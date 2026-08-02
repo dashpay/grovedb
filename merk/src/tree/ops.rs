@@ -56,6 +56,17 @@ pub enum Op {
     /// hence there is no need to calculate a difference in
     /// costs
     ReplaceLayeredReference(Vec<u8>, u32, CryptoHash, TreeFeatureType),
+    /// Like `PutLayeredReference` but for `CountIndexedTree` /
+    /// `ProvableCountIndexedTree` elements which point at TWO child Merks
+    /// (primary + secondary). The combined value hash is
+    /// `Blake3(actual_value_hash ‖ primary_root_hash ‖ secondary_root_hash)`
+    /// (H1-A composition).
+    ///
+    /// Fields: `(value, value_cost, primary_root_hash, secondary_root_hash, feature_type)`
+    PutLayeredCountIndexedReference(Vec<u8>, u32, CryptoHash, CryptoHash, TreeFeatureType),
+    /// Replacing variant of [`PutLayeredCountIndexedReference`]; same fields,
+    /// applied to an existing element.
+    ReplaceLayeredCountIndexedReference(Vec<u8>, u32, CryptoHash, CryptoHash, TreeFeatureType),
     /// Delete an element from the Merk tree
     Delete,
     /// Delete an element from the Merk tree knowing the previous value
@@ -92,6 +103,22 @@ impl fmt::Debug for Op {
                 ReplaceLayeredReference(value, cost, referenced_value, feature_type) => format!(
                     "Replace Layered Reference({value:?}) with cost ({cost:?}) for \
                      ({referenced_value:?}). ({feature_type:?})"
+                ),
+                PutLayeredCountIndexedReference(value, cost, primary, secondary, feature_type) => {
+                    format!(
+                        "Put Layered Count-Indexed Reference({value:?}) with cost ({cost:?}) for \
+                         primary=({primary:?}), secondary=({secondary:?}). ({feature_type:?})"
+                    )
+                }
+                ReplaceLayeredCountIndexedReference(
+                    value,
+                    cost,
+                    primary,
+                    secondary,
+                    feature_type,
+                ) => format!(
+                    "Replace Layered Count-Indexed Reference({value:?}) with cost ({cost:?}) for \
+                     primary=({primary:?}), secondary=({secondary:?}). ({feature_type:?})"
                 ),
                 Delete => "Delete".to_string(),
                 DeleteLayered => "Delete Layered".to_string(),
@@ -317,7 +344,11 @@ where
             | PutWithSpecializedCost(value, .., feature_type)
             | PutCombinedReference(value, .., feature_type)
             | PutLayeredReference(value, .., feature_type)
-            | ReplaceLayeredReference(value, .., feature_type) => (value.to_vec(), feature_type),
+            | ReplaceLayeredReference(value, .., feature_type)
+            | PutLayeredCountIndexedReference(value, .., feature_type)
+            | ReplaceLayeredCountIndexedReference(value, .., feature_type) => {
+                (value.to_vec(), feature_type)
+            }
         };
 
         // TODO: take from batch so we don't have to clone
@@ -355,6 +386,28 @@ where
                 )
                 .unwrap_add_cost(&mut cost)
             }
+            PutLayeredCountIndexedReference(
+                _,
+                value_cost,
+                primary_root_hash,
+                secondary_root_hash,
+                _,
+            )
+            | ReplaceLayeredCountIndexedReference(
+                _,
+                value_cost,
+                primary_root_hash,
+                secondary_root_hash,
+                _,
+            ) => TreeNode::new_with_layered_value_hash_three(
+                mid_key.as_ref().to_vec(),
+                mid_value,
+                *value_cost,
+                primary_root_hash.to_owned(),
+                secondary_root_hash.to_owned(),
+                mid_feature_type.to_owned(),
+            )
+            .unwrap_add_cost(&mut cost),
             Delete | DeleteLayered | DeleteLayeredMaybeSpecialized | DeleteMaybeSpecialized => {
                 unreachable!("cannot get here, should return at the top")
             }
@@ -496,6 +549,35 @@ where
                         self.put_value_with_reference_value_hash_and_value_cost(
                             value.to_vec(),
                             referenced_value.to_owned(),
+                            *value_cost,
+                            feature_type.to_owned(),
+                            old_specialized_cost,
+                            get_temp_new_value_with_old_flags,
+                            update_tree_value_based_on_costs,
+                            section_removal_bytes,
+                        )
+                    )
+                }
+                PutLayeredCountIndexedReference(
+                    value,
+                    value_cost,
+                    primary_root_hash,
+                    secondary_root_hash,
+                    feature_type,
+                )
+                | ReplaceLayeredCountIndexedReference(
+                    value,
+                    value_cost,
+                    primary_root_hash,
+                    secondary_root_hash,
+                    feature_type,
+                ) => {
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.put_value_with_two_reference_value_hashes_and_value_cost(
+                            value.to_vec(),
+                            primary_root_hash.to_owned(),
+                            secondary_root_hash.to_owned(),
                             *value_cost,
                             feature_type.to_owned(),
                             old_specialized_cost,
@@ -1442,5 +1524,60 @@ mod test {
         assert_eq!(tree.key(), &[63]);
         assert_eq!(tree.child(true).expect("expected child").key(), &[31]);
         assert_eq!(tree.child(false).expect("expected child").key(), &[79]);
+    }
+
+    // =====================================================================
+    // Coverage: Op::Debug formatters for cidx-specific variants
+    // (merk/src/tree/ops.rs:107-122).
+    // =====================================================================
+
+    #[test]
+    fn op_debug_formatters_cover_put_layered_count_indexed_reference() {
+        // Constructs a PutLayeredCountIndexedReference op and formats
+        // it through fmt::Debug; verifies the rendered string
+        // mentions the cidx-specific bits.
+        use crate::CryptoHash;
+        use crate::TreeFeatureType::CountedMerkNode;
+
+        let primary: CryptoHash = [0x11; 32];
+        let secondary: CryptoHash = [0x22; 32];
+        let op = Op::PutLayeredCountIndexedReference(
+            b"value".to_vec(),
+            42u32,
+            primary,
+            secondary,
+            CountedMerkNode(7),
+        );
+        let rendered = format!("{op:?}");
+        assert!(
+            rendered.contains("Put Layered Count-Indexed Reference"),
+            "expected Put Layered Count-Indexed Reference debug, got: {rendered}"
+        );
+        assert!(rendered.contains("primary="), "expected primary= label");
+        assert!(rendered.contains("secondary="), "expected secondary= label");
+    }
+
+    #[test]
+    fn op_debug_formatters_cover_replace_layered_count_indexed_reference() {
+        // Mirror of the previous test for the Replace variant.
+        use crate::CryptoHash;
+        use crate::TreeFeatureType::ProvableCountedMerkNode;
+
+        let primary: CryptoHash = [0x33; 32];
+        let secondary: CryptoHash = [0x44; 32];
+        let op = Op::ReplaceLayeredCountIndexedReference(
+            b"new_value".to_vec(),
+            99u32,
+            primary,
+            secondary,
+            ProvableCountedMerkNode(123),
+        );
+        let rendered = format!("{op:?}");
+        assert!(
+            rendered.contains("Replace Layered Count-Indexed Reference"),
+            "expected Replace Layered Count-Indexed Reference debug, got: {rendered}"
+        );
+        assert!(rendered.contains("primary="), "expected primary= label");
+        assert!(rendered.contains("secondary="), "expected secondary= label");
     }
 }

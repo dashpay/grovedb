@@ -2,6 +2,13 @@
 
 mod batch_structure;
 
+/// Indexed-tree helpers for the batch apply pipeline (pre-apply
+/// aggregate capture + post-apply secondary mirror) — covers
+/// `ProvableCountIndexedTree`, `ProvableSumIndexedTree`, and
+/// `ProvableCountProvableSumIndexedTree`. Extracted from `mod.rs` to
+/// keep the propagation pattern self-contained.
+mod indexed_tree;
+
 #[cfg(feature = "estimated_costs")]
 pub mod estimated_costs;
 
@@ -337,6 +344,68 @@ pub enum GroveOp {
         /// the wrapper byte on disk.
         non_counted: bool,
     },
+    /// **Internal only — do not construct directly.**
+    /// Replace both primary and secondary root keys for an aggregate-
+    /// indexed tree element (e.g. `CountIndexedTree`, and the planned
+    /// `SumIndexedTree` / other aggregate-indexed shapes) after batch ops
+    /// mutated its primary Merk. Carries both child Merks' new
+    /// `(root_hash, root_key)` plus the primary's aggregate value; the
+    /// parent merk node uses these in `combine_hash_three` (H1-A) to
+    /// recompute its value_hash via
+    /// `Op::ReplaceLayeredCountIndexedReference` (and its future
+    /// aggregate-shape siblings).
+    ///
+    /// The op is aggregate-agnostic: `primary_aggregate_data` is an
+    /// `AggregateData` enum, so the same propagation op works for Count,
+    /// ProvableCount, and any future Sum / BigSum / ProvableSum / etc.
+    /// secondary-indexed variants. Today this is produced only by
+    /// `execute_ops_on_path` when a level's path resolves to a
+    /// CountIndexedTree primary; consumed at the parent level to update
+    /// the cidx (or future aggregate-cidx) element bytes consistently
+    /// with both child Merks.
+    ///
+    /// This variant is `#[non_exhaustive]` and cannot be constructed outside
+    /// of this crate.
+    #[non_exhaustive]
+    ReplaceAggregateIndexedTreeRootKeys {
+        /// Primary Merk's new root hash.
+        primary_hash: [u8; 32],
+        /// Primary Merk's new root key.
+        primary_root_key: Option<Vec<u8>>,
+        /// Primary Merk's new aggregate, whichever the indexed variant
+        /// carries — count for PCIT, sum for PSIT, count-and-sum for PCPSIT.
+        primary_aggregate_data: AggregateData,
+        /// Every configured axis's new state, as
+        /// `(axis_tag, root_hash, root_key)`, in the element's canonical axis
+        /// order. One entry for the single-axis variants (PCIT, PSIT); up to
+        /// three for a PCPSIT indexing count, sum and avg.
+        ///
+        /// The consumer rebuilds the element from these and derives the second
+        /// input to the H1-A `combine_hash_three`: the single axis's root hash
+        /// directly for PCIT/PSIT, or `axes_digest` over all of them for
+        /// PCPSIT.
+        axes: Vec<(u8, [u8; 32], Option<Vec<u8>>)>,
+    },
+    /// Insert-side counterpart of [`Self::ReplaceAggregateIndexedTreeRootKeys`]
+    /// for an indexed primary CREATED in this same batch: there is no stored
+    /// element to read during propagation, so the op carries the caller's
+    /// element itself (root keys unset — enforced by the rootless-aggregate
+    /// rule) alongside the computed primary and per-axis secondary state.
+    /// Internal: emitted by the bubble-up when a deeper level finishes under
+    /// a freshly-inserted indexed element; rejected in user-supplied batches.
+    InsertAggregateIndexedTreeRootKeys {
+        /// The freshly created indexed element as the caller supplied it.
+        element: Element,
+        /// Root hash of the indexed primary Merk after this batch's ops.
+        primary_hash: CryptoHash,
+        /// Root key of the indexed primary Merk after this batch's ops.
+        primary_root_key: Option<Vec<u8>>,
+        /// The primary's aggregate data after this batch's ops.
+        primary_aggregate_data: AggregateData,
+        /// Post-mirror per-axis state, in the element's canonical axis
+        /// order: `(axis_tag, secondary_root_hash, secondary_root_key)`.
+        axes: Vec<(u8, CryptoHash, Option<Vec<u8>>)>,
+    },
     /// Refresh a reference. The full op shape (which on-disk variant,
     /// trust mode, sum-update behavior) lives in `mode` — see
     /// [`RefreshReferenceMode`] for the per-variant contract.
@@ -441,6 +510,70 @@ impl GroveOp {
             GroveOp::DenseTreeInsert { .. } => 14,
             GroveOp::ReplaceNonMerkTreeRoot { .. } => 15,
             GroveOp::InsertNonMerkTree { .. } => 16,
+            GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. } => 17,
+            GroveOp::InsertAggregateIndexedTreeRootKeys { .. } => 18,
+        }
+    }
+
+    /// True iff this op, when applied at a cidx primary's path, can
+    /// change the `count_value` (or absence) of the element at the
+    /// op's key — and therefore requires the cidx primary's secondary
+    /// mirror to be updated for that key.
+    ///
+    /// Used by `execute_ops_on_path`'s pre-state capture pass: only
+    /// ops that may change a key's count_value are read from disk
+    /// before apply, so the post-apply mirror knows the (old, new)
+    /// count delta.
+    ///
+    /// # Single source of truth — keep in sync with `GroveOp` variants
+    ///
+    /// This method uses an **exhaustive `match`** with no wildcard
+    /// arm. Adding a new `GroveOp` variant forces an explicit decision
+    /// here; the compiler will refuse to compile until the variant is
+    /// classified. This is the guard that prevents the nested-cidx
+    /// mirror-bug class (commit a8bb34fb) from recurring: that bug
+    /// existed because the original inline `matches!()` was a
+    /// non-exhaustive check, so the newly added
+    /// `ReplaceAggregateIndexedTreeRootKeys` variant silently fell through
+    /// to "doesn't mutate" and the outer's secondary stayed stale.
+    pub(crate) fn can_mutate_child_count(&self) -> bool {
+        match self {
+            // User-facing leaf-level mutations: insert/replace/patch
+            // all set a new (or unchanged) count_value on the affected
+            // key; delete removes it. All require secondary mirror.
+            GroveOp::InsertWithKnownToNotAlreadyExist { .. }
+            | GroveOp::InsertIfNotExists { .. }
+            | GroveOp::InsertOrReplace { .. }
+            | GroveOp::Replace { .. }
+            | GroveOp::Patch { .. }
+            | GroveOp::Delete
+            | GroveOp::DeleteTree(..)
+            | GroveOp::RefreshReference { .. } => true,
+
+            // Bubble-up ops emitted by propagation. Each updates the
+            // child element's bytes at the parent level — for
+            // count-bearing trees this changes the aggregated
+            // count_value, which is the secondary's sort key. Without
+            // this arm, nested-cidx bubble-up silently leaves the
+            // outer's secondary stale (commit a8bb34fb).
+            GroveOp::ReplaceTreeRootKey { .. }
+            | GroveOp::InsertTreeWithRootHash { .. }
+            | GroveOp::ReplaceNonMerkTreeRoot { .. }
+            | GroveOp::InsertNonMerkTree { .. }
+            | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. }
+            | GroveOp::InsertAggregateIndexedTreeRootKeys { .. } => true,
+
+            // Non-Merk-tree leaf inserts (commitment/MMR/bulk-append/
+            // dense) don't change count_value for their own entries
+            // because these trees use non-Merk storage and don't
+            // contribute counts to a parent cidx the same way. Their
+            // own internal aggregation is handled by the tree-specific
+            // propagation; they do NOT need a per-entry cidx secondary
+            // mirror at the leaf level.
+            GroveOp::CommitmentTreeInsert { .. }
+            | GroveOp::MmrTreeAppend { .. }
+            | GroveOp::BulkAppend { .. }
+            | GroveOp::DenseTreeInsert { .. } => false,
         }
     }
 }
@@ -731,6 +864,12 @@ impl fmt::Debug for QualifiedGroveDbOp {
             GroveOp::MmrTreeAppend { .. } => "MMR Tree Append".to_string(),
             GroveOp::BulkAppend { .. } => "Bulk Append".to_string(),
             GroveOp::DenseTreeInsert { .. } => "Dense Tree Insert".to_string(),
+            GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. } => {
+                "Replace CountIndexedTree primary+secondary roots".to_string()
+            }
+            GroveOp::InsertAggregateIndexedTreeRootKeys { .. } => {
+                "Insert fresh indexed tree with primary+secondary roots".to_string()
+            }
         };
 
         f.debug_struct("GroveDbOp")
@@ -1285,12 +1424,37 @@ impl GroveDbOpConsistencyResults {
 }
 
 /// Cache for Merk trees by their paths.
-struct TreeCacheMerkByPath<S, F> {
+struct TreeCacheMerkByPath<S, F, F2> {
     merks: HashMap<Vec<Vec<u8>>, Merk<S>>,
     get_merk_fn: F,
+    /// Opens EVERY configured axis secondary for an indexed primary, given
+    /// the primary's path. Used when ops mutate an indexed primary so the
+    /// mirrors stay in sync at apply time. The closure reads the indexed
+    /// element from the parent merk to learn the configured axes and each
+    /// axis's current root key, then opens one secondary per axis at its
+    /// derived prefix. PCIT/PSIT yield one; a PCPSIT indexing count+sum+avg
+    /// yields three.
+    get_secondary_merks_fn: F2,
+    /// Per-indexed-primary captured secondary state after apply, keyed by the
+    /// primary's path, as `(axis_tag, root_hash, root_key)` in the element's
+    /// canonical axis order. Populated by `execute_ops_on_path` when the
+    /// path's merk is an indexed primary; consumed by the bubble-up code so a
+    /// `ReplaceAggregateIndexedTreeRootKeys` op can be emitted on the parent
+    /// level carrying the primary plus every axis's state — one entry for
+    /// PCIT/PSIT, up to three for PCPSIT.
+    indexed_secondary_after_apply: HashMap<Vec<Vec<u8>>, Vec<(u8, CryptoHash, Option<Vec<u8>>)>>,
+    /// Cidx primary paths whose old storage (primary subtree + secondary
+    /// namespace) must be cleaned up at apply_batch's post-apply phase
+    /// because an InsertOrReplace / Replace / Patch op replaced the
+    /// cidx with either a non-cidx element OR an empty cidx. These are
+    /// the SAFE-SUBSET overwrites — cidx → non-empty cidx is rejected
+    /// at validation time because the storage-pointer semantics are
+    /// ambiguous. See the cidx-overwrite handling in
+    /// `execute_ops_on_path`.
+    cidx_overwrite_cleanup_paths: Vec<Vec<Vec<u8>>>,
 }
 
-impl<S, F> fmt::Debug for TreeCacheMerkByPath<S, F> {
+impl<S, F, F2> fmt::Debug for TreeCacheMerkByPath<S, F, F2> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TreeCacheMerkByPath").finish()
     }
@@ -1324,11 +1488,35 @@ trait TreeCache<G, SR> {
         root_key: Option<Vec<u8>>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>;
+
+    /// After a level's `execute_ops_on_path` returns, the bubble-up code
+    /// calls this to retrieve the cidx-secondary state captured by that
+    /// level (if the level was a cidx primary). Default impl returns
+    /// `None` for caches that do not support cidx primary mutations.
+    fn take_cidx_secondary_after_apply(
+        &mut self,
+        _path: &[Vec<u8>],
+    ) -> Option<Vec<(u8, CryptoHash, Option<Vec<u8>>)>> {
+        None
+    }
+
+    /// After all level processing completes, `apply_batch` calls this
+    /// to retrieve the list of cidx primary paths whose OLD storage
+    /// (primary subtree + secondary namespace) must be cleaned up
+    /// because a safe-subset overwrite replaced them with a non-cidx
+    /// element or an empty cidx. Default impl returns an empty Vec.
+    fn take_cidx_overwrite_cleanup_paths(&mut self) -> Vec<Vec<Vec<u8>>> {
+        Vec::new()
+    }
 }
 
-impl<'db, S, F> TreeCacheMerkByPath<S, F>
+impl<'db, S, F, F2> TreeCacheMerkByPath<S, F, F2>
 where
     F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
+    F2: FnMut(
+        &[Vec<u8>],
+        Option<&Element>,
+    ) -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
     S: StorageContext<'db>,
 {
     /// Processes a reference, determining whether it can be retrieved from a
@@ -1693,9 +1881,12 @@ where
             | Element::CommitmentTree(..)
             | Element::MmrTree(..)
             | Element::BulkAppendTree(..)
-            | Element::DenseAppendOnlyFixedSizeTree(..) => Err(Error::InvalidBatchOperation(
-                "references can not point to trees being updated",
-            ))
+            | Element::DenseAppendOnlyFixedSizeTree(..)
+            | Element::ProvableSumIndexedTree(..)
+            | Element::ProvableCountIndexedTree(..)
+            | Element::ProvableCountProvableSumIndexedTree(..) => Err(
+                Error::InvalidBatchOperation("references can not point to trees being updated"),
+            )
             .wrap_with_cost(cost),
             // underlying() unwraps a single level; the constructor and
             // (de)serializer reject nested wrappers, so these are
@@ -1757,6 +1948,8 @@ where
                 | GroveOp::InsertTreeWithRootHash { .. }
                 | GroveOp::ReplaceNonMerkTreeRoot { .. }
                 | GroveOp::InsertNonMerkTree { .. }
+                | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. }
+                | GroveOp::InsertAggregateIndexedTreeRootKeys { .. }
                 | GroveOp::CommitmentTreeInsert { .. }
                 | GroveOp::MmrTreeAppend { .. }
                 | GroveOp::BulkAppend { .. }
@@ -1850,7 +2043,10 @@ where
                         | Element::CommitmentTree(..)
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
-                        | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                        | Element::DenseAppendOnlyFixedSizeTree(..)
+                        | Element::ProvableSumIndexedTree(..)
+                        | Element::ProvableCountIndexedTree(..)
+                        | Element::ProvableCountProvableSumIndexedTree(..) => {
                             Err(Error::InvalidBatchOperation(
                                 "references can not point to trees being updated",
                             ))
@@ -1901,7 +2097,10 @@ where
                     | Element::CommitmentTree(..)
                     | Element::MmrTree(..)
                     | Element::BulkAppendTree(..)
-                    | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                    | Element::DenseAppendOnlyFixedSizeTree(..)
+                    | Element::ProvableSumIndexedTree(..)
+                    | Element::ProvableCountIndexedTree(..)
+                    | Element::ProvableCountProvableSumIndexedTree(..) => {
                         Err(Error::InvalidBatchOperation(
                             "references can not point to trees being updated",
                         ))
@@ -1971,7 +2170,7 @@ where
     }
 }
 
-impl<'db, S, F, G, SR> TreeCache<G, SR> for TreeCacheMerkByPath<S, F>
+impl<'db, S, F, F2, G, SR> TreeCache<G, SR> for TreeCacheMerkByPath<S, F, F2>
 where
     G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
     SR: FnMut(
@@ -1980,6 +2179,10 @@ where
         u32,
     ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
+    F2: FnMut(
+        &[Vec<u8>],
+        Option<&Element>,
+    ) -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
     S: StorageContext<'db>,
 {
     fn insert(
@@ -2000,6 +2203,17 @@ where
         }
 
         Ok(()).wrap_with_cost(cost)
+    }
+
+    fn take_cidx_secondary_after_apply(
+        &mut self,
+        path: &[Vec<u8>],
+    ) -> Option<Vec<(u8, CryptoHash, Option<Vec<u8>>)>> {
+        self.indexed_secondary_after_apply.remove(path)
+    }
+
+    fn take_cidx_overwrite_cleanup_paths(&mut self) -> Vec<Vec<Vec<u8>>> {
+        std::mem::take(&mut self.cidx_overwrite_cleanup_paths)
     }
 
     fn update_base_merk_root_key(
@@ -2050,6 +2264,30 @@ where
             merk.tree_type
         };
 
+        // For cidx primaries, capture the pre-apply count value of every
+        // key that this level's ops will mutate. After
+        // `merk.apply_with_specialized_costs` runs we re-read each
+        // key's post-apply element and use the (old, new) count pair to
+        // mirror the change in the secondary Merk. Then we store the
+        // post-mirror secondary state in `cidx_secondary_after_apply`
+        // so the bubble-up code can emit
+        // `ReplaceAggregateIndexedTreeRootKeys` instead of the standard
+        // `ReplaceTreeRootKey`. `ReplaceTreeRootKey` ops on a cidx
+        // primary level represent a child subtree's bubble-up — the
+        // child's element bytes have a new aggregate count, so its
+        // secondary entry needs to move; we capture it here too.
+        let indexed_pre_state: Option<BTreeMap<Vec<u8>, Option<(u64, i64)>>> = if in_tree_type
+            .is_indexed_primary()
+        {
+            let merk = self.merks.get(path).expect("the Merk is cached");
+            Some(cost_return_on_error!(
+                &mut cost,
+                indexed_tree::capture_indexed_pre_state(merk, &ops_at_path_by_key, grove_version,)
+            ))
+        } else {
+            None
+        };
+
         let mut batch_operations: Vec<(Vec<u8>, Op)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {
@@ -2064,13 +2302,29 @@ where
                         } => (true, *error_if_exists),
                         _ => (false, false),
                     };
+                    let op_could_overwrite = matches!(
+                        &op_ref,
+                        GroveOp::InsertOrReplace { .. }
+                            | GroveOp::Replace { .. }
+                            | GroveOp::Patch { .. }
+                    );
                     let element = match op_ref {
                         GroveOp::InsertWithKnownToNotAlreadyExist { element }
                         | GroveOp::InsertIfNotExists { element, .. }
                         | GroveOp::InsertOrReplace { element }
                         | GroveOp::Replace { element }
                         | GroveOp::Patch { element, .. } => element,
-                        _ => unreachable!(),
+                        // Structurally unreachable: the enclosing arm already
+                        // constrained op_ref to exactly these five variants.
+                        // Fail gracefully instead of panicking if a refactor
+                        // ever widens the outer pattern.
+                        _ => {
+                            return Err(Error::CorruptedCodeExecution(
+                                "execute_ops_on_path: op matched an insert/replace/patch \
+                                 variant in the outer arm but not when extracting its element",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
                     };
 
                     // Check tree-override protection for all non-reference elements.
@@ -2112,6 +2366,59 @@ where
                                 ))
                                 .wrap_with_cost(cost);
                             }
+                        }
+                    // NOTE: bare `Reference` overwrites are deliberately still
+                    // excluded here. Including them (so a reference overwriting an
+                    // indexed tree schedules the per-axis secondary cleanup) costs
+                    // one extra stored-element read on EVERY reference overwrite,
+                    // which measurably changes tracked cost — +1 seek and +79
+                    // storage_loaded_bytes on the repo's own refresh-reference cost
+                    // tests. Cost feeds fees, and references over plain trees are
+                    // shipped functionality on GROVE_V1/V2/V3, so paying that read
+                    // unconditionally is a live-path behaviour change.
+                    //
+                    // The hole it would close requires an indexed tree to be the
+                    // element being overwritten, which cannot occur on any released
+                    // version (indexed trees are introduced by this PR). Closing it
+                    // therefore belongs with the protocol version that activates
+                    // indexed trees, gated so live versions keep today's cost.
+                    } else if op_could_overwrite
+                        && !matches!(&element, Element::Reference(..))
+                        && grove_version
+                            .grovedb_versions
+                            .apply_batch
+                            .overwrite_indexed_cleanup_inspection
+                            >= 1
+                    {
+                        // Tree-override protection is OFF; let the
+                        // cidx helper classify the overwrite (safe
+                        // subset → schedule cleanup, ambiguous → err,
+                        // non-cidx → no-op).
+                        //
+                        // Gated exactly like `delete_tree_cleanup_type_source`:
+                        // the classification starts with a stored-element read,
+                        // which costs +1 seek and +129 loaded bytes per
+                        // overwrite-capable op. Cost feeds fees, so V1..V3 must
+                        // keep their released cost shape — and the hole this
+                        // closes needs an indexed tree to be the element being
+                        // overwritten, which cannot occur before the version
+                        // that introduces indexed trees. The bare-Reference
+                        // exclusion above is the same principle applied to the
+                        // reference overwrite path.
+                        let merk = self.merks.get(path).expect("the Merk is cached");
+                        let maybe_cleanup_path = cost_return_on_error!(
+                            &mut cost,
+                            indexed_tree::inspect_cidx_overwrite(
+                                merk,
+                                path,
+                                &key_info,
+                                &element,
+                                ops_by_qualified_paths,
+                                grove_version,
+                            )
+                        );
+                        if let Some(cidx_path) = maybe_cleanup_path {
+                            self.cidx_overwrite_cleanup_paths.push(cidx_path);
                         }
                     }
 
@@ -2231,6 +2538,234 @@ where
                                 element.insert_reference_into_batch_operations(
                                     key_info.get_key_clone(),
                                     referenced_element_value_hash,
+                                    &mut batch_operations,
+                                    merk_feature_type,
+                                    grove_version,
+                                )
+                            );
+                        }
+                        // CountIndexedTree / ProvableCountIndexedTree own two
+                        // child Merks (primary + secondary). For the batch
+                        // path we accept only the empty-creation case here:
+                        // both root keys = None, count = 0. This is
+                        // sufficient to create the element bytes correctly
+                        // (with the H1-A three-input combine and both
+                        // child hashes = NULL_HASH); subsequent item-level
+                        // mutations into the primary still need the
+                        // dedicated `insert_into_count_indexed_tree` /
+                        // `delete_from_count_indexed_tree` APIs because
+                        // the batch propagation pass does not yet cascade
+                        // through the secondary.
+                        Element::ProvableCountIndexedTree(primary, secondary, count_value, _) => {
+                            if primary.is_some() || secondary.is_some() || *count_value != 0 {
+                                return Err(Error::InvalidBatchOperation(
+                                    "a CountIndexedTree must be empty at the moment of batch \
+                                     insertion (both primary_root_key and secondary_root_key \
+                                     must be None and count = 0); item-level mutations require \
+                                     the dedicated insert_into_count_indexed_tree API",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                            // Check existence for InsertIfNotExists.
+                            if is_insert_if_not_exists
+                                || batch_apply_options.validate_insertion_does_not_override
+                            {
+                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                                let existing = cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.element_at_key_already_exists(
+                                        merk,
+                                        key_info.get_key_clone().as_slice(),
+                                        grove_version,
+                                    )
+                                );
+                                if existing {
+                                    if error_if_exists
+                                        || batch_apply_options.validate_insertion_does_not_override
+                                    {
+                                        return Err(Error::InvalidBatchOperation(
+                                            "attempting to insert CountIndexedTree element that \
+                                             already exists",
+                                        ))
+                                        .wrap_with_cost(cost);
+                                    }
+                                    continue;
+                                }
+                            }
+
+                            let merk_feature_type = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(in_tree_type)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            cost_return_on_error_into!(
+                                &mut cost,
+                                element.insert_count_indexed_subtree_into_batch_operations(
+                                    key_info.get_key_clone(),
+                                    NULL_HASH,
+                                    NULL_HASH,
+                                    false,
+                                    &mut batch_operations,
+                                    merk_feature_type,
+                                    grove_version,
+                                )
+                            );
+                        }
+                        // ProvableSumIndexedTree empty-creation: same
+                        // shape as PCIT — both root keys must be None
+                        // and sum_value = 0, then we write the element
+                        // via insert_count_indexed_subtree_into_batch_operations
+                        // (the merk-side helper now accepts all three
+                        // indexed-tree variants).
+                        Element::ProvableSumIndexedTree(primary, secondary, sum_value, _) => {
+                            if primary.is_some() || secondary.is_some() || *sum_value != 0 {
+                                return Err(Error::InvalidBatchOperation(
+                                    "a ProvableSumIndexedTree must be empty at the moment of \
+                                     batch insertion (both primary_root_key and \
+                                     secondary_root_key must be None and sum = 0); item-level \
+                                     mutations require the dedicated insert_into_indexed_tree \
+                                     API",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                            if is_insert_if_not_exists
+                                || batch_apply_options.validate_insertion_does_not_override
+                            {
+                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                                let existing = cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.element_at_key_already_exists(
+                                        merk,
+                                        key_info.get_key_clone().as_slice(),
+                                        grove_version,
+                                    )
+                                );
+                                if existing {
+                                    if error_if_exists
+                                        || batch_apply_options.validate_insertion_does_not_override
+                                    {
+                                        return Err(Error::InvalidBatchOperation(
+                                            "attempting to insert ProvableSumIndexedTree element \
+                                             that already exists",
+                                        ))
+                                        .wrap_with_cost(cost);
+                                    }
+                                    continue;
+                                }
+                            }
+                            let merk_feature_type = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(in_tree_type)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            cost_return_on_error_into!(
+                                &mut cost,
+                                element.insert_count_indexed_subtree_into_batch_operations(
+                                    key_info.get_key_clone(),
+                                    NULL_HASH,
+                                    NULL_HASH,
+                                    false,
+                                    &mut batch_operations,
+                                    merk_feature_type,
+                                    grove_version,
+                                )
+                            );
+                        }
+                        // ProvableCountProvableSumIndexedTree empty-creation:
+                        // primary_root_key = None, count = 0, sum = 0,
+                        // and every axis slot's secondary_root_key =
+                        // None (the axes list carries the configured
+                        // schema and is non-empty). Each axis slot
+                        // contributes NULL_HASH to the axes_digest.
+                        Element::ProvableCountProvableSumIndexedTree(
+                            primary,
+                            count_value,
+                            sum_value,
+                            axes,
+                            _,
+                        ) => {
+                            let axes_all_empty = axes.iter().all(|(_, sk)| sk.is_none());
+                            if primary.is_some()
+                                || *count_value != 0
+                                || *sum_value != 0
+                                || !axes_all_empty
+                            {
+                                return Err(Error::InvalidBatchOperation(
+                                    "a ProvableCountProvableSumIndexedTree must be empty at the \
+                                     moment of batch insertion (primary_root_key = None, count \
+                                     = 0, sum = 0, every axis secondary_root_key = None); \
+                                     item-level mutations require the dedicated \
+                                     insert_into_indexed_tree API",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                            // Full canonical-axes validation (1..=3 entries,
+                            // sorted ascending by tag, no duplicates, known
+                            // tags) — reuses the same check the Element
+                            // constructors run. Without this, a batch caller
+                            // could persist an empty PCPSIT whose axes are
+                            // unsorted / duplicated / out-of-range (the
+                            // axes_digest is computed over whatever TLV is
+                            // supplied; it does not validate).
+                            cost_return_on_error_no_add!(
+                                cost,
+                                Element::validate_pcpsit_axes(axes).map_err(|_| {
+                                    Error::InvalidBatchOperation(
+                                        "a ProvableCountProvableSumIndexedTree must have \
+                                         canonical axes (1..=3 entries, sorted ascending by \
+                                         tag, no duplicates, tags in 0..=2)",
+                                    )
+                                })
+                            );
+                            if is_insert_if_not_exists
+                                || batch_apply_options.validate_insertion_does_not_override
+                            {
+                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                                let existing = cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.element_at_key_already_exists(
+                                        merk,
+                                        key_info.get_key_clone().as_slice(),
+                                        grove_version,
+                                    )
+                                );
+                                if existing {
+                                    if error_if_exists
+                                        || batch_apply_options.validate_insertion_does_not_override
+                                    {
+                                        return Err(Error::InvalidBatchOperation(
+                                            "attempting to insert \
+                                             ProvableCountProvableSumIndexedTree element that \
+                                             already exists",
+                                        ))
+                                        .wrap_with_cost(cost);
+                                    }
+                                    continue;
+                                }
+                            }
+                            let merk_feature_type = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(in_tree_type)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            // For an empty PCPSIT each configured axis
+                            // contributes NULL_HASH to the digest. The
+                            // merk-side helper takes a single second
+                            // hash (axes_digest in this case).
+                            let zero_axes: Vec<(u8, grovedb_merk::CryptoHash)> =
+                                axes.iter().map(|(t, _)| (*t, NULL_HASH)).collect();
+                            let empty_axes_digest = grovedb_merk::tree::axes_digest(&zero_axes)
+                                .unwrap_add_cost(&mut cost);
+                            cost_return_on_error_into!(
+                                &mut cost,
+                                element.insert_count_indexed_subtree_into_batch_operations(
+                                    key_info.get_key_clone(),
+                                    NULL_HASH,
+                                    empty_axes_digest,
+                                    false,
                                     &mut batch_operations,
                                     merk_feature_type,
                                     grove_version,
@@ -2602,6 +3137,17 @@ where
                     );
                 }
                 GroveOp::DeleteTree(_tree_type, _) => {
+                    // CountIndexedTree owns two child Merks (primary +
+                    // secondary). The standard DeleteTree path runs
+                    // find_subtrees on the primary's prefix and clears
+                    // each subtree's storage, but it doesn't know about
+                    // the cidx secondary's storage namespace
+                    // (Blake3(primary_prefix ‖ 0x01)). The dedicated
+                    // post-apply secondary cleanup pass that runs in
+                    // apply_batch detects cidx primary deletes by
+                    // tree_type and clears the secondary prefix there;
+                    // here we just emit the merk-level delete the same
+                    // way as for any other tree.
                     cost_return_on_error_into!(
                         &mut cost,
                         Element::delete_into_batch_operations(
@@ -2838,6 +3384,59 @@ where
                     ))
                     .wrap_with_cost(cost);
                 }
+                GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+                    primary_hash,
+                    primary_root_key,
+                    primary_aggregate_data,
+                    axes,
+                } => {
+                    // Bubble-up from an indexed primary's level. The `path`
+                    // here is the parent merk where the indexed ELEMENT lives;
+                    // key_info points at that element. Recompute its
+                    // value_hash via H1-A from the primary's new root hash and
+                    // the axes' new state — the single axis's root hash for
+                    // PCIT/PSIT, the axes digest for PCPSIT.
+                    let merk = self.merks.get(path).expect("the Merk is cached");
+                    cost_return_on_error!(
+                        &mut cost,
+                        GroveDb::update_indexed_tree_item_preserve_flag_into_batch_operations(
+                            merk,
+                            key_info.get_key(),
+                            primary_root_key,
+                            axes,
+                            primary_aggregate_data,
+                            primary_hash,
+                            &mut batch_operations,
+                            grove_version,
+                        )
+                    );
+                }
+                GroveOp::InsertAggregateIndexedTreeRootKeys {
+                    element,
+                    primary_hash,
+                    primary_root_key,
+                    primary_aggregate_data,
+                    axes,
+                } => {
+                    // Bubble-up from an indexed primary CREATED in this same
+                    // batch: there is no stored element to read, so the op
+                    // carries it. Build the parent-merk INSERT with the same
+                    // H1-A value hash composition the replace arm uses.
+                    cost_return_on_error!(
+                        &mut cost,
+                        GroveDb::insert_indexed_tree_item_into_batch_operations(
+                            element,
+                            in_tree_type,
+                            key_info.get_key(),
+                            primary_root_key,
+                            axes,
+                            primary_aggregate_data,
+                            primary_hash,
+                            &mut batch_operations,
+                            grove_version,
+                        )
+                    );
+                }
             }
         }
 
@@ -2926,7 +3525,10 @@ where
                                     | Element::CommitmentTree(..)
                                     | Element::MmrTree(..)
                                     | Element::BulkAppendTree(..)
-                                    | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                                    | Element::DenseAppendOnlyFixedSizeTree(..)
+                                    | Element::ProvableSumIndexedTree(..)
+                                    | Element::ProvableCountIndexedTree(..)
+                                    | Element::ProvableCountProvableSumIndexedTree(..) => {
                                         let tree_type = new_element
                                             .tree_type()
                                             .expect("tree_type guaranteed by match arm");
@@ -2987,6 +3589,64 @@ where
             )
             .map_err(|e| Error::CorruptedData(e.to_string()))
         );
+
+        // Post-apply: if this level was a cidx primary, mirror each
+        // mutation to the secondary and capture the secondary's
+        // post-mirror state into `cidx_secondary_after_apply` so the
+        // bubble-up can emit `ReplaceAggregateIndexedTreeRootKeys`.
+        if let Some(pre) = indexed_pre_state {
+            // Open every configured axis secondary via the closure (it does the
+            // parent merk lookup to learn the axes and their current root
+            // keys), then mirror each one from the same captured pre-state.
+            // A freshly-created indexed primary has no stored element for the
+            // opener to read — the batch op that creates it carries the
+            // element, so hand it over. `None` for an existing primary keeps
+            // the read-from-parent path. Overwrite-with-descendants is
+            // rejected in preflight, so an in-batch insert op at this exact
+            // path means the element is fresh.
+            let fresh_indexed_element = ops_by_qualified_paths.get(path).and_then(|op| match op {
+                GroveOp::InsertOrReplace { element }
+                | GroveOp::InsertWithKnownToNotAlreadyExist { element }
+                | GroveOp::InsertIfNotExists { element, .. }
+                | GroveOp::Replace { element }
+                | GroveOp::Patch { element, .. }
+                    if element.is_indexed_tree() =>
+                {
+                    Some(element)
+                }
+                _ => None,
+            });
+            let secondaries = cost_return_on_error!(
+                &mut cost,
+                (self.get_secondary_merks_fn)(path, fresh_indexed_element)
+            );
+            let primary_merk = self.merks.get(path).expect("the Merk is cached");
+            // One post-state read per captured key, shared by every axis: the
+            // (count, sum) transitions are axis-independent, only the sort-key
+            // encoding differs. Reading inside the per-axis call charged a
+            // PCPSIT batch three primary reads per key where one suffices.
+            let transitions = cost_return_on_error!(
+                &mut cost,
+                indexed_tree::read_post_apply_transitions(primary_merk, &pre, grove_version)
+            );
+            let mut per_axis = Vec::with_capacity(secondaries.len());
+            for (axis, mut secondary_merk) in secondaries {
+                let (sec_hash, sec_root_key) = cost_return_on_error!(
+                    &mut cost,
+                    indexed_tree::apply_indexed_secondary_mirror_post_apply(
+                        &transitions,
+                        axis,
+                        &mut secondary_merk,
+                        grove_version,
+                    )
+                );
+                per_axis.push((axis.tag(), sec_hash, sec_root_key));
+            }
+            self.indexed_secondary_after_apply
+                .insert(path.to_vec(), per_axis);
+        }
+
+        let merk = self.merks.get_mut(path).expect("the Merk is cached");
         merk.root_hash_key_and_aggregate_data()
             .add_cost(cost)
             .map_err(Error::MerkError)
@@ -3001,11 +3661,21 @@ impl GroveDb {
     /// Method to propagate updated subtree root hashes up to GroveDB root
     /// If the stop level is set in the apply options the remaining operations
     /// are returned
+    /// Runs the level-by-level batch propagation.
+    ///
+    /// Returns `(leftover_ops, cidx_overwrite_cleanup_paths)`:
+    ///   - `leftover_ops` is `Some(...)` only if a `batch_pause_height`
+    ///     was set and pruning paused before reaching the root.
+    ///   - `cidx_overwrite_cleanup_paths` is the list of cidx primary
+    ///     paths whose old storage (primary subtree + secondary
+    ///     namespace) must be cleaned up post-apply because of a safe-
+    ///     subset cidx-overwrite (see `execute_ops_on_path`). Empty when
+    ///     no such overwrites occurred.
     fn apply_batch_structure<C: TreeCache<F, SR>, F, SR>(
         batch_structure: BatchStructure<C, F, SR>,
         batch_apply_options: Option<BatchApplyOptions>,
         grove_version: &GroveVersion,
-    ) -> CostResult<Option<OpsByLevelPath>, Error>
+    ) -> CostResult<(Option<OpsByLevelPath>, Vec<Vec<Vec<u8>>>), Error>
     where
         F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
         SR: FnMut(
@@ -3084,6 +3754,12 @@ impl GroveDb {
                         )
                     );
 
+                    // If the just-finished level was a cidx primary,
+                    // pull the post-mirror secondary state from the
+                    // side-channel set by execute_ops_on_path so the
+                    // bubble-up can carry it.
+                    let cidx_secondary_state =
+                        merk_tree_cache.take_cidx_secondary_after_apply(&path.to_path());
                     if current_level > 0 {
                         // We need to propagate up this root hash, this means adding grove_db
                         // operations up for the level above
@@ -3097,11 +3773,22 @@ impl GroveDb {
                                 {
                                     match ops_on_path.entry(key.clone()) {
                                         Entry::Vacant(vacant_entry) => {
-                                            vacant_entry.insert(GroveOp::ReplaceTreeRootKey {
-                                                hash: root_hash,
-                                                root_key: calculated_root_key,
-                                                aggregate_data,
-                                            });
+                                            if let Some(axes) = cidx_secondary_state {
+                                                vacant_entry.insert(
+                                                    GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+                                                        primary_hash: root_hash,
+                                                        primary_root_key: calculated_root_key,
+                                                        primary_aggregate_data: aggregate_data,
+                                                        axes,
+                                                    },
+                                                );
+                                            } else {
+                                                vacant_entry.insert(GroveOp::ReplaceTreeRootKey {
+                                                    hash: root_hash,
+                                                    root_key: calculated_root_key,
+                                                    aggregate_data,
+                                                });
+                                            }
                                         }
                                         Entry::Occupied(occupied_entry) => {
                                             let mutable_occupied_entry = occupied_entry.into_mut();
@@ -3111,9 +3798,24 @@ impl GroveDb {
                                                     root_key,
                                                     aggregate_data: aggregate_data_entry,
                                                 } => {
-                                                    *hash = root_hash;
-                                                    *root_key = calculated_root_key;
-                                                    *aggregate_data_entry = aggregate_data;
+                                                    if let Some(axes) = cidx_secondary_state {
+                                                        // Upgrade to the indexed variant so
+                                                        // the parent merk's value_hash
+                                                        // is recomputed via H1-A.
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+                                                                primary_hash: root_hash,
+                                                                primary_root_key:
+                                                                    calculated_root_key,
+                                                                primary_aggregate_data:
+                                                                    aggregate_data,
+                                                                axes,
+                                                            };
+                                                    } else {
+                                                        *hash = root_hash;
+                                                        *root_key = calculated_root_key;
+                                                        *aggregate_data_entry = aggregate_data;
+                                                    }
                                                 }
                                                 GroveOp::ReplaceNonMerkTreeRoot {
                                                     hash, ..
@@ -3124,7 +3826,13 @@ impl GroveDb {
                                                     *hash = root_hash;
                                                 }
                                                 GroveOp::InsertTreeWithRootHash { .. }
-                                                | GroveOp::InsertNonMerkTree { .. } => {
+                                                | GroveOp::InsertNonMerkTree { .. }
+                                                | GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+                                                    ..
+                                                }
+                                                | GroveOp::InsertAggregateIndexedTreeRootKeys {
+                                                    ..
+                                                } => {
                                                     return Err(Error::CorruptedCodeExecution(
                                                         "we can not do this operation twice",
                                                     ))
@@ -3360,6 +4068,51 @@ impl GroveDb {
                                                                 },
                                                                 non_counted,
                                                             }
+                                                    // A freshly-inserted indexed primary
+                                                    // needs BOTH primary and secondary root
+                                                    // state to propagate via the H1-A
+                                                    // composition, and there is no stored
+                                                    // element to read — so the op carries the
+                                                    // caller's element itself alongside the
+                                                    // level's computed state. The per-axis
+                                                    // state comes from the mirror this level
+                                                    // just ran (the fresh secondaries were
+                                                    // opened from the in-batch element).
+                                                    } else if matches!(
+                                                        element,
+                                                        Element::ProvableSumIndexedTree(..)
+                                                            | Element::ProvableCountIndexedTree(..)
+                                                            | Element::ProvableCountProvableSumIndexedTree(..)
+                                                    ) {
+                                                        if non_counted
+                                                            || not_summed
+                                                            || not_counted_or_summed
+                                                        {
+                                                            return Err(Error::InvalidBatchOperation(
+                                                                "indexed-tree elements cannot be \
+                                                                 wrapped in NonCounted / NotSummed \
+                                                                 / NotCountedOrSummed",
+                                                            ))
+                                                            .wrap_with_cost(cost);
+                                                        }
+                                                        // The real TreeCache always reports
+                                                        // per-axis state for an indexed level;
+                                                        // only the worst-case ESTIMATOR cache
+                                                        // cannot (its layer information carries
+                                                        // no tree type), and estimation never
+                                                        // applies the op — the apply arm's
+                                                        // empty-axes check guards the real path.
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::InsertAggregateIndexedTreeRootKeys {
+                                                                element: element.clone(),
+                                                                primary_hash: root_hash,
+                                                                primary_root_key:
+                                                                    calculated_root_key,
+                                                                primary_aggregate_data:
+                                                                    aggregate_data,
+                                                                axes: cidx_secondary_state
+                                                                    .unwrap_or_default(),
+                                                            };
                                                     } else {
                                                         return Err(Error::InvalidBatchOperation(
                                                             "insertion of element under a non tree",
@@ -3416,26 +4169,40 @@ impl GroveDb {
                                 } else {
                                     let mut ops_on_path: BTreeMap<KeyInfo, GroveOp> =
                                         BTreeMap::new();
-                                    ops_on_path.insert(
-                                        key.clone(),
+                                    let new_op = if let Some(axes) = cidx_secondary_state {
+                                        GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+                                            primary_hash: root_hash,
+                                            primary_root_key: calculated_root_key,
+                                            primary_aggregate_data: aggregate_data,
+                                            axes,
+                                        }
+                                    } else {
                                         GroveOp::ReplaceTreeRootKey {
                                             hash: root_hash,
                                             root_key: calculated_root_key,
                                             aggregate_data,
-                                        },
-                                    );
+                                        }
+                                    };
+                                    ops_on_path.insert(key.clone(), new_op);
                                     ops_at_level_above.insert(parent_path, ops_on_path);
                                 }
                             } else {
                                 let mut ops_on_path: BTreeMap<KeyInfo, GroveOp> = BTreeMap::new();
-                                ops_on_path.insert(
-                                    key.clone(),
+                                let new_op = if let Some(axes) = cidx_secondary_state {
+                                    GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+                                        primary_hash: root_hash,
+                                        primary_root_key: calculated_root_key,
+                                        primary_aggregate_data: aggregate_data,
+                                        axes,
+                                    }
+                                } else {
                                     GroveOp::ReplaceTreeRootKey {
                                         hash: root_hash,
                                         root_key: calculated_root_key,
                                         aggregate_data,
-                                    },
-                                );
+                                    }
+                                };
+                                ops_on_path.insert(key.clone(), new_op);
                                 let mut ops_on_level: BTreeMap<
                                     KeyInfoPath,
                                     BTreeMap<KeyInfo, GroveOp>,
@@ -3449,11 +4216,15 @@ impl GroveDb {
             }
             if current_level == stop_level {
                 // we need to pause the batch execution
-                return Ok(Some(ops_by_level_paths)).wrap_with_cost(cost);
+                let cidx_overwrite_cleanup_paths =
+                    merk_tree_cache.take_cidx_overwrite_cleanup_paths();
+                return Ok((Some(ops_by_level_paths), cidx_overwrite_cleanup_paths))
+                    .wrap_with_cost(cost);
             }
             current_level = current_level.saturating_sub(1);
         }
-        Ok(None).wrap_with_cost(cost)
+        let cidx_overwrite_cleanup_paths = merk_tree_cache.take_cidx_overwrite_cleanup_paths();
+        Ok((None, cidx_overwrite_cleanup_paths)).wrap_with_cost(cost)
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
@@ -3477,8 +4248,15 @@ impl GroveDb {
             Error,
         >,
         get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
+        get_secondary_merks_fn: impl FnMut(
+            &[Vec<u8>],
+            Option<&Element>,
+        ) -> CostResult<
+            Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>,
+            Error,
+        >,
         grove_version: &GroveVersion,
-    ) -> CostResult<Option<OpsByLevelPath>, Error> {
+    ) -> CostResult<(Option<OpsByLevelPath>, Vec<Vec<Vec<u8>>>), Error> {
         check_grovedb_v0_with_cost!(
             "apply_body",
             grove_version.grovedb_versions.apply_batch.apply_body
@@ -3493,6 +4271,9 @@ impl GroveDb {
                 TreeCacheMerkByPath {
                     merks: Default::default(),
                     get_merk_fn,
+                    get_secondary_merks_fn,
+                    indexed_secondary_after_apply: Default::default(),
+                    cidx_overwrite_cleanup_paths: Default::default(),
                 }
             )
         );
@@ -3522,8 +4303,15 @@ impl GroveDb {
             Error,
         >,
         get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
+        get_secondary_merks_fn: impl FnMut(
+            &[Vec<u8>],
+            Option<&Element>,
+        ) -> CostResult<
+            Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>,
+            Error,
+        >,
         grove_version: &GroveVersion,
-    ) -> CostResult<Option<OpsByLevelPath>, Error> {
+    ) -> CostResult<(Option<OpsByLevelPath>, Vec<Vec<Vec<u8>>>), Error> {
         check_grovedb_v0_with_cost!(
             "continue_partial_apply_body",
             grove_version
@@ -3542,6 +4330,9 @@ impl GroveDb {
                 TreeCacheMerkByPath {
                     merks: Default::default(),
                     get_merk_fn,
+                    get_secondary_merks_fn,
+                    indexed_secondary_after_apply: Default::default(),
+                    cidx_overwrite_cleanup_paths: Default::default(),
                 }
             )
         );
@@ -3834,7 +4625,9 @@ impl GroveDb {
                 GroveOp::ReplaceTreeRootKey { .. }
                 | GroveOp::InsertTreeWithRootHash { .. }
                 | GroveOp::ReplaceNonMerkTreeRoot { .. }
-                | GroveOp::InsertNonMerkTree { .. } => {
+                | GroveOp::InsertNonMerkTree { .. }
+                | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. }
+                | GroveOp::InsertAggregateIndexedTreeRootKeys { .. } => {
                     return Err(Error::NotSupported(
                         "internal tree ops not supported in apply_operations_without_batching"
                             .to_string(),
@@ -4055,6 +4848,16 @@ impl GroveDb {
             }
         }
 
+        cost_return_on_error!(
+            &mut cost,
+            indexed_tree::reject_indexed_overwrite_with_descendants(
+                self,
+                &ops,
+                tx.as_ref(),
+                grove_version,
+            )
+        );
+
         // `StorageBatch` collects all operations (preprocessing + apply_body)
         // for a single atomic commit at the end.
         let storage_batch = StorageBatch::new();
@@ -4104,6 +4907,11 @@ impl GroveDb {
         // nested subtrees.
         let mut non_merk_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
         let mut merk_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
+        // CountIndexedTree primary deletes: alongside the primary's
+        // recursive cleanup (via merk_delete_paths), the secondary's
+        // storage namespace at Blake3(primary_prefix ‖ 0x01) must be
+        // cleared explicitly — find_subtrees only walks primary keys.
+        let mut cidx_primary_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
         // Track paths skipped due to SubelementsDeletionBehavior::Skip so we can
         // filter the corresponding ops out of the batch before apply_body.
         let mut skipped_delete_paths: HashSet<Vec<Vec<u8>>> = HashSet::new();
@@ -4115,11 +4923,58 @@ impl GroveDb {
                 let mut child_path = op.path.to_path();
                 child_path.push(key.as_slice().to_vec());
 
+                let parent_path_vec = op.path.to_path();
+                let parent_path: SubtreePath<Vec<u8>> = parent_path_vec.as_slice().into();
+                // Gated: reading the stored element to pick cleanup namespaces
+                // costs an extra seek + load per DeleteTree op, so it cannot
+                // apply to the released versions. V1..V3 keep taking the
+                // caller-declared type at face value; V4+ reads the truth.
+                let resolved_tree_type = if grove_version
+                    .grovedb_versions
+                    .apply_batch
+                    .delete_tree_cleanup_type_source
+                    >= 1
+                {
+                    let parent_storage = self
+                        .db
+                        .get_transactional_storage_context(
+                            parent_path,
+                            Some(&storage_batch),
+                            tx.as_ref(),
+                        )
+                        .unwrap_add_cost(&mut cost);
+                    cost_return_on_error!(
+                        &mut cost,
+                        indexed_tree::validate_delete_tree_type(
+                            &parent_storage,
+                            key.as_slice(),
+                            *tree_type,
+                            grove_version,
+                        )
+                    )
+                } else {
+                    *tree_type
+                };
+                let tree_type = &resolved_tree_type;
+
                 // Per-op emptiness check based on the SubelementsDeletionBehavior policy.
                 match subelements_deletion_behavior {
                     SubelementsDeletionBehavior::DontCheckWithNoCleanup => {
                         // No emptiness check and no post-apply storage cleanup.
                         // The caller guarantees the subtree is already empty.
+                        // Cidx still needs the secondary cleared even when
+                        // primary cleanup is skipped, because the cidx's
+                        // secondary metadata lives in a different
+                        // namespace and is invisible to find_subtrees.
+                        // is_indexed_primary() (not is_count_indexed_primary):
+                        // PSIT and PCPSIT DeleteTree ops must also queue their
+                        // primary path for the all-axis secondary sweep below,
+                        // otherwise their sum/avg secondary namespaces survive
+                        // the DeleteTree. The sweep clears all three axis tags
+                        // unconditionally, so this is correct for every variant.
+                        if tree_type.is_indexed_primary() {
+                            cidx_primary_delete_paths.push(child_path);
+                        }
                         continue;
                     }
                     SubelementsDeletionBehavior::DeleteChildren => {
@@ -4217,8 +5072,21 @@ impl GroveDb {
                                     skipped_delete_paths.insert(child_path);
                                     continue;
                                 }
+                                // DontCheckWithNoCleanup / DeleteChildren never
+                                // reach the emptiness-check block above (they
+                                // either skip the check or delete children
+                                // unconditionally). Return a graceful error
+                                // rather than panicking if that invariant is
+                                // ever broken.
                                 SubelementsDeletionBehavior::DontCheckWithNoCleanup
-                                | SubelementsDeletionBehavior::DeleteChildren => unreachable!(),
+                                | SubelementsDeletionBehavior::DeleteChildren => {
+                                    return Err(Error::CorruptedCodeExecution(
+                                        "batch delete: DontCheckWithNoCleanup / DeleteChildren \
+                                         behaviors are handled before the non-empty-tree check \
+                                         and must not reach this match arm",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
                             }
                         }
                     }
@@ -4227,6 +5095,11 @@ impl GroveDb {
                 if tree_type.uses_non_merk_data_storage() {
                     non_merk_delete_paths.push(child_path);
                 } else {
+                    // is_indexed_primary(): PSIT/PCPSIT primaries also need
+                    // their path queued for the all-axis secondary sweep.
+                    if tree_type.is_indexed_primary() {
+                        cidx_primary_delete_paths.push(child_path.clone());
+                    }
                     merk_delete_paths.push(child_path);
                 }
             }
@@ -4261,7 +5134,7 @@ impl GroveDb {
         // 5. Remove operation from the tree, repeat until there are operations to do;
         // 6. Add root leaves save operation to the batch
         // 7. Apply storage_cost batch
-        cost_return_on_error!(
+        let (_leftover, cidx_overwrite_cleanup_paths) = cost_return_on_error!(
             &mut cost,
             self.apply_body(
                 ops,
@@ -4274,6 +5147,18 @@ impl GroveDb {
                         path.into(),
                         tx.as_ref(),
                         new_merk,
+                        grove_version,
+                    )
+                },
+                |primary_path: &[Vec<u8>], fresh_element: Option<&Element>| {
+                    let primary_refs: Vec<&[u8]> =
+                        primary_path.iter().map(|v| v.as_slice()).collect();
+                    let cidx_path: SubtreePath<&[u8]> = primary_refs.as_slice().into();
+                    self.open_indexed_secondaries_for_batch(
+                        cidx_path,
+                        fresh_element,
+                        &storage_batch,
+                        tx.as_ref(),
                         grove_version,
                     )
                 },
@@ -4334,6 +5219,122 @@ impl GroveDb {
                     storage.clear().map_err(|e| {
                         Error::CorruptedData(format!(
                             "unable to clean up merk subtree storage in batch delete: {e}",
+                        ))
+                    })
+                );
+            }
+        }
+
+        // Indexed-tree secondary cleanup. find_subtrees walks the
+        // primary's storage namespace via path-derived prefixes and
+        // does not see the per-axis secondaries at
+        // Blake3(primary_prefix ‖ axis_tag). Clear all three axis
+        // tags unconditionally so the secondary data does not survive
+        // a DeleteTree on its primary regardless of which
+        // indexed-tree variant the primary was. (Clears on empty
+        // namespaces are no-ops, so the sweep is safe.)
+        for primary_path in &cidx_primary_delete_paths {
+            let cidx_subtree_path: SubtreePath<Vec<u8>> = primary_path.as_slice().into();
+            let primary_prefix =
+                grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(cidx_subtree_path)
+                    .unwrap_add_cost(&mut cost);
+            for axis in [
+                grovedb_element::indexed::IndexAxis::Count,
+                grovedb_element::indexed::IndexAxis::Sum,
+                grovedb_element::indexed::IndexAxis::Avg,
+            ] {
+                let secondary_prefix =
+                    grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
+                        &primary_prefix,
+                        axis.tag(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                let mut secondary_storage = self
+                    .db
+                    .get_transactional_storage_context_by_subtree_prefix(
+                        secondary_prefix,
+                        Some(&storage_batch),
+                        tx.as_ref(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    secondary_storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to clean up indexed-tree secondary (axis {:?}) storage \
+                             in batch delete: {e}",
+                            axis
+                        ))
+                    })
+                );
+            }
+        }
+
+        // Cidx safe-subset OVERWRITE cleanup. When a batch op replaced
+        // an existing cidx element with a non-cidx element or an empty
+        // cidx, the OLD cidx's primary subtree storage AND secondary
+        // namespace must be cleared. Cleanup paths were collected by
+        // execute_ops_on_path and surfaced via apply_body's tuple
+        // return. Each path is the cidx primary's full path
+        // (parent_path + cidx_key).
+        for cidx_path in &cidx_overwrite_cleanup_paths {
+            let cidx_subtree_path: SubtreePath<Vec<u8>> = cidx_path.as_slice().into();
+            // Clear all primary subtree storage recursively via
+            // find_subtrees (same walk as DeleteTree cleanup above).
+            let subtrees_paths = cost_return_on_error!(
+                &mut cost,
+                self.find_subtrees(&cidx_subtree_path, Some(tx.as_ref()), grove_version)
+            );
+            for subtree_path in subtrees_paths {
+                let p: SubtreePath<_> = subtree_path.as_slice().into();
+                let mut storage = self
+                    .db
+                    .get_transactional_storage_context(p, Some(&storage_batch), tx.as_ref())
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to clean up cidx primary subtree storage in batch \
+                             overwrite: {e}",
+                        ))
+                    })
+                );
+            }
+            // Clear the per-axis secondary namespaces at
+            // Blake3(primary ‖ axis_tag). Sweep all three axes — clear
+            // on empty is a no-op, so this also works for PCIT-only
+            // overwrites (the sum / avg slots are empty).
+            let primary_prefix = grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(
+                cidx_subtree_path.clone(),
+            )
+            .unwrap_add_cost(&mut cost);
+            for axis in [
+                grovedb_element::indexed::IndexAxis::Count,
+                grovedb_element::indexed::IndexAxis::Sum,
+                grovedb_element::indexed::IndexAxis::Avg,
+            ] {
+                let secondary_prefix =
+                    grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
+                        &primary_prefix,
+                        axis.tag(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                let mut secondary_storage = self
+                    .db
+                    .get_transactional_storage_context_by_subtree_prefix(
+                        secondary_prefix,
+                        Some(&storage_batch),
+                        tx.as_ref(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    secondary_storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to clean up indexed-tree secondary (axis {:?}) storage \
+                             in batch overwrite: {e}",
+                            axis
                         ))
                     })
                 );
@@ -4426,6 +5427,16 @@ impl GroveDb {
             }
         }
 
+        cost_return_on_error!(
+            &mut cost,
+            indexed_tree::reject_indexed_overwrite_with_descendants(
+                self,
+                &ops,
+                tx.as_ref(),
+                grove_version,
+            )
+        );
+
         // `StorageBatch` collects all operations (preprocessing + apply_body)
         // for a single atomic commit at the end.
         let storage_batch = StorageBatch::new();
@@ -4459,6 +5470,7 @@ impl GroveDb {
         // emptiness checks are needed (H2).
         let mut non_merk_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
         let mut merk_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
+        let mut cidx_primary_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
 
         let mut batch_apply_options = batch_apply_options.unwrap_or_default();
         let mut skipped_delete_paths: HashSet<Vec<Vec<u8>>> = HashSet::new();
@@ -4470,10 +5482,53 @@ impl GroveDb {
                 let mut child_path = op.path.to_path();
                 child_path.push(key.as_slice().to_vec());
 
+                let parent_path_vec = op.path.to_path();
+                let parent_path: SubtreePath<Vec<u8>> = parent_path_vec.as_slice().into();
+                // Gated: reading the stored element to pick cleanup namespaces
+                // costs an extra seek + load per DeleteTree op, so it cannot
+                // apply to the released versions. V1..V3 keep taking the
+                // caller-declared type at face value; V4+ reads the truth.
+                let resolved_tree_type = if grove_version
+                    .grovedb_versions
+                    .apply_batch
+                    .delete_tree_cleanup_type_source
+                    >= 1
+                {
+                    let parent_storage = self
+                        .db
+                        .get_transactional_storage_context(
+                            parent_path,
+                            Some(&storage_batch),
+                            tx.as_ref(),
+                        )
+                        .unwrap_add_cost(&mut cost);
+                    cost_return_on_error!(
+                        &mut cost,
+                        indexed_tree::validate_delete_tree_type(
+                            &parent_storage,
+                            key.as_slice(),
+                            *tree_type,
+                            grove_version,
+                        )
+                    )
+                } else {
+                    *tree_type
+                };
+                let tree_type = &resolved_tree_type;
+
                 match subelements_deletion_behavior {
                     SubelementsDeletionBehavior::DontCheckWithNoCleanup => {
                         // No emptiness check and no post-apply storage cleanup.
                         // The caller guarantees the subtree is already empty.
+                        // is_indexed_primary() (not is_count_indexed_primary):
+                        // PSIT and PCPSIT DeleteTree ops must also queue their
+                        // primary path for the all-axis secondary sweep below,
+                        // otherwise their sum/avg secondary namespaces survive
+                        // the DeleteTree. The sweep clears all three axis tags
+                        // unconditionally, so this is correct for every variant.
+                        if tree_type.is_indexed_primary() {
+                            cidx_primary_delete_paths.push(child_path);
+                        }
                         continue;
                     }
                     SubelementsDeletionBehavior::DeleteChildren => {
@@ -4566,8 +5621,21 @@ impl GroveDb {
                                     skipped_delete_paths.insert(child_path);
                                     continue;
                                 }
+                                // DontCheckWithNoCleanup / DeleteChildren never
+                                // reach the emptiness-check block above (they
+                                // either skip the check or delete children
+                                // unconditionally). Return a graceful error
+                                // rather than panicking if that invariant is
+                                // ever broken.
                                 SubelementsDeletionBehavior::DontCheckWithNoCleanup
-                                | SubelementsDeletionBehavior::DeleteChildren => unreachable!(),
+                                | SubelementsDeletionBehavior::DeleteChildren => {
+                                    return Err(Error::CorruptedCodeExecution(
+                                        "batch delete: DontCheckWithNoCleanup / DeleteChildren \
+                                         behaviors are handled before the non-empty-tree check \
+                                         and must not reach this match arm",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
                             }
                         }
                     }
@@ -4576,6 +5644,11 @@ impl GroveDb {
                 if tree_type.uses_non_merk_data_storage() {
                     non_merk_delete_paths.push(child_path);
                 } else {
+                    // is_indexed_primary(): PSIT/PCPSIT primaries also need
+                    // their path queued for the all-axis secondary sweep.
+                    if tree_type.is_indexed_primary() {
+                        cidx_primary_delete_paths.push(child_path.clone());
+                    }
                     merk_delete_paths.push(child_path);
                 }
             }
@@ -4614,7 +5687,7 @@ impl GroveDb {
         // 5. Remove operation from the tree, repeat until there are operations to do;
         // 6. Add root leaves save operation to the batch
         // 7. Apply storage_cost batch
-        let left_over_operations = cost_return_on_error!(
+        let (left_over_operations, partial_cidx_overwrite_cleanup_paths) = cost_return_on_error!(
             &mut cost,
             self.apply_body(
                 ops,
@@ -4630,7 +5703,19 @@ impl GroveDb {
                         grove_version,
                     )
                 },
-                grove_version
+                |primary_path: &[Vec<u8>], fresh_element: Option<&Element>| {
+                    let primary_refs: Vec<&[u8]> =
+                        primary_path.iter().map(|v| v.as_slice()).collect();
+                    let cidx_path: SubtreePath<&[u8]> = primary_refs.as_slice().into();
+                    self.open_indexed_secondaries_for_batch(
+                        cidx_path,
+                        fresh_element,
+                        &storage_batch,
+                        tx.as_ref(),
+                        grove_version,
+                    )
+                },
+                grove_version,
             )
         );
         // if we paused at the root height, the left over operations would be to replace
@@ -4687,7 +5772,7 @@ impl GroveDb {
 
         let continue_storage_batch = StorageBatch::new();
 
-        cost_return_on_error!(
+        let (_leftover_unused, continue_cidx_overwrite_cleanup_paths) = cost_return_on_error!(
             &mut cost,
             self.continue_partial_apply_body(
                 left_over_operations,
@@ -4701,6 +5786,18 @@ impl GroveDb {
                         path.into(),
                         tx.as_ref(),
                         new_merk,
+                        grove_version,
+                    )
+                },
+                |primary_path: &[Vec<u8>], fresh_element: Option<&Element>| {
+                    let primary_refs: Vec<&[u8]> =
+                        primary_path.iter().map(|v| v.as_slice()).collect();
+                    let cidx_path: SubtreePath<&[u8]> = primary_refs.as_slice().into();
+                    self.open_indexed_secondaries_for_batch(
+                        cidx_path,
+                        fresh_element,
+                        &continue_storage_batch,
+                        tx.as_ref(),
                         grove_version,
                     )
                 },
@@ -4761,6 +5858,116 @@ impl GroveDb {
                     storage.clear().map_err(|e| {
                         Error::CorruptedData(format!(
                             "unable to clean up merk subtree storage in batch delete: {e}",
+                        ))
+                    })
+                );
+            }
+        }
+
+        // Indexed-tree secondary cleanup (parallels the
+        // apply_batch_with_element_flags_update pass). Sweep all
+        // three axes.
+        for primary_path in &cidx_primary_delete_paths {
+            let cidx_subtree_path: SubtreePath<Vec<u8>> = primary_path.as_slice().into();
+            let primary_prefix =
+                grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(cidx_subtree_path)
+                    .unwrap_add_cost(&mut cost);
+            for axis in [
+                grovedb_element::indexed::IndexAxis::Count,
+                grovedb_element::indexed::IndexAxis::Sum,
+                grovedb_element::indexed::IndexAxis::Avg,
+            ] {
+                let secondary_prefix =
+                    grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
+                        &primary_prefix,
+                        axis.tag(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                let mut secondary_storage = self
+                    .db
+                    .get_transactional_storage_context_by_subtree_prefix(
+                        secondary_prefix,
+                        Some(&continue_storage_batch),
+                        tx.as_ref(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    secondary_storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to clean up indexed-tree secondary (axis {:?}) storage \
+                             in batch delete: {e}",
+                            axis
+                        ))
+                    })
+                );
+            }
+        }
+
+        // Cidx safe-subset OVERWRITE cleanup (parallels the
+        // apply_batch_with_element_flags_update pass). Two passes
+        // contribute paths: the initial apply_body and the
+        // continue_partial_apply_body. Union them.
+        let all_cidx_overwrite_paths: Vec<&Vec<Vec<u8>>> = partial_cidx_overwrite_cleanup_paths
+            .iter()
+            .chain(continue_cidx_overwrite_cleanup_paths.iter())
+            .collect();
+        for cidx_path in all_cidx_overwrite_paths {
+            let cidx_subtree_path: SubtreePath<Vec<u8>> = cidx_path.as_slice().into();
+            let subtrees_paths = cost_return_on_error!(
+                &mut cost,
+                self.find_subtrees(&cidx_subtree_path, Some(tx.as_ref()), grove_version)
+            );
+            for subtree_path in subtrees_paths {
+                let p: SubtreePath<_> = subtree_path.as_slice().into();
+                let mut storage = self
+                    .db
+                    .get_transactional_storage_context(
+                        p,
+                        Some(&continue_storage_batch),
+                        tx.as_ref(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to clean up cidx primary subtree storage in batch \
+                             overwrite: {e}",
+                        ))
+                    })
+                );
+            }
+            let primary_prefix = grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(
+                cidx_subtree_path.clone(),
+            )
+            .unwrap_add_cost(&mut cost);
+            for axis in [
+                grovedb_element::indexed::IndexAxis::Count,
+                grovedb_element::indexed::IndexAxis::Sum,
+                grovedb_element::indexed::IndexAxis::Avg,
+            ] {
+                let secondary_prefix =
+                    grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
+                        &primary_prefix,
+                        axis.tag(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                let mut secondary_storage = self
+                    .db
+                    .get_transactional_storage_context_by_subtree_prefix(
+                        secondary_prefix,
+                        Some(&continue_storage_batch),
+                        tx.as_ref(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    secondary_storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to clean up indexed-tree secondary (axis {:?}) storage \
+                             in batch overwrite: {e}",
+                            axis
                         ))
                     })
                 );

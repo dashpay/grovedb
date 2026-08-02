@@ -1,8 +1,25 @@
 //! Grove protocol version 4.
 //!
-//! Behaviourally **identical to [`GROVE_V3`](super::v3::GROVE_V3)** at the
-//! moment it is introduced: every method-version slot carries the same value,
-//! so activating protocol version 4 without gating anything on it is a no-op.
+//! Introduced behaviourally identical to [`GROVE_V3`](super::v3::GROVE_V3),
+//! and no longer is — gates land here as they are written. Currently flipped:
+//!
+//! - `apply_batch.delete_tree_cleanup_type_source: 1` — a batch `DeleteTree`
+//!   reads the stored element and uses its ACTUAL type to select cleanup
+//!   namespaces, rejecting a declared/stored mismatch that involves an indexed
+//!   tree. V1..V3 keep taking the declared type at face value. Costs one extra
+//!   stored-element read per op, which is why it cannot apply to the released
+//!   versions.
+//!
+//! - `apply_batch.overwrite_indexed_cleanup_inspection: 1` — a batch overwrite
+//!   of a non-reference element (with tree-override protection off) reads the
+//!   stored element to detect an indexed tree being overwritten, scheduling
+//!   its per-axis secondary storage for cleanup or refusing the ambiguous
+//!   case. Same shape as the gate above: one extra stored-element read per
+//!   overwrite-capable op, so V1..V3 keep their released cost shape.
+//!
+//! Note that `GroveVersion::latest()` resolves to this version, so anything
+//! defaulting to "latest" — tests, benchmarks, tools — exercises every gate
+//! listed above rather than V3 behaviour.
 //!
 //! It exists so that fixes which change released behaviour have somewhere to
 //! land. GROVE_V3 is live, so a fix that alters an accepted/rejected outcome,
@@ -48,6 +65,8 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             apply_batch_with_element_flags_update: 0,
             apply_partial_batch_with_element_flags_update: 0,
             estimated_case_operations_for_batch: 0,
+            delete_tree_cleanup_type_source: 1,
+            overwrite_indexed_cleanup_inspection: 1,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,

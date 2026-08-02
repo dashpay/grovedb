@@ -15,11 +15,24 @@ use crate::{
         costs::ElementCostExtensions, exists::ElementExistsInStorageExtensions,
         get::ElementFetchFromStorageExtensions, tree_type::ElementTreeTypeExtensions,
     },
+    tree_type::TreeType,
     BatchEntry, CryptoHash, Error, Merk, MerkOptions, Op, TreeFeatureType,
 };
 
 /// Extension trait for inserting elements into Merk storage.
 pub trait ElementInsertToStorageExtensions {
+    /// Whether this element may legally live in a tree of `tree_type`.
+    ///
+    /// The rule the direct insert path has always enforced, lifted out so the
+    /// batch path can apply the identical check instead of a second copy that
+    /// can drift. It already had: a `SumItem` inserted into a count-only
+    /// indexed primary was refused through `Element::insert` but accepted
+    /// through a batch, where the caller's sum was then silently dropped.
+    ///
+    /// `get_feature_type` is NOT a substitute — it answers a different
+    /// question and admits several of the combinations rejected here.
+    fn validate_insertable_into(&self, tree_type: TreeType) -> Result<(), Error>;
+
     /// Insert an element in Merk under a key; path should be resolved and
     /// proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
@@ -144,6 +157,44 @@ pub trait ElementInsertToStorageExtensions {
         feature_type: TreeFeatureType,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>;
+
+    /// Insert any indexed-tree element (`ProvableSumIndexedTree`,
+    /// `ProvableCountIndexedTree`, or `ProvableCountProvableSumIndexedTree`)
+    /// directly into Merk under a key.
+    ///
+    /// Carries the primary Merk root hash plus a second hash that depends
+    /// on the variant:
+    /// - For PSIT / PCIT (single-axis variants): the secondary Merk root
+    ///   hash.
+    /// - For PCPSIT (multi-axis variant): the `axes_digest` over the
+    ///   canonical (axis_tag, secondary_root_hash) TLV.
+    ///
+    /// In both cases the resulting `combined_value_hash` is
+    /// `combine_hash_three(value_hash, primary_root_hash, second_hash)`.
+    fn insert_count_indexed_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: K,
+        primary_root_hash: CryptoHash,
+        secondary_root_hash: CryptoHash,
+        options: Option<MerkOptions>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>;
+
+    /// Adds a "Put" op to batch operations for any indexed-tree element
+    /// (`ProvableSumIndexedTree`, `ProvableCountIndexedTree`, or
+    /// `ProvableCountProvableSumIndexedTree`). Same hash composition
+    /// rules as [`insert_count_indexed_subtree`].
+    fn insert_count_indexed_subtree_into_batch_operations<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        primary_root_hash: CryptoHash,
+        secondary_root_hash: CryptoHash,
+        is_replace: bool,
+        batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: TreeFeatureType,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>;
 }
 
 impl ElementInsertToStorageExtensions for Element {
@@ -152,6 +203,34 @@ impl ElementInsertToStorageExtensions for Element {
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
+    fn validate_insertable_into(&self, tree_type: TreeType) -> Result<(), Error> {
+        if self.is_non_counted() && !tree_type.accepts_non_counted_children() {
+            return Err(Error::InvalidInputError(
+                "non-counted elements may only be inserted into non-provable count-bearing \
+                 trees (CountTree or CountSumTree); Provable* count trees commit the count \
+                 cryptographically and cannot host NonCounted children",
+            ));
+        }
+        if self.is_not_summed() && !tree_type.is_sum_bearing() {
+            return Err(Error::InvalidInputError(
+                "not-summed elements may only be inserted into sum-bearing trees",
+            ));
+        }
+        if self.is_not_counted_or_summed() && !tree_type.accepts_not_counted_or_summed_children() {
+            return Err(Error::InvalidInputError(
+                "not-counted-or-summed elements may only be inserted into CountSumTree; \
+                 ProvableCountSumTree commits the count cryptographically and cannot host \
+                 NotCountedOrSummed children",
+            ));
+        }
+        if !tree_type.allows_sum_item() && self.is_sum_item() {
+            return Err(Error::InvalidInputError(
+                "cannot add sum item to non sum tree",
+            ));
+        }
+        Ok(())
+    }
+
     fn insert<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         &self,
         merk: &mut Merk<S>,
@@ -163,38 +242,8 @@ impl ElementInsertToStorageExtensions for Element {
 
         let serialized = cost_return_on_error_into_default!(self.serialize(grove_version));
 
-        if self.is_non_counted() && !merk.tree_type.accepts_non_counted_children() {
-            return Err(Error::InvalidInputError(
-                "non-counted elements may only be inserted into non-provable count-bearing \
-                 trees (CountTree or CountSumTree); Provable* count trees commit the count \
-                 cryptographically and cannot host NonCounted children",
-            ))
-            .wrap_with_cost(Default::default());
-        }
-
-        if self.is_not_summed() && !merk.tree_type.is_sum_bearing() {
-            return Err(Error::InvalidInputError(
-                "not-summed elements may only be inserted into sum-bearing trees",
-            ))
-            .wrap_with_cost(Default::default());
-        }
-
-        if self.is_not_counted_or_summed()
-            && !merk.tree_type.accepts_not_counted_or_summed_children()
-        {
-            return Err(Error::InvalidInputError(
-                "not-counted-or-summed elements may only be inserted into CountSumTree; \
-                 ProvableCountSumTree commits the count cryptographically and cannot host \
-                 NotCountedOrSummed children",
-            ))
-            .wrap_with_cost(Default::default());
-        }
-
-        if !merk.tree_type.allows_sum_item() && self.is_sum_item() {
-            return Err(Error::InvalidInputError(
-                "cannot add sum item to non sum tree",
-            ))
-            .wrap_with_cost(Default::default());
+        if let Err(e) = self.validate_insertable_into(merk.tree_type) {
+            return Err(e).wrap_with_cost(Default::default());
         }
 
         let merk_feature_type =
@@ -673,6 +722,174 @@ impl ElementInsertToStorageExtensions for Element {
             (
                 key,
                 Op::PutLayeredReference(serialized, cost, subtree_root_hash, feature_type),
+            )
+        };
+        batch_operations.push(entry);
+        Ok(()).wrap_with_cost(Default::default())
+    }
+
+    fn insert_count_indexed_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: K,
+        primary_root_hash: CryptoHash,
+        secondary_root_hash: CryptoHash,
+        options: Option<MerkOptions>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        check_grovedb_v0_with_cost!(
+            "insert_count_indexed_subtree",
+            grove_version.grovedb_versions.element.insert_subtree
+        );
+
+        if !matches!(
+            self.underlying(),
+            Element::ProvableSumIndexedTree(..)
+                | Element::ProvableCountIndexedTree(..)
+                | Element::ProvableCountProvableSumIndexedTree(..)
+        ) {
+            return Err(Error::InvalidInputError(
+                "insert_count_indexed_subtree only accepts indexed-tree elements \
+                 (ProvableSumIndexedTree, ProvableCountIndexedTree, or \
+                 ProvableCountProvableSumIndexedTree)",
+            ))
+            .wrap_with_cost(Default::default());
+        }
+
+        if self.is_non_counted() && !merk.tree_type.accepts_non_counted_children() {
+            return Err(Error::InvalidInputError(
+                "non-counted elements may only be inserted into non-provable count-bearing trees",
+            ))
+            .wrap_with_cost(Default::default());
+        }
+
+        let serialized = match self.serialize(grove_version) {
+            Ok(s) => s,
+            Err(e) => return Err(e.into()).wrap_with_cost(Default::default()),
+        };
+
+        let cost = OperationCost::default();
+        let merk_feature_type =
+            cost_return_on_error_no_add!(cost, self.get_feature_type(merk.tree_type));
+
+        let value_cost = cost_return_on_error_no_add!(
+            cost,
+            self.layered_value_defined_cost(grove_version)
+                .ok_or(Error::CorruptedCodeExecution(
+                    "count-indexed trees should always have a layered value defined cost"
+                ))
+        );
+
+        let batch_operations = [(
+            key,
+            Op::PutLayeredCountIndexedReference(
+                serialized,
+                value_cost,
+                primary_root_hash,
+                secondary_root_hash,
+                merk_feature_type,
+            ),
+        )];
+        let tree_type = merk.tree_type;
+        merk.apply_with_specialized_costs::<_, Vec<u8>>(
+            &batch_operations,
+            &[],
+            options,
+            &|key, value| {
+                Self::specialized_costs_for_key_value(
+                    key,
+                    value,
+                    tree_type.inner_node_type(),
+                    grove_version,
+                )
+                .map_err(|e| Error::ClientCorruptionError(e.to_string()))
+            },
+            Some(&Element::value_defined_cost_for_serialized_value),
+            grove_version,
+        )
+        .map_err(|e| Error::CorruptedData(format!("insert_count_indexed_subtree: {e}")))
+    }
+
+    fn insert_count_indexed_subtree_into_batch_operations<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        primary_root_hash: CryptoHash,
+        secondary_root_hash: CryptoHash,
+        is_replace: bool,
+        batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: TreeFeatureType,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        check_grovedb_v0_with_cost!(
+            "insert_count_indexed_subtree_into_batch_operations",
+            grove_version
+                .grovedb_versions
+                .element
+                .insert_subtree_into_batch_operations
+        );
+
+        if !matches!(
+            self.underlying(),
+            Element::ProvableSumIndexedTree(..)
+                | Element::ProvableCountIndexedTree(..)
+                | Element::ProvableCountProvableSumIndexedTree(..)
+        ) {
+            return Err(Error::InvalidInputError(
+                "insert_count_indexed_subtree_into_batch_operations only accepts \
+                 indexed-tree elements (ProvableSumIndexedTree, ProvableCountIndexedTree, \
+                 or ProvableCountProvableSumIndexedTree)",
+            ))
+            .wrap_with_cost(Default::default());
+        }
+
+        // The batch builder has the parent's feature type instead of its
+        // TreeType. Only the non-provable CountTree/CountSumTree feature
+        // variants accept NonCounted children; the Provable* variants commit
+        // their count and must reject the wrapper just like the direct path.
+        if self.is_non_counted()
+            && !matches!(
+                feature_type,
+                TreeFeatureType::CountedMerkNode(_) | TreeFeatureType::CountedSummedMerkNode(..)
+            )
+        {
+            return Err(Error::InvalidInputError(
+                "non-counted elements may only be inserted into non-provable count-bearing trees",
+            ))
+            .wrap_with_cost(Default::default());
+        }
+
+        let serialized = match self.serialize(grove_version) {
+            Ok(s) => s,
+            Err(e) => return Err(e.into()).wrap_with_cost(Default::default()),
+        };
+
+        let cost = cost_return_on_error_default!(self
+            .layered_value_defined_cost(grove_version)
+            .ok_or(Error::CorruptedCodeExecution(
+                "count-indexed trees should always have a layered value defined cost"
+            )));
+
+        let entry = if is_replace {
+            (
+                key,
+                Op::ReplaceLayeredCountIndexedReference(
+                    serialized,
+                    cost,
+                    primary_root_hash,
+                    secondary_root_hash,
+                    feature_type,
+                ),
+            )
+        } else {
+            (
+                key,
+                Op::PutLayeredCountIndexedReference(
+                    serialized,
+                    cost,
+                    primary_root_hash,
+                    secondary_root_hash,
+                    feature_type,
+                ),
             )
         };
         batch_operations.push(entry);
@@ -1184,5 +1401,306 @@ mod tests {
             1,
             "nested count tree's 5 should be suppressed; only the bare item should count"
         );
+    }
+
+    // =====================================================================
+    // Coverage for cidx-specific subtree insert error branches
+    // (merk/src/element/insert.rs:685-700, 768-777).
+    // =====================================================================
+
+    #[test]
+    fn insert_count_indexed_subtree_rejects_non_cidx_element() {
+        // Coverage for L685-694 — insert_count_indexed_subtree must
+        // reject any element whose underlying type is not
+        // CountIndexedTree / ProvableCountIndexedTree.
+        use crate::tree::hash::NULL_HASH;
+
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::NormalTree);
+
+        // A plain item is not a cidx element.
+        let plain_item = Element::new_item(b"v".to_vec());
+        let result = plain_item
+            .insert_count_indexed_subtree(
+                &mut merk,
+                b"k",
+                NULL_HASH,
+                NULL_HASH,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(Error::InvalidInputError(msg)) => {
+                assert!(
+                    msg.contains("only accepts indexed-tree elements"),
+                    "expected non-indexed-tree error, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected InvalidInputError(non-cidx element), got: {:?}",
+                other
+            ),
+        }
+
+        // A regular tree element is also not an indexed-tree element.
+        let plain_tree = Element::empty_tree();
+        let result = plain_tree
+            .insert_count_indexed_subtree(
+                &mut merk,
+                b"k2",
+                NULL_HASH,
+                NULL_HASH,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidInputError(_))),
+            "regular tree must be rejected, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn insert_count_indexed_subtree_rejects_non_counted_wrapper_into_normal_tree() {
+        // Non-counted wrapper elements may only be inserted into
+        // non-provable count-bearing trees. A NonCounted-wrapped cidx into a
+        // NormalTree merk must be rejected.
+        use crate::tree::hash::NULL_HASH;
+
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::NormalTree);
+
+        // Wrap a PCIT in NonCounted, then attempt to insert into a
+        // NormalTree (not count-bearing). PCIT is the count-axis case
+        // for which the non-counted destination guard is meaningful.
+        let pcit_inner = Element::empty_provable_count_indexed_tree();
+        let wrapped = Element::new_non_counted(pcit_inner).expect("wrap");
+        let result = wrapped
+            .insert_count_indexed_subtree(
+                &mut merk,
+                b"k",
+                NULL_HASH,
+                NULL_HASH,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(Error::InvalidInputError(msg)) => {
+                assert!(
+                    msg.contains("non-provable count-bearing trees"),
+                    "expected non-counted-wrong-tree error, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected InvalidInputError(non-counted wrapper into non-count-bearing tree), \
+                 got: {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn insert_count_indexed_subtree_into_batch_operations_rejects_non_cidx_element() {
+        // Coverage for L768-777 — the batch-operations variant of
+        // insert_count_indexed_subtree has the same non-cidx reject.
+        use crate::tree::hash::NULL_HASH;
+        use crate::TreeFeatureType::BasicMerkNode;
+
+        let grove_version = GroveVersion::latest();
+        let mut batch_ops: Vec<BatchEntry<&[u8]>> = Vec::new();
+
+        // Plain item routed through the batch-ops API.
+        let plain_item = Element::new_item(b"v".to_vec());
+        let key: &[u8] = b"k";
+        let result = plain_item
+            .insert_count_indexed_subtree_into_batch_operations(
+                key,
+                NULL_HASH,
+                NULL_HASH,
+                false,
+                &mut batch_ops,
+                BasicMerkNode,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(Error::InvalidInputError(msg)) => {
+                assert!(
+                    msg.contains("only accepts indexed-tree elements"),
+                    "expected non-indexed-tree error, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected InvalidInputError(non-indexed-tree element in batch), got: {:?}",
+                other
+            ),
+        }
+        assert!(
+            batch_ops.is_empty(),
+            "rejected op must not push to batch operations vec"
+        );
+    }
+
+    #[test]
+    fn insert_count_indexed_subtree_rejects_non_counted_in_provable_count_parents() {
+        use crate::tree::hash::NULL_HASH;
+
+        let grove_version = GroveVersion::latest();
+        for parent_type in [
+            TreeType::ProvableCountTree,
+            TreeType::ProvableCountSumTree,
+            TreeType::ProvableCountProvableSumTree,
+            TreeType::ProvableCountIndexedTree,
+            TreeType::ProvableCountProvableSumIndexedTree,
+        ] {
+            assert!(!parent_type.accepts_non_counted_children());
+            let mut merk = TempMerk::new_with_tree_type(grove_version, parent_type);
+            let wrapped = Element::new_non_counted(Element::empty_provable_count_indexed_tree())
+                .expect("valid wrapper");
+            let result = wrapped
+                .insert_count_indexed_subtree(
+                    &mut merk,
+                    b"nested",
+                    NULL_HASH,
+                    NULL_HASH,
+                    None,
+                    grove_version,
+                )
+                .unwrap();
+            assert!(
+                matches!(result, Err(Error::InvalidInputError(_))),
+                "forbidden indexed child was accepted by {parent_type:?}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn insert_count_indexed_subtree_into_batch_operations_rejects_non_counted_wrapper_with_non_count_bearing_feature_type(
+    ) {
+        // Coverage for the new non-counted-destination guard (CodeRabbit
+        // finding on 2026-05-11 review). The direct
+        // insert_count_indexed_subtree path already enforces:
+        //   `NonCounted(...) + non-count-bearing merk → InvalidInput`
+        // The batch variant must enforce the equivalent invariant using its
+        // available `feature_type`: only the non-provable CountedMerkNode and
+        // CountedSummedMerkNode variants accept the wrapper.
+        use crate::tree::hash::NULL_HASH;
+        use crate::TreeFeatureType::BasicMerkNode;
+
+        let grove_version = GroveVersion::latest();
+        let mut batch_ops: Vec<BatchEntry<&[u8]>> = Vec::new();
+
+        // NonCounted-wrapped indexed tree + BasicMerkNode (not count-bearing).
+        // Use PCIT (the count-axis indexed tree) since it's the case for
+        // which the non-counted destination guard is meaningful.
+        let pcit_inner = Element::empty_provable_count_indexed_tree();
+        let wrapped = Element::new_non_counted(pcit_inner).expect("wrap");
+        let key: &[u8] = b"k";
+        let result = wrapped
+            .insert_count_indexed_subtree_into_batch_operations(
+                key,
+                NULL_HASH,
+                NULL_HASH,
+                false,
+                &mut batch_ops,
+                BasicMerkNode, // NOT count-bearing
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(Error::InvalidInputError(msg)) => {
+                assert!(
+                    msg.contains("non-provable count-bearing trees"),
+                    "expected non-counted-wrong-destination error, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected InvalidInputError(non-counted into non-count-bearing), \
+                 got: {:?}",
+                other
+            ),
+        }
+        assert!(
+            batch_ops.is_empty(),
+            "rejected op must not push to batch_operations vec"
+        );
+
+        // Sanity: the same wrapped element with a non-provable count-bearing
+        // feature succeeds.
+        let result_ok = wrapped
+            .insert_count_indexed_subtree_into_batch_operations(
+                key,
+                NULL_HASH,
+                NULL_HASH,
+                false,
+                &mut batch_ops,
+                crate::TreeFeatureType::CountedMerkNode(0),
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            result_ok.is_ok(),
+            "non-counted cidx into count-bearing tree must be accepted, got: {:?}",
+            result_ok
+        );
+
+        for feature_type in [
+            crate::TreeFeatureType::ProvableCountedMerkNode(0),
+            crate::TreeFeatureType::ProvableCountedSummedMerkNode(0, 0),
+            crate::TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(0, 0),
+        ] {
+            let mut rejected_ops: Vec<BatchEntry<&[u8]>> = Vec::new();
+            let result = wrapped
+                .insert_count_indexed_subtree_into_batch_operations(
+                    key,
+                    NULL_HASH,
+                    NULL_HASH,
+                    false,
+                    &mut rejected_ops,
+                    feature_type,
+                    grove_version,
+                )
+                .unwrap();
+            assert!(
+                matches!(result, Err(Error::InvalidInputError(_))),
+                "provable count feature accepted NonCounted child: {feature_type:?}"
+            );
+            assert!(rejected_ops.is_empty());
+        }
+    }
+
+    #[test]
+    fn insert_count_indexed_subtree_into_batch_operations_replace_variant_for_cidx() {
+        // Coverage for L790-799 — `is_replace = true` branch using
+        // Op::ReplaceLayeredCountIndexedReference (vs the Put variant
+        // at L802-811 which is `is_replace = false`).
+        use crate::tree::hash::NULL_HASH;
+        use crate::TreeFeatureType;
+
+        let grove_version = GroveVersion::latest();
+        let mut batch_ops: Vec<BatchEntry<&[u8]>> = Vec::new();
+
+        let cidx = Element::empty_provable_count_indexed_tree();
+        let key: &[u8] = b"k";
+        cidx.insert_count_indexed_subtree_into_batch_operations(
+            key,
+            NULL_HASH,
+            NULL_HASH,
+            true, // is_replace
+            &mut batch_ops,
+            TreeFeatureType::CountedMerkNode(0),
+            grove_version,
+        )
+        .unwrap()
+        .expect("replace variant must succeed for a cidx element");
+        assert_eq!(batch_ops.len(), 1, "one op must be queued");
+        // The pushed op should be Op::ReplaceLayeredCountIndexedReference.
+        match &batch_ops[0].1 {
+            Op::ReplaceLayeredCountIndexedReference(..) => {}
+            other => panic!("expected ReplaceLayered, got: {:?}", other),
+        }
     }
 }

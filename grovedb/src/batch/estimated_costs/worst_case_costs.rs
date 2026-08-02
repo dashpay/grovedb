@@ -15,7 +15,10 @@ use grovedb_merk::estimated_costs::worst_case_costs::{
     add_worst_case_merk_has_value, worst_case_merk_propagate, WorstCaseLayerInformation,
     MERK_BIGGEST_VALUE_SIZE,
 };
-use grovedb_merk::{tree::AggregateData, tree_type::TreeType, RootHashKeyAndAggregateData};
+use grovedb_merk::{
+    element::tree_type::ElementTreeTypeExtensions, tree::AggregateData, tree_type::TreeType,
+    RootHashKeyAndAggregateData,
+};
 #[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "minimal")]
@@ -354,6 +357,52 @@ impl GroveOp {
                 // NonCounted wrapper applies.
                 if *non_counted { 1 } else { 0 },
                 propagate_if_input(),
+                grove_version,
+            ),
+            // KNOWN GAP: this covers only the parent-merk node update that
+            // recomputes the indexed element's value_hash; the per-axis
+            // secondary Merk work is not charged.
+            //
+            // The average-case estimator DOES charge it (see
+            // `average_case_indexed_secondary_mirror`), deriving the
+            // secondary's shape from the primary's `EstimatedLayerInformation`.
+            // That is not possible here: `WorstCaseLayerInformation` carries
+            // only `MaxElementsNumber` / `NumberOfLevels` — no tree type (so an
+            // indexed primary cannot even be identified) and no key/value sizes
+            // (so a secondary row cannot be sized). Closing this needs that
+            // public type extended, which is a breaking change for callers
+            // that construct it. Worst-case fee reservation for indexed-tree
+            // ops must not rely on this number until then.
+            GroveOp::InsertAggregateIndexedTreeRootKeys { element, .. } => {
+                // Insert-side counterpart of the replace arm below. Sized
+                // from the CARRIED element's own tree type — the aggregate a
+                // worst-case estimate carries is `NoAggregateData`, whose
+                // fallback under-sizes an indexed parent. Flags come off the
+                // element; indexed elements cannot be wrapped.
+                GroveDb::worst_case_merk_insert_tree(
+                    key,
+                    element.get_flags(),
+                    element.tree_type().unwrap_or(TreeType::NormalTree),
+                    in_parent_tree_type,
+                    0,
+                    propagate_if_input(),
+                    grove_version,
+                )
+            }
+            GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+                primary_aggregate_data,
+                ..
+            } => GroveDb::worst_case_merk_replace_tree(
+                key,
+                // Sized as the INDEXED type — see the note on
+                // `indexed_parent_tree_type`; the non-indexed type is smaller
+                // than the indexed element's own minimum payload.
+                primary_aggregate_data
+                    .indexed_parent_tree_type()
+                    .unwrap_or_else(|| primary_aggregate_data.parent_tree_type()),
+                in_parent_tree_type,
+                worst_case_layer_element_estimates,
+                propagate,
                 grove_version,
             ),
         }
@@ -1447,5 +1496,70 @@ mod tests {
         .expect("expected worst case costs for replace");
         assert!(cost.seek_count > 0);
         assert!(cost.hash_node_calls > 0);
+    }
+
+    /// Covers the `GroveOp::ReplaceAggregateIndexedTreeRootKeys` arm in
+    /// `worst_case_cost`. The op is emitted by `execute_ops_on_path` when
+    /// a level's path resolves to a Count/ProvableCount-indexed primary
+    /// — the worst-case path here just delegates to
+    /// `worst_case_merk_replace_tree` with the indexed tree type derived
+    /// from the carried `primary_aggregate_data`.
+    #[test]
+    fn test_replace_aggregate_indexed_tree_root_keys_worst_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        use grovedb_merk::tree::AggregateData;
+        let key = KeyInfo::KnownKey(b"agg_idx".to_vec());
+
+        let op_count = GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+            primary_hash: [1u8; 32],
+            primary_root_key: Some(b"prk".to_vec()),
+            primary_aggregate_data: AggregateData::ProvableCount(42),
+            axes: vec![(0u8, [2u8; 32], Some(b"srk".to_vec()))],
+        };
+        let cost_count = op_count
+            .worst_case_cost(
+                &key,
+                TreeType::NormalTree,
+                &MaxElementsNumber(100),
+                false,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected worst case cost for ReplaceAggregateIndexedTreeRootKeys (Count)");
+        assert!(
+            cost_count.seek_count > 0
+                || cost_count.storage_loaded_bytes > 0
+                || cost_count.hash_node_calls > 0,
+            "expected non-trivial cost; got {:?}",
+            cost_count
+        );
+
+        // Also exercise the propagate=true path.
+        let op_pcount = GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+            primary_hash: [3u8; 32],
+            primary_root_key: None,
+            primary_aggregate_data: AggregateData::ProvableCount(7),
+            axes: vec![(0u8, [4u8; 32], None)],
+        };
+        let cost_pcount = op_pcount
+            .worst_case_cost(
+                &key,
+                TreeType::NormalTree,
+                &MaxElementsNumber(100),
+                true,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect(
+                "expected worst case cost for ReplaceAggregateIndexedTreeRootKeys (ProvableCount)",
+            );
+        assert!(
+            cost_pcount.seek_count >= cost_count.seek_count
+                || cost_pcount.hash_node_calls >= cost_count.hash_node_calls,
+            "propagate should not reduce cost below non-propagate baseline; pcount={:?}, \
+             count={:?}",
+            cost_pcount,
+            cost_count,
+        );
     }
 }

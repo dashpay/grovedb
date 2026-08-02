@@ -176,9 +176,13 @@ where
                 }
                 GroveOp::ReplaceTreeRootKey { .. }
                 | GroveOp::InsertTreeWithRootHash { .. }
-                | GroveOp::InsertNonMerkTree { .. } => Err(Error::InvalidBatchOperation(
-                    "replace and insert tree hash are internal operations only",
-                )),
+                | GroveOp::InsertNonMerkTree { .. }
+                | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. }
+                | GroveOp::InsertAggregateIndexedTreeRootKeys { .. } => {
+                    Err(Error::InvalidBatchOperation(
+                        "replace and insert tree hash are internal operations only",
+                    ))
+                }
             };
             if let Err(e) = op_result {
                 return Err(e).wrap_with_cost(op_cost);

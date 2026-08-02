@@ -27,7 +27,7 @@ pub use delete_up_tree::DeleteUpTreeOptions;
 use grovedb_costs::cost_return_on_error_into;
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
-    cost_return_on_error,
+    cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
@@ -42,7 +42,8 @@ use grovedb_merk::{Error as MerkError, Merk, MerkOptions};
 use grovedb_path::SubtreePath;
 #[cfg(feature = "minimal")]
 use grovedb_storage::{
-    rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch, StorageContext,
+    rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
+    Storage, StorageBatch, StorageContext,
 };
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
@@ -241,6 +242,20 @@ impl GroveDb {
                 tx.as_ref(),
                 Some(&batch),
                 grove_version,
+            )
+        );
+
+        // Clearing an indexed primary would empty the primary Merk while
+        // leaving every per-axis secondary Merk fully populated, so the
+        // element's secondary root key / axes digest would still commit to
+        // rows that no longer exist. Reject rather than corrupt; callers
+        // should delete the indexed tree itself (which sweeps all axes) or
+        // remove entries through the dedicated `delete_from_*` APIs.
+        cost_return_on_error_no_add!(
+            cost,
+            crate::operations::indexed_tree::reject_generic_write_into_indexed_primary(
+                merk_to_clear.tree_type,
+                "clear_subtree",
             )
         );
 
@@ -746,6 +761,17 @@ impl GroveDb {
                 grove_version
             )
         );
+        // A generic delete cannot mirror the removed child's ordering value
+        // out of an indexed primary's secondary index. Reject before any
+        // mutation.
+        cost_return_on_error_no_add!(
+            cost,
+            crate::operations::indexed_tree::reject_generic_write_into_indexed_primary(
+                subtree_to_delete_from.tree_type,
+                "delete",
+            )
+        );
+
         let uses_sum_tree = subtree_to_delete_from.tree_type;
         if let Some(tree_type) = element.tree_type() {
             let subtree_merk_path = path.derive_owned_with_child(key);
@@ -791,6 +817,63 @@ impl GroveDb {
                 };
             }
 
+            // Indexed-tree primaries own one or more secondary storage
+            // namespaces (the axis-ordered secondary indexes) at prefixes
+            // derived from the primary's prefix via S2-B
+            // (`Blake3(primary_prefix ‖ axis_tag)`) — one per axis: PCIT
+            // has Count, PSIT has Sum, and PCPSIT has up to all three
+            // (Count/Sum/Avg). `find_subtrees` only walks the primary's
+            // namespace, so without this explicit clear the secondary's
+            // storage would be orphaned: future inserts under the same
+            // path could collide with stale entries (the derived prefix
+            // is identical for a recreated tree at the same path), and
+            // the secondary index would be unreachable but would still
+            // consume disk. Run unconditionally on every indexed-tree
+            // primary delete — including the `is_empty` branch below,
+            // since a stale (drifted) secondary can co-exist with an
+            // empty primary (e.g. a bug that mirrors deletions into the
+            // primary but fails to mirror into the secondary would leave
+            // orphans here; defend against it by clearing the namespace
+            // at delete time). We sweep all three axis tags
+            // unconditionally rather than decoding the axes TLV, matching
+            // the nested-subtree sweep inside the `find_subtrees` loop
+            // below: clearing an unused axis prefix is idempotent on an
+            // empty namespace, so the redundancy is intentional
+            // defense-in-depth. The per-prefix cleanup inside that loop
+            // also clears these same namespaces for the target prefix,
+            // but both clears are idempotent so the redundancy is fine.
+            if tree_type.is_indexed_primary() {
+                let primary_prefix = RocksDbStorage::build_prefix(subtree_merk_path_ref.clone())
+                    .unwrap_add_cost(&mut cost);
+                for axis in [
+                    grovedb_element::indexed::IndexAxis::Count,
+                    grovedb_element::indexed::IndexAxis::Sum,
+                    grovedb_element::indexed::IndexAxis::Avg,
+                ] {
+                    let secondary_prefix =
+                        RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
+                            .unwrap_add_cost(&mut cost);
+                    let mut secondary_storage = self
+                        .db
+                        .get_transactional_storage_context_by_subtree_prefix(
+                            secondary_prefix,
+                            Some(batch),
+                            transaction,
+                        )
+                        .unwrap_add_cost(&mut cost);
+                    cost_return_on_error!(
+                        &mut cost,
+                        secondary_storage.clear().map_err(|e| {
+                            Error::CorruptedData(format!(
+                                "unable to cleanup indexed-tree secondary (axis {:?}) from \
+                                 storage: {e}",
+                                axis
+                            ))
+                        })
+                    );
+                }
+            }
+
             if !is_empty {
                 if non_merk_data {
                     // Non-Merk data trees: clear the subtree storage directly.
@@ -825,7 +908,7 @@ impl GroveDb {
                         let p: SubtreePath<_> = subtree_path.as_slice().into();
                         let mut storage = self
                             .db
-                            .get_transactional_storage_context(p, Some(batch), transaction)
+                            .get_transactional_storage_context(p.clone(), Some(batch), transaction)
                             .unwrap_add_cost(&mut cost);
 
                         cost_return_on_error!(
@@ -836,6 +919,55 @@ impl GroveDb {
                                 ))
                             })
                         );
+
+                        // NESTED INDEXED-TREE SECONDARY CLEANUP.
+                        // find_subtrees enumerates every nested subtree
+                        // under the deletion target, but only the
+                        // primary's storage namespace is reachable via
+                        // the path-prefix walk. Any nested indexed-tree
+                        // primary inside the deleted subtree has its own
+                        // per-axis secondary namespaces at
+                        // Blake3(its_prefix ‖ axis_tag) — one for PCIT
+                        // (count), one for PSIT (sum), up to three for
+                        // PCPSIT — that find_subtrees cannot see; clear
+                        // them all too.
+                        //
+                        // Clearing the secondary prefix is idempotent on
+                        // non-indexed subtrees (their secondary namespace
+                        // is empty), so we sweep all three axis tags
+                        // unconditionally rather than decoding each
+                        // subtree's root element to check the tree type —
+                        // cheaper and removes a class of missed-decoding
+                        // bugs.
+                        let primary_prefix =
+                            RocksDbStorage::build_prefix(p).unwrap_add_cost(&mut cost);
+                        for axis in [
+                            grovedb_element::indexed::IndexAxis::Count,
+                            grovedb_element::indexed::IndexAxis::Sum,
+                            grovedb_element::indexed::IndexAxis::Avg,
+                        ] {
+                            let secondary_prefix =
+                                RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
+                                    .unwrap_add_cost(&mut cost);
+                            let mut secondary_storage = self
+                                .db
+                                .get_transactional_storage_context_by_subtree_prefix(
+                                    secondary_prefix,
+                                    Some(batch),
+                                    transaction,
+                                )
+                                .unwrap_add_cost(&mut cost);
+                            cost_return_on_error!(
+                                &mut cost,
+                                secondary_storage.clear().map_err(|e| {
+                                    Error::CorruptedData(format!(
+                                        "unable to cleanup nested indexed-tree secondary \
+                                         (axis {:?}) in delete: {e}",
+                                        axis
+                                    ))
+                                })
+                            );
+                        }
                     }
                 }
                 // todo: verify why we need to open the same? merk again

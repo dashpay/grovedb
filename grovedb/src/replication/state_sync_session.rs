@@ -248,7 +248,8 @@ impl<'db> MultiStateSyncSession<'db> {
         // Individual subtree chunks are hash-verified during restore, but we must also
         // verify the overall GroveDB root to ensure the composition is correct.
         //
-        // TODO: This check is not fully atomic. apply_chunk() flushes completed
+        // TODO(https://github.com/dashpay/grovedb/issues/775): This check is not
+        // fully atomic. apply_chunk() flushes completed
         // subtree batches via set_new_transaction()/commit_transaction(), so on
         // mismatch only the last transaction is rolled back while earlier subtrees
         // remain on disk. A full fix requires staging all subtree commits and only
@@ -677,6 +678,24 @@ impl<'db> MultiStateSyncSession<'db> {
         let mut raw_iter = Element::iterator(merk.storage.raw_iter()).unwrap();
         while let Some((key, value)) = raw_iter.next_element(grove_version).unwrap()? {
             if value.is_any_tree() {
+                // State sync does not yet support indexed trees. Their
+                // primaries commit a three-input `combine_hash_three`
+                // (vs. the two-input combine the restorer expects) and
+                // carry secondary storage namespaces at
+                // `Blake3(prefix ‖ axis_tag)` that discovery never
+                // enumerates — so a chunk-based restore would fail
+                // midway with an opaque "chunk doesn't match expected
+                // root hash". Reject up-front here (the choke point
+                // where the decoded `Element` is available) with a
+                // descriptive error instead.
+                if value.is_indexed_tree() {
+                    return Err(Error::NotSupported(
+                        "state sync does not yet support indexed trees \
+                         (ProvableCountIndexedTree / ProvableSumIndexedTree / \
+                         ProvableCountProvableSumIndexedTree)"
+                            .to_string(),
+                    ));
+                }
                 subtree_keys.insert(key.to_vec());
             }
         }

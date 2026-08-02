@@ -118,6 +118,71 @@ fn element_display_and_type_helpers_cover_all_variants() {
     }
 }
 
+/// Display + type helpers for the indexed-tree element variants
+/// (PCIT, PSIT, PCPSIT) and wrappers (NonCounted, NotSummed,
+/// NotCountedOrSummed). These arms are exercised here in addition
+/// to the all-variant test above which omits them.
+#[test]
+fn element_display_indexed_tree_and_wrapper_variants() {
+    // ProvableCountIndexedTree
+    let pcit =
+        Element::ProvableCountIndexedTree(Some(vec![0xAA]), Some(vec![0xBB]), 42, Some(vec![1, 2]));
+    let s = format!("{pcit}");
+    assert!(
+        s.contains("ProvableCountIndexedTree")
+            && s.contains("primary=aa")
+            && s.contains("secondary=bb")
+            && s.contains("count=42"),
+        "Display: {}",
+        s
+    );
+
+    let pcit_empty = Element::ProvableCountIndexedTree(None, None, 0, None);
+    let s = format!("{pcit_empty}");
+    assert!(s.contains("primary=None") && s.contains("secondary=None"));
+    assert!(!s.contains("flags:"));
+
+    // ProvableSumIndexedTree
+    let psit =
+        Element::ProvableSumIndexedTree(Some(vec![0xCC]), Some(vec![0xDD]), -77, Some(vec![5]));
+    let s = format!("{psit}");
+    assert!(
+        s.contains("ProvableSumIndexedTree") && s.contains("primary=cc") && s.contains("sum=-77"),
+        "Display: {}",
+        s
+    );
+
+    // ProvableCountProvableSumIndexedTree (multi-axis)
+    let pcpsit = Element::ProvableCountProvableSumIndexedTree(
+        Some(vec![0xEE]),
+        3,
+        15,
+        vec![(0u8, Some(vec![0x11])), (1u8, None)],
+        None,
+    );
+    let s = format!("{pcpsit}");
+    assert!(
+        s.contains("ProvableCountProvableSumIndexedTree")
+            && s.contains("count=3")
+            && s.contains("sum=15")
+            && s.contains("axes=[")
+            && s.contains("(0, 11)")
+            && s.contains("(1, None)"),
+        "Display: {}",
+        s
+    );
+
+    // Wrapper variants — Display delegates to inner.
+    let nc = Element::NonCounted(Box::new(Element::Item(b"v".to_vec(), None)));
+    assert_eq!(format!("{nc}"), "NonCounted(Item(v))");
+
+    let ns = Element::NotSummed(Box::new(Element::SumTree(None, 5, None)));
+    assert_eq!(format!("{ns}"), "NotSummed(SumTree(None, 5))");
+
+    let ncs = Element::NotCountedOrSummed(Box::new(Element::SumTree(None, 7, None)));
+    assert_eq!(format!("{ncs}"), "NotCountedOrSummed(SumTree(None, 7))");
+}
+
 #[test]
 fn serialize_deserialize_round_trip_all_element_types_and_errors() {
     let grove_version = GroveVersion::latest();

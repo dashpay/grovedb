@@ -2,8 +2,8 @@
 //! Implements average case cost functions in GroveDb
 
 use grovedb_costs::{
-    cost_return_on_error_into_no_add, cost_return_on_error_no_add, CostResult, CostsExt,
-    OperationCost,
+    cost_return_on_error, cost_return_on_error_into_no_add, cost_return_on_error_no_add,
+    CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions,
@@ -13,14 +13,14 @@ use grovedb_merk::{
         average_case_costs::{
             add_average_case_get_merk_node, add_average_case_merk_delete,
             add_average_case_merk_delete_layered, add_average_case_merk_propagate,
-            add_average_case_merk_replace_layered, EstimatedLayerInformation,
+            add_average_case_merk_replace_layered, EstimatedLayerInformation, EstimatedLayerSizes,
         },
     },
     tree::TreeNode,
     tree_type::{CostSize, TreeType, SUM_ITEM_COST_SIZE},
     HASH_LENGTH,
 };
-use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
+use grovedb_storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage};
 use grovedb_version::{
     check_grovedb_v0, check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
 };
@@ -30,6 +30,12 @@ use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
     Element, ElementFlags, Error, GroveDb,
 };
+
+/// Upper bound on an indexed secondary row's value. The payload is fixed
+/// per axis — an empty `Item` (count), a `SumItem` (sum) or an empty
+/// `ItemWithSumItem` (avg) — and the largest of those serializes well under
+/// this bound, which also leaves room for the feature type and flags byte.
+pub const INDEXED_SECONDARY_MAX_VALUE_SIZE: u32 = 16;
 
 impl GroveDb {
     /// Add average case for getting a merk tree
@@ -436,6 +442,144 @@ impl GroveDb {
     }
 
     /// Add average case for deletion into Merk
+    /// Largest average key size described by a layer, used to derive a
+    /// secondary index layer's key sizes from its primary's.
+    fn average_case_layer_key_size(sizes: &EstimatedLayerSizes) -> u32 {
+        match sizes {
+            EstimatedLayerSizes::AllSubtrees(k, ..)
+            | EstimatedLayerSizes::AllItems(k, ..)
+            | EstimatedLayerSizes::AllReference(k, ..)
+            | EstimatedLayerSizes::AllItemsWithSumItem(k, ..)
+            | EstimatedLayerSizes::AllReferencesWithSumItem(k, ..) => *k as u32,
+            EstimatedLayerSizes::Mix {
+                subtrees_size,
+                items_size,
+                references_size,
+                ..
+            } => [
+                subtrees_size.map(|(k, ..)| k),
+                items_size.map(|(k, ..)| k),
+                references_size.map(|(k, ..)| k),
+            ]
+            .into_iter()
+            .flatten()
+            .max()
+            .unwrap_or(0) as u32,
+        }
+    }
+
+    /// Average-case cost of mirroring one primary-entry change into an
+    /// indexed tree's per-axis secondary Merks.
+    ///
+    /// The secondary Merks are NOT described by the caller's
+    /// `EstimatedLayerInformation` map — they live at derived prefixes
+    /// (`Blake3(primary_prefix ‖ axis_tag)`) that are not GroveDB paths. But
+    /// every input is derivable from the PRIMARY's layer information:
+    ///
+    /// - **Entry count** is the primary's, because the mirror is 1:1 — every
+    ///   primary entry has exactly one row per axis (the indexed trees do no
+    ///   sparse or conditional indexing).
+    /// - **Key size** is the primary's key size plus the axis sort-key width
+    ///   (8 bytes for count/sum, 16 for avg).
+    /// - **Value size** is bounded by the fixed per-axis payload shape:
+    ///   an empty `Item` (count), a `SumItem` (sum), or an empty
+    ///   `ItemWithSumItem` (avg) — all under
+    ///   [`INDEXED_SECONDARY_MAX_VALUE_SIZE`].
+    /// - **Tree type** is fixed per axis.
+    ///
+    /// Each axis is charged one Merk open, one delete of the old row and one
+    /// insert of the new row, each propagating — which is what
+    /// `mirror_*_to_secondary` actually performs.
+    pub fn average_case_indexed_secondary_mirror(
+        primary_path: &KeyInfoPath,
+        primary_layer_information: &EstimatedLayerInformation,
+        axes: &[grovedb_element::indexed::IndexAxis],
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        use crate::operations::indexed_tree::{axis_secondary_tree_type, axis_sort_key_len};
+
+        let mut cost = OperationCost::default();
+        let primary_key_size =
+            Self::average_case_layer_key_size(&primary_layer_information.estimated_layer_sizes);
+        let secondary_should_be_empty = primary_layer_information
+            .estimated_layer_count
+            .estimated_to_be_empty();
+
+        for axis in axes {
+            let secondary_key_size =
+                (primary_key_size + axis_sort_key_len(*axis) as u32).min(u8::MAX as u32) as u8;
+            let secondary_layer = EstimatedLayerInformation {
+                tree_type: axis_secondary_tree_type(*axis),
+                // 1:1 with the primary.
+                estimated_layer_count: primary_layer_information.estimated_layer_count,
+                estimated_layer_sizes: EstimatedLayerSizes::AllItems(
+                    secondary_key_size,
+                    INDEXED_SECONDARY_MAX_VALUE_SIZE,
+                    None,
+                ),
+            };
+            // Opening the secondary Merk.
+            cost_return_on_error_no_add!(
+                cost,
+                Self::add_average_case_get_merk_at_path::<RocksDbStorage>(
+                    &mut cost,
+                    primary_path,
+                    secondary_should_be_empty,
+                    secondary_layer.tree_type,
+                    grove_version,
+                )
+            );
+            // Deriving the secondary prefix costs one extra hash beyond the
+            // primary prefix the open above accounted for.
+            cost.hash_node_calls += 1;
+
+            let secondary_key = KeyInfo::MaxKeySize {
+                unique_id: primary_path.to_path().concat(),
+                max_size: secondary_key_size,
+            };
+            // The mirror is delete-old-row then insert-new-row, each of which
+            // rebalances and re-roots the secondary.
+            //
+            // The inserted row must be sized with the AXIS's real payload
+            // shape: `average_case_merk_insert_element` charges non-tree
+            // elements by their own serialized size, and the sum and avg rows
+            // are larger than the count axis's empty `Item`. Sizing all three
+            // as an empty `Item` put the PCPSIT estimate ~25 bytes per key
+            // UNDER actual `added_bytes` — the one dimension a storage-fee
+            // reservation cannot come in under. Sum values are charged at
+            // their fixed worst-case varint width, so `i64::MAX` here is the
+            // upper bound, not an average.
+            let worst_case_row = match axis {
+                grovedb_element::indexed::IndexAxis::Count => Element::new_item(vec![]),
+                grovedb_element::indexed::IndexAxis::Sum => Element::new_sum_item(i64::MAX),
+                grovedb_element::indexed::IndexAxis::Avg => {
+                    Element::new_item_with_sum_item(vec![], i64::MAX)
+                }
+            };
+            cost_return_on_error!(
+                &mut cost,
+                Self::average_case_merk_delete_element(
+                    &secondary_key,
+                    &secondary_layer,
+                    true,
+                    grove_version,
+                )
+            );
+            cost_return_on_error!(
+                &mut cost,
+                Self::average_case_merk_insert_element(
+                    &secondary_key,
+                    &worst_case_row,
+                    secondary_layer.tree_type,
+                    Some(&secondary_layer),
+                    grove_version,
+                )
+            );
+        }
+        Ok(()).wrap_with_cost(cost)
+    }
+
+    /// Add average case cost for deleting an element from a merk.
     pub fn average_case_merk_delete_element(
         key: &KeyInfo,
         estimated_layer_information: &EstimatedLayerInformation,

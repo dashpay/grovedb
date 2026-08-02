@@ -321,7 +321,11 @@ mod tests {
         let mut result: Vec<PathKeyOptionalElementTrio> = Vec::new();
 
         let err = GroveDb::verify_layer_proof_v1(
-            &dummy_proof,
+            match &dummy_proof.merk_proof {
+                ProofBytes::Merk(b) => b.as_slice(),
+                _ => panic!("test fixture must carry a Merk proof"),
+            },
+            &dummy_proof.lower_layers,
             &prove_options,
             &path_query,
             &mut limit,
@@ -713,7 +717,11 @@ mod tests {
         let mut result: Vec<PathKeyOptionalElementTrio> = Vec::new();
 
         let err = GroveDb::verify_layer_proof_v1(
-            &dummy_proof,
+            match &dummy_proof.merk_proof {
+                ProofBytes::Merk(b) => b.as_slice(),
+                _ => panic!("test fixture must carry a Merk proof"),
+            },
+            &dummy_proof.lower_layers,
             &prove_options,
             &path_query,
             &mut limit,

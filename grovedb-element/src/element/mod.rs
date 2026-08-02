@@ -229,14 +229,10 @@ pub enum Element {
     /// allowing aggregate-sum range queries to be cryptographically verified
     /// by including the sum in each node hash.
     ///
-    /// Discriminant 19 — appended after the wrapper bytes and the
-    /// `ReferenceWithSumItem` base variant so that the on-disk encoding of
-    /// every variant that landed on `develop` before this PR (including
-    /// `NotCountedOrSummed = 17` and `ReferenceWithSumItem = 18`) is
-    /// preserved exactly. `NotSummedProvableSumTree` and
+    /// Discriminant 19. `NotSummedProvableSumTree` and
     /// `NotCountedOrSummedProvableSumTree` keep their hand-assigned twin
-    /// slots (0xB1 and 0xC1) because base 19 still doesn't fit the
-    /// `prefix | base` formula either.
+    /// slots (0xB1 and 0xC1) because base 19 doesn't fit the
+    /// `prefix | base` formula.
     ProvableSumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
     /// Same as `Element::ProvableCountSumTree` but BOTH the per-node count
     /// AND the per-node sum are baked into the cryptographic state. Mirrors
@@ -251,6 +247,75 @@ pub enum Element {
     /// because the formula collapses for bases ≥ 16; their slots are 178
     /// (`0xB2`) and 194 (`0xC2`) respectively.
     ProvableCountProvableSumTree(Option<Vec<u8>>, CountValue, SumValue, Option<ElementFlags>),
+    /// Provable sum-indexed tree: a `ProvableSumTree`-style primary Merk
+    /// paired with a single secondary Merk keyed by
+    /// `(sum_sortable_be ‖ original_key)`. Both Merks contribute to the
+    /// element's `combined_value_hash` via the three-input hash composition
+    /// `combine_hash_three(value_hash, primary_root_hash,
+    /// secondary_root_hash)`.
+    ///
+    /// Fields: `(primary_root_key, secondary_root_key, sum_value, flags)`
+    /// - `primary_root_key`: root key of the primary `ProvableSumTree`.
+    /// - `secondary_root_key`: root key of the secondary sum-ordered Merk.
+    /// - `sum_value`: aggregated signed sum of the primary Merk.
+    /// - `flags`: optional per-element metadata.
+    ///
+    /// Variant order in this enum determines bincode's variant-index
+    /// encoding on disk. This variant gets index 21 — the slot that was
+    /// previously held by the (now-removed, never-shipped) non-provable
+    /// `CountIndexedTree`. Wire compatibility for that legacy variant is
+    /// not required.
+    ProvableSumIndexedTree(
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+        SumValue,
+        Option<ElementFlags>,
+    ),
+    /// Provable count-indexed tree: primary Merk uses
+    /// `ProvableCountedMerkNode` (count baked into node hash) and the
+    /// secondary Merk is keyed by `(count_be ‖ original_key)`. The
+    /// secondary's per-node feature type is `ProvableCountedMerkNode(1)`
+    /// so aggregate count queries against the secondary work uniformly.
+    ///
+    /// Fields: `(primary_root_key, secondary_root_key, count_value, flags)`
+    ProvableCountIndexedTree(
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+        CountValue,
+        Option<ElementFlags>,
+    ),
+    /// Provable count + provable sum indexed tree: primary Merk uses
+    /// `ProvableCountedAndProvableSummedMerkNode` (both count AND sum
+    /// baked into node hash) and carries a TLV list of 1..=3 secondary
+    /// Merks — one per selected axis (count, sum, avg). Each secondary
+    /// lives at its own derived storage prefix and is itself a
+    /// `ProvableCountProvableSumTree` so any axis can produce both
+    /// count-on-range and sum-on-range proofs.
+    ///
+    /// Fields: `(primary_root_key, count_value, sum_value, axes, flags)`
+    /// - `primary_root_key`: root key of the primary
+    ///   `ProvableCountProvableSumTree`.
+    /// - `count_value`: aggregated count of the primary.
+    /// - `sum_value`: aggregated signed sum of the primary.
+    /// - `axes`: canonical (sorted by tag, deduped, 1..=3) list of
+    ///   `(axis_tag, secondary_root_key)`. Axis tags are
+    ///   `0 = count`, `1 = sum`, `2 = avg` (see
+    ///   [`crate::indexed::IndexAxis`]).
+    /// - `flags`: optional per-element metadata.
+    ///
+    /// The element's `combined_value_hash` is
+    /// `combine_hash_three(value_hash, primary_root_hash, axes_digest)`,
+    /// where `axes_digest` is a length-prefixed Blake3 over the canonical
+    /// axes TLV (see `merk::tree::hash::axes_digest`). Empty secondaries
+    /// (no entries yet for an axis) contribute `NULL_HASH` in their
+    /// per-axis hash slot.
+    ProvableCountProvableSumIndexedTree(
+        Option<Vec<u8>>,
+        CountValue,
+        SumValue,
+        Vec<(u8, Option<Vec<u8>>)>,
+        Option<ElementFlags>,
+    ),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -439,6 +504,85 @@ impl fmt::Display for Element {
             Element::NonCounted(inner) => {
                 write!(f, "NonCounted({})", inner)
             }
+            Element::ProvableSumIndexedTree(
+                primary_root_key,
+                secondary_root_key,
+                sum_value,
+                flags,
+            ) => {
+                write!(
+                    f,
+                    "ProvableSumIndexedTree(primary={}, secondary={}, sum={}{})",
+                    primary_root_key
+                        .as_ref()
+                        .map_or("None".to_string(), hex::encode),
+                    secondary_root_key
+                        .as_ref()
+                        .map_or("None".to_string(), hex::encode),
+                    sum_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::ProvableCountIndexedTree(
+                primary_root_key,
+                secondary_root_key,
+                count_value,
+                flags,
+            ) => {
+                write!(
+                    f,
+                    "ProvableCountIndexedTree(primary={}, secondary={}, count={}{})",
+                    primary_root_key
+                        .as_ref()
+                        .map_or("None".to_string(), hex::encode),
+                    secondary_root_key
+                        .as_ref()
+                        .map_or("None".to_string(), hex::encode),
+                    count_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::ProvableCountProvableSumIndexedTree(
+                primary_root_key,
+                count_value,
+                sum_value,
+                axes,
+                flags,
+            ) => {
+                write!(
+                    f,
+                    "ProvableCountProvableSumIndexedTree(primary={}, count={}, sum={}, axes=[",
+                    primary_root_key
+                        .as_ref()
+                        .map_or("None".to_string(), hex::encode),
+                    count_value,
+                    sum_value,
+                )?;
+                let mut first = true;
+                for (tag, sk) in axes {
+                    if !first {
+                        write!(f, ", ")?;
+                    }
+                    first = false;
+                    write!(
+                        f,
+                        "({}, {})",
+                        tag,
+                        sk.as_ref().map_or("None".to_string(), hex::encode)
+                    )?;
+                }
+                write!(
+                    f,
+                    "]{})",
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
             Element::NotSummed(inner) => {
                 write!(f, "NotSummed({})", inner)
             }
@@ -511,6 +655,11 @@ impl Element {
             Element::ProvableSumTree(..) => ElementType::ProvableSumTree,
             Element::ProvableCountProvableSumTree(..) => ElementType::ProvableCountProvableSumTree,
             Element::ReferenceWithSumItem(..) => ElementType::ReferenceWithSumItem,
+            Element::ProvableSumIndexedTree(..) => ElementType::ProvableSumIndexedTree,
+            Element::ProvableCountIndexedTree(..) => ElementType::ProvableCountIndexedTree,
+            Element::ProvableCountProvableSumIndexedTree(..) => {
+                ElementType::ProvableCountProvableSumIndexedTree
+            }
             Element::NonCounted(inner) => match inner.element_type() {
                 ElementType::Item => ElementType::NonCountedItem,
                 ElementType::Reference => ElementType::NonCountedReference,
@@ -534,6 +683,15 @@ impl Element {
                     ElementType::NonCountedProvableCountProvableSumTree
                 }
                 ElementType::ReferenceWithSumItem => ElementType::NonCountedReferenceWithSumItem,
+                ElementType::ProvableSumIndexedTree => {
+                    ElementType::NonCountedProvableSumIndexedTree
+                }
+                ElementType::ProvableCountIndexedTree => {
+                    ElementType::NonCountedProvableCountIndexedTree
+                }
+                ElementType::ProvableCountProvableSumIndexedTree => {
+                    ElementType::NonCountedProvableCountProvableSumIndexedTree
+                }
                 // Inner is always a base type — nested wrappers are
                 // forbidden at construction and (de)serialization.
                 already_non_counted => already_non_counted,
@@ -708,6 +866,25 @@ mod serde_impl {
             Option<ElementFlags>,
         ),
         ProvableCountProvableSumTree(Option<Vec<u8>>, CountValue, SumValue, Option<ElementFlags>),
+        ProvableSumIndexedTree(
+            Option<Vec<u8>>,
+            Option<Vec<u8>>,
+            SumValue,
+            Option<ElementFlags>,
+        ),
+        ProvableCountIndexedTree(
+            Option<Vec<u8>>,
+            Option<Vec<u8>>,
+            CountValue,
+            Option<ElementFlags>,
+        ),
+        ProvableCountProvableSumIndexedTree(
+            Option<Vec<u8>>,
+            CountValue,
+            SumValue,
+            Vec<(u8, Option<Vec<u8>>)>,
+            Option<ElementFlags>,
+        ),
     }
 
     impl From<ElementShadow> for Element {
@@ -747,6 +924,15 @@ mod serde_impl {
                 }
                 ElementShadow::ProvableCountProvableSumTree(k, c, s, f) => {
                     Element::ProvableCountProvableSumTree(k, c, s, f)
+                }
+                ElementShadow::ProvableSumIndexedTree(pk, sk, s, f) => {
+                    Element::ProvableSumIndexedTree(pk, sk, s, f)
+                }
+                ElementShadow::ProvableCountIndexedTree(pk, sk, c, f) => {
+                    Element::ProvableCountIndexedTree(pk, sk, c, f)
+                }
+                ElementShadow::ProvableCountProvableSumIndexedTree(pk, c, s, axes, f) => {
+                    Element::ProvableCountProvableSumIndexedTree(pk, c, s, axes, f)
                 }
             }
         }
@@ -808,6 +994,62 @@ mod serde_impl {
                 let back: Element = serde_json::from_str(&json).expect("deserialize");
                 assert_eq!(back, original, "round trip mismatch for {:?}", original);
             }
+        }
+
+        /// The three indexed-tree variants must survive the shadow-enum
+        /// detour (`ElementShadow` -> `From<ElementShadow> for Element`)
+        /// with every field intact — including PCPSIT's axes TLV, whose
+        /// shadow variant carries an extra `Vec<(u8, Option<Vec<u8>>)>`
+        /// field the other two do not have.
+        #[test]
+        fn serde_round_trip_indexed_tree_variants() {
+            let cases = vec![
+                Element::ProvableSumIndexedTree(
+                    Some(b"pk".to_vec()),
+                    Some(b"sk".to_vec()),
+                    -42,
+                    Some(vec![1, 2]),
+                ),
+                Element::ProvableSumIndexedTree(None, None, 0, None),
+                Element::ProvableCountIndexedTree(
+                    Some(b"pk".to_vec()),
+                    Some(b"sk".to_vec()),
+                    99,
+                    Some(vec![3]),
+                ),
+                Element::ProvableCountIndexedTree(None, None, 0, None),
+                Element::ProvableCountProvableSumIndexedTree(
+                    Some(b"pk".to_vec()),
+                    7,
+                    -13,
+                    vec![(0, None), (1, Some(b"sk".to_vec())), (2, None)],
+                    Some(vec![4, 5]),
+                ),
+            ];
+            for original in cases {
+                let json = serde_json::to_string(&original).expect("serialize");
+                let back: Element = serde_json::from_str(&json).expect("deserialize");
+                assert_eq!(back, original, "round trip mismatch for {:?}", original);
+            }
+
+            // Pin the wire shape of the PCPSIT axes field so a shadow /
+            // element field-order divergence is caught here.
+            let pcpsit = Element::ProvableCountProvableSumIndexedTree(
+                None,
+                7,
+                -13,
+                vec![(1, Some(vec![0xAB]))],
+                None,
+            );
+            assert_eq!(
+                serde_json::to_string(&pcpsit).expect("serialize"),
+                r#"{"ProvableCountProvableSumIndexedTree":[null,7,-13,[[1,[171]]],null]}"#
+            );
+            let back: Element = serde_json::from_str(
+                r#"{"ProvableCountProvableSumIndexedTree":[null,7,-13,[[1,[171]]],null]}"#,
+            )
+            .expect("deserialize");
+            assert_eq!(back, pcpsit);
         }
 
         /// `NotCountedOrSummed(NotCountedOrSummed(_))` and cross-nestings
@@ -1006,6 +1248,142 @@ mod tests {
     }
 
     #[test]
+    fn element_type_resolves_non_counted_indexed_twins() {
+        // The three indexed-tree variants each map to their NonCounted
+        // twin (and to the twin's `as_str`).
+        let cases: [(Element, ElementType); 3] = [
+            (
+                Element::NonCounted(Box::new(Element::ProvableSumIndexedTree(
+                    None, None, -5, None,
+                ))),
+                ElementType::NonCountedProvableSumIndexedTree,
+            ),
+            (
+                Element::NonCounted(Box::new(Element::ProvableCountIndexedTree(
+                    None, None, 7, None,
+                ))),
+                ElementType::NonCountedProvableCountIndexedTree,
+            ),
+            (
+                Element::NonCounted(Box::new(Element::ProvableCountProvableSumIndexedTree(
+                    None,
+                    7,
+                    -5,
+                    vec![(0, None)],
+                    None,
+                ))),
+                ElementType::NonCountedProvableCountProvableSumIndexedTree,
+            ),
+        ];
+        for (element, expected) in cases {
+            assert_eq!(element.element_type(), expected);
+            assert_eq!(element.type_str(), expected.as_str());
+        }
+        assert_eq!(
+            ElementType::NonCountedProvableSumIndexedTree.as_str(),
+            "non_counted provable sum indexed tree"
+        );
+        assert_eq!(
+            ElementType::NonCountedProvableCountIndexedTree.as_str(),
+            "non_counted provable count indexed tree"
+        );
+        assert_eq!(
+            ElementType::NonCountedProvableCountProvableSumIndexedTree.as_str(),
+            "non_counted provable count provable sum indexed tree"
+        );
+    }
+
+    #[test]
+    fn display_renders_pcpsit_with_all_axes_and_flags() {
+        // Exercises the axes loop: the separator between entries, the
+        // hex rendering of a present secondary root key, the "None"
+        // fallback for an absent one, and the trailing flags suffix.
+        let element = Element::new_provable_count_provable_sum_indexed_tree(
+            Some(vec![0x01, 0x02, 0x03]),
+            5,
+            -7,
+            vec![
+                (0, None),
+                (1, Some(vec![0xAA, 0xBB])),
+                (2, Some(vec![0x0C])),
+            ],
+            Some(vec![9, 10]),
+        )
+        .expect("canonical axes");
+        assert_eq!(
+            format!("{}", element),
+            "ProvableCountProvableSumIndexedTree(primary=010203, count=5, sum=-7, axes=[(0, \
+             None), (1, aabb), (2, 0c)], flags: [9, 10])"
+        );
+    }
+
+    #[test]
+    fn display_renders_pcpsit_single_axis_no_primary_no_flags() {
+        let element = Element::empty_provable_count_provable_sum_indexed_tree(vec![(2, None)])
+            .expect("canonical axes");
+        assert_eq!(
+            format!("{}", element),
+            "ProvableCountProvableSumIndexedTree(primary=None, count=0, sum=0, axes=[(2, None)])"
+        );
+    }
+
+    #[test]
+    fn display_pcpsit_propagates_formatter_errors() {
+        // The PCPSIT Display arm is the only one that chains several
+        // `write!(..)?` calls (header, per-axis entry, separator, trailing
+        // flags). Each `?` has an error path that a `String` sink can never
+        // take, so drive it with a sink that fails after a fixed number of
+        // successful writes.
+        use std::fmt::Write as _;
+
+        struct Failing {
+            budget: usize,
+        }
+        impl fmt::Write for Failing {
+            fn write_str(&mut self, _s: &str) -> fmt::Result {
+                if self.budget == 0 {
+                    return Err(fmt::Error);
+                }
+                self.budget -= 1;
+                Ok(())
+            }
+        }
+
+        let element = Element::new_provable_count_provable_sum_indexed_tree(
+            Some(vec![0x01]),
+            5,
+            -7,
+            vec![(0, None), (1, Some(vec![0xAA]))],
+            Some(vec![9]),
+        )
+        .expect("canonical axes");
+
+        // Find the smallest budget that renders the whole element.
+        let mut first_success = None;
+        for budget in 0..256 {
+            let mut sink = Failing { budget };
+            if write!(sink, "{}", element).is_ok() {
+                first_success = Some(budget);
+                break;
+            }
+        }
+        let first_success = first_success.expect("a large enough budget must succeed");
+        // Header + two axis entries + separator + tail means the arm makes
+        // several distinct writes, each of which must be able to fail.
+        assert!(
+            first_success > 5,
+            "expected the PCPSIT arm to perform several writes, first success at {first_success}"
+        );
+        for budget in 0..first_success {
+            let mut sink = Failing { budget };
+            assert!(
+                write!(sink, "{}", element).is_err(),
+                "budget {budget} must surface the sink error"
+            );
+        }
+    }
+
+    #[test]
     fn display_renders_non_counted_wrapper() {
         let inner = Element::Item(b"abc".to_vec(), None);
         let wrapped = Element::new_non_counted(inner).expect("wrap ok");
@@ -1081,4 +1459,174 @@ mod tests {
         let bad = Element::NotCountedOrSummed(Box::new(Element::Item(b"x".to_vec(), None)));
         assert!(bad.validate_wrapper_invariants().is_err());
     }
+
+    // -----------------------------------------------------------------
+    // Display tests for the indexed-tree variants (PSIT/PCIT/PCPSIT)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn display_psit_with_none_root_keys() {
+        let elem = Element::ProvableSumIndexedTree(None, None, 0, None);
+        let s = format!("{}", elem);
+        assert!(s.starts_with("ProvableSumIndexedTree("), "got: {}", s);
+        assert!(s.contains("primary=None"), "got: {}", s);
+        assert!(s.contains("secondary=None"), "got: {}", s);
+        assert!(s.contains("sum=0"), "got: {}", s);
+        // No flags arm.
+        assert!(!s.contains("flags:"), "got: {}", s);
+    }
+
+    #[test]
+    fn display_psit_with_some_root_keys_and_flags() {
+        let elem = Element::ProvableSumIndexedTree(
+            Some(vec![0xAA, 0xBB]),
+            Some(vec![0xCC, 0xDD]),
+            42,
+            Some(vec![1, 2, 3]),
+        );
+        let s = format!("{}", elem);
+        assert!(s.contains("primary=aabb"), "got: {}", s);
+        assert!(s.contains("secondary=ccdd"), "got: {}", s);
+        assert!(s.contains("sum=42"), "got: {}", s);
+        assert!(s.contains("flags:"), "got: {}", s);
+    }
+
+    #[test]
+    fn display_pcit_with_none_root_keys() {
+        let elem = Element::ProvableCountIndexedTree(None, None, 0, None);
+        let s = format!("{}", elem);
+        assert!(s.starts_with("ProvableCountIndexedTree("), "got: {}", s);
+        assert!(s.contains("primary=None"), "got: {}", s);
+        assert!(s.contains("secondary=None"), "got: {}", s);
+        assert!(s.contains("count=0"), "got: {}", s);
+    }
+
+    #[test]
+    fn display_pcit_with_some_root_keys_and_flags() {
+        let elem = Element::ProvableCountIndexedTree(
+            Some(vec![0x11]),
+            Some(vec![0x22]),
+            7,
+            Some(vec![0xFF]),
+        );
+        let s = format!("{}", elem);
+        assert!(s.contains("primary=11"), "got: {}", s);
+        assert!(s.contains("secondary=22"), "got: {}", s);
+        assert!(s.contains("count=7"), "got: {}", s);
+        assert!(s.contains("flags:"), "got: {}", s);
+    }
+
+    #[test]
+    fn display_pcpsit_empty_axes() {
+        // Manually construct (validate_pcpsit_axes would reject empty,
+        // but Display arm doesn't care about that).
+        let elem = Element::ProvableCountProvableSumIndexedTree(None, 0, 0, vec![], None);
+        let s = format!("{}", elem);
+        assert!(
+            s.starts_with("ProvableCountProvableSumIndexedTree("),
+            "got: {}",
+            s
+        );
+        assert!(s.contains("primary=None"), "got: {}", s);
+        assert!(s.contains("count=0"), "got: {}", s);
+        assert!(s.contains("sum=0"), "got: {}", s);
+        assert!(s.contains("axes=[]"), "got: {}", s);
+    }
+
+    #[test]
+    fn display_pcpsit_one_axis_with_root_key() {
+        let elem = Element::ProvableCountProvableSumIndexedTree(
+            Some(vec![0xDE, 0xAD]),
+            5,
+            10,
+            vec![(0, Some(vec![0xBE, 0xEF]))],
+            None,
+        );
+        let s = format!("{}", elem);
+        assert!(s.contains("primary=dead"), "got: {}", s);
+        assert!(s.contains("count=5"), "got: {}", s);
+        assert!(s.contains("sum=10"), "got: {}", s);
+        assert!(s.contains("(0, beef)"), "got: {}", s);
+    }
+
+    #[test]
+    fn display_pcpsit_multiple_axes_with_mixed_keys() {
+        // Mix Some/None root keys to exercise the inner map_or arm.
+        let elem = Element::ProvableCountProvableSumIndexedTree(
+            None,
+            0,
+            0,
+            vec![(0, Some(vec![0xAB])), (1, None), (2, Some(vec![0xCD]))],
+            Some(vec![0x42]),
+        );
+        let s = format!("{}", elem);
+        assert!(s.contains("(0, ab)"), "got: {}", s);
+        assert!(s.contains("(1, None)"), "got: {}", s);
+        assert!(s.contains("(2, cd)"), "got: {}", s);
+        // Comma separation between entries.
+        assert!(s.matches(", ").count() >= 2, "got: {}", s);
+        assert!(s.contains("flags:"), "got: {}", s);
+    }
+
+    #[test]
+    fn display_pcpsit_three_axes_no_flags() {
+        let elem = Element::ProvableCountProvableSumIndexedTree(
+            None,
+            1,
+            2,
+            vec![(0, None), (1, None), (2, None)],
+            None,
+        );
+        let s = format!("{}", elem);
+        assert!(s.contains("axes=["), "got: {}", s);
+        // Three (tag, None) entries should all show up.
+        assert_eq!(s.matches("(0, None)").count(), 1);
+        assert_eq!(s.matches("(1, None)").count(), 1);
+        assert_eq!(s.matches("(2, None)").count(), 1);
+        // No flags arm.
+        assert!(!s.contains("flags:"), "got: {}", s);
+    }
+
+    #[test]
+    fn debug_renders_psit_with_negative_sum() {
+        // Debug rendering differs between the derived Debug and the
+        // visualize feature's custom Debug. Check only that we get
+        // non-empty output that contains the sum literal.
+        let elem = Element::ProvableSumIndexedTree(None, None, -1234, None);
+        let s = format!("{:?}", elem);
+        assert!(!s.is_empty(), "got: {}", s);
+        assert!(s.contains("-1234"), "got: {}", s);
+    }
+
+    #[test]
+    fn debug_renders_pcpsit_with_axes_and_flags() {
+        let elem = Element::ProvableCountProvableSumIndexedTree(
+            None,
+            3,
+            -5,
+            vec![(0, None), (1, None)],
+            Some(vec![1, 2, 3]),
+        );
+        let s = format!("{:?}", elem);
+        assert!(!s.is_empty(), "got: {}", s);
+        assert!(s.contains("-5"), "got: {}", s);
+    }
+
+    #[test]
+    fn display_indexed_tree_variants_show_sums_and_counts() {
+        // Check that signed sums render correctly for PSIT.
+        let elem = Element::ProvableSumIndexedTree(None, None, -7, None);
+        let s = format!("{}", elem);
+        assert!(s.contains("sum=-7"), "got: {}", s);
+
+        // Negative sum in PCPSIT.
+        let elem =
+            Element::ProvableCountProvableSumIndexedTree(None, 10, -100, vec![(0, None)], None);
+        let s = format!("{}", elem);
+        assert!(s.contains("count=10"), "got: {}", s);
+        assert!(s.contains("sum=-100"), "got: {}", s);
+    }
 }
+
+#[cfg(test)]
+mod cidx_tests;

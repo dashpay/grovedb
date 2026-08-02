@@ -1584,14 +1584,136 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 7, // todo: verify this
+                // +1 seek and +129 storage_loaded_bytes vs. V1..V3: with
+                // `overwrite_indexed_cleanup_inspection >= 1` (V4+, which is
+                // what `latest()` resolves to) and tree-override validation
+                // off, the batch path reads each existing element for
+                // indexed-overwrite detection, preventing silent
+                // secondary-storage orphaning. The `_v3_keeps_live_costs`
+                // companion below pins that released versions do NOT pay
+                // this read.
+                seek_count: 8,
                 storage_cost: StorageCost {
                     added_bytes: 4,
-                    replaced_bytes: 285, // todo: verify this
+                    replaced_bytes: 285,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 380, // todo: verify this
-                hash_node_calls: 12,       // todo: verify this
+                storage_loaded_bytes: 509,
+                hash_node_calls: 12,
+                sinsemilla_hash_calls: 0,
+            }
+        );
+
+        let issues = db
+            .visualize_verify_grovedb(Some(&tx), true, false, &Default::default())
+            .unwrap();
+        assert_eq!(
+            issues.len(),
+            0,
+            "reference issue: {}",
+            issues
+                .iter()
+                .map(|(hash, (a, b, c))| format!("{}: {} {} {}", hash, a, b, c))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        );
+    }
+
+    #[test]
+    fn test_batch_root_one_update_cost_right_above_value_required_cost_of_2_with_refresh_reference_v3_keeps_live_costs(
+    ) {
+        let grove_version = &grovedb_version::version::v3::GROVE_V3;
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"key1".to_vec(),
+                Element::new_item_with_flags([0u8; 56].to_vec(), Some(vec![0, 0])),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"keyref".to_vec(),
+                Element::new_reference(SiblingReference(b"key1".to_vec())),
+            ),
+        ];
+
+        let cost_result = db.apply_batch(ops, None, Some(&tx), grove_version);
+        cost_result.value.expect("expected to execute batch");
+        // We are adding 2 bytes
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"key1".to_vec(),
+                Element::new_item_with_flags([0u8; 57].to_vec(), Some(vec![0, 1])),
+            ),
+            QualifiedGroveDbOp::replace_op(
+                vec![],
+                b"keyref".to_vec(),
+                Element::new_reference(SiblingReference(b"key1".to_vec())),
+            ),
+        ];
+
+        let cost = db
+            .apply_batch_with_element_flags_update(
+                ops,
+                None,
+                |cost, old_flags, new_flags| match cost.transition_type() {
+                    OperationStorageTransitionType::OperationUpdateBiggerSize => {
+                        if new_flags[0] == 0 {
+                            new_flags[0] = 1;
+                            let new_flags_epoch = new_flags[1];
+                            new_flags[1] = old_flags.unwrap()[1];
+                            new_flags.push(new_flags_epoch);
+                            new_flags.extend(cost.added_bytes.encode_var_vec());
+                            // first pass will be vec![1u8, 0, 1, 2], second pass will be vec![1u8,
+                            // 0, 1, 4]
+                            assert!(
+                                new_flags == &vec![1u8, 0, 1, 2]
+                                    || new_flags == &vec![1u8, 0, 1, 4]
+                            );
+                            Ok(true)
+                        } else {
+                            assert_eq!(new_flags[0], 1);
+                            Ok(false)
+                        }
+                    }
+                    OperationStorageTransitionType::OperationUpdateSmallerSize => {
+                        new_flags.extend(vec![1, 2]);
+                        Ok(true)
+                    }
+                    _ => Ok(false),
+                },
+                |_flags, removed_key_bytes, removed_value_bytes| {
+                    Ok((
+                        BasicStorageRemoval(removed_key_bytes),
+                        BasicStorageRemoval(removed_value_bytes),
+                    ))
+                },
+                Some(&tx),
+                grove_version,
+            )
+            .cost;
+
+        assert_eq!(
+            cost,
+            OperationCost {
+                // The exact constants this batch shape cost on the released
+                // versions. `overwrite_indexed_cleanup_inspection` is 0 on
+                // V1..V3, so the stored-element read the V4 test above pays
+                // (+1 seek, +129 loaded bytes) must NOT happen here — cost
+                // feeds fees, and released versions must keep their released
+                // cost shape. If this test starts failing, a live fee just
+                // changed.
+                seek_count: 7,
+                storage_cost: StorageCost {
+                    added_bytes: 4,
+                    replaced_bytes: 285,
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 380,
+                hash_node_calls: 12,
                 sinsemilla_hash_calls: 0,
             }
         );

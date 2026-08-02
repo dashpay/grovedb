@@ -972,6 +972,27 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
         crate::Element::NonCounted(inner)
         | crate::Element::NotSummed(inner)
         | crate::Element::NotCountedOrSummed(inner) => element_to_grovedbg(*inner),
+        // Indexed-tree variants are not yet represented in the
+        // grovedbg wire format; render them as a generic subtree pointing
+        // at the primary's root key. The secondary (or axes TLV for
+        // PCPSIT) is invisible to the debug UI for now.
+        crate::Element::ProvableSumIndexedTree(primary_root_key, _, _, element_flags)
+        | crate::Element::ProvableCountIndexedTree(primary_root_key, _, _, element_flags) => {
+            grovedbg_types::Element::Subtree {
+                root_key: primary_root_key,
+                element_flags,
+            }
+        }
+        crate::Element::ProvableCountProvableSumIndexedTree(
+            primary_root_key,
+            _,
+            _,
+            _,
+            element_flags,
+        ) => grovedbg_types::Element::Subtree {
+            root_key: primary_root_key,
+            element_flags,
+        },
     }
 }
 

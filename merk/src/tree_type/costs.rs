@@ -45,6 +45,23 @@ pub const BULK_APPEND_TREE_COST_SIZE: u32 = 9 + 1 + 2; // 12
 /// height (u8) + 2 bytes overhead)
 pub const DENSE_TREE_COST_SIZE: u32 = 3 + 1 + 2; // 6
 
+/// The cost of a count-indexed tree element. Same shape as `COUNT_TREE_COST_SIZE`
+/// but with one extra byte of overhead for the second `Option<root_key>` field
+/// (the secondary root key).
+pub const COUNT_INDEXED_TREE_COST_SIZE: u32 = COUNT_TREE_COST_SIZE + 1; // 13
+
+/// The cost of a provable-count + provable-sum indexed tree element.
+///
+/// Unlike the single-axis indexed trees this carries BOTH aggregates plus a
+/// variable-length axes TLV, so it is sized as the count+sum layer cost plus
+/// the TLV's worst case: one length byte, and for each of the maximum three
+/// axes one tag byte and one `Option<root_key>` discriminant byte. Sizing it
+/// like the single-axis trees put it *below* its own minimum serialized
+/// payload, and `merk::tree::Tree` disables `StorageCost::verify` for layered
+/// nodes so nothing caught the shortfall.
+pub const PROVABLE_COUNT_PROVABLE_SUM_INDEXED_TREE_COST_SIZE: u32 =
+    SUM_AND_COUNT_LAYER_COST_SIZE + 1 + 3 * 2; // 28
+
 /// Provides the serialized cost size in bytes for a tree type.
 pub trait CostSize {
     /// Returns the cost size in bytes for this value.
@@ -70,6 +87,16 @@ impl CostSize for TreeType {
             // ProvableCountProvableSumTree carries both a count and a sum
             // like ProvableCountSumTree, so reuse its cost size.
             TreeType::ProvableCountProvableSumTree => COUNT_SUM_TREE_COST_SIZE,
+            TreeType::ProvableSumIndexedTree | TreeType::ProvableCountIndexedTree => {
+                COUNT_INDEXED_TREE_COST_SIZE
+            }
+            // PCPSIT carries both aggregates and a variable-length axes TLV,
+            // so it gets its own worst-case constant rather than the
+            // single-axis indexed cost, which was smaller than the element's
+            // own minimum payload.
+            TreeType::ProvableCountProvableSumIndexedTree => {
+                PROVABLE_COUNT_PROVABLE_SUM_INDEXED_TREE_COST_SIZE
+            }
         }
     }
 }

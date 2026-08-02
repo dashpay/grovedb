@@ -627,6 +627,52 @@ fn classify_self<'a>(
                     own_count
                 )));
             }
+            // V1 strict-mode KV→KVValueHash forgery guard (mirrors the
+            // regular `execute_proof` check at `verify.rs:427`).
+            //
+            // Without this, an attacker can replace an honest
+            // `KVCount(k, real_value, count)` (where `real_value` is an
+            // Item) with `KVValueHashFeatureType(k, serialized_forged_Item,
+            // H(real_value), ProvableCountedMerkNode(count))`: the merk
+            // tree-hash chain still reconstructs because the proof
+            // carries the committed `value_hash` directly rather than
+            // recomputing it from `value`, but the surfaced bytes are
+            // the attacker's forged Item. The downstream GroveDB
+            // filter at `grovedb/src/operations/proof/verify.rs:523`
+            // only blacklists NonCounted / Reference / non-empty Tree
+            // shapes — it cannot tell a forged Item-in-tree-shape from
+            // an honest tree return.
+            //
+            // KVValueHashFeatureType is the right proof-node type ONLY
+            // for elements with `combine_hash`-composed value_hash
+            // (subtrees, references, indexed-tree elements). Element
+            // types with a simple `H(value)` value_hash (`Item`,
+            // `SumItem`, `ItemWithSumItem`) MUST use `KVCount` /
+            // `KVCountSum` (count tree) or the plain `KV` / `KVValueHash`
+            // family (other trees), where the verifier recomputes the
+            // value_hash from the value bytes via
+            // `kv_digest_to_kv_hash` and forgery is structurally
+            // blocked.
+            let element_type = grovedb_element::ElementType::from_serialized_value(
+                value.as_slice(),
+            )
+            .map_err(|e| {
+                Error::InvalidProofError(format!(
+                    "count-offset proof: cannot determine element type in \
+                             KVValueHashFeatureType node: {e}"
+                ))
+            })?;
+            if element_type.has_simple_value_hash() {
+                return Err(Error::InvalidProofError(
+                    "count-offset proof: KVValueHashFeatureType node must not contain a \
+                     simple-value Element type (Item / SumItem / ItemWithSumItem) — these \
+                     use a simple H(value) value-hash and an honest prover would emit \
+                     KVCount or KVCountSum instead. Rejected to prevent KV→KVValueHash \
+                     forgery (the proof's tree-hash chain only verifies the proof-carried \
+                     value_hash, not that `value_hash == H(value)`)"
+                        .to_string(),
+                ));
+            }
             Ok(BoundaryKind::ValueReturned {
                 key: key.as_slice(),
                 value: value.as_slice(),

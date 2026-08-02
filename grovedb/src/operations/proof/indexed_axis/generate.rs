@@ -1,0 +1,1126 @@
+//! The prover: single-key layer proofs down the path, per-ancestor
+//! attestations, and the per-shape envelope builders.
+//!
+//! Everything here runs against live storage under a transaction. The
+//! verifier ([`super::verify`]) must be able to reconstruct the GroveDB
+//! root hash from nothing but the envelope these builders emit.
+
+use grovedb_costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
+use grovedb_element::indexed::{encode_count_sort_key, encode_sum_sort_key, IndexAxis};
+use grovedb_merk::{
+    element::get::ElementFetchFromStorageExtensions,
+    proofs::{encode_into, query::QueryItem as MerkQueryItemForRange, Query as MerkQuery},
+};
+use grovedb_path::{SubtreePath, SubtreePathBuilder};
+use grovedb_query::QueryItem as MerkQueryItem;
+use grovedb_storage::StorageBatch;
+use grovedb_version::version::GroveVersion;
+
+use crate::{util::TxRef, Element, Error, GroveDb, Transaction, TransactionArg};
+
+use super::{
+    aggregate_range_out_of_domain, AncestorAttestation, IndexedAxisAggregateProof,
+    IndexedAxisPaginatedProof, IndexedAxisRangeProof,
+};
+
+/// Build the per-ancestor attestation list for a path of length N: the
+/// list has length N-1 (one entry per intermediate layer). For each
+/// intermediate layer, open the parent merk and inspect the element
+/// at the depth's key to determine the chain composition.
+fn build_ancestor_attestations<'db>(
+    grovedb: &'db GroveDb,
+    path_keys: &[Vec<u8>],
+    transaction: &'db Transaction,
+    batch: &'db StorageBatch,
+    grove_version: &GroveVersion,
+    err_label: &'static str,
+) -> CostResult<Vec<AncestorAttestation>, Error> {
+    let mut cost = OperationCost::default();
+    let last_idx = path_keys.len() - 1;
+    let mut atts: Vec<AncestorAttestation> = Vec::with_capacity(last_idx);
+    for depth in 0..last_idx {
+        // The parent merk at path_keys[..depth] holds the element with key
+        // path_keys[depth]; we examine the element to decide the chain.
+        let parent_slices: Vec<&[u8]> = path_keys[..depth].iter().map(|p| p.as_slice()).collect();
+        let parent_path: SubtreePath<&[u8]> = parent_slices.as_slice().into();
+        let parent_merk = cost_return_on_error!(
+            &mut cost,
+            grovedb.open_transactional_merk_at_path(
+                parent_path,
+                transaction,
+                Some(batch),
+                grove_version,
+            )
+        );
+        let intermediate = cost_return_on_error!(
+            &mut cost,
+            Element::get(
+                &parent_merk,
+                path_keys[depth].as_slice(),
+                true,
+                grove_version,
+            )
+            .map_err(|e| {
+                Error::CorruptedData(format!(
+                    "{err_label}: fetch intermediate-layer element at depth {depth}: {e}"
+                ))
+            })
+        );
+        let att = match intermediate.underlying() {
+            Element::ProvableCountIndexedTree(_, secondary_root_key, ..)
+            | Element::ProvableSumIndexedTree(_, secondary_root_key, ..) => {
+                let axis = match intermediate.underlying() {
+                    Element::ProvableCountIndexedTree(..) => IndexAxis::Count,
+                    Element::ProvableSumIndexedTree(..) => IndexAxis::Sum,
+                    // Structurally unreachable: the outer arm already
+                    // bound this value as PCIT or PSIT. Return a graceful
+                    // error rather than panicking if that invariant is
+                    // ever broken by a refactor.
+                    _ => {
+                        return Err(Error::CorruptedCodeExecution(
+                            "build_ancestor_attestations: element matched PCIT/PSIT in the \
+                             outer arm but neither in the inner axis match",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                };
+                let ancestor_path_owned: SubtreePathBuilder<Vec<u8>> =
+                    SubtreePathBuilder::owned_from_iter(path_keys[..=depth].iter().cloned());
+                let ancestor_path = SubtreePath::from(&ancestor_path_owned);
+                let ancestor_secondary = cost_return_on_error!(
+                    &mut cost,
+                    grovedb.open_indexed_secondary_at_path(
+                        ancestor_path,
+                        axis,
+                        secondary_root_key.clone(),
+                        transaction,
+                        Some(batch),
+                        grove_version,
+                    )
+                );
+                let (sec_hash, _, _) = cost_return_on_error!(
+                    &mut cost,
+                    ancestor_secondary
+                        .root_hash_key_and_aggregate_data()
+                        .map_err(|e| Error::CorruptedData(format!(
+                            "{err_label}: ancestor secondary root hash at depth {depth}: {e}"
+                        )))
+                );
+                AncestorAttestation::SingleSecondary(sec_hash)
+            }
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => {
+                let ancestor_path_owned: SubtreePathBuilder<Vec<u8>> =
+                    SubtreePathBuilder::owned_from_iter(path_keys[..=depth].iter().cloned());
+                let ancestor_path = SubtreePath::from(&ancestor_path_owned);
+                let mut axis_hashes: Vec<(u8, [u8; 32])> = Vec::with_capacity(axes.len());
+                for (tag, sec_root_key) in axes {
+                    let axis = cost_return_on_error_no_add!(
+                        cost,
+                        IndexAxis::try_from_tag(*tag).map_err(|e| Error::CorruptedData(format!(
+                            "{err_label}: invalid axis tag in PCPSIT ancestor at depth {depth}: {e}"
+                        )))
+                    );
+                    let ancestor_path_clone = ancestor_path.clone();
+                    let ancestor_secondary = cost_return_on_error!(
+                        &mut cost,
+                        grovedb.open_indexed_secondary_at_path(
+                            ancestor_path_clone,
+                            axis,
+                            sec_root_key.clone(),
+                            transaction,
+                            Some(batch),
+                            grove_version,
+                        )
+                    );
+                    let (sec_hash, _, _) = cost_return_on_error!(
+                        &mut cost,
+                        ancestor_secondary
+                            .root_hash_key_and_aggregate_data()
+                            .map_err(|e| Error::CorruptedData(format!(
+                                "{err_label}: PCPSIT ancestor secondary root hash at depth \
+                                 {depth} axis {:?}: {e}",
+                                axis
+                            )))
+                    );
+                    axis_hashes.push((*tag, sec_hash));
+                }
+                AncestorAttestation::MultiAxis(axis_hashes)
+            }
+            _ => AncestorAttestation::NotIndexed,
+        };
+        atts.push(att);
+    }
+    Ok(atts).wrap_with_cost(cost)
+}
+
+/// Build single-key Merk proofs per layer, top-down. `layer_proofs[i]`
+/// proves the existence of `path_keys[i]` in the Merk at
+/// `path_keys[..i]`.
+fn build_layer_proofs<'db>(
+    grovedb: &'db GroveDb,
+    path_keys: &[Vec<u8>],
+    transaction: &'db Transaction,
+    batch: &'db StorageBatch,
+    grove_version: &GroveVersion,
+    err_label: &'static str,
+) -> CostResult<Vec<Vec<u8>>, Error> {
+    let mut cost = OperationCost::default();
+    let mut layer_proofs: Vec<Vec<u8>> = Vec::with_capacity(path_keys.len());
+    for depth in 0..path_keys.len() {
+        let parent_slices: Vec<&[u8]> = path_keys[..depth].iter().map(|p| p.as_slice()).collect();
+        let parent_path: SubtreePath<&[u8]> = parent_slices.as_slice().into();
+        let parent_merk = cost_return_on_error!(
+            &mut cost,
+            grovedb.open_transactional_merk_at_path(
+                parent_path,
+                transaction,
+                Some(batch),
+                grove_version,
+            )
+        );
+        let key = path_keys[depth].clone();
+        let mut q = MerkQuery::new();
+        q.insert_item(MerkQueryItem::Key(key));
+        let result = cost_return_on_error!(
+            &mut cost,
+            parent_merk
+                .prove(q, None, grove_version)
+                .map_err(|e| Error::CorruptedData(format!(
+                    "{err_label}: prove single-key at layer depth {depth}: {e}"
+                )))
+        );
+        layer_proofs.push(result.proof);
+    }
+    Ok(layer_proofs).wrap_with_cost(cost)
+}
+
+/// Path-keys-driven variant of `read_queried_axis_info`. For PCPSIT, also
+/// opens each non-queried axis's secondary to capture its root hash.
+///
+/// Returns `(secondary_root_key, other_axes_root_hashes, target_is_pcpsit)`.
+fn read_queried_axis_info_with_path_keys<'db>(
+    grovedb: &'db GroveDb,
+    path_keys: &[Vec<u8>],
+    axis: IndexAxis,
+    transaction: &'db Transaction,
+    batch: &'db StorageBatch,
+    grove_version: &GroveVersion,
+    err_label: &'static str,
+) -> CostResult<(Option<Vec<u8>>, Vec<(u8, [u8; 32])>, bool), Error> {
+    let mut cost = OperationCost::default();
+    if path_keys.is_empty() {
+        return Err(Error::InvalidPath(format!(
+            "{err_label}: cannot query an indexed tree at the root path"
+        )))
+        .wrap_with_cost(cost);
+    }
+    let last_idx = path_keys.len() - 1;
+    let parent_slices: Vec<&[u8]> = path_keys[..last_idx].iter().map(|p| p.as_slice()).collect();
+    let parent_path: SubtreePath<&[u8]> = parent_slices.as_slice().into();
+    let parent_merk = cost_return_on_error!(
+        &mut cost,
+        grovedb.open_transactional_merk_at_path(
+            parent_path,
+            transaction,
+            Some(batch),
+            grove_version,
+        )
+    );
+    let element = cost_return_on_error!(
+        &mut cost,
+        Element::get(
+            &parent_merk,
+            path_keys[last_idx].as_slice(),
+            true,
+            grove_version,
+        )
+        .map_err(|e| {
+            Error::CorruptedData(format!(
+                "{err_label}: fetch indexed-tree element from parent merk: {e}"
+            ))
+        })
+    );
+    match (axis, element.underlying()) {
+        (IndexAxis::Count, Element::ProvableCountIndexedTree(_, secondary, ..)) => {
+            Ok((secondary.clone(), Vec::new(), false)).wrap_with_cost(cost)
+        }
+        (IndexAxis::Sum, Element::ProvableSumIndexedTree(_, secondary, ..)) => {
+            Ok((secondary.clone(), Vec::new(), false)).wrap_with_cost(cost)
+        }
+        (_, Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _)) => {
+            let want_tag = axis.tag();
+            let mut queried_secondary: Option<Option<Vec<u8>>> = None;
+            let mut other: Vec<(u8, [u8; 32])> = Vec::new();
+            // Path to the PCPSIT element (the queried path's full chain).
+            let pcpsit_path_owned: SubtreePathBuilder<Vec<u8>> =
+                SubtreePathBuilder::owned_from_iter(path_keys.iter().cloned());
+            for (tag, sec_root_key) in axes {
+                let parsed_axis = cost_return_on_error_no_add!(
+                    cost,
+                    IndexAxis::try_from_tag(*tag).map_err(|e| Error::CorruptedData(format!(
+                        "{err_label}: invalid axis tag in queried PCPSIT element: {e}"
+                    )))
+                );
+                if *tag == want_tag {
+                    queried_secondary = Some(sec_root_key.clone());
+                    continue;
+                }
+                let secondary_path = SubtreePath::from(&pcpsit_path_owned);
+                let other_secondary = cost_return_on_error!(
+                    &mut cost,
+                    grovedb.open_indexed_secondary_at_path(
+                        secondary_path,
+                        parsed_axis,
+                        sec_root_key.clone(),
+                        transaction,
+                        Some(batch),
+                        grove_version,
+                    )
+                );
+                let (sec_hash, _, _) = cost_return_on_error!(
+                    &mut cost,
+                    other_secondary
+                        .root_hash_key_and_aggregate_data()
+                        .map_err(|e| Error::CorruptedData(format!(
+                            "{err_label}: PCPSIT non-queried axis {:?} secondary root hash: {e}",
+                            parsed_axis
+                        )))
+                );
+                other.push((*tag, sec_hash));
+            }
+            match queried_secondary {
+                Some(key) => Ok((key, other, true)).wrap_with_cost(cost),
+                None => Err(Error::InvalidPath(format!(
+                    "{:?} axis not indexed at this path",
+                    axis
+                )))
+                .wrap_with_cost(cost),
+            }
+        }
+        _ => Err(Error::InvalidPath(format!(
+            "{:?} axis not indexed at this path",
+            axis
+        )))
+        .wrap_with_cost(cost),
+    }
+}
+
+impl GroveDb {
+    /// Generate a proof for the top-`k` entries of an indexed-tree on a
+    /// specific [`IndexAxis`].
+    ///
+    /// The path's last segment must point to a variant that supports
+    /// the requested axis:
+    /// - [`IndexAxis::Count`] supports
+    ///   [`Element::ProvableCountIndexedTree`] (PCIT) or
+    ///   [`Element::ProvableCountProvableSumIndexedTree`] (PCPSIT) iff
+    ///   the count axis is in the PCPSIT's TLV.
+    /// - [`IndexAxis::Sum`] supports
+    ///   [`Element::ProvableSumIndexedTree`] (PSIT) or PCPSIT iff the
+    ///   sum axis is in the TLV.
+    /// - [`IndexAxis::Avg`] supports PCPSIT only, and only if the avg
+    ///   axis is in the TLV.
+    ///
+    /// Any other variant — or a PCPSIT whose TLV does not carry the
+    /// requested axis — is rejected with [`Error::InvalidPath`].
+    pub fn prove_indexed_axis_top_k<'b, B, P>(
+        &self,
+        path: P,
+        axis: IndexAxis,
+        k: u16,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<u8>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let mut full_range = MerkQuery::new();
+        full_range.insert_all();
+        full_range.left_to_right = !descending;
+        self.prove_indexed_axis_query(path, axis, full_range, Some(k), transaction, grove_version)
+    }
+
+    /// Generate a proof for an arbitrary query against the per-axis
+    /// secondary of an indexed-tree at `path`. The query is over the
+    /// secondary's keyspace, which is `(sort_key_be ‖ original_key)`
+    /// per axis (8 + N bytes for count/sum, 16 + N bytes for avg).
+    pub fn prove_indexed_axis_query<'b, B, P>(
+        &self,
+        path: P,
+        axis: IndexAxis,
+        secondary_query: MerkQuery,
+        limit: Option<u16>,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<u8>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let mut cost = OperationCost::default();
+        let path: SubtreePath<B> = path.into();
+        let batch = StorageBatch::new();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let envelope = cost_return_on_error!(
+            &mut cost,
+            self.build_indexed_axis_range_proof(
+                path,
+                axis,
+                secondary_query,
+                limit,
+                tx_ref,
+                &batch,
+                grove_version,
+            )
+        );
+
+        let bytes = cost_return_on_error_no_add!(
+            cost,
+            bincode::encode_to_vec(&envelope, bincode::config::standard()).map_err(|e| {
+                Error::CorruptedData(format!("encoding indexed-axis range proof: {e}"))
+            })
+        );
+
+        Ok(bytes).wrap_with_cost(cost)
+    }
+
+    /// Generate an offset-paginated proof for the top-`k` entries of an
+    /// indexed-tree on a specific axis, starting after `offset` entries
+    /// in the directional walk.
+    ///
+    /// For count and avg axes the secondary proof uses
+    /// `Merk::prove_count_offset_on_range` (O(log n + k)); for the sum
+    /// axis it uses a regular range proof with `limit = offset + k`
+    /// (O(offset + k)) — no count-bound offset primitive exists for
+    /// `ProvableSumTree` hosts.
+    pub fn prove_indexed_axis_top_k_paginated<'b, B, P>(
+        &self,
+        path: P,
+        axis: IndexAxis,
+        k: u16,
+        offset: u64,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<u8>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let mut cost = OperationCost::default();
+        let path: SubtreePath<B> = path.into();
+        let batch = StorageBatch::new();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let envelope = cost_return_on_error!(
+            &mut cost,
+            self.build_indexed_axis_paginated_proof(
+                path,
+                axis,
+                k,
+                offset,
+                descending,
+                tx_ref,
+                &batch,
+                grove_version,
+            )
+        );
+
+        let bytes = cost_return_on_error_no_add!(
+            cost,
+            bincode::encode_to_vec(&envelope, bincode::config::standard()).map_err(|e| {
+                Error::CorruptedData(format!("encoding indexed-axis paginated proof: {e}"))
+            })
+        );
+
+        Ok(bytes).wrap_with_cost(cost)
+    }
+
+    /// Generate an aggregate proof over a value-range against an
+    /// indexed-tree's per-axis secondary.
+    ///
+    /// Only [`IndexAxis::Count`] and [`IndexAxis::Sum`] are supported.
+    /// [`IndexAxis::Avg`] returns [`Error::NotSupported`] — averaging
+    /// averages over a range is not a closed-form aggregate (callers
+    /// should compute it client-side from
+    /// `indexed_count_range_aggregate` + `indexed_sum_range_aggregate`
+    /// against the same path).
+    ///
+    /// `lo > hi` is a degenerate range; the proof commits `0`.
+    pub fn prove_indexed_axis_range_aggregate<'b, B, P>(
+        &self,
+        path: P,
+        axis: IndexAxis,
+        lo: i128,
+        hi: i128,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<u8>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let mut cost = OperationCost::default();
+        match axis {
+            IndexAxis::Count | IndexAxis::Sum => {}
+            IndexAxis::Avg => {
+                return Err(Error::NotSupported(
+                    "indexed-axis aggregate proofs are not defined for the Avg axis".to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+        }
+        let path: SubtreePath<B> = path.into();
+        let batch = StorageBatch::new();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let envelope = cost_return_on_error!(
+            &mut cost,
+            self.build_indexed_axis_aggregate_proof(
+                path,
+                axis,
+                lo,
+                hi,
+                tx_ref,
+                &batch,
+                grove_version,
+            )
+        );
+
+        let bytes = cost_return_on_error_no_add!(
+            cost,
+            bincode::encode_to_vec(&envelope, bincode::config::standard()).map_err(|e| {
+                Error::CorruptedData(format!("encoding indexed-axis aggregate proof: {e}"))
+            })
+        );
+
+        Ok(bytes).wrap_with_cost(cost)
+    }
+
+    fn build_indexed_axis_range_proof<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        axis: IndexAxis,
+        secondary_query: MerkQuery,
+        limit: Option<u16>,
+        transaction: &'db Transaction,
+        batch: &'db StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<IndexedAxisRangeProof, Error> {
+        let mut cost = OperationCost::default();
+
+        let path_keys: Vec<Vec<u8>> = path.to_vec();
+        if path_keys.is_empty() {
+            return Err(Error::InvalidPath(
+                "cannot prove indexed-axis query at root path".to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+
+        // 1. Per-axis validation + secondary root key + non-queried axis hashes.
+        let (secondary_root_key, other_axes_root_hashes, target_is_pcpsit) = cost_return_on_error!(
+            &mut cost,
+            read_queried_axis_info_with_path_keys(
+                self,
+                &path_keys,
+                axis,
+                transaction,
+                batch,
+                grove_version,
+                "indexed-axis range proof",
+            )
+        );
+
+        // 2. Layer proofs + ancestor attestations.
+        let layer_proofs = cost_return_on_error!(
+            &mut cost,
+            build_layer_proofs(
+                self,
+                &path_keys,
+                transaction,
+                batch,
+                grove_version,
+                "indexed-axis range proof",
+            )
+        );
+        let ancestor_attestations = cost_return_on_error!(
+            &mut cost,
+            build_ancestor_attestations(
+                self,
+                &path_keys,
+                transaction,
+                batch,
+                grove_version,
+                "indexed-axis range proof",
+            )
+        );
+
+        // 3. Open the queried primary and capture its root hash.
+        let primary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                path.clone(),
+                transaction,
+                Some(batch),
+                grove_version
+            )
+        );
+        if !primary_merk.tree_type.is_indexed_primary() {
+            return Err(Error::InvalidPath(
+                "prove_indexed_axis_* requires the path's last segment to be an indexed-tree \
+                 element"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+        let (primary_root_hash, _, _) = cost_return_on_error!(
+            &mut cost,
+            primary_merk
+                .root_hash_key_and_aggregate_data()
+                .map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "indexed-axis range proof: primary root hash: {e}"
+                    ))
+                })
+        );
+
+        // 4. Open the per-axis secondary and produce the range proof.
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_indexed_secondary_at_path(
+                path,
+                axis,
+                secondary_root_key,
+                transaction,
+                Some(batch),
+                grove_version,
+            )
+        );
+        let descending = !secondary_query.left_to_right;
+        let requested_limit = limit;
+        let sec_result = cost_return_on_error!(
+            &mut cost,
+            secondary_merk
+                .prove(secondary_query, limit, grove_version)
+                .map_err(|e| Error::CorruptedData(format!(
+                    "indexed-axis range proof: secondary range proof: {e}"
+                )))
+        );
+
+        Ok(IndexedAxisRangeProof {
+            axis_tag: axis.tag(),
+            layer_proofs,
+            primary_root_hash,
+            ancestor_attestations,
+            other_axes_root_hashes,
+            target_is_pcpsit,
+            secondary_proof: sec_result.proof,
+            requested_limit,
+            descending,
+        })
+        .wrap_with_cost(cost)
+    }
+
+    fn build_indexed_axis_paginated_proof<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        axis: IndexAxis,
+        k: u16,
+        offset: u64,
+        descending: bool,
+        transaction: &'db Transaction,
+        batch: &'db StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<IndexedAxisPaginatedProof, Error> {
+        let mut cost = OperationCost::default();
+
+        let path_keys: Vec<Vec<u8>> = path.to_vec();
+        if path_keys.is_empty() {
+            return Err(Error::InvalidPath(
+                "cannot prove indexed-axis paginated query at root path".to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+
+        // 1. Per-axis validation + secondary root key + non-queried axes.
+        let (secondary_root_key, other_axes_root_hashes, target_is_pcpsit) = cost_return_on_error!(
+            &mut cost,
+            read_queried_axis_info_with_path_keys(
+                self,
+                &path_keys,
+                axis,
+                transaction,
+                batch,
+                grove_version,
+                "indexed-axis paginated proof",
+            )
+        );
+
+        // 2. Layer proofs + ancestor attestations.
+        let layer_proofs = cost_return_on_error!(
+            &mut cost,
+            build_layer_proofs(
+                self,
+                &path_keys,
+                transaction,
+                batch,
+                grove_version,
+                "indexed-axis paginated proof",
+            )
+        );
+        let ancestor_attestations = cost_return_on_error!(
+            &mut cost,
+            build_ancestor_attestations(
+                self,
+                &path_keys,
+                transaction,
+                batch,
+                grove_version,
+                "indexed-axis paginated proof",
+            )
+        );
+
+        // 3. Open the primary and capture its root hash.
+        let primary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                path.clone(),
+                transaction,
+                Some(batch),
+                grove_version
+            )
+        );
+        if !primary_merk.tree_type.is_indexed_primary() {
+            return Err(Error::InvalidPath(
+                "prove_indexed_axis_top_k_paginated requires the path's last segment to be an \
+                 indexed-tree element"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+        let (primary_root_hash, _, _) = cost_return_on_error!(
+            &mut cost,
+            primary_merk
+                .root_hash_key_and_aggregate_data()
+                .map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "indexed-axis paginated proof: primary root hash: {e}"
+                    ))
+                })
+        );
+
+        // 4. Open the per-axis secondary; emit the appropriate paginated
+        //    proof per axis. Count/Avg axes have a HashWithCount-based
+        //    primitive; Sum axis does not, so we fall back to a regular
+        //    range proof with `limit = offset + k`.
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_indexed_secondary_at_path(
+                path,
+                axis,
+                secondary_root_key,
+                transaction,
+                Some(batch),
+                grove_version,
+            )
+        );
+        let serialized = match axis {
+            IndexAxis::Count | IndexAxis::Avg => {
+                let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
+                let prove_result = cost_return_on_error!(
+                    &mut cost,
+                    secondary_merk
+                        .prove_count_offset_on_range(
+                            &inner_range,
+                            offset,
+                            Some(k as u64),
+                            !descending,
+                            grove_version,
+                        )
+                        .map_err(|e| Error::CorruptedData(format!(
+                            "indexed-axis paginated proof: secondary count-offset proof: {e}"
+                        )))
+                );
+                let mut serialized = Vec::with_capacity(128);
+                encode_into(prove_result.ops.iter(), &mut serialized);
+                serialized
+            }
+            IndexAxis::Sum => {
+                // Sum axis: ProvableSumTree has no count-offset
+                // primitive. Emit a plain `prove` with limit = offset+k;
+                // the verifier discards the leading `offset` items.
+                let mut full_range = MerkQuery::new();
+                full_range.insert_all();
+                full_range.left_to_right = !descending;
+                // `offset + k` must fit a u16 Merk limit. Clamping instead
+                // would silently prove a SHORT page while the verifier's
+                // documented `skipped == expected_offset` cross-check still
+                // passed, so the caller would receive fewer rows than asked
+                // for with no error anywhere. Reject instead.
+                let combined = (offset as u128).saturating_add(k as u128);
+                if combined > u16::MAX as u128 {
+                    return Err(Error::NotSupported(format!(
+                        "indexed-axis paginated proof (sum): offset + k = {combined} exceeds the \
+                         {} entry limit a single page can prove; request a smaller page or a \
+                         smaller offset",
+                        u16::MAX
+                    )))
+                    .wrap_with_cost(cost);
+                }
+                let combined_limit = combined as u16;
+                let sec_result = cost_return_on_error!(
+                    &mut cost,
+                    secondary_merk
+                        .prove(full_range, Some(combined_limit), grove_version)
+                        .map_err(|e| Error::CorruptedData(format!(
+                            "indexed-axis paginated proof: secondary regular proof (sum): {e}"
+                        )))
+                );
+                sec_result.proof
+            }
+        };
+
+        Ok(IndexedAxisPaginatedProof {
+            axis_tag: axis.tag(),
+            layer_proofs,
+            primary_root_hash,
+            ancestor_attestations,
+            other_axes_root_hashes,
+            target_is_pcpsit,
+            secondary_proof: serialized,
+            requested_k: k,
+            requested_offset: offset,
+            descending,
+        })
+        .wrap_with_cost(cost)
+    }
+
+    fn build_indexed_axis_aggregate_proof<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        axis: IndexAxis,
+        lo: i128,
+        hi: i128,
+        transaction: &'db Transaction,
+        batch: &'db StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<IndexedAxisAggregateProof, Error> {
+        let mut cost = OperationCost::default();
+
+        let path_keys: Vec<Vec<u8>> = path.to_vec();
+        if path_keys.is_empty() {
+            return Err(Error::InvalidPath(
+                "cannot prove indexed-axis aggregate at root path".to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+
+        // 1. Per-axis validation + secondary root key + non-queried axes.
+        let (secondary_root_key, other_axes_root_hashes, target_is_pcpsit) = cost_return_on_error!(
+            &mut cost,
+            read_queried_axis_info_with_path_keys(
+                self,
+                &path_keys,
+                axis,
+                transaction,
+                batch,
+                grove_version,
+                "indexed-axis aggregate proof",
+            )
+        );
+
+        // 2. Layer proofs + ancestor attestations.
+        let layer_proofs = cost_return_on_error!(
+            &mut cost,
+            build_layer_proofs(
+                self,
+                &path_keys,
+                transaction,
+                batch,
+                grove_version,
+                "indexed-axis aggregate proof",
+            )
+        );
+        let ancestor_attestations = cost_return_on_error!(
+            &mut cost,
+            build_ancestor_attestations(
+                self,
+                &path_keys,
+                transaction,
+                batch,
+                grove_version,
+                "indexed-axis aggregate proof",
+            )
+        );
+
+        // 3. Open the primary and capture its root hash.
+        let primary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                path.clone(),
+                transaction,
+                Some(batch),
+                grove_version
+            )
+        );
+        if !primary_merk.tree_type.is_indexed_primary() {
+            return Err(Error::InvalidPath(
+                "prove_indexed_axis_range_aggregate requires the path's last segment to be an \
+                 indexed-tree element"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+        let (primary_root_hash, _, _) = cost_return_on_error!(
+            &mut cost,
+            primary_merk
+                .root_hash_key_and_aggregate_data()
+                .map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "indexed-axis aggregate proof: primary root hash: {e}"
+                    ))
+                })
+        );
+
+        // 4. Open the per-axis secondary; build the inner range against
+        //    the secondary's keyspace per axis and emit the appropriate
+        //    aggregate proof.
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_indexed_secondary_at_path(
+                path,
+                axis,
+                secondary_root_key,
+                transaction,
+                Some(batch),
+                grove_version,
+            )
+        );
+        let serialized = match axis {
+            IndexAxis::Count => {
+                // count_value ∈ [0, u64::MAX]. A range whose whole span is
+                // outside that domain (hi < 0 OR lo > u64::MAX) must commit
+                // an EMPTY (count = 0) proof — clamping the bounds into the
+                // domain would otherwise collapse the range onto a boundary
+                // key (e.g. lo = u64::MAX + 5, hi = u64::MAX + 10 → query
+                // `count == u64::MAX`) and erroneously count entries
+                // sitting exactly on the boundary.
+                if aggregate_range_out_of_domain(IndexAxis::Count, lo, hi) {
+                    cost_return_on_error_no_add!(
+                        cost,
+                        build_empty_count_aggregate_proof(
+                            &secondary_merk,
+                            grove_version,
+                            &mut cost,
+                        )
+                    )
+                } else {
+                    let lo_u = if lo < 0 {
+                        0u64
+                    } else {
+                        lo.min(u64::MAX as i128) as u64
+                    };
+                    let hi_u = hi.min(u64::MAX as i128) as u64;
+                    cost_return_on_error_no_add!(
+                        cost,
+                        build_count_aggregate_secondary_proof(
+                            &secondary_merk,
+                            lo_u,
+                            hi_u,
+                            grove_version,
+                            &mut cost,
+                        )
+                    )
+                }
+            }
+            IndexAxis::Sum => {
+                // sum_value ∈ [i64::MIN, i64::MAX]. As with count, a range
+                // entirely above or below that domain must commit an EMPTY
+                // (sum = 0) proof rather than clamping onto i64::MAX /
+                // i64::MIN (which would count/sum boundary entries).
+                if aggregate_range_out_of_domain(IndexAxis::Sum, lo, hi) {
+                    cost_return_on_error_no_add!(
+                        cost,
+                        build_empty_sum_aggregate_proof(&secondary_merk, grove_version, &mut cost)
+                    )
+                } else {
+                    let lo_i = lo.max(i64::MIN as i128).min(i64::MAX as i128) as i64;
+                    let hi_i = hi.max(i64::MIN as i128).min(i64::MAX as i128) as i64;
+                    cost_return_on_error_no_add!(
+                        cost,
+                        build_sum_aggregate_secondary_proof(
+                            &secondary_merk,
+                            lo_i,
+                            hi_i,
+                            grove_version,
+                            &mut cost,
+                        )
+                    )
+                }
+            }
+            IndexAxis::Avg => unreachable!("avg axis rejected by public entry point"),
+        };
+
+        Ok(IndexedAxisAggregateProof {
+            axis_tag: axis.tag(),
+            layer_proofs,
+            primary_root_hash,
+            ancestor_attestations,
+            other_axes_root_hashes,
+            target_is_pcpsit,
+            secondary_proof: serialized,
+            lo,
+            hi,
+        })
+        .wrap_with_cost(cost)
+    }
+}
+
+fn build_count_aggregate_secondary_proof<'db, S>(
+    secondary_merk: &grovedb_merk::Merk<S>,
+    lo_count: u64,
+    hi_count: u64,
+    grove_version: &GroveVersion,
+    cost: &mut OperationCost,
+) -> Result<Vec<u8>, Error>
+where
+    S: grovedb_storage::StorageContext<'db>,
+{
+    if lo_count > hi_count {
+        // Degenerate; build a guaranteed-empty range so the merk still
+        // emits a proof that hashes to the actual secondary root.
+        let lo_bytes = hi_count.saturating_add(1).to_be_bytes().to_vec();
+        let inner_range = MerkQueryItemForRange::Range(lo_bytes.clone()..lo_bytes);
+        let (ops, _) = secondary_merk
+            .prove_aggregate_count_on_range(&inner_range, grove_version)
+            .unwrap_add_cost(cost)
+            .map_err(|e| {
+                Error::CorruptedData(format!(
+                    "indexed-axis count-aggregate degenerate-range proof: {e}"
+                ))
+            })?;
+        let mut serialized = Vec::with_capacity(128);
+        encode_into(ops.iter(), &mut serialized);
+        return Ok(serialized);
+    }
+    let lo_bytes = encode_count_sort_key(lo_count).to_vec();
+    let inner_range = if hi_count == u64::MAX {
+        MerkQueryItemForRange::RangeFrom(lo_bytes..)
+    } else {
+        let upper_bytes = encode_count_sort_key(hi_count + 1).to_vec();
+        MerkQueryItemForRange::Range(lo_bytes..upper_bytes)
+    };
+    let (ops, _) = secondary_merk
+        .prove_aggregate_count_on_range(&inner_range, grove_version)
+        .unwrap_add_cost(cost)
+        .map_err(|e| {
+            Error::CorruptedData(format!("indexed-axis count-aggregate range proof: {e}"))
+        })?;
+    let mut serialized = Vec::with_capacity(128);
+    encode_into(ops.iter(), &mut serialized);
+    Ok(serialized)
+}
+
+fn build_empty_count_aggregate_proof<'db, S>(
+    secondary_merk: &grovedb_merk::Merk<S>,
+    grove_version: &GroveVersion,
+    cost: &mut OperationCost,
+) -> Result<Vec<u8>, Error>
+where
+    S: grovedb_storage::StorageContext<'db>,
+{
+    // Empty range = "count = 0", emitted as a guaranteed-empty range
+    // so the secondary root is still committed.
+    let bytes = u64::MAX.to_be_bytes().to_vec();
+    let inner_range = MerkQueryItemForRange::Range(bytes.clone()..bytes);
+    let (ops, _) = secondary_merk
+        .prove_aggregate_count_on_range(&inner_range, grove_version)
+        .unwrap_add_cost(cost)
+        .map_err(|e| {
+            Error::CorruptedData(format!(
+                "indexed-axis count-aggregate empty-range proof: {e}"
+            ))
+        })?;
+    let mut serialized = Vec::with_capacity(128);
+    encode_into(ops.iter(), &mut serialized);
+    Ok(serialized)
+}
+
+fn build_sum_aggregate_secondary_proof<'db, S>(
+    secondary_merk: &grovedb_merk::Merk<S>,
+    lo_sum: i64,
+    hi_sum: i64,
+    grove_version: &GroveVersion,
+    cost: &mut OperationCost,
+) -> Result<Vec<u8>, Error>
+where
+    S: grovedb_storage::StorageContext<'db>,
+{
+    if lo_sum > hi_sum {
+        // Degenerate: emit an empty-range proof against the secondary.
+        let bytes = encode_sum_sort_key(hi_sum.saturating_add(1)).to_vec();
+        let inner_range = MerkQueryItemForRange::Range(bytes.clone()..bytes);
+        let (ops, _) = secondary_merk
+            .prove_aggregate_sum_on_range(&inner_range, grove_version)
+            .unwrap_add_cost(cost)
+            .map_err(|e| {
+                Error::CorruptedData(format!(
+                    "indexed-axis sum-aggregate degenerate-range proof: {e}"
+                ))
+            })?;
+        let mut serialized = Vec::with_capacity(128);
+        encode_into(ops.iter(), &mut serialized);
+        return Ok(serialized);
+    }
+    let lo_bytes = encode_sum_sort_key(lo_sum).to_vec();
+    let inner_range = if hi_sum == i64::MAX {
+        MerkQueryItemForRange::RangeFrom(lo_bytes..)
+    } else {
+        let upper_bytes = encode_sum_sort_key(hi_sum + 1).to_vec();
+        MerkQueryItemForRange::Range(lo_bytes..upper_bytes)
+    };
+    let (ops, _) = secondary_merk
+        .prove_aggregate_sum_on_range(&inner_range, grove_version)
+        .unwrap_add_cost(cost)
+        .map_err(|e| {
+            Error::CorruptedData(format!("indexed-axis sum-aggregate range proof: {e}"))
+        })?;
+    let mut serialized = Vec::with_capacity(128);
+    encode_into(ops.iter(), &mut serialized);
+    Ok(serialized)
+}
+
+/// Canonical empty (sum = 0) aggregate proof for the sum axis. Emits a
+/// guaranteed-empty range `[encode(i64::MAX) .. encode(i64::MAX))` so
+/// the secondary root is still committed. Mirrors
+/// [`build_empty_count_aggregate_proof`] for the sum axis; the verifier
+/// reconstructs the identical range in [`sum_aggregate_inner_range`]'s
+/// out-of-domain branch.
+fn build_empty_sum_aggregate_proof<'db, S>(
+    secondary_merk: &grovedb_merk::Merk<S>,
+    grove_version: &GroveVersion,
+    cost: &mut OperationCost,
+) -> Result<Vec<u8>, Error>
+where
+    S: grovedb_storage::StorageContext<'db>,
+{
+    let bytes = encode_sum_sort_key(i64::MAX).to_vec();
+    let inner_range = MerkQueryItemForRange::Range(bytes.clone()..bytes);
+    let (ops, _) = secondary_merk
+        .prove_aggregate_sum_on_range(&inner_range, grove_version)
+        .unwrap_add_cost(cost)
+        .map_err(|e| {
+            Error::CorruptedData(format!("indexed-axis sum-aggregate empty-range proof: {e}"))
+        })?;
+    let mut serialized = Vec::with_capacity(128);
+    encode_into(ops.iter(), &mut serialized);
+    Ok(serialized)
+}

@@ -33,4 +33,7 @@ pub mod dense_tree;
 pub mod replace_subtree_root;
 
 #[cfg(feature = "minimal")]
+pub mod indexed_tree;
+
+#[cfg(feature = "minimal")]
 pub use get::{QueryItemOrSumReturnType, MAX_REFERENCE_HOPS};
