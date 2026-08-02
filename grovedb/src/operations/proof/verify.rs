@@ -1371,17 +1371,28 @@ impl GroveDb {
                             }
                         }
 
-                        // For non-empty Merk trees without a subquery (no
-                        // lower layer proof), the prover must use
+                        // For trees reported without a subquery (no lower layer
+                        // proof), the prover must use
                         // KVValueHashFeatureTypeWithChildHash so the merk
                         // verifier can confirm combine_hash(H(value),
                         // child_hash) == value_hash. If child_hash_verified is
                         // false, an attacker may have downgraded the node type
                         // to hide child hash verification.
-                        // Non-Merk trees (MmrTree, BulkAppendTree, etc.) are
-                        // excluded — they use different proof structures.
-                        if element.is_non_empty_merk_tree() && !proved_key_value.child_hash_verified
-                        {
+                        //
+                        // This covers non-empty Merk trees (child_hash = child
+                        // Merk root) and all four non-Merk trees —
+                        // CommitmentTree, MmrTree, BulkAppendTree,
+                        // DenseAppendOnlyFixedSizeTree (child_hash = the tree's
+                        // own state root, which their parent commits through
+                        // the same two-input combine_hash). `is_non_empty_tree`
+                        // is true unconditionally for those four, so an empty
+                        // one is bound too — its committed child hash is
+                        // NULL_HASH, or EMPTY_COMMITMENT_TREE_STATE_ROOT for a
+                        // CommitmentTree. Without this, the element bytes of a
+                        // terminally-reported non-Merk tree were unbound and a
+                        // prover could forge the entry count callers read from
+                        // them.
+                        if element.is_non_empty_tree() && !proved_key_value.child_hash_verified {
                             return Err(Error::InvalidProof(
                                 query.clone(),
                                 format!(
