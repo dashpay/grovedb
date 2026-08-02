@@ -63,6 +63,7 @@
 
 mod axis_api;
 mod envelope;
+#[cfg(feature = "minimal")]
 mod generate;
 mod verify;
 
