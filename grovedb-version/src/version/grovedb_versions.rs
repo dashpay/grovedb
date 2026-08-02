@@ -139,6 +139,33 @@ pub struct GroveDBOperationsProofVersions {
     pub verify_subset_query_with_absence_proof: FeatureVersion,
     pub verify_query_with_chained_path_queries: FeatureVersion,
     pub verify_query_get_parent_tree_info_with_options: FeatureVersion,
+    /// Whether a V1 proof binds the element bytes of a **terminally-reported
+    /// non-Merk tree** — `CommitmentTree`, `MmrTree`, `BulkAppendTree`,
+    /// `DenseAppendOnlyFixedSizeTree` — to the `value_hash` its parent Merk
+    /// commits to. "Terminal" means the query targets the tree element itself
+    /// and the prover emits no lower layer.
+    ///
+    /// - `0` (V1..V3): the prover emits a bare `KVValueHash` node and the
+    ///   verifier does not require a child hash. That node hashes only
+    ///   `(key, value_hash)`, so the serialized element bytes are unbound: a
+    ///   prover can serve a forged entry count (an inflated or deflated
+    ///   `CommitmentTree` `total_count`, a different MMR size) alongside the
+    ///   genuine `value_hash` and still reconstruct the correct root hash.
+    /// - `1` (V4+): the prover emits
+    ///   `KVValueHashFeatureTypeWithChildHash` carrying the tree's own state
+    ///   root, and the verifier requires it, so the merk-level
+    ///   `combine_hash(H(value), child_hash) == value_hash` check closes the
+    ///   loop. This is exactly the composition the parent commits, since these
+    ///   types are written through `insert_subtree`.
+    ///
+    /// Gated rather than applied unconditionally on two counts. It flips an
+    /// accepted/rejected outcome — an upgraded verifier rejects proofs a
+    /// released one accepts — and computing the state root costs the prover
+    /// extra storage reads and hash calls on a released path. The
+    /// non-Merk tree types this covers are the only elements affected;
+    /// non-empty **Merk** trees have required the child hash since V3 and
+    /// stay bound at every version.
+    pub terminal_non_merk_tree_child_hash: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

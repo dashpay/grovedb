@@ -2352,6 +2352,15 @@ impl GroveDb {
                             // `KVValueHashFeatureTypeWithChildHash` is
                             // verified with, so carry the state root in the
                             // node and let the merk verifier close the loop.
+                            //
+                            // Version-gated on
+                            // `proof.terminal_non_merk_tree_child_hash`:
+                            // deriving the state root costs storage reads and
+                            // hash calls that V1..V3 did not pay, and cost
+                            // feeds fees. Under those versions the node is
+                            // left as the prover has always emitted it and
+                            // only the limit moves — the released shape, which
+                            // the matching verifier gate still accepts.
                             Ok(ref non_merk_elem @ Element::MmrTree(..))
                             | Ok(ref non_merk_elem @ Element::BulkAppendTree(..))
                             | Ok(
@@ -2360,56 +2369,64 @@ impl GroveDb {
                             | Ok(ref non_merk_elem @ Element::CommitmentTree(..))
                                 if !done_with_results =>
                             {
-                                let mut child_path = path.clone();
-                                child_path.push(key.as_slice());
+                                if grove_version
+                                    .grovedb_versions
+                                    .operations
+                                    .proof
+                                    .terminal_non_merk_tree_child_hash
+                                    >= 1
+                                {
+                                    let mut child_path = path.clone();
+                                    child_path.push(key.as_slice());
 
-                                let child_hash = cost_return_on_error!(
-                                    &mut cost,
-                                    self.non_merk_tree_child_hash(
-                                        non_merk_elem,
-                                        &child_path,
-                                        &tx,
-                                    )
-                                );
+                                    let child_hash = cost_return_on_error!(
+                                        &mut cost,
+                                        self.non_merk_tree_child_hash(
+                                            non_merk_elem,
+                                            &child_path,
+                                            &tx,
+                                        )
+                                    );
 
-                                let key_owned = key.to_owned();
-                                let value_owned = value.to_owned();
-                                let element_vh =
-                                    value_hash(&value_owned).unwrap_add_cost(&mut cost);
-                                let recomputed = combine_hash(&element_vh, &child_hash)
-                                    .unwrap_add_cost(&mut cost);
-                                let (vh, ft) = match node {
-                                    Node::KVValueHashFeatureType(_, _, vh, ft) => (*vh, *ft),
-                                    Node::KVValueHash(_, _, vh) => {
-                                        (*vh, TreeFeatureType::BasicMerkNode)
+                                    let key_owned = key.to_owned();
+                                    let value_owned = value.to_owned();
+                                    let element_vh =
+                                        value_hash(&value_owned).unwrap_add_cost(&mut cost);
+                                    let recomputed = combine_hash(&element_vh, &child_hash)
+                                        .unwrap_add_cost(&mut cost);
+                                    let (vh, ft) = match node {
+                                        Node::KVValueHashFeatureType(_, _, vh, ft) => (*vh, *ft),
+                                        Node::KVValueHash(_, _, vh) => {
+                                            (*vh, TreeFeatureType::BasicMerkNode)
+                                        }
+                                        _ => (recomputed, TreeFeatureType::BasicMerkNode),
+                                    };
+
+                                    // Self-check: if the recomputed state root
+                                    // does not reproduce the committed
+                                    // value_hash, the node we are about to emit
+                                    // would be rejected by the verifier. Fail
+                                    // here, where the cause is visible, rather
+                                    // than shipping a proof that cannot verify.
+                                    if recomputed != vh {
+                                        return Err(Error::CorruptedData(format!(
+                                            "non-Merk tree at key {} has state root {} which \
+                                             does not reproduce the committed value hash {}",
+                                            hex::encode(&key_owned),
+                                            hex::encode(child_hash),
+                                            hex::encode(vh),
+                                        )))
+                                        .wrap_with_cost(cost);
                                     }
-                                    _ => (recomputed, TreeFeatureType::BasicMerkNode),
-                                };
 
-                                // Self-check: if the recomputed state root does
-                                // not reproduce the committed value_hash, the
-                                // node we are about to emit would be rejected
-                                // by the verifier. Fail here, where the cause
-                                // is visible, rather than shipping a proof that
-                                // cannot verify.
-                                if recomputed != vh {
-                                    return Err(Error::CorruptedData(format!(
-                                        "non-Merk tree at key {} has state root {} which does \
-                                         not reproduce the committed value hash {}",
-                                        hex::encode(&key_owned),
-                                        hex::encode(child_hash),
-                                        hex::encode(vh),
-                                    )))
-                                    .wrap_with_cost(cost);
+                                    *node = Node::KVValueHashFeatureTypeWithChildHash(
+                                        key_owned,
+                                        value_owned,
+                                        vh,
+                                        ft,
+                                        child_hash,
+                                    );
                                 }
-
-                                *node = Node::KVValueHashFeatureTypeWithChildHash(
-                                    key_owned,
-                                    value_owned,
-                                    vh,
-                                    ft,
-                                    child_hash,
-                                );
 
                                 if let Some(limit) = overall_limit.as_mut() {
                                     *limit -= 1;

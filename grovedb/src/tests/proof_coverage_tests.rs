@@ -8238,6 +8238,202 @@ mod tests {
         bincode::encode_to_vec(&grovedb_proof, config).expect("re-encode")
     }
 
+    /// Version-agnostic sibling of [`forge_terminal_tree_element`]: swaps the
+    /// element bytes of whatever terminal node the prover emitted for
+    /// `target_key`, keeping its value_hash, and reports whether that node was
+    /// the child-hash-bearing kind. Used to pin behaviour on both sides of the
+    /// `terminal_non_merk_tree_child_hash` gate, where the node shape differs.
+    fn forge_terminal_node_any_shape(
+        proof_bytes: &[u8],
+        target_key: &[u8],
+        fake_element_bytes: &[u8],
+    ) -> (bool, Vec<u8>) {
+        use grovedb_merk::proofs::{encode_into, Decoder, Node, Op};
+
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (mut grovedb_proof, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(proof_bytes, config).expect("decode");
+
+        let GroveDBProof::V1(ref mut v1) = grovedb_proof else {
+            panic!("expected a V1 envelope");
+        };
+        let leaf_layer = v1
+            .root_layer
+            .lower_layers
+            .get_mut(TEST_LEAF)
+            .expect("TEST_LEAF lower layer");
+        let bytes = match leaf_layer.merk_proof {
+            crate::operations::proof::ProofBytes::Merk(ref mut bytes) => bytes,
+            _ => panic!("expected Merk proof bytes at the TEST_LEAF layer"),
+        };
+
+        let mut ops: Vec<Op> = Decoder::new(bytes).map(|r| r.expect("decode op")).collect();
+
+        let mut had_child_hash = None;
+        for op in ops.iter_mut() {
+            match op {
+                Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+                    key,
+                    _v,
+                    value_hash,
+                    feature_type,
+                    child_hash,
+                )) if key.as_slice() == target_key => {
+                    had_child_hash = Some(true);
+                    *op = Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+                        key.clone(),
+                        fake_element_bytes.to_vec(),
+                        *value_hash,
+                        *feature_type,
+                        *child_hash,
+                    ));
+                    break;
+                }
+                Op::Push(Node::KVValueHash(key, _v, value_hash))
+                    if key.as_slice() == target_key =>
+                {
+                    had_child_hash = Some(false);
+                    *op = Op::Push(Node::KVValueHash(
+                        key.clone(),
+                        fake_element_bytes.to_vec(),
+                        *value_hash,
+                    ));
+                    break;
+                }
+                _ => continue,
+            }
+        }
+        let had_child_hash =
+            had_child_hash.expect("proof should carry a value-bearing node for the target key");
+
+        let mut new_bytes = Vec::new();
+        encode_into(ops.iter(), &mut new_bytes);
+        *bytes = new_bytes;
+
+        (
+            had_child_hash,
+            bincode::encode_to_vec(&grovedb_proof, config).expect("re-encode"),
+        )
+    }
+
+    /// Consensus version gate for `proof.terminal_non_merk_tree_child_hash`.
+    ///
+    /// A terminal non-Merk tree (here a populated `CommitmentTree`) is proved
+    /// with a bare `KVValueHash` under **v0** (`GROVE_V1`..`GROVE_V3` — the
+    /// released shape), which hashes only `(key, value_hash)` and so leaves the
+    /// element bytes unbound: a forged `total_count` verifies against the real
+    /// root hash. Under **v1** (`GROVE_V4`+) the prover emits
+    /// `KVValueHashFeatureTypeWithChildHash` carrying the tree's state root and
+    /// the verifier requires it, so the same forgery is rejected.
+    ///
+    /// This pins both sides so the gate cannot silently collapse to one
+    /// behaviour — which would either reject honest released proofs (if V3
+    /// started demanding the child hash) or silently reopen the forgery (if V4
+    /// stopped).
+    #[test]
+    fn terminal_non_merk_tree_child_hash_version_gate() {
+        use grovedb_version::version::v3::GROVE_V3;
+
+        let build_and_forge = |grove_version: &GroveVersion| {
+            let db = make_test_grovedb(grove_version);
+            db.insert(
+                [TEST_LEAF].as_ref(),
+                b"pool",
+                Element::empty_commitment_tree(10).expect("valid chunk_power"),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert commitment tree");
+
+            let mut cmx = [0u8; 32];
+            cmx[0] = 1;
+            cmx[31] &= 0x7f;
+            let mut rho = [0u8; 32];
+            rho[0] = 1;
+            rho[1] = 0xAA;
+            let mut cv_net = [0u8; 32];
+            cv_net[0] = 1;
+            cv_net[1] = 0xCC;
+            let ciphertext = grovedb_commitment_tree::TransmittedNoteCiphertext::<
+                grovedb_commitment_tree::DashMemo,
+            >::from_parts(
+                [7u8; 32],
+                grovedb_commitment_tree::NoteBytesData([3u8; 104]),
+                [5u8; 80],
+            );
+            db.commitment_tree_insert(
+                [TEST_LEAF].as_ref(),
+                b"pool",
+                cmx,
+                rho,
+                cv_net,
+                ciphertext,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("append note");
+
+            let mut query = Query::new();
+            query.insert_key(b"pool".to_vec());
+            let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+            let proof_bytes = db
+                .prove_query(&path_query, None, grove_version)
+                .unwrap()
+                .expect("prove");
+
+            // The honest proof must verify at every version.
+            let (_, results) = GroveDb::verify_query_raw(&proof_bytes, &path_query, grove_version)
+                .expect("honest proof should verify");
+            let element = Element::deserialize(&results[0].value, grove_version).expect("deser");
+            let (chunk_power, flags) = match &element {
+                Element::CommitmentTree(total_count, chunk_power, flags) => {
+                    assert_eq!(*total_count, 1, "honest proof should report 1 note");
+                    (*chunk_power, flags.clone())
+                }
+                other => panic!("expected CommitmentTree, got {:?}", other),
+            };
+
+            let fake_element_bytes = Element::CommitmentTree(999, chunk_power, flags)
+                .serialize(grove_version)
+                .expect("serialize");
+            let (had_child_hash, tampered) =
+                forge_terminal_node_any_shape(&proof_bytes, b"pool", &fake_element_bytes);
+            let accepted = GroveDb::verify_query_raw(&tampered, &path_query, grove_version).is_ok();
+            (had_child_hash, accepted)
+        };
+
+        // v0 — GROVE_V3, the released shape. Bare KVValueHash, forgery
+        // accepted. This is the hole; it cannot be closed in place because
+        // V3 is live.
+        let (v3_child_hash, v3_accepted) = build_and_forge(&GROVE_V3);
+        assert!(
+            !v3_child_hash,
+            "GROVE_V3 must keep emitting a bare KVValueHash for a terminal non-Merk tree"
+        );
+        assert!(
+            v3_accepted,
+            "GROVE_V3 is expected to still accept the forgery — if this now fails, the fix \
+             leaked into a released version and changes consensus behaviour"
+        );
+
+        // v1 — GROVE_V4, latest. Child-hash node, forgery rejected.
+        let (v4_child_hash, v4_accepted) = build_and_forge(GroveVersion::latest());
+        assert!(
+            v4_child_hash,
+            "GROVE_V4 must emit KVValueHashFeatureTypeWithChildHash for a terminal non-Merk tree"
+        );
+        assert!(
+            !v4_accepted,
+            "GROVE_V4 must reject a forged CommitmentTree total_count"
+        );
+    }
+
     #[test]
     fn terminal_commitment_tree_count_forgery_is_detected() {
         let grove_version = GroveVersion::latest();
