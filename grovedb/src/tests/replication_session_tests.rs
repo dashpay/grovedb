@@ -921,4 +921,237 @@ mod tests {
             .expect_err("source-side fetch_chunk of an indexed tree must be rejected");
         assert_not_supported_indexed(&err, "source-side fetch_chunk");
     }
+
+    /// Investigation test (state sync vs append-only tree family):
+    /// state-sync of a DB containing a POPULATED CommitmentTree fails hard
+    /// on the SOURCE side.
+    ///
+    /// The CT's payload (Sinsemilla frontier + BulkAppendTree chunks + MMR
+    /// overlay) lives in the data namespace as raw non-Merk entries while
+    /// its Merk is always empty (root_key = None). `fetch_chunk` opens the
+    /// prefix and calls `is_empty_tree()`, which raw-iterates the namespace
+    /// and sees the payload entries — "not empty" — then tries to build a
+    /// `ChunkProducer` over the rootless Merk, which errors. So a source
+    /// node holding any populated CommitmentTree cannot serve that subtree,
+    /// and a syncing peer can never complete state sync.
+    ///
+    /// (An EMPTY CommitmentTree syncs fine — no payload entries exist yet,
+    /// so the empty-tree path is taken; see
+    /// `state_sync_empty_commitment_tree_succeeds` below. And note the
+    /// failure is NOT an up-front `NotSupported` rejection like the indexed
+    /// trees get: discovery happily enumerates the CT subtree and the error
+    /// surfaces later as an opaque `CorruptedData` from the chunk producer.)
+    #[test]
+    fn state_sync_populated_commitment_tree_fails_on_source_fetch() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"ct",
+                Element::empty_commitment_tree(4).expect("valid chunk power"),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert commitment tree");
+
+        // Populate with three notes.
+        for i in 1u8..=3 {
+            source
+                .commitment_tree_insert_raw(
+                    [TEST_LEAF].as_ref(),
+                    b"ct",
+                    [i; 32],
+                    [i.wrapping_add(100); 32],
+                    [i.wrapping_add(200); 32],
+                    vec![0u8; 216],
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert commitment tree note");
+        }
+
+        // Source is healthy: anchor readable, verify_grovedb clean.
+        source
+            .commitment_tree_anchor([TEST_LEAF].as_ref(), b"ct", None, grove_version)
+            .unwrap()
+            .expect("source anchor should be readable");
+        let source_issues = source
+            .verify_grovedb(None, true, false, grove_version)
+            .expect("source verify_grovedb should run");
+        assert!(
+            source_issues.is_empty(),
+            "source must verify clean, got: {:?}",
+            source_issues
+        );
+
+        // State sync fails: the source cannot produce a chunk for the CT
+        // subtree prefix.
+        let err = try_sync_source_to_destination(&source, grove_version)
+            .expect_err("state sync of a DB containing a populated CommitmentTree must fail");
+        let msg = format!("{err:?}");
+        println!("sync error: {msg}");
+        assert!(
+            matches!(err, crate::Error::CorruptedData(_)),
+            "expected opaque CorruptedData from the chunk producer, got: {msg}"
+        );
+        assert!(
+            msg.contains("cannot create chunk producer for empty Merk"),
+            "expected chunk-producer failure over the CT's rootless Merk, got: {msg}"
+        );
+    }
+
+    /// Companion to the test above: an EMPTY CommitmentTree state-syncs
+    /// without error today, because no payload entries exist yet under its
+    /// prefix — `is_empty_tree()` is true, the source returns an empty
+    /// chunk, and the destination accepts the NULL-root subtree. The CT
+    /// element itself is restored byte-for-byte via the parent Merk.
+    ///
+    /// This is exactly why a naive "return empty chunk / skip" fix for the
+    /// populated case would be dangerous: the destination would accept the
+    /// sync (parent Merk and app hash restore fine — nothing recomputes the
+    /// ct_state root from payload during restore) while the frontier and
+    /// note data are silently missing.
+    #[test]
+    fn state_sync_empty_commitment_tree_succeeds() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"ct_empty",
+                Element::empty_commitment_tree(4).expect("valid chunk power"),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert commitment tree");
+
+        let source_root_hash = source
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("source root hash");
+
+        let dest = sync_source_to_destination(&source, grove_version);
+
+        let dest_root_hash = dest
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("dest root hash");
+        assert_eq!(source_root_hash, dest_root_hash);
+
+        // The empty CT element survives and is intact on the destination.
+        let elem = dest
+            .get([TEST_LEAF].as_ref(), b"ct_empty", None, grove_version)
+            .unwrap()
+            .expect("CT element must exist on destination");
+        match elem.underlying() {
+            Element::CommitmentTree(total_count, _, _) => {
+                assert_eq!(*total_count, 0);
+            }
+            other => panic!("expected CommitmentTree element, got {:?}", other),
+        }
+
+        let dest_issues = dest
+            .verify_grovedb(None, true, false, grove_version)
+            .expect("dest verify_grovedb should run");
+        assert!(
+            dest_issues.is_empty(),
+            "empty-CT destination must verify clean, got: {:?}",
+            dest_issues
+        );
+    }
+
+    /// The failure is family-wide: every populated tree type that stores
+    /// payload as non-Merk data-namespace entries (MmrTree, BulkAppendTree,
+    /// DenseAppendOnlyFixedSizeTree — same storage model as
+    /// CommitmentTree) breaks source-side `fetch_chunk` the same way.
+    #[test]
+    fn state_sync_populated_non_merk_trees_all_fail_on_source_fetch() {
+        let grove_version = GroveVersion::latest();
+
+        // (key, element, populate)
+        let cases: Vec<(
+            &[u8],
+            Element,
+            Box<dyn Fn(&TempGroveDb) -> Result<(), crate::Error>>,
+        )> = vec![
+            (
+                b"mmr".as_ref(),
+                Element::empty_mmr_tree(),
+                Box::new(|db: &TempGroveDb| {
+                    db.mmr_tree_append(
+                        [TEST_LEAF].as_ref(),
+                        b"mmr",
+                        b"leaf-1".to_vec(),
+                        None,
+                        GroveVersion::latest(),
+                    )
+                    .unwrap()
+                    .map(|_| ())
+                }),
+            ),
+            (
+                b"bulk".as_ref(),
+                Element::empty_bulk_append_tree(4).expect("valid chunk power"),
+                Box::new(|db: &TempGroveDb| {
+                    db.bulk_append(
+                        [TEST_LEAF].as_ref(),
+                        b"bulk",
+                        b"value-1".to_vec(),
+                        None,
+                        GroveVersion::latest(),
+                    )
+                    .unwrap()
+                    .map(|_| ())
+                }),
+            ),
+            (
+                b"dense".as_ref(),
+                Element::empty_dense_tree(4),
+                Box::new(|db: &TempGroveDb| {
+                    db.dense_tree_insert(
+                        [TEST_LEAF].as_ref(),
+                        b"dense",
+                        vec![7u8; 32],
+                        None,
+                        GroveVersion::latest(),
+                    )
+                    .unwrap()
+                    .map(|_| ())
+                }),
+            ),
+        ];
+
+        for (key, element, populate) in cases {
+            let source = make_test_grovedb(grove_version);
+            source
+                .insert(
+                    [TEST_LEAF].as_ref(),
+                    key,
+                    element,
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert non-Merk tree element");
+            populate(&source).expect("populate non-Merk tree");
+
+            let err = try_sync_source_to_destination(&source, grove_version)
+                .expect_err("state sync of a DB containing a populated non-Merk tree must fail");
+            let msg = format!("{err:?}");
+            assert!(
+                msg.contains("cannot create chunk producer for empty Merk"),
+                "key {:?}: expected chunk-producer failure, got: {msg}",
+                String::from_utf8_lossy(key)
+            );
+        }
+    }
 }
