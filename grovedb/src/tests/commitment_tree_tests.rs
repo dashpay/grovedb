@@ -2739,3 +2739,122 @@ fn replace_subtree_root_rejects_non_tree_element() {
         "expected InvalidInput for non-tree element, got {result:?}"
     );
 }
+
+/// Regression (Dash Platform shielded-notes shape): the note-count query.
+///
+/// Platform fetches shielded notes with one proof that subqueries INTO the
+/// `CommitmentTree`, then extracts the on-chain total note count from those
+/// SAME proof bytes by subset-verifying a single-key `PathQuery` that targets
+/// the `CommitmentTree` element itself — no subquery, limit 1 — and reading
+/// `Element::CommitmentTree(total_count, ..)`.
+///
+/// The proof therefore carries a lower layer at the tree's key while the
+/// count query has nothing below it. That must verify, and the element must
+/// come back bound to the parent-committed value hash via the lower layer's
+/// derived state root.
+#[test]
+fn test_commitment_tree_element_count_subset_query_against_note_fetch_proof() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+    let chunk_power: u8 = 2;
+
+    db.insert(
+        EMPTY_PATH,
+        b"root",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert root tree");
+
+    db.insert(
+        &[b"root"],
+        b"pool",
+        Element::empty_commitment_tree(chunk_power).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert commitment tree");
+
+    // 6 notes: one full chunk (4) plus 2 buffered.
+    const NOTE_COUNT: u64 = 6;
+    for i in 0..NOTE_COUNT as u8 {
+        db.commitment_tree_insert(
+            &[b"root"],
+            b"pool",
+            test_cmx(i),
+            test_rho(i),
+            test_cv_net(i),
+            test_ciphertext(i),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("commitment tree insert");
+    }
+
+    // The note-fetch proof: descends into the CommitmentTree.
+    let mut inner_query = Query::new();
+    inner_query.insert_range_inclusive(0u64.to_be_bytes().to_vec()..=5u64.to_be_bytes().to_vec());
+    let notes_query = PathQuery {
+        path: vec![b"root".to_vec()],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"pool".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner_query.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    let proof_bytes = db
+        .prove_query(&notes_query, None, grove_version)
+        .unwrap()
+        .expect("generate note-fetch proof");
+
+    // The count query: the CommitmentTree element itself, no subquery.
+    let count_query = PathQuery {
+        path: vec![b"root".to_vec()],
+        query: SizedQuery {
+            query: Query::new_single_key(b"pool".to_vec()),
+            limit: Some(1),
+            offset: None,
+        },
+    };
+
+    let (count_root_hash, count_results) =
+        GroveDb::verify_subset_query(&proof_bytes, &count_query, grove_version)
+            .expect("count query must subset-verify against the note-fetch proof");
+
+    let expected_root = db.grove_db.root_hash(None, grove_version).unwrap().unwrap();
+    assert_eq!(
+        count_root_hash, expected_root,
+        "the count sub-proof must derive the same root as the note-fetch proof"
+    );
+    assert_eq!(count_results.len(), 1, "exactly the CommitmentTree element");
+
+    let (path, key, element) = &count_results[0];
+    assert_eq!(path, &vec![b"root".to_vec()]);
+    assert_eq!(key, b"pool");
+    match element.as_ref().expect("element present") {
+        Element::CommitmentTree(total_count, height, _) => {
+            assert_eq!(
+                *total_count, NOTE_COUNT,
+                "total_count must be the on-chain note count"
+            );
+            assert_eq!(*height, chunk_power);
+        }
+        other => panic!("expected CommitmentTree element, got {:?}", other),
+    }
+}
