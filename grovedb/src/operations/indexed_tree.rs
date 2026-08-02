@@ -2421,14 +2421,14 @@ mod secondary_key_codec_tests {
     use super::{
         axis_sort_key_len, axis_sort_prefix_len, corrupted_secondary_key_error,
         decode_avg_secondary_key, decode_secondary_key, decode_sum_secondary_key,
-        make_axis_secondary_key, make_secondary_key, max_item_key_len_for_axis,
-        MAX_AVG_INDEXED_ITEM_KEY_LEN, MAX_CIDX_ITEM_KEY_LEN,
+        make_axis_secondary_key, max_item_key_len_for_axis, MAX_AVG_INDEXED_ITEM_KEY_LEN,
+        MAX_CIDX_ITEM_KEY_LEN,
     };
     use crate::Error;
 
     #[test]
     fn count_secondary_keys_round_trip_and_sort_by_count() {
-        let key = make_secondary_key(258, b"row");
+        let key = make_axis_secondary_key(IndexAxis::Count, 258, 0, b"row");
         assert_eq!(
             key,
             vec![0, 0, 0, 0, 0, 0, 1, 2, b'r', b'o', b'w'],
@@ -2437,14 +2437,12 @@ mod secondary_key_codec_tests {
         assert_eq!(
             decode_secondary_key(&key),
             Some((258u64, b"row".to_vec())),
-            "decode must invert make_secondary_key"
+            "decode must invert the count-axis key builder"
         );
         // Big-endian is what makes byte order equal count order.
-        assert!(make_secondary_key(2, b"a") < make_secondary_key(10, b"a"));
-        // The shared axis builder must agree with the count-specific one.
-        assert_eq!(
-            make_axis_secondary_key(IndexAxis::Count, 258, 0, b"row"),
-            key
+        assert!(
+            make_axis_secondary_key(IndexAxis::Count, 2, 0, b"a")
+                < make_axis_secondary_key(IndexAxis::Count, 10, 0, b"a")
         );
     }
 
