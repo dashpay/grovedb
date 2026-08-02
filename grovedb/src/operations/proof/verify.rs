@@ -1371,17 +1371,46 @@ impl GroveDb {
                             }
                         }
 
-                        // For non-empty Merk trees without a subquery (no
-                        // lower layer proof), the prover must use
+                        // For trees reported without a subquery (no lower layer
+                        // proof), the prover must use
                         // KVValueHashFeatureTypeWithChildHash so the merk
                         // verifier can confirm combine_hash(H(value),
                         // child_hash) == value_hash. If child_hash_verified is
                         // false, an attacker may have downgraded the node type
                         // to hide child hash verification.
-                        // Non-Merk trees (MmrTree, BulkAppendTree, etc.) are
-                        // excluded — they use different proof structures.
-                        if element.is_non_empty_merk_tree() && !proved_key_value.child_hash_verified
-                        {
+                        //
+                        // Non-empty Merk trees (child_hash = child Merk root)
+                        // have required this since V3 and are checked at every
+                        // version.
+                        //
+                        // The four non-Merk trees — CommitmentTree, MmrTree,
+                        // BulkAppendTree, DenseAppendOnlyFixedSizeTree
+                        // (child_hash = the tree's own state root, which their
+                        // parent commits through the same two-input
+                        // combine_hash) — are checked only from V4, under
+                        // `proof.terminal_non_merk_tree_child_hash`. V1..V3
+                        // provers emit a bare KVValueHash here, so demanding
+                        // the child hash from them would reject honest
+                        // released proofs; the gate moves prover and verifier
+                        // together at the protocol boundary. Until it
+                        // activates, the element bytes of a terminally-reported
+                        // non-Merk tree stay unbound and a prover can forge the
+                        // entry count callers read from them.
+                        //
+                        // `is_non_empty_tree` is true unconditionally for those
+                        // four, so an empty one is bound too — its committed
+                        // child hash is NULL_HASH, or
+                        // EMPTY_COMMITMENT_TREE_STATE_ROOT for a
+                        // CommitmentTree.
+                        let requires_child_hash = element.is_non_empty_merk_tree()
+                            || (grove_version
+                                .grovedb_versions
+                                .operations
+                                .proof
+                                .terminal_non_merk_tree_child_hash
+                                >= 1
+                                && element.is_non_empty_tree());
+                        if requires_child_hash && !proved_key_value.child_hash_verified {
                             return Err(Error::InvalidProof(
                                 query.clone(),
                                 format!(

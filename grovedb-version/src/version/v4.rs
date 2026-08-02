@@ -17,6 +17,17 @@
 //!   case. Same shape as the gate above: one extra stored-element read per
 //!   overwrite-capable op, so V1..V3 keep their released cost shape.
 //!
+//! - `proof.terminal_non_merk_tree_child_hash: 1` — a V1 proof that reports a
+//!   `CommitmentTree` / `MmrTree` / `BulkAppendTree` /
+//!   `DenseAppendOnlyFixedSizeTree` as a terminal result (query targets the
+//!   tree element itself, no lower layer) carries the tree's state root in a
+//!   `KVValueHashFeatureTypeWithChildHash` node, and the verifier requires it.
+//!   V1..V3 emit a bare `KVValueHash`, which hashes only `(key, value_hash)`
+//!   and so leaves the element bytes — including the entry count callers read
+//!   — free for a prover to forge under a genuine root hash. Gated because it
+//!   flips a rejected/accepted outcome and because deriving the state root
+//!   costs the prover extra storage reads and hash calls.
+//!
 //! Note that `GroveVersion::latest()` resolves to this version, so anything
 //! defaulting to "latest" — tests, benchmarks, tools — exercises every gate
 //! listed above rather than V3 behaviour.
@@ -205,6 +216,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 verify_subset_query_with_absence_proof: 0,
                 verify_query_with_chained_path_queries: 0,
                 verify_query_get_parent_tree_info_with_options: 0,
+                terminal_non_merk_tree_child_hash: 1, // bind terminal non-Merk tree element bytes to the parent value_hash
             },
             average_case: GroveDBOperationsAverageCaseVersions {
                 add_average_case_get_merk_at_path: 0,

@@ -8,6 +8,11 @@ mod aggregate_count;
 mod aggregate_count_and_sum;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod aggregate_sum;
+/// Versioned dispatch for `bind_terminal_non_merk_tree`, which binds a
+/// terminally-reported non-Merk tree's element bytes to the parent-committed
+/// `value_hash`. Consensus-critical — see the module docs.
+#[cfg(feature = "minimal")]
+mod bind_terminal_non_merk_tree;
 #[cfg(feature = "minimal")]
 mod generate;
 // The prover lives in `indexed_axis::generate` and is `minimal`-gated there;

@@ -2339,13 +2339,47 @@ impl GroveDb {
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
 
-                            // MmrTree/BulkAppendTree without subquery (query targets the tree
-                            // itself)
-                            Ok(Element::MmrTree(..))
-                            | Ok(Element::BulkAppendTree(..))
-                            | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
+                            // Non-Merk tree that is itself the result, with
+                            // nothing queried below it. These types have no
+                            // child Merk, so there is no lower layer to bind
+                            // them — a bare `KVValueHash` node hashes only
+                            // (key, value_hash) and would leave the element
+                            // bytes (and with them the entry count a caller
+                            // reads) free for a prover to forge under a
+                            // genuine root hash. Their parent commits
+                            // `combine_hash(H(value), state_root)`, exactly
+                            // the two-input form
+                            // `KVValueHashFeatureTypeWithChildHash` is
+                            // verified with, so carry the state root in the
+                            // node and let the merk verifier close the loop.
+                            //
+                            // Version-gated on
+                            // `proof.terminal_non_merk_tree_child_hash`, so the
+                            // binding itself lives in
+                            // `bind_terminal_non_merk_tree`: deriving the state
+                            // root costs storage reads and hash calls that
+                            // V1..V3 did not pay, and cost feeds fees. Under
+                            // those versions the node is left as the prover has
+                            // always emitted it and only the limit moves.
+                            Ok(ref non_merk_elem @ Element::MmrTree(..))
+                            | Ok(ref non_merk_elem @ Element::BulkAppendTree(..))
+                            | Ok(
+                                ref non_merk_elem @ Element::DenseAppendOnlyFixedSizeTree(..),
+                            )
+                            | Ok(ref non_merk_elem @ Element::CommitmentTree(..))
                                 if !done_with_results =>
                             {
+                                cost_return_on_error!(
+                                    &mut cost,
+                                    self.bind_terminal_non_merk_tree(
+                                        node,
+                                        non_merk_elem,
+                                        &path,
+                                        &tx,
+                                        grove_version,
+                                    )
+                                );
+
                                 if let Some(limit) = overall_limit.as_mut() {
                                     *limit -= 1;
                                 }
@@ -2579,7 +2613,10 @@ impl GroveDb {
                                 }
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
-                            // Empty trees and CommitmentTree without subquery
+                            // Empty trees without subquery. CommitmentTree is
+                            // NOT here — like the other non-Merk trees it is
+                            // bound by the child-hash arm above, which applies
+                            // whether or not it holds any notes.
                             Ok(Element::Tree(None, _))
                             | Ok(Element::SumTree(None, ..))
                             | Ok(Element::BigSumTree(None, ..))
