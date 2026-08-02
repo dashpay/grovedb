@@ -1242,18 +1242,19 @@ mod storage_tests {
         }
     }
 
-    /// Fast sizes: 0 / 1 / 2 / 3 cover edge cases around the very-empty and
-    /// pre-compaction shapes; 100 spans the buffer mid-range. The per-leaf
-    /// reference path is O(N) depth-32 Sinsemilla walks, so larger sizes live
-    /// in the `#[ignore]`d companion test below.
+    /// Fast sizes (with TEST_CHUNK_POWER=1, epoch_size=2): 0 / 1 cover the
+    /// very-empty shapes, 2 fills exactly one epoch, 3 lands one past the
+    /// first epoch boundary, and 100 spans 50 epochs of repeated compaction.
+    /// The per-leaf reference path is O(N) depth-32 Sinsemilla walks, so
+    /// larger sizes live in the `#[ignore]`d companion test below.
     #[test]
     fn append_many_raw_byte_for_byte_matches_per_leaf() {
         assert_append_many_matches_per_leaf(&[0, 1, 2, 3, 100]);
     }
 
-    /// Large sizes: 2048 fills exactly one epoch (with TEST_CHUNK_POWER=1 we
-    /// hit MANY compactions, exercising the cache + MMR path); 10_000 spans
-    /// several epochs at meaningful scale.
+    /// Large sizes (with TEST_CHUNK_POWER=1, epoch_size=2): 2048 spans 1024
+    /// epochs and 10_000 spans 5000, hammering the compaction cache + MMR
+    /// path at meaningful scale.
     #[test]
     #[ignore] // minutes in debug: ~12k eager Sinsemilla appends; runs in the Slow Tests CI workflow via `cargo test -- --ignored`
     fn append_many_raw_byte_for_byte_matches_per_leaf_large() {
