@@ -2354,13 +2354,13 @@ impl GroveDb {
                             // node and let the merk verifier close the loop.
                             //
                             // Version-gated on
-                            // `proof.terminal_non_merk_tree_child_hash`:
-                            // deriving the state root costs storage reads and
-                            // hash calls that V1..V3 did not pay, and cost
-                            // feeds fees. Under those versions the node is
-                            // left as the prover has always emitted it and
-                            // only the limit moves — the released shape, which
-                            // the matching verifier gate still accepts.
+                            // `proof.terminal_non_merk_tree_child_hash`, so the
+                            // binding itself lives in
+                            // `bind_terminal_non_merk_tree`: deriving the state
+                            // root costs storage reads and hash calls that
+                            // V1..V3 did not pay, and cost feeds fees. Under
+                            // those versions the node is left as the prover has
+                            // always emitted it and only the limit moves.
                             Ok(ref non_merk_elem @ Element::MmrTree(..))
                             | Ok(ref non_merk_elem @ Element::BulkAppendTree(..))
                             | Ok(
@@ -2369,64 +2369,16 @@ impl GroveDb {
                             | Ok(ref non_merk_elem @ Element::CommitmentTree(..))
                                 if !done_with_results =>
                             {
-                                if grove_version
-                                    .grovedb_versions
-                                    .operations
-                                    .proof
-                                    .terminal_non_merk_tree_child_hash
-                                    >= 1
-                                {
-                                    let mut child_path = path.clone();
-                                    child_path.push(key.as_slice());
-
-                                    let child_hash = cost_return_on_error!(
-                                        &mut cost,
-                                        self.non_merk_tree_child_hash(
-                                            non_merk_elem,
-                                            &child_path,
-                                            &tx,
-                                        )
-                                    );
-
-                                    let key_owned = key.to_owned();
-                                    let value_owned = value.to_owned();
-                                    let element_vh =
-                                        value_hash(&value_owned).unwrap_add_cost(&mut cost);
-                                    let recomputed = combine_hash(&element_vh, &child_hash)
-                                        .unwrap_add_cost(&mut cost);
-                                    let (vh, ft) = match node {
-                                        Node::KVValueHashFeatureType(_, _, vh, ft) => (*vh, *ft),
-                                        Node::KVValueHash(_, _, vh) => {
-                                            (*vh, TreeFeatureType::BasicMerkNode)
-                                        }
-                                        _ => (recomputed, TreeFeatureType::BasicMerkNode),
-                                    };
-
-                                    // Self-check: if the recomputed state root
-                                    // does not reproduce the committed
-                                    // value_hash, the node we are about to emit
-                                    // would be rejected by the verifier. Fail
-                                    // here, where the cause is visible, rather
-                                    // than shipping a proof that cannot verify.
-                                    if recomputed != vh {
-                                        return Err(Error::CorruptedData(format!(
-                                            "non-Merk tree at key {} has state root {} which \
-                                             does not reproduce the committed value hash {}",
-                                            hex::encode(&key_owned),
-                                            hex::encode(child_hash),
-                                            hex::encode(vh),
-                                        )))
-                                        .wrap_with_cost(cost);
-                                    }
-
-                                    *node = Node::KVValueHashFeatureTypeWithChildHash(
-                                        key_owned,
-                                        value_owned,
-                                        vh,
-                                        ft,
-                                        child_hash,
-                                    );
-                                }
+                                cost_return_on_error!(
+                                    &mut cost,
+                                    self.bind_terminal_non_merk_tree(
+                                        node,
+                                        non_merk_elem,
+                                        &path,
+                                        &tx,
+                                        grove_version,
+                                    )
+                                );
 
                                 if let Some(limit) = overall_limit.as_mut() {
                                     *limit -= 1;
@@ -2748,161 +2700,6 @@ impl GroveDb {
             lower_layers,
         })
         .wrap_with_cost(cost)
-    }
-
-    /// Compute the child hash that a non-Merk tree element's parent Merk
-    /// commits to, i.e. the `child_hash` satisfying
-    /// `combine_hash(H(value), child_hash) == value_hash`.
-    ///
-    /// `CommitmentTree`, `MmrTree`, `BulkAppendTree` and
-    /// `DenseAppendOnlyFixedSizeTree` have no child Merk; their parent entry is
-    /// written by `insert_subtree` with the tree's own state root as the
-    /// supplied hash. This reproduces that hash so a terminal proof of the tree
-    /// element itself can carry it and stay bound to the element bytes.
-    ///
-    /// Each arm must mirror the corresponding write path exactly:
-    /// - `MmrTree` / `DenseAppendOnlyFixedSizeTree` / `BulkAppendTree` are
-    ///   inserted with `NULL_HASH` while still empty, and only start committing
-    ///   a computed root once the first append lands. Note that an empty
-    ///   `BulkAppendTree`'s `compute_current_state_root()` is *not* `NULL_HASH`,
-    ///   so the zero-count case has to short-circuit.
-    /// - `CommitmentTree` is inserted with `EMPTY_COMMITMENT_TREE_STATE_ROOT`,
-    ///   which is exactly what the sinsemilla/bulk composition below yields at
-    ///   count 0 — no special case needed.
-    fn non_merk_tree_child_hash(
-        &self,
-        element: &Element,
-        subtree_path: &[&[u8]],
-        tx: &Transaction,
-    ) -> CostResult<grovedb_merk::CryptoHash, Error> {
-        use grovedb_merk::tree::NULL_HASH;
-
-        let mut cost = OperationCost::default();
-
-        let path_vec: Vec<Vec<u8>> = subtree_path.iter().map(|s| s.to_vec()).collect();
-        let path_refs: Vec<&[u8]> = path_vec.iter().map(|v| v.as_slice()).collect();
-        let storage_path = grovedb_path::SubtreePath::from(path_refs.as_slice());
-
-        match element {
-            Element::MmrTree(mmr_size, _) => {
-                if *mmr_size == 0 {
-                    return Ok(NULL_HASH).wrap_with_cost(cost);
-                }
-                let storage_ctx = self
-                    .db
-                    .get_transactional_storage_context(storage_path, None, tx)
-                    .unwrap_add_cost(&mut cost);
-                let store = grovedb_merkle_mountain_range::MmrStore::new(&storage_ctx);
-                let mmr = grovedb_merkle_mountain_range::MMR::new(*mmr_size, &store);
-                let root = cost_return_on_error!(
-                    &mut cost,
-                    mmr.get_root()
-                        .map_err(|e| Error::CorruptedData(format!("MMR get_root failed: {}", e)))
-                );
-                Ok(root.hash()).wrap_with_cost(cost)
-            }
-            Element::DenseAppendOnlyFixedSizeTree(count, height, _) => {
-                if *count == 0 {
-                    return Ok(NULL_HASH).wrap_with_cost(cost);
-                }
-                let storage_ctx = self
-                    .db
-                    .get_transactional_storage_context(storage_path, None, tx)
-                    .unwrap_add_cost(&mut cost);
-                let tree = cost_return_on_error_no_add!(
-                    cost,
-                    grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree::from_state(
-                        *height,
-                        *count,
-                        storage_ctx,
-                    )
-                    .map_err(|e| Error::CorruptedData(format!("dense tree state error: {}", e)))
-                );
-                let root_hash = cost_return_on_error!(
-                    &mut cost,
-                    tree.root_hash().map_err(|e| Error::CorruptedData(format!(
-                        "dense tree root hash error: {}",
-                        e
-                    )))
-                );
-                Ok(root_hash).wrap_with_cost(cost)
-            }
-            Element::BulkAppendTree(total_count, chunk_power, _) => {
-                if *total_count == 0 {
-                    return Ok(NULL_HASH).wrap_with_cost(cost);
-                }
-                let storage_ctx = self
-                    .db
-                    .get_transactional_storage_context(storage_path, None, tx)
-                    .unwrap_add_cost(&mut cost);
-                let tree = cost_return_on_error_no_add!(
-                    cost,
-                    grovedb_bulk_append_tree::BulkAppendTree::from_state(
-                        *total_count,
-                        *chunk_power,
-                        storage_ctx,
-                    )
-                    .map_err(|e| Error::CorruptedData(format!(
-                        "failed to create BulkAppendTree: {}",
-                        e
-                    )))
-                );
-                let state_root = cost_return_on_error_no_add!(
-                    cost,
-                    tree.compute_current_state_root().map_err(|e| {
-                        Error::CorruptedData(format!("bulk append state root failed: {}", e))
-                    })
-                );
-                Ok(state_root).wrap_with_cost(cost)
-            }
-            Element::CommitmentTree(total_count, chunk_power, _) => {
-                let storage_ctx = self
-                    .db
-                    .get_transactional_storage_context(storage_path, None, tx)
-                    .unwrap_add_cost(&mut cost);
-
-                let sinsemilla_root = match storage_ctx.get(COMMITMENT_TREE_DATA_KEY).value {
-                    Ok(Some(frontier_bytes)) => {
-                        match grovedb_commitment_tree::CommitmentFrontier::deserialize(
-                            frontier_bytes.as_ref(),
-                        ) {
-                            Ok(frontier) => frontier.root_hash(),
-                            Err(_) => grovedb_commitment_tree::EMPTY_SINSEMILLA_ROOT,
-                        }
-                    }
-                    _ => grovedb_commitment_tree::EMPTY_SINSEMILLA_ROOT,
-                };
-
-                let tree = cost_return_on_error_no_add!(
-                    cost,
-                    grovedb_bulk_append_tree::BulkAppendTree::from_state(
-                        *total_count,
-                        *chunk_power,
-                        storage_ctx,
-                    )
-                    .map_err(|e| Error::CorruptedData(format!(
-                        "failed to create BulkAppendTree: {}",
-                        e
-                    )))
-                );
-                let bulk_state_root = cost_return_on_error_no_add!(
-                    cost,
-                    tree.compute_current_state_root().map_err(|e| {
-                        Error::CorruptedData(format!("bulk append state root failed: {}", e))
-                    })
-                );
-
-                Ok(grovedb_commitment_tree::compute_commitment_tree_state_root(
-                    &sinsemilla_root,
-                    &bulk_state_root,
-                ))
-                .wrap_with_cost(cost)
-            }
-            _ => Err(Error::CorruptedCodeExecution(
-                "non_merk_tree_child_hash called on an element that is not a non-Merk tree",
-            ))
-            .wrap_with_cost(cost),
-        }
     }
 
     /// Generate an MMR tree layer proof for a subquery.
