@@ -240,7 +240,7 @@ mod tests {
         let before = db.root_hash(None, gv).unwrap().expect("root hash");
         let secondary_root_before = read_secondary_root_key(&db, &[TEST_LEAF, b"pcit"], gv);
 
-        db.reconcile_count_indexed_tree_secondary([TEST_LEAF, b"pcit"].as_ref(), None, gv)
+        db.reconcile_indexed_tree_secondaries([TEST_LEAF, b"pcit"].as_ref(), None, gv)
             .unwrap()
             .expect("reconcile a healthy secondary");
 
@@ -256,7 +256,7 @@ mod tests {
         );
         assert_clean(&db, gv);
         // Running it twice must also be stable.
-        db.reconcile_count_indexed_tree_secondary([TEST_LEAF, b"pcit"].as_ref(), None, gv)
+        db.reconcile_indexed_tree_secondaries([TEST_LEAF, b"pcit"].as_ref(), None, gv)
             .unwrap()
             .expect("second reconcile");
         assert_eq!(
@@ -314,7 +314,7 @@ mod tests {
         );
         let drifted_root = db.root_hash(None, gv).unwrap().expect("root hash");
 
-        db.reconcile_count_indexed_tree_secondary([TEST_LEAF, b"pcit"].as_ref(), None, gv)
+        db.reconcile_indexed_tree_secondaries([TEST_LEAF, b"pcit"].as_ref(), None, gv)
             .unwrap()
             .expect("reconcile removes the orphan");
 
@@ -331,7 +331,7 @@ mod tests {
             repaired_root, drifted_root,
             "dropping the orphan must rebind the parent and move the root hash"
         );
-        db.reconcile_count_indexed_tree_secondary([TEST_LEAF, b"pcit"].as_ref(), None, gv)
+        db.reconcile_indexed_tree_secondaries([TEST_LEAF, b"pcit"].as_ref(), None, gv)
             .unwrap()
             .expect("second reconcile");
         assert_eq!(
@@ -380,7 +380,7 @@ mod tests {
         );
         let drifted_root = db.root_hash(None, gv).unwrap().expect("root hash");
 
-        db.reconcile_count_indexed_tree_secondary([TEST_LEAF, b"pcit"].as_ref(), None, gv)
+        db.reconcile_indexed_tree_secondaries([TEST_LEAF, b"pcit"].as_ref(), None, gv)
             .unwrap()
             .expect("reconcile reinserts the missing row");
 
@@ -436,7 +436,7 @@ mod tests {
         );
         let drifted_root = db.root_hash(None, gv).unwrap().expect("root hash");
 
-        db.reconcile_count_indexed_tree_secondary([TEST_LEAF, b"pcit"].as_ref(), None, gv)
+        db.reconcile_indexed_tree_secondaries([TEST_LEAF, b"pcit"].as_ref(), None, gv)
             .unwrap()
             .expect("reconcile moves the row back");
 
@@ -500,7 +500,7 @@ mod tests {
 
         let mut roots = Vec::new();
         for db in [&with_orphan, &with_missing_row, &with_wrong_count] {
-            db.reconcile_count_indexed_tree_secondary([TEST_LEAF, b"pcit"].as_ref(), None, gv)
+            db.reconcile_indexed_tree_secondaries([TEST_LEAF, b"pcit"].as_ref(), None, gv)
                 .unwrap()
                 .expect("reconcile");
             assert_clean(db, gv);
@@ -595,7 +595,7 @@ mod tests {
             "the drifted index must be missing 'big'"
         );
 
-        db.reconcile_count_indexed_tree_secondary([TEST_LEAF, b"pcit"].as_ref(), None, gv)
+        db.reconcile_indexed_tree_secondaries([TEST_LEAF, b"pcit"].as_ref(), None, gv)
             .unwrap()
             .expect("reconcile rebuilds from the primary");
 
@@ -629,14 +629,15 @@ mod tests {
         .expect("create plain tree");
 
         let err = db
-            .reconcile_count_indexed_tree_secondary([TEST_LEAF, b"plain"].as_ref(), None, gv)
+            .reconcile_indexed_tree_secondaries([TEST_LEAF, b"plain"].as_ref(), None, gv)
             .unwrap()
             .expect_err("a plain tree is not reconcilable");
         match err {
             Error::InvalidPath(message) => assert_eq!(
                 message,
-                "reconcile_count_indexed_tree_secondary requires the path's last segment to be a \
-                 CountIndexedTree or ProvableCountIndexedTree element"
+                "reconcile_indexed_tree_secondaries requires the path's last segment to be a \
+                 ProvableCountIndexedTree, ProvableSumIndexedTree or \
+                 ProvableCountProvableSumIndexedTree element"
             ),
             other => panic!("expected InvalidPath, got {other:?}"),
         }
@@ -647,14 +648,13 @@ mod tests {
         let gv = GroveVersion::latest();
         let db = make_test_grovedb(gv);
         let err = db
-            .reconcile_count_indexed_tree_secondary(EMPTY_PATH, None, gv)
+            .reconcile_indexed_tree_secondaries(EMPTY_PATH, None, gv)
             .unwrap()
             .expect_err("the root has no parent to rebind");
         match err {
-            Error::InvalidPath(message) => assert_eq!(
-                message,
-                "cannot reconcile a count-indexed tree at the root path"
-            ),
+            Error::InvalidPath(message) => {
+                assert_eq!(message, "cannot reconcile an indexed tree at the root path")
+            }
             other => panic!("expected InvalidPath, got {other:?}"),
         }
     }
@@ -722,15 +722,15 @@ mod tests {
         }
 
         let err = db
-            .reconcile_count_indexed_tree_secondary([TEST_LEAF, b"pcit"].as_ref(), None, gv)
+            .reconcile_indexed_tree_secondaries([TEST_LEAF, b"pcit"].as_ref(), None, gv)
             .unwrap()
             .expect_err("reconcile must refuse an oversize primary key");
         match err {
             Error::CorruptedData(message) => {
                 assert!(
                     message.starts_with(
-                        "reconcile_count_indexed_tree_secondary found a primary key of length \
-                         248 bytes which exceeds the cidx ceiling of 247 bytes"
+                        "reconcile_indexed_tree_secondaries found a primary key of length \
+                         248 bytes which exceeds this tree's per-axis ceiling of 247 bytes"
                     ),
                     "unexpected message: {message}"
                 );
@@ -958,5 +958,384 @@ mod tests {
             ),
             "PCPSIT with a populated axis",
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Per-variant repair: PSIT and PCPSIT
+    // -----------------------------------------------------------------
+
+    use crate::operations::indexed_tree::{axis_secondary_tree_type, make_axis_secondary_key};
+
+    fn make_psit_with(db: &TempGroveDb, key: &[u8], sums: &[(&[u8], i64)], gv: &GroveVersion) {
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            key,
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("create PSIT");
+        for (child, sum) in sums {
+            db.insert_into_provable_sum_indexed_tree(
+                [TEST_LEAF, key].as_ref(),
+                child,
+                Element::new_sum_item(*sum),
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("populate PSIT");
+        }
+    }
+
+    fn make_pcpsit_with(db: &TempGroveDb, key: &[u8], rows: &[(&[u8], i64)], gv: &GroveVersion) {
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            key,
+            Element::empty_provable_count_provable_sum_indexed_tree(vec![
+                (0u8, None),
+                (1u8, None),
+                (2u8, None),
+            ])
+            .expect("canonical axes"),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("create PCPSIT");
+        for (child, sum) in rows {
+            db.insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, key].as_ref(),
+                child,
+                Element::new_item_with_sum_item(b"v".to_vec(), *sum),
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("populate PCPSIT");
+        }
+    }
+
+    /// Axis-aware sibling of [`drift_secondary`]: edit rows in ONE axis
+    /// secondary of any indexed variant, then rebind the parent element to
+    /// every axis's current `(root_hash, root_key)` so the damage is a
+    /// *coherent* wrong index rather than a torn one — the same reasoning as
+    /// the PCIT helper's doc.
+    ///
+    /// `overwrite` entries write a payload at a key IN PLACE (no structural
+    /// change — an existing key keeps its node position); `insert` adds new
+    /// rows and `delete` removes rows, both of which can rotate the AVL and
+    /// therefore permanently change tree SHAPE (see the shape caveat on
+    /// `reconcile_indexed_tree_secondaries`).
+    fn drift_axis_secondary(
+        db: &TempGroveDb,
+        indexed_path: &[&[u8]],
+        axis: IndexAxis,
+        overwrite_or_insert: &[(Vec<u8>, Element)],
+        delete: &[Vec<u8>],
+        gv: &GroveVersion,
+    ) {
+        use grovedb_merk::element::reconstruct::ElementReconstructExtensions;
+
+        let tx = db.start_transaction();
+        let batch = StorageBatch::new();
+        let owned: Vec<&[u8]> = indexed_path.to_vec();
+        let path: SubtreePath<&[u8]> = owned.as_slice().into();
+        let (parent_path, indexed_key) = path.derive_parent().expect("non-root indexed tree");
+
+        let (primary_root_hash, primary_root_key, primary_aggregate) = {
+            let primary = db
+                .open_transactional_merk_at_path(path.clone(), &tx, Some(&batch), gv)
+                .unwrap()
+                .expect("open primary");
+            primary
+                .root_hash_key_and_aggregate_data()
+                .unwrap()
+                .expect("primary root state")
+        };
+
+        let mut parent_merk = db
+            .open_transactional_merk_at_path(parent_path.clone(), &tx, Some(&batch), gv)
+            .unwrap()
+            .expect("open parent merk");
+        let indexed_element = Element::get(&parent_merk, indexed_key, true, gv)
+            .unwrap()
+            .expect("indexed element");
+        let axes: Vec<(IndexAxis, Option<Vec<u8>>)> = match indexed_element.underlying() {
+            Element::ProvableCountIndexedTree(_, s, ..) => vec![(IndexAxis::Count, s.clone())],
+            Element::ProvableSumIndexedTree(_, s, ..) => vec![(IndexAxis::Sum, s.clone())],
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, tlv, _) => tlv
+                .iter()
+                .map(|(tag, root_key)| {
+                    (
+                        IndexAxis::try_from_tag(*tag).expect("canonical tag"),
+                        root_key.clone(),
+                    )
+                })
+                .collect(),
+            other => panic!("not an indexed element: {other:?}"),
+        };
+
+        // Apply the edits to the chosen axis; read every axis's post-state.
+        let mut per_axis: Vec<(u8, grovedb_merk::CryptoHash, Option<Vec<u8>>)> = Vec::new();
+        for (candidate, stored_root_key) in &axes {
+            let mut secondary = db
+                .open_indexed_secondary_at_path(
+                    path.clone(),
+                    *candidate,
+                    stored_root_key.clone(),
+                    &tx,
+                    Some(&batch),
+                    gv,
+                )
+                .unwrap()
+                .expect("open axis secondary");
+            if *candidate == axis {
+                for key in delete {
+                    Element::delete(
+                        &mut secondary,
+                        key.as_slice(),
+                        None,
+                        false,
+                        axis_secondary_tree_type(axis),
+                        gv,
+                    )
+                    .unwrap()
+                    .expect("delete secondary row");
+                }
+                for (key, element) in overwrite_or_insert {
+                    element
+                        .clone()
+                        .insert(&mut secondary, key.as_slice(), None, gv)
+                        .unwrap()
+                        .expect("write secondary row");
+                }
+            }
+            let (hash, root_key, _) = secondary
+                .root_hash_key_and_aggregate_data()
+                .unwrap()
+                .expect("axis root state");
+            per_axis.push((candidate.tag(), hash, root_key));
+        }
+
+        // Rebind the parent element per variant.
+        let is_multi_axis = matches!(
+            indexed_element.underlying(),
+            Element::ProvableCountProvableSumIndexedTree(..)
+        );
+        let (rebound, second_hash) = if is_multi_axis {
+            let tlv: Vec<(u8, Option<Vec<u8>>)> = per_axis
+                .iter()
+                .map(|(tag, _, root_key)| (*tag, root_key.clone()))
+                .collect();
+            let hashes: Vec<(u8, grovedb_merk::CryptoHash)> = per_axis
+                .iter()
+                .map(|(tag, hash, _)| (*tag, *hash))
+                .collect();
+            let digest = grovedb_merk::tree::axes_digest(&hashes).unwrap();
+            (
+                indexed_element
+                    .reconstruct_with_axes(primary_root_key, primary_aggregate, tlv)
+                    .expect("reconstruct PCPSIT"),
+                digest,
+            )
+        } else {
+            (
+                indexed_element
+                    .reconstruct_with_two_root_keys(
+                        primary_root_key,
+                        per_axis[0].2.clone(),
+                        primary_aggregate,
+                    )
+                    .expect("reconstruct single-axis element"),
+                per_axis[0].1,
+            )
+        };
+        rebound
+            .insert_count_indexed_subtree(
+                &mut parent_merk,
+                indexed_key,
+                primary_root_hash,
+                second_hash,
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("rebind indexed element");
+
+        let mut merk_cache = std::collections::HashMap::new();
+        merk_cache.insert(parent_path.clone(), parent_merk);
+        db.propagate_changes_with_transaction(merk_cache, parent_path, &tx, &batch, gv)
+            .unwrap()
+            .expect("propagate rebind");
+        db.db
+            .commit_multi_context_batch(batch, Some(&tx))
+            .unwrap()
+            .expect("commit axis drift");
+        tx.commit().expect("tx commit");
+    }
+
+    /// PSIT: an orphan row in the sum secondary is removed and the root
+    /// returns to the pristine twin's — the repair covers the sum axis, not
+    /// just count.
+    #[test]
+    fn reconcile_repairs_a_psit_orphan_row() {
+        let gv = GroveVersion::latest();
+        let rows: &[(&[u8], i64)] = &[(b"a", 7), (b"b", -3)];
+
+        let db = make_test_grovedb(gv);
+        make_psit_with(&db, b"psit", rows, gv);
+        let pristine = make_test_grovedb(gv);
+        make_psit_with(&pristine, b"psit", rows, gv);
+
+        let ghost_key = make_axis_secondary_key(IndexAxis::Sum, 0, 99, b"ghost");
+        drift_axis_secondary(
+            &db,
+            &[TEST_LEAF, b"psit"],
+            IndexAxis::Sum,
+            &[(ghost_key, Element::new_sum_item(99))],
+            &[],
+            gv,
+        );
+        assert_ne!(
+            db.root_hash(None, gv).unwrap().unwrap(),
+            pristine.root_hash(None, gv).unwrap().unwrap(),
+            "pre-condition: the drift must have moved the root"
+        );
+
+        db.reconcile_indexed_tree_secondaries([TEST_LEAF, b"psit"].as_ref(), None, gv)
+            .unwrap()
+            .expect("reconcile PSIT");
+        assert_eq!(
+            db.root_hash(None, gv).unwrap().unwrap(),
+            pristine.root_hash(None, gv).unwrap().unwrap(),
+            "the repaired PSIT must be byte-identical to the pristine twin"
+        );
+        assert_clean(&db, gv);
+    }
+
+    /// PCPSIT: a row at the CORRECT avg sort key carrying a damaged payload
+    /// must be rewritten. Key-presence alone cannot detect this — it is the
+    /// content-compare path the count-only reconcile never needed. The
+    /// damage is an IN-PLACE overwrite (no delete), so the tree shape is
+    /// untouched and pristine-equality is the correct expectation per the
+    /// shape caveat on the repair API.
+    #[test]
+    fn reconcile_rewrites_a_payload_damaged_avg_row() {
+        let gv = GroveVersion::latest();
+        let rows: &[(&[u8], i64)] = &[(b"a", 10), (b"b", 4)];
+
+        let db = make_test_grovedb(gv);
+        make_pcpsit_with(&db, b"idx", rows, gv);
+        let pristine = make_test_grovedb(gv);
+        make_pcpsit_with(&pristine, b"idx", rows, gv);
+
+        // Each child is (count 1, sum s): its avg row key encodes avg = s.
+        // Overwrite b"a"'s payload with a wrong sum at the SAME key, in
+        // place.
+        let avg_key = make_axis_secondary_key(IndexAxis::Avg, 1, 10, b"a");
+        drift_axis_secondary(
+            &db,
+            &[TEST_LEAF, b"idx"],
+            IndexAxis::Avg,
+            &[(avg_key, Element::new_item_with_sum_item(Vec::new(), 9999))],
+            &[],
+            gv,
+        );
+        assert_ne!(
+            db.root_hash(None, gv).unwrap().unwrap(),
+            pristine.root_hash(None, gv).unwrap().unwrap(),
+            "pre-condition: the payload damage must have moved the root"
+        );
+
+        db.reconcile_indexed_tree_secondaries([TEST_LEAF, b"idx"].as_ref(), None, gv)
+            .unwrap()
+            .expect("reconcile PCPSIT");
+        assert_eq!(
+            db.root_hash(None, gv).unwrap().unwrap(),
+            pristine.root_hash(None, gv).unwrap().unwrap(),
+            "the payload-damaged avg row must have been rewritten in place"
+        );
+        assert_clean(&db, gv);
+    }
+
+    /// Two PCPSITs damaged DIFFERENTLY (a ghost row on the sum axis, a
+    /// deleted row on the avg axis) must both reconcile back to the pristine
+    /// twin's root — canonical content repair across axes, with damage whose
+    /// undo restores the previous shape.
+    #[test]
+    fn reconcile_pcpsit_is_canonical_regardless_of_which_axis_drifted() {
+        let gv = GroveVersion::latest();
+        let rows: &[(&[u8], i64)] = &[(b"a", 5), (b"b", 11), (b"c", -2)];
+
+        let sum_drifted = make_test_grovedb(gv);
+        make_pcpsit_with(&sum_drifted, b"idx", rows, gv);
+        let avg_drifted = make_test_grovedb(gv);
+        make_pcpsit_with(&avg_drifted, b"idx", rows, gv);
+        let pristine = make_test_grovedb(gv);
+        make_pcpsit_with(&pristine, b"idx", rows, gv);
+
+        drift_axis_secondary(
+            &sum_drifted,
+            &[TEST_LEAF, b"idx"],
+            IndexAxis::Sum,
+            &[(
+                make_axis_secondary_key(IndexAxis::Sum, 0, 77, b"ghost"),
+                Element::new_sum_item(77),
+            )],
+            &[],
+            gv,
+        );
+        drift_axis_secondary(
+            &avg_drifted,
+            &[TEST_LEAF, b"idx"],
+            IndexAxis::Avg,
+            &[],
+            &[make_axis_secondary_key(IndexAxis::Avg, 1, 11, b"b")],
+            gv,
+        );
+
+        for db in [&sum_drifted, &avg_drifted] {
+            db.reconcile_indexed_tree_secondaries([TEST_LEAF, b"idx"].as_ref(), None, gv)
+                .unwrap()
+                .expect("reconcile");
+        }
+        let pristine_root = pristine.root_hash(None, gv).unwrap().unwrap();
+        assert_eq!(
+            sum_drifted.root_hash(None, gv).unwrap().unwrap(),
+            pristine_root,
+            "sum-axis damage must reconcile to the pristine root"
+        );
+        assert_eq!(
+            avg_drifted.root_hash(None, gv).unwrap().unwrap(),
+            pristine_root,
+            "avg-axis damage must reconcile to the pristine root"
+        );
+        assert_clean(&sum_drifted, gv);
+        assert_clean(&avg_drifted, gv);
+    }
+
+    /// Idempotence for the multi-axis variant: reconciling a healthy PCPSIT
+    /// must not move the root hash.
+    #[test]
+    fn reconcile_of_a_healthy_pcpsit_leaves_the_root_hash_untouched() {
+        let gv = GroveVersion::latest();
+        let db = make_test_grovedb(gv);
+        make_pcpsit_with(&db, b"idx", &[(b"a", 3), (b"b", 9)], gv);
+        let before = db.root_hash(None, gv).unwrap().unwrap();
+
+        db.reconcile_indexed_tree_secondaries([TEST_LEAF, b"idx"].as_ref(), None, gv)
+            .unwrap()
+            .expect("reconcile healthy PCPSIT");
+
+        assert_eq!(
+            db.root_hash(None, gv).unwrap().unwrap(),
+            before,
+            "a healthy multi-axis reconcile must be a no-op on the root"
+        );
+        assert_clean(&db, gv);
     }
 }

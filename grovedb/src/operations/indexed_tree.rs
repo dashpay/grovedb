@@ -772,45 +772,62 @@ impl GroveDb {
         )
     }
 
-    /// Rebuild the count-ordered secondary index for a `CountIndexedTree`
-    /// element from scratch by walking its primary Merk.
+    /// Rebuild EVERY configured axis secondary of an indexed tree (PCIT /
+    /// PSIT / PCPSIT) from scratch by walking its primary Merk — the
+    /// indexed-tree family's `REINDEX`.
     ///
     /// **When you need this: normally, never.**
     ///
-    /// This is a repair API. No supported write can desync the secondary
+    /// This is a repair API. No supported write can desync a secondary
     /// any more, so nothing in ordinary operation requires calling it:
     ///
     /// - The dedicated `insert_into_*` / `delete_from_*` APIs maintain
-    ///   the secondary inline.
-    /// - The batch path mirrors it per axis, and a generic write that
+    ///   the secondaries inline.
+    /// - The batch path mirrors every axis, and a generic write that
     ///   targets an indexed primary directly is rejected outright rather
     ///   than silently skipping the mirror.
     /// - A deep write *under* a child of the primary — inserting into a
     ///   sub-`CountTree` held in the primary, so the sub-tree's aggregate
     ///   propagates up into the primary's element bytes — keeps the index
-    ///   in sync through both paths. That case used to be exactly what
-    ///   this method was for; it is pinned now by
+    ///   in sync through both paths, pinned by
     ///   `a_deep_write_under_an_indexed_child_keeps_the_secondary_in_sync`.
     ///
-    /// What remains is repair of a secondary already damaged by something
-    /// outside those paths: storage-level corruption, a partially applied
-    /// migration, or a bug. `verify_grovedb` reporting
-    /// `__cidx_count_mismatch__` for a primary is the signal.
+    /// What remains is repair of secondaries damaged by something outside
+    /// those paths: storage-level corruption, a partially applied
+    /// migration, or a bug. `verify_grovedb` reporting an indexed-tree
+    /// mismatch for a primary is the signal. The secondary is DERIVED
+    /// state, so rebuilding it from the intact primary is the one kind of
+    /// local repair that provably reconverges: the recomputed secondaries
+    /// restore the canonical H1-A binding, so a node whose root hash
+    /// diverged through index damage returns to the network's root.
     ///
-    /// The rebuild is canonical rather than incremental, so the repaired
-    /// secondary depends only on the primary's contents — two differently
-    /// damaged indexes over the same primary reconcile to the same bytes.
+    /// The repair is incremental over CONTENT: orphan rows are deleted,
+    /// missing rows inserted, and payload-damaged rows rewritten in place.
+    /// Calling it when every secondary is already correct is a no-op on
+    /// the root hash.
     ///
-    /// Calling this method when the secondary is already correct is
-    /// idempotent — it will rewrite the secondary to a state that
-    /// matches the primary, producing identical bytes.
+    /// **Shape caveat.** A Merk root hash commits to the tree's SHAPE,
+    /// and shape is a function of operation history, which no content
+    /// repair can recover. Reconcile therefore guarantees a
+    /// content-correct, `verify_grovedb`-clean index whose H1-A binding
+    /// is consistent — and root-hash equality with an undamaged twin
+    /// only when the damage was shape-preserving (payload corruption in
+    /// place, or row damage whose undo restores the previous rotations,
+    /// which covers the common cases the drift tests pin). Damage that
+    /// permanently rotated the surviving nodes yields a self-consistent
+    /// index whose root may differ from an undamaged peer's; in a
+    /// consensus deployment that state still requires a state sync to
+    /// reconverge, once state sync supports indexed trees.
     ///
-    /// **Cost:** `O(n)` where `n` is the number of entries in the
-    /// primary. Intended for occasional use (post-batch reconciliation,
-    /// migration, repair). For maintaining the secondary in real time
-    /// during high-frequency updates, use the dedicated insert/delete
-    /// APIs.
-    pub fn reconcile_count_indexed_tree_secondary<'b, B, P>(
+    /// Sum and avg rows carry PAYLOADS (`SumItem` / `ItemWithSumItem`), so
+    /// the repair compares row content, not just row keys: a row sitting
+    /// at the right sort key with a damaged payload is rewritten.
+    ///
+    /// **Cost:** `O(n · axes)` where `n` is the number of entries in the
+    /// primary. Intended for occasional use (migration, repair). For
+    /// maintaining the secondaries in real time, use the dedicated
+    /// insert/delete APIs or batches.
+    pub fn reconcile_indexed_tree_secondaries<'b, B, P>(
         &self,
         path: P,
         transaction: TransactionArg,
@@ -828,7 +845,7 @@ impl GroveDb {
 
         cost_return_on_error!(
             &mut cost,
-            self.reconcile_count_indexed_tree_secondary_on_transaction(
+            self.reconcile_indexed_tree_secondaries_on_transaction(
                 path,
                 tx_ref,
                 &batch,
@@ -846,7 +863,7 @@ impl GroveDb {
         tx.commit_local().wrap_with_cost(cost)
     }
 
-    fn reconcile_count_indexed_tree_secondary_on_transaction<'db, 'b, B: AsRef<[u8]>>(
+    fn reconcile_indexed_tree_secondaries_on_transaction<'db, 'b, B: AsRef<[u8]>>(
         &'db self,
         path: SubtreePath<'b, B>,
         transaction: &'db Transaction,
@@ -855,17 +872,18 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        let (parent_path, count_indexed_key) = match path.derive_parent() {
+        let (parent_path, indexed_key) = match path.derive_parent() {
             Some(p) => p,
             None => {
                 return Err(Error::InvalidPath(
-                    "cannot reconcile a count-indexed tree at the root path".to_string(),
+                    "cannot reconcile an indexed tree at the root path".to_string(),
                 ))
                 .wrap_with_cost(cost);
             }
         };
 
-        // 1. Open primary and read all (key, count_value) pairs.
+        // 1. Open the primary and confirm it is an indexed primary of any
+        //    variant.
         let primary_merk = cost_return_on_error!(
             &mut cost,
             self.open_transactional_merk_at_path(
@@ -875,37 +893,86 @@ impl GroveDb {
                 grove_version
             )
         );
-        if !primary_merk.tree_type.is_count_indexed_primary() {
+        if !primary_merk.tree_type.is_indexed_primary() {
             return Err(Error::InvalidPath(
-                "reconcile_count_indexed_tree_secondary requires the path's last segment to be \
-                 a CountIndexedTree or ProvableCountIndexedTree element"
+                "reconcile_indexed_tree_secondaries requires the path's last segment to be \
+                 a ProvableCountIndexedTree, ProvableSumIndexedTree or \
+                 ProvableCountProvableSumIndexedTree element"
                     .to_string(),
             ))
             .wrap_with_cost(cost);
         }
 
+        // 2. Read the parent element FIRST: its variant determines which
+        //    axes exist, and each axis's stored root key is needed to open
+        //    that (possibly damaged) secondary.
+        let mut parent_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                parent_path.clone(),
+                transaction,
+                Some(batch),
+                grove_version
+            )
+        );
+        let indexed_element = cost_return_on_error!(
+            &mut cost,
+            Element::get(&parent_merk, indexed_key, true, grove_version).map_err(Error::MerkError)
+        );
+        let axes: Vec<(IndexAxis, Option<Vec<u8>>)> = match indexed_element.underlying() {
+            Element::ProvableCountIndexedTree(_, s, ..) => vec![(IndexAxis::Count, s.clone())],
+            Element::ProvableSumIndexedTree(_, s, ..) => vec![(IndexAxis::Sum, s.clone())],
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes_tlv, _) => {
+                let mut out = Vec::with_capacity(axes_tlv.len());
+                for (tag, root_key) in axes_tlv {
+                    let axis = cost_return_on_error_no_add!(
+                        cost,
+                        IndexAxis::try_from_tag(*tag).map_err(|e| Error::CorruptedData(format!(
+                            "reconcile_indexed_tree_secondaries: invalid axis tag: {e}"
+                        )))
+                    );
+                    out.push((axis, root_key.clone()));
+                }
+                out
+            }
+            _ => {
+                return Err(Error::CorruptedData(
+                    "parent element at the indexed key is not an indexed tree".to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+        };
+        // The tightest ceiling across the configured axes (avg prepends a
+        // 16-byte sort key against count/sum's 8).
+        let max_item_key_len = axes
+            .iter()
+            .map(|(axis, _)| max_item_key_len_for_axis(*axis))
+            .min()
+            .expect("every indexed variant carries at least one axis");
+
+        // 3. Walk the primary once, collecting each entry's (count, sum)
+        //    pair — every axis derives its rows from the same pair.
         let mut all_query = Query::new();
         all_query.insert_all();
         let mut iter =
             KVIterator::new(primary_merk.storage.raw_iter(), &all_query).unwrap_add_cost(&mut cost);
-        let mut entries: Vec<(u64, Vec<u8>)> = Vec::new();
+        let mut entries: Vec<(Vec<u8>, (u64, i64))> = Vec::new();
         while let Some((key, value_bytes)) = iter.next_kv().unwrap_add_cost(&mut cost) {
             // Reject oversized primary keys before they can drive
-            // make_secondary_key to synthesize a secondary key that
-            // violates Merk's < 256-byte invariant. The cidx write
-            // paths now enforce this (commit 978dc2d9), but reconcile
-            // operates over EXISTING storage which may contain legacy
-            // or externally-injected oversize keys; fail closed
-            // rather than corrupting the secondary.
-            if key.len() > MAX_CIDX_ITEM_KEY_LEN {
+            // make_axis_secondary_key to synthesize a secondary key that
+            // violates Merk's < 256-byte invariant. The indexed write paths
+            // enforce this, but reconcile operates over EXISTING storage
+            // which may contain externally-injected oversize keys; fail
+            // closed rather than corrupting a secondary.
+            if key.len() > max_item_key_len {
                 return Err(Error::CorruptedData(format!(
-                    "reconcile_count_indexed_tree_secondary found a primary key of length \
-                     {} bytes which exceeds the cidx ceiling of {} bytes; refusing to \
-                     synthesize an oversize secondary key. The cidx primary at this path \
-                     was written by a code path that bypassed the cidx-key length check \
-                     and is corrupt — investigate the source before re-running reconcile",
+                    "reconcile_indexed_tree_secondaries found a primary key of length {} \
+                     bytes which exceeds this tree's per-axis ceiling of {} bytes; refusing \
+                     to synthesize an oversize secondary key. The primary at this path was \
+                     written by a code path that bypassed the indexed key-length check and \
+                     is corrupt — investigate the source before re-running reconcile",
                     key.len(),
-                    MAX_CIDX_ITEM_KEY_LEN
+                    max_item_key_len
                 )))
                 .wrap_with_cost(cost);
             }
@@ -917,150 +984,204 @@ impl GroveDb {
                     ))
                 })
             );
-            entries.push((element.count_value_or_default(), key));
+            entries.push((key, element.count_sum_value_or_default()));
         }
 
-        // 2. Open parent merk to get current secondary_root_key, then open
-        //    the secondary.
-        let mut parent_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_transactional_merk_at_path(
-                parent_path.clone(),
-                transaction,
-                Some(batch),
-                grove_version
-            )
-        );
-        let count_indexed_element = cost_return_on_error!(
-            &mut cost,
-            Element::get(&parent_merk, count_indexed_key, true, grove_version)
-                .map_err(Error::MerkError)
-        );
-        let secondary_root_key_before = match count_indexed_element.underlying() {
-            Element::ProvableCountIndexedTree(_, secondary, ..) => secondary.clone(),
-            _ => {
-                return Err(Error::CorruptedData(
-                    "parent element at count-indexed key is not a ProvableCountIndexedTree"
-                        .to_string(),
-                ))
-                .wrap_with_cost(cost);
-            }
-        };
+        // 4. Rebuild each axis's secondary and capture its post-repair
+        //    state in the element's canonical axis order.
+        let mut per_axis_state: Vec<(u8, grovedb_merk::CryptoHash, Option<Vec<u8>>)> =
+            Vec::with_capacity(axes.len());
+        for (axis, stored_root_key) in &axes {
+            let axis = *axis;
+            let mut secondary_merk = cost_return_on_error!(
+                &mut cost,
+                self.open_indexed_secondary_at_path(
+                    path.clone(),
+                    axis,
+                    stored_root_key.clone(),
+                    transaction,
+                    Some(batch),
+                    grove_version,
+                )
+            );
+            let secondary_tree_type = axis_secondary_tree_type(axis);
 
-        let mut secondary_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_indexed_secondary_at_path(
-                path.clone(),
-                IndexAxis::Count,
-                secondary_root_key_before,
-                transaction,
-                Some(batch),
-                grove_version,
-            )
-        );
-
-        // 3. Collect all current secondary keys.
-        let mut all_query_sec = Query::new();
-        all_query_sec.insert_all();
-        let mut sec_iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query_sec)
-            .unwrap_add_cost(&mut cost);
-        let mut existing_secondary_keys: Vec<Vec<u8>> = Vec::new();
-        while let Some((key, _value)) = sec_iter.next_kv().unwrap_add_cost(&mut cost) {
-            existing_secondary_keys.push(key);
-        }
-
-        // 4. Compute the desired secondary keys from the primary entries.
-        //    `BTreeSet`, not `HashSet`: step 6 iterates this set to drive the
-        //    repair inserts, and a hashed iteration order would build the
-        //    secondary AVL in a different shape on every run — so two
-        //    operators repairing identical databases would derive different
-        //    secondary root hashes, and therefore different
-        //    `combine_hash_three` parent bindings, contradicting this API's
-        //    "producing identical bytes" contract.
-        let desired_keys: std::collections::BTreeSet<Vec<u8>> = entries
-            .iter()
-            .map(|(count, key)| make_secondary_key(*count, key))
-            .collect();
-
-        // 5. Delete entries that should not be present.
-        let existing_set: std::collections::BTreeSet<Vec<u8>> =
-            existing_secondary_keys.iter().cloned().collect();
-        for key in existing_secondary_keys {
-            if !desired_keys.contains(&key) {
-                cost_return_on_error!(
-                    &mut cost,
-                    Element::delete(
-                        &mut secondary_merk,
-                        key.as_slice(),
-                        None,
-                        false,
-                        TreeType::ProvableCountTree,
-                        grove_version,
-                    )
-                    .map_err(Error::MerkError)
+            // Desired rows: key AND serialized payload. `BTreeMap`, not a
+            // hashed map: the repair loops below iterate it, and a hashed
+            // iteration order would build the secondary AVL in a different
+            // shape on every run — two operators repairing identical
+            // databases must derive identical secondary root hashes, or the
+            // H1-A parent bindings would disagree.
+            let mut desired: std::collections::BTreeMap<Vec<u8>, Vec<u8>> =
+                std::collections::BTreeMap::new();
+            for (key, (count, sum)) in &entries {
+                let secondary_key = make_axis_secondary_key(axis, *count, *sum, key);
+                let payload = match axis {
+                    IndexAxis::Count => Element::new_item(Vec::new()),
+                    IndexAxis::Sum => Element::new_sum_item(*sum),
+                    IndexAxis::Avg => Element::new_item_with_sum_item(Vec::new(), *sum),
+                };
+                let payload_bytes = cost_return_on_error_no_add!(
+                    cost,
+                    payload.serialize(grove_version).map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "failed to serialize desired secondary payload: {e}"
+                        ))
+                    })
                 );
+                desired.insert(secondary_key, payload_bytes);
             }
-        }
 
-        // 6. Insert entries that are missing.
-        for desired_key in &desired_keys {
-            if !existing_set.contains(desired_key) {
-                let entry = Element::new_item(Vec::new());
-                cost_return_on_error!(
-                    &mut cost,
-                    entry
-                        .insert(
+            // Existing row KEYS, raw-iterated so unlinked-but-present rows
+            // are still observed. (The raw value is the Merk NODE encoding —
+            // links and child hashes, not element bytes — so payloads are
+            // compared via `merk.get` below, which yields the element.)
+            let mut all_query_sec = Query::new();
+            all_query_sec.insert_all();
+            let mut sec_iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query_sec)
+                .unwrap_add_cost(&mut cost);
+            let mut existing_keys: std::collections::BTreeSet<Vec<u8>> =
+                std::collections::BTreeSet::new();
+            while let Some((key, _node_bytes)) = sec_iter.next_kv().unwrap_add_cost(&mut cost) {
+                existing_keys.insert(key);
+            }
+
+            // Delete rows that should not exist.
+            for key in &existing_keys {
+                if !desired.contains_key(key) {
+                    cost_return_on_error!(
+                        &mut cost,
+                        Element::delete(
                             &mut secondary_merk,
-                            desired_key.as_slice(),
+                            key.as_slice(),
                             None,
+                            false,
+                            secondary_tree_type,
                             grove_version,
                         )
                         .map_err(Error::MerkError)
-                );
+                    );
+                }
             }
+
+            // Insert missing rows and rewrite payload-damaged ones. Sum and
+            // avg rows carry real payloads, so key-presence alone does not
+            // imply row-correctness; compare the stored element bytes.
+            for (desired_key, desired_payload) in &desired {
+                let needs_write = if existing_keys.contains(desired_key) {
+                    let stored = cost_return_on_error!(
+                        &mut cost,
+                        secondary_merk
+                            .get(
+                                desired_key.as_slice(),
+                                true,
+                                Some(&Element::value_defined_cost_for_serialized_value),
+                                grove_version,
+                            )
+                            .map_err(|e| Error::CorruptedData(format!(
+                                "reading secondary row for payload compare: {e}"
+                            )))
+                    );
+                    stored.as_deref() != Some(desired_payload.as_slice())
+                } else {
+                    true
+                };
+                if needs_write {
+                    let entry = cost_return_on_error_no_add!(
+                        cost,
+                        Element::deserialize(desired_payload.as_slice(), grove_version).map_err(
+                            |e| {
+                                Error::CorruptedData(format!(
+                                    "failed to round-trip desired secondary payload: {e}"
+                                ))
+                            }
+                        )
+                    );
+                    cost_return_on_error!(
+                        &mut cost,
+                        entry
+                            .insert(
+                                &mut secondary_merk,
+                                desired_key.as_slice(),
+                                None,
+                                grove_version,
+                            )
+                            .map_err(Error::MerkError)
+                    );
+                }
+            }
+
+            let (sec_hash, sec_root_key, _) = cost_return_on_error!(
+                &mut cost,
+                secondary_merk
+                    .root_hash_key_and_aggregate_data()
+                    .map_err(Error::MerkError)
+            );
+            per_axis_state.push((axis.tag(), sec_hash, sec_root_key));
         }
 
-        // 7. Snapshot updated states and rebuild the parent's element.
+        // 5. Snapshot the primary and rebuild the parent's element with the
+        //    repaired per-axis state — the lone axis root hash for PCIT /
+        //    PSIT, the axes digest for PCPSIT.
         let (primary_root_hash, primary_root_key, primary_aggregate_data) = cost_return_on_error!(
             &mut cost,
             primary_merk
                 .root_hash_key_and_aggregate_data()
                 .map_err(Error::MerkError)
         );
-        let (secondary_root_hash, secondary_root_key, _) = cost_return_on_error!(
-            &mut cost,
-            secondary_merk
-                .root_hash_key_and_aggregate_data()
-                .map_err(Error::MerkError)
+        let is_multi_axis = matches!(
+            indexed_element.underlying(),
+            Element::ProvableCountProvableSumIndexedTree(..)
         );
-
+        let (reconstructed, second_hash) = if is_multi_axis {
+            let axes_tlv: Vec<(u8, Option<Vec<u8>>)> = per_axis_state
+                .iter()
+                .map(|(tag, _, root_key)| (*tag, root_key.clone()))
+                .collect();
+            let axis_hashes: Vec<(u8, grovedb_merk::CryptoHash)> = per_axis_state
+                .iter()
+                .map(|(tag, hash, _)| (*tag, *hash))
+                .collect();
+            let digest = grovedb_merk::tree::axes_digest(&axis_hashes).unwrap_add_cost(&mut cost);
+            (
+                indexed_element.reconstruct_with_axes(
+                    primary_root_key,
+                    primary_aggregate_data,
+                    axes_tlv,
+                ),
+                digest,
+            )
+        } else {
+            (
+                indexed_element.reconstruct_with_two_root_keys(
+                    primary_root_key,
+                    per_axis_state[0].2.clone(),
+                    primary_aggregate_data,
+                ),
+                per_axis_state[0].1,
+            )
+        };
         let reconstructed = cost_return_on_error_no_add!(
             cost,
-            count_indexed_element
-                .reconstruct_with_two_root_keys(
-                    primary_root_key,
-                    secondary_root_key,
-                    primary_aggregate_data,
-                )
-                .ok_or(Error::CorruptedCodeExecution(
-                    "reconstruct_with_two_root_keys returned None for a CountIndexedTree element"
-                ))
+            reconstructed.ok_or(Error::CorruptedCodeExecution(
+                "reconstructing the indexed element with repaired root state returned None"
+            ))
         );
         cost_return_on_error!(
             &mut cost,
             reconstructed
                 .insert_count_indexed_subtree(
                     &mut parent_merk,
-                    count_indexed_key,
+                    indexed_key,
                     primary_root_hash,
-                    secondary_root_hash,
+                    second_hash,
                     None,
                     grove_version,
                 )
                 .map_err(Error::MerkError)
         );
 
-        // 8. Hand off to shared propagation (CountIndexedTree-aware).
+        // 6. Hand off to shared propagation.
         let mut merk_cache: std::collections::HashMap<
             SubtreePath<B>,
             Merk<PrefixedRocksDbTransactionContext>,
@@ -2210,14 +2331,6 @@ pub(crate) fn max_item_key_len_for_axis(axis: IndexAxis) -> usize {
         IndexAxis::Count | IndexAxis::Sum => MAX_CIDX_ITEM_KEY_LEN,
         IndexAxis::Avg => MAX_AVG_INDEXED_ITEM_KEY_LEN,
     }
-}
-
-#[inline]
-fn make_secondary_key(count: u64, item_key: &[u8]) -> Vec<u8> {
-    let mut k = Vec::with_capacity(8 + item_key.len());
-    k.extend_from_slice(&count.to_be_bytes());
-    k.extend_from_slice(item_key);
-    k
 }
 
 /// Inverse of `make_secondary_key`: split a secondary key into

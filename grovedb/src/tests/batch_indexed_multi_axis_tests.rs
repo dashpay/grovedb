@@ -1304,7 +1304,7 @@ mod tests {
     /// A deep write *under* a child of an indexed primary keeps the secondary
     /// in sync on its own, through both the generic and the batch path.
     ///
-    /// This is the scenario `reconcile_count_indexed_tree_secondary` was
+    /// This is the scenario `reconcile_indexed_tree_secondaries` was
     /// written for: inserting into a sub-`CountTree` held inside a PCIT
     /// propagates the sub-tree's aggregate up into the primary's element
     /// bytes, which is the value the secondary orders by. It used to desync
