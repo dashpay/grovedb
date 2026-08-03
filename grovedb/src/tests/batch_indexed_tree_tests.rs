@@ -569,13 +569,13 @@ mod tests {
         // Refused by the ungated empty-at-batch-insertion guard (a non-empty
         // indexed element cannot enter a batch at all); the overwrite
         // classifier's NotSupported stays as defense in depth behind it.
-        assert!(
-            matches!(result, Err(Error::InvalidBatchOperation(_)))
-                || matches!(result, Err(Error::NotSupported(_)))
-                || matches!(result, Err(Error::InvalidInput(_))),
-            "expected InvalidBatchOperation / NotSupported / InvalidInput, got {:?}",
-            result
-        );
+        match result {
+            Err(Error::InvalidBatchOperation(message)) => assert!(
+                message.contains("must be empty at the moment of batch insertion"),
+                "expected the empty-at-insertion refusal, got: {message}"
+            ),
+            other => panic!("expected InvalidBatchOperation, got {:?}", other),
+        }
     }
 
     #[test]
@@ -1012,13 +1012,12 @@ mod tests {
             validate_insertion_does_not_override_tree: false,
             ..Default::default()
         };
-        // Either succeeds (safe overwrite path) or returns the
-        // ambiguous-cidx error from classify_cidx_overwrite. Both
-        // exercise the call site at L2330.
-        let _ = db
-            .apply_batch(ops, Some(options), None, grove_version)
-            .unwrap();
-        // Regardless of outcome the DB is consistent.
+        // Indexed → Item is the safe overwrite subset: the classifier
+        // schedules the old cidx's storage for cleanup and the batch
+        // must succeed.
+        db.apply_batch(ops, Some(options), None, grove_version)
+            .unwrap()
+            .expect("safe-subset cidx overwrite with an Item must succeed");
         assert_verify_passes(&db, grove_version);
     }
 

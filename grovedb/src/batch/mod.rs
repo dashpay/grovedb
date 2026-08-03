@@ -3840,14 +3840,18 @@ impl GroveDb {
     /// are returned
     /// Runs the level-by-level batch propagation.
     ///
-    /// Returns `(leftover_ops, cidx_overwrite_cleanup_paths)`:
+    /// Returns `(leftover_ops, captures)`:
     ///   - `leftover_ops` is `Some(...)` only if a `batch_pause_height`
     ///     was set and pruning paused before reaching the root.
-    ///   - `cidx_overwrite_cleanup_paths` is the list of cidx primary
-    ///     paths whose old storage (primary subtree + secondary
-    ///     namespace) must be cleaned up post-apply because of a safe-
-    ///     subset cidx-overwrite (see `execute_ops_on_path`). Empty when
-    ///     no such overwrites occurred.
+    ///   - `captures` is the [`BatchApplyCaptures`] collected while the
+    ///     body applied, for the caller's post-apply cleanup passes:
+    ///     `cidx_overwrite_cleanup_paths` lists the cidx primary paths
+    ///     whose old storage (primary subtree + secondary namespaces)
+    ///     must be cleared because of a safe-subset cidx-overwrite (see
+    ///     `execute_ops_on_path`), and `deleted_tree_actual_types` maps
+    ///     each really-deleted `DeleteTree` target to its ACTUAL stored
+    ///     tree type so cleanup namespaces follow the truth rather than
+    ///     the op's declaration. Both are empty on V1..V3.
     fn apply_batch_structure<C: TreeCache<F, SR>, F, SR>(
         batch_structure: BatchStructure<C, F, SR>,
         batch_apply_options: Option<BatchApplyOptions>,
