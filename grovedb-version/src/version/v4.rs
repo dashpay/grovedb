@@ -4,18 +4,22 @@
 //! and no longer is — gates land here as they are written. Currently flipped:
 //!
 //! - `apply_batch.delete_tree_cleanup_type_source: 1` — a batch `DeleteTree`
-//!   reads the stored element and uses its ACTUAL type to select cleanup
-//!   namespaces, rejecting a declared/stored mismatch that involves an indexed
-//!   tree. V1..V3 keep taking the declared type at face value. Costs one extra
-//!   stored-element read per op, which is why it cannot apply to the released
-//!   versions.
+//!   uses the stored element's ACTUAL type to select cleanup namespaces,
+//!   rejecting a declared/stored mismatch that involves an indexed tree.
+//!   V1..V3 keep taking the declared type at face value. The stored element
+//!   comes from data the apply already loads (the emptiness pre-scan's own
+//!   read, or the old value the merk delete surfaces through the old-value
+//!   observer), so V4 charges exactly the V1..V3 cost — the gate exists
+//!   because it flips an accepted/rejected outcome, not because of cost.
 //!
-//! - `apply_batch.overwrite_indexed_cleanup_inspection: 1` — a batch overwrite
-//!   of a non-reference element (with tree-override protection off) reads the
-//!   stored element to detect an indexed tree being overwritten, scheduling
-//!   its per-axis secondary storage for cleanup or refusing the ambiguous
-//!   case. Same shape as the gate above: one extra stored-element read per
-//!   overwrite-capable op, so V1..V3 keep their released cost shape.
+//! - `apply_batch.overwrite_indexed_cleanup_inspection: 1` — a batch
+//!   overwrite (with tree-override protection off, references included)
+//!   classifies the element it displaces to detect an indexed tree being
+//!   overwritten, scheduling its per-axis secondary storage for cleanup or
+//!   refusing the ambiguous case. The old bytes come from the node the merk
+//!   walk fetched anyway to rewrite the key, so — like the gate above —
+//!   V1..V3 cost is charged exactly and only the accepted/rejected outcome
+//!   is gated.
 //!
 //! - `proof.terminal_non_merk_tree_child_hash: 1` — a V1 proof that reports a
 //!   `CommitmentTree` / `MmrTree` / `BulkAppendTree` /

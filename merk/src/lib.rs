@@ -51,8 +51,8 @@ pub use ed;
 pub use error::Error;
 #[cfg(feature = "minimal")]
 pub use tree::{
-    BatchEntry, Link, MerkBatch, Op, PanicSource, HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32,
-    HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
+    BatchEntry, Link, MerkBatch, OldValueDisposition, Op, PanicSource, HASH_BLOCK_SIZE,
+    HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
 };
 pub use tree::{CryptoHash, TreeFeatureType};
 pub use tree_type::{MaybeTree, TreeType};

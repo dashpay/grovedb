@@ -13,17 +13,21 @@
 //!   in one batch is supported — the level executor opens the fresh primary
 //!   and secondaries from the in-batch element, and the bubble-up emits
 //!   `InsertAggregateIndexedTreeRootKeys`.
-//! - [`overwrite`] runs inside the per-op loop when tree-override protection
-//!   is OFF and the op could overwrite an existing element (V4+ only — the
-//!   stored-element read [`inspect_cidx_overwrite`] starts with is gated by
-//!   `overwrite_indexed_cleanup_inspection` so released versions keep their
-//!   cost shape). Indexed → non-indexed and indexed → empty indexed are
-//!   allowed and schedule the old tree's storage for cleanup; indexed →
-//!   non-empty indexed is rejected as ambiguous.
-//! - [`delete_tree`] holds the other V4-gated stored-element read:
+//! - [`overwrite`] classifies overwrite-capable ops that displaced an
+//!   existing element (V4+ only, gated by
+//!   `overwrite_indexed_cleanup_inspection`). [`classify_cidx_overwrite`]
+//!   runs against the OLD element bytes the merk apply already fetched —
+//!   surfaced through the merk old-value observer — so it performs no
+//!   storage read of its own and V4 costs match V1..V3 exactly. Indexed →
+//!   non-indexed and indexed → empty indexed are allowed and schedule the
+//!   old tree's storage for cleanup; indexed → non-empty indexed is
+//!   rejected as ambiguous.
+//! - [`delete_tree`] holds the other V4 gate's check:
 //!   [`validate_delete_tree_type`] treats the tree type a `DeleteTree` op
 //!   carries as a checked claim rather than storage-ownership authority, so
-//!   cleanup namespaces are selected from what is actually stored.
+//!   cleanup namespaces are selected from what is actually stored. It takes
+//!   the already-loaded stored element (from the emptiness pre-scan's own
+//!   read or the merk old-value observer) and performs no read itself.
 //! - [`pre_state`] runs against an indexed primary's level just before the
 //!   merk apply: [`capture_indexed_pre_state`] validates the level's ops
 //!   against the indexed-primary rules and reads each mutated key's *old*
@@ -55,7 +59,7 @@ use grovedb_merk::{element::costs::ElementCostExtensions, Merk};
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 pub(crate) use mirror::{apply_indexed_secondary_mirror_post_apply, read_post_apply_transitions};
-pub(crate) use overwrite::inspect_cidx_overwrite;
+pub(crate) use overwrite::classify_cidx_overwrite;
 pub(crate) use pre_state::capture_indexed_pre_state;
 pub(crate) use preflight::reject_indexed_overwrite_with_descendants;
 

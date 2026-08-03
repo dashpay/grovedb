@@ -1,23 +1,18 @@
 //! Classification of batch overwrites that target an existing indexed tree.
 //!
-//! Runs inside the per-op loop when tree-override protection is OFF and the
-//! op could overwrite an existing element — on V4+ only: the stored-element
-//! read this starts with is gated by `overwrite_indexed_cleanup_inspection`,
-//! so released versions keep their cost shape.
+//! Runs on V4+ only (`overwrite_indexed_cleanup_inspection`), against the OLD
+//! element bytes the merk apply already fetched: when a batch put lands on an
+//! existing key, the tree walk loads that node to rewrite it, and the batch
+//! layer receives its stored value through the merk old-value observer. The
+//! classification therefore adds no storage read and no tracked cost — which
+//! is also why V1..V3 (which skip the classification entirely) and V4 charge
+//! identical costs for overwrite-capable ops.
 
 use std::collections::BTreeMap;
 
-use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
-};
-use grovedb_merk::{element::costs::ElementCostExtensions, Merk};
-use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
-use crate::{
-    batch::{GroveOp, KeyInfo},
-    Element, Error,
-};
+use crate::{batch::GroveOp, Element, Error};
 
 /// What "empty" means for each indexed variant offered as a replacement:
 /// `Some(true)` for an empty indexed element, `Some(false)` for a non-empty
@@ -45,18 +40,26 @@ fn replacement_indexed_emptiness(new_element: &Element) -> Option<bool> {
     }
 }
 
-/// Classify an `op_could_overwrite` insert at `path / key_info` against
-/// the existing primary-merk entry, when tree-override protection is
-/// **OFF** for this batch. Allows indexed-tree safe-subset overwrites and
-/// rejects the ambiguous ones:
+/// Classify an `op_could_overwrite` insert at `path / key` against the
+/// element it displaced (`old_value` — the stored bytes surfaced by the merk
+/// old-value observer), when the op reached the merk apply without
+/// tree-override protection rejecting it. Allows indexed-tree safe-subset
+/// overwrites and rejects the ambiguous ones:
 ///
 /// |  existing              |  new                       |  outcome                      |
 /// |------------------------|----------------------------|-------------------------------|
-/// |  none                  |  *                         |  `Ok(None)`                   |
 /// |  non-indexed           |  *                         |  `Ok(None)`                   |
-/// |  indexed              |  non-indexed               |  `Ok(Some(indexed_path))`     |
-/// |  indexed              |  empty indexed             |  `Ok(Some(indexed_path))`     |
-/// |  indexed              |  non-empty indexed         |  `Err(NotSupported)`          |
+/// |  indexed               |  non-indexed               |  `Ok(Some(indexed_path))`     |
+/// |  indexed               |  empty indexed             |  `Ok(Some(indexed_path))`     |
+/// |  indexed               |  non-empty indexed         |  `Err(NotSupported)`          |
+///
+/// (The "no existing element" row of the old table cannot occur here: the
+/// observer only fires for keys that exist, and a fresh insert never
+/// classifies — exactly the case that used to pay a wasted read. The
+/// `Err(NotSupported)` row is normally preempted too: the ungated
+/// empty-at-batch-insertion guard in the op loop refuses any NON-EMPTY
+/// indexed element before the merk apply runs, so the arm here is defense
+/// in depth should that guard ever be relaxed.)
 ///
 /// When `Ok(Some(cidx_path))` is returned, the caller should push
 /// `cidx_path` onto its `cidx_overwrite_cleanup_paths` list so the
@@ -77,43 +80,19 @@ fn replacement_indexed_emptiness(new_element: &Element) -> Option<bool> {
 /// (`verify_consistency_of_operations`) only blocks writes under
 /// `Delete` / `DeleteTree` paths; it does not know about safe-subset
 /// cidx-overwrite cleanup, so the descendant-check lives here.
-pub(crate) fn inspect_cidx_overwrite<'db, S: StorageContext<'db>>(
-    primary_merk: &Merk<S>,
+pub(crate) fn classify_cidx_overwrite(
+    old_value: &[u8],
     path: &[Vec<u8>],
-    key_info: &KeyInfo,
+    key: &[u8],
     new_element: &Element,
     ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, GroveOp>,
     grove_version: &GroveVersion,
-) -> CostResult<Option<Vec<Vec<u8>>>, Error> {
-    let mut cost = OperationCost::default();
-
-    let maybe_existing = cost_return_on_error!(
-        &mut cost,
-        primary_merk
-            .get(
-                key_info.get_key_clone().as_slice(),
-                true,
-                Some(&Element::value_defined_cost_for_serialized_value),
-                grove_version,
-            )
-            .map_err(|e| Error::CorruptedData(format!(
-                "unable to check for existing element: {e}"
-            )))
-    );
-
-    let Some(existing_bytes) = maybe_existing else {
-        return Ok(None).wrap_with_cost(cost);
-    };
-
-    let existing_element = cost_return_on_error_no_add!(
-        cost,
-        Element::deserialize(existing_bytes.as_slice(), grove_version).map_err(|_| {
-            Error::CorruptedData("unable to deserialize existing element".to_string())
-        })
-    );
+) -> Result<Option<Vec<Vec<u8>>>, Error> {
+    let existing_element = Element::deserialize(old_value, grove_version)
+        .map_err(|_| Error::CorruptedData("unable to deserialize existing element".to_string()))?;
 
     if !existing_element.is_indexed_tree() {
-        return Ok(None).wrap_with_cost(cost);
+        return Ok(None);
     }
 
     if matches!(replacement_indexed_emptiness(new_element), Some(false)) {
@@ -124,15 +103,14 @@ pub(crate) fn inspect_cidx_overwrite<'db, S: StorageContext<'db>>(
              post-apply cleanup also clears it). DeleteTree the old indexed tree and re-create \
              the new state in a follow-up batch"
                 .to_string(),
-        ))
-        .wrap_with_cost(cost);
+        ));
     }
 
     // Safe subset: indexed → non-indexed OR indexed → empty indexed.
     // Schedule the OLD indexed tree's storage namespaces for cleanup. Its path is
-    // `path + key_info`.
+    // `path + key`.
     let mut cidx_path = path.to_vec();
-    cidx_path.push(key_info.get_key_clone());
+    cidx_path.push(key.to_vec());
 
     // CONSISTENCY CHECK: writes UNDER the cidx's path in the same batch
     // would be silently lost when the post-apply cleanup clears the prefix.
@@ -140,13 +118,10 @@ pub(crate) fn inspect_cidx_overwrite<'db, S: StorageContext<'db>>(
     // This loop is currently UNREACHABLE, and deliberately kept anyway.
     // The reason it cannot fire is self-cancelling: a descendant write makes
     // the deeper level bubble a `ReplaceTreeRootKey` into this key's slot
-    // before the shallower level runs, so by the time this function reads the
-    // existing element it no longer sees an indexed tree and returns above,
-    // never reaching here. In other words the very condition being checked
-    // for is what prevents the check from running. Verified by instrumenting
-    // both this loop and the function entry: for a PCIT overwritten with a
-    // plain tree alongside a write underneath it, the function is entered and
-    // returns early, and the loop is never reached.
+    // before the shallower level runs, so by the time this classification
+    // sees the displaced element it no longer is an indexed tree and the
+    // function returns above, never reaching here. In other words the very
+    // condition being checked for is what prevents the check from running.
     //
     // It stays because the unreachability is a property of the ORDER the
     // levels are processed in, not of this function — reorder the bubble-up,
@@ -161,10 +136,9 @@ pub(crate) fn inspect_cidx_overwrite<'db, S: StorageContext<'db>>(
                  safe-subset-overwritten in the same batch; the post-apply cleanup \
                  would silently clear the descendant write. Split into two batches: \
                  delete + recreate first, then populate.",
-            ))
-            .wrap_with_cost(cost);
+            ));
         }
     }
 
-    Ok(Some(cidx_path)).wrap_with_cost(cost)
+    Ok(Some(cidx_path))
 }
