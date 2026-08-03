@@ -19,6 +19,7 @@ use grovedb_storage::{
 use grovedb_version::version::GroveVersion;
 
 use super::{
+    non_merk_sync::NonMerkRestorer,
     utils::{decode_vec_ops, encode_global_chunk_id, path_to_string},
     CURRENT_STATE_SYNC_VERSION,
 };
@@ -34,10 +35,19 @@ pub const CONST_GROUP_PACKING_SIZE: usize = 32;
 
 pub(crate) type SubtreePrefix = [u8; 32];
 
+/// The restore backend for one subtree: Merk chunk restore for ordinary
+/// subtrees, entry replay for the non-Merk append-only tree family
+/// (CommitmentTree / MmrTree / BulkAppendTree /
+/// DenseAppendOnlyFixedSizeTree) — see issue #785.
+enum SubtreeRestorer<'db> {
+    Merk(Restorer<PrefixedRocksDbImmediateStorageContext<'db>>),
+    NonMerk(NonMerkRestorer),
+}
+
 /// Struct governing the state synchronization of one subtree.
 struct SubtreeStateSyncInfo<'db> {
-    /// Current Chunk restorer
-    restorer: Restorer<PrefixedRocksDbImmediateStorageContext<'db>>,
+    /// Current chunk restorer (Merk chunks or non-Merk entry replay)
+    restorer: SubtreeRestorer<'db>,
 
     /// Set of global chunk ids requested to be fetched and pending for
     /// processing. For the description of global chunk id check
@@ -91,8 +101,10 @@ impl SubtreeStateSyncInfo<'_> {
     ///   expected format.
     /// - The function modifies the state of the synchronization process, so it
     ///   must be used carefully to maintain correctness.
-    fn apply_inner_chunk(
+    fn apply_inner_chunk<'tx, 'db: 'tx>(
         &mut self,
+        db: &'db GroveDb,
+        tx: &'tx Transaction<'db>,
         chunk_id: &[u8],
         chunk_data: &[u8],
         grove_version: &GroveVersion,
@@ -105,28 +117,46 @@ impl SubtreeStateSyncInfo<'_> {
             ));
         }
         self.pending_chunks.remove(chunk_id);
-        if !chunk_data.is_empty() {
-            match decode_vec_ops(chunk_data) {
-                Ok(ops) => {
-                    match self.restorer.process_chunk(chunk_id, ops, grove_version) {
-                        Ok(next_chunk_ids) => {
-                            self.num_processed_chunks += 1;
-                            for next_chunk_id in next_chunk_ids {
-                                self.pending_chunks.insert(next_chunk_id.clone());
-                                res.push(next_chunk_id);
-                            }
+        match &mut self.restorer {
+            SubtreeRestorer::Merk(restorer) => {
+                if !chunk_data.is_empty() {
+                    match decode_vec_ops(chunk_data) {
+                        Ok(ops) => {
+                            match restorer.process_chunk(chunk_id, ops, grove_version) {
+                                Ok(next_chunk_ids) => {
+                                    self.num_processed_chunks += 1;
+                                    for next_chunk_id in next_chunk_ids {
+                                        self.pending_chunks.insert(next_chunk_id.clone());
+                                        res.push(next_chunk_id);
+                                    }
+                                }
+                                Err(e) => {
+                                    return Err(Error::InternalError(format!(
+                                        "Unable to process incoming chunk: {e}"
+                                    )));
+                                }
+                            };
                         }
                         Err(e) => {
-                            return Err(Error::InternalError(format!(
-                                "Unable to process incoming chunk: {e}"
+                            return Err(Error::CorruptedData(format!(
+                                "Unable to decode incoming chunk: {e}"
                             )));
                         }
-                    };
+                    }
                 }
-                Err(e) => {
-                    return Err(Error::CorruptedData(format!(
-                        "Unable to decode incoming chunk: {e}"
-                    )));
+            }
+            SubtreeRestorer::NonMerk(non_merk_restorer) => {
+                let next_chunk_ids = non_merk_restorer.apply_page(
+                    db,
+                    tx,
+                    &self.current_path,
+                    chunk_id,
+                    chunk_data,
+                )?;
+                self.num_processed_chunks += 1;
+                for next_chunk_id in next_chunk_ids {
+                    self.pending_chunks.insert(next_chunk_id.clone());
+                    res.push(next_chunk_id);
                 }
             }
         }
@@ -138,7 +168,7 @@ impl SubtreeStateSyncInfo<'_> {
 impl<'tx> SubtreeStateSyncInfo<'tx> {
     pub fn new(restorer: Restorer<PrefixedRocksDbImmediateStorageContext<'tx>>) -> Self {
         SubtreeStateSyncInfo {
-            restorer,
+            restorer: SubtreeRestorer::Merk(restorer),
             root_key: None,
             tree_type: TreeType::NormalTree,
             pending_chunks: Default::default(),
@@ -344,10 +374,48 @@ impl<'db> MultiStateSyncSession<'db> {
             &*(tx as *const _)
         };
 
-        if let Ok((merk, root_key, tree_type)) =
+        if let Ok((merk, root_key, tree_type, element)) =
             self.db
                 .open_merk_for_replication(path.clone(), transaction_ref, grove_version)
         {
+            if tree_type.uses_non_merk_data_storage() {
+                // Non-Merk append-only subtree: restored by replaying leaf
+                // entries rather than Merk chunks (see issue #785). The
+                // Merk opened above is structurally empty for these types
+                // and is not needed.
+                drop(merk);
+                let element = element.ok_or_else(|| {
+                    Error::InternalError(
+                        "append-only subtree must have a parent element".to_string(),
+                    )
+                })?;
+                let actual_hash = actual_hash.ok_or_else(|| {
+                    Error::InternalError(
+                        "append-only subtree sync requires the parent element value hash"
+                            .to_string(),
+                    )
+                })?;
+                let non_merk_restorer = NonMerkRestorer::new(element, hash, actual_hash)?;
+                let first_chunk_id = non_merk_restorer.initial_chunk_id();
+                let mut sync_info = SubtreeStateSyncInfo {
+                    restorer: SubtreeRestorer::NonMerk(non_merk_restorer),
+                    root_key: root_key.clone(),
+                    tree_type,
+                    pending_chunks: Default::default(),
+                    current_path: path.to_vec(),
+                    num_processed_chunks: 0,
+                };
+                sync_info.pending_chunks.insert(first_chunk_id.clone());
+                self.as_mut()
+                    .current_prefixes()
+                    .insert(chunk_prefix, sync_info);
+                return encode_global_chunk_id(
+                    chunk_prefix,
+                    root_key,
+                    tree_type,
+                    vec![first_chunk_id],
+                );
+            }
             let restorer = Restorer::new(merk, hash, actual_hash);
             let mut sync_info = SubtreeStateSyncInfo::new(restorer);
             sync_info.pending_chunks.insert(vec![]);
@@ -470,6 +538,16 @@ impl<'db> MultiStateSyncSession<'db> {
             ));
         }
 
+        let db = self.db;
+        // SAFETY: the transaction lives as long as the pinned session and is
+        // dropped last; the reference is only used within this call while
+        // the session is alive. This mirrors the pattern used by
+        // `add_subtree_sync_info` and `discover_new_subtrees_metadata`.
+        let transaction_ref: &'db Transaction<'db> = unsafe {
+            let tx: &Transaction<'db> = &self.as_ref().transaction;
+            &*(tx as *const _)
+        };
+
         let mut next_global_chunk_ids: Vec<Vec<u8>> = vec![];
 
         for (iter_global_chunk_id, iter_packed_chunks) in nested_global_chunk_ids
@@ -510,6 +588,8 @@ impl<'db> MultiStateSyncSession<'db> {
                 it_chunk_ids.iter().zip(current_nested_chunk_data.iter())
             {
                 next_local_chunk_ids.extend(subtree_state_sync.apply_inner_chunk(
+                    db,
+                    transaction_ref,
                     current_local_chunk_id.as_slice(),
                     current_local_chunks.as_slice(),
                     grove_version,
@@ -531,24 +611,38 @@ impl<'db> MultiStateSyncSession<'db> {
 
                 // Subtree is finished. We can save it.
                 let is_subtree_empty = subtree_state_sync.num_processed_chunks == 0;
+                let mut is_non_merk_subtree = false;
                 if let Some(prefix_data) = current_prefixes.remove(&chunk_prefix) {
-                    if is_subtree_empty {
-                        // For empty subtrees, verify the restorer's underlying merk has a
-                        // NULL root hash. A malicious peer that sends empty data for a
-                        // non-empty subtree will be caught here (and also at commit time
-                        // via H3 root hash verification).
-                        let merk = prefix_data.restorer.into_merk();
-                        let merk_root = merk.root_hash().unwrap();
-                        if merk_root != grovedb_merk::tree::hash::NULL_HASH {
-                            return Err(Error::InternalError(
-                                "empty subtree has non-null root hash".to_string(),
-                            ));
+                    match prefix_data.restorer {
+                        SubtreeRestorer::Merk(restorer) => {
+                            if is_subtree_empty {
+                                // For empty subtrees, verify the restorer's underlying merk
+                                // has a NULL root hash. A malicious peer that sends empty
+                                // data for a non-empty subtree will be caught here (and
+                                // also at commit time via H3 root hash verification).
+                                let merk = restorer.into_merk();
+                                let merk_root = merk.root_hash().unwrap();
+                                if merk_root != grovedb_merk::tree::hash::NULL_HASH {
+                                    return Err(Error::InternalError(
+                                        "empty subtree has non-null root hash".to_string(),
+                                    ));
+                                }
+                            } else if let Err(err) = restorer.finalize(grove_version) {
+                                return Err(Error::InternalError(format!(
+                                    "Unable to finalize Merk: {:?}",
+                                    err
+                                )));
+                            }
                         }
-                    } else if let Err(err) = prefix_data.restorer.finalize(grove_version) {
-                        return Err(Error::InternalError(format!(
-                            "Unable to finalize Merk: {:?}",
-                            err
-                        )));
+                        SubtreeRestorer::NonMerk(non_merk_restorer) => {
+                            // Entry replay finished: recompute the state
+                            // root from the replayed payload and verify it
+                            // against the parent binding. A byzantine
+                            // source that tampered with any wire byte is
+                            // rejected here.
+                            is_non_merk_subtree = true;
+                            non_merk_restorer.finalize(db, transaction_ref, &completed_path)?;
+                        }
                     }
                 } else {
                     return Err(Error::InternalError(format!(
@@ -561,8 +655,15 @@ impl<'db> MultiStateSyncSession<'db> {
 
                 *self.as_mut().num_processed_subtrees_in_batch() += 1;
 
-                let new_subtrees_metadata =
-                    self.discover_new_subtrees_metadata(&completed_path, grove_version)?;
+                // Non-Merk append-only subtrees never contain child
+                // subtrees, and their data namespace holds raw payload
+                // entries (not Elements) — running element discovery over
+                // it would fail. Skip it.
+                let new_subtrees_metadata = if is_non_merk_subtree {
+                    SubtreesMetadata::default()
+                } else {
+                    self.discover_new_subtrees_metadata(&completed_path, grove_version)?
+                };
 
                 if self.num_processed_subtrees_in_batch >= self.subtrees_batch_size {
                     match self.as_mut().pending_discovered_subtrees() {
@@ -696,29 +797,11 @@ impl<'db> MultiStateSyncSession<'db> {
                             .to_string(),
                     ));
                 }
-                // State sync does not yet support POPULATED non-Merk
-                // append-only trees. Their payload (frontier / chunk
-                // blobs / MMR nodes / dense entries) lives in the data
-                // namespace as raw non-Element entries while their Merk
-                // is always empty, so a Merk-chunk restore transfers
-                // nothing — and the source side cannot even produce a
-                // chunk (ChunkProducer fails on the rootless Merk).
-                // Reject up-front with a descriptive error instead of
-                // letting the source fail later with an opaque
-                // CorruptedData. Empty ones are fine: there is no
-                // payload to transfer and the element itself is
-                // restored via the parent Merk.
-                // See https://github.com/dashpay/grovedb/issues/785.
-                if value.uses_non_merk_data_storage()
-                    && value.non_merk_entry_count().unwrap_or(0) > 0
-                {
-                    return Err(Error::NotSupported(
-                        "state sync does not yet support populated append-only \
-                         trees (CommitmentTree / MmrTree / BulkAppendTree / \
-                         DenseAppendOnlyFixedSizeTree) — see issue #785"
-                            .to_string(),
-                    ));
-                }
+                // Non-Merk append-only trees (CommitmentTree / MmrTree /
+                // BulkAppendTree / DenseAppendOnlyFixedSizeTree) are
+                // discovered like any subtree; `add_subtree_sync_info`
+                // routes them to the entry-replay restore path instead of
+                // Merk chunk restore (see issue #785).
                 subtree_keys.insert(key.to_vec());
             }
         }

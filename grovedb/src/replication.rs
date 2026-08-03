@@ -1,3 +1,4 @@
+pub(crate) mod non_merk_sync;
 mod state_sync_session;
 
 use std::pin::Pin;
@@ -143,6 +144,35 @@ impl GroveDb {
                 ));
             }
 
+            // Non-Merk append-only trees (CommitmentTree / MmrTree /
+            // BulkAppendTree / DenseAppendOnlyFixedSizeTree) have no Merk
+            // nodes to chunk — their payload is served as target-driven
+            // entry pages instead. The target encodes a page cursor into
+            // every local chunk id; a request without one comes from a
+            // peer speaking the pre-#785 protocol, which cannot sync
+            // these subtrees.
+            if tree_type.uses_non_merk_data_storage() {
+                if nested_chunk_ids.is_empty() {
+                    return Err(Error::NotSupported(
+                        "append-only subtree chunk request is missing its page \
+                         cursor — the requesting peer does not support state \
+                         sync of append-only trees (see issue #785)"
+                            .to_string(),
+                    ));
+                }
+                let mut local_chunk_bytes: Vec<Vec<u8>> = vec![];
+                for chunk_id in &nested_chunk_ids {
+                    local_chunk_bytes.push(self.fetch_non_merk_page(
+                        chunk_prefix,
+                        tree_type,
+                        chunk_id,
+                        tx.as_ref(),
+                    )?);
+                }
+                global_chunk_bytes.push(pack_nested_bytes(local_chunk_bytes)?);
+                continue;
+            }
+
             let mut local_chunk_bytes: Vec<Vec<u8>> = vec![];
 
             let merk = self
@@ -165,21 +195,6 @@ impl GroveDb {
             if merk.is_empty_tree().unwrap() {
                 local_chunk_bytes.push(vec![]);
             } else {
-                // A non-empty namespace under a non-Merk append-only tree
-                // holds raw payload entries (frontier / chunk blobs / MMR
-                // nodes / dense entries), not Merk nodes — the Merk itself
-                // is rootless, so ChunkProducer::new below would fail with
-                // an opaque "cannot create chunk producer for empty Merk".
-                // Reject with a descriptive error instead.
-                // See https://github.com/dashpay/grovedb/issues/785.
-                if tree_type.uses_non_merk_data_storage() {
-                    return Err(Error::NotSupported(
-                        "state sync does not yet support populated append-only \
-                         trees (CommitmentTree / MmrTree / BulkAppendTree / \
-                         DenseAppendOnlyFixedSizeTree) — see issue #785"
-                            .to_string(),
-                    ));
-                }
                 let mut chunk_producer = ChunkProducer::new(&merk).map_err(|e| {
                     Error::CorruptedData(format!(
                         "failed to create chunk producer by prefix tx:{} with:{}",

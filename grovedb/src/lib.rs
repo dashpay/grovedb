@@ -311,12 +311,18 @@ type VerificationIssues = HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoH
 /// It represents a tuple containing:
 /// - A `Merk` instance with a prefixed RocksDB immediate storage context.
 /// - An optional `root_key`, represented as a vector of bytes.
-/// - A boolean indicating whether the Merk is a sum tree.
+/// - The `TreeType` of the subtree (with its parameters, e.g. chunk power,
+///   preserved from the parent element).
+/// - The parent-declared `Element` for this subtree, or `None` when opening
+///   the root subtree (which has no parent element). Replication needs the
+///   full element for non-Merk append-only trees, whose entry counts and
+///   parameters drive the raw-replay restore path.
 #[cfg(feature = "minimal")]
 type OpenedMerkForReplication<'tx> = (
     Merk<PrefixedRocksDbImmediateStorageContext<'tx>>,
     Option<Vec<u8>>,
     TreeType,
+    Option<Element>,
 );
 
 /// Verify that an indexed tree's secondary projection is exactly derivable
@@ -549,7 +555,7 @@ impl GroveDb {
                     ))
                 })
                 .unwrap()?;
-            if let Some((root_key, tree_type)) = element.root_key_and_tree_type_owned() {
+            if let Some((root_key, tree_type)) = element.clone().root_key_and_tree_type_owned() {
                 Ok((
                     Merk::open_layered_with_root_key(
                         storage,
@@ -566,6 +572,7 @@ impl GroveDb {
                     .unwrap()?,
                     root_key,
                     tree_type,
+                    Some(element),
                 ))
             } else {
                 Err(Error::CorruptedPath(
@@ -584,6 +591,7 @@ impl GroveDb {
                 .unwrap()?,
                 None,
                 TreeType::NormalTree,
+                None,
             ))
         }
     }
@@ -2453,6 +2461,131 @@ impl GroveDb {
                 }
             }
             _ => merk_root_hash,
+        }
+    }
+
+    /// Strict variant of [`Self::compute_non_merk_child_hash`] for callers
+    /// that must not silently fall back when the payload is unreadable —
+    /// notably state-sync restore, where a missing or corrupt payload has to
+    /// reject the subtree rather than slip through as a hash that may
+    /// coincidentally match.
+    ///
+    /// Recomputes the tree-type-specific state root from the payload stored
+    /// in the subtree's data namespace:
+    /// - `CommitmentTree`: `blake3("ct_state" || sinsemilla_root ||
+    ///   bulk_state_root)` (reads the frontier and the bulk store)
+    /// - `BulkAppendTree`: `blake3("bulk_state" || mmr_root || dense_root)`
+    /// - `MmrTree`: the MMR root hash
+    /// - `DenseAppendOnlyFixedSizeTree`: the dense tree root hash
+    ///
+    /// For empty trees this returns the same conventions the insert path
+    /// binds into the parent: `EMPTY_COMMITMENT_TREE_STATE_ROOT` for an
+    /// empty commitment tree, `NULL_HASH` (the empty Merk root) for the
+    /// other three types.
+    ///
+    /// Returns an error if `element` is not a non-Merk data tree, or if the
+    /// payload cannot be read back as a consistent tree of the declared
+    /// size.
+    pub(crate) fn compute_non_merk_state_root<'b, B: AsRef<[u8]>>(
+        &self,
+        element: &Element,
+        subtree_path: SubtreePath<'b, B>,
+        transaction: &Transaction,
+    ) -> Result<CryptoHash, Error> {
+        use grovedb_merk::tree::hash::NULL_HASH;
+        match element.underlying() {
+            Element::CommitmentTree(total_count, chunk_power, _) => {
+                if *total_count == 0 {
+                    return Ok(grovedb_commitment_tree::EMPTY_COMMITMENT_TREE_STATE_ROOT);
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                let ct = grovedb_commitment_tree::CommitmentTree::<_>::open(
+                    *total_count,
+                    *chunk_power,
+                    storage_ctx,
+                )
+                .value
+                .map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "cannot open commitment tree of {total_count} entries from payload: {e}"
+                    ))
+                })?;
+                ct.compute_current_state_root().map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "cannot compute commitment tree state root from payload: {e}"
+                    ))
+                })
+            }
+            Element::BulkAppendTree(total_count, chunk_power, _) => {
+                if *total_count == 0 {
+                    return Ok(NULL_HASH);
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                let tree = grovedb_bulk_append_tree::BulkAppendTree::from_state(
+                    *total_count,
+                    *chunk_power,
+                    storage_ctx,
+                )
+                .map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "cannot open bulk append tree of {total_count} entries from payload: {e}"
+                    ))
+                })?;
+                tree.compute_current_state_root().map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "cannot compute bulk append tree state root from payload: {e}"
+                    ))
+                })
+            }
+            Element::MmrTree(mmr_size, _) => {
+                if *mmr_size == 0 {
+                    return Ok(NULL_HASH);
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                let store = grovedb_merkle_mountain_range::MmrStore::new(&storage_ctx);
+                let mmr = grovedb_merkle_mountain_range::MMR::new(*mmr_size, &store);
+                mmr.get_root().value.map(|root| root.hash()).map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "cannot compute MMR root of size {mmr_size} from payload: {e}"
+                    ))
+                })
+            }
+            Element::DenseAppendOnlyFixedSizeTree(count, height, _) => {
+                if *count == 0 {
+                    return Ok(NULL_HASH);
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                use grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree;
+                DenseFixedSizedMerkleTree::from_state(*height, *count, storage_ctx)
+                    .map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "cannot open dense tree of {count} entries from payload: {e}"
+                        ))
+                    })?
+                    .root_hash()
+                    .unwrap()
+                    .map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "cannot compute dense tree root from payload: {e}"
+                        ))
+                    })
+            }
+            _ => Err(Error::InternalError(format!(
+                "compute_non_merk_state_root called on a non append-only element: {}",
+                element.type_str()
+            ))),
         }
     }
 }
