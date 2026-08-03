@@ -2625,6 +2625,14 @@ impl GroveDb {
         limit: u16,
         grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, grovedb_bulk_append_tree::RangePage), Error> {
+        check_grovedb_v0!(
+            "verify_bulk_position_range_proof",
+            grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .verify_bulk_position_range_proof
+        );
         // 1. Verify the range entries against the canonical range query.
         //    Succinctness cannot be required: range proofs are chunk-aligned
         //    and intentionally carry whole chunk blobs — a superset of the

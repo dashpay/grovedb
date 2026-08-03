@@ -2429,6 +2429,24 @@ fn test_bulk_position_range_proof_wrong_range_rejected() {
         grove_version,
     )
     .expect_err("proof for a narrower range must be rejected");
+
+    // Intended semantics pin: a DISJOINT range within the SAME chunk
+    // verifies. The proof for [0, 2) carries the whole chunk 0 blob
+    // (positions 0..4) because proofs are chunk-aligned, and every entry in
+    // it is authenticated against the root — so a verifier asking [2, 4)
+    // legitimately gets those entries from the same bytes.
+    let (root_hash, page) = crate::GroveDb::verify_bulk_position_range_proof(
+        &narrow_proof,
+        vec![],
+        b"bulk",
+        2,
+        2,
+        grove_version,
+    )
+    .expect("disjoint range within the proved chunk must verify");
+    let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+    assert_eq!(root_hash, expected_root);
+    assert_bulk_page(&page, 2, 4, 10);
 }
 
 #[test]

@@ -91,13 +91,28 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         let epoch_size = self.epoch_size();
         let buffer_start = self.chunk_count() * epoch_size;
 
-        // Completed chunks overlapping [start, min(end, buffer_start))
+        // Completed chunks overlapping [start, min(end, buffer_start)).
+        // The MMR (with its overlay clone) is built once and reused for every
+        // chunk in the page — going through `get_chunk_value` would rebuild
+        // it, and re-clone the overlay, per chunk.
         let chunk_end = end.min(buffer_start);
         if start < chunk_end {
             let first_chunk = start / epoch_size;
             let last_chunk = (chunk_end - 1) / epoch_size;
+            let mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32);
+            let mmr = MMR::new_with_overlay(self.mmr_size(), &mmr_store, self.mmr_overlay.clone());
             for chunk_idx in first_chunk..=last_chunk {
-                let blob = self.get_chunk_value(chunk_idx)?.ok_or_else(|| {
+                let node = mmr
+                    .batch
+                    .element_at_position(leaf_to_pos(chunk_idx))
+                    .unwrap()
+                    .map_err(|e| {
+                        BulkAppendError::MmrError(format!(
+                            "failed to read MMR node for chunk {}: {}",
+                            chunk_idx, e
+                        ))
+                    })?;
+                let blob = node.and_then(|n| n.into_value()).ok_or_else(|| {
                     BulkAppendError::CorruptedData(format!(
                         "missing chunk blob for index {}",
                         chunk_idx

@@ -231,6 +231,14 @@ impl GroveDb {
         prove_options: Option<ProveOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error> {
+        check_grovedb_v0_with_cost!(
+            "prove_bulk_position_range",
+            grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .prove_bulk_position_range
+        );
         let mut cost = OperationCost::default();
 
         // Fail fast with a clear error when the target is not an append-only

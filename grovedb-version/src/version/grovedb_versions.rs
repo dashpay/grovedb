@@ -130,6 +130,8 @@ pub struct GroveDBOperationsProofVersions {
     pub prove_trunk_chunk_non_serialized: FeatureVersion,
     pub prove_branch_chunk: FeatureVersion,
     pub prove_branch_chunk_non_serialized: FeatureVersion,
+    pub prove_bulk_position_range: FeatureVersion,
+    pub verify_bulk_position_range_proof: FeatureVersion,
     pub verify_query_with_options: FeatureVersion,
     pub verify_query_raw: FeatureVersion,
     pub verify_layer_proof: FeatureVersion,

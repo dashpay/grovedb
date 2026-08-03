@@ -3099,3 +3099,29 @@ fn test_commitment_tree_position_range_proof_empty_tree() {
     assert!(page.entries.is_empty());
     assert_eq!(page.total_count, 0);
 }
+
+/// The CommitmentTree envelope (`ProofBytes::CommitmentTree`, sinsemilla
+/// prefix + bulk proof) must reject a wider range than was proved, same as
+/// the plain BulkAppendTree envelope.
+#[test]
+fn test_commitment_tree_position_range_proof_wrong_range_rejected() {
+    let grove_version = GroveVersion::latest();
+    let (db, _) = make_ct_db_with_notes(10);
+
+    // Proof generated for [0, 2) (inside chunk 0) must not verify a request
+    // for [0, 6), which also needs chunk 1.
+    let narrow_proof = db
+        .prove_bulk_position_range(vec![b"root".to_vec()], b"pool", 0, 2, None, grove_version)
+        .unwrap()
+        .expect("prove narrow range");
+
+    GroveDb::verify_bulk_position_range_proof(
+        &narrow_proof,
+        vec![b"root".to_vec()],
+        b"pool",
+        0,
+        6,
+        grove_version,
+    )
+    .expect_err("proof for a narrower range must be rejected");
+}
