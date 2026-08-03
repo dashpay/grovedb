@@ -55,34 +55,41 @@ pub struct GroveDBApplyBatchVersions {
     ///
     /// - `0` (V1..V3): the caller-declared `TreeType` carried by the op is
     ///   taken at face value.
-    /// - `1` (V4+): the stored element is read and its actual type used
-    ///   instead, and a declared/stored mismatch involving an indexed tree is
-    ///   rejected. Closes an indexed type-confusion — a declared type hiding a
-    ///   stored indexed primary skips the per-axis secondary sweep and leaves
+    /// - `1` (V4+): the ACTUAL stored type is used instead, and a
+    ///   declared/stored mismatch involving an indexed tree is rejected.
+    ///   Closes an indexed type-confusion — a declared type hiding a stored
+    ///   indexed primary skips the per-axis secondary sweep and leaves
     ///   authenticated stale rows — and a `CommitmentTree` case where the
     ///   declared type sends the op down the wrong emptiness path, orphaning
-    ///   its non-Merk data. Costs one extra stored-element read per op, which
-    ///   is why it cannot apply to the released versions.
+    ///   its non-Merk data.
+    ///
+    /// The stored element comes from data the apply already loads (the
+    /// emptiness pre-scan's own read, or the old value the merk delete
+    /// surfaces through the old-value observer), so V4 charges exactly the
+    /// V1..V3 cost per op. The slot still gates the check because it flips
+    /// an accepted/rejected outcome — a mismatched delete that V1..V3
+    /// accept is refused on V4+ when an indexed tree is involved.
     pub delete_tree_cleanup_type_source: FeatureVersion,
-    /// Whether a batch overwrite (`InsertOrReplace` / `Replace` / `Patch` of a
-    /// non-reference element, with tree-override protection off) reads the
-    /// stored element to detect an indexed tree being overwritten.
+    /// Whether a batch overwrite (`InsertOrReplace` / `Replace` / `Patch`,
+    /// with tree-override protection off) classifies the element it
+    /// displaces to detect an indexed tree being overwritten.
     ///
-    /// - `0` (V1..V3): no read. Overwrites keep their released cost shape.
-    /// - `1` (V4+): the stored element is read and, when it is an indexed
-    ///   tree, the overwrite is classified — the safe subset (empty indexed or
-    ///   non-indexed replacement) schedules the per-axis secondary storage for
-    ///   cleanup, and an ambiguous non-empty indexed replacement is refused.
-    ///   Without the read, overwriting an indexed primary would orphan its
-    ///   secondary namespaces at their derived prefixes.
+    /// - `0` (V1..V3): no classification. Overwrites keep their released
+    ///   accepted/rejected outcomes.
+    /// - `1` (V4+): the displaced element is classified — the safe subset
+    ///   (empty indexed or non-indexed replacement, references included)
+    ///   schedules the per-axis secondary storage for cleanup, and an
+    ///   ambiguous non-empty indexed replacement is refused. Without this,
+    ///   overwriting an indexed primary would orphan its secondary
+    ///   namespaces at their derived prefixes.
     ///
-    /// Costs one extra stored-element read per overwrite-capable op, which
-    /// measurably changes tracked costs (+1 seek, +129 loaded bytes on the
-    /// repo's own cost tests) — cost feeds fees, so like
-    /// [`Self::delete_tree_cleanup_type_source`] it cannot apply to the
-    /// released versions. The hole it closes needs an indexed tree to be the
-    /// element being overwritten, which cannot occur before the version that
-    /// introduces indexed trees.
+    /// The old element bytes come from the node the merk walk fetched
+    /// anyway to rewrite the key, surfaced through the old-value observer —
+    /// no dedicated stored-element read, so V4 charges exactly the V1..V3
+    /// cost per overwrite-capable op. Like
+    /// [`Self::delete_tree_cleanup_type_source`] the slot gates behaviour,
+    /// not cost: a non-empty indexed replacement that would be accepted
+    /// blind on V1..V3 is refused on V4+.
     pub overwrite_indexed_cleanup_inspection: FeatureVersion,
 }
 

@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn pcit_batch_overwrite_existing_pcit_with_empty_pcit_clears_secondary() {
-        // Per `inspect_cidx_overwrite`: cidx → empty cidx is the safe
+        // Per `classify_cidx_overwrite`: cidx → empty cidx is the safe
         // subset and must succeed via batch (post-apply cleanup
         // clears the old secondary namespace at
         // Blake3(primary_prefix ‖ 0x01)).
@@ -473,7 +473,7 @@ mod tests {
     #[test]
     fn pcit_batch_overwrite_existing_pcit_with_non_empty_pcit_is_rejected() {
         // indexed → non-empty indexed must be rejected by
-        // `inspect_cidx_overwrite` (storage-pointer ambiguity: the new
+        // `classify_cidx_overwrite` (storage-pointer ambiguity: the new
         // root keys would refer to on-disk data that post-apply
         // cleanup of the OLD cidx also clears).
         let grove_version = GroveVersion::latest();
@@ -497,12 +497,15 @@ mod tests {
                 grove_version,
             )
             .unwrap();
+        // Refused by the ungated empty-at-batch-insertion guard (a non-empty
+        // indexed element cannot enter a batch at all); the overwrite
+        // classifier's NotSupported stays as defense in depth behind it.
         match result {
-            Err(Error::NotSupported(msg)) => assert!(
-                msg.contains("NON-EMPTY indexed tree"),
-                "expected NotSupported, got: {msg}"
+            Err(Error::InvalidBatchOperation(msg)) => assert!(
+                msg.contains("must be empty at the moment of batch insertion"),
+                "expected the empty-at-insertion refusal, got: {msg}"
             ),
-            other => panic!("expected NotSupported, got {:?}", other),
+            other => panic!("expected InvalidBatchOperation, got {:?}", other),
         }
     }
 
