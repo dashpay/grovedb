@@ -643,11 +643,11 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     /// the raw `cmx || rho || cv_net || payload` bytes at that position.
     /// Delegates to [`BulkAppendTree::get_range`], so the read is
     /// chunk-aligned — O(chunks touched) blob reads, not O(entries) random
-    /// reads.
-    pub fn get_range(&self, start: u64, limit: u16) -> Result<RangePage, CommitmentTreeError> {
+    /// reads — and carries the page's storage costs.
+    pub fn get_range(&self, start: u64, limit: u16) -> CostResult<RangePage, CommitmentTreeError> {
         self.bulk_tree
             .get_range(start, limit)
-            .map_err(|e| CommitmentTreeError::InvalidData(format!("range read: {}", e)))
+            .map(|r| r.map_err(|e| CommitmentTreeError::InvalidData(format!("range read: {}", e))))
     }
 
     /// The number of entries per completed chunk (epoch).

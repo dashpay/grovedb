@@ -2618,3 +2618,40 @@ fn test_bulk_position_range_verify_rejects_unbound_element() {
     .expect_err("proof that binds no element must be rejected");
     assert!(matches!(err, Error::InvalidProof(..)));
 }
+
+/// Range reads must charge their storage work: the page's chunk-MMR seeks
+/// and buffer reads all show up in the returned cost, so cost limits
+/// reflect the actual work instead of treating a 65k-entry page as free.
+#[test]
+fn test_bulk_get_range_reports_storage_costs() {
+    let grove_version = GroveVersion::latest();
+    // 11 values = 2 full chunks + 3 buffered (chunk size 4)
+    let db = make_bulk_db_with_values(11);
+
+    // A page spanning both chunks and the buffer
+    let result = db.bulk_get_range(EMPTY_PATH, b"bulk", 0, 11, None, grove_version);
+    let cost = result.cost.clone();
+    let page = result.unwrap().expect("bulk get range");
+    assert_eq!(page.entries.len(), 11);
+    assert!(
+        cost.storage_loaded_bytes > 0,
+        "range read must charge loaded bytes, got {:?}",
+        cost
+    );
+    assert!(
+        cost.seek_count > 0,
+        "range read must charge seeks, got {:?}",
+        cost
+    );
+
+    // A wider page must not cost less than a narrower one
+    let narrow_cost = db
+        .bulk_get_range(EMPTY_PATH, b"bulk", 8, 1, None, grove_version)
+        .cost;
+    assert!(
+        cost.storage_loaded_bytes > narrow_cost.storage_loaded_bytes,
+        "an 11-entry page must load more bytes than a 1-entry page ({} vs {})",
+        cost.storage_loaded_bytes,
+        narrow_cost.storage_loaded_bytes
+    );
+}

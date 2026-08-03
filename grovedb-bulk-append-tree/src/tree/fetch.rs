@@ -1,5 +1,6 @@
 //! Read operations for BulkAppendTree.
 
+use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
 use grovedb_merkle_mountain_range::{leaf_to_pos, MmrKeySize, MmrStore, MMR};
 use grovedb_query::Query;
@@ -77,14 +78,20 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     ///
     /// Absence needs no lookup: positions `>= total_count` do not exist, so
     /// a page shorter than `limit` means the end of the tree was reached.
-    pub fn get_range(&self, start: u64, limit: u16) -> Result<RangePage, BulkAppendError> {
+    ///
+    /// Returns a [`CostResult`] so callers can charge the page's actual
+    /// storage work (chunk MMR seeks and buffer reads) against cost limits.
+    pub fn get_range(&self, start: u64, limit: u16) -> CostResult<RangePage, BulkAppendError> {
+        let mut cost = OperationCost::default();
+
         let total_count = self.total_count;
         let end = start.saturating_add(limit as u64).min(total_count);
         if start >= end {
             return Ok(RangePage {
                 entries: Vec::new(),
                 total_count,
-            });
+            })
+            .wrap_with_cost(cost);
         }
         let mut entries = Vec::with_capacity((end - start) as usize);
 
@@ -102,23 +109,48 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             let mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32);
             let mmr = MMR::new_with_overlay(self.mmr_size(), &mmr_store, self.mmr_overlay.clone());
             for chunk_idx in first_chunk..=last_chunk {
-                let node = mmr
+                let node = match mmr
                     .batch
                     .element_at_position(leaf_to_pos(chunk_idx))
-                    .unwrap()
-                    .map_err(|e| {
-                        BulkAppendError::MmrError(format!(
+                    .unwrap_add_cost(&mut cost)
+                {
+                    Ok(node) => node,
+                    Err(e) => {
+                        return Err(BulkAppendError::MmrError(format!(
                             "failed to read MMR node for chunk {}: {}",
                             chunk_idx, e
-                        ))
-                    })?;
-                let blob = node.and_then(|n| n.into_value()).ok_or_else(|| {
-                    BulkAppendError::CorruptedData(format!(
+                        )))
+                        .wrap_with_cost(cost);
+                    }
+                };
+                let Some(blob) = node.and_then(|n| n.into_value()) else {
+                    return Err(BulkAppendError::CorruptedData(format!(
                         "missing chunk blob for index {}",
                         chunk_idx
-                    ))
-                })?;
-                let chunk_entries = deserialize_chunk_blob(&blob)?;
+                    )))
+                    .wrap_with_cost(cost);
+                };
+                let chunk_entries = match deserialize_chunk_blob(&blob) {
+                    Ok(chunk_entries) => chunk_entries,
+                    Err(e) => return Err(e).wrap_with_cost(cost),
+                };
+                // A completed chunk holds exactly `epoch_size` entries — a
+                // short blob would silently omit positions and an oversized
+                // one would overlap the next chunk, breaking the contiguous
+                // page contract. Unlike proof verification (where chunk
+                // bytes are bound to the state root and a length check is
+                // redundant — see the NOTE in proof/mod.rs), this raw read
+                // path has no root comparison backing it, so the length is
+                // validated here.
+                if chunk_entries.len() as u64 != epoch_size {
+                    return Err(BulkAppendError::CorruptedData(format!(
+                        "chunk {} holds {} entries, expected {}",
+                        chunk_idx,
+                        chunk_entries.len(),
+                        epoch_size
+                    )))
+                    .wrap_with_cost(cost);
+                }
                 let chunk_start = chunk_idx * epoch_size;
                 for (i, value) in chunk_entries.into_iter().enumerate() {
                     let pos = chunk_start + i as u64;
@@ -129,15 +161,27 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             }
         }
 
-        // Buffer tail: positions in [max(start, buffer_start), end)
+        // Buffer tail: positions in [max(start, buffer_start), end). Read
+        // through the dense tree directly so each read's cost is charged.
         for pos in start.max(buffer_start)..end {
             let buffer_pos = (pos - buffer_start) as u16;
-            let value = self.get_buffer_value(buffer_pos)?.ok_or_else(|| {
-                BulkAppendError::CorruptedData(format!(
-                    "missing buffer value at position {}",
-                    buffer_pos
-                ))
-            })?;
+            let value = match self.dense_tree.get(buffer_pos).unwrap_add_cost(&mut cost) {
+                Ok(Some(value)) => value,
+                Ok(None) => {
+                    return Err(BulkAppendError::CorruptedData(format!(
+                        "missing buffer value at position {}",
+                        buffer_pos
+                    )))
+                    .wrap_with_cost(cost);
+                }
+                Err(e) => {
+                    return Err(BulkAppendError::StorageError(format!(
+                        "dense tree get at {} failed: {}",
+                        buffer_pos, e
+                    )))
+                    .wrap_with_cost(cost);
+                }
+            };
             entries.push((pos, value));
         }
 
@@ -145,6 +189,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             entries,
             total_count,
         })
+        .wrap_with_cost(cost)
     }
 
     // ── Chunk operations (MMR) ───────────────────────────────────────

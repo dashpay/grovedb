@@ -308,8 +308,11 @@ impl GroveDb {
             BulkAppendTree::from_state(total_count, chunk_power, storage_ctx).map_err(map_bulk_err)
         );
 
-        let page =
-            cost_return_on_error_no_add!(cost, tree.get_range(start, limit).map_err(map_bulk_err));
+        let page = cost_return_on_error!(
+            &mut cost,
+            tree.get_range(start, limit)
+                .map(|r| r.map_err(map_bulk_err))
+        );
 
         Ok(page).wrap_with_cost(cost)
     }

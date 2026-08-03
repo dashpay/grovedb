@@ -447,8 +447,10 @@ impl GroveDb {
                 .map(|r| r.map_err(map_ct_err))
         );
 
-        let page =
-            cost_return_on_error_no_add!(cost, ct.get_range(start, limit).map_err(map_ct_err));
+        let page = cost_return_on_error!(
+            &mut cost,
+            ct.get_range(start, limit).map(|r| r.map_err(map_ct_err))
+        );
 
         Ok(page).wrap_with_cost(cost)
     }
