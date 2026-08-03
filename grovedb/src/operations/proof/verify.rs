@@ -1645,11 +1645,27 @@ impl GroveDb {
             .verify_and_compute_root(element_height, element_total_count)
             .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
 
+        // An empty `BulkAppendTree` element chains through NULL_HASH, not the
+        // domain-tagged empty state root: insert commits the element with a
+        // NULL_HASH child hash (there is no bulk state until the first
+        // append), and `verify_grovedb`'s integrity walk mirrors that. This
+        // is sound because `verify_and_compute_root` above already rejected
+        // any proof carrying data for a zero-count tree. `CommitmentTree` is
+        // different — its insert commits `EMPTY_COMMITMENT_TREE_STATE_ROOT`,
+        // which folds in the *computed* empty bulk root, so the CT wrapper
+        // (our caller) keeps the computed value.
+        let child_hash =
+            if element_total_count == 0 && matches!(element, Element::BulkAppendTree(..)) {
+                NULL_HASH
+            } else {
+                bulk_state_root
+            };
+
         // Root only: the caller is binding the parent element and does not
         // report this layer's entries, so there is no query at this path to
         // extract a position range from.
         if !report_contents {
-            return Ok(bulk_state_root);
+            return Ok(child_hash);
         }
 
         // Get the query range from the path query to extract matching values
@@ -1722,8 +1738,8 @@ impl GroveDb {
             }
         }
 
-        // Return computed state_root as child Merk hash
-        Ok(bulk_state_root)
+        // Return the derived child Merk hash (see the empty-tree note above)
+        Ok(child_hash)
     }
 
     /// Verify a CommitmentTree lower layer proof and add results.
