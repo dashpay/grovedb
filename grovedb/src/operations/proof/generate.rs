@@ -205,6 +205,62 @@ impl GroveDb {
         }
     }
 
+    /// Prove the paginated position range `[start, start + limit)` of the
+    /// append-only, BulkAppendTree-backed element at `path`/`key`
+    /// (`Element::BulkAppendTree` or `Element::CommitmentTree`).
+    ///
+    /// This is the scanning hot path: clients walking "all entries since my
+    /// cursor" prove one page per call, passing their cursor as `start`. The
+    /// proof reuses the existing V1 layering (`ProofBytes::BulkAppendTree` /
+    /// `ProofBytes::CommitmentTree`) over the canonical
+    /// [`PathQuery::new_bulk_position_range`] query, so it is chunk-aligned:
+    /// it carries each completed chunk blob overlapping the range plus the
+    /// in-range buffer entries — O(chunks touched), not O(entries). It also
+    /// binds the element itself, whose authenticated `total_count` makes
+    /// absence beyond the end provable (`position >= total_count`), so
+    /// ranges past the end need no per-position absence proofs.
+    ///
+    /// Verify with [`GroveDb::verify_bulk_position_range_proof`], which
+    /// derives the same canonical query from `(path, key, start, limit)`.
+    pub fn prove_bulk_position_range(
+        &self,
+        path: Vec<Vec<u8>>,
+        key: &[u8],
+        start: u64,
+        limit: u16,
+        prove_options: Option<ProveOptions>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<u8>, Error> {
+        let mut cost = OperationCost::default();
+
+        // Fail fast with a clear error when the target is not an append-only
+        // store — a generic proof for some other element type would only be
+        // rejected later, at verification time.
+        let path_refs: Vec<&[u8]> = path.iter().map(|p| p.as_slice()).collect();
+        let subtree_path = grovedb_path::SubtreePath::from(path_refs.as_slice());
+        let element = cost_return_on_error!(
+            &mut cost,
+            self.get_raw_caching_optional(subtree_path, key, true, None, grove_version)
+        );
+        match element.underlying() {
+            Element::BulkAppendTree(..) | Element::CommitmentTree(..) => {}
+            _ => {
+                return Err(Error::InvalidInput(
+                    "prove_bulk_position_range requires a BulkAppendTree or CommitmentTree \
+                     element",
+                ))
+                .wrap_with_cost(cost);
+            }
+        }
+
+        let path_query = PathQuery::new_bulk_position_range(path, key.to_vec(), start, limit);
+        let proof = cost_return_on_error!(
+            &mut cost,
+            self.prove_query(&path_query, prove_options, grove_version)
+        );
+        Ok(proof).wrap_with_cost(cost)
+    }
+
     /// Helper for the top-level count-offset gate in
     /// `prove_query_non_serialized_v{0,1}`. Opens the merk at
     /// `path_query.path` and confirms its `tree_type` is one of the

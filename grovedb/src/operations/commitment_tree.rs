@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use grovedb_commitment_tree::{
     deserialize_chunk_blob, serialize_ciphertext, Anchor, CommitmentTree, DashMemo, MemoSize,
-    TransmittedNoteCiphertext,
+    RangePage, TransmittedNoteCiphertext,
 };
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
@@ -386,6 +386,71 @@ impl GroveDb {
             );
             Ok(entries.get(pos_in_chunk).cloned()).wrap_with_cost(cost)
         }
+    }
+
+    /// Fetch entries for the position range `[start, start + limit)` from a
+    /// CommitmentTree, clamped to its total count.
+    ///
+    /// This is the shielded-pool scanning read path: clients walk "all notes
+    /// since my cursor" in pages, trial-decrypting each returned
+    /// `cmx || rho || cv_net || payload` value. The read is chunk-aligned —
+    /// each completed chunk overlapping the range is read and deserialized
+    /// exactly once, so a page costs O(chunks touched) blob reads plus one
+    /// read per buffer entry, not O(entries) random reads.
+    ///
+    /// The returned [`RangePage`] also carries the tree's `total_count`:
+    /// positions `>= total_count` do not exist, so a page shorter than
+    /// `limit` means the scan caught up with the tip.
+    pub fn commitment_tree_get_range<'b, B, P>(
+        &self,
+        path: P,
+        key: &[u8],
+        start: u64,
+        limit: u16,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<RangePage, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let path: SubtreePath<B> = path.into();
+        let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
+
+        let element = cost_return_on_error!(
+            &mut cost,
+            self.get_raw_caching_optional(path.clone(), key, true, transaction, grove_version)
+        );
+
+        // Look through NonCounted: a wrapped CommitmentTree is still one.
+        let (total_count, chunk_power) = match element.underlying() {
+            Element::CommitmentTree(tc, cp, _) => (*tc, *cp),
+            _ => {
+                return Err(Error::InvalidInput("element is not a commitment tree"))
+                    .wrap_with_cost(cost);
+            }
+        };
+
+        let ct_path_vec = self.build_ct_path(&path, key);
+        let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
+        let ct_path = SubtreePath::from(ct_path_refs.as_slice());
+
+        let storage_ctx = self
+            .db
+            .get_transactional_storage_context(ct_path, None, tx.as_ref())
+            .unwrap_add_cost(&mut cost);
+
+        let ct = cost_return_on_error!(
+            &mut cost,
+            CommitmentTree::<_, DashMemo>::open(total_count, chunk_power, storage_ctx)
+                .map(|r| r.map_err(map_ct_err))
+        );
+
+        let page =
+            cost_return_on_error_no_add!(cost, ct.get_range(start, limit).map_err(map_ct_err));
+
+        Ok(page).wrap_with_cost(cost)
     }
 
     /// Get the total count of items in a CommitmentTree.

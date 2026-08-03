@@ -2125,3 +2125,368 @@ fn test_bulk_batch_multi_compaction_transaction_rollback() {
         "bulk tree should be empty after multi-compaction tx rollback"
     );
 }
+
+// ===========================================================================
+// Paginated position-range reads (get_range) and range proofs
+// ===========================================================================
+
+/// Helper: create a DB with a BulkAppendTree at root key `b"bulk"` holding
+/// `n` values `b"value_0"`, `b"value_1"`, ... (chunk_power = 2 → chunk size
+/// 4).
+fn make_bulk_db_with_values(n: u32) -> crate::tests::TempGroveDb {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"bulk",
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk append tree");
+
+    for i in 0..n {
+        db.bulk_append(
+            EMPTY_PATH,
+            b"bulk",
+            format!("value_{}", i).into_bytes(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("bulk append");
+    }
+
+    db
+}
+
+/// Helper: assert a page holds exactly positions `start..end` with the
+/// values written by [`make_bulk_db_with_values`].
+fn assert_bulk_page(page: &crate::RangePage, start: u64, end: u64, total_count: u64) {
+    assert_eq!(page.total_count, total_count, "page total_count");
+    assert_eq!(page.entries.len(), (end - start) as usize, "page length");
+    for (i, (pos, value)) in page.entries.iter().enumerate() {
+        assert_eq!(*pos, start + i as u64, "page position");
+        assert_eq!(value, format!("value_{}", pos).as_bytes(), "page value");
+    }
+}
+
+#[test]
+fn test_bulk_get_range_matches_get_value() {
+    let grove_version = GroveVersion::latest();
+    // 11 values = 2 full chunks (8) + 3 buffered
+    let db = make_bulk_db_with_values(11);
+
+    // Every possible page of size 4 must match per-position reads
+    for start in 0..12u64 {
+        let page = db
+            .bulk_get_range(EMPTY_PATH, b"bulk", start, 4, None, grove_version)
+            .unwrap()
+            .expect("bulk get range");
+        assert_eq!(page.total_count, 11);
+
+        let end = (start + 4).min(11);
+        let expected_len = end.saturating_sub(start.min(end));
+        assert_eq!(page.entries.len(), expected_len as usize);
+
+        for (pos, value) in &page.entries {
+            let expected = db
+                .bulk_get_value(EMPTY_PATH, b"bulk", *pos, None, grove_version)
+                .unwrap()
+                .expect("bulk get value")
+                .expect("value exists");
+            assert_eq!(value, &expected);
+        }
+    }
+}
+
+#[test]
+fn test_bulk_get_range_empty_and_past_end() {
+    let grove_version = GroveVersion::latest();
+    let db = make_bulk_db_with_values(10);
+
+    // limit = 0
+    let page = db
+        .bulk_get_range(EMPTY_PATH, b"bulk", 3, 0, None, grove_version)
+        .unwrap()
+        .expect("bulk get range");
+    assert_bulk_page(&page, 3, 3, 10);
+
+    // start exactly at total_count
+    let page = db
+        .bulk_get_range(EMPTY_PATH, b"bulk", 10, 5, None, grove_version)
+        .unwrap()
+        .expect("bulk get range");
+    assert_bulk_page(&page, 10, 10, 10);
+
+    // start far past total_count
+    let page = db
+        .bulk_get_range(EMPTY_PATH, b"bulk", 1000, 5, None, grove_version)
+        .unwrap()
+        .expect("bulk get range");
+    assert!(page.entries.is_empty());
+    assert_eq!(page.total_count, 10);
+
+    // clamped at the end
+    let page = db
+        .bulk_get_range(EMPTY_PATH, b"bulk", 8, 100, None, grove_version)
+        .unwrap()
+        .expect("bulk get range");
+    assert_bulk_page(&page, 8, 10, 10);
+}
+
+#[test]
+fn test_bulk_get_range_wrong_element_type() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"normal",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert normal tree");
+
+    let result = db
+        .bulk_get_range(EMPTY_PATH, b"normal", 0, 4, None, grove_version)
+        .unwrap();
+    assert!(matches!(result, Err(Error::InvalidInput(_))));
+}
+
+/// Helper: prove and verify a position range page, asserting the returned
+/// root hash matches the database root hash, and return the page.
+fn roundtrip_bulk_range_proof(
+    db: &crate::tests::TempGroveDb,
+    start: u64,
+    limit: u16,
+) -> crate::RangePage {
+    let grove_version = GroveVersion::latest();
+
+    let proof = db
+        .prove_bulk_position_range(vec![], b"bulk", start, limit, None, grove_version)
+        .unwrap()
+        .expect("prove bulk position range");
+
+    let (root_hash, page) = crate::GroveDb::verify_bulk_position_range_proof(
+        &proof,
+        vec![],
+        b"bulk",
+        start,
+        limit,
+        grove_version,
+    )
+    .expect("verify bulk position range proof");
+
+    let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+    assert_eq!(root_hash, expected_root, "proof root must match db root");
+
+    page
+}
+
+#[test]
+fn test_bulk_position_range_proof_across_chunk_boundary() {
+    // 10 values = 2 chunks (8) + 2 buffered, chunk size 4
+    let db = make_bulk_db_with_values(10);
+
+    // Page [3, 6) spans the chunk 0 / chunk 1 boundary
+    let page = roundtrip_bulk_range_proof(&db, 3, 3);
+    assert_bulk_page(&page, 3, 6, 10);
+
+    // Page [6, 10) spans the chunk 1 / buffer boundary
+    let page = roundtrip_bulk_range_proof(&db, 6, 4);
+    assert_bulk_page(&page, 6, 10, 10);
+}
+
+#[test]
+fn test_bulk_position_range_proof_empty_range() {
+    let db = make_bulk_db_with_values(10);
+    let page = roundtrip_bulk_range_proof(&db, 3, 0);
+    assert_bulk_page(&page, 3, 3, 10);
+}
+
+#[test]
+fn test_bulk_position_range_proof_past_end() {
+    let db = make_bulk_db_with_values(10);
+
+    // Start exactly at total_count: provably nothing there — the verified
+    // total_count is the absence proof.
+    let page = roundtrip_bulk_range_proof(&db, 10, 5);
+    assert!(page.entries.is_empty());
+    assert_eq!(page.total_count, 10);
+
+    // Start far past total_count
+    let page = roundtrip_bulk_range_proof(&db, 1000, 5);
+    assert!(page.entries.is_empty());
+    assert_eq!(page.total_count, 10);
+
+    // Range starting inside but extending past the end is clamped
+    let page = roundtrip_bulk_range_proof(&db, 8, 100);
+    assert_bulk_page(&page, 8, 10, 10);
+}
+
+#[test]
+fn test_bulk_position_range_proof_single_entry_pages() {
+    let db = make_bulk_db_with_values(10);
+    for pos in 0..10u64 {
+        let page = roundtrip_bulk_range_proof(&db, pos, 1);
+        assert_bulk_page(&page, pos, pos + 1, 10);
+    }
+}
+
+#[test]
+fn test_bulk_position_range_proof_large_multi_chunk_page() {
+    // 30 values = 7 full chunks (28) + 2 buffered, chunk size 4.
+    let db = make_bulk_db_with_values(30);
+
+    // One page covering everything touches all chunks and the buffer
+    let page = roundtrip_bulk_range_proof(&db, 0, 30);
+    assert_bulk_page(&page, 0, 30, 30);
+
+    // A large page crossing several chunk boundaries mid-tree
+    let page = roundtrip_bulk_range_proof(&db, 5, 20);
+    assert_bulk_page(&page, 5, 25, 30);
+}
+
+#[test]
+fn test_bulk_position_range_proof_empty_tree() {
+    let db = make_bulk_db_with_values(0);
+    let page = roundtrip_bulk_range_proof(&db, 0, 10);
+    assert!(page.entries.is_empty());
+    assert_eq!(page.total_count, 0);
+}
+
+#[test]
+fn test_bulk_position_range_paged_scan() {
+    // The scanning pattern: walk the whole tree in proved pages of 7
+    // (deliberately not aligned to the chunk size of 4).
+    let db = make_bulk_db_with_values(30);
+
+    let mut cursor = 0u64;
+    let mut seen = Vec::new();
+    loop {
+        let page = roundtrip_bulk_range_proof(&db, cursor, 7);
+        if page.entries.is_empty() {
+            assert!(cursor >= page.total_count, "empty page only at the end");
+            break;
+        }
+        cursor += page.entries.len() as u64;
+        seen.extend(page.entries);
+    }
+    assert_eq!(seen.len(), 30);
+    for (i, (pos, value)) in seen.iter().enumerate() {
+        assert_eq!(*pos, i as u64);
+        assert_eq!(value, format!("value_{}", i).as_bytes());
+    }
+}
+
+#[test]
+fn test_bulk_position_range_prove_wrong_element_type() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"normal",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert normal tree");
+
+    let result = db
+        .prove_bulk_position_range(vec![], b"normal", 0, 4, None, grove_version)
+        .unwrap();
+    assert!(matches!(result, Err(Error::InvalidInput(_))));
+}
+
+#[test]
+fn test_bulk_position_range_proof_wrong_range_rejected() {
+    let grove_version = GroveVersion::latest();
+    let db = make_bulk_db_with_values(10);
+
+    // Proof generated for [0, 2) (inside chunk 0) must not verify a request
+    // for [0, 6), which also needs chunk 1.
+    let narrow_proof = db
+        .prove_bulk_position_range(vec![], b"bulk", 0, 2, None, grove_version)
+        .unwrap()
+        .expect("prove narrow range");
+
+    crate::GroveDb::verify_bulk_position_range_proof(
+        &narrow_proof,
+        vec![],
+        b"bulk",
+        0,
+        6,
+        grove_version,
+    )
+    .expect_err("proof for a narrower range must be rejected");
+}
+
+#[test]
+fn test_bulk_position_range_proof_deep_path() {
+    // Same flow but with the BulkAppendTree nested under a normal tree.
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"deep",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent tree");
+
+    db.insert(
+        &[b"deep"],
+        b"bulk",
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk append tree");
+
+    for i in 0..10u32 {
+        db.bulk_append(
+            &[b"deep"],
+            b"bulk",
+            format!("value_{}", i).into_bytes(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("bulk append");
+    }
+
+    let proof = db
+        .prove_bulk_position_range(vec![b"deep".to_vec()], b"bulk", 2, 5, None, grove_version)
+        .unwrap()
+        .expect("prove nested bulk position range");
+
+    let (root_hash, page) = crate::GroveDb::verify_bulk_position_range_proof(
+        &proof,
+        vec![b"deep".to_vec()],
+        b"bulk",
+        2,
+        5,
+        grove_version,
+    )
+    .expect("verify nested bulk position range proof");
+
+    let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+    assert_eq!(root_hash, expected_root);
+    assert_bulk_page(&page, 2, 7, 10);
+}

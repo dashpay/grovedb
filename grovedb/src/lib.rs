@@ -180,6 +180,8 @@ pub use element::aggregate_sum_query::{AggregateSumQueryOptions, AggregateSumQue
 pub use element::Element;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use element::ElementFlags;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grovedb_bulk_append_tree::RangePage;
 #[cfg(feature = "minimal")]
 use grovedb_costs::cost_return_on_error_into;
 #[cfg(feature = "minimal")]

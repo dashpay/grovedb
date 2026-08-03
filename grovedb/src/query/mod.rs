@@ -526,6 +526,48 @@ impl PathQuery {
         Self { path, query }
     }
 
+    /// Canonical `PathQuery` for a paginated position-range read of an
+    /// append-only, BulkAppendTree-backed element (`BulkAppendTree` or
+    /// `CommitmentTree`) at `path`/`key`.
+    ///
+    /// Selects the element at `key` and subqueries positions
+    /// `[start, start + limit)`, encoded as 8-byte big-endian keys
+    /// (`start + limit` saturates at `u64::MAX`). Prover and verifier both
+    /// derive this query from `(start, limit)`, so a scanning client only
+    /// needs its cursor and page size — see
+    /// [`GroveDb::prove_bulk_position_range`] and
+    /// [`GroveDb::verify_bulk_position_range_proof`].
+    ///
+    /// [`GroveDb::prove_bulk_position_range`]:
+    ///     crate::GroveDb::prove_bulk_position_range
+    /// [`GroveDb::verify_bulk_position_range_proof`]:
+    ///     crate::GroveDb::verify_bulk_position_range_proof
+    pub fn new_bulk_position_range(
+        path: Vec<Vec<u8>>,
+        key: Vec<u8>,
+        start: u64,
+        limit: u16,
+    ) -> Self {
+        let position_query = grovedb_bulk_append_tree::position_range_query(start, limit);
+        Self {
+            path,
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::Key(key)],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: None,
+                        subquery: Some(position_query.into()),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
+                },
+                limit: None,
+                offset: None,
+            },
+        }
+    }
+
     /// Construct a `PathQuery` for an aggregate-count-on-range query against
     /// the subtree at `path`. `range` is the inner `QueryItem` describing the
     /// keys to count over; see [`Query::new_aggregate_count_on_range`] for the

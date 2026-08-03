@@ -2858,3 +2858,244 @@ fn test_commitment_tree_element_count_subset_query_against_note_fetch_proof() {
         other => panic!("expected CommitmentTree element, got {:?}", other),
     }
 }
+
+// ===========================================================================
+// Paginated position-range reads (get_range) and range proofs
+// ===========================================================================
+
+/// Helper: create a DB with a CommitmentTree at [b"root"]/b"pool"
+/// (chunk_power = 2 → chunk size 4) holding `n` notes, returning the
+/// expected `cmx || rho || cv_net || payload` bytes per position.
+fn make_ct_db_with_notes(n: u8) -> (crate::tests::TempGroveDb, Vec<Vec<u8>>) {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"root",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert root tree");
+
+    db.insert(
+        &[b"root"],
+        b"pool",
+        Element::empty_commitment_tree(2).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert commitment tree");
+
+    let mut expected_values = Vec::new();
+    for i in 0..n {
+        let cmx = test_cmx(i);
+        let rho = test_rho(i);
+        let cv_net = test_cv_net(i);
+        let payload = serialize_ciphertext(&test_ciphertext(i));
+        db.commitment_tree_insert(
+            &[b"root"],
+            b"pool",
+            cmx,
+            rho,
+            cv_net,
+            test_ciphertext(i),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("commitment tree insert");
+
+        let mut expected = Vec::with_capacity(32 + 32 + 32 + payload.len());
+        expected.extend_from_slice(&cmx);
+        expected.extend_from_slice(&rho);
+        expected.extend_from_slice(&cv_net);
+        expected.extend_from_slice(&payload);
+        expected_values.push(expected);
+    }
+
+    (db, expected_values)
+}
+
+#[test]
+fn test_commitment_tree_get_range_matches_get_value() {
+    let grove_version = GroveVersion::latest();
+    // 10 notes = 2 full chunks (8) + 2 buffered, chunk size 4
+    let (db, expected_values) = make_ct_db_with_notes(10);
+
+    for start in 0..11u64 {
+        let page = db
+            .commitment_tree_get_range(&[b"root"], b"pool", start, 4, None, grove_version)
+            .unwrap()
+            .expect("commitment tree get range");
+        assert_eq!(page.total_count, 10);
+
+        let end = (start + 4).min(10);
+        let expected_len = end.saturating_sub(start.min(end));
+        assert_eq!(page.entries.len(), expected_len as usize);
+
+        for (i, (pos, value)) in page.entries.iter().enumerate() {
+            assert_eq!(*pos, start + i as u64);
+            assert_eq!(value, &expected_values[*pos as usize]);
+
+            let per_position = db
+                .commitment_tree_get_value(&[b"root"], b"pool", *pos, None, grove_version)
+                .unwrap()
+                .expect("commitment tree get value")
+                .expect("value exists");
+            assert_eq!(value, &per_position);
+        }
+    }
+}
+
+#[test]
+fn test_commitment_tree_get_range_wrong_element_type() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"normal",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert normal tree");
+
+    let result = db
+        .commitment_tree_get_range(EMPTY_PATH, b"normal", 0, 4, None, grove_version)
+        .unwrap();
+    assert!(matches!(result, Err(Error::InvalidInput(_))));
+}
+
+/// Helper: prove and verify a CommitmentTree position range page, asserting
+/// the returned root hash matches the database root hash.
+fn roundtrip_ct_range_proof(
+    db: &crate::tests::TempGroveDb,
+    start: u64,
+    limit: u16,
+) -> crate::RangePage {
+    let grove_version = GroveVersion::latest();
+
+    let proof = db
+        .prove_bulk_position_range(
+            vec![b"root".to_vec()],
+            b"pool",
+            start,
+            limit,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("prove commitment tree position range");
+
+    let (root_hash, page) = GroveDb::verify_bulk_position_range_proof(
+        &proof,
+        vec![b"root".to_vec()],
+        b"pool",
+        start,
+        limit,
+        grove_version,
+    )
+    .expect("verify commitment tree position range proof");
+
+    let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+    assert_eq!(root_hash, expected_root, "proof root must match db root");
+
+    page
+}
+
+#[test]
+fn test_commitment_tree_position_range_proof_across_chunk_boundary() {
+    let (db, expected_values) = make_ct_db_with_notes(10);
+
+    // Page [3, 7) spans the chunk 0 / chunk 1 boundary
+    let page = roundtrip_ct_range_proof(&db, 3, 4);
+    assert_eq!(page.total_count, 10);
+    assert_eq!(page.entries.len(), 4);
+    for (i, (pos, value)) in page.entries.iter().enumerate() {
+        assert_eq!(*pos, 3 + i as u64);
+        assert_eq!(value, &expected_values[*pos as usize]);
+    }
+
+    // Page [6, 10) spans the chunk 1 / buffer boundary
+    let page = roundtrip_ct_range_proof(&db, 6, 4);
+    assert_eq!(page.entries.len(), 4);
+    for (i, (pos, value)) in page.entries.iter().enumerate() {
+        assert_eq!(*pos, 6 + i as u64);
+        assert_eq!(value, &expected_values[*pos as usize]);
+    }
+}
+
+#[test]
+fn test_commitment_tree_position_range_proof_empty_and_past_end() {
+    let (db, _) = make_ct_db_with_notes(10);
+
+    // Empty range
+    let page = roundtrip_ct_range_proof(&db, 3, 0);
+    assert!(page.entries.is_empty());
+    assert_eq!(page.total_count, 10);
+
+    // Past the end: the verified total_count is the absence proof for
+    // positions >= 10.
+    let page = roundtrip_ct_range_proof(&db, 10, 5);
+    assert!(page.entries.is_empty());
+    assert_eq!(page.total_count, 10);
+
+    // Clamped at the end
+    let page = roundtrip_ct_range_proof(&db, 8, 100);
+    assert_eq!(page.entries.len(), 2);
+    assert_eq!(page.total_count, 10);
+}
+
+#[test]
+fn test_commitment_tree_position_range_proof_single_entry_pages() {
+    let (db, expected_values) = make_ct_db_with_notes(6);
+
+    for pos in 0..6u64 {
+        let page = roundtrip_ct_range_proof(&db, pos, 1);
+        assert_eq!(page.total_count, 6);
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].0, pos);
+        assert_eq!(page.entries[0].1, expected_values[pos as usize]);
+    }
+}
+
+#[test]
+fn test_commitment_tree_position_range_paged_scan() {
+    // The shielded-pool scanning pattern: walk all notes since cursor 0 in
+    // proved pages of 3 (not aligned to the chunk size of 4).
+    let (db, expected_values) = make_ct_db_with_notes(10);
+
+    let mut cursor = 0u64;
+    let mut seen = Vec::new();
+    loop {
+        let page = roundtrip_ct_range_proof(&db, cursor, 3);
+        if page.entries.is_empty() {
+            assert!(cursor >= page.total_count, "empty page only at the end");
+            break;
+        }
+        cursor += page.entries.len() as u64;
+        seen.extend(page.entries);
+    }
+    assert_eq!(seen.len(), 10);
+    for (i, (pos, value)) in seen.iter().enumerate() {
+        assert_eq!(*pos, i as u64);
+        assert_eq!(value, &expected_values[i]);
+    }
+}
+
+#[test]
+fn test_commitment_tree_position_range_proof_empty_tree() {
+    let (db, _) = make_ct_db_with_notes(0);
+    let page = roundtrip_ct_range_proof(&db, 0, 10);
+    assert!(page.entries.is_empty());
+    assert_eq!(page.total_count, 0);
+}
