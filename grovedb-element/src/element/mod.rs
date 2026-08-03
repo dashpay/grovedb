@@ -772,6 +772,34 @@ impl Element {
         self.element_type().as_str()
     }
 
+    /// Validate the committed configuration of a `PrivateDocumentStore`
+    /// element, looking through `NonCounted`: `entry_size` must be non-zero
+    /// and `chunk_power` must be in `1..=16` (the underlying `BulkAppendTree`
+    /// dense-buffer height range). Returns `Ok(())` for every other variant.
+    ///
+    /// The configuration is committed into the store's state root, so an
+    /// unusable configuration must not be representable: the checked
+    /// constructors, the insert paths, and both (de)serialization codecs
+    /// (bincode and serde) all enforce this. `new_private_document_store`
+    /// itself stays unchecked — it is the restoration constructor used to
+    /// rebuild elements from already-validated on-disk state, mirroring
+    /// `new_commitment_tree` / `new_bulk_append_tree`.
+    pub fn validate_private_document_store_config(&self) -> Result<(), crate::error::ElementError> {
+        if let Element::PrivateDocumentStore(_, entry_size, chunk_power, _) = self.underlying() {
+            if *entry_size == 0 {
+                return Err(crate::error::ElementError::InvalidInput(
+                    "private document store entry_size must be non-zero",
+                ));
+            }
+            if !(1..=16).contains(chunk_power) {
+                return Err(crate::error::ElementError::InvalidInput(
+                    "private document store chunk_power must be between 1 and 16",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Verify the wrapper invariants for `self`:
     /// - `NonCounted`, `NotSummed`, and `NotCountedOrSummed` may not nest
     ///   in any combination.
@@ -992,6 +1020,11 @@ mod serde_impl {
             // built by recursive `From<ElementShadow>` calls, so the check
             // at each level catches a violation at any depth.
             Self::check_recursive_wrapper_invariants(&element).map_err(D::Error::custom)?;
+            // A PrivateDocumentStore's committed config must be valid at
+            // every ingress — including this external-tooling codec.
+            element
+                .validate_private_document_store_config()
+                .map_err(D::Error::custom)?;
             Ok(element)
         }
     }

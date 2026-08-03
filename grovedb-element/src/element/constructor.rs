@@ -541,7 +541,15 @@ impl Element {
         ))
     }
 
-    /// Set element to a private document store with all fields
+    /// Set element to a private document store with all fields.
+    ///
+    /// Restoration constructor: unchecked, mirroring `new_commitment_tree` /
+    /// `new_bulk_append_tree` — it rebuilds an element from already-validated
+    /// state (stored bytes, batch metadata). Invalid configurations are
+    /// rejected at every real ingress: the `empty_*` constructors, the direct
+    /// and batch insert paths, and both (de)serialization codecs
+    /// (`Element::serialize` / `Element::deserialize` / serde) via
+    /// [`Element::validate_private_document_store_config`].
     pub fn new_private_document_store(
         total_count: u64,
         entry_size: u32,

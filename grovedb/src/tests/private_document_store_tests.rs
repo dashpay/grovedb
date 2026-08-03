@@ -186,6 +186,7 @@ fn test_private_document_store_insert_get_count_roundtrip() {
 fn test_private_document_store_insert_rejects_wrong_entry_size() {
     let grove_version = GroveVersion::latest();
     let db = make_db_with_store();
+    let root_before = db.root_hash(None, grove_version).unwrap().unwrap();
 
     for bad in [
         vec![0u8; TEST_ENTRY_SIZE as usize - 1],
@@ -203,6 +204,11 @@ fn test_private_document_store_insert_rejects_wrong_entry_size() {
     }
 
     // Nothing was appended and the root hash is unchanged by rejections.
+    assert_eq!(
+        root_before,
+        db.root_hash(None, grove_version).unwrap().unwrap(),
+        "rejected appends must not change the grove root hash"
+    );
     assert_eq!(
         db.private_document_store_count(&[b"root"], b"docs", None, grove_version)
             .unwrap()
@@ -536,6 +542,52 @@ fn test_private_document_store_delete() {
         db.get(&[b"root"], b"docs", None, grove_version).unwrap(),
         Err(Error::PathKeyNotFound(_))
     ));
+
+    // The store's non-Merk data namespace (buffer entries, chunk blobs, MMR
+    // nodes) must be reclaimed by the delete — not just the parent element.
+    {
+        use grovedb_storage::{RawIterator, Storage, StorageContext};
+        let tx = db.start_transaction();
+        let ctx = db
+            .db
+            .get_transactional_storage_context(
+                grovedb_path::SubtreePath::from([b"root".as_slice(), b"docs".as_slice()].as_ref()),
+                None,
+                &tx,
+            )
+            .unwrap();
+        let mut iter = ctx.raw_iter();
+        iter.seek_to_first().unwrap();
+        assert!(
+            !iter.valid().unwrap(),
+            "deleted store left orphaned rows in its data namespace"
+        );
+    }
+
+    // A store recreated at the same path starts from scratch: appends begin
+    // at position 0 and nothing from the deleted store is visible.
+    db.insert(
+        &[b"root"],
+        b"docs",
+        Element::empty_private_document_store(TEST_ENTRY_SIZE, TEST_CHUNK_POWER)
+            .expect("valid config"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("recreate store");
+    let (_, position) = db
+        .private_document_store_insert(&[b"root"], b"docs", entry(99), None, grove_version)
+        .unwrap()
+        .expect("append to recreated store");
+    assert_eq!(position, 0);
+    assert_eq!(
+        db.private_document_store_get_value(&[b"root"], b"docs", 0, None, grove_version)
+            .unwrap()
+            .expect("get"),
+        Some(entry(99))
+    );
 
     let issues = db
         .verify_grovedb(None, true, false, grove_version)
@@ -1148,13 +1200,31 @@ fn test_private_document_store_v0_prover_rejects_subqueries() {
         result
     );
 
-    // ...while a terminal query for the element itself still proves (the
-    // node passes through as a result, V0 shape unchanged).
+    // ...while a terminal query for the element itself still proves and
+    // verifies (the node passes through as a result, V0 shape unchanged).
     let terminal = PathQuery::new_unsized(
         vec![b"root".to_vec()],
         Query::new_single_key(b"docs".to_vec()),
     );
-    db.prove_query(&terminal, None, &GROVE_V2)
+    let proof_bytes = db
+        .prove_query(&terminal, None, &GROVE_V2)
         .unwrap()
         .expect("V0 terminal proof over a store element generates");
+    let (root_hash, result_set) = GroveDb::verify_query_with_options(
+        &proof_bytes,
+        &terminal,
+        grovedb_merk::proofs::query::VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: false,
+            verify_proof_succinctness: false,
+            include_empty_trees_in_result: true,
+        },
+        &GROVE_V2,
+    )
+    .expect("verify V0 terminal proof");
+    assert_eq!(
+        root_hash,
+        db.root_hash(None, grove_version).unwrap().unwrap(),
+        "V0 proof must bind the current grove root"
+    );
+    assert_eq!(result_set.len(), 1);
 }

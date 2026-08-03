@@ -976,12 +976,26 @@ impl GroveDb {
                     .get_transactional_storage_context(path.clone(), Some(batch), transaction)
                     .unwrap_add_cost(&mut cost);
 
+                // The merk reopened here is the PARENT merk (at `path`), but
+                // the historical code labels it with the DELETED CHILD's
+                // tree type. For a PrivateDocumentStore child that label
+                // would trip the merk-level "no ops on a PDS Merk"
+                // chokepoint (the delete below applies to the parent), so
+                // use the parent's actual tree type for PDS deletions.
+                // Existing types keep the historical label byte-for-byte to
+                // avoid any behavior change on released paths.
+                let reopen_tree_type =
+                    if matches!(tree_type, grovedb_merk::TreeType::PrivateDocumentStore(_)) {
+                        subtree_to_delete_from.tree_type
+                    } else {
+                        tree_type
+                    };
                 let mut merk_to_delete_tree_from = cost_return_on_error!(
                     &mut cost,
                     Merk::open_layered_with_root_key(
                         storage,
                         subtree_to_delete_from.root_key(),
-                        tree_type,
+                        reopen_tree_type,
                         Some(&Element::value_defined_cost_for_serialized_value),
                         grove_version,
                     )

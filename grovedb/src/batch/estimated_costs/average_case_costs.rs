@@ -318,16 +318,17 @@ impl GroveOp {
                     propagate,
                     grove_version,
                 );
-                // Additional cost: buffer write + running hash, identical to
-                // the underlying BulkAppend (the composite pds_state blake3
-                // is folded into the same single-hash average as the bulk
-                // state-root hash it replaces per append). Most appends only
+                // Additional cost: buffer write + hashing. Most appends only
                 // write to the buffer (O(1)); compaction happens once per
-                // epoch_size appends and is amortized.
+                // epoch_size appends and is amortized. Unlike BulkAppend, a
+                // PDS append unconditionally derives the composite
+                // `pds_state` root on top of the bulk state root, so the
+                // average models both blake3 calls.
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 let entry_size = entry.len() as u32;
-                // 1 blake3 hash for the running buffer hash chain
-                const AVG_HASH_CALLS: u32 = 1;
+                // 1 blake3 for the bulk state root + 1 for the composite
+                // config-binding pds_state root
+                const AVG_HASH_CALLS: u32 = 2;
                 item_cost.add_cost(OperationCost {
                     seek_count: 1, // 1 buffer entry write
                     storage_cost: StorageCost {

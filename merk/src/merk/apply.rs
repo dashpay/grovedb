@@ -16,7 +16,7 @@ use crate::{
         kv::{ValueDefinedCostType, KV},
         AuxMerkBatch, Walker,
     },
-    Error, Merk, MerkBatch, MerkOptions,
+    Error, Merk, MerkBatch, MerkOptions, TreeType,
 };
 
 const MAX_KEY_LENGTH: usize = u8::MAX as usize;
@@ -346,6 +346,21 @@ where
         ) -> Result<(bool, Option<ValueDefinedCostType>), Error>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
+        // A PrivateDocumentStore's Merk must stay empty forever — its
+        // entries live in the non-Merk data namespace and immutability is
+        // enforced by the type. The element-insert entry points already
+        // reject PDS destinations; this chokepoint additionally covers ops
+        // assembled through the `*_into_batch_operations` builders (which
+        // cannot see the destination), since queued ops can only take
+        // effect through an apply on the destination Merk. Every public
+        // apply variant funnels through here.
+        if !batch.is_empty() && matches!(self.tree_type, TreeType::PrivateDocumentStore(_)) {
+            return Err(Error::InvalidInputError(
+                "private document stores cannot hold child elements; entries are appended \
+                 via the private_document_store_insert API",
+            ))
+            .wrap_with_cost(Default::default());
+        }
         for (key, ..) in batch.iter() {
             if key.as_ref().len() > MAX_KEY_LENGTH {
                 return Err(Error::InvalidInputError(

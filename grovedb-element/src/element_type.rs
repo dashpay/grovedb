@@ -2001,16 +2001,22 @@ mod tests {
                 ElementType::ProvableCountProvableSumIndexedTree,
                 "ProvableCountProvableSumIndexedTree",
             ),
+            // discriminant 24
+            (
+                Element::PrivateDocumentStore(0, 64, 4, None),
+                ElementType::PrivateDocumentStore,
+                "PrivateDocumentStore",
+            ),
         ];
 
-        // Verify we're testing all 21 base discriminants: 0..=14, 18, 19,
-        // 20, 21, 22, 23. (15 = NonCounted wrapper byte, 16 = NotSummed
+        // Verify we're testing all 22 base discriminants: 0..=14, 18, 19,
+        // 20, 21, 22, 23, 24. (15 = NonCounted wrapper byte, 16 = NotSummed
         // wrapper byte, 17 = NotCountedOrSummed wrapper byte — none has
         // a base ElementType variant.)
         assert_eq!(
             test_cases.len(),
-            21,
-            "Expected 21 base Element variants in test, got {}",
+            22,
+            "Expected 22 base Element variants in test, got {}",
             test_cases.len()
         );
 

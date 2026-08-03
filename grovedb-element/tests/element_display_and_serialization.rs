@@ -445,3 +445,39 @@ fn element_display_without_flags_covers_none_branches() {
         );
     }
 }
+
+#[test]
+fn private_document_store_invalid_config_is_unrepresentable() {
+    let grove_version = GroveVersion::latest();
+    // entry_size 0, chunk_power 0, chunk_power 17 must be rejected by both
+    // directions of the bincode codec (the config is committed into the
+    // store's state root, so an unusable config must never round-trip).
+    for bad in [
+        Element::new_private_document_store(0, 0, 4, None),
+        Element::new_private_document_store(0, 64, 0, None),
+        Element::new_private_document_store(0, 64, 17, None),
+    ] {
+        assert!(
+            bad.serialize(grove_version).is_err(),
+            "serialize must reject {:?}",
+            bad
+        );
+    }
+    // Craft the bytes directly (serialize refuses) and check deserialize
+    // rejects them: a valid element re-encoded with a zeroed entry_size.
+    let good = Element::new_private_document_store(0, 64, 4, None);
+    let mut bytes = good.serialize(grove_version).expect("serialize valid");
+    // Layout: [24 (discriminant), total_count varint (0 = 1 byte),
+    //          entry_size varint (64 = 1 byte), chunk_power, flags None]
+    assert_eq!(bytes[0], 24);
+    assert_eq!(bytes[2], 64);
+    bytes[2] = 0; // entry_size -> 0
+    assert!(
+        Element::deserialize(&bytes, grove_version).is_err(),
+        "deserialize must reject a zero entry_size"
+    );
+    // NonCounted-wrapped invalid config is rejected too (validation looks
+    // through the wrapper).
+    let wrapped = Element::NonCounted(Box::new(Element::new_private_document_store(0, 0, 4, None)));
+    assert!(wrapped.serialize(grove_version).is_err());
+}

@@ -991,6 +991,56 @@ mod tests {
             )
             .unwrap()
             .is_err());
+
+        // The `*_into_batch_operations` builders cannot see the destination
+        // Merk, so ops CAN be queued — but the apply chokepoint
+        // (`Merk::apply_unchecked`, which every apply variant funnels
+        // through) rejects any non-empty batch aimed at a PDS Merk, so the
+        // queued ops can never take effect.
+        let mut ops: Vec<crate::BatchEntry<Vec<u8>>> = Vec::new();
+        item.insert_into_batch_operations(
+            b"k".to_vec(),
+            &mut ops,
+            crate::TreeFeatureType::BasicMerkNode,
+            grove_version,
+        )
+        .unwrap()
+        .expect("builder itself queues");
+        subtree
+            .insert_subtree_into_batch_operations(
+                b"k2".to_vec(),
+                [0u8; 32],
+                true,
+                &mut ops,
+                crate::TreeFeatureType::BasicMerkNode,
+                grove_version,
+            )
+            .unwrap()
+            .expect("builder itself queues");
+        reference
+            .insert_reference_into_batch_operations(
+                b"k3".to_vec(),
+                [0u8; 32],
+                &mut ops,
+                crate::TreeFeatureType::BasicMerkNode,
+                grove_version,
+            )
+            .unwrap()
+            .expect("builder itself queues");
+        let apply_result = merk
+            .apply_with_specialized_costs::<_, Vec<u8>>(
+                &ops,
+                &[],
+                None,
+                &|_, _| Ok(0),
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            apply_result.is_err(),
+            "applying queued ops to a PDS Merk must be rejected"
+        );
     }
 
     #[test]
