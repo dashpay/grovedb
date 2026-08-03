@@ -12,17 +12,19 @@ use grovedb_costs::{
 };
 #[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::worst_case_costs::{
-    add_worst_case_merk_has_value, worst_case_merk_propagate, WorstCaseLayerInformation,
-    MERK_BIGGEST_VALUE_SIZE,
+    add_worst_case_get_merk_node, add_worst_case_merk_has_value, worst_case_merk_propagate,
+    WorstCaseLayerInformation, MERK_BIGGEST_VALUE_SIZE,
 };
 use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions, tree::AggregateData, tree_type::TreeType,
     RootHashKeyAndAggregateData,
 };
 #[cfg(feature = "minimal")]
+use grovedb_merk::{tree::kv::KV, tree_type::CostSize};
+#[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "minimal")]
-use grovedb_storage::worst_case_costs::WorstKeyLength;
+use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "minimal")]
 use itertools::Itertools;
@@ -34,6 +36,7 @@ use crate::{
         key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveOp, KeyInfoPath,
         RefreshReferenceMode, TreeCache,
     },
+    estimated_costs::worst_case_costs::WORST_CASE_FLAGS_LEN,
     Error, GroveDb,
 };
 
@@ -410,6 +413,63 @@ impl GroveOp {
 }
 
 #[cfg(feature = "minimal")]
+/// Model the stored-element reads the GROVE_V4 apply gates add, keeping the
+/// worst-case estimate an upper bound of the applied cost per gate. On
+/// V1..V3 both gates are 0 and this charges nothing, preserving released
+/// estimates. See the average-case counterpart for the shape of each gated
+/// read; the worst case sizes the loaded node with the Merk-wide maxima
+/// (`MERK_BIGGEST_VALUE_SIZE` / `WORST_CASE_FLAGS_LEN`) instead of layer
+/// estimates.
+fn add_worst_case_v4_read_gate_costs(
+    cost: &mut OperationCost,
+    path: &KeyInfoPath,
+    key: &KeyInfo,
+    op: &GroveOp,
+    worst_case_layer_information: &WorstCaseLayerInformation,
+    batch_apply_options: &BatchApplyOptions,
+    grove_version: &GroveVersion,
+) -> Result<(), Error> {
+    let apply_batch = &grove_version.grovedb_versions.apply_batch;
+    // A get on an empty Merk is free, so a layer known to hold nothing
+    // charges no inspection read — mirroring the average-case skip and
+    // keeping fresh-insert estimates unchanged.
+    let layer_known_empty = matches!(
+        worst_case_layer_information,
+        WorstCaseLayerInformation::MaxElementsNumber(0)
+            | WorstCaseLayerInformation::NumberOfLevels(0)
+    );
+    match op {
+        GroveOp::InsertOrReplace { element }
+        | GroveOp::Replace { element }
+        | GroveOp::Patch { element, .. }
+            if apply_batch.overwrite_indexed_cleanup_inspection >= 1
+                && !batch_apply_options.validate_insertion_does_not_override_tree
+                && !matches!(element, Element::Reference(..))
+                && !layer_known_empty =>
+        {
+            add_worst_case_get_merk_node(
+                cost,
+                key.max_length() as u32,
+                MERK_BIGGEST_VALUE_SIZE,
+                TreeType::NormalTree.inner_node_type(),
+            )
+            .map_err(Error::MerkError)?;
+        }
+        GroveOp::DeleteTree(tree_type, _) if apply_batch.delete_tree_cleanup_type_source >= 1 => {
+            *cost += RocksDbStorage::get_storage_context_cost(path.as_vec());
+            cost.seek_count += 1;
+            cost.storage_loaded_bytes += KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                key.max_length() as u32,
+                tree_type.cost_size() + WORST_CASE_FLAGS_LEN,
+                TreeType::NormalTree.inner_node_type(),
+            ) as u64;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+#[cfg(feature = "minimal")]
 /// Cache for subtree paths for worst case scenario costs.
 #[derive(Default)]
 pub(in crate::batch) struct WorstCaseTreeCacheKnownPaths {
@@ -465,7 +525,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         path: &KeyInfoPath,
         ops_at_path_by_key: BTreeMap<KeyInfo, GroveOp>,
         _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, GroveOp>,
-        _batch_apply_options: &BatchApplyOptions,
+        batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
         grove_version: &GroveVersion,
@@ -497,6 +557,18 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         }
 
         for (key, op) in ops_at_path_by_key.into_iter() {
+            cost_return_on_error_no_add!(
+                cost,
+                add_worst_case_v4_read_gate_costs(
+                    &mut cost,
+                    path,
+                    &key,
+                    &op,
+                    worst_case_layer_element_estimates,
+                    batch_apply_options,
+                    grove_version,
+                )
+            );
             cost_return_on_error!(
                 &mut cost,
                 op.worst_case_cost(
@@ -607,16 +679,22 @@ mod tests {
             worst_case_cost.storage_cost.added_bytes
         );
 
+        // +1 seek and +65682 storage_loaded_bytes vs. V1..V3: with
+        // `overwrite_indexed_cleanup_inspection >= 1` (V4+, which is what
+        // `latest()` resolves to) and tree-override validation off, the
+        // estimator models the applied path's read of the existing element
+        // for indexed-overwrite detection — one worst-case node read sized
+        // at `MERK_BIGGEST_VALUE_SIZE`.
         assert_eq!(
             worst_case_cost,
             OperationCost {
-                seek_count: 5,
+                seek_count: 6,
                 storage_cost: StorageCost {
                     added_bytes: 115,
                     replaced_bytes: 65535, // todo: verify
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 65791,
+                storage_loaded_bytes: 131473,
                 hash_node_calls: 8, // todo: verify why
                 sinsemilla_hash_calls: 0,
             }
@@ -786,16 +864,19 @@ mod tests {
             worst_case_cost.storage_cost.added_bytes
         );
 
+        // +1 seek and +65682 storage_loaded_bytes vs. V1..V3: the gated
+        // worst-case indexed-overwrite inspection read, as in
+        // `test_batch_root_one_tree_insert_op_worst_case_costs`.
         assert_eq!(
             worst_case_cost,
             OperationCost {
-                seek_count: 38,
+                seek_count: 39,
                 storage_cost: StorageCost {
                     added_bytes: 115,
                     replaced_bytes: 2228190, // todo: verify
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 2236894,
+                storage_loaded_bytes: 2302576,
                 hash_node_calls: 74,
                 sinsemilla_hash_calls: 0,
             }
@@ -1561,5 +1642,139 @@ mod tests {
             cost_pcount,
             cost_count,
         );
+    }
+
+    /// Worst-case counterpart of the average-case V4-gate parity test: the
+    /// `overwrite_indexed_cleanup_inspection` gate moves the estimate by
+    /// exactly one worst-case node read between V3 and V4, and only when
+    /// the gate's applied-side conditions hold.
+    #[test]
+    fn test_worst_case_overwrite_inspection_read_gated_v4_vs_v3() {
+        use grovedb_merk::{
+            estimated_costs::worst_case_costs::MERK_BIGGEST_VALUE_SIZE, tree::TreeNode,
+        };
+        use grovedb_version::version::v3::GROVE_V3;
+
+        use crate::batch::BatchApplyOptions;
+
+        let v3 = &GROVE_V3;
+        let v4 = GroveVersion::latest();
+        assert!(
+            v4.grovedb_versions
+                .apply_batch
+                .overwrite_indexed_cleanup_inspection
+                >= 1
+        );
+
+        let ops = vec![QualifiedGroveDbOp::replace_op(
+            vec![],
+            b"key1".to_vec(),
+            Element::new_item(b"12345678".to_vec()),
+        )];
+        let estimate = |grove_version, options| {
+            let mut paths = HashMap::new();
+            paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(1));
+            GroveDb::estimated_case_operations_for_batch(
+                WorstCaseCostsType(paths),
+                ops.clone(),
+                options,
+                |_cost, _old_flags, _new_flags| Ok(false),
+                |_flags, _removed_key_bytes, _removed_value_bytes| {
+                    Ok((NoStorageRemoval, NoStorageRemoval))
+                },
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to estimate costs")
+        };
+
+        let est_v3 = estimate(v3, None);
+        let est_v4 = estimate(v4, None);
+
+        let expected_loaded = TreeNode::worst_case_encoded_tree_size(
+            4,
+            MERK_BIGGEST_VALUE_SIZE,
+            TreeType::NormalTree.inner_node_type(),
+        ) as u64;
+        assert_eq!(est_v4.seek_count, est_v3.seek_count + 1);
+        assert_eq!(
+            est_v4.storage_loaded_bytes,
+            est_v3.storage_loaded_bytes + expected_loaded
+        );
+        assert_eq!(est_v4.storage_cost, est_v3.storage_cost);
+        assert_eq!(est_v4.hash_node_calls, est_v3.hash_node_calls);
+
+        // Tree-override validation ON suppresses the applied read, so the
+        // estimator must charge nothing for the gate.
+        let validated = BatchApplyOptions {
+            validate_insertion_does_not_override_tree: true,
+            ..Default::default()
+        };
+        assert_eq!(estimate(v4, Some(validated)), est_v3);
+    }
+
+    /// Worst-case counterpart of the average-case `DeleteTree` gate test:
+    /// the `delete_tree_cleanup_type_source` gate moves the estimate by
+    /// exactly the context-prefix build plus one worst-case layered
+    /// element load between V3 and V4.
+    #[test]
+    fn test_worst_case_delete_tree_type_source_read_gated_v4_vs_v3() {
+        use grovedb_merk::{merk::NodeType, tree::kv::KV, tree_type::CostSize};
+        use grovedb_version::version::v3::GROVE_V3;
+
+        use crate::estimated_costs::worst_case_costs::WORST_CASE_FLAGS_LEN;
+
+        let v3 = &GROVE_V3;
+        let v4 = GroveVersion::latest();
+        assert!(
+            v4.grovedb_versions
+                .apply_batch
+                .delete_tree_cleanup_type_source
+                >= 1
+        );
+
+        let ops = vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![b"tree1".to_vec()],
+            b"key1".to_vec(),
+            TreeType::NormalTree,
+            SubelementsDeletionBehavior::Error,
+        )];
+        let estimate = |grove_version| {
+            let mut paths = HashMap::new();
+            paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(1));
+            paths.insert(
+                KeyInfoPath(vec![KeyInfo::KnownKey(b"tree1".to_vec())]),
+                MaxElementsNumber(1),
+            );
+            GroveDb::estimated_case_operations_for_batch(
+                WorstCaseCostsType(paths),
+                ops.clone(),
+                None,
+                |_cost, _old_flags, _new_flags| Ok(false),
+                |_flags, _removed_key_bytes, _removed_value_bytes| {
+                    Ok((NoStorageRemoval, NoStorageRemoval))
+                },
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to estimate costs")
+        };
+
+        let est_v3 = estimate(v3);
+        let est_v4 = estimate(v4);
+
+        let expected_loaded = KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+            4,
+            TreeType::NormalTree.cost_size() + WORST_CASE_FLAGS_LEN,
+            NodeType::NormalNode,
+        ) as u64;
+        assert_eq!(est_v4.seek_count, est_v3.seek_count + 1);
+        assert_eq!(
+            est_v4.storage_loaded_bytes,
+            est_v3.storage_loaded_bytes + expected_loaded
+        );
+        assert_eq!(est_v4.storage_cost, est_v3.storage_cost);
+        // One blake3 block hashed to build the parent path's context prefix.
+        assert_eq!(est_v4.hash_node_calls, est_v3.hash_node_calls + 1);
     }
 }
