@@ -2508,3 +2508,113 @@ fn test_bulk_position_range_proof_deep_path() {
     assert_eq!(root_hash, expected_root);
     assert_bulk_page(&page, 2, 7, 10);
 }
+
+#[test]
+fn test_bulk_position_range_version_gates() {
+    let grove_version = GroveVersion::latest();
+    let db = make_bulk_db_with_values(4);
+    let proof = db
+        .prove_bulk_position_range(vec![], b"bulk", 0, 4, None, grove_version)
+        .unwrap()
+        .expect("prove under latest version");
+
+    // Unknown prove version → VersionError before any work happens
+    let mut gated = grove_version.clone();
+    gated
+        .grovedb_versions
+        .operations
+        .proof
+        .prove_bulk_position_range = 99;
+    let result = db
+        .prove_bulk_position_range(vec![], b"bulk", 0, 4, None, &gated)
+        .unwrap();
+    assert!(matches!(result, Err(Error::VersionError(_))));
+
+    // Unknown verify version → VersionError before any work happens
+    let mut gated = grove_version.clone();
+    gated
+        .grovedb_versions
+        .operations
+        .proof
+        .verify_bulk_position_range_proof = 99;
+    let result =
+        crate::GroveDb::verify_bulk_position_range_proof(&proof, vec![], b"bulk", 0, 4, &gated);
+    assert!(matches!(result, Err(Error::VersionError(_))));
+}
+
+/// A proof over a NORMAL tree holding items at 8-byte keys: the range
+/// entries verify as plain Merk rows, but total_count extraction must
+/// reject the element type instead of trusting a non-append-only element.
+#[test]
+fn test_bulk_position_range_verify_rejects_non_append_element() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"plain",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert normal tree");
+    for i in 0..4u64 {
+        db.insert(
+            &[b"plain"],
+            &i.to_be_bytes(),
+            Element::new_item(vec![i as u8]),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert item");
+    }
+
+    // Bypass prove_bulk_position_range's own element check by proving the
+    // canonical query directly, as a crafted prover would.
+    let query = crate::PathQuery::new_bulk_position_range(vec![], b"plain".to_vec(), 0, 4);
+    let proof = db
+        .prove_query(&query, None, grove_version)
+        .unwrap()
+        .expect("prove canonical query over normal tree");
+
+    let err = crate::GroveDb::verify_bulk_position_range_proof(
+        &proof,
+        vec![],
+        b"plain",
+        0,
+        4,
+        grove_version,
+    )
+    .expect_err("normal tree element must be rejected");
+    assert!(matches!(err, Error::InvalidProof(..)));
+}
+
+/// A proof for a key that does not exist: the range query verifies (as an
+/// absence), but the element subset query binds nothing, so the verifier
+/// must refuse to invent a total_count.
+#[test]
+fn test_bulk_position_range_verify_rejects_unbound_element() {
+    let grove_version = GroveVersion::latest();
+    let db = make_bulk_db_with_values(4);
+
+    let query = crate::PathQuery::new_bulk_position_range(vec![], b"ghost".to_vec(), 0, 4);
+    let proof = db
+        .prove_query(&query, None, grove_version)
+        .unwrap()
+        .expect("prove canonical query for missing key");
+
+    let err = crate::GroveDb::verify_bulk_position_range_proof(
+        &proof,
+        vec![],
+        b"ghost",
+        0,
+        4,
+        grove_version,
+    )
+    .expect_err("proof that binds no element must be rejected");
+    assert!(matches!(err, Error::InvalidProof(..)));
+}

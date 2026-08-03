@@ -529,3 +529,26 @@ fn get_range_paged_scan_covers_everything() {
         assert_eq!(value, &vec![i as u8]);
     }
 }
+
+#[test]
+fn get_range_missing_chunk_is_corruption() {
+    // Storage claims 2 completed chunks (via from_state) but holds no data:
+    // the chunk MMR leaf lookup comes back empty and the read must surface
+    // corruption, not silently skip entries.
+    let tree = BulkAppendTree::from_state(4, 1, MemStorageContext::new()).expect("from_state");
+    assert_eq!(tree.chunk_count(), 2);
+    let err = tree
+        .get_range(0, 4)
+        .expect_err("missing chunk blob must error");
+    assert!(matches!(err, crate::BulkAppendError::CorruptedData(_)));
+}
+
+#[test]
+fn get_range_missing_buffer_value_is_corruption() {
+    // Storage claims 1 buffered entry (via from_state) but holds no data:
+    // the buffer read must surface an error, not silently skip entries.
+    let tree = BulkAppendTree::from_state(1, 2, MemStorageContext::new()).expect("from_state");
+    assert_eq!(tree.buffer_count(), 1);
+    tree.get_range(0, 1)
+        .expect_err("missing buffer value must error");
+}
