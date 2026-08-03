@@ -552,3 +552,17 @@ fn get_range_missing_buffer_value_is_corruption() {
     tree.get_range(0, 1)
         .expect_err("missing buffer value must error");
 }
+
+#[test]
+fn get_range_storage_read_failure_is_mmr_error() {
+    // A backing store that fails reads must surface as an MMR error from the
+    // chunk lookup, not a panic or a silent empty page.
+    let ctx = MemStorageContext::new();
+    ctx.fail_gets.set(true);
+    let tree = BulkAppendTree::from_state(4, 1, ctx).expect("from_state");
+    assert_eq!(tree.chunk_count(), 2);
+    let err = tree
+        .get_range(0, 4)
+        .expect_err("failing storage must error");
+    assert!(matches!(err, crate::BulkAppendError::MmrError(_)));
+}

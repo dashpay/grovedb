@@ -16,6 +16,9 @@ use grovedb_storage::{Batch, RawIterator, StorageContext};
 #[derive(Default)]
 pub(crate) struct MemStorageContext {
     pub data: RefCell<HashMap<Vec<u8>, Vec<u8>>>,
+    /// When set, every `get` fails — simulates a broken backing store for
+    /// exercising storage-error paths.
+    pub fail_gets: std::cell::Cell<bool>,
 }
 
 impl MemStorageContext {
@@ -29,6 +32,12 @@ impl<'db> StorageContext<'db> for MemStorageContext {
     type RawIterator = MemRawIterator;
 
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
+        if self.fail_gets.get() {
+            return Err(grovedb_storage::Error::StorageError(
+                "simulated read failure".to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        }
         Ok(self.data.borrow().get(key.as_ref()).cloned()).wrap_with_cost(OperationCost::default())
     }
 
