@@ -362,6 +362,7 @@ impl GroveDb {
 /// Restorer for a non-Merk append-only subtree. Holds only plain data — the
 /// per-page storage context is created (and dropped) inside each call, so
 /// this type has no lifetime entanglement with the sync transaction.
+#[derive(Debug)]
 pub(crate) struct NonMerkRestorer {
     /// The subtree's element as declared by the (hash-verified) parent.
     element: Element,

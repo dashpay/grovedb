@@ -1699,4 +1699,192 @@ mod tests {
             .expect("dest verify_grovedb should run");
         assert!(dest_issues.is_empty(), "got: {:?}", dest_issues);
     }
+
+    /// Empty append-only trees of every type survive state sync: nothing
+    /// to transfer, and verification reduces to the empty-tree state-root
+    /// conventions (NULL_HASH for MMR / bulk / dense).
+    #[test]
+    fn state_sync_empty_non_merk_trees_round_trip() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"mmr_empty",
+                Element::empty_mmr_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert empty mmr tree");
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"bulk_empty",
+                Element::empty_bulk_append_tree(2).expect("valid chunk power"),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert empty bulk tree");
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"dense_empty",
+                Element::empty_dense_tree(4),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert empty dense tree");
+
+        let dest = sync_source_to_destination(&source, grove_version);
+
+        assert_eq!(
+            source.root_hash(None, grove_version).unwrap().unwrap(),
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+        );
+        let dest_issues = dest
+            .verify_grovedb(None, true, false, grove_version)
+            .expect("dest verify_grovedb should run");
+        assert!(dest_issues.is_empty(), "got: {:?}", dest_issues);
+    }
+
+    /// Direct misuse/malformed-input coverage for the non-Merk restorer:
+    /// every wire-level validation must reject before touching storage.
+    #[test]
+    fn non_merk_restorer_rejects_malformed_input() {
+        use crate::replication::non_merk_sync::{
+            encode_non_merk_page, NonMerkChunkId, NonMerkRestorer,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let tx = db.start_transaction();
+        let path: Vec<Vec<u8>> = vec![TEST_LEAF.to_vec(), b"ct".to_vec()];
+
+        // Non append-only elements are rejected outright.
+        let err = NonMerkRestorer::new(Element::new_item(b"nope".to_vec()), [0u8; 32], [1u8; 32])
+            .expect_err("item element must be rejected");
+        assert!(
+            format!("{err:?}").contains("non append-only"),
+            "got: {err:?}"
+        );
+
+        // A commitment tree declaring 3 entries with chunk_power 2.
+        let mut restorer =
+            NonMerkRestorer::new(Element::CommitmentTree(3, 2, None), [0u8; 32], [1u8; 32])
+                .expect("valid CT element");
+        let frontier = b"opaque frontier bytes".to_vec();
+
+        // Malformed cursor: wrong length.
+        let page = encode_non_merk_page(false, frontier.clone(), vec![b"e".to_vec()])
+            .expect("encode page");
+        let err = restorer
+            .apply_page(&db, &tx, &path, &[0u8; 3], &page)
+            .expect_err("short chunk id must be rejected");
+        assert!(format!("{err:?}").contains("17 bytes"), "got: {err:?}");
+
+        // Out-of-order cursor: wrong start position.
+        let bad_id = NonMerkChunkId {
+            start: 1,
+            state: 3,
+            param: 2,
+        }
+        .encode();
+        let err = restorer
+            .apply_page(&db, &tx, &path, &bad_id, &page)
+            .expect_err("out-of-order cursor must be rejected");
+        assert!(format!("{err:?}").contains("out of order"), "got: {err:?}");
+
+        let good_id = restorer.initial_chunk_id();
+
+        // Empty page data cannot even be decoded.
+        let err = restorer
+            .apply_page(&db, &tx, &path, &good_id, &[])
+            .expect_err("empty page must be rejected");
+        assert!(
+            format!("{err:?}").contains("missing more-flag"),
+            "got: {err:?}"
+        );
+
+        // A page claiming more data but carrying no entries would loop
+        // forever; it must be rejected.
+        let page = encode_non_merk_page(true, frontier.clone(), vec![]).expect("encode page");
+        let err = restorer
+            .apply_page(&db, &tx, &path, &good_id, &page)
+            .expect_err("more-without-entries must be rejected");
+        assert!(
+            format!("{err:?}").contains("carries no entries"),
+            "got: {err:?}"
+        );
+
+        // More entries than the element declares.
+        let too_many: Vec<Vec<u8>> = (0u8..4).map(|i| vec![i; 8]).collect();
+        let page = encode_non_merk_page(false, frontier.clone(), too_many).expect("encode page");
+        let err = restorer
+            .apply_page(&db, &tx, &path, &good_id, &page)
+            .expect_err("entry overflow must be rejected");
+        assert!(format!("{err:?}").contains("overflows"), "got: {err:?}");
+
+        // A populated commitment tree page 0 without the frontier.
+        let page =
+            encode_non_merk_page(false, Vec::new(), vec![b"e".to_vec()]).expect("encode page");
+        let err = restorer
+            .apply_page(&db, &tx, &path, &good_id, &page)
+            .expect_err("missing frontier must be rejected");
+        assert!(
+            format!("{err:?}").contains("missing the frontier"),
+            "got: {err:?}"
+        );
+
+        // Finalizing before all entries arrived is rejected.
+        let err = restorer
+            .finalize(&db, &tx, &path)
+            .expect_err("incomplete replay must be rejected");
+        assert!(
+            format!("{err:?}").contains("replay incomplete"),
+            "got: {err:?}"
+        );
+
+        // Aux data is only valid on a commitment tree's first page; any
+        // other tree type must reject it.
+        let mmr_path: Vec<Vec<u8>> = vec![TEST_LEAF.to_vec(), b"mmr".to_vec()];
+        let mut mmr_restorer =
+            NonMerkRestorer::new(Element::MmrTree(0, None), [0u8; 32], [1u8; 32])
+                .expect("valid MMR element");
+        let page = encode_non_merk_page(false, b"bogus aux".to_vec(), vec![]).expect("encode page");
+        let err = mmr_restorer
+            .apply_page(&db, &tx, &mmr_path, &mmr_restorer.initial_chunk_id(), &page)
+            .expect_err("aux on a non-CT page must be rejected");
+        assert!(
+            format!("{err:?}").contains("unexpected aux"),
+            "got: {err:?}"
+        );
+
+        // A page arriving after the final page is rejected.
+        let dense_path: Vec<Vec<u8>> = vec![TEST_LEAF.to_vec(), b"dense".to_vec()];
+        let mut dense_restorer = NonMerkRestorer::new(
+            Element::DenseAppendOnlyFixedSizeTree(0, 4, None),
+            [0u8; 32],
+            [1u8; 32],
+        )
+        .expect("valid dense element");
+        let final_page = encode_non_merk_page(false, Vec::new(), vec![]).expect("encode page");
+        let dense_id = dense_restorer.initial_chunk_id();
+        dense_restorer
+            .apply_page(&db, &tx, &dense_path, &dense_id, &final_page)
+            .expect("final page applies");
+        let err = dense_restorer
+            .apply_page(&db, &tx, &dense_path, &dense_id, &final_page)
+            .expect_err("page after final must be rejected");
+        assert!(
+            format!("{err:?}").contains("after the final page"),
+            "got: {err:?}"
+        );
+    }
 }
