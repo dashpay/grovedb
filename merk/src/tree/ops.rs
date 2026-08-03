@@ -1195,6 +1195,34 @@ mod test {
         tree::{tree_feature_type::TreeFeatureType::BasicMerkNode, *},
     };
 
+    /// `Walker::apply_to` with inert cost callbacks and a no-op old-value
+    /// observer — the shape every test in this module wants. Consolidated so
+    /// each case exercises the same plumbing (including the observer, which
+    /// fires whenever a batch op lands on an existing key).
+    fn apply_to_plain(
+        maybe_walker: Option<Walker<PanicSource>>,
+        batch: &MerkBatch<Vec<u8>>,
+        grove_version: &GroveVersion,
+    ) -> CostContext<Result<(Option<TreeNode>, KeyUpdates), Error>> {
+        Walker::<PanicSource>::apply_to(
+            maybe_walker,
+            batch,
+            PanicSource {},
+            &|_, _| Ok(0),
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            &|_, _| Ok(None),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
+                Ok((
+                    BasicStorageRemoval(key_bytes_to_remove),
+                    BasicStorageRemoval(value_bytes_to_remove),
+                ))
+            },
+            &mut |_, _, _| {},
+            grove_version,
+        )
+    }
+
     #[test]
     fn simple_insert() {
         let grove_version = GroveVersion::latest();
@@ -1355,24 +1383,7 @@ mod test {
     #[test]
     fn apply_empty_none() {
         let grove_version = GroveVersion::latest();
-        let (maybe_tree, key_updates) =
-            Walker::<PanicSource>::apply_to::<Vec<u8>, _, _, _, _, _, _>(
-                None,
-                &[],
-                PanicSource {},
-                &|_, _| Ok(0),
-                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                &|_, _| Ok(None),
-                &mut |_, _, _| Ok((false, None)),
-                &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
-                    Ok((
-                        BasicStorageRemoval(key_bytes_to_remove),
-                        BasicStorageRemoval(value_bytes_to_remove),
-                    ))
-                },
-                &mut |_, _, _| {},
-                grove_version,
-            )
+        let (maybe_tree, key_updates) = apply_to_plain(None, &[], grove_version)
             .unwrap()
             .expect("apply_to failed");
         assert!(maybe_tree.is_none());
@@ -1381,28 +1392,40 @@ mod test {
     }
 
     #[test]
+    fn build_with_mid_delete_ignores_missing_key() {
+        // Building a fresh tree from a batch whose middle op is a Delete
+        // exercises `build`'s delete arm: the left half is built, then the
+        // right half is applied to it via `apply_sorted`, and the delete of
+        // a key that never existed is simply skipped.
+        let grove_version = GroveVersion::latest();
+        let batch = vec![
+            (vec![0], Put(vec![1], BasicMerkNode)),
+            (vec![1], Delete),
+            (vec![2], Put(vec![3], BasicMerkNode)),
+        ];
+        let (maybe_tree, _key_updates) = apply_to_plain(None, &batch, grove_version)
+            .unwrap()
+            .expect("apply_to failed");
+        let tree = maybe_tree.expect("expected tree");
+        // Both puts landed; the deleted key never existed.
+        let mut keys = vec![tree.key().to_vec()];
+        if let Some(child) = tree.child(true) {
+            keys.push(child.key().to_vec());
+        }
+        if let Some(child) = tree.child(false) {
+            keys.push(child.key().to_vec());
+        }
+        keys.sort();
+        assert_eq!(keys, vec![vec![0], vec![2]]);
+    }
+
+    #[test]
     fn insert_empty_single() {
         let grove_version = GroveVersion::latest();
         let batch = vec![(vec![0], Put(vec![1], BasicMerkNode))];
-        let (maybe_tree, key_updates) = Walker::<PanicSource>::apply_to(
-            None,
-            &batch,
-            PanicSource {},
-            &|_, _| Ok(0),
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            &|_, _| Ok(None),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
-                Ok((
-                    BasicStorageRemoval(key_bytes_to_remove),
-                    BasicStorageRemoval(value_bytes_to_remove),
-                ))
-            },
-            &mut |_, _, _| {},
-            grove_version,
-        )
-        .unwrap()
-        .expect("apply_to failed");
+        let (maybe_tree, key_updates) = apply_to_plain(None, &batch, grove_version)
+            .unwrap()
+            .expect("apply_to failed");
         let tree = maybe_tree.expect("expected tree");
         assert_eq!(tree.key(), &[0]);
         assert_eq!(tree.value_as_slice(), &[1]);
@@ -1415,25 +1438,9 @@ mod test {
     fn insert_updated_single() {
         let grove_version = GroveVersion::latest();
         let batch = vec![(vec![0], Put(vec![1], BasicMerkNode))];
-        let (maybe_tree, key_updates) = Walker::<PanicSource>::apply_to(
-            None,
-            &batch,
-            PanicSource {},
-            &|_, _| Ok(0),
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            &|_, _| Ok(None),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
-                Ok((
-                    BasicStorageRemoval(key_bytes_to_remove),
-                    BasicStorageRemoval(value_bytes_to_remove),
-                ))
-            },
-            &mut |_, _, _| {},
-            grove_version,
-        )
-        .unwrap()
-        .expect("apply_to failed");
+        let (maybe_tree, key_updates) = apply_to_plain(None, &batch, grove_version)
+            .unwrap()
+            .expect("apply_to failed");
         assert!(key_updates.updated_keys.is_empty());
         assert!(key_updates.deleted_keys.is_empty());
 
@@ -1442,25 +1449,9 @@ mod test {
             (vec![0], Put(vec![2], BasicMerkNode)),
             (vec![1], Put(vec![2], BasicMerkNode)),
         ];
-        let (maybe_tree, key_updates) = Walker::<PanicSource>::apply_to(
-            maybe_walker,
-            &batch,
-            PanicSource {},
-            &|_, _| Ok(0),
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            &|_, _| Ok(None),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
-                Ok((
-                    BasicStorageRemoval(key_bytes_to_remove),
-                    BasicStorageRemoval(value_bytes_to_remove),
-                ))
-            },
-            &mut |_, _, _| {},
-            grove_version,
-        )
-        .unwrap()
-        .expect("apply_to failed");
+        let (maybe_tree, key_updates) = apply_to_plain(maybe_walker, &batch, grove_version)
+            .unwrap()
+            .expect("apply_to failed");
         let tree = maybe_tree.expect("expected tree");
         assert_eq!(tree.key(), &[0]);
         assert_eq!(tree.value_as_slice(), &[2]);
@@ -1476,25 +1467,9 @@ mod test {
             (vec![1], Put(vec![2], BasicMerkNode)),
             (vec![2], Put(vec![3], BasicMerkNode)),
         ];
-        let (maybe_tree, key_updates) = Walker::<PanicSource>::apply_to(
-            None,
-            &batch,
-            PanicSource {},
-            &|_, _| Ok(0),
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            &|_, _| Ok(None),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
-                Ok((
-                    BasicStorageRemoval(key_bytes_to_remove),
-                    BasicStorageRemoval(value_bytes_to_remove),
-                ))
-            },
-            &mut |_, _, _| {},
-            grove_version,
-        )
-        .unwrap()
-        .expect("apply_to failed");
+        let (maybe_tree, key_updates) = apply_to_plain(None, &batch, grove_version)
+            .unwrap()
+            .expect("apply_to failed");
         assert!(key_updates.updated_keys.is_empty());
         assert!(key_updates.deleted_keys.is_empty());
 
@@ -1504,25 +1479,9 @@ mod test {
             (vec![1], Put(vec![8], BasicMerkNode)),
             (vec![2], Delete),
         ];
-        let (maybe_tree, key_updates) = Walker::<PanicSource>::apply_to(
-            maybe_walker,
-            &batch,
-            PanicSource {},
-            &|_, _| Ok(0),
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            &|_, _| Ok(None),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
-                Ok((
-                    BasicStorageRemoval(key_bytes_to_remove),
-                    BasicStorageRemoval(value_bytes_to_remove),
-                ))
-            },
-            &mut |_, _, _| {},
-            grove_version,
-        )
-        .unwrap()
-        .expect("apply_to failed");
+        let (maybe_tree, key_updates) = apply_to_plain(maybe_walker, &batch, grove_version)
+            .unwrap()
+            .expect("apply_to failed");
         let tree = maybe_tree.expect("expected tree");
         assert_eq!(tree.key(), &[1]);
         assert_eq!(tree.value_as_slice(), &[8]);
