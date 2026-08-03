@@ -321,6 +321,63 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
 }
 
 #[cfg(test)]
+mod error_path_tests {
+    use super::*;
+    use crate::test_utils::MemStorageContext;
+
+    #[test]
+    fn test_debug_and_error_display() {
+        let store = PrivateDocumentStore::new(64, 4, MemStorageContext::new()).expect("new");
+        let dbg = format!("{:?}", store);
+        assert!(dbg.contains("PrivateDocumentStore") && dbg.contains("entry_size: 64"));
+        assert_eq!(store.entry_size(), 64);
+        assert_eq!(store.chunk_power(), 4);
+        assert_eq!(store.epoch_size(), 16);
+
+        assert!(format!(
+            "{}",
+            PrivateDocumentStoreError::InvalidEntrySize {
+                expected: 8,
+                actual: 9
+            }
+        )
+        .contains("expected 8 bytes, got 9"));
+        assert!(
+            format!("{}", PrivateDocumentStoreError::InvalidConfig("x".into())).contains("config")
+        );
+        assert!(
+            format!("{}", PrivateDocumentStoreError::CorruptedData("x".into()))
+                .contains("corrupted")
+        );
+        assert!(format!("{}", PrivateDocumentStoreError::InvalidData("x".into())).contains("data"));
+    }
+
+    #[test]
+    fn test_reads_error_on_wiped_storage() {
+        // Populate past a compaction so both a chunk and the buffer exist,
+        // then wipe the backing storage and reopen with the same claimed
+        // state: chunk reads and the integrity walk must surface errors
+        // rather than fabricate data.
+        let mut store = PrivateDocumentStore::new(8, 2, MemStorageContext::new()).expect("new");
+        for i in 0..6u8 {
+            store.append(&[i; 8]).unwrap().expect("append");
+        }
+        store.commit_mmr().expect("commit mmr");
+        let storage = PrivateDocumentStore::into_storage_for_test(store);
+        storage.data.borrow_mut().clear();
+
+        let broken = PrivateDocumentStore::from_state(6, 8, 2, storage).expect("reopen");
+        // Position 0 lives in the (now missing) completed chunk.
+        assert!(broken.get_value(0).is_err());
+        // The integrity walk fails on the missing chunk too.
+        assert!(broken.verify_entry_sizes().is_err());
+        // Buffer positions read as missing entries in the walk; direct
+        // get_value returns the underlying error or None consistently.
+        assert!(broken.compute_current_state_root().is_err() || broken.get_value(5).is_err());
+    }
+}
+
+#[cfg(test)]
 impl<S> PrivateDocumentStore<S> {
     /// Test helper: tear down the store and recover its storage context so a
     /// reopen can be simulated against the same in-memory backing.

@@ -1283,6 +1283,31 @@ mod tests {
     }
 
     #[test]
+    fn test_private_document_store_insert_worst_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        let op = GroveOp::PrivateDocumentStoreInsert {
+            entry: vec![0u8; 128],
+        };
+        let key = KeyInfo::KnownKey(b"pds_key".to_vec());
+        let cost = op
+            .worst_case_cost(
+                &key,
+                TreeType::NormalTree,
+                &MaxElementsNumber(100),
+                false,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected worst case cost for private document store insert");
+        assert!(cost.seek_count > 0);
+        assert!(cost.hash_node_calls > 0);
+        // The worst case includes the compaction blob bound plus the
+        // entry-size-parametrized per-append write.
+        assert!(cost.storage_cost.added_bytes >= 128 + 65536);
+        assert_eq!(cost.sinsemilla_hash_calls, 0);
+    }
+
+    #[test]
     fn test_dense_tree_insert_worst_case_cost_direct() {
         let grove_version = GroveVersion::latest();
         let op = GroveOp::DenseTreeInsert {

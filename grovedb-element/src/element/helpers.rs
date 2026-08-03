@@ -1335,6 +1335,12 @@ mod flag_accessor_tests {
     }
 
     #[test]
+    fn private_document_store_flag_accessors() {
+        let e = Element::PrivateDocumentStore(0, 64, 4, flags());
+        check_accessors_round_trip(e);
+    }
+
+    #[test]
     fn dense_append_only_tree_flag_accessors() {
         let e = Element::DenseAppendOnlyFixedSizeTree(0, 0, flags());
         check_accessors_round_trip(e);

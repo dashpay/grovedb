@@ -675,6 +675,46 @@ mod tests {
     }
 
     #[test]
+    fn private_document_store_extension_arms_direct() {
+        // PrivateDocumentStore carries {entry_size, chunk_power}; only the
+        // chunk_power flows into the TreeType. Drive every dispatch arm.
+        let entry_size = 64u32;
+        let chunk_power = 4u8;
+        let e = Element::PrivateDocumentStore(3, entry_size, chunk_power, Some(vec![1]));
+
+        let (rk, tt) = e.root_key_and_tree_type().expect("Some");
+        assert!(rk.is_none());
+        assert_eq!(tt, TreeType::PrivateDocumentStore(chunk_power));
+
+        let (rk, tt) = e.clone().root_key_and_tree_type_owned().expect("Some");
+        assert!(rk.is_none());
+        assert_eq!(tt, TreeType::PrivateDocumentStore(chunk_power));
+
+        assert_eq!(
+            e.tree_type(),
+            Some(TreeType::PrivateDocumentStore(chunk_power))
+        );
+        assert_eq!(
+            e.maybe_tree_type(),
+            MaybeTree::Tree(TreeType::PrivateDocumentStore(chunk_power))
+        );
+
+        let (flags, tt) = e.tree_flags_and_type().expect("Some");
+        assert!(flags.is_some());
+        assert_eq!(tt, TreeType::PrivateDocumentStore(chunk_power));
+        assert_eq!(e.tree_feature_type(), Some(BasicMerkNode));
+
+        // Children of a PDS parent (unreachable in practice — inserts are
+        // rejected) still resolve to BasicMerkNode for exhaustiveness.
+        assert_eq!(
+            Element::new_item(b"x".to_vec())
+                .get_feature_type(TreeType::PrivateDocumentStore(chunk_power))
+                .expect("feature type"),
+            BasicMerkNode
+        );
+    }
+
+    #[test]
     fn bulk_append_tree_extension_arms_direct() {
         let chunk_power = 8u8;
         let e = Element::BulkAppendTree(0, chunk_power, None);

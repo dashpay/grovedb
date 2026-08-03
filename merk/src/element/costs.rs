@@ -457,3 +457,55 @@ impl ElementCostExtensions for Element {
         element.value_defined_cost(grove_version)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use grovedb_version::version::GroveVersion;
+
+    use super::*;
+
+    #[test]
+    fn private_document_store_cost_paths() {
+        let grove_version = GroveVersion::latest();
+        let element = Element::new_private_document_store(5, 64, 4, Some(vec![1, 2]));
+
+        // Specialized (layered) cost uses the entry-size-carrying constant.
+        assert_eq!(
+            element.get_specialized_cost(grove_version).expect("cost"),
+            crate::tree_type::PRIVATE_DOCUMENT_STORE_COST_SIZE
+        );
+
+        // Layered value defined cost = specialized cost + flags overhead.
+        let layered = element
+            .layered_value_defined_cost(grove_version)
+            .expect("layered cost");
+        assert_eq!(
+            layered,
+            crate::tree_type::PRIVATE_DOCUMENT_STORE_COST_SIZE + 3
+        );
+        assert!(matches!(
+            element.value_defined_cost(grove_version),
+            Some(LayeredValueDefinedCost(c)) if c == layered
+        ));
+        // Not an item-like element: no specialized (sum-item) value cost.
+        assert!(element
+            .specialized_value_defined_cost(grove_version)
+            .is_none());
+
+        // The serialized-value cost path takes the PDS block in
+        // specialized_costs_for_key_value.
+        let serialized = element.serialize(grove_version).expect("serialize");
+        let cost = Element::specialized_costs_for_key_value(
+            b"key",
+            &serialized,
+            NodeType::NormalNode,
+            grove_version,
+        )
+        .expect("cost for key value");
+        assert!(cost > 0);
+        assert_eq!(
+            Element::value_defined_cost_for_serialized_value(&serialized, grove_version),
+            Some(LayeredValueDefinedCost(layered))
+        );
+    }
+}

@@ -204,6 +204,18 @@ mod tests {
     use crate::tree::AggregateData;
 
     #[test]
+    fn reconstruct_private_document_store_is_verbatim() {
+        // Like the other non-Merk data trees, a PrivateDocumentStore has no
+        // root key and no Merk aggregate: reconstruction ignores both inputs
+        // and returns the element verbatim.
+        let element = Element::new_private_document_store(9, 64, 4, Some(vec![1, 2]));
+        let reconstructed = element
+            .reconstruct_with_root_key(Some(b"ignored".to_vec()), AggregateData::NoAggregateData)
+            .expect("reconstruct ok");
+        assert_eq!(reconstructed, element);
+    }
+
+    #[test]
     fn reconstruct_preserves_non_counted_wrapper() {
         // A NonCounted-wrapped tree must come back wrapped after a root-key
         // propagation, otherwise update_tree_item_preserve_flag on a

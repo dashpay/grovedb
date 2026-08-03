@@ -1789,6 +1789,56 @@ mod tests {
     }
 
     #[test]
+    fn test_private_document_store_insert_average_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        let op = GroveOp::PrivateDocumentStoreInsert {
+            entry: vec![42u8; 64],
+        };
+        let key = KeyInfo::KnownKey(b"pds_key".to_vec());
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: ApproximateElements(5),
+            estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+        };
+        let cost = op
+            .average_case_cost(&key, &layer_info, false, grove_version)
+            .cost_as_result()
+            .expect("expected cost for private document store insert");
+        // PrivateDocumentStoreInsert mirrors BulkAppend: parent replace cost
+        // plus buffer write + running hash; added bytes are entry-size
+        // parametrized (the entry length is the committed entry_size).
+        assert!(
+            cost.seek_count > 0,
+            "expected seek_count > 0, got {}",
+            cost.seek_count
+        );
+        assert!(
+            cost.hash_node_calls > 0,
+            "expected hash_node_calls > 0, got {}",
+            cost.hash_node_calls
+        );
+        assert!(
+            cost.storage_cost.added_bytes >= 64,
+            "expected added_bytes >= entry size, got {}",
+            cost.storage_cost.added_bytes
+        );
+
+        // Entry-size parametrization: doubling the entry length grows the
+        // added bytes by exactly the difference.
+        let op_large = GroveOp::PrivateDocumentStoreInsert {
+            entry: vec![42u8; 128],
+        };
+        let cost_large = op_large
+            .average_case_cost(&key, &layer_info, false, grove_version)
+            .cost_as_result()
+            .expect("expected cost for larger entry");
+        assert_eq!(
+            cost_large.storage_cost.added_bytes - cost.storage_cost.added_bytes,
+            64
+        );
+    }
+
+    #[test]
     fn test_dense_tree_insert_average_case_cost_direct() {
         let grove_version = GroveVersion::latest();
         let op = GroveOp::DenseTreeInsert {

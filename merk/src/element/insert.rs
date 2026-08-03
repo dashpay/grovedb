@@ -940,6 +940,60 @@ mod tests {
     };
 
     #[test]
+    fn private_document_store_merk_rejects_all_child_element_inserts() {
+        // A PrivateDocumentStore's Merk must stay empty forever: every
+        // element-insert entry point rejects when the destination Merk is
+        // PDS-typed — validate_insertable_into (used by insert /
+        // insert_if_not_exists), the inline guards in insert_reference and
+        // insert_subtree, and insert_count_indexed_subtree.
+        let grove_version = GroveVersion::latest();
+        let mut merk =
+            TempMerk::new_with_tree_type(grove_version, TreeType::PrivateDocumentStore(4));
+
+        let item = Element::new_item(b"value".to_vec());
+        assert!(item
+            .validate_insertable_into(TreeType::PrivateDocumentStore(4))
+            .is_err());
+        assert!(item
+            .insert(&mut merk, b"k", None, grove_version)
+            .unwrap()
+            .is_err());
+        assert!(item
+            .insert_if_not_exists(&mut merk, b"k", None, grove_version)
+            .unwrap()
+            .is_err());
+
+        let reference = Element::new_reference(
+            grovedb_element::reference_path::ReferencePathType::AbsolutePathReference(vec![
+                b"a".to_vec()
+            ]),
+        );
+        assert!(reference
+            .insert_reference(&mut merk, b"k", [0u8; 32], None, grove_version)
+            .unwrap()
+            .is_err());
+
+        let subtree = Element::empty_tree();
+        assert!(subtree
+            .insert_subtree(&mut merk, b"k", [0u8; 32], None, grove_version)
+            .unwrap()
+            .is_err());
+
+        let cidx = Element::empty_provable_count_indexed_tree();
+        assert!(cidx
+            .insert_count_indexed_subtree(
+                &mut merk,
+                b"k",
+                [0u8; 32],
+                [0u8; 32],
+                None,
+                grove_version
+            )
+            .unwrap()
+            .is_err());
+    }
+
+    #[test]
     fn test_success_insert() {
         let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);

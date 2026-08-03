@@ -416,6 +416,23 @@ fn test_private_document_store_direct_insert_rejects_non_empty_element() {
         "expected non-empty rejection, got {:?}",
         result
     );
+
+    // A caller-built element with an invalid config (bypassing the checked
+    // constructors) is rejected by the insert path as well.
+    for bad in [
+        Element::new_private_document_store(0, 0, TEST_CHUNK_POWER, None),
+        Element::new_private_document_store(0, TEST_ENTRY_SIZE, 0, None),
+        Element::new_private_document_store(0, TEST_ENTRY_SIZE, 17, None),
+    ] {
+        let result = db
+            .insert(EMPTY_PATH, b"docs", bad, None, None, grove_version)
+            .unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidInput(_))),
+            "expected config rejection, got {:?}",
+            result
+        );
+    }
 }
 
 #[test]
@@ -665,6 +682,12 @@ fn test_private_document_store_path_query_rejects_tree_result() {
         .unwrap();
     assert!(matches!(result, Err(Error::InvalidQuery(_))));
 
+    // The item-or-sum variant rejects stores too.
+    let result = db
+        .query_item_value_or_sum(&path_query, true, true, true, None, grove_version)
+        .unwrap();
+    assert!(matches!(result, Err(Error::InvalidQuery(_))));
+
     // Raw element queries return the store element itself.
     let (elements, _) = db
         .query_raw(
@@ -860,4 +883,278 @@ fn test_private_document_store_empty_root_constant_matches_insert_binding() {
         .verify_grovedb(None, true, false, grove_version)
         .expect("verify_grovedb");
     assert!(issues.is_empty(), "issues: {:?}", issues);
+}
+
+// ===========================================================================
+// Coverage: v0 insert path, batch policy branches, op metadata
+// ===========================================================================
+
+/// Exercise the v0 `add_element_on_transaction` arm for
+/// PrivateDocumentStore. No registered version pairs the v0 insert
+/// implementation with an enabled PDS family (V1..V3 fail closed, V4 uses
+/// v1), so drive it with a custom version: V4 with the insert
+/// implementation slot dialed back to 0.
+#[test]
+fn test_private_document_store_insert_v0_element_path() {
+    let mut custom = GROVE_V4.clone();
+    custom
+        .grovedb_versions
+        .operations
+        .insert
+        .add_element_on_transaction = 0;
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"docs",
+        Element::empty_private_document_store(TEST_ENTRY_SIZE, TEST_CHUNK_POWER)
+            .expect("valid config"),
+        None,
+        None,
+        &custom,
+    )
+    .unwrap()
+    .expect("v0 insert of empty store works");
+
+    // The v0 arm enforces the same emptiness and config validation.
+    let result = db
+        .insert(
+            EMPTY_PATH,
+            b"docs2",
+            Element::new_private_document_store(5, TEST_ENTRY_SIZE, TEST_CHUNK_POWER, None),
+            None,
+            None,
+            &custom,
+        )
+        .unwrap();
+    assert!(matches!(result, Err(Error::InvalidCodeExecution(_))));
+
+    let result = db
+        .insert(
+            EMPTY_PATH,
+            b"docs3",
+            Element::new_private_document_store(0, 0, TEST_CHUNK_POWER, None),
+            None,
+            None,
+            &custom,
+        )
+        .unwrap();
+    assert!(matches!(result, Err(Error::InvalidInput(_))));
+
+    // The binding written by the v0 arm matches what verify_grovedb
+    // recomputes (same config-parametrized empty root as the v1 arm).
+    let issues = db
+        .verify_grovedb(None, true, false, GroveVersion::latest())
+        .expect("verify_grovedb");
+    assert!(issues.is_empty(), "issues: {:?}", issues);
+}
+
+#[test]
+fn test_private_document_store_batch_insert_if_not_exists() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    let store_element = || {
+        Element::empty_private_document_store(TEST_ENTRY_SIZE, TEST_CHUNK_POWER)
+            .expect("valid config")
+    };
+
+    // First InsertIfNotExists creates the store.
+    let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
+        vec![],
+        b"docs".to_vec(),
+        store_element(),
+    )];
+    db.apply_batch(ops, None, None, grove_version)
+        .unwrap()
+        .expect("first insert_if_not_exists creates the store");
+
+    // A second InsertIfNotExists over the same key hits the existence check
+    // and errors (validate_insertion_does_not_override defaults to erroring
+    // for InsertIfNotExists in batches).
+    let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
+        vec![],
+        b"docs".to_vec(),
+        store_element(),
+    )];
+    let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+    assert!(
+        matches!(result, Err(Error::InvalidBatchOperation(_))),
+        "duplicate insert_if_not_exists must be rejected, got {:?}",
+        result
+    );
+
+    // The store is intact.
+    assert_eq!(
+        db.private_document_store_count(EMPTY_PATH, b"docs", None, grove_version)
+            .unwrap()
+            .expect("count"),
+        0
+    );
+}
+
+#[test]
+fn test_private_document_store_reference_to_updated_store_rejected() {
+    let grove_version = GroveVersion::latest();
+    let db = make_db_with_store();
+
+    // A reference in the same batch pointing at a store that receives
+    // appends must be rejected: references cannot point to trees being
+    // updated.
+    let ops = vec![
+        QualifiedGroveDbOp::private_document_store_insert_op(
+            vec![b"root".to_vec(), b"docs".to_vec()],
+            entry(1),
+        ),
+        QualifiedGroveDbOp::insert_or_replace_op(
+            vec![b"root".to_vec()],
+            b"link".to_vec(),
+            Element::new_reference(
+                crate::reference_path::ReferencePathType::AbsolutePathReference(vec![
+                    b"root".to_vec(),
+                    b"docs".to_vec(),
+                ]),
+            ),
+        ),
+    ];
+    let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+    assert!(
+        matches!(result, Err(Error::InvalidBatchOperation(_))),
+        "reference to a store being appended to must be rejected, got {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_private_document_store_op_metadata() {
+    // The sort tag is consensus-relevant for batch op ordering; pin it.
+    let op = crate::batch::GroveOp::PrivateDocumentStoreInsert { entry: entry(0) };
+    assert_eq!(op.to_u8(), 19);
+    assert!(!op.can_mutate_child_count());
+
+    // NonMerkTreeMeta round-trips the element state.
+    let meta = crate::batch::NonMerkTreeMeta::PrivateDocumentStore {
+        total_count: 7,
+        entry_size: TEST_ENTRY_SIZE,
+        chunk_power: TEST_CHUNK_POWER,
+    };
+    assert_eq!(
+        meta.to_tree_type(),
+        grovedb_merk::tree_type::TreeType::PrivateDocumentStore(TEST_CHUNK_POWER)
+    );
+    assert_eq!(meta.count(), 7);
+    assert_eq!(
+        meta.to_element(Some(vec![1])),
+        Element::new_private_document_store(7, TEST_ENTRY_SIZE, TEST_CHUNK_POWER, Some(vec![1]))
+    );
+}
+
+#[test]
+fn test_private_document_store_apply_without_batching() {
+    // The non-batch fallback path dispatches PrivateDocumentStoreInsert ops
+    // to the direct typed insert.
+    let grove_version = GroveVersion::latest();
+    let db = make_db_with_store();
+
+    let ops = vec![
+        QualifiedGroveDbOp::private_document_store_insert_op(
+            vec![b"root".to_vec(), b"docs".to_vec()],
+            entry(1),
+        ),
+        QualifiedGroveDbOp::private_document_store_insert_op(
+            vec![b"root".to_vec(), b"docs".to_vec()],
+            entry(2),
+        ),
+    ];
+    db.apply_operations_without_batching(ops, None, None, grove_version)
+        .unwrap()
+        .expect("apply without batching");
+
+    assert_eq!(
+        db.private_document_store_count(&[b"root"], b"docs", None, grove_version)
+            .unwrap()
+            .expect("count"),
+        2
+    );
+    assert_eq!(
+        db.private_document_store_get_value(&[b"root"], b"docs", 1, None, grove_version)
+            .unwrap()
+            .expect("get"),
+        Some(entry(2))
+    );
+
+    let issues = db
+        .verify_grovedb(None, true, false, grove_version)
+        .expect("verify_grovedb");
+    assert!(issues.is_empty(), "issues: {:?}", issues);
+}
+
+#[test]
+fn test_private_document_store_element_display_and_visualize() {
+    let element = Element::new_private_document_store(3, TEST_ENTRY_SIZE, TEST_CHUNK_POWER, None);
+    let display = format!("{}", element);
+    assert!(
+        display.contains("PrivateDocumentStore")
+            && display.contains("entry_size: 16")
+            && display.contains("chunk_power: 2"),
+        "unexpected display: {}",
+        display
+    );
+    assert_eq!(element.type_str(), "private_document_store");
+    assert_eq!(
+        Element::new_non_counted(element).expect("wrap").type_str(),
+        "non_counted private_document_store"
+    );
+}
+
+#[test]
+fn test_private_document_store_v0_prover_rejects_subqueries() {
+    use grovedb_version::version::v2::GROVE_V2;
+
+    // Build the store under the latest version, then generate proofs with
+    // GROVE_V2 (whose prover is the locked V0 wire format). Subqueries into
+    // the store must be rejected by the V0 dispatch...
+    let grove_version = GroveVersion::latest();
+    let db = make_db_with_store();
+    db.private_document_store_insert(&[b"root"], b"docs", entry(1), None, grove_version)
+        .unwrap()
+        .expect("append");
+
+    let mut inner_query = Query::new();
+    inner_query.insert_all();
+    let subquery = PathQuery {
+        path: vec![b"root".to_vec()],
+        query: SizedQuery {
+            query: Query {
+                items: vec![grovedb_merk::proofs::query::QueryItem::Key(
+                    b"docs".to_vec(),
+                )],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner_query.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+    let result = db.prove_query(&subquery, None, &GROVE_V2).unwrap();
+    assert!(
+        matches!(result, Err(Error::NotSupported(_))),
+        "V0 subquery into a store must be rejected, got {:?}",
+        result
+    );
+
+    // ...while a terminal query for the element itself still proves (the
+    // node passes through as a result, V0 shape unchanged).
+    let terminal = PathQuery::new_unsized(
+        vec![b"root".to_vec()],
+        Query::new_single_key(b"docs".to_vec()),
+    );
+    db.prove_query(&terminal, None, &GROVE_V2)
+        .unwrap()
+        .expect("V0 terminal proof over a store element generates");
 }

@@ -1026,6 +1026,7 @@ mod serde_impl {
             let cases = vec![
                 Element::Item(b"abc".to_vec(), None),
                 Element::SumTree(Some(b"r".to_vec()), 42, None),
+                Element::PrivateDocumentStore(9, 64, 4, Some(vec![1])),
                 Element::new_non_counted(Element::Item(b"x".to_vec(), None)).unwrap(),
                 Element::new_not_summed(Element::SumTree(None, 100, None)).unwrap(),
                 Element::new_not_counted_or_summed(Element::CountSumTree(None, 3, 100, None))
