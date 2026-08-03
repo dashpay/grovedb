@@ -12,17 +12,22 @@ use grovedb_costs::{
 };
 #[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::average_case_costs::{
-    add_average_case_merk_has_value, average_case_merk_propagate, EstimatedLayerInformation,
+    add_average_case_get_merk_node, add_average_case_merk_has_value, average_case_merk_propagate,
+    EstimatedLayerInformation,
 };
 use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions, tree::AggregateData, tree_type::TreeType,
     RootHashKeyAndAggregateData,
 };
 #[cfg(feature = "minimal")]
+use grovedb_merk::{tree::kv::KV, tree_type::CostSize};
+#[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "minimal")]
-use grovedb_storage::worst_case_costs::WorstKeyLength;
+use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
 use grovedb_version::version::GroveVersion;
+#[cfg(feature = "minimal")]
+use integer_encoding::VarInt;
 #[cfg(feature = "minimal")]
 use itertools::Itertools;
 
@@ -428,6 +433,78 @@ fn indexed_axes_for_tree_type(tree_type: TreeType) -> Vec<grovedb_element::index
 }
 
 #[cfg(feature = "minimal")]
+/// Model the stored-element reads the GROVE_V4 apply gates add, keeping the
+/// estimated cost in step with the applied cost per gate. On V1..V3 both
+/// gates are 0 and this charges nothing, preserving released estimates.
+///
+/// - `overwrite_indexed_cleanup_inspection >= 1`: an overwrite-capable op
+///   (`InsertOrReplace` / `Replace` / `Patch`, excluding bare references)
+///   with tree-override validation OFF reads the existing element from the
+///   op's own Merk to detect an indexed tree being overwritten. Modeled as
+///   one average-case Merk node read of this layer's estimated element,
+///   skipped when the layer is estimated to be empty — a get on an empty
+///   Merk is free, which is what keeps fresh-insert estimates identical to
+///   applied costs.
+/// - `delete_tree_cleanup_type_source >= 1`: a `DeleteTree` op builds the
+///   parent storage context and reads the stored element so cleanup
+///   namespaces follow its ACTUAL type. Modeled as the context prefix hash
+///   plus one seek loading the layered element cost — the exact
+///   `storage_loaded_bytes` shape `Element::get_from_storage` reports for
+///   tree elements.
+fn add_average_case_v4_read_gate_costs(
+    cost: &mut OperationCost,
+    path: &KeyInfoPath,
+    key: &KeyInfo,
+    op: &GroveOp,
+    layer_element_estimates: &EstimatedLayerInformation,
+    batch_apply_options: &BatchApplyOptions,
+    grove_version: &GroveVersion,
+) -> Result<(), Error> {
+    let apply_batch = &grove_version.grovedb_versions.apply_batch;
+    match op {
+        GroveOp::InsertOrReplace { element }
+        | GroveOp::Replace { element }
+        | GroveOp::Patch { element, .. }
+            if apply_batch.overwrite_indexed_cleanup_inspection >= 1
+                && !batch_apply_options.validate_insertion_does_not_override_tree
+                && !matches!(element, Element::Reference(..))
+                && !layer_element_estimates
+                    .estimated_layer_count
+                    .estimated_to_be_empty() =>
+        {
+            let estimated_element_size = layer_element_estimates
+                .estimated_layer_sizes
+                .value_with_feature_and_flags_size(grove_version)
+                .map_err(Error::MerkError)?;
+            add_average_case_get_merk_node(
+                cost,
+                key.max_length() as u32,
+                estimated_element_size,
+                layer_element_estimates.tree_type.inner_node_type(),
+            )
+            .map_err(Error::MerkError)?;
+        }
+        GroveOp::DeleteTree(tree_type, _) if apply_batch.delete_tree_cleanup_type_source >= 1 => {
+            *cost += RocksDbStorage::get_storage_context_cost(path.as_vec());
+            let flags_size = layer_element_estimates
+                .estimated_layer_sizes
+                .layered_flags_size()
+                .map_err(Error::MerkError)?
+                .map(|f| f + f.required_space() as u32)
+                .unwrap_or_default();
+            cost.seek_count += 1;
+            cost.storage_loaded_bytes += KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                key.max_length() as u32,
+                tree_type.cost_size() + flags_size,
+                layer_element_estimates.tree_type.inner_node_type(),
+            ) as u64;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+#[cfg(feature = "minimal")]
 /// Cache for subtree paths for average case scenario costs.
 #[derive(Default)]
 pub(in crate::batch) struct AverageCaseTreeCacheKnownPaths {
@@ -517,7 +594,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         path: &KeyInfoPath,
         ops_at_path_by_key: BTreeMap<KeyInfo, GroveOp>,
         _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, GroveOp>,
-        _batch_apply_options: &BatchApplyOptions,
+        batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
         grove_version: &GroveVersion,
@@ -584,6 +661,18 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             .count();
 
         for (key, op) in ops_at_path_by_key.into_iter() {
+            cost_return_on_error_no_add!(
+                cost,
+                add_average_case_v4_read_gate_costs(
+                    &mut cost,
+                    path,
+                    &key,
+                    &op,
+                    layer_element_estimates,
+                    batch_apply_options,
+                    grove_version,
+                )
+            );
             cost_return_on_error!(
                 &mut cost,
                 op.average_case_cost(&key, layer_element_estimates, false, grove_version)
@@ -959,7 +1048,13 @@ mod tests {
         // case cost if it doesn't already exist
         assert_eq!(cost.storage_cost, average_case_cost.storage_cost);
         assert_eq!(cost.hash_node_calls, average_case_cost.hash_node_calls);
-        assert_eq!(cost.seek_count, average_case_cost.seek_count);
+        // With `overwrite_indexed_cleanup_inspection >= 1` (V4+, which is
+        // what `latest()` resolves to) the estimator charges one node read
+        // for indexed-overwrite detection on this non-empty layer. The
+        // applied path performs the same read but gets it for free here:
+        // the only existing node is the Merk's root, already in memory
+        // from opening the Merk.
+        assert_eq!(cost.seek_count + 1, average_case_cost.seek_count);
 
         // Seek Count explanation (this isn't 100% sure - needs to be verified)
         // 1 to get root merk
@@ -967,6 +1062,8 @@ mod tests {
         // 1 to get previous element
         // 1 to insert
         // 1 to insert node above
+        // 1 for the gated indexed-overwrite inspection read (estimator only
+        //   pays it here; see comment above)
 
         // Replaced parent Value -> 76
         //   1 for the flag option (but no flags)
@@ -979,17 +1076,19 @@ mod tests {
         // Loaded
         // For root key 1 byte
         // For root tree item 69 bytes
+        // For the inspection read 150 bytes (average-case encoded node with
+        //   both links present, keyed and valued from the layer estimates)
 
         assert_eq!(
             average_case_cost,
             OperationCost {
-                seek_count: 5, // todo: why is this 5
+                seek_count: 6,
                 storage_cost: StorageCost {
                     added_bytes: 115,
                     replaced_bytes: 75,
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 109,
+                storage_loaded_bytes: 259,
                 hash_node_calls: 8,
                 sinsemilla_hash_calls: 0,
             }
@@ -1147,16 +1246,22 @@ mod tests {
         // case cost if it doesn't already exist
         assert_eq!(average_case_cost.storage_cost.added_bytes, 0);
 
+        // +1 seek and +238 storage_loaded_bytes vs. V1..V3: with
+        // `overwrite_indexed_cleanup_inspection >= 1` (V4+, which is what
+        // `latest()` resolves to) and tree-override validation off, the
+        // estimator models the applied path's read of the existing element
+        // for indexed-overwrite detection — one average-case node read of
+        // this layer's estimated element.
         assert_eq!(
             average_case_cost,
             OperationCost {
-                seek_count: 41,
+                seek_count: 42,
                 storage_cost: StorageCost {
                     added_bytes: 0,
                     replaced_bytes: 5594,
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 7669,
+                storage_loaded_bytes: 7907,
                 hash_node_calls: 79,
                 sinsemilla_hash_calls: 0,
             }
@@ -2392,6 +2497,254 @@ mod tests {
             "estimated storage_loaded_bytes {} must not be under actual {}",
             est.storage_loaded_bytes,
             actual.storage_loaded_bytes
+        );
+    }
+
+    /// The V4 `overwrite_indexed_cleanup_inspection` gate charges one extra
+    /// stored-element read per overwrite-capable op in the APPLIED path, so
+    /// the estimator must move by exactly one modeled node read between V3
+    /// and V4 — and must NOT move when the gate's own applied-side
+    /// conditions (tree-override validation on, bare-reference element)
+    /// suppress the read.
+    #[test]
+    fn test_average_case_overwrite_inspection_read_gated_v4_vs_v3() {
+        use grovedb_merk::tree::TreeNode;
+        use grovedb_version::version::v3::GROVE_V3;
+
+        use crate::batch::BatchApplyOptions;
+
+        let v3 = &GROVE_V3;
+        let v4 = GroveVersion::latest();
+        assert!(
+            v4.grovedb_versions
+                .apply_batch
+                .overwrite_indexed_cleanup_inspection
+                >= 1
+        );
+
+        let layer = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLevel(1, false),
+            estimated_layer_sizes: AllItems(4, 8, None),
+        };
+        let ops = vec![QualifiedGroveDbOp::replace_op(
+            vec![],
+            b"key1".to_vec(),
+            Element::new_item(b"12345678".to_vec()),
+        )];
+        let estimate = |grove_version, options| {
+            let mut paths = HashMap::new();
+            paths.insert(KeyInfoPath(vec![]), layer);
+            GroveDb::estimated_case_operations_for_batch(
+                AverageCaseCostsType(paths),
+                ops.clone(),
+                options,
+                |_cost, _old_flags, _new_flags| Ok(false),
+                |_flags, _removed_key_bytes, _removed_value_bytes| {
+                    Ok((NoStorageRemoval, NoStorageRemoval))
+                },
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to estimate costs")
+        };
+
+        let est_v3 = estimate(v3, None);
+        let est_v4 = estimate(v4, None);
+
+        // Exactly one average-case node read of this layer's estimated
+        // element — the same shape `add_average_case_get_merk_node` charges.
+        let estimated_element_size = layer
+            .estimated_layer_sizes
+            .value_with_feature_and_flags_size(v4)
+            .expect("expected element size");
+        let expected_loaded = TreeNode::average_case_encoded_tree_size(
+            4,
+            estimated_element_size,
+            layer.tree_type.inner_node_type(),
+        ) as u64;
+        assert_eq!(est_v4.seek_count, est_v3.seek_count + 1);
+        assert_eq!(
+            est_v4.storage_loaded_bytes,
+            est_v3.storage_loaded_bytes + expected_loaded
+        );
+        assert_eq!(est_v4.storage_cost, est_v3.storage_cost);
+        assert_eq!(est_v4.hash_node_calls, est_v3.hash_node_calls);
+
+        // Tree-override validation ON suppresses the applied read (the
+        // ungated validation branch runs instead), so the estimator must
+        // charge nothing for the gate.
+        let validated = BatchApplyOptions {
+            validate_insertion_does_not_override_tree: true,
+            ..Default::default()
+        };
+        assert_eq!(estimate(v4, Some(validated)), est_v3);
+
+        // Bare references are excluded from the applied inspection, so a
+        // reference overwrite estimates identically on V3 and V4.
+        let ops = vec![QualifiedGroveDbOp::replace_op(
+            vec![],
+            b"key1".to_vec(),
+            Element::new_reference(ReferencePathType::SiblingReference(b"key2".to_vec())),
+        )];
+        let est_ref_v3 = {
+            let mut paths = HashMap::new();
+            paths.insert(KeyInfoPath(vec![]), layer);
+            GroveDb::estimated_case_operations_for_batch(
+                AverageCaseCostsType(paths),
+                ops.clone(),
+                None,
+                |_cost, _old_flags, _new_flags| Ok(false),
+                |_flags, _removed_key_bytes, _removed_value_bytes| {
+                    Ok((NoStorageRemoval, NoStorageRemoval))
+                },
+                v3,
+            )
+            .cost_as_result()
+            .expect("expected to estimate costs")
+        };
+        let est_ref_v4 = {
+            let mut paths = HashMap::new();
+            paths.insert(KeyInfoPath(vec![]), layer);
+            GroveDb::estimated_case_operations_for_batch(
+                AverageCaseCostsType(paths),
+                ops,
+                None,
+                |_cost, _old_flags, _new_flags| Ok(false),
+                |_flags, _removed_key_bytes, _removed_value_bytes| {
+                    Ok((NoStorageRemoval, NoStorageRemoval))
+                },
+                v4,
+            )
+            .cost_as_result()
+            .expect("expected to estimate costs")
+        };
+        assert_eq!(est_ref_v4, est_ref_v3);
+    }
+
+    /// The V4 `delete_tree_cleanup_type_source` gate reads the stored
+    /// element (through a freshly built parent storage context) on every
+    /// applied `DeleteTree` op. That read is deterministic — a raw
+    /// storage get, no Merk caching involved — so the estimator's modeled
+    /// read must match the applied one EXACTLY: same seek, same loaded
+    /// bytes, same context-prefix hash calls, per gate, field for field.
+    #[test]
+    fn test_average_case_delete_tree_type_source_read_estimated_vs_applied_parity() {
+        use grovedb_merk::{merk::NodeType, tree::kv::KV, tree_type::CostSize};
+        use grovedb_version::version::v3::GROVE_V3;
+
+        let v3 = &GROVE_V3;
+        let v4 = GroveVersion::latest();
+        assert!(
+            v4.grovedb_versions
+                .apply_batch
+                .delete_tree_cleanup_type_source
+                >= 1
+        );
+
+        let ops = vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![b"tree1".to_vec()],
+            b"key1".to_vec(),
+            TreeType::NormalTree,
+            SubelementsDeletionBehavior::Error,
+        )];
+
+        let apply = |grove_version| {
+            let db = make_empty_grovedb();
+            let tx = db.start_transaction();
+            db.insert(
+                EMPTY_PATH,
+                b"tree1",
+                Element::empty_tree(),
+                None,
+                Some(&tx),
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert parent tree");
+            db.insert(
+                [b"tree1".as_slice()].as_ref(),
+                b"key1",
+                Element::empty_tree(),
+                None,
+                Some(&tx),
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert child tree");
+            db.apply_batch(ops.clone(), None, Some(&tx), grove_version)
+                .cost_as_result()
+                .expect("apply delete tree batch")
+        };
+
+        let estimate = |grove_version| {
+            let mut paths = HashMap::new();
+            paths.insert(
+                KeyInfoPath(vec![]),
+                EstimatedLayerInformation {
+                    tree_type: TreeType::NormalTree,
+                    estimated_layer_count: EstimatedLevel(1, false),
+                    estimated_layer_sizes: AllSubtrees(5, NoSumTrees, None),
+                },
+            );
+            paths.insert(
+                KeyInfoPath(vec![KeyInfo::KnownKey(b"tree1".to_vec())]),
+                EstimatedLayerInformation {
+                    tree_type: TreeType::NormalTree,
+                    estimated_layer_count: EstimatedLevel(1, false),
+                    estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+                },
+            );
+            GroveDb::estimated_case_operations_for_batch(
+                AverageCaseCostsType(paths),
+                ops.clone(),
+                None,
+                |_cost, _old_flags, _new_flags| Ok(false),
+                |_flags, _removed_key_bytes, _removed_value_bytes| {
+                    Ok((NoStorageRemoval, NoStorageRemoval))
+                },
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to estimate costs")
+        };
+
+        let applied_v3 = apply(v3);
+        let applied_v4 = apply(v4);
+        let est_v3 = estimate(v3);
+        let est_v4 = estimate(v4);
+
+        // The stored element is an empty tree with no flags under a 4-byte
+        // key in a normal-node parent — the exact layered cost
+        // `Element::get_from_storage` reports for the read.
+        let expected_loaded = KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+            4,
+            TreeType::NormalTree.cost_size(),
+            NodeType::NormalNode,
+        ) as u64;
+
+        for (v4_cost, v3_cost, side) in [
+            (&applied_v4, &applied_v3, "applied"),
+            (&est_v4, &est_v3, "estimated"),
+        ] {
+            assert_eq!(v4_cost.seek_count, v3_cost.seek_count + 1, "{side} seeks");
+            assert_eq!(
+                v4_cost.storage_loaded_bytes,
+                v3_cost.storage_loaded_bytes + expected_loaded,
+                "{side} loaded bytes"
+            );
+            assert_eq!(
+                v4_cost.storage_cost, v3_cost.storage_cost,
+                "{side} storage cost"
+            );
+        }
+        // Context-prefix hashing must move identically on both sides —
+        // that is the estimated-vs-applied parity for the gate's
+        // `get_transactional_storage_context` build.
+        assert_eq!(
+            applied_v4.hash_node_calls - applied_v3.hash_node_calls,
+            est_v4.hash_node_calls - est_v3.hash_node_calls,
+            "context-prefix hash calls"
         );
     }
 }
