@@ -5,7 +5,7 @@ use grovedb_merkle_mountain_range::{leaf_to_pos, MmrKeySize, MmrStore, MMR};
 use grovedb_query::Query;
 use grovedb_storage::StorageContext;
 
-use super::BulkAppendTree;
+use super::{BulkAppendTree, RangePage};
 use crate::{chunk::deserialize_chunk_blob, BulkAppendError};
 
 /// Result of querying the dense tree buffer.
@@ -61,6 +61,75 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             })?;
         let entries = proof.entries.clone();
         Ok(BufferQueryResult { entries, proof })
+    }
+
+    // ── Range operations (chunks + buffer) ───────────────────────────
+
+    /// Fetch entries for the position range `[start, start + limit)`,
+    /// clamped to the tree's total count.
+    ///
+    /// This is the paginated-scan read path: clients walking "all entries
+    /// since my cursor" call it with their cursor as `start` and advance by
+    /// `entries.len()`. The read is chunk-aligned — each completed chunk
+    /// overlapping the range is read and deserialized exactly once, so a
+    /// page costs O(chunks touched) blob reads plus one read per buffer
+    /// entry, not O(entries) random reads.
+    ///
+    /// Absence needs no lookup: positions `>= total_count` do not exist, so
+    /// a page shorter than `limit` means the end of the tree was reached.
+    pub fn get_range(&self, start: u64, limit: u16) -> Result<RangePage, BulkAppendError> {
+        let total_count = self.total_count;
+        let end = start.saturating_add(limit as u64).min(total_count);
+        if start >= end {
+            return Ok(RangePage {
+                entries: Vec::new(),
+                total_count,
+            });
+        }
+        let mut entries = Vec::with_capacity((end - start) as usize);
+
+        let epoch_size = self.epoch_size();
+        let buffer_start = self.chunk_count() * epoch_size;
+
+        // Completed chunks overlapping [start, min(end, buffer_start))
+        let chunk_end = end.min(buffer_start);
+        if start < chunk_end {
+            let first_chunk = start / epoch_size;
+            let last_chunk = (chunk_end - 1) / epoch_size;
+            for chunk_idx in first_chunk..=last_chunk {
+                let blob = self.get_chunk_value(chunk_idx)?.ok_or_else(|| {
+                    BulkAppendError::CorruptedData(format!(
+                        "missing chunk blob for index {}",
+                        chunk_idx
+                    ))
+                })?;
+                let chunk_entries = deserialize_chunk_blob(&blob)?;
+                let chunk_start = chunk_idx * epoch_size;
+                for (i, value) in chunk_entries.into_iter().enumerate() {
+                    let pos = chunk_start + i as u64;
+                    if pos >= start && pos < chunk_end {
+                        entries.push((pos, value));
+                    }
+                }
+            }
+        }
+
+        // Buffer tail: positions in [max(start, buffer_start), end)
+        for pos in start.max(buffer_start)..end {
+            let buffer_pos = (pos - buffer_start) as u16;
+            let value = self.get_buffer_value(buffer_pos)?.ok_or_else(|| {
+                BulkAppendError::CorruptedData(format!(
+                    "missing buffer value at position {}",
+                    buffer_pos
+                ))
+            })?;
+            entries.push((pos, value));
+        }
+
+        Ok(RangePage {
+            entries,
+            total_count,
+        })
     }
 
     // ── Chunk operations (MMR) ───────────────────────────────────────

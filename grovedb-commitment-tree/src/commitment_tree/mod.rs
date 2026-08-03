@@ -11,7 +11,7 @@
 
 use std::marker::PhantomData;
 
-use grovedb_bulk_append_tree::BulkAppendTree;
+use grovedb_bulk_append_tree::{BulkAppendTree, RangePage};
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_storage::StorageContext;
 use orchard::{
@@ -634,6 +634,20 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         self.bulk_tree
             .get_chunk_value(chunk_index)
             .map_err(|e| CommitmentTreeError::InvalidData(format!("chunk value: {}", e)))
+    }
+
+    /// Fetch entries for the position range `[start, start + limit)`,
+    /// clamped to the tree's total count.
+    ///
+    /// This is the shielded-pool scanning read path: each returned value is
+    /// the raw `cmx || rho || cv_net || payload` bytes at that position.
+    /// Delegates to [`BulkAppendTree::get_range`], so the read is
+    /// chunk-aligned — O(chunks touched) blob reads, not O(entries) random
+    /// reads.
+    pub fn get_range(&self, start: u64, limit: u16) -> Result<RangePage, CommitmentTreeError> {
+        self.bulk_tree
+            .get_range(start, limit)
+            .map_err(|e| CommitmentTreeError::InvalidData(format!("range read: {}", e)))
     }
 
     /// The number of entries per completed chunk (epoch).

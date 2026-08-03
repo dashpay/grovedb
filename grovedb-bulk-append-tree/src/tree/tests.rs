@@ -390,3 +390,142 @@ fn query_chunks_empty_indices_returns_empty_proof() {
     assert!(result.mmr_proof_items.is_empty());
     assert_eq!(result.mmr_root, [0u8; 32]);
 }
+
+// ── get_range (paginated position-range reads) ───────────────────────
+
+/// Helper: build a tree with `n` single-byte values `[0], [1], ...`.
+fn build_range_tree(height: u8, n: u8) -> BulkAppendTree<MemStorageContext> {
+    let mut tree = BulkAppendTree::new(height, MemStorageContext::new()).expect("create tree");
+    for i in 0..n {
+        tree.append(&[i]).expect("append");
+    }
+    tree
+}
+
+/// Helper: assert a page holds exactly positions `start..end` with value
+/// `[pos as u8]` at each.
+fn assert_page(page: &super::RangePage, start: u64, end: u64, total_count: u64) {
+    assert_eq!(page.total_count, total_count);
+    assert_eq!(page.entries.len(), (end - start) as usize);
+    for (i, (pos, value)) in page.entries.iter().enumerate() {
+        assert_eq!(*pos, start + i as u64);
+        assert_eq!(value, &vec![*pos as u8]);
+    }
+}
+
+#[test]
+fn get_range_buffer_only() {
+    // height=3, capacity=7: 5 values all in buffer
+    let tree = build_range_tree(3, 5);
+    assert_eq!(tree.chunk_count(), 0);
+
+    let page = tree.get_range(1, 3).expect("get range");
+    assert_page(&page, 1, 4, 5);
+}
+
+#[test]
+fn get_range_single_chunk() {
+    // height=2, epoch_size=4: 8 values = 2 full chunks
+    let tree = build_range_tree(2, 8);
+    assert_eq!(tree.chunk_count(), 2);
+    assert_eq!(tree.buffer_count(), 0);
+
+    // Page entirely inside chunk 0
+    let page = tree.get_range(1, 2).expect("get range");
+    assert_page(&page, 1, 3, 8);
+}
+
+#[test]
+fn get_range_across_chunk_boundary() {
+    // height=2, epoch_size=4: 10 values = 2 chunks + 2 buffered
+    let tree = build_range_tree(2, 10);
+    assert_eq!(tree.chunk_count(), 2);
+    assert_eq!(tree.buffer_count(), 2);
+
+    // Page [3, 6) spans the chunk 0 / chunk 1 boundary
+    let page = tree.get_range(3, 3).expect("get range");
+    assert_page(&page, 3, 6, 10);
+
+    // Page [6, 10) spans the chunk 1 / buffer boundary
+    let page = tree.get_range(6, 4).expect("get range");
+    assert_page(&page, 6, 10, 10);
+}
+
+#[test]
+fn get_range_whole_tree() {
+    let tree = build_range_tree(2, 10);
+    let page = tree.get_range(0, 100).expect("get range");
+    assert_page(&page, 0, 10, 10);
+}
+
+#[test]
+fn get_range_empty_limit() {
+    let tree = build_range_tree(2, 10);
+    let page = tree.get_range(3, 0).expect("get range");
+    assert_page(&page, 3, 3, 10);
+}
+
+#[test]
+fn get_range_past_end() {
+    let tree = build_range_tree(2, 10);
+
+    // Start exactly at total_count
+    let page = tree.get_range(10, 5).expect("get range");
+    assert!(page.entries.is_empty());
+    assert_eq!(page.total_count, 10);
+
+    // Start far past total_count
+    let page = tree.get_range(1000, 5).expect("get range");
+    assert!(page.entries.is_empty());
+    assert_eq!(page.total_count, 10);
+
+    // Range that starts inside but extends past the end is clamped
+    let page = tree.get_range(8, 100).expect("get range");
+    assert_page(&page, 8, 10, 10);
+}
+
+#[test]
+fn get_range_single_entry() {
+    let tree = build_range_tree(2, 10);
+    let page = tree.get_range(7, 1).expect("get range");
+    assert_page(&page, 7, 8, 10);
+}
+
+#[test]
+fn get_range_empty_tree() {
+    let tree = build_range_tree(2, 0);
+    let page = tree.get_range(0, 10).expect("get range");
+    assert!(page.entries.is_empty());
+    assert_eq!(page.total_count, 0);
+}
+
+#[test]
+fn get_range_start_saturating_overflow() {
+    let tree = build_range_tree(2, 10);
+    let page = tree.get_range(u64::MAX, u16::MAX).expect("get range");
+    assert!(page.entries.is_empty());
+    assert_eq!(page.total_count, 10);
+}
+
+#[test]
+fn get_range_paged_scan_covers_everything() {
+    // The scanning pattern: walk the whole tree in pages of 3 and check the
+    // concatenation matches per-position reads.
+    let tree = build_range_tree(2, 11); // 2 chunks + 3 buffered
+    let mut cursor = 0u64;
+    let mut seen = Vec::new();
+    loop {
+        let page = tree.get_range(cursor, 3).expect("get range");
+        if page.entries.is_empty() {
+            assert!(cursor >= page.total_count, "empty page only at the end");
+            break;
+        }
+        cursor += page.entries.len() as u64;
+        seen.extend(page.entries);
+    }
+    assert_eq!(seen.len(), 11);
+    for (i, (pos, value)) in seen.iter().enumerate() {
+        assert_eq!(*pos, i as u64);
+        assert_eq!(value, &vec![i as u8]);
+    }
+}

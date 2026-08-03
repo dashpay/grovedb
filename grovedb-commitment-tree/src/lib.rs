@@ -71,7 +71,7 @@ pub use commitment_tree::{
 pub use error::CommitmentTreeError;
 #[cfg(feature = "server")]
 pub use grovedb_bulk_append_tree::{
-    deserialize_chunk_blob, serialize_chunk_blob, BulkAppendError, BulkAppendTree,
+    deserialize_chunk_blob, serialize_chunk_blob, BulkAppendError, BulkAppendTree, RangePage,
 };
 pub use grovedb_costs::{self};
 pub use incrementalmerkletree::{Hashable, Level, Position, Retention};
