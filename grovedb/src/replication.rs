@@ -165,6 +165,21 @@ impl GroveDb {
             if merk.is_empty_tree().unwrap() {
                 local_chunk_bytes.push(vec![]);
             } else {
+                // A non-empty namespace under a non-Merk append-only tree
+                // holds raw payload entries (frontier / chunk blobs / MMR
+                // nodes / dense entries), not Merk nodes — the Merk itself
+                // is rootless, so ChunkProducer::new below would fail with
+                // an opaque "cannot create chunk producer for empty Merk".
+                // Reject with a descriptive error instead.
+                // See https://github.com/dashpay/grovedb/issues/785.
+                if tree_type.uses_non_merk_data_storage() {
+                    return Err(Error::NotSupported(
+                        "state sync does not yet support populated append-only \
+                         trees (CommitmentTree / MmrTree / BulkAppendTree / \
+                         DenseAppendOnlyFixedSizeTree) — see issue #785"
+                            .to_string(),
+                    ));
+                }
                 let mut chunk_producer = ChunkProducer::new(&merk).map_err(|e| {
                     Error::CorruptedData(format!(
                         "failed to create chunk producer by prefix tx:{} with:{}",

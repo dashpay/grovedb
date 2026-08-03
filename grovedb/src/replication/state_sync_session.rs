@@ -696,6 +696,29 @@ impl<'db> MultiStateSyncSession<'db> {
                             .to_string(),
                     ));
                 }
+                // State sync does not yet support POPULATED non-Merk
+                // append-only trees. Their payload (frontier / chunk
+                // blobs / MMR nodes / dense entries) lives in the data
+                // namespace as raw non-Element entries while their Merk
+                // is always empty, so a Merk-chunk restore transfers
+                // nothing — and the source side cannot even produce a
+                // chunk (ChunkProducer fails on the rootless Merk).
+                // Reject up-front with a descriptive error instead of
+                // letting the source fail later with an opaque
+                // CorruptedData. Empty ones are fine: there is no
+                // payload to transfer and the element itself is
+                // restored via the parent Merk.
+                // See https://github.com/dashpay/grovedb/issues/785.
+                if value.uses_non_merk_data_storage()
+                    && value.non_merk_entry_count().unwrap_or(0) > 0
+                {
+                    return Err(Error::NotSupported(
+                        "state sync does not yet support populated append-only \
+                         trees (CommitmentTree / MmrTree / BulkAppendTree / \
+                         DenseAppendOnlyFixedSizeTree) — see issue #785"
+                            .to_string(),
+                    ));
+                }
                 subtree_keys.insert(key.to_vec());
             }
         }
