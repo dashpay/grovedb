@@ -80,6 +80,10 @@ harness = false
 name = "cidx_benchmark"
 harness = false
 
+[[bench]]
+name = "bulk_range_scan_benchmark"
+harness = false
+
 [features]
 default = ["full", "estimated_costs"]
 proof_debug = ["grovedb-merk/proof_debug"]
