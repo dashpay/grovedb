@@ -96,6 +96,36 @@ pub struct GroveDBOperationsVersions {
     pub proof: GroveDBOperationsProofVersions,
     pub average_case: GroveDBOperationsAverageCaseVersions,
     pub worst_case: GroveDBOperationsWorstCaseVersions,
+    pub private_document_store: GroveDBOperationsPrivateDocumentStoreVersions,
+}
+
+/// Version slots for the PrivateDocumentStore operation family.
+///
+/// Unlike most families, these slots act as **capability gates**, not
+/// implementation selectors: slot value `0` means the operation (and the
+/// element type itself, via `element_creation`) is unavailable and fails
+/// closed with a version-mismatch error; `1` means the v1 implementation is
+/// active. `GROVE_V1`..`GROVE_V3` hold every slot at `0` — the
+/// `PrivateDocumentStore` element (discriminant 24) cannot be created or
+/// operated on under released protocol versions. `GROVE_V4` flips them to
+/// `1`.
+///
+/// Note this does NOT gate `Element::deserialize` — the element bincode
+/// codec stays protocol-independent (append-only discriminants, see the
+/// doc on `GroveDBElementMethodVersions::serialize`). The gate lives at
+/// the write/read operation entry points and at element insertion.
+#[derive(Clone, Debug, Default)]
+pub struct GroveDBOperationsPrivateDocumentStoreVersions {
+    /// Creating a `PrivateDocumentStore` element (direct or batch insert of
+    /// the element itself).
+    pub element_creation: FeatureVersion,
+    /// Appending an entry (`private_document_store_insert`, the
+    /// `PrivateDocumentStoreInsert` batch op).
+    pub insert: FeatureVersion,
+    /// Reading an entry by position (`private_document_store_get_value`).
+    pub get_value: FeatureVersion,
+    /// Reading the entry count (`private_document_store_count`).
+    pub count: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -141,9 +171,11 @@ pub struct GroveDBOperationsProofVersions {
     pub verify_query_get_parent_tree_info_with_options: FeatureVersion,
     /// Whether a V1 proof binds the element bytes of a **terminally-reported
     /// non-Merk tree** — `CommitmentTree`, `MmrTree`, `BulkAppendTree`,
-    /// `DenseAppendOnlyFixedSizeTree` — to the `value_hash` its parent Merk
-    /// commits to. "Terminal" means the query targets the tree element itself
-    /// and the prover emits no lower layer.
+    /// `DenseAppendOnlyFixedSizeTree`, `PrivateDocumentStore` — to the
+    /// `value_hash` its parent Merk commits to. "Terminal" means the query
+    /// targets the tree element itself and the prover emits no lower layer.
+    /// (`PrivateDocumentStore` cannot exist before V4, so it is always
+    /// bound.)
     ///
     /// - `0` (V1..V3): the prover emits a bare `KVValueHash` node and the
     ///   verifier does not require a child hash. That node hashes only

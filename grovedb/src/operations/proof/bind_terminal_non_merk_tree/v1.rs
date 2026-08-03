@@ -261,6 +261,47 @@ impl GroveDb {
                 ))
                 .wrap_with_cost(cost)
             }
+            Element::PrivateDocumentStore(total_count, entry_size, chunk_power, _) => {
+                // The state root binds the committed config even when the
+                // store is empty, so the empty case is the precomputed
+                // config-parametrized root rather than NULL_HASH.
+                if *total_count == 0 {
+                    return Ok(
+                        grovedb_private_document_store::empty_private_document_store_state_root(
+                            *entry_size,
+                            *chunk_power,
+                        ),
+                    )
+                    .wrap_with_cost(cost);
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(storage_path, None, tx)
+                    .unwrap_add_cost(&mut cost);
+                let store = cost_return_on_error_no_add!(
+                    cost,
+                    grovedb_private_document_store::PrivateDocumentStore::from_state(
+                        *total_count,
+                        *entry_size,
+                        *chunk_power,
+                        storage_ctx,
+                    )
+                    .map_err(|e| Error::CorruptedData(format!(
+                        "failed to open PrivateDocumentStore: {}",
+                        e
+                    )))
+                );
+                let state_root = cost_return_on_error_no_add!(
+                    cost,
+                    store.compute_current_state_root().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "private document store state root failed: {}",
+                            e
+                        ))
+                    })
+                );
+                Ok(state_root).wrap_with_cost(cost)
+            }
             _ => Err(Error::CorruptedCodeExecution(
                 "non_merk_tree_child_hash called on an element that is not a non-Merk tree",
             ))

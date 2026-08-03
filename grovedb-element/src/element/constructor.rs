@@ -500,6 +500,57 @@ impl Element {
         Element::DenseAppendOnlyFixedSizeTree(count, height, flags)
     }
 
+    /// Set element to an empty private document store.
+    ///
+    /// Returns `InvalidInput` unless `entry_size >= 1` and `chunk_power` is
+    /// in `1..=16` (the underlying `BulkAppendTree` dense-buffer height
+    /// range). Unlike `empty_commitment_tree` / `empty_bulk_append_tree`,
+    /// the constraints are enforced eagerly here: the configuration is
+    /// committed into the state root, so an unusable config must never be
+    /// constructible.
+    pub fn empty_private_document_store(
+        entry_size: u32,
+        chunk_power: u8,
+    ) -> Result<Self, ElementError> {
+        Self::empty_private_document_store_with_flags(entry_size, chunk_power, None)
+    }
+
+    /// Set element to an empty private document store with flags.
+    ///
+    /// Same validation as [`Element::empty_private_document_store`].
+    pub fn empty_private_document_store_with_flags(
+        entry_size: u32,
+        chunk_power: u8,
+        flags: Option<ElementFlags>,
+    ) -> Result<Self, ElementError> {
+        if entry_size == 0 {
+            return Err(ElementError::InvalidInput(
+                "private document store entry_size must be non-zero",
+            ));
+        }
+        if !(1..=16).contains(&chunk_power) {
+            return Err(ElementError::InvalidInput(
+                "private document store chunk_power must be between 1 and 16",
+            ));
+        }
+        Ok(Element::PrivateDocumentStore(
+            0,
+            entry_size,
+            chunk_power,
+            flags,
+        ))
+    }
+
+    /// Set element to a private document store with all fields
+    pub fn new_private_document_store(
+        total_count: u64,
+        entry_size: u32,
+        chunk_power: u8,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::PrivateDocumentStore(total_count, entry_size, chunk_power, flags)
+    }
+
     /// Set element to an empty provable sum-indexed tree without flags.
     pub fn empty_provable_sum_indexed_tree() -> Self {
         Element::ProvableSumIndexedTree(None, None, 0, None)

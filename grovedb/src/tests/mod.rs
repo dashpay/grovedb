@@ -24,6 +24,7 @@ mod checkpoint_tests;
 mod chunk_branch_proof_tests;
 mod commitment_tree_tests;
 mod coverage_round7_tests;
+mod private_document_store_tests;
 // NOTE: the former `count_indexed_tree_tests` (~12.3k LOC) was written
 // against the now-removed non-provable `Element::CountIndexedTree` and was
 // carried here behind a `#[cfg(any())]` gate that made it permanently dead —

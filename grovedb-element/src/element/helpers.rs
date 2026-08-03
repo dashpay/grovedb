@@ -358,6 +358,7 @@ impl Element {
                 | Element::ProvableSumIndexedTree(..)
                 | Element::ProvableCountIndexedTree(..)
                 | Element::ProvableCountProvableSumIndexedTree(..)
+                | Element::PrivateDocumentStore(..)
         )
     }
 
@@ -414,6 +415,12 @@ impl Element {
         matches!(self.underlying(), Element::DenseAppendOnlyFixedSizeTree(..))
     }
 
+    /// Check if the element is a private document store. Looks through
+    /// `NonCounted`.
+    pub fn is_private_document_store(&self) -> bool {
+        matches!(self.underlying(), Element::PrivateDocumentStore(..))
+    }
+
     /// Check if the element is a tree type that stores data in the data
     /// namespace as non-Merk entries.  These tree types have an always-empty
     /// Merk (root_key = None) and never contain child subtrees. The data
@@ -430,6 +437,7 @@ impl Element {
                 | Element::MmrTree(..)
                 | Element::BulkAppendTree(..)
                 | Element::DenseAppendOnlyFixedSizeTree(..)
+                | Element::PrivateDocumentStore(..)
         )
     }
 
@@ -443,6 +451,7 @@ impl Element {
             Element::MmrTree(mmr_size, _) => Some(*mmr_size),
             Element::BulkAppendTree(count, ..) => Some(*count),
             Element::DenseAppendOnlyFixedSizeTree(count, ..) => Some(*count as u64),
+            Element::PrivateDocumentStore(count, ..) => Some(*count),
             _ => None,
         }
     }
@@ -470,6 +479,7 @@ impl Element {
                 | Element::MmrTree(..)
                 | Element::BulkAppendTree(..)
                 | Element::DenseAppendOnlyFixedSizeTree(..)
+                | Element::PrivateDocumentStore(..)
                 | Element::ProvableSumIndexedTree(Some(_), ..)
                 | Element::ProvableSumIndexedTree(_, Some(_), ..)
                 | Element::ProvableCountIndexedTree(Some(_), ..)
@@ -663,6 +673,7 @@ impl Element {
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
             | Element::DenseAppendOnlyFixedSizeTree(.., flags)
+            | Element::PrivateDocumentStore(.., flags)
             | Element::ProvableSumIndexedTree(.., flags)
             | Element::ProvableCountIndexedTree(.., flags)
             | Element::ReferenceWithSumItem(.., flags) => flags,
@@ -695,6 +706,7 @@ impl Element {
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
             | Element::DenseAppendOnlyFixedSizeTree(.., flags)
+            | Element::PrivateDocumentStore(.., flags)
             | Element::ProvableSumIndexedTree(.., flags)
             | Element::ProvableCountIndexedTree(.., flags)
             | Element::ReferenceWithSumItem(.., flags) => flags,
@@ -727,6 +739,7 @@ impl Element {
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
             | Element::DenseAppendOnlyFixedSizeTree(.., flags)
+            | Element::PrivateDocumentStore(.., flags)
             | Element::ProvableSumIndexedTree(.., flags)
             | Element::ProvableCountIndexedTree(.., flags)
             | Element::ReferenceWithSumItem(.., flags) => flags,
@@ -758,6 +771,7 @@ impl Element {
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
             | Element::DenseAppendOnlyFixedSizeTree(.., flags)
+            | Element::PrivateDocumentStore(.., flags)
             | Element::ProvableSumIndexedTree(.., flags)
             | Element::ProvableCountIndexedTree(.., flags)
             | Element::ReferenceWithSumItem(.., flags) => *flags = new_flags,

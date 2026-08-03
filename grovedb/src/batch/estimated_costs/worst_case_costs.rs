@@ -303,6 +303,44 @@ impl GroveOp {
                     sinsemilla_hash_calls: 0,
                 })
             }
+            GroveOp::PrivateDocumentStoreInsert { entry } => {
+                // Cost of updating parent element in the Merk.
+                let item_cost = GroveDb::worst_case_merk_replace_tree(
+                    key,
+                    TreeType::PrivateDocumentStore(0),
+                    in_parent_tree_type,
+                    worst_case_layer_element_estimates,
+                    propagate,
+                    grove_version,
+                );
+                // Worst case mirrors the underlying BulkAppend: compaction
+                // trigger (buffer fills -> serialize chunk blob -> dense
+                // Merkle root -> MMR push), plus one blake3 for the
+                // config-binding composite pds_state root. The per-append
+                // write is entry-size-parametrized (entry.len() is the
+                // store's committed entry_size).
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                let entry_size = entry.len() as u32;
+                // Max compaction overhead: 64KB safe bound for chunk blob
+                const MAX_COMPACTION_BLOB: u32 = 65536;
+                // Dense Merkle root: epoch_size hashes. Buffer hash: 1.
+                // MMR push: up to 64 merges. Composite pds_state root: 1.
+                const MAX_HASH_CALLS: u32 = 1024 + 1 + 65 + 1;
+                // Writes: buffer entry + chunk blob + MMR nodes
+                const MAX_WRITES: u32 = 1 + 1 + 65;
+                const MAX_READS: u32 = 64; // MMR sibling reads
+                item_cost.add_cost(OperationCost {
+                    seek_count: MAX_WRITES + MAX_READS,
+                    storage_cost: StorageCost {
+                        added_bytes: entry_size + MAX_COMPACTION_BLOB,
+                        replaced_bytes: 0,
+                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+                    },
+                    storage_loaded_bytes: (33 * MAX_READS) as u64,
+                    hash_node_calls: MAX_HASH_CALLS,
+                    sinsemilla_hash_calls: 0,
+                })
+            }
             GroveOp::DenseTreeInsert { value } => {
                 // Cost of updating parent element in the Merk
                 let item_cost = GroveDb::worst_case_merk_replace_tree(

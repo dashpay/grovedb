@@ -1028,6 +1028,18 @@ impl GroveDb {
                                     }
                                 }
                             }
+                            // The V1 prover rejects subqueries into a
+                            // PrivateDocumentStore (range-read proofs are not
+                            // implemented yet), so an honest proof never
+                            // carries a lower layer for one — refuse to
+                            // fabricate a chain for it.
+                            Element::PrivateDocumentStore(..) => {
+                                return Err(Error::NotSupported(
+                                    "V1 proofs do not yet support lower layers for \
+                                     PrivateDocumentStore elements"
+                                        .to_string(),
+                                ));
+                            }
                             Element::Tree(Some(_), _)
                             | Element::SumTree(Some(_), ..)
                             | Element::BigSumTree(Some(_), ..)
@@ -2425,6 +2437,7 @@ impl GroveDb {
                             | Element::MmrTree(..)
                             | Element::BulkAppendTree(..)
                             | Element::DenseAppendOnlyFixedSizeTree(..)
+                            | Element::PrivateDocumentStore(..)
                             | Element::SumItem(..)
                             | Element::Item(..)
                             | Element::ItemWithSumItem(..)

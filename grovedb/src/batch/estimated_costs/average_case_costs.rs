@@ -307,6 +307,39 @@ impl GroveOp {
                     sinsemilla_hash_calls: 0,
                 })
             }
+            GroveOp::PrivateDocumentStoreInsert { entry } => {
+                // Cost of updating parent element in the Merk. The entry
+                // length is the store's committed entry_size, so the added
+                // storage bytes are entry-size-parametrized.
+                let item_cost = GroveDb::average_case_merk_replace_tree(
+                    key,
+                    layer_element_estimates,
+                    TreeType::PrivateDocumentStore(0),
+                    propagate,
+                    grove_version,
+                );
+                // Additional cost: buffer write + running hash, identical to
+                // the underlying BulkAppend (the composite pds_state blake3
+                // is folded into the same single-hash average as the bulk
+                // state-root hash it replaces per append). Most appends only
+                // write to the buffer (O(1)); compaction happens once per
+                // epoch_size appends and is amortized.
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                let entry_size = entry.len() as u32;
+                // 1 blake3 hash for the running buffer hash chain
+                const AVG_HASH_CALLS: u32 = 1;
+                item_cost.add_cost(OperationCost {
+                    seek_count: 1, // 1 buffer entry write
+                    storage_cost: StorageCost {
+                        added_bytes: entry_size,
+                        replaced_bytes: 0,
+                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+                    },
+                    storage_loaded_bytes: 0,
+                    hash_node_calls: AVG_HASH_CALLS,
+                    sinsemilla_hash_calls: 0,
+                })
+            }
             GroveOp::DenseTreeInsert { value } => {
                 // Cost of updating parent element in the Merk
                 let item_cost = GroveDb::average_case_merk_replace_tree(

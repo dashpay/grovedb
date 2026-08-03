@@ -280,6 +280,7 @@ where {
             | Element::MmrTree(..)
             | Element::BulkAppendTree(..)
             | Element::DenseAppendOnlyFixedSizeTree(..)
+            | Element::PrivateDocumentStore(..)
             | Element::ProvableSumIndexedTree(..)
             | Element::ProvableCountProvableSumIndexedTree(..)
             | Element::ProvableCountIndexedTree(..) => {
@@ -426,6 +427,7 @@ where {
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
                         | Element::DenseAppendOnlyFixedSizeTree(..)
+                        | Element::PrivateDocumentStore(..)
                         | Element::ProvableSumIndexedTree(..)
                         | Element::ProvableCountProvableSumIndexedTree(..)
                         | Element::ProvableCountIndexedTree(..) => Err(Error::InvalidQuery(
@@ -639,7 +641,8 @@ where {
                         | Element::CommitmentTree(..)
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
-                        | Element::DenseAppendOnlyFixedSizeTree(..) => Err(Error::InvalidQuery(
+                        | Element::DenseAppendOnlyFixedSizeTree(..)
+                        | Element::PrivateDocumentStore(..) => Err(Error::InvalidQuery(
                             "path_queries can only refer to items, sum items, references and sum \
                              trees",
                         )),
@@ -1285,6 +1288,7 @@ where {
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
                         | Element::DenseAppendOnlyFixedSizeTree(..)
+                        | Element::PrivateDocumentStore(..)
                         | Element::ProvableSumIndexedTree(..)
                         | Element::ProvableCountProvableSumIndexedTree(..)
                         | Element::ProvableCountIndexedTree(..)

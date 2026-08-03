@@ -45,6 +45,12 @@ pub const BULK_APPEND_TREE_COST_SIZE: u32 = 9 + 1 + 2; // 12
 /// height (u8) + 2 bytes overhead)
 pub const DENSE_TREE_COST_SIZE: u32 = 3 + 1 + 2; // 6
 
+/// The cost of a private document store (9 bytes total_count (u64 varint
+/// worst case) + 5 bytes entry_size (u32 varint worst case) + 1 byte
+/// chunk_power (u8) + 2 bytes overhead). Same shape as
+/// `BULK_APPEND_TREE_COST_SIZE` plus the committed entry size field.
+pub const PRIVATE_DOCUMENT_STORE_COST_SIZE: u32 = 9 + 5 + 1 + 2; // 17
+
 /// The cost of a count-indexed tree element. Same shape as `COUNT_TREE_COST_SIZE`
 /// but with one extra byte of overhead for the second `Option<root_key>` field
 /// (the secondary root key).
@@ -97,6 +103,7 @@ impl CostSize for TreeType {
             TreeType::ProvableCountProvableSumIndexedTree => {
                 PROVABLE_COUNT_PROVABLE_SUM_INDEXED_TREE_COST_SIZE
             }
+            TreeType::PrivateDocumentStore(_) => PRIVATE_DOCUMENT_STORE_COST_SIZE,
         }
     }
 }

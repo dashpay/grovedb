@@ -316,6 +316,31 @@ pub enum Element {
         Vec<(u8, Option<Vec<u8>>)>,
         Option<ElementFlags>,
     ),
+    /// Private document store: an append-only store of fixed-size opaque
+    /// entries, a thin wrapper over a `BulkAppendTree` (the same
+    /// relationship `CommitmentTree` has to it, minus the Sinsemilla
+    /// frontier). Entries are write-once — there is no per-entry delete or
+    /// update; immutability is enforced by the type.
+    ///
+    /// Fields: `(total_count, entry_size, chunk_power, flags)`
+    /// - `total_count`: Number of entries appended so far.
+    /// - `entry_size`: Committed byte length of every entry; appends of any
+    ///   other length are rejected.
+    /// - `chunk_power`: Log2 of the chunk size (actual size = `1 <<
+    ///   chunk_power`).
+    /// - `flags`: Optional per-element metadata.
+    ///
+    /// The state root
+    /// (`blake3("pds_state" || config_hash || bulk_state_root)`, where
+    /// `config_hash` commits to `{entry_size, chunk_power}`) flows through
+    /// the Merk child hash mechanism (`insert_subtree`'s
+    /// `subtree_root_hash` parameter), so the declared configuration is
+    /// consensus-visible and a proof can never be reinterpreted under a
+    /// different config.
+    ///
+    /// Variant order in this enum determines bincode's variant-index
+    /// encoding on disk. This variant gets index 24.
+    PrivateDocumentStore(u64, u32, u8, Option<ElementFlags>),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -583,6 +608,18 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::PrivateDocumentStore(total_count, entry_size, chunk_power, flags) => {
+                write!(
+                    f,
+                    "PrivateDocumentStore(count: {}, entry_size: {}, chunk_power: {}{})",
+                    total_count,
+                    entry_size,
+                    chunk_power,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
             Element::NotSummed(inner) => {
                 write!(f, "NotSummed({})", inner)
             }
@@ -660,6 +697,7 @@ impl Element {
             Element::ProvableCountProvableSumIndexedTree(..) => {
                 ElementType::ProvableCountProvableSumIndexedTree
             }
+            Element::PrivateDocumentStore(..) => ElementType::PrivateDocumentStore,
             Element::NonCounted(inner) => match inner.element_type() {
                 ElementType::Item => ElementType::NonCountedItem,
                 ElementType::Reference => ElementType::NonCountedReference,
@@ -692,6 +730,7 @@ impl Element {
                 ElementType::ProvableCountProvableSumIndexedTree => {
                     ElementType::NonCountedProvableCountProvableSumIndexedTree
                 }
+                ElementType::PrivateDocumentStore => ElementType::NonCountedPrivateDocumentStore,
                 // Inner is always a base type — nested wrappers are
                 // forbidden at construction and (de)serialization.
                 already_non_counted => already_non_counted,
@@ -885,6 +924,7 @@ mod serde_impl {
             Vec<(u8, Option<Vec<u8>>)>,
             Option<ElementFlags>,
         ),
+        PrivateDocumentStore(u64, u32, u8, Option<ElementFlags>),
     }
 
     impl From<ElementShadow> for Element {
@@ -933,6 +973,9 @@ mod serde_impl {
                 }
                 ElementShadow::ProvableCountProvableSumIndexedTree(pk, c, s, axes, f) => {
                     Element::ProvableCountProvableSumIndexedTree(pk, c, s, axes, f)
+                }
+                ElementShadow::PrivateDocumentStore(c, e, p, f) => {
+                    Element::PrivateDocumentStore(c, e, p, f)
                 }
             }
         }

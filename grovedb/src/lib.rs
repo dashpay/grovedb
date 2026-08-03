@@ -1928,7 +1928,8 @@ impl GroveDb {
                 | Element::CommitmentTree(..)
                 | Element::MmrTree(..)
                 | Element::BulkAppendTree(..)
-                | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                | Element::DenseAppendOnlyFixedSizeTree(..)
+                | Element::PrivateDocumentStore(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
@@ -2452,6 +2453,42 @@ impl GroveDb {
                     Err(_) => merk_root_hash,
                 }
             }
+            Element::PrivateDocumentStore(total_count, entry_size, chunk_power, _) => {
+                // The state root binds the committed config even when the
+                // store is empty, so the empty case is the config-parametrized
+                // empty root rather than the (empty) Merk root.
+                if *total_count == 0 {
+                    return grovedb_private_document_store::empty_private_document_store_state_root(
+                        *entry_size,
+                        *chunk_power,
+                    );
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                match grovedb_private_document_store::PrivateDocumentStore::from_state(
+                    *total_count,
+                    *entry_size,
+                    *chunk_power,
+                    storage_ctx,
+                ) {
+                    Ok(store) => {
+                        // Integrity walk: every stored entry must respect the
+                        // committed entry size (the state root authenticates
+                        // whatever bytes were written, so a buggy or bypassing
+                        // writer could persist wrong-size entries under a
+                        // consistent root). On violation, fall back to
+                        // `merk_root_hash` — the caller's chain check then
+                        // reports the path as an issue.
+                        if store.verify_entry_sizes().is_err() {
+                            return merk_root_hash;
+                        }
+                        store.compute_current_state_root().unwrap_or(merk_root_hash)
+                    }
+                    Err(_) => merk_root_hash,
+                }
+            }
             _ => merk_root_hash,
         }
     }
@@ -2651,7 +2688,8 @@ fn aggregate_consistency_labels(
         (Element::CommitmentTree(..), _)
         | (Element::MmrTree(..), _)
         | (Element::BulkAppendTree(..), _)
-        | (Element::DenseAppendOnlyFixedSizeTree(..), _) => None,
+        | (Element::DenseAppendOnlyFixedSizeTree(..), _)
+        | (Element::PrivateDocumentStore(..), _) => None,
 
         // --- Anything else is a variant/aggregate-shape mismatch (e.g.
         // the inner Merk's tree-type has drifted from what the parent

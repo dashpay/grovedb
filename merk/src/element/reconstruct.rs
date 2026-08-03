@@ -116,6 +116,12 @@ impl ElementReconstructExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(c, h, f) => {
                 Some(Element::DenseAppendOnlyFixedSizeTree(*c, *h, f.clone()))
             }
+            // Like the other non-Merk data trees, the private document store
+            // has no root key and no Merk aggregate — the element is
+            // reconstructed verbatim.
+            Element::PrivateDocumentStore(tc, es, cp, f) => {
+                Some(Element::PrivateDocumentStore(*tc, *es, *cp, f.clone()))
+            }
             // Recurse on the inner element and re-wrap. Without this, a
             // batch that mutates a subtree under a wrapped tree would lose
             // the wrapper on the parent's stored element when its root key

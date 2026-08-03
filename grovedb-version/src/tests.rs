@@ -3,6 +3,7 @@ use crate::version::grovedb_versions::*;
 use crate::version::merk_versions::*;
 use crate::version::v1::GROVE_V1;
 use crate::version::v2::GROVE_V2;
+use crate::version::v3::GROVE_V3;
 use crate::version::v4::GROVE_V4;
 use crate::version::{GroveVersion, GROVE_VERSIONS};
 use crate::{TryFromVersioned, TryIntoVersioned};
@@ -72,6 +73,26 @@ fn grove_version_latest_returns_v4() {
 #[test]
 fn grove_versions_count() {
     assert_eq!(GROVE_VERSIONS.len(), 4);
+}
+
+#[test]
+fn private_document_store_slots_are_gated_to_v4() {
+    // The PrivateDocumentStore family fails closed on every released
+    // version: all slots must be 0 on V1..V3 and 1 on V4. Changing a V1..V3
+    // value would retroactively enable (or a V4 value disable) the element
+    // type on a live protocol version — a consensus break.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3] {
+        let pds = &v.grovedb_versions.operations.private_document_store;
+        assert_eq!(pds.element_creation, 0, "v{}", v.protocol_version);
+        assert_eq!(pds.insert, 0, "v{}", v.protocol_version);
+        assert_eq!(pds.get_value, 0, "v{}", v.protocol_version);
+        assert_eq!(pds.count, 0, "v{}", v.protocol_version);
+    }
+    let pds = &GROVE_V4.grovedb_versions.operations.private_document_store;
+    assert_eq!(pds.element_creation, 1);
+    assert_eq!(pds.insert, 1);
+    assert_eq!(pds.get_value, 1);
+    assert_eq!(pds.count, 1);
 }
 
 #[test]

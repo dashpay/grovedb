@@ -4,8 +4,8 @@ use crate::version::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
         GroveDBOperationsDeleteVersions, GroveDBOperationsGetVersions,
-        GroveDBOperationsInsertVersions, GroveDBOperationsProofVersions,
-        GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
+        GroveDBOperationsInsertVersions, GroveDBOperationsPrivateDocumentStoreVersions,
+        GroveDBOperationsProofVersions, GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
         GroveDBReplicationVersions, GroveDBVersions,
     },
@@ -196,6 +196,14 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 add_worst_case_get_raw_tree_cost: 0,
                 add_worst_case_get_raw_cost: 0,
                 add_worst_case_get_cost: 0,
+            },
+            // PrivateDocumentStore is unavailable before GROVE_V4: every
+            // slot is 0 and the operations fail closed.
+            private_document_store: GroveDBOperationsPrivateDocumentStoreVersions {
+                element_creation: 0,
+                insert: 0,
+                get_value: 0,
+                count: 0,
             },
         },
         aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions { merge: 0 },

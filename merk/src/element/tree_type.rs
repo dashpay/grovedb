@@ -79,6 +79,9 @@ impl ElementTreeTypeExtensions for Element {
                 primary_root_key,
                 TreeType::ProvableCountProvableSumIndexedTree,
             )),
+            Element::PrivateDocumentStore(_, _, chunk_power, _) => {
+                Some((None, TreeType::PrivateDocumentStore(chunk_power)))
+            }
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
             | Element::NotCountedOrSummed(inner) => inner.root_key_and_tree_type_owned(),
@@ -128,6 +131,9 @@ impl ElementTreeTypeExtensions for Element {
                 primary_root_key,
                 TreeType::ProvableCountProvableSumIndexedTree,
             )),
+            Element::PrivateDocumentStore(_, _, chunk_power, _) => {
+                Some((&NONE_ROOT_KEY, TreeType::PrivateDocumentStore(*chunk_power)))
+            }
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
             | Element::NotCountedOrSummed(inner) => inner.root_key_and_tree_type(),
@@ -172,6 +178,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountProvableSumIndexedTree(_, _, _, _, flags) => {
                 Some((flags, TreeType::ProvableCountProvableSumIndexedTree))
             }
+            Element::PrivateDocumentStore(_, _, chunk_power, flags) => {
+                Some((flags, TreeType::PrivateDocumentStore(*chunk_power)))
+            }
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
             | Element::NotCountedOrSummed(inner) => inner.tree_flags_and_type(),
@@ -208,6 +217,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountIndexedTree(..) => Some(TreeType::ProvableCountIndexedTree),
             Element::ProvableCountProvableSumIndexedTree(..) => {
                 Some(TreeType::ProvableCountProvableSumIndexedTree)
+            }
+            Element::PrivateDocumentStore(_, _, chunk_power, _) => {
+                Some(TreeType::PrivateDocumentStore(*chunk_power))
             }
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
@@ -255,6 +267,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountProvableSumIndexedTree(_, count_value, sum_value, _, _) => Some(
                 TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(*count_value, *sum_value),
             ),
+            Element::PrivateDocumentStore(..) => Some(BasicMerkNode),
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
             | Element::NotCountedOrSummed(inner) => inner.tree_feature_type(),
@@ -296,6 +309,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountProvableSumIndexedTree(..) => {
                 MaybeTree::Tree(TreeType::ProvableCountProvableSumIndexedTree)
             }
+            Element::PrivateDocumentStore(_, _, chunk_power, _) => {
+                MaybeTree::Tree(TreeType::PrivateDocumentStore(*chunk_power))
+            }
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
             | Element::NotCountedOrSummed(inner) => inner.maybe_tree_type(),
@@ -334,6 +350,7 @@ impl ElementTreeTypeExtensions for Element {
             TreeType::MmrTree => Ok(BasicMerkNode),
             TreeType::BulkAppendTree(_) => Ok(BasicMerkNode),
             TreeType::DenseAppendOnlyFixedSizeTree(_) => Ok(BasicMerkNode),
+            TreeType::PrivateDocumentStore(_) => Ok(BasicMerkNode),
             // ProvableSumTree aggregates an i64 sum (same arithmetic
             // shape as plain SumTree) but carries it via
             // `ProvableSummedMerkNode` so the sum is baked into every

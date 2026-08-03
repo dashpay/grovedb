@@ -176,6 +176,21 @@ impl Visualize for Element {
                     drawer = f.visualize(drawer)?;
                 }
             }
+            Element::PrivateDocumentStore(total_count, entry_size, chunk_power, flags) => {
+                drawer.write(
+                    format!(
+                        "private_document_store: count: {total_count} entry_size: {entry_size} \
+                         chunk_power: {chunk_power}",
+                    )
+                    .as_bytes(),
+                )?;
+
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
+                }
+            }
             Element::NonCounted(inner) => {
                 drawer.write(b"non_counted(")?;
                 drawer = inner.visualize(drawer)?;

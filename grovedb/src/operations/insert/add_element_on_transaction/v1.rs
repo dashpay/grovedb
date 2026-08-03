@@ -187,6 +187,50 @@ impl GroveDb {
                     )
                 );
             }
+            // PrivateDocumentStore: the initial child hash is the empty
+            // state root for the element's committed config (the state root
+            // binds {entry_size, chunk_power}), so V1 proof verification and
+            // verify_grovedb agree even before the first append. Creation is
+            // version-gated and only an empty store may be inserted; entries
+            // are appended via the typed private_document_store_insert path.
+            Element::PrivateDocumentStore(total_count, entry_size, chunk_power, _) => {
+                cost_return_on_error_no_add!(
+                    cost,
+                    crate::operations::private_document_store::check_pds_enabled(
+                        "insert Element::PrivateDocumentStore",
+                        grove_version
+                            .grovedb_versions
+                            .operations
+                            .private_document_store
+                            .element_creation,
+                    )
+                );
+                if *total_count != 0 {
+                    return Err(Error::InvalidCodeExecution(
+                        "a private document store should be empty at the moment of insertion",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                if *entry_size == 0 || !(1..=16).contains(chunk_power) {
+                    return Err(Error::InvalidInput(
+                        "a PrivateDocumentStore requires entry_size >= 1 and chunk_power in 1..=16",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                cost_return_on_error_into!(
+                    &mut cost,
+                    element.insert_subtree(
+                        &mut subtree_to_insert_into,
+                        key,
+                        grovedb_private_document_store::empty_private_document_store_state_root(
+                            *entry_size,
+                            *chunk_power,
+                        ),
+                        Some(options.as_merk_options()),
+                        grove_version
+                    )
+                );
+            }
             // MmrTree, BulkAppendTree, DenseAppendOnlyFixedSizeTree: initial
             // insert uses NULL_HASH since these trees start empty.
             Element::MmrTree(..)

@@ -204,6 +204,12 @@ impl ElementInsertToStorageExtensions for Element {
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
     fn validate_insertable_into(&self, tree_type: TreeType) -> Result<(), Error> {
+        if matches!(tree_type, TreeType::PrivateDocumentStore(_)) {
+            return Err(Error::InvalidInputError(
+                "private document stores cannot hold child elements; entries are appended \
+                 via the private_document_store_insert API",
+            ));
+        }
         if self.is_non_counted() && !tree_type.accepts_non_counted_children() {
             return Err(Error::InvalidInputError(
                 "non-counted elements may only be inserted into non-provable count-bearing \
@@ -503,6 +509,14 @@ impl ElementInsertToStorageExtensions for Element {
             grove_version.grovedb_versions.element.insert_reference
         );
 
+        if matches!(merk.tree_type, TreeType::PrivateDocumentStore(_)) {
+            return Err(Error::InvalidInputError(
+                "private document stores cannot hold child elements; entries are appended \
+                 via the private_document_store_insert API",
+            ))
+            .wrap_with_cost(Default::default());
+        }
+
         if self.is_non_counted() && !merk.tree_type.accepts_non_counted_children() {
             return Err(Error::InvalidInputError(
                 "non-counted elements may only be inserted into non-provable count-bearing \
@@ -614,6 +628,14 @@ impl ElementInsertToStorageExtensions for Element {
             "insert_subtree",
             grove_version.grovedb_versions.element.insert_subtree
         );
+
+        if matches!(merk.tree_type, TreeType::PrivateDocumentStore(_)) {
+            return Err(Error::InvalidInputError(
+                "private document stores cannot hold child elements; entries are appended \
+                 via the private_document_store_insert API",
+            ))
+            .wrap_with_cost(Default::default());
+        }
 
         if self.is_non_counted() && !merk.tree_type.accepts_non_counted_children() {
             return Err(Error::InvalidInputError(
@@ -752,6 +774,14 @@ impl ElementInsertToStorageExtensions for Element {
                 "insert_count_indexed_subtree only accepts indexed-tree elements \
                  (ProvableSumIndexedTree, ProvableCountIndexedTree, or \
                  ProvableCountProvableSumIndexedTree)",
+            ))
+            .wrap_with_cost(Default::default());
+        }
+
+        if matches!(merk.tree_type, TreeType::PrivateDocumentStore(_)) {
+            return Err(Error::InvalidInputError(
+                "private document stores cannot hold child elements; entries are appended \
+                 via the private_document_store_insert API",
             ))
             .wrap_with_cost(Default::default());
         }
