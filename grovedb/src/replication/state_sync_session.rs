@@ -543,6 +543,12 @@ impl<'db> MultiStateSyncSession<'db> {
         // dropped last; the reference is only used within this call while
         // the session is alive. This mirrors the pattern used by
         // `add_subtree_sync_info` and `discover_new_subtrees_metadata`.
+        //
+        // ADDITIONAL INVARIANT for this call site: `set_new_transaction()`
+        // below replaces and commits `self.transaction`, which invalidates
+        // `transaction_ref`. Every use of `transaction_ref` MUST stay inside
+        // the per-chunk loop, above the `set_new_transaction()` call. Do not
+        // use `transaction_ref` after that point.
         let transaction_ref: &'db Transaction<'db> = unsafe {
             let tx: &Transaction<'db> = &self.as_ref().transaction;
             &*(tx as *const _)

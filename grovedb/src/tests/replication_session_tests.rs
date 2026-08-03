@@ -13,16 +13,27 @@ mod tests {
         Element, GroveDb,
     };
 
-    /// Helper: perform a full state sync from source to destination using
-    /// a checkpoint of the source (mirrors the tutorial/production pattern).
-    ///
-    /// Returns the destination TempGroveDb after committing the session.
-    fn sync_source_to_destination(
+    /// Optional in-flight mutation of a commitment tree page:
+    /// `(more, aux, entries) -> (more, aux, entries)`. Used by tamper tests.
+    type CtPageMutator<'a> =
+        &'a dyn Fn(bool, Vec<u8>, Vec<Vec<u8>>) -> (bool, Vec<u8>, Vec<Vec<u8>>);
+
+    /// The single sync driver behind every test in this file: checkpoint the
+    /// source (the standard replication pattern — the tutorial does the
+    /// same), run the fetch/apply loop with the given subtree batch size,
+    /// optionally mutating commitment tree pages in flight, verify
+    /// completion, and commit the session.
+    fn run_sync(
         source: &TempGroveDb,
         grove_version: &GroveVersion,
-    ) -> TempGroveDb {
-        // Create a checkpoint from the source -- this is the standard pattern
-        // for replication (the tutorial does the same).
+        subtrees_batch_size: usize,
+        mutate_ct_page: Option<CtPageMutator>,
+    ) -> Result<TempGroveDb, crate::Error> {
+        use crate::replication::{
+            non_merk_sync::{decode_non_merk_page, encode_non_merk_page},
+            utils::{decode_global_chunk_id, pack_nested_bytes, unpack_nested_bytes},
+        };
+
         let checkpoint_dir = TempDir::new().expect("should create temp dir for checkpoint");
         let checkpoint_path = checkpoint_dir.path().join("checkpoint");
         source
@@ -37,45 +48,86 @@ mod tests {
 
         let dest = make_empty_grovedb();
 
-        let mut session = dest
-            .start_snapshot_syncing(app_hash, 64, CURRENT_STATE_SYNC_VERSION, grove_version)
-            .expect("should start snapshot syncing");
+        let mut session = dest.start_snapshot_syncing(
+            app_hash,
+            subtrees_batch_size,
+            CURRENT_STATE_SYNC_VERSION,
+            grove_version,
+        )?;
 
         // Use a queue-based approach as shown in the tutorial
         let mut chunk_queue: VecDeque<Vec<u8>> = VecDeque::new();
         chunk_queue.push_back(app_hash.to_vec());
 
         while let Some(chunk_id) = chunk_queue.pop_front() {
-            let chunk_data = checkpoint_db
-                .fetch_chunk(
-                    chunk_id.as_slice(),
-                    None,
-                    CURRENT_STATE_SYNC_VERSION,
-                    grove_version,
-                )
-                .expect("should fetch chunk from checkpoint");
+            let mut chunk_data = checkpoint_db.fetch_chunk(
+                chunk_id.as_slice(),
+                None,
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )?;
 
-            let more_ids = session
-                .apply_chunk(
-                    chunk_id.as_slice(),
-                    &chunk_data,
-                    CURRENT_STATE_SYNC_VERSION,
-                    grove_version,
-                )
-                .expect("should apply chunk to destination");
+            if let Some(mutate) = mutate_ct_page {
+                // Mirror apply_chunk's unpacking to find commitment tree
+                // pages and run them through the mutator.
+                let global_ids: Vec<Vec<u8>> = if chunk_id.as_slice() == app_hash.as_slice() {
+                    vec![chunk_id.clone()]
+                } else {
+                    unpack_nested_bytes(&chunk_id)?
+                };
+                let global_data = unpack_nested_bytes(&chunk_data)?;
+                assert_eq!(global_ids.len(), global_data.len());
+                let mut mutated_globals = Vec::with_capacity(global_data.len());
+                for (gid, gdata) in global_ids.iter().zip(global_data) {
+                    let (_, _, tree_type, _) = decode_global_chunk_id(gid, &app_hash)?;
+                    if matches!(
+                        tree_type,
+                        grovedb_merk::tree_type::TreeType::CommitmentTree(_)
+                    ) {
+                        let pages = unpack_nested_bytes(&gdata)?;
+                        let mut mutated_pages = Vec::with_capacity(pages.len());
+                        for page in pages {
+                            let (more, aux, entries) = decode_non_merk_page(&page)?;
+                            let (more, aux, entries) = mutate(more, aux, entries);
+                            mutated_pages.push(encode_non_merk_page(more, aux, entries)?);
+                        }
+                        mutated_globals.push(pack_nested_bytes(mutated_pages)?);
+                    } else {
+                        mutated_globals.push(gdata);
+                    }
+                }
+                chunk_data = pack_nested_bytes(mutated_globals)?;
+            }
+
+            let more_ids = session.apply_chunk(
+                chunk_id.as_slice(),
+                &chunk_data,
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )?;
 
             chunk_queue.extend(more_ids);
         }
 
-        assert!(
-            session.is_sync_completed(),
-            "sync should be completed after all chunks are applied"
-        );
+        if !session.is_sync_completed() {
+            return Err(crate::Error::InternalError(
+                "sync did not complete".to_string(),
+            ));
+        }
 
-        dest.commit_session(session, grove_version)
-            .expect("should commit sync session");
+        dest.commit_session(session, grove_version)?;
+        Ok(dest)
+    }
 
-        dest
+    /// Helper: perform a full state sync from source to destination,
+    /// panicking on any error.
+    ///
+    /// Returns the destination TempGroveDb after committing the session.
+    fn sync_source_to_destination(
+        source: &TempGroveDb,
+        grove_version: &GroveVersion,
+    ) -> TempGroveDb {
+        run_sync(source, grove_version, 64, None).expect("state sync should succeed")
     }
 
     #[test]
@@ -720,41 +772,7 @@ mod tests {
         source: &TempGroveDb,
         grove_version: &GroveVersion,
     ) -> Result<(), crate::Error> {
-        let checkpoint_dir = TempDir::new().expect("should create temp dir for checkpoint");
-        let checkpoint_path = checkpoint_dir.path().join("checkpoint");
-        source
-            .create_checkpoint(&checkpoint_path)
-            .expect("should create checkpoint");
-        let checkpoint_db = GroveDb::open(&checkpoint_path).expect("should open checkpoint db");
-
-        let app_hash = checkpoint_db
-            .root_hash(None, grove_version)
-            .unwrap()
-            .expect("checkpoint root hash should be available");
-
-        let dest = make_empty_grovedb();
-        let mut session =
-            dest.start_snapshot_syncing(app_hash, 64, CURRENT_STATE_SYNC_VERSION, grove_version)?;
-
-        let mut chunk_queue: VecDeque<Vec<u8>> = VecDeque::new();
-        chunk_queue.push_back(app_hash.to_vec());
-
-        while let Some(chunk_id) = chunk_queue.pop_front() {
-            let chunk_data = checkpoint_db.fetch_chunk(
-                chunk_id.as_slice(),
-                None,
-                CURRENT_STATE_SYNC_VERSION,
-                grove_version,
-            )?;
-            let more_ids = session.apply_chunk(
-                chunk_id.as_slice(),
-                &chunk_data,
-                CURRENT_STATE_SYNC_VERSION,
-                grove_version,
-            )?;
-            chunk_queue.extend(more_ids);
-        }
-        Ok(())
+        run_sync(source, grove_version, 64, None).map(|_| ())
     }
 
     #[test]
@@ -1351,14 +1369,16 @@ mod tests {
             )
             .unwrap()
             .expect("insert mmr tree");
-        // 4 leaves of 400 KiB each: > 1 MiB total, so the source must split
-        // the transfer into at least two pages.
+        // Size each leaf from the page budget so any two leaves exceed one
+        // page: the transfer is guaranteed to split into at least two pages
+        // even if MAX_PAGE_BYTES is raised later.
+        let leaf_size = crate::replication::non_merk_sync::MAX_PAGE_BYTES / 2 + 1;
         for i in 0u8..4 {
             source
                 .mmr_tree_append(
                     [TEST_LEAF].as_ref(),
                     b"mmr_big",
-                    vec![i; 400 * 1024],
+                    vec![i; leaf_size],
                     None,
                     grove_version,
                 )
@@ -1377,7 +1397,7 @@ mod tests {
                 dest.mmr_tree_get_value([TEST_LEAF].as_ref(), b"mmr_big", i, None, grove_version)
                     .unwrap()
                     .expect("dest mmr leaf"),
-                Some(vec![i as u8; 400 * 1024]),
+                Some(vec![i as u8; leaf_size]),
                 "big mmr leaf {i} must survive the sync"
             );
         }
@@ -1394,85 +1414,9 @@ mod tests {
     fn try_sync_with_ct_page_mutation(
         source: &TempGroveDb,
         grove_version: &GroveVersion,
-        mutate_page: &dyn Fn(bool, Vec<u8>, Vec<Vec<u8>>) -> (bool, Vec<u8>, Vec<Vec<u8>>),
+        mutate_page: CtPageMutator,
     ) -> Result<(), crate::Error> {
-        use crate::replication::{
-            non_merk_sync::{decode_non_merk_page, encode_non_merk_page},
-            utils::{decode_global_chunk_id, pack_nested_bytes, unpack_nested_bytes},
-        };
-
-        let checkpoint_dir = TempDir::new().expect("should create temp dir for checkpoint");
-        let checkpoint_path = checkpoint_dir.path().join("checkpoint");
-        source
-            .create_checkpoint(&checkpoint_path)
-            .expect("should create checkpoint");
-        let checkpoint_db = GroveDb::open(&checkpoint_path).expect("should open checkpoint db");
-
-        let app_hash = checkpoint_db
-            .root_hash(None, grove_version)
-            .unwrap()
-            .expect("checkpoint root hash should be available");
-
-        let dest = make_empty_grovedb();
-        let mut session =
-            dest.start_snapshot_syncing(app_hash, 64, CURRENT_STATE_SYNC_VERSION, grove_version)?;
-
-        let mut chunk_queue: VecDeque<Vec<u8>> = VecDeque::new();
-        chunk_queue.push_back(app_hash.to_vec());
-
-        while let Some(chunk_id) = chunk_queue.pop_front() {
-            let chunk_data = checkpoint_db.fetch_chunk(
-                chunk_id.as_slice(),
-                None,
-                CURRENT_STATE_SYNC_VERSION,
-                grove_version,
-            )?;
-
-            // Mirror apply_chunk's unpacking to find commitment tree pages
-            // and run them through the mutator.
-            let global_ids: Vec<Vec<u8>> = if chunk_id.as_slice() == app_hash.as_slice() {
-                vec![chunk_id.clone()]
-            } else {
-                unpack_nested_bytes(&chunk_id)?
-            };
-            let global_data = unpack_nested_bytes(&chunk_data)?;
-            assert_eq!(global_ids.len(), global_data.len());
-            let mut mutated_globals = Vec::with_capacity(global_data.len());
-            for (gid, gdata) in global_ids.iter().zip(global_data) {
-                let (_, _, tree_type, _) = decode_global_chunk_id(gid, &app_hash)?;
-                if matches!(
-                    tree_type,
-                    grovedb_merk::tree_type::TreeType::CommitmentTree(_)
-                ) {
-                    let pages = unpack_nested_bytes(&gdata)?;
-                    let mut mutated_pages = Vec::with_capacity(pages.len());
-                    for page in pages {
-                        let (more, aux, entries) = decode_non_merk_page(&page)?;
-                        let (more, aux, entries) = mutate_page(more, aux, entries);
-                        mutated_pages.push(encode_non_merk_page(more, aux, entries)?);
-                    }
-                    mutated_globals.push(pack_nested_bytes(mutated_pages)?);
-                } else {
-                    mutated_globals.push(gdata);
-                }
-            }
-            let chunk_data = pack_nested_bytes(mutated_globals)?;
-
-            let more_ids = session.apply_chunk(
-                chunk_id.as_slice(),
-                &chunk_data,
-                CURRENT_STATE_SYNC_VERSION,
-                grove_version,
-            )?;
-            chunk_queue.extend(more_ids);
-        }
-
-        if !session.is_sync_completed() {
-            return Err(crate::Error::InternalError(
-                "sync did not complete".to_string(),
-            ));
-        }
-        dest.commit_session(session, grove_version)
+        run_sync(source, grove_version, 64, Some(mutate_page)).map(|_| ())
     }
 
     /// Byzantine-source coverage: any tampering with commitment tree wire
@@ -1554,7 +1498,9 @@ mod tests {
             .expect_err("tampered frontier must be rejected");
         let msg = format!("{err:?}");
         assert!(
-            msg.contains("state root mismatch after replay") || msg.contains("cannot"),
+            msg.contains("state root mismatch after replay")
+                || msg.contains("cannot open commitment tree")
+                || msg.contains("cannot compute commitment tree state root"),
             "expected frontier-integrity rejection, got: {msg}"
         );
 
@@ -1648,47 +1594,10 @@ mod tests {
             .unwrap()
             .expect("dense insert");
 
-        // Same sync loop as the shared helper but with subtrees_batch_size
+        // Same sync loop as the shared driver but with subtrees_batch_size
         // of 1, exercising set_new_transaction between subtrees.
-        let checkpoint_dir = TempDir::new().expect("should create temp dir for checkpoint");
-        let checkpoint_path = checkpoint_dir.path().join("checkpoint");
-        source
-            .create_checkpoint(&checkpoint_path)
-            .expect("should create checkpoint");
-        let checkpoint_db = GroveDb::open(&checkpoint_path).expect("should open checkpoint db");
-        let app_hash = checkpoint_db
-            .root_hash(None, grove_version)
-            .unwrap()
-            .expect("checkpoint root hash");
-
-        let dest = make_empty_grovedb();
-        let mut session = dest
-            .start_snapshot_syncing(app_hash, 1, CURRENT_STATE_SYNC_VERSION, grove_version)
-            .expect("start snapshot syncing");
-        let mut chunk_queue: VecDeque<Vec<u8>> = VecDeque::new();
-        chunk_queue.push_back(app_hash.to_vec());
-        while let Some(chunk_id) = chunk_queue.pop_front() {
-            let chunk_data = checkpoint_db
-                .fetch_chunk(
-                    chunk_id.as_slice(),
-                    None,
-                    CURRENT_STATE_SYNC_VERSION,
-                    grove_version,
-                )
-                .expect("fetch chunk");
-            let more_ids = session
-                .apply_chunk(
-                    chunk_id.as_slice(),
-                    &chunk_data,
-                    CURRENT_STATE_SYNC_VERSION,
-                    grove_version,
-                )
-                .expect("apply chunk");
-            chunk_queue.extend(more_ids);
-        }
-        assert!(session.is_sync_completed());
-        dest.commit_session(session, grove_version)
-            .expect("commit session");
+        let dest = run_sync(&source, grove_version, 1, None)
+            .expect("state sync with batch size 1 should succeed");
 
         assert_eq!(
             source.root_hash(None, grove_version).unwrap().unwrap(),

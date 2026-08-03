@@ -48,7 +48,7 @@ use crate::{
 
 /// Soft byte budget for a single page of entries. A page always carries at
 /// least one entry even if that entry alone exceeds the budget.
-const MAX_PAGE_BYTES: usize = 1 << 20; // 1 MiB
+pub(crate) const MAX_PAGE_BYTES: usize = 1 << 20; // 1 MiB
 
 /// Hard cap on the number of entries in a single page, so pages of tiny
 /// entries stay bounded in element count as well as bytes.

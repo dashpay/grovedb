@@ -94,6 +94,12 @@ impl GroveDb {
     /// - The function opens a `Merk` tree for each chunk and retrieves the
     ///   associated data.
     /// - Empty trees return an empty byte vector.
+    /// - Non-Merk append-only subtrees (`CommitmentTree`, `MmrTree`,
+    ///   `BulkAppendTree`, `DenseAppendOnlyFixedSizeTree`) are served as
+    ///   cursor-based entry pages instead of Merk chunks. A request for one
+    ///   of these subtrees without a page cursor returns
+    ///   `Error::NotSupported`.
+    /// - Indexed-tree requests return `Error::NotSupported`.
     pub fn fetch_chunk(
         &self,
         packed_global_chunk_id: &[u8],
