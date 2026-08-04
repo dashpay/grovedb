@@ -64,23 +64,32 @@ pub enum TreeType {
     ProvableCountProvableSumTree,
     /// A provable sum-indexed tree's primary Merk: same node shape as
     /// `ProvableSumTree` (uses `ProvableSummedMerkNode` aggregation). The
-    /// secondary Merk pointed to by the parent element is a regular
-    /// `ProvableSumTree` opened at a derived storage prefix, keyed by
-    /// `(sum_sortable_be ‖ original_key)`.
+    /// secondary Merk pointed to by the parent element is a
+    /// `ProvableCountProvableSumTree` opened at a derived storage prefix,
+    /// keyed by `(sum_sortable_be ‖ original_key)`. The primary stays
+    /// lean (sum-only nodes); the secondary carries BOTH aggregates so
+    /// positional queries against the sum ranking (offset pagination,
+    /// rank-of-key) are provable in O(log n) via count-bound
+    /// subtree-skip commitments.
     ProvableSumIndexedTree,
     /// A provable count-indexed tree's primary Merk: same node shape as
     /// `ProvableCountTree` (uses `ProvableCountedMerkNode` aggregation).
     /// The secondary Merk pointed to by the parent element is a regular
     /// `ProvableCountTree` opened at a derived storage prefix, keyed by
-    /// `(count_be ‖ original_key)`.
+    /// `(count_be ‖ original_key)`. Count-provable already, so offset
+    /// pagination over the count ranking is O(log n) out of the box.
     ProvableCountIndexedTree,
     /// A provable count + provable sum indexed tree's primary Merk: same
     /// node shape as `ProvableCountProvableSumTree` (uses
     /// `ProvableCountedAndProvableSummedMerkNode` aggregation). The parent
     /// element carries a TLV list of 1..=3 secondary Merks, one per
     /// selected axis (count, sum, avg). Each secondary lives at its own
-    /// derived storage prefix and is itself a `ProvableCountProvableSumTree`
-    /// so any axis can produce both count-on-range and sum-on-range proofs.
+    /// derived storage prefix; the count axis opens as a
+    /// `ProvableCountTree` while the sum and avg axes open as
+    /// `ProvableCountProvableSumTree`s — every axis therefore carries a
+    /// hash-bound count aggregate, so all of them support count-bound
+    /// offset pagination, and the sum/avg axes additionally support
+    /// sum-on-range proofs.
     ProvableCountProvableSumIndexedTree,
 }
 

@@ -327,9 +327,10 @@ mod tests {
     }
 
     #[test]
-    fn psit_indexed_axis_paginated_round_trip_uses_fallback() {
-        // Sum axis has no count-offset primitive — verify the fallback
-        // (regular range proof + post-skip) round-trips correctly.
+    fn psit_indexed_axis_paginated_round_trip_uses_count_offset() {
+        // The sum-axis secondary is a ProvableCountProvableSumTree, so
+        // pagination rides the count-offset primitive — the skipped
+        // prefix is attested by counted subtree commitments.
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         build_psit(

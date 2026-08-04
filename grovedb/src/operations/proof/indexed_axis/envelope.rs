@@ -89,15 +89,13 @@ pub struct IndexedAxisRangeProof {
 /// Wire-format envelope for an offset-paginated top-k proof over an
 /// indexed-tree's per-axis secondary.
 ///
-/// For count and avg axes (`ProvableCountTree` / dual-axis
-/// `ProvableCountProvableSumTree` secondaries) the secondary proof is
-/// produced by `Merk::prove_count_offset_on_range`, giving
-/// `O(log n + k)` proof size regardless of `offset`. For the sum axis
-/// (`ProvableSumTree` secondary) there is no count-bound offset
-/// primitive, so the prover instead emits a regular range proof with
-/// `limit = offset + k` and the verifier discards the first `offset`
-/// items independently. The `axis_tag` field disambiguates the two
-/// shapes.
+/// Every axis's secondary binds a count aggregate into its node hashes
+/// (count axis: `ProvableCountTree`; sum and avg axes: dual-axis
+/// `ProvableCountProvableSumTree`), so the secondary proof is always
+/// produced by `Merk::prove_count_offset_on_range`: the skipped prefix
+/// is attested by counted subtree commitments (`HashWithCount` /
+/// `HashWithCountAndSum`), giving `O(log n + k)` proof size regardless
+/// of `offset`.
 #[derive(Encode, Decode, Debug)]
 pub struct IndexedAxisPaginatedProof {
     /// Echoed [`IndexAxis::tag`] of the queried axis. The verifier
@@ -113,12 +111,9 @@ pub struct IndexedAxisPaginatedProof {
     pub other_axes_root_hashes: Vec<(u8, [u8; 32])>,
     /// Same as [`IndexedAxisRangeProof::target_is_pcpsit`].
     pub target_is_pcpsit: bool,
-    /// Encoded paginated proof bytes for the per-axis secondary.
-    ///
-    /// For count/avg axes this is the
-    /// `prove_count_offset_on_range`-produced `Vec<Op>` stream. For
-    /// the sum axis this is a regular `Merk::prove`-produced range
-    /// proof bound by `limit = offset + k`.
+    /// Encoded paginated proof bytes for the per-axis secondary: the
+    /// `prove_count_offset_on_range`-produced `Vec<Op>` stream (every
+    /// axis's secondary carries a provable count).
     pub secondary_proof: Vec<u8>,
     /// Echoed pagination parameters.
     pub requested_k: u16,
@@ -204,16 +199,19 @@ pub struct IndexedAxisPaginatedResult {
     pub root_hash: CryptoHash,
     /// Per-axis decoded entries (after the `skipped` offset region).
     pub entries: AxisEntries,
-    /// Number of secondary entries the proof committed as skipped.
-    /// For count/avg axes this is independently re-derived by the
-    /// verifier from `HashWithCount` commitments in the proof bytes
-    /// (i.e. *cryptographically* committed). For the sum axis this
-    /// is the verifier-side count of items returned by the regular
-    /// range proof up to the `offset` cutoff — also independently
-    /// derived from the proof bytes, but constrained only by the
-    /// merk's regular range-walk discipline (NOT a count
-    /// commitment). The caller must cross-check
-    /// `skipped == expected_offset` if exact-page semantics matter.
+    /// Number of secondary entries the proof committed as skipped,
+    /// independently re-derived by the verifier from the counted
+    /// subtree commitments (`HashWithCount` / `HashWithCountAndSum`)
+    /// in the proof bytes — i.e. *cryptographically* attested for
+    /// every axis.
+    ///
+    /// `skipped == requested_offset` unless the walk was exhausted
+    /// first, in which case `skipped < requested_offset` and
+    /// `entries` is empty — that shape is itself a proof that the
+    /// secondary's total population is exactly `skipped` (the counted
+    /// commitments cover the whole walk). Callers wanting strict
+    /// "page exists" semantics should cross-check
+    /// `skipped == expected_offset`.
     pub skipped: u64,
 }
 

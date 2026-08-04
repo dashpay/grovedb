@@ -1287,7 +1287,7 @@ mod tests {
                 secondary_key,
                 None,
                 false,
-                TreeType::ProvableSumTree,
+                TreeType::ProvableCountProvableSumTree,
                 grove_version,
             )
             .unwrap()
