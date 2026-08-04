@@ -521,8 +521,9 @@ impl GroveDb {
         let item_element = cost_return_on_error!(
             &mut cost,
             Element::get(&primary_merk, item_key, true, grove_version).map_err(|e| {
-                Error::CorruptedData(format!(
-                    "indexed-axis rank proof: item key not found in primary: {e}"
+                Error::PathKeyNotFound(format!(
+                    "indexed-axis rank proof: item key {} not found in the indexed primary: {e}",
+                    hex::encode(item_key)
                 ))
             })
         );

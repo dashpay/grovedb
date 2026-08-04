@@ -719,11 +719,13 @@ mod tests {
         build_psit(&db, gv, TEN);
         let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
 
+        let err = db
+            .prove_indexed_axis_rank_of_key(path, IndexAxis::Sum, b"nope", true, None, gv)
+            .unwrap()
+            .expect_err("rank of an absent key is unprovable");
         assert!(
-            db.prove_indexed_axis_rank_of_key(path, IndexAxis::Sum, b"nope", true, None, gv)
-                .unwrap()
-                .is_err(),
-            "rank of an absent key is unprovable"
+            matches!(err, crate::Error::PathKeyNotFound(_)),
+            "an absent key is a not-found error, not corruption: {err:?}"
         );
     }
 
