@@ -726,4 +726,107 @@ mod tests {
             "rank of an absent key is unprovable"
         );
     }
+
+    /// Rank proving rejects invalid targets before touching the
+    /// secondary: the root path has no indexed element, and a
+    /// non-indexed tree is not an indexed primary.
+    #[test]
+    fn rank_of_key_rejects_root_path_and_non_indexed_targets() {
+        let gv = GroveVersion::latest();
+        let db = make_test_grovedb(gv);
+        build_psit(&db, gv, TEN);
+
+        let root: &[&[u8]] = &[];
+        assert!(
+            db.prove_indexed_axis_rank_of_key(root, IndexAxis::Sum, b"a", false, None, gv)
+                .unwrap()
+                .is_err(),
+            "rank at the root path is rejected"
+        );
+
+        // TEST_LEAF itself is a plain tree, not an indexed primary.
+        let plain: &[&[u8]] = &[TEST_LEAF];
+        assert!(
+            db.prove_indexed_axis_rank_of_key(plain, IndexAxis::Sum, b"psit", false, None, gv)
+                .unwrap()
+                .is_err(),
+            "rank against a non-indexed tree is rejected"
+        );
+    }
+
+    /// The rank verifier's own checks, beyond the paginated echoes:
+    /// a claimed rank past the walk's end fails the
+    /// `skipped == expected_rank` requirement, and a rank exactly at
+    /// the population boundary (empty window, fully satisfied skip)
+    /// fails the single-yielded-entry requirement — no key sits at a
+    /// rank equal to the population.
+    #[test]
+    fn rank_verifier_rejects_ranks_at_or_past_the_population() {
+        let gv = GroveVersion::latest();
+        let db = make_test_grovedb(gv);
+        build_psit(&db, gv, TEN);
+        let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
+
+        // Rank 99 on a 10-entry walk: the paginated proof itself is
+        // honest (skipped = 10 < 99, empty page), so the paginated
+        // verifier accepts it — the RANK verifier must reject it.
+        let proof = db
+            .prove_indexed_sum_top_k_paginated(path, 1, 99, false, None, gv)
+            .unwrap()
+            .expect("prove offset past end");
+        GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 1, 99, false)
+            .expect("paginated shape verifies");
+        assert!(
+            GroveDb::verify_indexed_axis_rank_of_key(&proof, path, IndexAxis::Sum, b"a", 99, false)
+                .is_err(),
+            "a rank claim past the population must be rejected (skipped < rank)"
+        );
+
+        // Rank 10 == population: skip fully satisfied but the window is
+        // empty, so there is no entry to bind the key to.
+        let proof = db
+            .prove_indexed_sum_top_k_paginated(path, 1, 10, false, None, gv)
+            .unwrap()
+            .expect("prove offset == population");
+        assert!(
+            GroveDb::verify_indexed_axis_rank_of_key(&proof, path, IndexAxis::Sum, b"a", 10, false)
+                .is_err(),
+            "a rank claim equal to the population must be rejected (no yielded entry)"
+        );
+    }
+
+    /// Trailing bytes after the envelope are rejected on the range
+    /// (top-k) and aggregate envelope decoders too, mirroring the
+    /// paginated case tested above — the three shapes share the
+    /// anti-malleability rule.
+    #[test]
+    fn range_and_aggregate_envelopes_reject_trailing_bytes() {
+        let gv = GroveVersion::latest();
+        let db = make_test_grovedb(gv);
+        build_psit(&db, gv, TEN);
+        let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
+
+        let mut top_k = db
+            .prove_indexed_sum_top_k(path, 3, true, None, gv)
+            .unwrap()
+            .expect("prove top-k");
+        GroveDb::verify_indexed_sum_top_k(&top_k, path, 3, true).expect("clean top-k verifies");
+        top_k.push(0);
+        assert!(
+            GroveDb::verify_indexed_sum_top_k(&top_k, path, 3, true).is_err(),
+            "trailing byte after the range envelope must be rejected"
+        );
+
+        let mut aggregate = db
+            .prove_indexed_sum_range_aggregate(path, 0, 100, None, gv)
+            .unwrap()
+            .expect("prove aggregate");
+        GroveDb::verify_indexed_sum_range_aggregate(&aggregate, path, 0, 100)
+            .expect("clean aggregate verifies");
+        aggregate.push(0);
+        assert!(
+            GroveDb::verify_indexed_sum_range_aggregate(&aggregate, path, 0, 100).is_err(),
+            "trailing byte after the aggregate envelope must be rejected"
+        );
+    }
 }
