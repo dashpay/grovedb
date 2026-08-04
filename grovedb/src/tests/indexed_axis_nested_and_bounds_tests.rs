@@ -479,13 +479,15 @@ mod tests {
         );
     }
 
-    /// The sum axis has no count-bound offset primitive, so its paginated proof
-    /// is a plain range proof limited to `offset + k`. That limit is a `u16`, and
-    /// clamping an overflowing request would silently prove a short page while
-    /// the documented `skipped == expected_offset` cross-check still passed — so
-    /// the prover refuses instead.
+    /// The sum axis's secondary is a `ProvableCountProvableSumTree`, so its
+    /// paginated proof rides the count-bound offset primitive: the old u16
+    /// `offset + k` page ceiling (an artifact of the enumeration fallback)
+    /// is gone, and an offset past the end of the walk is provable — the
+    /// verifier reports the attested `skipped` (= the total population) with
+    /// an empty page, which is itself a proof that the population is ≤ the
+    /// requested offset.
     #[test]
-    fn a_sum_axis_page_beyond_the_u16_proof_limit_is_refused_rather_than_truncated() {
+    fn a_sum_axis_page_beyond_the_old_u16_limit_proves_an_attested_empty_page() {
         let gv = GroveVersion::latest();
         let db = make_test_grovedb(gv);
         db.insert(
@@ -509,24 +511,28 @@ mod tests {
         .expect("entry");
         let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
 
-        let err = db
-            .prove_indexed_sum_top_k_paginated(path, 10, u16::MAX as u64, false, None, gv)
+        // An offset that would have overflowed the old u16 page limit now
+        // proves fine: the walk has 1 entry, so the count commitments attest
+        // exactly 1 skipped and the page is empty.
+        let offset = u16::MAX as u64;
+        let proof = db
+            .prove_indexed_sum_top_k_paginated(path, 10, offset, false, None, gv)
             .unwrap()
-            .expect_err("offset + k overflows the u16 page limit");
-        match err {
-            Error::NotSupported(message) => assert!(
-                message.starts_with("indexed-axis paginated proof (sum): offset + k = 65545")
-                    && message.contains("65535 entry limit"),
-                "unexpected message: {message}"
-            ),
-            other => panic!("expected NotSupported, got {other:?}"),
-        }
-
-        // One less is exactly at the limit and is accepted, which is what makes
-        // the refusal above about the overflow rather than about large offsets.
-        db.prove_indexed_sum_top_k_paginated(path, 10, u16::MAX as u64 - 10, false, None, gv)
-            .unwrap()
-            .expect("offset + k == u16::MAX must still be provable");
+            .expect("offset far past the end must be provable via count commitments");
+        let result = GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 10, offset, false)
+            .expect("verify offset-past-end page");
+        assert_eq!(
+            result.skipped, 1,
+            "the whole 1-entry walk is attested as skipped"
+        );
+        assert!(
+            result.entries.is_empty(),
+            "a page past the end of the walk is empty"
+        );
+        assert!(
+            result.skipped < offset,
+            "skipped < requested offset proves the total population is exactly `skipped`"
+        );
     }
 
     // -----------------------------------------------------------------

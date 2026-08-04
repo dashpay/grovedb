@@ -58,8 +58,12 @@ pub(crate) fn axis_secondary_tree_type(axis: IndexAxis) -> TreeType {
     match axis {
         // Each count entry contributes count = 1.
         IndexAxis::Count => TreeType::ProvableCountTree,
-        // Each sum entry contributes its own SumValue.
-        IndexAxis::Sum => TreeType::ProvableSumTree,
+        // Each sum entry contributes (count = 1, sum = its own SumValue).
+        // The count half is what makes positional queries against the sum
+        // ranking provable in O(log n): the count-offset proof primitive
+        // skips whole subtrees via counted node commitments, which needs
+        // every secondary node to carry a hash-bound count aggregate.
+        IndexAxis::Sum => TreeType::ProvableCountProvableSumTree,
         // Each avg entry contributes (count = 1, sum = item's SumValue).
         IndexAxis::Avg => TreeType::ProvableCountProvableSumTree,
     }
@@ -2198,11 +2202,13 @@ impl GroveDb {
 ///
 /// The secondary entry is a no-payload `Item` whose own sum / count
 /// contribution comes from its position in a sum/count-bearing tree.
-/// For the sum axis the secondary entry is a `SumItem(sum)`; for the
-/// avg axis the secondary entry is an `ItemWithSumItem(empty, sum)` so
-/// both count (= 1) and sum (= the entry's sum_value) propagate to the
-/// secondary's `ProvableCountProvableSumTree`. For the count axis the
-/// secondary entry is a plain `Item` (count = 1, no sum).
+/// For the sum axis the secondary entry is a `SumItem(sum)`, which in
+/// the secondary's `ProvableCountProvableSumTree` contributes
+/// (count = 1, sum); for the avg axis the secondary entry is an
+/// `ItemWithSumItem(empty, sum)` so both count (= 1) and sum (= the
+/// entry's sum_value) propagate to the secondary's
+/// `ProvableCountProvableSumTree`. For the count axis the secondary
+/// entry is a plain `Item` (count = 1, no sum).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn mirror_indexed_axis_to_secondary<'db, S: StorageContext<'db>>(
     secondary: &mut Merk<S>,
@@ -2284,7 +2290,8 @@ pub(crate) fn mirror_indexed_axis_to_secondary<'db, S: StorageContext<'db>>(
         // equality check above uses, so the two stay in lockstep:
         // - Count → empty Item (secondary is a ProvableCountTree; every
         //   entry contributes count = 1)
-        // - Sum   → SumItem(sum) (secondary is a ProvableSumTree)
+        // - Sum   → SumItem(sum) (secondary is a
+        //   ProvableCountProvableSumTree; contributes (1, sum))
         // - Avg   → ItemWithSumItem(empty, sum) (secondary is a
         //   ProvableCountProvableSumTree; contributes (1, sum))
         let entry = axis_payload(new_sum_val);

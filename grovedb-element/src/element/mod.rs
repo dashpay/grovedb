@@ -249,7 +249,12 @@ pub enum Element {
     ProvableCountProvableSumTree(Option<Vec<u8>>, CountValue, SumValue, Option<ElementFlags>),
     /// Provable sum-indexed tree: a `ProvableSumTree`-style primary Merk
     /// paired with a single secondary Merk keyed by
-    /// `(sum_sortable_be ‖ original_key)`. Both Merks contribute to the
+    /// `(sum_sortable_be ‖ original_key)`. The secondary is a
+    /// `ProvableCountProvableSumTree` — each row is a `SumItem`
+    /// contributing `(count = 1, sum)` — so positional queries against
+    /// the sum ranking are provable via counted subtree commitments:
+    /// offset pagination in O(log n + k) proof size (k = page size),
+    /// rank-of-key in O(log n). Both Merks contribute to the
     /// element's `combined_value_hash` via the three-input hash composition
     /// `combine_hash_three(value_hash, primary_root_hash,
     /// secondary_root_hash)`.
@@ -288,9 +293,11 @@ pub enum Element {
     /// `ProvableCountedAndProvableSummedMerkNode` (both count AND sum
     /// baked into node hash) and carries a TLV list of 1..=3 secondary
     /// Merks — one per selected axis (count, sum, avg). Each secondary
-    /// lives at its own derived storage prefix and is itself a
-    /// `ProvableCountProvableSumTree` so any axis can produce both
-    /// count-on-range and sum-on-range proofs.
+    /// lives at its own derived storage prefix; the count axis is a
+    /// `ProvableCountTree` while the sum and avg axes are
+    /// `ProvableCountProvableSumTree`s, so every axis carries a
+    /// hash-bound count (enabling count-bound offset pagination) and
+    /// the sum/avg axes can additionally produce sum-on-range proofs.
     ///
     /// Fields: `(primary_root_key, count_value, sum_value, axes, flags)`
     /// - `primary_root_key`: root key of the primary

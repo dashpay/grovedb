@@ -2166,7 +2166,8 @@ impl GroveDb {
                     }
                 }
                 // ProvableSumIndexedTree integrity: identical shape to
-                // PCIT but the secondary is a `ProvableSumTree`. Open
+                // PCIT but the secondary is a
+                // `ProvableCountProvableSumTree`. Open
                 // both Merks, recompute `combine_hash_three(value_hash,
                 // primary_root_hash, secondary_root_hash)`, compare
                 // to the parent's stored combined value hash, and

@@ -394,11 +394,24 @@ impl GroveDb {
     /// indexed-tree on a specific axis, starting after `offset` entries
     /// in the directional walk.
     ///
-    /// For count and avg axes the secondary proof uses
-    /// `Merk::prove_count_offset_on_range` (O(log n + k)); for the sum
-    /// axis it uses a regular range proof with `limit = offset + k`
-    /// (O(offset + k)) — no count-bound offset primitive exists for
-    /// `ProvableSumTree` hosts.
+    /// Every axis's secondary carries a hash-bound count aggregate
+    /// (count axis: `ProvableCountTree`; sum and avg axes:
+    /// `ProvableCountProvableSumTree`), so the secondary proof always
+    /// uses `Merk::prove_count_offset_on_range` — the skipped prefix is
+    /// attested by counted subtree commitments (`HashWithCount` /
+    /// `HashWithCountAndSum`) instead of enumeration, giving
+    /// O(log n + k) proof size regardless of `offset`.
+    ///
+    /// Ties (equal axis values) break by `original_key` in walk
+    /// direction, in both the skipped prefix and the yielded window —
+    /// the secondary is keyed `(axis_sort_key ‖ original_key)` so the
+    /// walk order is total and deterministic.
+    ///
+    /// `offset` past the end of the walk is provable: the prover skips
+    /// everything it can and yields nothing; the verifier reports the
+    /// attested `skipped < offset`, which together with the root-bound
+    /// count commitments is a proof that the total population is
+    /// exactly `skipped`.
     pub fn prove_indexed_axis_top_k_paginated<'b, B, P>(
         &self,
         path: P,
@@ -441,6 +454,152 @@ impl GroveDb {
         );
 
         Ok(bytes).wrap_with_cost(cost)
+    }
+
+    /// Prove that `item_key` sits at a specific rank in the directional
+    /// walk of an indexed axis: rank `R` (0-based) means exactly `R`
+    /// entries come strictly before it in the walk. Ties (equal axis
+    /// values) are broken by `original_key` in walk direction — the
+    /// same total order every other axis proof uses — so the rank is
+    /// well-defined even inside a tie group.
+    ///
+    /// Returns `(proof_bytes, rank)`. The proof is an ordinary
+    /// offset-paginated envelope with `offset = rank, k = 1`: the count
+    /// commitments attest that exactly `rank` entries precede the
+    /// single yielded entry, and the yielded entry's key binds the
+    /// claim to `item_key`. Verify with
+    /// [`Self::verify_indexed_axis_rank_of_key`], which additionally
+    /// checks the yielded entry is `item_key` and the attested skip is
+    /// exactly `rank`.
+    ///
+    /// Errors if `item_key` is not present in the indexed tree's
+    /// primary, or if the axis is not indexed at this path.
+    pub fn prove_indexed_axis_rank_of_key<'b, B, P>(
+        &self,
+        path: P,
+        axis: IndexAxis,
+        item_key: &[u8],
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(Vec<u8>, u64), Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        use crate::operations::indexed_tree::make_axis_secondary_key;
+
+        let mut cost = OperationCost::default();
+        let path: SubtreePath<B> = path.into();
+        let batch = StorageBatch::new();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let path_keys: Vec<Vec<u8>> = path.to_vec();
+        if path_keys.is_empty() {
+            return Err(Error::InvalidPath(
+                "cannot prove indexed-axis rank at root path".to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+
+        // 1. Read the item's element from the primary to derive its
+        //    secondary sort key (the walk position is a pure function of
+        //    the entry's (count, sum) aggregates plus its key).
+        let primary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(path.clone(), tx_ref, Some(&batch), grove_version)
+        );
+        if !primary_merk.tree_type.is_indexed_primary() {
+            return Err(Error::InvalidPath(
+                "prove_indexed_axis_rank_of_key requires the path's last segment to be an \
+                 indexed-tree element"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+        let item_element = cost_return_on_error!(
+            &mut cost,
+            Element::get(&primary_merk, item_key, true, grove_version).map_err(|e| {
+                Error::PathKeyNotFound(format!(
+                    "indexed-axis rank proof: item key {} not found in the indexed primary: {e}",
+                    hex::encode(item_key)
+                ))
+            })
+        );
+        let (count, sum) = item_element.count_sum_value_or_default();
+        let secondary_key = make_axis_secondary_key(axis, count, sum, item_key);
+
+        // 2. Compute the rank: the count of entries strictly before the
+        //    item in the directional walk, read O(log n) off the
+        //    secondary's count aggregates.
+        let (secondary_root_key, _, _) = cost_return_on_error!(
+            &mut cost,
+            read_queried_axis_info_with_path_keys(
+                self,
+                &path_keys,
+                axis,
+                tx_ref,
+                &batch,
+                grove_version,
+                "indexed-axis rank proof",
+            )
+        );
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_indexed_secondary_at_path(
+                path.clone(),
+                axis,
+                secondary_root_key,
+                tx_ref,
+                Some(&batch),
+                grove_version,
+            )
+        );
+        let before_range = if descending {
+            // Descending walk: everything with a strictly GREATER
+            // secondary key comes first.
+            MerkQueryItemForRange::RangeAfter(secondary_key.clone()..)
+        } else {
+            // Ascending walk: everything with a strictly SMALLER
+            // secondary key comes first.
+            MerkQueryItemForRange::RangeTo(..secondary_key.clone())
+        };
+        let rank = cost_return_on_error!(
+            &mut cost,
+            secondary_merk
+                .count_aggregate_on_range(&before_range, grove_version)
+                .map_err(|e| Error::CorruptedData(format!(
+                    "indexed-axis rank proof: counting entries before the item: {e}"
+                )))
+        );
+        drop(secondary_merk);
+        drop(primary_merk);
+
+        // 3. The rank proof IS the paginated proof at (offset = rank,
+        //    k = 1): its counted commitments attest the skipped prefix
+        //    and its single yielded entry binds the item.
+        let envelope = cost_return_on_error!(
+            &mut cost,
+            self.build_indexed_axis_paginated_proof(
+                path,
+                axis,
+                1,
+                rank,
+                descending,
+                tx_ref,
+                &batch,
+                grove_version,
+            )
+        );
+        let bytes = cost_return_on_error_no_add!(
+            cost,
+            bincode::encode_to_vec(&envelope, bincode::config::standard()).map_err(|e| {
+                Error::CorruptedData(format!("encoding indexed-axis rank proof: {e}"))
+            })
+        );
+
+        Ok((bytes, rank)).wrap_with_cost(cost)
     }
 
     /// Generate an aggregate proof over a value-range against an
@@ -717,10 +876,12 @@ impl GroveDb {
                 })
         );
 
-        // 4. Open the per-axis secondary; emit the appropriate paginated
-        //    proof per axis. Count/Avg axes have a HashWithCount-based
-        //    primitive; Sum axis does not, so we fall back to a regular
-        //    range proof with `limit = offset + k`.
+        // 4. Open the per-axis secondary and emit the count-offset
+        //    paginated proof. The gate is structural, not per-axis:
+        //    `Merk::prove_count_offset_on_range` rejects any host whose
+        //    tree type does not bind a count aggregate into node hashes,
+        //    so an axis whose secondary somehow lacked counts would fail
+        //    here rather than silently degrade to enumeration.
         let secondary_merk = cost_return_on_error!(
             &mut cost,
             self.open_indexed_secondary_at_path(
@@ -732,61 +893,31 @@ impl GroveDb {
                 grove_version,
             )
         );
-        let serialized = match axis {
-            IndexAxis::Count | IndexAxis::Avg => {
-                let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
-                let prove_result = cost_return_on_error!(
-                    &mut cost,
-                    secondary_merk
-                        .prove_count_offset_on_range(
-                            &inner_range,
-                            offset,
-                            Some(k as u64),
-                            !descending,
-                            grove_version,
-                        )
-                        .map_err(|e| Error::CorruptedData(format!(
-                            "indexed-axis paginated proof: secondary count-offset proof: {e}"
-                        )))
-                );
-                let mut serialized = Vec::with_capacity(128);
-                encode_into(prove_result.ops.iter(), &mut serialized);
-                serialized
-            }
-            IndexAxis::Sum => {
-                // Sum axis: ProvableSumTree has no count-offset
-                // primitive. Emit a plain `prove` with limit = offset+k;
-                // the verifier discards the leading `offset` items.
-                let mut full_range = MerkQuery::new();
-                full_range.insert_all();
-                full_range.left_to_right = !descending;
-                // `offset + k` must fit a u16 Merk limit. Clamping instead
-                // would silently prove a SHORT page while the verifier's
-                // documented `skipped == expected_offset` cross-check still
-                // passed, so the caller would receive fewer rows than asked
-                // for with no error anywhere. Reject instead.
-                let combined = (offset as u128).saturating_add(k as u128);
-                if combined > u16::MAX as u128 {
-                    return Err(Error::NotSupported(format!(
-                        "indexed-axis paginated proof (sum): offset + k = {combined} exceeds the \
-                         {} entry limit a single page can prove; request a smaller page or a \
-                         smaller offset",
-                        u16::MAX
-                    )))
-                    .wrap_with_cost(cost);
-                }
-                let combined_limit = combined as u16;
-                let sec_result = cost_return_on_error!(
-                    &mut cost,
-                    secondary_merk
-                        .prove(full_range, Some(combined_limit), grove_version)
-                        .map_err(|e| Error::CorruptedData(format!(
-                            "indexed-axis paginated proof: secondary regular proof (sum): {e}"
-                        )))
-                );
-                sec_result.proof
-            }
-        };
+        if !secondary_merk.tree_type.is_count_bearing() {
+            return Err(Error::NotSupported(format!(
+                "indexed-axis paginated proof: the {axis:?} axis secondary ({:?}) does not carry \
+                 a provable count aggregate, so offset pagination cannot be attested",
+                secondary_merk.tree_type
+            )))
+            .wrap_with_cost(cost);
+        }
+        let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
+        let prove_result = cost_return_on_error!(
+            &mut cost,
+            secondary_merk
+                .prove_count_offset_on_range(
+                    &inner_range,
+                    offset,
+                    Some(k as u64),
+                    !descending,
+                    grove_version,
+                )
+                .map_err(|e| Error::CorruptedData(format!(
+                    "indexed-axis paginated proof: secondary count-offset proof: {e}"
+                )))
+        );
+        let mut serialized = Vec::with_capacity(128);
+        encode_into(prove_result.ops.iter(), &mut serialized);
 
         Ok(IndexedAxisPaginatedProof {
             axis_tag: axis.tag(),

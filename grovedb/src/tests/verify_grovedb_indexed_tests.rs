@@ -1236,7 +1236,7 @@ mod tests {
                 secondary_key,
                 None,
                 false,
-                TreeType::ProvableSumTree,
+                crate::operations::indexed_tree::axis_secondary_tree_type(IndexAxis::Sum),
                 grove_version,
             )
             .unwrap()
@@ -1287,7 +1287,7 @@ mod tests {
                 secondary_key,
                 None,
                 false,
-                TreeType::ProvableSumTree,
+                crate::operations::indexed_tree::axis_secondary_tree_type(IndexAxis::Sum),
                 grove_version,
             )
             .unwrap()
@@ -1473,11 +1473,7 @@ mod tests {
                 _ => panic!("not PCPSIT"),
             }
         };
-        let tree_type = match axis {
-            IndexAxis::Count => TreeType::ProvableCountTree,
-            IndexAxis::Sum => TreeType::ProvableSumTree,
-            IndexAxis::Avg => TreeType::ProvableCountSumTree,
-        };
+        let tree_type = crate::operations::indexed_tree::axis_secondary_tree_type(axis);
         {
             let mut secondary_merk = db
                 .open_indexed_secondary_at_path(
@@ -1606,6 +1602,71 @@ mod tests {
             .verify_grovedb(None, true, true, grove_version)
             .expect("verify");
         assert!(!issues.is_empty(), "expected PCPSIT sum-axis drift");
+    }
+
+    #[test]
+    fn verify_grovedb_pcpsit_detects_avg_axis_drift() {
+        // Same shape as the count/sum drift tests but for the Avg
+        // axis, whose secondary key carries a 16-byte fixed-point
+        // sort prefix. Deleting one avg-secondary row must surface
+        // through the per-axis content walk with the avg-axis
+        // sentinel prefix.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let axes = vec![(IndexAxis::Avg.tag(), None)];
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit",
+            Element::empty_provable_count_provable_sum_indexed_tree(axes).unwrap(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        for (k, v) in [(b"a".as_ref(), 7i64), (b"b", 12)] {
+            db.insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                k,
+                Element::new_item_with_sum_item(k.to_vec(), v),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        assert_verify_passes(&db, grove_version);
+
+        // Each entry contributes (count = 1, sum = v) to the avg axis;
+        // derive the row key with the canonical builder so the test
+        // cannot drift from the mirror's encoding.
+        let sec_key =
+            crate::operations::indexed_tree::make_axis_secondary_key(IndexAxis::Avg, 1, 7, b"a");
+        corrupt_pcpsit_axis_secondary_delete(
+            &db,
+            &[TEST_LEAF, b"pcpsit"],
+            IndexAxis::Avg,
+            &sec_key,
+            grove_version,
+        );
+
+        let issues = db
+            .verify_grovedb(None, true, true, grove_version)
+            .expect("verify");
+        assert!(!issues.is_empty(), "expected PCPSIT avg-axis drift");
+        // The content walk labels avg-axis issues with the
+        // `__pcpsit_avg_<kind>__` sentinel; the deleted row surfaces
+        // its primary entry as an avg-axis orphan.
+        let has_avg_sentinel = issues.keys().any(|p| {
+            p.iter().any(|seg| {
+                seg.windows(b"__pcpsit_avg_".len())
+                    .any(|w| w == b"__pcpsit_avg_")
+            })
+        });
+        assert!(
+            has_avg_sentinel,
+            "expected an __pcpsit_avg_*__ sentinel among issues: {issues:?}"
+        );
     }
 
     #[test]

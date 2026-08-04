@@ -625,15 +625,25 @@ impl ElementType {
         // `KvValueHashFeatureType` — the embedded `TreeFeatureType` carries
         // the per-node aggregate(s) so a single proof-node variant suffices
         // for the subtree case in every family.
+        // Indexed-tree primaries dispatch with their own node family:
+        // PCIT primaries use count-only nodes, PSIT primaries use
+        // sum-only nodes, and PCPSIT primaries use count-and-sum nodes
+        // (mirroring `TreeType::inner_node_type`).
         let is_provable_count_only_tree = matches!(
             parent_base,
             Some(ElementType::ProvableCountTree)
                 | Some(ElementType::ProvableCountSumTree)
                 | Some(ElementType::ProvableCountIndexedTree)
         );
-        let is_provable_sum_only_tree = matches!(parent_base, Some(ElementType::ProvableSumTree));
-        let is_provable_count_and_provable_sum_tree =
-            matches!(parent_base, Some(ElementType::ProvableCountProvableSumTree));
+        let is_provable_sum_only_tree = matches!(
+            parent_base,
+            Some(ElementType::ProvableSumTree) | Some(ElementType::ProvableSumIndexedTree)
+        );
+        let is_provable_count_and_provable_sum_tree = matches!(
+            parent_base,
+            Some(ElementType::ProvableCountProvableSumTree)
+                | Some(ElementType::ProvableCountProvableSumIndexedTree)
+        );
         let is_provable_aggregate_tree = is_provable_count_only_tree
             || is_provable_sum_only_tree
             || is_provable_count_and_provable_sum_tree;

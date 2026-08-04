@@ -213,10 +213,10 @@ impl GroveDb {
         )
     }
 
-    /// Prove an offset-paginated top-`k` window on the sum axis.
-    /// Note: the secondary is a `ProvableSumTree`, which has no
-    /// count-bound offset primitive, so the proof size is
-    /// O(offset + k). Use sparingly with large offsets.
+    /// Prove an offset-paginated top-`k` window on the sum axis. The
+    /// secondary is a `ProvableCountProvableSumTree`, so the skipped
+    /// prefix is attested by counted subtree commitments and the proof
+    /// size is O(log n + k) regardless of `offset`.
     #[cfg(feature = "minimal")]
     pub fn prove_indexed_sum_top_k_paginated<'b, B, P>(
         &self,
