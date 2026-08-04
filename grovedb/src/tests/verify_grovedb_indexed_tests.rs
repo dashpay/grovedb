@@ -1236,7 +1236,7 @@ mod tests {
                 secondary_key,
                 None,
                 false,
-                TreeType::ProvableSumTree,
+                crate::operations::indexed_tree::axis_secondary_tree_type(IndexAxis::Sum),
                 grove_version,
             )
             .unwrap()
@@ -1287,7 +1287,7 @@ mod tests {
                 secondary_key,
                 None,
                 false,
-                TreeType::ProvableCountProvableSumTree,
+                crate::operations::indexed_tree::axis_secondary_tree_type(IndexAxis::Sum),
                 grove_version,
             )
             .unwrap()
@@ -1473,11 +1473,7 @@ mod tests {
                 _ => panic!("not PCPSIT"),
             }
         };
-        let tree_type = match axis {
-            IndexAxis::Count => TreeType::ProvableCountTree,
-            IndexAxis::Sum => TreeType::ProvableSumTree,
-            IndexAxis::Avg => TreeType::ProvableCountSumTree,
-        };
+        let tree_type = crate::operations::indexed_tree::axis_secondary_tree_type(axis);
         {
             let mut secondary_merk = db
                 .open_indexed_secondary_at_path(

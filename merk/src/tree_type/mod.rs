@@ -68,16 +68,18 @@ pub enum TreeType {
     /// `ProvableCountProvableSumTree` opened at a derived storage prefix,
     /// keyed by `(sum_sortable_be ‖ original_key)`. The primary stays
     /// lean (sum-only nodes); the secondary carries BOTH aggregates so
-    /// positional queries against the sum ranking (offset pagination,
-    /// rank-of-key) are provable in O(log n) via count-bound
-    /// subtree-skip commitments.
+    /// positional queries against the sum ranking are provable via
+    /// count-bound subtree-skip commitments — offset pagination in
+    /// O(log n + k) proof size (k = page size), rank-of-key in
+    /// O(log n).
     ProvableSumIndexedTree,
     /// A provable count-indexed tree's primary Merk: same node shape as
     /// `ProvableCountTree` (uses `ProvableCountedMerkNode` aggregation).
     /// The secondary Merk pointed to by the parent element is a regular
     /// `ProvableCountTree` opened at a derived storage prefix, keyed by
     /// `(count_be ‖ original_key)`. Count-provable already, so offset
-    /// pagination over the count ranking is O(log n) out of the box.
+    /// pagination over the count ranking is O(log n + k) proof size
+    /// (k = page size) out of the box.
     ProvableCountIndexedTree,
     /// A provable count + provable sum indexed tree's primary Merk: same
     /// node shape as `ProvableCountProvableSumTree` (uses

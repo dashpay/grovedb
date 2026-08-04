@@ -252,8 +252,9 @@ pub enum Element {
     /// `(sum_sortable_be ‖ original_key)`. The secondary is a
     /// `ProvableCountProvableSumTree` — each row is a `SumItem`
     /// contributing `(count = 1, sum)` — so positional queries against
-    /// the sum ranking (offset pagination) are provable in O(log n) via
-    /// counted subtree commitments. Both Merks contribute to the
+    /// the sum ranking are provable via counted subtree commitments:
+    /// offset pagination in O(log n + k) proof size (k = page size),
+    /// rank-of-key in O(log n). Both Merks contribute to the
     /// element's `combined_value_hash` via the three-input hash composition
     /// `combine_hash_three(value_hash, primary_root_hash,
     /// secondary_root_hash)`.
