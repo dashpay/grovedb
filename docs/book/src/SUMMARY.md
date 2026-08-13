@@ -15,6 +15,7 @@
 - [Aggregate Sum on Range Queries](aggregate-sum-on-range-queries.md)
 - [Count-Offset Paginated Queries](count-offset-paginated-queries.md)
 - [The CountIndexedTree](count-indexed-tree.md)
+- [Branched Indexed-Axis Proofs](branched-indexed-axis-proofs.md)
 - [Batch Operations](batch-operations.md)
 - [Cost Tracking](cost-tracking.md)
 - [The MMR Tree](mmr-tree.md)
