@@ -507,6 +507,11 @@ impl Query {
                 conditional_subquery_branches,
                 left_to_right: _,
                 add_parent_tree_on_subquery,
+                // Read modes do not merge: PathQuery::merge rejects
+                // read-mode queries before reaching this, and these
+                // merge functions become fallible (rejecting read-mode
+                // conflicts explicitly) in a follow-up.
+                read_mode: _,
             } = query;
             // Preserve add_parent_tree_on_subquery if any query requests it
             if add_parent_tree_on_subquery {
@@ -555,6 +560,9 @@ impl Query {
             conditional_subquery_branches,
             left_to_right: _,
             add_parent_tree_on_subquery,
+            // See merge_multiple: read modes do not merge; gated
+            // upstream and made explicitly fallible in a follow-up.
+            read_mode: _,
         } = other;
         // Preserve add_parent_tree_on_subquery if either query requests it
         if add_parent_tree_on_subquery {

@@ -109,6 +109,12 @@ impl GroveDb {
         prove_options: Option<ProveOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<GroveDBProof, Error> {
+        // Read-mode gate: axis / sum-budget reads are not served by this
+        // prover. Fail closed rather than misreading such a query as key
+        // selection and returning a proof about the wrong thing.
+        if let Err(e) = path_query.reject_unserved_read_mode() {
+            return Err(e).wrap_with_cost(OperationCost::default());
+        }
         // Aggregate-count gate: validate at entry so malformed ACOR
         // queries (invalid inner range, ACOR-hidden-in-subquery, etc.) are
         // rejected up front instead of being skipped when the recursive

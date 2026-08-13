@@ -30,7 +30,9 @@
 //!   provable tree) requires opening the merk and stays at execution /
 //!   verification time. Classification is purely syntactic.
 
-use grovedb_merk::proofs::query::query_item::QueryItem;
+use grovedb_merk::proofs::query::{
+    query_item::QueryItem, AxisQuery, ReadMode, SumBudgetRead as SumBudgetReadSpec,
+};
 
 use crate::{Error, PathQuery};
 
@@ -84,6 +86,34 @@ pub enum PathQueryShape<'q> {
         /// The wrapped range of the leaf aggregate inside the carrier.
         inner: &'q QueryItem,
     },
+    /// An axis-ordered read of the indexed tree the path names: the
+    /// root query carries `ReadMode::Axis` and nothing else.
+    AxisRead {
+        /// The axis read to perform.
+        axis: &'q AxisQuery,
+    },
+    /// The same axis read fanned over N sibling branch keys: root items
+    /// are `Key`s selecting the branches, the default subquery branch's
+    /// path is the shared suffix from each branch key to its indexed
+    /// tree, and the branch terminal carries `ReadMode::Axis`.
+    BranchedAxisRead {
+        /// The `Key` items naming the branches.
+        branch_items: &'q [QueryItem],
+        /// The shared path from each branch key to its indexed tree.
+        suffix: &'q [Vec<u8>],
+        /// The axis read performed under every branch.
+        axis: &'q AxisQuery,
+    },
+    /// A key-ordered read of the root items that stops on a running-sum
+    /// budget (the read `AggregateSumPathQuery` serves): the root query
+    /// carries `ReadMode::SumBudget`. Trusted reads only until the
+    /// sum-budget proof shape lands.
+    SumBudget {
+        /// The stop condition.
+        budget: &'q SumBudgetReadSpec,
+        /// The key-ordered items the budget walk scans.
+        items: &'q [QueryItem],
+    },
 }
 
 impl PathQueryShape<'_> {
@@ -123,6 +153,13 @@ impl PathQuery {
     /// gets from the prover today.
     pub fn classify(&self) -> Result<PathQueryShape<'_>, Error> {
         let query = &self.query.query;
+
+        // Read modes are checked first: a query carrying one anywhere is
+        // one of the three read-mode shapes or malformed — it must never
+        // fall through and be served as key selection.
+        if query.has_read_mode_anywhere() {
+            return self.classify_read_mode_shape();
+        }
 
         if query.has_aggregate_count_on_range_anywhere() {
             // Leaf-vs-carrier is decided exactly the way the validator
@@ -182,6 +219,195 @@ impl PathQuery {
         }
 
         Ok(PathQueryShape::KeySelection)
+    }
+
+    /// Grammar for queries that carry a [`ReadMode`] anywhere. Strict
+    /// v1 grammar — exactly three legal placements, everything else is
+    /// a typed error naming the violated rule. Looser placements
+    /// (conditional axis branches, range items over branch keys,
+    /// heterogeneous per-branch reads) can be admitted later; loosening
+    /// a grammar is additive, tightening one is a break.
+    fn classify_read_mode_shape(&self) -> Result<PathQueryShape<'_>, Error> {
+        let sized = &self.query;
+        let query = &sized.query;
+
+        // No pagination in any read-mode shape: axis traversals carry
+        // their own caps (`k` / `limit`), and a sum budget is its own
+        // stop condition.
+        if sized.limit.is_some() {
+            return Err(Error::InvalidQuery(
+                "read-mode queries may not set SizedQuery::limit — the read mode carries its \
+                 own entry caps",
+            ));
+        }
+        if sized.offset.is_some() {
+            return Err(Error::InvalidQuery(
+                "read-mode queries may not set SizedQuery::offset — axis pagination is \
+                 expressed in the traversal (TopK.offset)",
+            ));
+        }
+        if query.add_parent_tree_on_subquery {
+            return Err(Error::InvalidQuery(
+                "read-mode queries may not set add_parent_tree_on_subquery",
+            ));
+        }
+
+        match &query.read_mode {
+            // Shape: single-path axis read. The axis query is the whole
+            // read; the node selects nothing by key.
+            Some(ReadMode::Axis(axis)) => {
+                if !query.items.is_empty() {
+                    return Err(Error::InvalidQuery(
+                        "an axis read carries no query items — the axis traversal is the \
+                         whole read",
+                    ));
+                }
+                if query.default_subquery_branch.subquery.is_some()
+                    || query.default_subquery_branch.subquery_path.is_some()
+                {
+                    return Err(Error::InvalidQuery(
+                        "an axis read carries no subquery branches — it is a terminal read \
+                         of the indexed tree the path names",
+                    ));
+                }
+                if has_conditional_branches(query) {
+                    return Err(Error::InvalidQuery(
+                        "an axis read carries no conditional subquery branches",
+                    ));
+                }
+                if self.path.is_empty() {
+                    return Err(Error::InvalidQuery(
+                        "an axis read's path names the indexed tree and cannot be empty — \
+                         the GroveDB root is always a NormalTree, never an indexed tree",
+                    ));
+                }
+                axis.validate().map_err(read_mode_validation_error)?;
+                Ok(PathQueryShape::AxisRead { axis })
+            }
+            // Shape: sum-budget read of this node's items.
+            Some(ReadMode::SumBudget(budget)) => {
+                if query.items.is_empty() {
+                    return Err(Error::InvalidQuery(
+                        "a sum-budget read needs at least one query item to walk",
+                    ));
+                }
+                if query.items.iter().any(|item| {
+                    matches!(
+                        item,
+                        QueryItem::AggregateCountOnRange(_)
+                            | QueryItem::AggregateSumOnRange(_)
+                            | QueryItem::AggregateCountAndSumOnRange(_)
+                    )
+                }) {
+                    return Err(Error::InvalidQuery(
+                        "a sum-budget read walks plain key/range items — aggregate wrappers \
+                         have their own query shapes",
+                    ));
+                }
+                if query.default_subquery_branch.subquery.is_some()
+                    || query.default_subquery_branch.subquery_path.is_some()
+                    || has_conditional_branches(query)
+                {
+                    return Err(Error::InvalidQuery(
+                        "a sum-budget read carries no subquery branches — it walks one tree's \
+                         items in key order",
+                    ));
+                }
+                budget.validate().map_err(read_mode_validation_error)?;
+                Ok(PathQueryShape::SumBudget {
+                    budget,
+                    items: &query.items,
+                })
+            }
+            // The root has no read mode but something below does: only
+            // the branched-axis grammar is legal — branch keys at the
+            // root, one shared suffix, one axis terminal.
+            None => {
+                if has_conditional_branches(query) {
+                    return Err(Error::InvalidQuery(
+                        "read modes may not appear under conditional subquery branches — a \
+                         branched axis read uses Key items and the default subquery branch",
+                    ));
+                }
+                if query.items.is_empty()
+                    || !query
+                        .items
+                        .iter()
+                        .all(|item| matches!(item, QueryItem::Key(_)))
+                {
+                    return Err(Error::InvalidQuery(
+                        "a branched axis read selects its branches with Key items only \
+                         (at least one)",
+                    ));
+                }
+                let branch = &query.default_subquery_branch;
+                let Some(suffix) = branch.subquery_path.as_deref() else {
+                    return Err(Error::InvalidQuery(
+                        "a branched axis read requires a non-empty subquery_path — the \
+                         shared suffix from each branch key to its indexed tree",
+                    ));
+                };
+                if suffix.is_empty() || suffix.iter().any(|segment| segment.is_empty()) {
+                    return Err(Error::InvalidQuery(
+                        "a branched axis read's suffix must be non-empty and contain \
+                         non-empty keys",
+                    ));
+                }
+                let Some(inner) = branch.subquery.as_deref() else {
+                    return Err(Error::InvalidQuery(
+                        "a branched axis read requires the default subquery branch to carry \
+                         the axis-read terminal",
+                    ));
+                };
+                match &inner.read_mode {
+                    Some(ReadMode::Axis(axis)) => {
+                        if !inner.items.is_empty()
+                            || inner.default_subquery_branch.subquery.is_some()
+                            || inner.default_subquery_branch.subquery_path.is_some()
+                            || has_conditional_branches(inner)
+                            || inner.add_parent_tree_on_subquery
+                        {
+                            return Err(Error::InvalidQuery(
+                                "a branched axis read's terminal carries only the axis read — \
+                                 no items, subquery branches, or parent-tree flag",
+                            ));
+                        }
+                        axis.validate().map_err(read_mode_validation_error)?;
+                        Ok(PathQueryShape::BranchedAxisRead {
+                            branch_items: &query.items,
+                            suffix,
+                            axis,
+                        })
+                    }
+                    Some(ReadMode::SumBudget(_)) => Err(Error::InvalidQuery(
+                        "a sum-budget read may only appear at the root query, not under \
+                         branch keys",
+                    )),
+                    None => Err(Error::InvalidQuery(
+                        "read modes may nest at most one level deep: branch keys at the \
+                         root, one suffix, one axis-read terminal",
+                    )),
+                }
+            }
+        }
+    }
+}
+
+/// Whether the query has a non-empty conditional-subquery-branch map.
+fn has_conditional_branches(query: &grovedb_merk::proofs::Query) -> bool {
+    query
+        .conditional_subquery_branches
+        .as_ref()
+        .is_some_and(|branches| !branches.is_empty())
+}
+
+/// Projects the vocabulary crate's validation error (always
+/// `InvalidOperation(&'static str)`) into this crate's `InvalidQuery`,
+/// preserving the message.
+fn read_mode_validation_error(e: grovedb_query::error::Error) -> Error {
+    match e {
+        grovedb_query::error::Error::InvalidOperation(msg) => Error::InvalidQuery(msg),
+        _ => Error::InvalidQuery("read-mode validation failed"),
     }
 }
 
@@ -472,6 +698,193 @@ mod tests {
             .expect_err("aggregate hidden beside another kind must fail");
     }
 
+    // ---------- Read-mode shapes ----------
+
+    use grovedb_merk::proofs::query::{AxisQuery, IndexAxis, ReadMode};
+
+    #[test]
+    fn axis_constructors_classify_as_axis_read() {
+        let queries = [
+            PathQuery::new_axis_top_k(path(), IndexAxis::Count, 5, 0, true),
+            PathQuery::new_axis_bounded(path(), IndexAxis::Sum, -10, 10, 3, false),
+            PathQuery::new_axis_rank_of_key(path(), IndexAxis::Avg, b"alice".to_vec(), true),
+            PathQuery::new_axis_range_aggregate(path(), IndexAxis::Sum, 0, 100),
+        ];
+        for pq in queries {
+            match pq.classify().expect("axis constructor must classify") {
+                PathQueryShape::AxisRead { axis } => {
+                    axis.validate().expect("constructed axis must validate");
+                }
+                other => panic!("expected AxisRead, got {other:?} for {pq}"),
+            }
+        }
+    }
+
+    #[test]
+    fn branched_axis_constructor_classifies_with_its_parts() {
+        let pq = PathQuery::new_branched_axis(
+            vec![b"contracts".to_vec()],
+            vec![b"alice".to_vec(), b"bob".to_vec()],
+            vec![b"scores".to_vec()],
+            AxisQuery::top_k(IndexAxis::Count, 3, 0, true),
+        );
+        match pq.classify().expect("branched constructor must classify") {
+            PathQueryShape::BranchedAxisRead {
+                branch_items,
+                suffix,
+                axis,
+            } => {
+                assert_eq!(branch_items.len(), 2);
+                assert_eq!(suffix, &[b"scores".to_vec()]);
+                assert_eq!(axis.axis, IndexAxis::Count);
+            }
+            other => panic!("expected BranchedAxisRead, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sum_budget_constructor_classifies_with_its_parts() {
+        let pq = PathQuery::new_sum_budget(path(), vec![range_item()], true, 500, Some(20));
+        match pq.classify().expect("sum-budget constructor must classify") {
+            PathQueryShape::SumBudget { budget, items } => {
+                assert_eq!(budget.sum_limit, 500);
+                assert_eq!(budget.max_items_checked, Some(20));
+                assert_eq!(items.len(), 1);
+            }
+            other => panic!("expected SumBudget, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_mode_grammar_rejections_name_the_violated_rule() {
+        use grovedb_merk::proofs::query::SumBudgetRead;
+
+        fn axis_node() -> Query {
+            let mut q = Query::new();
+            q.read_mode = Some(ReadMode::Axis(AxisQuery::top_k(
+                IndexAxis::Count,
+                1,
+                0,
+                true,
+            )));
+            q
+        }
+
+        let cases: Vec<(&str, PathQuery)> = vec![
+            ("axis read carries items", {
+                let mut q = axis_node();
+                q.items.push(QueryItem::Key(b"k".to_vec()));
+                PathQuery::new_unsized(path(), q)
+            }),
+            ("axis read carries a subquery", {
+                let mut q = axis_node();
+                q.set_subquery(Query::new_single_key(b"x".to_vec()));
+                PathQuery::new_unsized(path(), q)
+            }),
+            ("axis read at the root merk", {
+                PathQuery::new_unsized(vec![], axis_node())
+            }),
+            ("axis read with a limit", {
+                PathQuery::new(path(), SizedQuery::new(axis_node(), Some(1), None))
+            }),
+            ("axis read with an offset", {
+                PathQuery::new(path(), SizedQuery::new(axis_node(), None, Some(1)))
+            }),
+            ("axis read with parent-tree flag", {
+                let mut q = axis_node();
+                q.add_parent_tree_on_subquery = true;
+                PathQuery::new_unsized(path(), q)
+            }),
+            ("invalid axis payload (k = 0)", {
+                let mut q = Query::new();
+                q.read_mode = Some(ReadMode::Axis(AxisQuery::top_k(
+                    IndexAxis::Count,
+                    0,
+                    0,
+                    true,
+                )));
+                PathQuery::new_unsized(path(), q)
+            }),
+            ("range aggregate on the Avg axis", {
+                PathQuery::new_axis_range_aggregate(path(), IndexAxis::Avg, 0, 10)
+            }),
+            ("branched: range item selecting branches", {
+                let mut q = Query::new_single_query_item(range_item());
+                q.set_subquery_path(vec![b"s".to_vec()]);
+                q.set_subquery(axis_node());
+                PathQuery::new_unsized(path(), q)
+            }),
+            ("branched: missing suffix", {
+                let mut q = Query::new_single_key(b"b".to_vec());
+                q.set_subquery(axis_node());
+                PathQuery::new_unsized(path(), q)
+            }),
+            ("branched: empty suffix segment", {
+                let mut q = Query::new_single_key(b"b".to_vec());
+                q.set_subquery_path(vec![b"".to_vec()]);
+                q.set_subquery(axis_node());
+                PathQuery::new_unsized(path(), q)
+            }),
+            ("branched: terminal carries items", {
+                let mut terminal = axis_node();
+                terminal.items.push(QueryItem::Key(b"k".to_vec()));
+                let mut q = Query::new_single_key(b"b".to_vec());
+                q.set_subquery_path(vec![b"s".to_vec()]);
+                q.set_subquery(terminal);
+                PathQuery::new_unsized(path(), q)
+            }),
+            ("sum budget below the root", {
+                let mut terminal = Query::new_single_query_item(range_item());
+                terminal.read_mode = Some(ReadMode::SumBudget(SumBudgetRead {
+                    sum_limit: 1,
+                    max_items_checked: None,
+                }));
+                let mut q = Query::new_single_key(b"b".to_vec());
+                q.set_subquery_path(vec![b"s".to_vec()]);
+                q.set_subquery(terminal);
+                PathQuery::new_unsized(path(), q)
+            }),
+            ("read mode two levels deep", {
+                let mut middle = Query::new_single_key(b"m".to_vec());
+                middle.set_subquery_path(vec![b"s".to_vec()]);
+                middle.set_subquery(axis_node());
+                let mut q = Query::new_single_key(b"b".to_vec());
+                q.set_subquery_path(vec![b"t".to_vec()]);
+                q.set_subquery(middle);
+                PathQuery::new_unsized(path(), q)
+            }),
+            ("read mode under a conditional branch", {
+                let mut q = Query::new_single_key(b"b".to_vec());
+                q.add_conditional_subquery(QueryItem::Key(b"b".to_vec()), None, Some(axis_node()));
+                PathQuery::new_unsized(path(), q)
+            }),
+            ("sum budget without items", {
+                PathQuery::new_sum_budget(path(), vec![], true, 1, None)
+            }),
+            ("sum budget over an aggregate item", {
+                PathQuery::new_sum_budget(
+                    path(),
+                    vec![QueryItem::AggregateSumOnRange(Box::new(range_item()))],
+                    true,
+                    1,
+                    None,
+                )
+            }),
+            ("sum budget of zero", {
+                PathQuery::new_sum_budget(path(), vec![range_item()], true, 0, None)
+            }),
+        ];
+        for (label, pq) in cases {
+            match pq.classify() {
+                Err(Error::InvalidQuery(_)) => {}
+                Err(other) => {
+                    panic!("case {label:?}: expected InvalidQuery, got {other:?}")
+                }
+                Ok(shape) => panic!("case {label:?}: must be rejected, classified as {shape:?}"),
+            }
+        }
+    }
+
     // ---------- Totality ----------
 
     #[test]
@@ -495,11 +908,32 @@ mod tests {
                 QueryItem::AggregateSumOnRange(Box::new(range_item())),
             ],
         ];
+        let axis_terminal = {
+            let mut q = Query::new();
+            q.read_mode = Some(ReadMode::Axis(AxisQuery::top_k(IndexAxis::Sum, 2, 0, true)));
+            q
+        };
         let subqueries: Vec<Option<Query>> = vec![
             None,
             Some(Query::new_single_key(b"inner".to_vec())),
             Some(leaf_aggregate_query(AggregateKind::Count)),
             Some(leaf_aggregate_query(AggregateKind::Sum)),
+            Some(axis_terminal.clone()),
+        ];
+        let read_modes: Vec<Option<ReadMode>> = vec![
+            None,
+            Some(ReadMode::Axis(AxisQuery::top_k(
+                IndexAxis::Count,
+                1,
+                0,
+                false,
+            ))),
+            Some(ReadMode::SumBudget(
+                grovedb_merk::proofs::query::SumBudgetRead {
+                    sum_limit: 10,
+                    max_items_checked: None,
+                },
+            )),
         ];
         let limits = [None, Some(0u16), Some(7)];
         let offsets = [None, Some(0u16), Some(7)];
@@ -509,20 +943,30 @@ mod tests {
         let mut rejected = 0usize;
         for items in &item_sets {
             for subquery in &subqueries {
-                for &limit in &limits {
-                    for &offset in &offsets {
-                        for p in &paths {
-                            let mut q = Query::new();
-                            q.items = items.clone();
-                            if let Some(sub) = subquery {
-                                q.set_subquery(sub.clone());
-                            }
-                            let pq = PathQuery::new(p.clone(), SizedQuery::new(q, limit, offset));
-                            match pq.classify() {
-                                Ok(_) => classified += 1,
-                                Err(Error::InvalidQuery(_)) => rejected += 1,
-                                Err(other) => {
-                                    panic!("classify must only fail with InvalidQuery, got {other:?} for {pq}")
+                for read_mode in &read_modes {
+                    for &limit in &limits {
+                        for &offset in &offsets {
+                            for p in &paths {
+                                let mut q = Query::new();
+                                q.items = items.clone();
+                                if let Some(sub) = subquery {
+                                    q.set_subquery(sub.clone());
+                                    if matches!(sub.read_mode, Some(ReadMode::Axis(_))) {
+                                        q.set_subquery_path(vec![b"suffix".to_vec()]);
+                                    }
+                                }
+                                q.read_mode = read_mode.clone();
+                                let pq =
+                                    PathQuery::new(p.clone(), SizedQuery::new(q, limit, offset));
+                                match pq.classify() {
+                                    Ok(_) => classified += 1,
+                                    Err(Error::InvalidQuery(_)) => rejected += 1,
+                                    Err(other) => {
+                                        panic!(
+                                            "classify must only fail with InvalidQuery, got \
+                                             {other:?} for {pq}"
+                                        )
+                                    }
                                 }
                             }
                         }
