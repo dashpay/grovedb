@@ -119,15 +119,22 @@ differed on two points:
   reads instead of with the raw-storage accident.
 - **Corrupt keys inside the skipped region** are no longer decoded (not visiting them is the
   point); returned keys are still validated, and a visited node with own-count ≠ 1 fails loud.
-- **No snapshot isolation** (`start_transaction` takes no snapshot at this rev): a multi-fetch
-  walk can observe a concurrent commit between fetches. For *this function specifically* that is
-  a real (if narrow) regression, stated plainly: the old implementation ran skip and collect
-  through a single RocksDB iterator, which pins a consistent view for the whole page, so the page
-  was internally consistent even under concurrent writes; the counted descent is independent
-  point-gets with no read snapshot — the same exposure as merk's existing unproved aggregate
-  walks, but new to this read. A torn walk surfaces as `CorruptedData` (the checked count
-  arithmetic and the link/child cross-check both trip on mixed-version nodes) or a
-  stale-but-ordered page. The fix is a storage-layer read snapshot, outside this scope.
+- **Snapshot consistency: restored after a blocking Platform review finding.** The first
+  implementation fetched nodes through independent `RefWalker` point-gets on a snapshotless
+  transaction; a commit landing mid-descent could hand back a child from a newer state than its
+  resident parent, and because merk's child loads never verify the fetched child against the
+  parent's recorded link hash — and the count cross-checks cannot see a same-population update —
+  the result was a *silently mixed page*. (The proved path survives the same torn reads because
+  verification's ancestor-chain reconciliation rejects them; the unproved read has no such
+  check, which is exactly why it needed the snapshot.) The counted walk now serves **every**
+  node fetch — root re-read, descent, and collect — through one raw iterator, whose RocksDB
+  transaction iterator pins an implicit snapshot of committed state plus the transaction's own
+  uncommitted writes: the same guarantee, from the same mechanism, that the replaced
+  single-`KVIterator` linear scan had. The transaction-overlay half is pinned by an always-on
+  test; the commit-interleaving half is not deterministically testable (no way to pause a
+  synchronous read between fetches) and rests on RocksDB's iterator-snapshot contract, as the
+  old code's guarantee did. The open→iterator window can at worst produce a loud
+  `CorruptedData` (root key moved), never a mixed page.
 - **One function, two views.** `offset == 0` serves the storage-iterator view; `offset > 0`
   serves the merk-tree view. Identical on any clean secondary; in a drifted one, a caller paging
   `offset = 0, k, 2k, …` could see a discontinuity between the first page and the rest. Accepted:
@@ -165,12 +172,13 @@ harness output):
 
 | N | offset | counted (seeks / bytes / µs) | linear (seeks / bytes / µs) |
 |---:|---:|---:|---:|
-| 1e3 | 0 | 5 / 625 / 6 | 5 / 625 / 6 |
-| 1e3 | N−1 | 11 / 1,727 / 15 | 1,004 / 316 KB / 268 |
-| 1e3 | ≥ N | 3 / 362 / 4 | 1,004 / 316 KB / 259 |
-| 1e6 | 0 | 5 / 629 / 8 | 5 / 629 / 7 |
-| 1e6 | N−1 | 22 / 3,710 / 32 | 1,000,004 / 316 MB / 326,226 |
-| 1e6 | 4×10⁹ | 3 / 366 / 4 | 1,000,004 / 316 MB / 339,806 |
+| 1e6 | 0 | 5 / 629 / 7 | 5 / 629 / 6 |
+| 1e6 | N−1 | 23 / 5,811 / 32 | 1,000,004 / 316 MB / 316,420 |
+| 1e6 | ≥ N | 4 / 643 / 7 | 1,000,004 / 316 MB / 308,299 |
+
+(Numbers are from the final snapshot-consistent implementation; relative to the pre-snapshot
+point-get walk, the pinned-view fetches cost one extra seek — the root re-read through the
+iterator — and charge full prefixed key bytes per fetch, leaving wall-clock unchanged.)
 
 What the numbers establish:
 

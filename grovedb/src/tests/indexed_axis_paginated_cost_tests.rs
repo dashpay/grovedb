@@ -691,6 +691,68 @@ mod tests {
         }
     }
 
+    /// The counted read's pinned view must be the *transaction's* view —
+    /// snapshot of committed state plus the transaction's own uncommitted
+    /// writes — not a bare DB snapshot. Rows inserted inside an open
+    /// transaction must be visible (and counted) by a paginated read
+    /// through that same transaction before commit, exactly as they were
+    /// through the old single-iterator scan.
+    ///
+    /// The other half of the consistency property — that a commit landing
+    /// mid-descent cannot produce a page mixing two states — is not
+    /// deterministically testable from here: the read is one synchronous
+    /// call with no way to pause between node fetches. It rests on
+    /// RocksDB's iterator-snapshot contract, the same contract the
+    /// replaced implementation relied on for the same guarantee.
+    #[test]
+    fn counted_read_sees_the_transactions_uncommitted_writes() {
+        let grove_version = GroveVersion::latest();
+        let db = make_pcit_with_rows(20, grove_version);
+        let path = [TEST_LEAF, b"cidx"];
+
+        let tx = db.start_transaction();
+        for i in 20..30u64 {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                format!("k{i:07}").as_bytes(),
+                Element::new_item(vec![]),
+                Some(&tx),
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert within tx");
+        }
+
+        // Through the transaction, all 30 rows exist: a counted read at
+        // offset 25 must see the uncommitted tail.
+        let in_tx = db
+            .indexed_count_top_k_paginated(path.as_ref(), 3, 25, false, Some(&tx), grove_version)
+            .unwrap()
+            .expect("counted read inside the transaction");
+        assert_eq!(in_tx.skipped, 25, "population through the tx is 30");
+        assert_eq!(
+            in_tx
+                .entries
+                .iter()
+                .map(|(_, key)| key.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                b"k0000025".to_vec(),
+                b"k0000026".to_vec(),
+                b"k0000027".to_vec()
+            ],
+        );
+
+        // Without the transaction, the committed view still has 20 rows:
+        // the same offset is past the end.
+        let outside = db
+            .indexed_count_top_k_paginated(path.as_ref(), 3, 25, false, None, grove_version)
+            .unwrap()
+            .expect("counted read outside the transaction");
+        assert!(outside.entries.is_empty());
+        assert_eq!(outside.skipped, 20, "committed population is 20");
+    }
+
     // -----------------------------------------------------------------
     // Manual measurement harness — not run in CI. Run with:
     //   cargo test -p grovedb measure_paginated_costs -- --ignored --nocapture
