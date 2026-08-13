@@ -7,7 +7,22 @@ use crate::query_item::QueryItem;
 
 impl QueryItem {
     /// Merge two overlapping query items into one that covers both ranges.
+    ///
+    /// Neither `self` nor `other` may be an aggregate meta-variant
+    /// (`AggregateCountOnRange`, `AggregateSumOnRange`,
+    /// `AggregateCountAndSumOnRange`): the result is always a plain
+    /// key/range variant, so merging an aggregate would silently erase the
+    /// aggregate wrapper and change the meaning of the query. Callers
+    /// (`Query::insert_item` / `AggregateSumQuery::insert_item`) must keep
+    /// aggregate items out of merging; this precondition is checked with a
+    /// `debug_assert!`.
     pub fn merge(&self, other: &Self) -> Self {
+        debug_assert!(
+            !self.is_aggregate() && !other.is_aggregate(),
+            "QueryItem::merge must not be called with aggregate meta-variants; merging would \
+             drop the aggregate wrapper"
+        );
+
         if self.is_key() && other.is_key() && self == other {
             return self.clone();
         }
