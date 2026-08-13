@@ -19,8 +19,9 @@ mod tests {
 
     use crate::{
         batch::QualifiedGroveDbOp,
+        operations::proof::indexed_axis::AxisEntries,
         tests::{make_test_grovedb, TempGroveDb, TEST_LEAF},
-        Element,
+        Element, GroveDb,
     };
 
     /// Rows in the large tie-heavy fixture. Big enough that a linear skip
@@ -547,6 +548,91 @@ mod tests {
                     offset.min(N),
                     "true skipped at offset={offset}"
                 );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Cross-path parity: the unproved `skipped` is the same quantity the
+    // proved path attests.
+    //
+    // A client reading `skipped` off the wire cannot tell which path
+    // served it, so the two must report the same number for the same
+    // request — including the past-the-end shape, where both must report
+    // the population rather than echoing the request. The proved side
+    // re-derives its value from the counted subtree commitments in the
+    // proof bytes; the unproved side reads the secondary's root
+    // aggregate. Nothing structural keeps those in step, so it is pinned
+    // here rather than assumed.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn unproved_skipped_equals_the_proved_paths_attested_skipped() {
+        let grove_version = GroveVersion::latest();
+        let (db, population) = make_pcit_with_mixed_counts(grove_version);
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let pop = population as u64;
+
+        for descending in [false, true] {
+            // Offsets spanning: nothing skipped, mid-page, the last row,
+            // exactly the population, just past it, and absurdly past it
+            // (the original denial-of-service lever).
+            for offset in [0u64, 1, 5, pop - 1, pop, pop + 1, 4_000_000_000] {
+                for k in [0u16, 1, 3] {
+                    let unproved = db
+                        .indexed_count_top_k_paginated(
+                            path,
+                            k,
+                            offset,
+                            descending,
+                            None,
+                            grove_version,
+                        )
+                        .unwrap()
+                        .expect("unproved page");
+
+                    let proof = db
+                        .prove_indexed_count_top_k_paginated(
+                            path,
+                            k,
+                            offset,
+                            descending,
+                            None,
+                            grove_version,
+                        )
+                        .unwrap()
+                        .expect("prove page");
+                    let proved = GroveDb::verify_indexed_count_top_k_paginated(
+                        &proof, path, k, offset, descending,
+                    )
+                    .expect("verify page");
+
+                    assert_eq!(
+                        unproved.skipped, proved.skipped,
+                        "skipped disagrees between paths at offset={offset} k={k} \
+                         descending={descending}"
+                    );
+                    // Both paths must also agree that `min(offset,
+                    // population)` is what that number means — equality
+                    // alone would be satisfied by two identically wrong
+                    // values.
+                    assert_eq!(
+                        unproved.skipped,
+                        offset.min(pop),
+                        "skipped is not min(offset, population) at offset={offset} k={k} \
+                         descending={descending}"
+                    );
+
+                    let proved_entries = match &proved.entries {
+                        AxisEntries::Count(v) => v.clone(),
+                        other => panic!("count axis proof returned {other:?}"),
+                    };
+                    assert_eq!(
+                        unproved.entries, proved_entries,
+                        "entries disagree between paths at offset={offset} k={k} \
+                         descending={descending}"
+                    );
+                }
             }
         }
     }
