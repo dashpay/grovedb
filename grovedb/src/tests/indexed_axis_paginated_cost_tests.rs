@@ -637,6 +637,60 @@ mod tests {
         }
     }
 
+    /// Always-on differential against the pre-change implementation
+    /// (`legacy_linear_indexed_count_top_k_paginated`, kept verbatim as a
+    /// test-only baseline): identical entries in identical order at every
+    /// probed offset/k/direction, plus the `skipped` semantics the legacy
+    /// shape could not report. The release-mode measurement harness runs
+    /// the same comparison at 1e3–1e6 rows; this pins it in CI at a size
+    /// CI can afford.
+    #[test]
+    fn counted_path_agrees_with_the_pre_change_linear_implementation() {
+        let grove_version = GroveVersion::latest();
+        const ROWS: u64 = 120;
+        let db = make_pcit_with_rows(ROWS, grove_version);
+        let path = [TEST_LEAF, b"cidx"];
+
+        for descending in [false, true] {
+            for offset in [0u64, 1, 3, 60, ROWS - 1, ROWS, ROWS + 80] {
+                for k in [1u16, 7] {
+                    let counted = db
+                        .indexed_count_top_k_paginated(
+                            path.as_ref(),
+                            k,
+                            offset,
+                            descending,
+                            None,
+                            grove_version,
+                        )
+                        .unwrap()
+                        .expect("counted read");
+                    let legacy = db
+                        .legacy_linear_indexed_count_top_k_paginated(
+                            path.as_ref(),
+                            k,
+                            offset,
+                            descending,
+                            None,
+                            grove_version,
+                        )
+                        .unwrap()
+                        .expect("legacy linear read");
+                    assert_eq!(
+                        counted.entries, legacy,
+                        "counted and legacy diverge at offset={offset} k={k} \
+                         descending={descending}"
+                    );
+                    assert_eq!(
+                        counted.skipped,
+                        offset.min(ROWS),
+                        "true skipped at offset={offset} k={k} descending={descending}"
+                    );
+                }
+            }
+        }
+    }
+
     // -----------------------------------------------------------------
     // Manual measurement harness — not run in CI. Run with:
     //   cargo test -p grovedb measure_paginated_costs -- --ignored --nocapture

@@ -869,6 +869,17 @@ mod tests {
             "range",
         );
 
+        // When the malformed row is the RETURNED position of a counted read
+        // (ascending order is [a, b, 0xff…]; offset 2 selects it), the
+        // counted path must decode-and-refuse it exactly as the iterator
+        // paths do — skipped rows go undecoded, returned rows never do.
+        assert_short_key_corruption(
+            db.indexed_count_top_k_paginated([TEST_LEAF, b"pcit"].as_ref(), 1, 2, false, None, gv)
+                .unwrap()
+                .expect_err("a returned malformed row must surface through the counted path"),
+            "paginated (offset 2, counted path, returned row)",
+        );
+
         // Ascending top-k stops before reaching the malformed row, so the
         // well-formed prefix of the index still reads cleanly — the error above
         // is the decoder refusing a specific row, not the query failing wholesale.
