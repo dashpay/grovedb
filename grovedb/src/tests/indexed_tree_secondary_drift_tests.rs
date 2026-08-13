@@ -795,16 +795,19 @@ mod tests {
     }
 
     /// A secondary row whose key is shorter than the axis's 8-byte sort prefix
-    /// carries no recoverable `(count, original_key)` pair. Every direct count
-    /// query must raise `CorruptedData` naming the axis and the expected width
-    /// — dropping the row instead would let a short-key row silently shrink a
-    /// top-k page or a range listing while the caller sees a successful result.
+    /// carries no recoverable `(count, original_key)` pair. Every place that
+    /// decodes a row must raise `CorruptedData` naming the axis and the
+    /// expected width — dropping the row instead would let a short-key row
+    /// silently shrink a top-k page or a range listing while the caller sees a
+    /// successful result.
     ///
-    /// Each of the three query shapes decodes in a different place — the plain
-    /// walk, the pagination *skip* loop, the pagination *collect* loop, and the
-    /// range walk — so all four are driven here.
+    /// The decode sites driven here: the plain top-k walk, the paginated
+    /// collect at `offset == 0`, and the range walk. A paginated read with
+    /// `offset > 0` skips by counted descent and decodes only *returned* rows,
+    /// so its skip phase deliberately does not error — that contract is
+    /// asserted here too.
     #[test]
-    fn a_short_secondary_key_is_reported_by_every_count_query_shape() {
+    fn a_short_secondary_key_is_reported_by_every_shape_that_decodes_it() {
         let gv = GroveVersion::latest();
         let db = make_test_grovedb(gv);
         make_pcit_with(&db, b"pcit", &[b"a", b"b"], gv);
@@ -833,11 +836,22 @@ mod tests {
                 .expect_err("paginated collect must surface the malformed row"),
             "paginated (offset 0, collect loop)",
         );
-        assert_short_key_corruption(
+        // A paginated read with `offset > 0` skips by counted descent over
+        // the secondary merk: skipped rows are consumed from aggregate
+        // counts and their keys are never decoded. The malformed row is a
+        // real tree row here, so it still occupies its position (descending
+        // order is [0xff…, b, a] and offset 1 lands on b — the same
+        // position the storage iterator would assign), but only *returned*
+        // rows are decoded, so the skip no longer surfaces it as an error.
+        // Detecting malformed rows in the skipped region is
+        // `verify_grovedb`'s job (asserted above) and the collect loops'
+        // (asserted below for every shape that reads the row itself).
+        assert_eq!(
             db.indexed_count_top_k_paginated([TEST_LEAF, b"pcit"].as_ref(), 1, 1, true, None, gv)
                 .unwrap()
-                .expect_err("paginated skip must surface the malformed row"),
-            "paginated (offset 1, skip loop)",
+                .expect("counted skip passes the malformed row without decoding it"),
+            vec![(1u64, b"b".to_vec())],
+            "descending order is [0xff…, b, a]; the malformed row is counted at offset 0",
         );
         assert_short_key_corruption(
             db.indexed_count_range(

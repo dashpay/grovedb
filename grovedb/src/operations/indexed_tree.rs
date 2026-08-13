@@ -41,6 +41,7 @@ use grovedb_merk::{
     },
     merk::KVIterator,
     proofs::Query,
+    tree::{kv::ValueDefinedCostType, AggregateData, Fetch, RefWalker},
     Merk, TreeType,
 };
 use grovedb_path::SubtreePath;
@@ -1269,28 +1270,7 @@ impl GroveDb {
             self.open_validated_axis_secondary(path, axis, tx_ref, grove_version)
         );
 
-        let mut all_query = Query::new();
-        all_query.left_to_right = !descending;
-        all_query.insert_all();
-
-        let mut iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query)
-            .unwrap_add_cost(&mut cost);
-
-        let mut results = Vec::with_capacity(k as usize);
-        while results.len() < k as usize {
-            match iter.next_kv().unwrap_add_cost(&mut cost) {
-                Some((secondary_key, _)) => match decode(&secondary_key) {
-                    Some(decoded) => results.push(decoded),
-                    None => {
-                        return Err(corrupted_secondary_key_error(axis, &secondary_key))
-                            .wrap_with_cost(cost);
-                    }
-                },
-                None => break,
-            }
-        }
-
-        Ok(results).wrap_with_cost(cost)
+        collect_top_k_via_iterator(&secondary_merk, axis, k, descending, &decode).add_cost(cost)
     }
 
     /// One implementation of the `indexed_<axis>_top_k_paginated` shape.
@@ -1317,42 +1297,43 @@ impl GroveDb {
             self.open_validated_axis_secondary(path, axis, tx_ref, grove_version)
         );
 
-        let mut all_query = Query::new();
-        all_query.left_to_right = !descending;
-        all_query.insert_all();
+        // `offset == 0` is the overwhelmingly common shape, and the raw
+        // iterator is the cheapest way to serve it: one directional seek
+        // plus `k` sequential steps, no tree-path loads. It shares the
+        // `top_k` core's implementation, so "offset 0 costs exactly what
+        // plain top-k costs" is structural, not coincidental.
+        if offset == 0 {
+            return collect_top_k_via_iterator(&secondary_merk, axis, k, descending, &decode)
+                .add_cost(cost);
+        }
 
-        let mut iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query)
-            .unwrap_add_cost(&mut cost);
-
-        // Skip `offset` entries; surface corruption defensively.
-        let mut skipped: u64 = 0;
-        while skipped < offset {
-            match iter.next_kv().unwrap_add_cost(&mut cost) {
-                Some((secondary_key, _)) => {
-                    if decode(&secondary_key).is_none() {
-                        return Err(corrupted_secondary_key_error(axis, &secondary_key))
-                            .wrap_with_cost(cost);
-                    }
-                    skipped += 1;
+        // `offset > 0`: counted skip. Walk the secondary merk itself,
+        // consuming the offset through link aggregate counts — a subtree
+        // whose whole population fits inside the remaining offset is
+        // skipped without ever being fetched — then collect up to `k`
+        // keys in directional order. One root-to-position descent plus
+        // `k` node loads, instead of one storage-iterator step per
+        // skipped entry.
+        let secondary_keys = cost_return_on_error!(
+            &mut cost,
+            counted_skip_page(
+                &secondary_merk,
+                offset,
+                u64::from(k),
+                !descending,
+                grove_version
+            )
+        );
+        let mut results = Vec::with_capacity(secondary_keys.len());
+        for secondary_key in secondary_keys {
+            match decode(&secondary_key) {
+                Some(decoded) => results.push(decoded),
+                None => {
+                    return Err(corrupted_secondary_key_error(axis, &secondary_key))
+                        .wrap_with_cost(cost);
                 }
-                None => return Ok(Vec::new()).wrap_with_cost(cost),
             }
         }
-
-        let mut results = Vec::with_capacity(k as usize);
-        while results.len() < k as usize {
-            match iter.next_kv().unwrap_add_cost(&mut cost) {
-                Some((secondary_key, _)) => match decode(&secondary_key) {
-                    Some(decoded) => results.push(decoded),
-                    None => {
-                        return Err(corrupted_secondary_key_error(axis, &secondary_key))
-                            .wrap_with_cost(cost);
-                    }
-                },
-                None => break,
-            }
-        }
-
         Ok(results).wrap_with_cost(cost)
     }
 
@@ -1460,10 +1441,13 @@ impl GroveDb {
     /// entries in the directional scan before collecting up to `k`
     /// results.
     ///
-    /// `offset = 0` is equivalent to plain `indexed_count_top_k`. The
-    /// skip is performed at the secondary's storage iterator level —
-    /// this is not a verifiable / proof-bounded skip; for the provable
-    /// variant use
+    /// `offset = 0` is equivalent to plain `indexed_count_top_k` and is
+    /// served by the same storage-iterator scan. A positive `offset` is
+    /// skipped by counted descent over the secondary merk — subtrees are
+    /// consumed from their aggregate counts without loading their
+    /// entries, so the skip costs `O(log n)` node loads rather than
+    /// `O(offset)` iterator steps. Neither shape is a verifiable /
+    /// proof-bounded read; for the provable variant use
     /// [`Self::prove_indexed_count_top_k_paginated`] which relies on the
     /// merk-level count-offset proof to commit the skipped count via
     /// `HashWithCount`.
@@ -1658,9 +1642,10 @@ impl GroveDb {
 
     /// Paginated form of [`Self::indexed_sum_top_k`]. Skips `offset`
     /// entries in the directional scan before collecting up to `k`
-    /// results. `offset = 0` is equivalent to plain
-    /// `indexed_sum_top_k`; the skip is iterator-level only (not
-    /// proof-bounded).
+    /// results. `offset = 0` is equivalent to plain `indexed_sum_top_k`;
+    /// a positive `offset` is skipped by counted descent over the
+    /// secondary merk in `O(log n)` node loads. Not a verifiable /
+    /// proof-bounded read.
     pub fn indexed_sum_top_k_paginated<'b, B, P>(
         &self,
         path: P,
@@ -1845,7 +1830,10 @@ impl GroveDb {
 
     /// Paginated form of [`Self::indexed_avg_top_k`]. Skips `offset`
     /// entries in the directional scan before collecting up to `k`
-    /// results.
+    /// results. `offset = 0` is equivalent to plain `indexed_avg_top_k`;
+    /// a positive `offset` is skipped by counted descent over the
+    /// secondary merk in `O(log n)` node loads. Not a verifiable /
+    /// proof-bounded read.
     pub fn indexed_avg_top_k_paginated<'b, B, P>(
         &self,
         path: P,
@@ -2412,6 +2400,408 @@ fn corrupted_secondary_key_error(axis: IndexAxis, secondary_key: &[u8]) -> Error
         axis_sort_prefix_len(axis),
         secondary_key
     ))
+}
+
+/// Directional top-`k` collect over the secondary's storage iterator.
+/// Shared by the `top_k` core and the paginated core's `offset == 0` fast
+/// path, so "offset 0 costs exactly what plain top-k costs" is a
+/// structural fact rather than two implementations kept in sync.
+fn collect_top_k_via_iterator<'db, S: StorageContext<'db>, T>(
+    secondary_merk: &Merk<S>,
+    axis: IndexAxis,
+    k: u16,
+    descending: bool,
+    decode: &impl Fn(&[u8]) -> Option<(T, Vec<u8>)>,
+) -> CostResult<Vec<(T, Vec<u8>)>, Error> {
+    let mut cost = OperationCost::default();
+
+    let mut all_query = Query::new();
+    all_query.left_to_right = !descending;
+    all_query.insert_all();
+
+    let mut iter =
+        KVIterator::new(secondary_merk.storage.raw_iter(), &all_query).unwrap_add_cost(&mut cost);
+
+    let mut results = Vec::with_capacity(k as usize);
+    while results.len() < k as usize {
+        match iter.next_kv().unwrap_add_cost(&mut cost) {
+            Some((secondary_key, _)) => match decode(&secondary_key) {
+                Some(decoded) => results.push(decoded),
+                None => {
+                    return Err(corrupted_secondary_key_error(axis, &secondary_key))
+                        .wrap_with_cost(cost);
+                }
+            },
+            None => break,
+        }
+    }
+
+    Ok(results).wrap_with_cost(cost)
+}
+
+/// Strict provable-count read of an aggregate. The counted skip only ever
+/// runs against axis secondaries, whose tree types (`ProvableCountTree` /
+/// `ProvableCountProvableSumTree`) bind a provable count into every node;
+/// any other aggregate shape here is corruption, never a fallback.
+/// Deliberately not `AggregateData::as_count_u64`, which returns 0 for
+/// non-count variants — silently, which is exactly what this matcher
+/// exists to prevent. Mirrors merk's `pub(super)`
+/// `provable_count_from_aggregate` (unreachable from here).
+#[inline]
+fn provable_count_from_aggregate(aggregate: AggregateData) -> Result<u64, Error> {
+    match aggregate {
+        AggregateData::ProvableCount(c)
+        | AggregateData::ProvableCountAndSum(c, _)
+        | AggregateData::ProvableCountAndProvableSum(c, _) => Ok(c),
+        other => Err(Error::CorruptedData(format!(
+            "indexed secondary node carries a non-provable-count aggregate: {:?}",
+            other
+        ))),
+    }
+}
+
+/// Mutable state threaded through the counted descent.
+struct CountedPageState {
+    /// In-range entries still to skip before returning starts.
+    offset_remaining: u64,
+    /// Page slots still to fill. The recursion is only ever entered while
+    /// this is non-zero and unwinds the moment it reaches zero.
+    limit_remaining: u64,
+    /// `true` = ascending (left child first), `false` = descending.
+    left_to_right: bool,
+}
+
+/// Serve one page of secondary keys at `offset` in directional order by
+/// counted descent over the secondary merk: subtrees whose whole
+/// population fits inside the remaining offset are consumed from their
+/// parent's link aggregate without being fetched, so the skip costs one
+/// root-to-position path instead of one step per skipped entry. Returns
+/// the raw secondary keys (`sort_key ‖ item_key`); values are never
+/// needed — the caller decodes keys exactly as the iterator path does.
+///
+/// The root node is already resident from the merk open, so an offset at
+/// or past the whole population is answered from its aggregate alone,
+/// with zero storage fetches.
+fn counted_skip_page<'db, S: StorageContext<'db>>(
+    merk: &Merk<S>,
+    offset: u64,
+    limit: u64,
+    left_to_right: bool,
+    grove_version: &GroveVersion,
+) -> CostResult<Vec<Vec<u8>>, Error> {
+    merk.walk(|maybe_walker| {
+        let mut cost = OperationCost::default();
+        let Some(mut walker) = maybe_walker else {
+            // Empty secondary: nothing to skip, nothing to return.
+            return Ok(Vec::new()).wrap_with_cost(cost);
+        };
+        let population = cost_return_on_error_no_add!(
+            cost,
+            walker
+                .tree()
+                .aggregate_data()
+                .map_err(|e| Error::CorruptedData(format!("secondary aggregate_data: {e}")))
+                .and_then(provable_count_from_aggregate)
+        );
+        if limit == 0 || offset >= population {
+            return Ok(Vec::new()).wrap_with_cost(cost);
+        }
+        let mut state = CountedPageState {
+            offset_remaining: offset,
+            limit_remaining: limit,
+            left_to_right,
+        };
+        let page_len = (population - offset).min(limit) as usize;
+        let mut out = Vec::with_capacity(page_len);
+        cost_return_on_error!(
+            &mut cost,
+            counted_skip_collect(&mut walker, &mut state, &mut out, 0, grove_version)
+        );
+        Ok(out).wrap_with_cost(cost)
+    })
+}
+
+/// Recursion ceiling for the counted descent. An AVL tree cannot exceed
+/// 1.44·64 ≈ 93 levels even at the u64 population limit, so anything
+/// deeper means a corrupt link structure (e.g. a cyclic link) — fail with
+/// an error instead of overflowing the stack.
+const COUNTED_SKIP_MAX_DEPTH: u32 = 128;
+
+/// Read a child link's provable count. A present link points at a
+/// non-empty subtree, whose count is therefore at least 1 — a zero is
+/// corruption, not an empty side (that is `None`).
+fn provable_count_from_link(link: Option<&grovedb_merk::tree::Link>) -> Result<u64, Error> {
+    match link {
+        None => Ok(0),
+        Some(link) => match provable_count_from_aggregate(link.aggregate_data())? {
+            0 => Err(Error::CorruptedData(
+                "secondary link is present but carries aggregate count 0".to_string(),
+            )),
+            count => Ok(count),
+        },
+    }
+}
+
+/// Recursive counted descent. Entered only on subtrees whose population
+/// exceeds the remaining offset (the caller and both descend sites
+/// guarantee it) and only while the page has room.
+fn counted_skip_collect<S>(
+    walker: &mut RefWalker<S>,
+    state: &mut CountedPageState,
+    out: &mut Vec<Vec<u8>>,
+    depth: u32,
+    grove_version: &GroveVersion,
+) -> CostResult<(), Error>
+where
+    S: Fetch + Sized + Clone,
+{
+    let mut cost = OperationCost::default();
+
+    if depth > COUNTED_SKIP_MAX_DEPTH {
+        return Err(Error::CorruptedData(format!(
+            "secondary tree exceeds the maximum plausible depth {COUNTED_SKIP_MAX_DEPTH} — link \
+             structure is corrupt"
+        )))
+        .wrap_with_cost(cost);
+    }
+
+    let node_count = cost_return_on_error_no_add!(
+        cost,
+        walker
+            .tree()
+            .aggregate_data()
+            .map_err(|e| Error::CorruptedData(format!("secondary aggregate_data: {e}")))
+            .and_then(provable_count_from_aggregate)
+    );
+    let left_count =
+        cost_return_on_error_no_add!(cost, provable_count_from_link(walker.tree().link(true)));
+    let right_count =
+        cost_return_on_error_no_add!(cost, provable_count_from_link(walker.tree().link(false)));
+
+    // Every valid secondary row contributes structural count exactly 1
+    // (`mirror_indexed_axis_to_secondary` writes nothing else, and
+    // `verify_indexed_axis_content` enforces it). This is a payload check
+    // on the node's own count value — a link whose cached count disagrees
+    // with its child's real subtree is caught separately, by the
+    // cross-check in `counted_skip_descend`.
+    let own_count = node_count
+        .checked_sub(left_count)
+        .and_then(|n| n.checked_sub(right_count));
+    if own_count != Some(1) {
+        return Err(Error::CorruptedData(format!(
+            "indexed secondary node must have own structural count 1: aggregate {} with child \
+             counts {} + {}",
+            node_count, left_count, right_count
+        )))
+        .wrap_with_cost(cost);
+    }
+
+    let (first_is_left, first_count, second_count) = if state.left_to_right {
+        (true, left_count, right_count)
+    } else {
+        (false, right_count, left_count)
+    };
+
+    // First child in directional order: consumed wholesale from the link
+    // aggregate (no fetch) when its entire population fits inside the
+    // remaining offset; descended into otherwise.
+    if first_count > 0 {
+        if first_count <= state.offset_remaining {
+            state.offset_remaining -= first_count;
+        } else {
+            cost_return_on_error!(
+                &mut cost,
+                counted_skip_descend(
+                    walker,
+                    first_is_left,
+                    first_count,
+                    state,
+                    out,
+                    depth,
+                    grove_version
+                )
+            );
+            if state.limit_remaining == 0 {
+                return Ok(()).wrap_with_cost(cost);
+            }
+        }
+    }
+
+    // The node itself: burn one unit of offset, or emit its key. The
+    // entry invariant (population > offset, page not full) makes the
+    // emit branch safe without re-checking `limit_remaining`.
+    if state.offset_remaining > 0 {
+        state.offset_remaining -= 1;
+    } else {
+        out.push(walker.tree().key().to_vec());
+        state.limit_remaining -= 1;
+        if state.limit_remaining == 0 {
+            return Ok(()).wrap_with_cost(cost);
+        }
+    }
+
+    // Second child. With consistent aggregates the offset can never
+    // swallow it whole (this frame was entered because its subtree
+    // outlasts the offset), but the count arithmetic keeps the skip
+    // branch as the safe symmetric action.
+    if second_count > 0 {
+        if second_count <= state.offset_remaining {
+            state.offset_remaining -= second_count;
+        } else {
+            cost_return_on_error!(
+                &mut cost,
+                counted_skip_descend(
+                    walker,
+                    !first_is_left,
+                    second_count,
+                    state,
+                    out,
+                    depth,
+                    grove_version
+                )
+            );
+        }
+    }
+
+    Ok(()).wrap_with_cost(cost)
+}
+
+/// Fetch one child (upgrading its link) and recurse into it.
+///
+/// `link_count` is the aggregate count read off the parent's link — the
+/// number that authorized this descent (and that whole-subtree skips
+/// trust without fetching). It is cross-checked against the loaded
+/// child's own aggregate, so a link whose cached count disagrees with
+/// its subtree fails loud instead of shifting every position after it.
+fn counted_skip_descend<S>(
+    walker: &mut RefWalker<S>,
+    left: bool,
+    link_count: u64,
+    state: &mut CountedPageState,
+    out: &mut Vec<Vec<u8>>,
+    depth: u32,
+    grove_version: &GroveVersion,
+) -> CostResult<(), Error>
+where
+    S: Fetch + Sized + Clone,
+{
+    let mut cost = OperationCost::default();
+    let walked = cost_return_on_error!(
+        &mut cost,
+        walker
+            .walk(
+                left,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+            .map_err(Into::into)
+    );
+    let mut child = match walked {
+        Some(child) => child,
+        None => {
+            // The caller only descends where the link (and its non-zero
+            // count) was just read, so a missing child is corruption.
+            return Err(Error::CorruptedData(
+                "secondary link is present but its child failed to load".to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+    };
+    let child_count = cost_return_on_error_no_add!(
+        cost,
+        child
+            .tree()
+            .aggregate_data()
+            .map_err(|e| Error::CorruptedData(format!("secondary aggregate_data: {e}")))
+            .and_then(provable_count_from_aggregate)
+    );
+    if child_count != link_count {
+        return Err(Error::CorruptedData(format!(
+            "secondary link claims aggregate count {link_count} but its subtree carries \
+             {child_count}"
+        )))
+        .wrap_with_cost(cost);
+    }
+    counted_skip_collect(&mut child, state, out, depth + 1, grove_version).add_cost(cost)
+}
+
+#[cfg(test)]
+impl GroveDb {
+    /// The pre-counted-skip linear implementation, specialized to the
+    /// Count axis (the generic `decode`/`axis` parameters are the only
+    /// change from the replaced code). Kept as the measurement baseline
+    /// for `indexed_axis_paginated_cost_tests::measure_paginated_costs`;
+    /// compiled only for tests, never reachable in production builds.
+    pub(crate) fn legacy_linear_indexed_count_top_k_paginated<'b, B, P>(
+        &self,
+        path: P,
+        k: u16,
+        offset: u64,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(u64, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_validated_axis_secondary(
+                path.into(),
+                IndexAxis::Count,
+                tx_ref,
+                grove_version
+            )
+        );
+
+        let mut all_query = Query::new();
+        all_query.left_to_right = !descending;
+        all_query.insert_all();
+
+        let mut iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query)
+            .unwrap_add_cost(&mut cost);
+
+        let mut skipped: u64 = 0;
+        while skipped < offset {
+            match iter.next_kv().unwrap_add_cost(&mut cost) {
+                Some((secondary_key, _)) => {
+                    if decode_secondary_key(&secondary_key).is_none() {
+                        return Err(corrupted_secondary_key_error(
+                            IndexAxis::Count,
+                            &secondary_key,
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                    skipped += 1;
+                }
+                None => return Ok(Vec::new()).wrap_with_cost(cost),
+            }
+        }
+
+        let mut results = Vec::with_capacity(k as usize);
+        while results.len() < k as usize {
+            match iter.next_kv().unwrap_add_cost(&mut cost) {
+                Some((secondary_key, _)) => match decode_secondary_key(&secondary_key) {
+                    Some(decoded) => results.push(decoded),
+                    None => {
+                        return Err(corrupted_secondary_key_error(
+                            IndexAxis::Count,
+                            &secondary_key,
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                },
+                None => break,
+            }
+        }
+
+        Ok(results).wrap_with_cost(cost)
+    }
 }
 
 #[cfg(test)]
