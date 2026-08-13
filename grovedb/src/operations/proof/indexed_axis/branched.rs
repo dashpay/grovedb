@@ -72,7 +72,7 @@ use super::verify::{
     reject_trailing_envelope_bytes, verify_deepest_layer, walk_ancestor_chain,
 };
 use super::{
-    AncestorAttestation, BranchedProofBranch, IndexedAxisBranchedPaginatedProof,
+    AncestorAttestation, AxisEntries, BranchedProofBranch, IndexedAxisBranchedPaginatedProof,
     IndexedAxisBranchedPaginatedResult, IndexedAxisBranchedQueryResult,
     IndexedAxisBranchedRangeProof,
 };
@@ -130,12 +130,14 @@ fn compose_intermediate(
 /// Execute the branching-level multi-key proof: one Merk proof
 /// covering every branch key in the shared prefix's Merk. Returns the
 /// layer's root hash plus, aligned with `branch_keys`, each key's
-/// element bytes and the `value_hash` the parent Merk records for it.
+/// element bytes and recorded `value_hash` — or `None` for a key the
+/// proof shows **absent** (an exact-key Merk proof authenticates both
+/// outcomes).
 fn execute_multi_key_proof(
     proof_bytes: &[u8],
     branch_keys: &[Vec<u8>],
     err_label: &'static str,
-) -> Result<(CryptoHash, Vec<(Vec<u8>, CryptoHash)>), Error> {
+) -> Result<(CryptoHash, Vec<Option<(Vec<u8>, CryptoHash)>>), Error> {
     let mut query = MerkQuery::new();
     for key in branch_keys {
         query.insert_item(MerkQueryItem::Key(key.clone()));
@@ -150,23 +152,24 @@ fn execute_multi_key_proof(
         })?;
     let mut per_key = Vec::with_capacity(branch_keys.len());
     for key in branch_keys {
-        let proved = result
-            .result_set
-            .iter()
-            .find(|p| &p.key == key)
-            .ok_or_else(|| {
-                Error::CorruptedData(format!(
-                    "{err_label}: branching-level proof does not contain branch key {}",
-                    hex::encode(key)
-                ))
-            })?;
-        let value = proved.value.clone().ok_or_else(|| {
-            Error::CorruptedData(format!(
-                "{err_label}: branching-level proof carries no value for branch key {}",
-                hex::encode(key)
-            ))
-        })?;
-        per_key.push((value, proved.proof));
+        // An exact-key Merk proof authenticates both outcomes: a key
+        // missing from the result set is *proven absent* (the proof
+        // would not verify otherwise), which is exactly the empty
+        // branch of an `IN` union.
+        let proved = result.result_set.iter().find(|p| &p.key == key);
+        match proved {
+            None => per_key.push(None),
+            Some(proved) => {
+                let value = proved.value.clone().ok_or_else(|| {
+                    Error::CorruptedData(format!(
+                        "{err_label}: branching-level proof carries no value for branch \
+                         key {}",
+                        hex::encode(key)
+                    ))
+                })?;
+                per_key.push(Some((value, proved.proof)));
+            }
+        }
     }
     Ok((root_hash, per_key))
 }
@@ -176,10 +179,10 @@ fn execute_multi_key_proof(
 /// multi-key proof's recorded hashes, then chain the shared layers to
 /// the GroveDB root.
 ///
-/// `branch_tail_roots[i]` is branch `i`'s reconstructed value-tree
-/// root (the output of that branch's tail walk), and
-/// `branch_first_attestations[i]` describes branch `i`'s value-tree
-/// element.
+/// `branch_tail_roots[i]` is `Some((root, attestation))` for a present
+/// branch — its reconstructed value-tree root plus the attestation
+/// describing its value-tree element — and `None` for a branch the
+/// envelope claims absent.
 #[allow(clippy::too_many_arguments)]
 fn verify_branching_and_shared_layers(
     shared_layer_proofs: &[Vec<u8>],
@@ -187,8 +190,7 @@ fn verify_branching_and_shared_layers(
     branching_layer_proof: &[u8],
     branch_keys: &[Vec<u8>],
     path_prefix: &[&[u8]],
-    branch_tail_roots: &[CryptoHash],
-    branch_first_attestations: &[&AncestorAttestation],
+    branch_tail_roots: &[Option<(CryptoHash, &AncestorAttestation)>],
     err_label: &'static str,
 ) -> Result<CryptoHash, Error> {
     if shared_layer_proofs.len() != path_prefix.len() {
@@ -208,18 +210,40 @@ fn verify_branching_and_shared_layers(
 
     let (branching_root, per_key) =
         execute_multi_key_proof(branching_layer_proof, branch_keys, err_label)?;
-    for (branch, ((element_bytes, recorded_hash), tail_root)) in
-        per_key.iter().zip(branch_tail_roots.iter()).enumerate()
-    {
-        let combined =
-            compose_intermediate(element_bytes, tail_root, branch_first_attestations[branch]);
-        if combined != *recorded_hash {
-            return Err(Error::CorruptedData(format!(
-                "{err_label}: branch {branch} (key {}) chain mismatch at the branching \
-                 level: the branch tail reconstructs a different subtree than the \
-                 multi-key proof commits — a swapped, re-ordered, or foreign branch tail",
-                hex::encode(&branch_keys[branch])
-            )));
+    for (branch, (proved, tail)) in per_key.iter().zip(branch_tail_roots.iter()).enumerate() {
+        match (proved, tail) {
+            // Present key, present tail: the composition binds them.
+            (Some((element_bytes, recorded_hash)), Some((tail_root, first_attestation))) => {
+                let combined = compose_intermediate(element_bytes, tail_root, first_attestation);
+                if combined != *recorded_hash {
+                    return Err(Error::CorruptedData(format!(
+                        "{err_label}: branch {branch} (key {}) chain mismatch at the \
+                         branching level: the branch tail reconstructs a different \
+                         subtree than the multi-key proof commits — a swapped, \
+                         re-ordered, or foreign branch tail",
+                        hex::encode(&branch_keys[branch])
+                    )));
+                }
+            }
+            // Absent key, no tail: the authenticated-empty branch.
+            (None, None) => {}
+            // Absence forgery, either direction: an envelope claiming a
+            // tail for a key the branching proof shows absent, or
+            // claiming absence for a key it shows present.
+            (Some(_), None) => {
+                return Err(Error::CorruptedData(format!(
+                    "{err_label}: branch {branch} (key {}) is present in the branching \
+                     Merk but the envelope claims it absent",
+                    hex::encode(&branch_keys[branch])
+                )));
+            }
+            (None, Some(_)) => {
+                return Err(Error::CorruptedData(format!(
+                    "{err_label}: branch {branch} (key {}) carries a tail but the \
+                     branching Merk proves the key absent",
+                    hex::encode(&branch_keys[branch])
+                )));
+            }
         }
     }
 
@@ -280,8 +304,26 @@ impl GroveDb {
         let mut shared_ancestor_attestations: Option<Vec<AncestorAttestation>> = None;
         let mut branches = Vec::with_capacity(branch_keys.len());
         let mut requested_limit = limit;
-        let mut descending = false;
+        let descending = !secondary_query.left_to_right;
         for key in branch_keys {
+            // An absent branch key contributes the empty page: the
+            // branching-level multi-key proof authenticates the
+            // absence, so no tail is built (there is no subtree to
+            // walk). Presence is decided at the branching Merk itself
+            // — deeper breakage under a *present* key stays an error.
+            let present = cost_return_on_error!(
+                &mut cost,
+                self.get_raw_optional(
+                    SubtreePath::from(path_prefix),
+                    key,
+                    Some(tx_ref),
+                    grove_version
+                )
+            );
+            if present.is_none() {
+                branches.push(None);
+                continue;
+            }
             let full_path: Vec<&[u8]> = path_prefix
                 .iter()
                 .copied()
@@ -301,7 +343,6 @@ impl GroveDb {
                 )
             );
             requested_limit = sub_envelope.requested_limit;
-            descending = sub_envelope.descending;
             let mut layer_proofs = sub_envelope.layer_proofs;
             let mut attestations = sub_envelope.ancestor_attestations;
             let tail_layer_proofs = layer_proofs.split_off(branching_depth + 1);
@@ -311,14 +352,26 @@ impl GroveDb {
                 shared_layer_proofs = Some(layer_proofs);
                 shared_ancestor_attestations = Some(attestations);
             }
-            branches.push(BranchedProofBranch {
+            branches.push(Some(BranchedProofBranch {
                 ancestor_attestations: branch_attestations,
                 tail_layer_proofs,
                 primary_root_hash: sub_envelope.primary_root_hash,
                 other_axes_root_hashes: sub_envelope.other_axes_root_hashes,
                 target_is_pcpsit: sub_envelope.target_is_pcpsit,
                 secondary_proof: sub_envelope.secondary_proof,
-            });
+            }));
+        }
+        if shared_layer_proofs.is_none() {
+            // Every branch was absent: build the shared layers from the
+            // prefix alone so the envelope still chains to the root.
+            // (The attestation builder wants one segment past the last
+            // attested element; the dummy is never read.)
+            let (layers, attestations) = cost_return_on_error!(
+                &mut cost,
+                self.build_shared_prefix_parts(path_prefix, tx_ref, &batch, grove_version)
+            );
+            shared_layer_proofs = Some(layers);
+            shared_ancestor_attestations = Some(attestations);
         }
 
         let branching_layer_proof = cost_return_on_error!(
@@ -389,6 +442,20 @@ impl GroveDb {
         let mut shared_ancestor_attestations: Option<Vec<AncestorAttestation>> = None;
         let mut branches = Vec::with_capacity(branch_keys.len());
         for key in branch_keys {
+            // Same absence contract as the range prover above.
+            let present = cost_return_on_error!(
+                &mut cost,
+                self.get_raw_optional(
+                    SubtreePath::from(path_prefix),
+                    key,
+                    Some(tx_ref),
+                    grove_version
+                )
+            );
+            if present.is_none() {
+                branches.push(None);
+                continue;
+            }
             let full_path: Vec<&[u8]> = path_prefix
                 .iter()
                 .copied()
@@ -417,14 +484,22 @@ impl GroveDb {
                 shared_layer_proofs = Some(layer_proofs);
                 shared_ancestor_attestations = Some(attestations);
             }
-            branches.push(BranchedProofBranch {
+            branches.push(Some(BranchedProofBranch {
                 ancestor_attestations: branch_attestations,
                 tail_layer_proofs,
                 primary_root_hash: sub_envelope.primary_root_hash,
                 other_axes_root_hashes: sub_envelope.other_axes_root_hashes,
                 target_is_pcpsit: sub_envelope.target_is_pcpsit,
                 secondary_proof: sub_envelope.secondary_proof,
-            });
+            }));
+        }
+        if shared_layer_proofs.is_none() {
+            let (layers, attestations) = cost_return_on_error!(
+                &mut cost,
+                self.build_shared_prefix_parts(path_prefix, tx_ref, &batch, grove_version)
+            );
+            shared_layer_proofs = Some(layers);
+            shared_ancestor_attestations = Some(attestations);
         }
 
         let branching_layer_proof = cost_return_on_error!(
@@ -458,6 +533,46 @@ impl GroveDb {
             })
         );
         Ok(bytes).wrap_with_cost(cost)
+    }
+
+    /// The shared layers built from the prefix alone — the all-absent
+    /// fallback, where no branch sub-envelope exists to split them out
+    /// of. The attestation builder wants one segment past the last
+    /// attested element; a dummy segment is appended and never read.
+    fn build_shared_prefix_parts(
+        &self,
+        path_prefix: &[&[u8]],
+        transaction: &crate::Transaction,
+        batch: &StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(Vec<Vec<u8>>, Vec<AncestorAttestation>), Error> {
+        let mut cost = OperationCost::default();
+        let prefix_keys: Vec<Vec<u8>> = path_prefix.iter().map(|s| s.to_vec()).collect();
+        let layers = cost_return_on_error!(
+            &mut cost,
+            super::generate::build_layer_proofs(
+                self,
+                &prefix_keys,
+                transaction,
+                batch,
+                grove_version,
+                "indexed-axis branched proof (shared prefix)",
+            )
+        );
+        let mut with_dummy = prefix_keys;
+        with_dummy.push(Vec::new());
+        let attestations = cost_return_on_error!(
+            &mut cost,
+            super::generate::build_ancestor_attestations(
+                self,
+                &with_dummy,
+                transaction,
+                batch,
+                grove_version,
+                "indexed-axis branched proof (shared prefix)",
+            )
+        );
+        Ok((layers, attestations)).wrap_with_cost(cost)
     }
 
     /// One multi-key Merk proof at the branching level: proves every
@@ -553,8 +668,14 @@ impl GroveDb {
         let left_to_right = secondary_query.left_to_right;
         let mut branch_entries = Vec::with_capacity(envelope.branches.len());
         let mut branch_tail_roots = Vec::with_capacity(envelope.branches.len());
-        let mut branch_first_attestations = Vec::with_capacity(envelope.branches.len());
         for (branch_index, branch) in envelope.branches.iter().enumerate() {
+            let Some(branch) = branch else {
+                // Claimed absent — authenticated against the branching
+                // proof inside the shared walk below.
+                branch_entries.push(AxisEntries::empty_for_axis(expected_axis));
+                branch_tail_roots.push(None);
+                continue;
+            };
             let (secondary_root_hash, sec_result) = secondary_query
                 .clone()
                 .execute_proof(
@@ -580,8 +701,7 @@ impl GroveDb {
                 err_label,
             )?;
             branch_entries.push(entries);
-            branch_tail_roots.push(tail_root);
-            branch_first_attestations.push(&branch.ancestor_attestations[0]);
+            branch_tail_roots.push(Some((tail_root, &branch.ancestor_attestations[0])));
         }
 
         let root_hash = verify_branching_and_shared_layers(
@@ -591,7 +711,6 @@ impl GroveDb {
             branch_keys,
             path_prefix,
             &branch_tail_roots,
-            &branch_first_attestations,
             err_label,
         )?;
         Ok(IndexedAxisBranchedQueryResult {
@@ -664,8 +783,15 @@ impl GroveDb {
         let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
         let mut branch_pages = Vec::with_capacity(envelope.branches.len());
         let mut branch_tail_roots = Vec::with_capacity(envelope.branches.len());
-        let mut branch_first_attestations = Vec::with_capacity(envelope.branches.len());
         for (branch_index, branch) in envelope.branches.iter().enumerate() {
+            let Some(branch) = branch else {
+                // Claimed absent — an empty page with an attested skip
+                // of zero (there is nothing to skip in a tree that does
+                // not exist); authenticated in the shared walk below.
+                branch_pages.push((0, AxisEntries::empty_for_axis(expected_axis)));
+                branch_tail_roots.push(None);
+                continue;
+            };
             let count_offset_result = verify_count_offset_on_range_proof(
                 &branch.secondary_proof,
                 &inner_range,
@@ -692,8 +818,7 @@ impl GroveDb {
                 err_label,
             )?;
             branch_pages.push((count_offset_result.skipped, entries));
-            branch_tail_roots.push(tail_root);
-            branch_first_attestations.push(&branch.ancestor_attestations[0]);
+            branch_tail_roots.push(Some((tail_root, &branch.ancestor_attestations[0])));
         }
 
         let root_hash = verify_branching_and_shared_layers(
@@ -703,7 +828,6 @@ impl GroveDb {
             branch_keys,
             path_prefix,
             &branch_tail_roots,
-            &branch_first_attestations,
             err_label,
         )?;
         Ok(IndexedAxisBranchedPaginatedResult {

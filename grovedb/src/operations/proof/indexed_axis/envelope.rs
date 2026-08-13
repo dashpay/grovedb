@@ -181,6 +181,16 @@ impl AxisEntries {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// The empty entry list of the given axis — what an
+    /// authenticated-absent branch of a branched proof verifies to.
+    pub fn empty_for_axis(axis: grovedb_element::indexed::IndexAxis) -> Self {
+        match axis {
+            grovedb_element::indexed::IndexAxis::Count => AxisEntries::Count(Vec::new()),
+            grovedb_element::indexed::IndexAxis::Sum => AxisEntries::Sum(Vec::new()),
+            grovedb_element::indexed::IndexAxis::Avg => AxisEntries::Avg(Vec::new()),
+        }
+    }
 }
 
 /// Verified result of a range / top-k / arbitrary-query proof.
@@ -274,10 +284,16 @@ pub struct IndexedAxisBranchedRangeProof {
     /// `shared_layer_proofs.len()`.
     pub shared_ancestor_attestations: Vec<AncestorAttestation>,
     /// One multi-key Merk proof at the branching level, proving every
-    /// echoed branch key in the shared prefix's Merk.
+    /// echoed branch key in the shared prefix's Merk — presence for
+    /// branches that exist, **authenticated absence** for those that
+    /// don't (a Merk exact-key proof binds both outcomes).
     pub branching_layer_proof: Vec<u8>,
     /// Per-branch tails, aligned with the verifier's branch-key list.
-    pub branches: Vec<BranchedProofBranch>,
+    /// `None` marks a branch whose key the branching-level proof shows
+    /// **absent**: that branch verifies as the empty page. The verifier
+    /// cross-checks presence both ways, so an envelope cannot claim a
+    /// tail for an absent key or absence for a present one.
+    pub branches: Vec<Option<BranchedProofBranch>>,
     /// Echoed query limit, shared by every branch.
     pub requested_limit: Option<u16>,
     /// Echoed iteration direction, shared by every branch.
@@ -300,8 +316,10 @@ pub struct IndexedAxisBranchedPaginatedProof {
     /// Same as
     /// [`IndexedAxisBranchedRangeProof::branching_layer_proof`].
     pub branching_layer_proof: Vec<u8>,
-    /// Per-branch tails, aligned with the verifier's branch-key list.
-    pub branches: Vec<BranchedProofBranch>,
+    /// Per-branch tails, aligned with the verifier's branch-key list;
+    /// `None` = authenticated absence, same contract as
+    /// [`IndexedAxisBranchedRangeProof::branches`].
+    pub branches: Vec<Option<BranchedProofBranch>>,
     /// Echoed page size, shared by every branch.
     pub requested_k: u16,
     /// Echoed offset, shared by every branch.

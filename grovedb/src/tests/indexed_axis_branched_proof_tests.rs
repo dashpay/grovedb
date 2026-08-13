@@ -446,4 +446,171 @@ mod tests {
             .unwrap()
             .is_err());
     }
+
+    /// An `IN` element whose prefix was never written contributes the
+    /// **empty page**, authenticated: the branching-level proof shows
+    /// the key absent, the envelope carries no tail for it, and the
+    /// present branch still proves normally under the same single root
+    /// hash — the union semantics the query surface advertises.
+    #[test]
+    fn an_absent_branch_key_verifies_as_the_empty_page() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_branched_fixture(&db, grove_version, &[(b"east", &[(b"math", 3)])]);
+
+        let keys = vec![b"east".to_vec(), b"north".to_vec()];
+        let proof = db
+            .prove_indexed_axis_top_k_paginated_branched(
+                &prefix(),
+                &keys,
+                &suffix(),
+                IndexAxis::Count,
+                2,
+                0,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove succeeds with an absent branch");
+
+        let result = GroveDb::verify_indexed_axis_top_k_paginated_branched(
+            &proof,
+            &prefix(),
+            &keys,
+            &suffix(),
+            IndexAxis::Count,
+            2,
+            0,
+            true,
+        )
+        .expect("an absent branch verifies as empty");
+        assert_eq!(
+            count_entries(&result.branches[0].1),
+            vec![(3, b"math".to_vec())],
+            "the present branch's page is intact"
+        );
+        assert_eq!(result.branches[1].0, 0, "nothing to skip in an absent tree");
+        assert!(
+            result.branches[1].1.is_empty(),
+            "the absent branch is the empty page"
+        );
+        assert_eq!(
+            result.root_hash,
+            db.root_hash(None, grove_version)
+                .unwrap()
+                .expect("root hash readable"),
+        );
+
+        // The range shape has the same contract.
+        let range_proof = db
+            .prove_indexed_axis_query_branched(
+                &prefix(),
+                &keys,
+                &suffix(),
+                IndexAxis::Count,
+                full_range_query(),
+                Some(10),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("range prove succeeds with an absent branch");
+        let range_result = GroveDb::verify_indexed_axis_query_branched(
+            &range_proof,
+            &prefix(),
+            &keys,
+            &suffix(),
+            IndexAxis::Count,
+            full_range_query(),
+            Some(10),
+        )
+        .expect("range verify succeeds with an absent branch");
+        assert!(range_result.branches[1].is_empty());
+    }
+
+    /// Absence forgery fails in both directions: an envelope claiming
+    /// absence for a key the branching proof shows present, and an
+    /// envelope carrying a tail for a key the proof shows absent.
+    #[test]
+    fn absence_forgeries_do_not_verify() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_branched_fixture(
+            &db,
+            grove_version,
+            &[(b"east", &[(b"math", 3)]), (b"west", &[(b"science", 2)])],
+        );
+        let config = bincode::config::standard();
+
+        // Direction 1: both present; claim west absent.
+        let both = branch_keys();
+        let proof = db
+            .prove_indexed_axis_top_k_paginated_branched(
+                &prefix(),
+                &both,
+                &suffix(),
+                IndexAxis::Count,
+                1,
+                0,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove succeeds");
+        let (mut envelope, _): (IndexedAxisBranchedPaginatedProof, _) =
+            bincode::decode_from_slice(&proof, config).expect("decode own envelope");
+        envelope.branches[1] = None;
+        let tampered = bincode::encode_to_vec(&envelope, config).expect("re-encode");
+        assert!(
+            GroveDb::verify_indexed_axis_top_k_paginated_branched(
+                &tampered,
+                &prefix(),
+                &both,
+                &suffix(),
+                IndexAxis::Count,
+                1,
+                0,
+                true,
+            )
+            .is_err(),
+            "claiming a present branch absent must not verify"
+        );
+
+        // Direction 2: north is absent; graft east's tail onto it.
+        let with_absent = vec![b"east".to_vec(), b"north".to_vec()];
+        let proof = db
+            .prove_indexed_axis_top_k_paginated_branched(
+                &prefix(),
+                &with_absent,
+                &suffix(),
+                IndexAxis::Count,
+                1,
+                0,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove succeeds");
+        let (mut envelope, _): (IndexedAxisBranchedPaginatedProof, _) =
+            bincode::decode_from_slice(&proof, config).expect("decode own envelope");
+        envelope.branches[1] = envelope.branches[0].clone();
+        let tampered = bincode::encode_to_vec(&envelope, config).expect("re-encode");
+        assert!(
+            GroveDb::verify_indexed_axis_top_k_paginated_branched(
+                &tampered,
+                &prefix(),
+                &with_absent,
+                &suffix(),
+                IndexAxis::Count,
+                1,
+                0,
+                true,
+            )
+            .is_err(),
+            "a tail grafted onto an absent key must not verify"
+        );
+    }
 }

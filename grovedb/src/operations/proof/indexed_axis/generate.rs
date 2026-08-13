@@ -29,7 +29,7 @@ use super::{
 /// list has length N-1 (one entry per intermediate layer). For each
 /// intermediate layer, open the parent merk and inspect the element
 /// at the depth's key to determine the chain composition.
-fn build_ancestor_attestations<'db>(
+pub(super) fn build_ancestor_attestations<'db>(
     grovedb: &'db GroveDb,
     path_keys: &[Vec<u8>],
     transaction: &'db Transaction,
@@ -158,7 +158,7 @@ fn build_ancestor_attestations<'db>(
 /// Build single-key Merk proofs per layer, top-down. `layer_proofs[i]`
 /// proves the existence of `path_keys[i]` in the Merk at
 /// `path_keys[..i]`.
-fn build_layer_proofs<'db>(
+pub(super) fn build_layer_proofs<'db>(
     grovedb: &'db GroveDb,
     path_keys: &[Vec<u8>],
     transaction: &'db Transaction,
