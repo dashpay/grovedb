@@ -918,7 +918,7 @@ mod tests {
             .unwrap()
             .expect("page 1");
         assert_eq!(
-            page1,
+            page1.entries,
             vec![(100i64, b"frank".to_vec()), (12, b"bob".to_vec())]
         );
 
@@ -934,7 +934,7 @@ mod tests {
             .unwrap()
             .expect("page 2");
         assert_eq!(
-            page2,
+            page2.entries,
             vec![(5i64, b"alice".to_vec()), (0, b"dave".to_vec())]
         );
 
@@ -950,7 +950,7 @@ mod tests {
             )
             .unwrap()
             .expect("beyond");
-        assert!(beyond.is_empty());
+        assert!(beyond.entries.is_empty());
 
         // offset=0 ≡ plain top_k.
         let plain = db
@@ -968,7 +968,7 @@ mod tests {
             )
             .unwrap()
             .expect("pag offset 0");
-        assert_eq!(plain, pag);
+        assert_eq!(plain, pag.entries);
     }
 
     #[test]

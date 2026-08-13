@@ -208,7 +208,8 @@ mod tests {
                 grove_version,
             );
             let page0 = page0.expect("offset 0");
-            assert_eq!(page0.len(), K as usize);
+            assert_eq!(page0.entries.len(), K as usize);
+            assert_eq!(page0.skipped, 0, "offset 0 skips nothing");
 
             let far_offset = N - K as u64;
             let CostContext {
@@ -223,7 +224,15 @@ mod tests {
                 grove_version,
             );
             let page_far = page_far.expect("deep offset");
-            assert_eq!(page_far.len(), K as usize, "last full page must exist");
+            assert_eq!(
+                page_far.entries.len(),
+                K as usize,
+                "last full page must exist"
+            );
+            assert_eq!(
+                page_far.skipped, far_offset,
+                "true skipped at a deep offset"
+            );
 
             let depth_bound = avl_depth_bound(N);
 
@@ -268,9 +277,14 @@ mod tests {
                 None,
                 grove_version,
             );
+            let past = past.expect("past-end offset");
             assert!(
-                past.expect("past-end offset").is_empty(),
+                past.entries.is_empty(),
                 "past-end offset must return an empty page"
+            );
+            assert_eq!(
+                past.skipped, N,
+                "past-end must report the true population, not echo the request"
             );
             assert!(
                 cost_past.seek_count + u32::from(K) <= cost_0.seek_count,
@@ -305,9 +319,10 @@ mod tests {
                     .unwrap()
                     .expect("empty secondary must serve an empty page");
                 assert!(
-                    page.is_empty(),
+                    page.entries.is_empty(),
                     "offset={offset} descending={descending} must be empty"
                 );
+                assert_eq!(page.skipped, 0, "an empty secondary has nothing to skip");
             }
         }
     }
@@ -339,11 +354,13 @@ mod tests {
                 None,
                 grove_version,
             );
+            let paginated = paginated.expect("paginated offset 0");
             assert_eq!(
                 plain.expect("plain top-k"),
-                paginated.expect("paginated offset 0"),
+                paginated.entries,
                 "offset 0 must return exactly the top-k page (descending={descending})"
             );
+            assert_eq!(paginated.skipped, 0);
             assert_eq!(
                 cost_plain.seek_count, cost_paginated.seek_count,
                 "offset 0 must stay on the iterator path: seek_count diverged \
@@ -398,10 +415,15 @@ mod tests {
                     let start = (offset as usize).min(population);
                     let end = (start + k as usize).min(population);
                     assert_eq!(
-                        page,
+                        page.entries,
                         full[start..end],
                         "count axis page mismatch at offset={offset} k={k} \
                          descending={descending}"
+                    );
+                    assert_eq!(
+                        page.skipped,
+                        offset.min(population as u64),
+                        "true skipped at offset={offset} k={k}"
                     );
                 }
             }
@@ -455,11 +477,12 @@ mod tests {
                         .unwrap()
                         .expect("sum page");
                     assert_eq!(
-                        sum_page,
+                        sum_page.entries,
                         full_sum[start..end],
                         "sum axis page mismatch at offset={offset} k={k} \
                          descending={descending}"
                     );
+                    assert_eq!(sum_page.skipped, (offset).min(population as u64));
 
                     let avg_page = db
                         .indexed_avg_top_k_paginated(
@@ -473,11 +496,12 @@ mod tests {
                         .unwrap()
                         .expect("avg page");
                     assert_eq!(
-                        avg_page,
+                        avg_page.entries,
                         full_avg[start..end],
                         "avg axis page mismatch at offset={offset} k={k} \
                          descending={descending}"
                     );
+                    assert_eq!(avg_page.skipped, (offset).min(population as u64));
                 }
             }
         }
@@ -514,9 +538,14 @@ mod tests {
                 let start = (offset as usize).min(N as usize);
                 let end = (start + K as usize).min(N as usize);
                 assert_eq!(
-                    page,
+                    page.entries,
                     full[start..end],
                     "page mismatch at offset={offset} descending={descending}"
+                );
+                assert_eq!(
+                    page.skipped,
+                    offset.min(N),
+                    "true skipped at offset={offset}"
                 );
             }
         }
@@ -575,7 +604,7 @@ mod tests {
                         value: counted_rows,
                         cost: counted_cost,
                     } = counted.expect("three runs happened");
-                    let counted_rows = counted_rows.expect("counted read");
+                    let counted_page = counted_rows.expect("counted read");
 
                     let mut linear_wall = u128::MAX;
                     let mut linear = None;
@@ -599,15 +628,20 @@ mod tests {
                     let linear_rows = linear_rows.expect("legacy linear read");
 
                     assert_eq!(
-                        counted_rows, linear_rows,
+                        counted_page.entries, linear_rows,
                         "counted and linear paths diverged at n={n} k={k} offset={offset}"
+                    );
+                    assert_eq!(
+                        counted_page.skipped,
+                        offset.min(n),
+                        "true skipped at n={n} k={k} offset={offset}"
                     );
 
                     println!(
                         "| {n} | {k} | {offset} | counted | {} | {} | {} | {} |",
                         counted_cost.seek_count,
                         counted_cost.storage_loaded_bytes,
-                        counted_rows.len(),
+                        counted_page.entries.len(),
                         counted_wall,
                     );
                     println!(

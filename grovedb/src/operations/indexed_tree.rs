@@ -1284,7 +1284,7 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
         decode: impl Fn(&[u8]) -> Option<(T, Vec<u8>)>,
-    ) -> CostResult<Vec<(T, Vec<u8>)>, Error>
+    ) -> CostResult<IndexedTopKPage<T>, Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -1301,9 +1301,15 @@ impl GroveDb {
         // iterator is the cheapest way to serve it: one directional seek
         // plus `k` sequential steps, no tree-path loads. It shares the
         // `top_k` core's implementation, so "offset 0 costs exactly what
-        // plain top-k costs" is structural, not coincidental.
+        // plain top-k costs" is structural, not coincidental. Zero offset
+        // skips zero entries, so `skipped = min(0, population) = 0` needs
+        // no tree read.
         if offset == 0 {
             return collect_top_k_via_iterator(&secondary_merk, axis, k, descending, &decode)
+                .map_ok(|entries| IndexedTopKPage {
+                    entries,
+                    skipped: 0,
+                })
                 .add_cost(cost);
         }
 
@@ -1314,7 +1320,7 @@ impl GroveDb {
         // keys in directional order. One root-to-position descent plus
         // `k` node loads, instead of one storage-iterator step per
         // skipped entry.
-        let secondary_keys = cost_return_on_error!(
+        let (secondary_keys, skipped) = cost_return_on_error!(
             &mut cost,
             counted_skip_page(
                 &secondary_merk,
@@ -1324,17 +1330,17 @@ impl GroveDb {
                 grove_version
             )
         );
-        let mut results = Vec::with_capacity(secondary_keys.len());
+        let mut entries = Vec::with_capacity(secondary_keys.len());
         for secondary_key in secondary_keys {
             match decode(&secondary_key) {
-                Some(decoded) => results.push(decoded),
+                Some(decoded) => entries.push(decoded),
                 None => {
                     return Err(corrupted_secondary_key_error(axis, &secondary_key))
                         .wrap_with_cost(cost);
                 }
             }
         }
-        Ok(results).wrap_with_cost(cost)
+        Ok(IndexedTopKPage { entries, skipped }).wrap_with_cost(cost)
     }
 
     /// One implementation of the `indexed_<axis>_range` shape. The
@@ -1446,11 +1452,14 @@ impl GroveDb {
     /// skipped by counted descent over the secondary merk — subtrees are
     /// consumed from their aggregate counts without loading their
     /// entries, so the skip costs `O(log n)` node loads rather than
-    /// `O(offset)` iterator steps. Neither shape is a verifiable /
-    /// proof-bounded read; for the provable variant use
-    /// [`Self::prove_indexed_count_top_k_paginated`] which relies on the
-    /// merk-level count-offset proof to commit the skipped count via
-    /// `HashWithCount`.
+    /// `O(offset)` iterator steps. The returned
+    /// [`IndexedTopKPage::skipped`] is the true skipped count,
+    /// `min(offset, population)` — an offset past the end reports the
+    /// secondary's population rather than echoing the request. Neither
+    /// shape is a verifiable / proof-bounded read; for the provable
+    /// variant use [`Self::prove_indexed_count_top_k_paginated`] which
+    /// relies on the merk-level count-offset proof to commit the skipped
+    /// count via `HashWithCount`.
     pub fn indexed_count_top_k_paginated<'b, B, P>(
         &self,
         path: P,
@@ -1459,7 +1468,7 @@ impl GroveDb {
         descending: bool,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(u64, Vec<u8>)>, Error>
+    ) -> CostResult<IndexedTopKPage<u64>, Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
@@ -1644,8 +1653,9 @@ impl GroveDb {
     /// entries in the directional scan before collecting up to `k`
     /// results. `offset = 0` is equivalent to plain `indexed_sum_top_k`;
     /// a positive `offset` is skipped by counted descent over the
-    /// secondary merk in `O(log n)` node loads. Not a verifiable /
-    /// proof-bounded read.
+    /// secondary merk in `O(log n)` node loads, and
+    /// [`IndexedTopKPage::skipped`] reports the true
+    /// `min(offset, population)`. Not a verifiable / proof-bounded read.
     pub fn indexed_sum_top_k_paginated<'b, B, P>(
         &self,
         path: P,
@@ -1654,7 +1664,7 @@ impl GroveDb {
         descending: bool,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(i64, Vec<u8>)>, Error>
+    ) -> CostResult<IndexedTopKPage<i64>, Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
@@ -1832,8 +1842,9 @@ impl GroveDb {
     /// entries in the directional scan before collecting up to `k`
     /// results. `offset = 0` is equivalent to plain `indexed_avg_top_k`;
     /// a positive `offset` is skipped by counted descent over the
-    /// secondary merk in `O(log n)` node loads. Not a verifiable /
-    /// proof-bounded read.
+    /// secondary merk in `O(log n)` node loads, and
+    /// [`IndexedTopKPage::skipped`] reports the true
+    /// `min(offset, population)`. Not a verifiable / proof-bounded read.
     pub fn indexed_avg_top_k_paginated<'b, B, P>(
         &self,
         path: P,
@@ -1842,7 +1853,7 @@ impl GroveDb {
         descending: bool,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(i128, Vec<u8>)>, Error>
+    ) -> CostResult<IndexedTopKPage<i128>, Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
@@ -2460,6 +2471,20 @@ fn provable_count_from_aggregate(aggregate: AggregateData) -> Result<u64, Error>
     }
 }
 
+/// One page of an `indexed_<axis>_top_k_paginated` read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedTopKPage<T> {
+    /// Page entries, `(axis_value, original_key)`, in directional order.
+    pub entries: Vec<(T, Vec<u8>)>,
+    /// How many entries the offset actually skipped:
+    /// `min(offset, population)`. When the offset runs past the end this
+    /// reports the secondary's true population instead of echoing the
+    /// request — the same quantity the proved path attests through its
+    /// count commitments, though here it is the local tree's unverified
+    /// claim, like the entries themselves.
+    pub skipped: u64,
+}
+
 /// Mutable state threaded through the counted descent.
 struct CountedPageState {
     /// In-range entries still to skip before returning starts.
@@ -2476,8 +2501,9 @@ struct CountedPageState {
 /// population fits inside the remaining offset are consumed from their
 /// parent's link aggregate without being fetched, so the skip costs one
 /// root-to-position path instead of one step per skipped entry. Returns
-/// the raw secondary keys (`sort_key ‖ item_key`); values are never
-/// needed — the caller decodes keys exactly as the iterator path does.
+/// the raw secondary keys (`sort_key ‖ item_key`) plus the true skipped
+/// count, `min(offset, population)`; values are never needed — the
+/// caller decodes keys exactly as the iterator path does.
 ///
 /// The root node is already resident from the merk open, so an offset at
 /// or past the whole population is answered from its aggregate alone,
@@ -2488,12 +2514,12 @@ fn counted_skip_page<'db, S: StorageContext<'db>>(
     limit: u64,
     left_to_right: bool,
     grove_version: &GroveVersion,
-) -> CostResult<Vec<Vec<u8>>, Error> {
+) -> CostResult<(Vec<Vec<u8>>, u64), Error> {
     merk.walk(|maybe_walker| {
         let mut cost = OperationCost::default();
         let Some(mut walker) = maybe_walker else {
             // Empty secondary: nothing to skip, nothing to return.
-            return Ok(Vec::new()).wrap_with_cost(cost);
+            return Ok((Vec::new(), 0)).wrap_with_cost(cost);
         };
         let population = cost_return_on_error_no_add!(
             cost,
@@ -2503,8 +2529,9 @@ fn counted_skip_page<'db, S: StorageContext<'db>>(
                 .map_err(|e| Error::CorruptedData(format!("secondary aggregate_data: {e}")))
                 .and_then(provable_count_from_aggregate)
         );
+        let skipped = offset.min(population);
         if limit == 0 || offset >= population {
-            return Ok(Vec::new()).wrap_with_cost(cost);
+            return Ok((Vec::new(), skipped)).wrap_with_cost(cost);
         }
         let mut state = CountedPageState {
             offset_remaining: offset,
@@ -2517,7 +2544,7 @@ fn counted_skip_page<'db, S: StorageContext<'db>>(
             &mut cost,
             counted_skip_collect(&mut walker, &mut state, &mut out, 0, grove_version)
         );
-        Ok(out).wrap_with_cost(cost)
+        Ok((out, skipped)).wrap_with_cost(cost)
     })
 }
 

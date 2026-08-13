@@ -849,7 +849,8 @@ mod tests {
         assert_eq!(
             db.indexed_count_top_k_paginated([TEST_LEAF, b"pcit"].as_ref(), 1, 1, true, None, gv)
                 .unwrap()
-                .expect("counted skip passes the malformed row without decoding it"),
+                .expect("counted skip passes the malformed row without decoding it")
+                .entries,
             vec![(1u64, b"b".to_vec())],
             "descending order is [0xff…, b, a]; the malformed row is counted at offset 0",
         );

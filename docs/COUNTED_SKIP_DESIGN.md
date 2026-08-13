@@ -86,6 +86,12 @@ shape-rejection rules are all unnecessary here.
      rest of the tree.
 - The page holds secondary **keys** only; the caller decodes them exactly as before (the old
   loop also discarded values). Cost is `O(depth + k)` node fetches for `offset > 0`.
+- The three paginated APIs return `IndexedTopKPage { entries, skipped }`, where `skipped` is the
+  **true** skipped count `min(offset, population)` — read from the root aggregate at zero extra
+  cost. The old linear read structurally could not report this (an offset past the end just
+  exhausted the iterator); the proved path attests the same quantity through its count
+  commitments, so unproved and proved reads now agree on it. Like the entries, the unproved
+  value is the local tree's claim, not independently verifiable.
 
 ### Where the two research passes differed (recorded per the consolidation request)
 
@@ -216,8 +222,6 @@ What the numbers establish:
 
 ## 8. Explicitly out of scope
 
-- Surfacing `skipped = min(offset, population)` to callers — the traversal computes it for free,
-  but returning it changes the public API shape; deferred to an owner decision.
 - Snapshot isolation for unproved reads (pre-existing, storage-layer).
 - A general-range merk-level walker and the large-`k` iterator-hybrid collect — neither is needed
   by the only caller; both are recorded above should the need appear.
