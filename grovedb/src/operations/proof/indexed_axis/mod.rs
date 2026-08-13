@@ -63,6 +63,7 @@
 
 mod axis_api;
 mod branched;
+mod display;
 mod envelope;
 #[cfg(feature = "minimal")]
 mod generate;

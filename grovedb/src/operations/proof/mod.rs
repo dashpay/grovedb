@@ -740,7 +740,7 @@ impl fmt::Display for GroveDBProofV1 {
     }
 }
 
-fn decode_merk_proof(proof: &[u8]) -> Result<String, fmt::Error> {
+pub(crate) fn decode_merk_proof(proof: &[u8]) -> Result<String, fmt::Error> {
     let mut result = String::new();
     let ops = MerkDecoder::new(proof);
 
