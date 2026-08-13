@@ -290,15 +290,24 @@ impl GroveDb {
                         items: items.to_vec(),
                         left_to_right: path_query.query.query.left_to_right,
                         sum_limit: budget.sum_limit,
-                        limit_of_items_to_check: budget.max_items_checked,
+                        limit_of_items_to_check: budget.match_limit,
                     },
                 };
+                // The unified sum-budget read uses the PROVABLE fold
+                // semantics — skip non-sum elements, skip references —
+                // so the trusted read and the sum-budget proof replay
+                // agree over any state. (The legacy AggregateSumPathQuery
+                // surface keeps its configurable options.)
                 let result = cost_return_on_error!(
                     &mut cost,
-                    self.query_aggregate_sums(
+                    self.query_aggregate_sums_with_options(
                         &aggregate_sum_path_query,
-                        allow_cache,
-                        error_if_intermediate_path_tree_not_present,
+                        crate::element::aggregate_sum_query::AggregateSumQueryOptions {
+                            allow_cache,
+                            error_if_intermediate_path_tree_not_present,
+                            error_if_non_sum_item_found: false,
+                            ignore_references: true,
+                        },
                         transaction,
                         grove_version,
                     )
