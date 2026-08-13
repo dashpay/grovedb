@@ -40,6 +40,7 @@
 //! [`verify_deepest_layer`] and [`walk_ancestor_chain`] verbatim on
 //! the tail and shared windows.
 
+#[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
@@ -52,12 +53,19 @@ use grovedb_merk::{
     proofs::{query::QueryProofVerify, Query as MerkQuery},
     tree::{combine_hash, combine_hash_three, value_hash, CryptoHash},
 };
+#[cfg(feature = "minimal")]
 use grovedb_path::SubtreePath;
 use grovedb_query::QueryItem as MerkQueryItem;
+#[cfg(feature = "minimal")]
 use grovedb_storage::StorageBatch;
+#[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
 
-use crate::{util::TxRef, Error, GroveDb, TransactionArg};
+#[cfg(feature = "minimal")]
+use crate::util::TxRef;
+#[cfg(feature = "minimal")]
+use crate::TransactionArg;
+use crate::{Error, GroveDb};
 
 use super::verify::{
     decode_axis_entries_from_count_offset_items, decode_axis_entries_from_result_set,
@@ -233,6 +241,7 @@ fn verify_branching_and_shared_layers(
     )
 }
 
+#[cfg(feature = "minimal")]
 impl GroveDb {
     /// Prove one arbitrary secondary query (the same `secondary_query`
     /// and `limit` per branch) over N sibling prefix branches, as one
@@ -487,7 +496,9 @@ impl GroveDb {
         );
         Ok(result.proof).wrap_with_cost(cost)
     }
+}
 
+impl GroveDb {
     /// Verify an [`IndexedAxisBranchedRangeProof`]: the same
     /// `secondary_query` and `limit` executed over every branch,
     /// reconstructing one GroveDB root hash.
