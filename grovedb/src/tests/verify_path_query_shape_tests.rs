@@ -10,7 +10,7 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
-        operations::proof::VerifiedPathQuery,
+        operations::proof::{SumBudgetStop, VerifiedPathQuery},
         tests::{make_test_grovedb, TEST_LEAF},
         Element, Error, GroveDb, PathQuery, SizedQuery,
     };
@@ -387,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn sum_budget_path_queries_have_no_proof_form_yet() {
+    fn sum_budget_verifies_through_the_unified_entry() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         build_pst(&db, b"pst", &[(b"a", 5), (b"b", 7)], grove_version);
@@ -399,22 +399,48 @@ mod tests {
             10,
             None,
         );
+        let proof = prove(&db, &pq, grove_version);
 
-        // The prover refuses by name...
-        match db.prove_query(&pq, None, grove_version).unwrap() {
-            Err(Error::NotSupported(message)) => {
-                assert!(message.contains("sum-budget"), "got: {message}")
-            }
-            other => panic!("sum-budget proving must be refused, got {other:?}"),
-        }
+        // The proved window must agree with the trusted read over the
+        // same state.
+        let direct = db
+            .run_path_query(
+                &pq,
+                true,
+                true,
+                true,
+                crate::query_result_type::QueryResultType::QueryKeyElementPairResultType,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("trusted sum-budget read");
+        let crate::operations::get::PathQueryRun::SumBudget(direct) = direct else {
+            panic!("expected PathQueryRun::SumBudget, got {direct:?}");
+        };
 
-        // ...and so does the verifier, pointing at the trusted read
-        // rather than verifying the shape as key selection.
-        match GroveDb::verify_path_query(&[], &pq, grove_version) {
-            Err(Error::NotSupported(message)) => {
-                assert!(message.contains("run_path_query"), "got: {message}")
+        match GroveDb::verify_path_query(&proof, &pq, grove_version)
+            .expect("unified sum-budget verify")
+        {
+            VerifiedPathQuery::SumBudget {
+                root_hash,
+                matches,
+                total,
+                stop,
+            } => {
+                assert_eq!(
+                    root_hash,
+                    db.root_hash(None, grove_version).unwrap().expect("root")
+                );
+                // Budget 10 over 5 then 7: the walk stops on the entry
+                // that crosses the limit, so both are matched.
+                assert_eq!(matches, vec![(b"a".to_vec(), 5i64), (b"b".to_vec(), 7i64)]);
+                assert_eq!(total, 12);
+                assert_eq!(matches, direct.results);
+                // 5 + 7 crosses the budget of 10 on the second entry.
+                assert_eq!(stop, SumBudgetStop::BudgetReached);
             }
-            other => panic!("sum-budget verification must be refused, got {other:?}"),
+            other => panic!("expected SumBudget, got {other:?}"),
         }
     }
 

@@ -91,7 +91,7 @@ fn read_mode_queries_use_version_2_and_round_trip() {
     let mut budget_query = Query::new_single_query_item(QueryItem::RangeFull(..));
     budget_query.read_mode = Some(Box::new(ReadMode::SumBudget(SumBudgetRead {
         sum_limit: 500,
-        max_items_checked: Some(100),
+        match_limit: Some(100),
     })));
     let bytes = encode(&budget_query);
     assert_eq!(bytes[0], 2);

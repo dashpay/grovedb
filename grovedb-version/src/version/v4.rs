@@ -40,6 +40,13 @@
 //!   supplied raw. V1..V3 refuse the shape on both sides. Gated because it
 //!   adds an acceptance rule to the live V1 envelope.
 //!
+//! - `proof.sum_budget_in_v1_envelope: 1` — the V1 proof envelope carries
+//!   sum-budget windows (`ProofBytes::SumBudgetWindow`): an ordinary Merk
+//!   proof over exactly the window the budget walk scanned, whose stop
+//!   condition the verifier attests by replaying the engine's fold over the
+//!   proved elements. V1..V3 refuse the shape on both sides. Gated because
+//!   it adds an acceptance rule to the live V1 envelope.
+//!
 //! - `path_query_methods.unified_read_mode: 1` — `PathQuery` read modes
 //!   (axis-ordered and sum-budget reads carried in `Query::read_mode`) are
 //!   served by the unified dispatch (`run_path_query`, and the unified
@@ -239,6 +246,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 verify_query_get_parent_tree_info_with_options: 0,
                 terminal_non_merk_tree_child_hash: 1, // bind terminal non-Merk tree element bytes to the parent value_hash
                 axis_descent_in_v1_envelope: 1, // axis-ordered descents in the V1 envelope (ReadMode::Axis)
+                sum_budget_in_v1_envelope: 1, // sum-budget windows in the V1 envelope (ReadMode::SumBudget)
             },
             average_case: GroveDBOperationsAverageCaseVersions {
                 add_average_case_get_merk_at_path: 0,

@@ -169,6 +169,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 verify_query_get_parent_tree_info_with_options: 0,
                 terminal_non_merk_tree_child_hash: 0,
                 axis_descent_in_v1_envelope: 0,
+                sum_budget_in_v1_envelope: 0,
             },
             average_case: GroveDBOperationsAverageCaseVersions {
                 add_average_case_get_merk_at_path: 0,
