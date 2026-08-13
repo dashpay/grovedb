@@ -7,7 +7,28 @@ use crate::query_item::QueryItem;
 
 impl QueryItem {
     /// Merge two overlapping query items into one that covers both ranges.
+    ///
+    /// Neither `self` nor `other` may be an aggregate meta-variant
+    /// (`AggregateCountOnRange`, `AggregateSumOnRange`,
+    /// `AggregateCountAndSumOnRange`): the result is always a plain
+    /// key/range variant, so merging an aggregate would silently erase the
+    /// aggregate wrapper and change the meaning of the query. Callers
+    /// (`Query::insert_item` / `AggregateSumQuery::insert_item`) must keep
+    /// aggregate items out of merging.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `self` or `other` is an aggregate meta-variant. This is an
+    /// invariant-enforcement panic (violating the precondition would
+    /// otherwise silently change query semantics); it is enforced in release
+    /// builds too because `merge` is public API.
     pub fn merge(&self, other: &Self) -> Self {
+        assert!(
+            !self.is_aggregate() && !other.is_aggregate(),
+            "QueryItem::merge must not be called with aggregate meta-variants; merging would \
+             drop the aggregate wrapper"
+        );
+
         if self.is_key() && other.is_key() && self == other {
             return self.clone();
         }
@@ -72,6 +93,11 @@ impl QueryItem {
     }
 
     /// Merges another QueryItem into this one in-place.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `self` or `other` is an aggregate meta-variant — see
+    /// [`Self::merge`].
     pub fn merge_assign(&mut self, other: &Self) {
         *self = self.merge(other);
     }
@@ -96,5 +122,16 @@ mod tests {
         let merged = key1.merge(&key2);
 
         assert_matches!(merged, QueryItem::Key(v) if v == value);
+    }
+
+    #[test]
+    #[should_panic(expected = "must not be called with aggregate meta-variants")]
+    fn test_merge_rejects_aggregate_meta_variants() {
+        let aggregate = QueryItem::AggregateCountOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        let key = QueryItem::Key(b"extra".to_vec());
+
+        let _ = aggregate.merge(&key);
     }
 }
