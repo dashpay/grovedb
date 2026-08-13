@@ -227,3 +227,107 @@ pub struct IndexedAxisAggregateResult {
     /// sum axis this is the signed sum.
     pub aggregate: i128,
 }
+
+/// One branch of a branched (multi-prefix) indexed-axis proof: the
+/// layers *below* the branching level, plus the branch's own target
+/// attestations and secondary proof. The layers above the branching
+/// level — and the branching level itself — are shared across branches
+/// and live once on the enclosing envelope.
+#[derive(Encode, Decode, Debug, Clone)]
+pub struct BranchedProofBranch {
+    /// Per-intermediate attestations for the branch's own layers:
+    /// entry 0 describes the branch's value-tree element at the
+    /// branching level (proved by the shared multi-key layer proof);
+    /// subsequent entries describe deeper intermediates. Length equals
+    /// `tail_layer_proofs.len()`.
+    pub ancestor_attestations: Vec<AncestorAttestation>,
+    /// Single-key layer proofs for the segments below the branch key,
+    /// top-down; the deepest proves the indexed-tree element. Length
+    /// equals the path-suffix length.
+    pub tail_layer_proofs: Vec<Vec<u8>>,
+    /// Same as [`IndexedAxisRangeProof::primary_root_hash`], per branch.
+    pub primary_root_hash: [u8; 32],
+    /// Same as [`IndexedAxisRangeProof::other_axes_root_hashes`].
+    pub other_axes_root_hashes: Vec<(u8, [u8; 32])>,
+    /// Same as [`IndexedAxisRangeProof::target_is_pcpsit`].
+    pub target_is_pcpsit: bool,
+    /// The branch's secondary proof: a Merk range proof for the range
+    /// shape, a `prove_count_offset_on_range` stream for the paginated
+    /// shape.
+    pub secondary_proof: Vec<u8>,
+}
+
+/// Wire-format envelope for a **branched** range / arbitrary-query
+/// proof: one query over N sibling prefix branches, attested by a
+/// single envelope. The layers above the branching level appear once;
+/// the branching level is one multi-key Merk proof binding every
+/// branch's value tree simultaneously; each branch carries only its
+/// own tail. Exactly one GroveDB root hash is reconstructed.
+#[derive(Encode, Decode, Debug)]
+pub struct IndexedAxisBranchedRangeProof {
+    /// Echoed [`IndexAxis::tag`] of the queried axis.
+    pub axis_tag: u8,
+    /// Single-key layer proofs for the shared path prefix, top-down.
+    /// Length equals the path-prefix length.
+    pub shared_layer_proofs: Vec<Vec<u8>>,
+    /// Attestations for the shared intermediate layers. Length equals
+    /// `shared_layer_proofs.len()`.
+    pub shared_ancestor_attestations: Vec<AncestorAttestation>,
+    /// One multi-key Merk proof at the branching level, proving every
+    /// echoed branch key in the shared prefix's Merk.
+    pub branching_layer_proof: Vec<u8>,
+    /// Per-branch tails, aligned with the verifier's branch-key list.
+    pub branches: Vec<BranchedProofBranch>,
+    /// Echoed query limit, shared by every branch.
+    pub requested_limit: Option<u16>,
+    /// Echoed iteration direction, shared by every branch.
+    pub descending: bool,
+}
+
+/// Wire-format envelope for a **branched** offset-paginated top-k
+/// proof. Same layer structure as
+/// [`IndexedAxisBranchedRangeProof`]; each branch's secondary proof is
+/// a `prove_count_offset_on_range` stream.
+#[derive(Encode, Decode, Debug)]
+pub struct IndexedAxisBranchedPaginatedProof {
+    /// Echoed [`IndexAxis::tag`] of the queried axis.
+    pub axis_tag: u8,
+    /// Same as [`IndexedAxisBranchedRangeProof::shared_layer_proofs`].
+    pub shared_layer_proofs: Vec<Vec<u8>>,
+    /// Same as
+    /// [`IndexedAxisBranchedRangeProof::shared_ancestor_attestations`].
+    pub shared_ancestor_attestations: Vec<AncestorAttestation>,
+    /// Same as
+    /// [`IndexedAxisBranchedRangeProof::branching_layer_proof`].
+    pub branching_layer_proof: Vec<u8>,
+    /// Per-branch tails, aligned with the verifier's branch-key list.
+    pub branches: Vec<BranchedProofBranch>,
+    /// Echoed page size, shared by every branch.
+    pub requested_k: u16,
+    /// Echoed offset, shared by every branch.
+    pub requested_offset: u64,
+    /// Echoed iteration direction, shared by every branch.
+    pub descending: bool,
+}
+
+/// Verified result of a branched range / arbitrary query: one root
+/// hash, per-branch entries aligned with the caller's branch keys.
+#[derive(Debug)]
+pub struct IndexedAxisBranchedQueryResult {
+    /// GroveDB root hash the whole envelope reconstructs.
+    pub root_hash: CryptoHash,
+    /// Per-branch decoded entries, aligned with the caller's branch
+    /// keys.
+    pub branches: Vec<AxisEntries>,
+}
+
+/// Verified result of a branched paginated top-k query.
+#[derive(Debug)]
+pub struct IndexedAxisBranchedPaginatedResult {
+    /// GroveDB root hash the whole envelope reconstructs.
+    pub root_hash: CryptoHash,
+    /// Per-branch `(skipped, entries)`, aligned with the caller's
+    /// branch keys; `skipped` carries the same attested-skip semantics
+    /// as [`IndexedAxisPaginatedResult::skipped`], per branch.
+    pub branches: Vec<(u64, AxisEntries)>,
+}

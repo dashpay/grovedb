@@ -664,7 +664,7 @@ impl GroveDb {
         Ok(bytes).wrap_with_cost(cost)
     }
 
-    fn build_indexed_axis_range_proof<'db, 'b, B: AsRef<[u8]>>(
+    pub(super) fn build_indexed_axis_range_proof<'db, 'b, B: AsRef<[u8]>>(
         &'db self,
         path: SubtreePath<'b, B>,
         axis: IndexAxis,
@@ -788,7 +788,7 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
-    fn build_indexed_axis_paginated_proof<'db, 'b, B: AsRef<[u8]>>(
+    pub(super) fn build_indexed_axis_paginated_proof<'db, 'b, B: AsRef<[u8]>>(
         &'db self,
         path: SubtreePath<'b, B>,
         axis: IndexAxis,

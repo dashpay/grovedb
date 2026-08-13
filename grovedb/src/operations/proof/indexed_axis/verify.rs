@@ -34,7 +34,7 @@ use super::{
 /// Walk the verifier-side ancestor chain (depths `last_idx - 1` down to
 /// `0`) and return the final reconstructed root hash. Returns the
 /// outer GroveDB root hash on success.
-fn walk_ancestor_chain(
+pub(super) fn walk_ancestor_chain(
     layer_proofs: &[Vec<u8>],
     ancestor_attestations: &[AncestorAttestation],
     path: &[&[u8]],
@@ -110,7 +110,7 @@ fn walk_ancestor_chain(
 /// Returns `(initial_layer_root, cidx_value_bytes)`. The
 /// `initial_layer_root` is then passed to `walk_ancestor_chain` as the
 /// starting `current_layer_root` for the ancestor walk.
-fn verify_deepest_layer(
+pub(super) fn verify_deepest_layer(
     layer_proofs: &[Vec<u8>],
     path: &[&[u8]],
     primary_root_hash: &[u8; 32],
@@ -228,7 +228,7 @@ fn verify_deepest_layer(
 
 /// Verify a single-key Merk proof: returns
 /// `(value_bytes, layer_root_hash, parent_recorded_value_hash)`.
-fn execute_single_key_proof(
+pub(super) fn execute_single_key_proof(
     proof_bytes: &[u8],
     target_key: &[u8],
     layer_label: &'static str,
@@ -509,7 +509,7 @@ fn decode_range_envelope(proof_bytes: &[u8]) -> Result<IndexedAxisRangeProof, Er
 /// them makes the proof byte-malleable — two distinct byte strings
 /// would verify as the same proof, which breaks any caller that
 /// dedups, caches, or consensus-compares proofs by their bytes.
-fn reject_trailing_envelope_bytes(
+pub(super) fn reject_trailing_envelope_bytes(
     consumed: usize,
     total: usize,
     shape: &'static str,
@@ -729,7 +729,7 @@ fn verify_indexed_axis_aggregate_inner(
     })
 }
 
-fn decode_axis_entries_from_result_set(
+pub(super) fn decode_axis_entries_from_result_set(
     axis: IndexAxis,
     result_set: &[grovedb_merk::proofs::query::ProvedKeyOptionalValue],
 ) -> Result<AxisEntries, Error> {
@@ -788,7 +788,7 @@ fn decode_axis_entries_from_result_set(
     }
 }
 
-fn decode_axis_entries_from_count_offset_items(
+pub(super) fn decode_axis_entries_from_count_offset_items(
     axis: IndexAxis,
     items: &[grovedb_merk::proofs::query::CountOffsetReturnedItem],
 ) -> Result<AxisEntries, Error> {
