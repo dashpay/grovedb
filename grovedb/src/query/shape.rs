@@ -403,8 +403,9 @@ fn has_conditional_branches(query: &grovedb_merk::proofs::Query) -> bool {
 
 /// Projects the vocabulary crate's validation error (always
 /// `InvalidOperation(&'static str)`) into this crate's `InvalidQuery`,
-/// preserving the message.
-fn read_mode_validation_error(e: grovedb_query::error::Error) -> Error {
+/// preserving the message. Shared with the axis-bounds lowering, which
+/// runs the same validation on the prover/verifier side.
+pub(crate) fn read_mode_validation_error(e: grovedb_query::error::Error) -> Error {
     match e {
         grovedb_query::error::Error::InvalidOperation(msg) => Error::InvalidQuery(msg),
         _ => Error::InvalidQuery("read-mode validation failed"),

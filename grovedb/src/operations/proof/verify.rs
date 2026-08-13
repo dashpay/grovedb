@@ -21,14 +21,44 @@ use crate::operations::proof::util::{
 };
 use crate::{
     operations::proof::{
+        indexed_axis::AxisEntries,
         util::{ProvedPathKeyOptionalValue, ProvedPathKeyValues},
-        GroveDBProof, GroveDBProofV0, GroveDBProofV1, LayerProof, MerkOnlyLayerProof, ProofBytes,
-        ProveOptions,
+        AxisDescentProof, GroveDBProof, GroveDBProofV0, GroveDBProofV1, LayerProof,
+        MerkOnlyLayerProof, ProofBytes, ProveOptions,
     },
     query::{GroveTrunkQueryResult, PathTrunkChunkQuery},
     query_result_type::PathKeyOptionalElementTrio,
     Element, Error, GroveDb, PathQuery,
 };
+
+/// One axis-ordered layer verified during a V1 walk: the full path to
+/// the indexed tree whose axis was read, plus the traversal's verified
+/// answer. Collected into a side channel because axis entries are
+/// `(aggregate_value, original_key)` pairs, not elements — they do not
+/// belong in the trio result set.
+#[derive(Debug)]
+pub(crate) struct AxisWalkOutcome {
+    /// Full path (from the GroveDB root) of the indexed tree.
+    pub(crate) path: Vec<Vec<u8>>,
+    /// The traversal's verified answer.
+    pub(crate) result: AxisWalkResult,
+}
+
+/// The verified answer of one axis-ordered layer, by traversal family.
+#[derive(Debug)]
+pub(crate) enum AxisWalkResult {
+    /// `TopK` / `Bounded`: the entries in walk order. `skipped` is the
+    /// count-commitment-attested skip for paginated traversals, `None`
+    /// for bounded ones (which do not skip).
+    Entries {
+        entries: AxisEntries,
+        skipped: Option<u64>,
+    },
+    /// `RankOfKey`: the attested 0-based rank of the queried key.
+    Rank { rank: u64 },
+    /// `RangeAggregate`: the attested aggregate over the value range.
+    Aggregate { value: i128 },
+}
 
 impl GroveDb {
     /// Verifies a proof against a path query with the given options, returning
@@ -370,6 +400,10 @@ impl GroveDb {
         let mut result = Vec::new();
         let mut limit = query.query.limit;
         let mut last_tree_feature_type = None;
+        // This entry point serves key-selection queries only (read-mode
+        // queries are gated out before reaching it), so axis outcomes
+        // cannot occur; the collector exists to satisfy the walk.
+        let mut axis_outcomes = Vec::new();
         let root_hash = Self::verify_layer_proof_v1(
             Self::merk_bytes_of_layer(&proof.root_layer, query)?,
             &proof.root_layer.lower_layers,
@@ -378,6 +412,7 @@ impl GroveDb {
             &mut limit,
             &[],
             &mut result,
+            &mut axis_outcomes,
             &mut last_tree_feature_type,
             &options,
             0,
@@ -408,6 +443,53 @@ impl GroveDb {
         Ok((root_hash, last_tree_feature_type, result))
     }
 
+    /// Run the V1 walk for a read-mode (axis-shaped) query, returning
+    /// the reconstructed root hash, the trio result set (which for axis
+    /// shapes carries only absence records and any incidental
+    /// key-selection rows), and the collected axis outcomes.
+    ///
+    /// This is the one V1 entry that does NOT gate read-mode queries
+    /// out — `verify_path_query` is its only caller and applies the
+    /// shape grammar (`classify`) plus the envelope gate first.
+    pub(crate) fn verify_proof_v1_with_axis_outcomes(
+        proof: &GroveDBProofV1,
+        query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<
+        (
+            CryptoHash,
+            Vec<PathKeyOptionalElementTrio>,
+            Vec<AxisWalkOutcome>,
+        ),
+        Error,
+    > {
+        let prove_options = ProveOptions::default();
+        let options = VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: false,
+            verify_proof_succinctness: true,
+            include_empty_trees_in_result: false,
+        };
+        let mut result = Vec::new();
+        let mut limit = query.query.limit;
+        let mut last_tree_feature_type = None;
+        let mut axis_outcomes = Vec::new();
+        let root_hash = Self::verify_layer_proof_v1(
+            Self::merk_bytes_of_layer(&proof.root_layer, query)?,
+            &proof.root_layer.lower_layers,
+            &prove_options,
+            query,
+            &mut limit,
+            &[],
+            &mut result,
+            &mut axis_outcomes,
+            &mut last_tree_feature_type,
+            &options,
+            0,
+            grove_version,
+        )?;
+        Ok((root_hash, result, axis_outcomes))
+    }
+
     fn verify_proof_v1_raw_internal(
         proof: &GroveDBProofV1,
         query: &PathQuery,
@@ -419,6 +501,8 @@ impl GroveDb {
         let mut result = Vec::new();
         let mut limit = query.query.limit;
         let mut last_tree_feature_type = None;
+        // Key-selection-only entry point; see verify_proof_v1_internal.
+        let mut axis_outcomes = Vec::new();
         let root_hash = Self::verify_layer_proof_v1(
             Self::merk_bytes_of_layer(&proof.root_layer, query)?,
             &proof.root_layer.lower_layers,
@@ -427,6 +511,7 @@ impl GroveDb {
             &mut limit,
             &[],
             &mut result,
+            &mut axis_outcomes,
             &mut last_tree_feature_type,
             &options,
             0,
@@ -677,11 +762,289 @@ impl GroveDb {
             | ProofBytes::DenseTree(_)
             | ProofBytes::CommitmentTree(_)
             | ProofBytes::CountIndexedTree(_)
-            | ProofBytes::IndexedTreeTerminal(_) => Err(Error::InvalidProof(
+            | ProofBytes::IndexedTreeTerminal(_)
+            | ProofBytes::IndexedTreeAxisDescent(_) => Err(Error::InvalidProof(
                 query.clone(),
                 "Expected Merk proof at this layer, got non-Merk proof type".to_string(),
             )),
         }
+    }
+
+    /// Verify one axis-ordered descent layer: the embedded
+    /// (V1-envelope) counterpart of the standalone indexed-axis
+    /// envelopes.
+    ///
+    /// Trust chain, strictly downward:
+    /// 1. The secondary proof is verified for the query's traversal,
+    ///    yielding the entries/aggregate AND the secondary's
+    ///    reconstructed root hash — the attestation is **recomputed**,
+    ///    never accepted as raw bytes.
+    /// 2. The proved element's family is checked against the queried
+    ///    axis, and the third `combine_hash_three` input is derived
+    ///    (recomputed secondary root for PCIT/PSIT; `axes_digest` over
+    ///    the payload's other-axes list plus the recomputed root for
+    ///    PCPSIT). Forged `primary_root_hash` / `other_axes` fail the
+    ///    binding below because they are part of its preimage.
+    /// 3. `combine_hash_three(H(value), primary_root, digest)` must
+    ///    equal the parent-committed `value_hash` the surrounding walk
+    ///    already verified.
+    ///
+    /// On success the traversal's verified answer is pushed into
+    /// `axis_outcomes` keyed by the indexed tree's full path.
+    #[allow(clippy::too_many_arguments)]
+    fn verify_axis_descent_layer(
+        lower_layer: &LayerProof,
+        axis_query: &grovedb_merk::proofs::query::AxisQuery,
+        element_value_bytes: &[u8],
+        parent_committed_hash: &CryptoHash,
+        path: &[&[u8]],
+        axis_outcomes: &mut Vec<AxisWalkOutcome>,
+        query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        use grovedb_merk::proofs::query::{
+            verify_aggregate_count_on_range_proof, verify_aggregate_sum_on_range_proof,
+            verify_count_offset_on_range_proof, AxisTraversal, QueryItem as MerkQueryItemForRange,
+        };
+
+        use crate::operations::proof::indexed_axis::verify::{
+            count_aggregate_inner_range, decode_axis_entries_from_count_offset_items,
+            decode_axis_entries_from_result_set, recompute_axis_binding_digest,
+            sum_aggregate_inner_range,
+        };
+
+        // Envelope gate: the axis descent is a V4 acceptance rule.
+        if grove_version
+            .grovedb_versions
+            .operations
+            .proof
+            .axis_descent_in_v1_envelope
+            != 1
+        {
+            return Err(Error::NotSupported(
+                "axis-ordered descents in the V1 proof envelope are not accepted at this \
+                 grove version"
+                    .to_string(),
+            ));
+        }
+
+        let ProofBytes::IndexedTreeAxisDescent(payload_bytes) = &lower_layer.merk_proof else {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "the query node at this indexed tree is an axis read; its lower layer must \
+                 carry ProofBytes::IndexedTreeAxisDescent"
+                    .to_string(),
+            ));
+        };
+        if !lower_layer.lower_layers.is_empty() {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "an axis descent is terminal and must not carry further lower layers".to_string(),
+            ));
+        }
+        let payload = AxisDescentProof::decode_canonical(payload_bytes)?;
+        let axis = axis_query.axis;
+        if payload.axis_tag != axis.tag() {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                format!(
+                    "axis descent payload claims axis tag {} but the query reads axis {:?}",
+                    payload.axis_tag, axis
+                ),
+            ));
+        }
+        if payload.rank.is_some()
+            && !matches!(axis_query.traversal, AxisTraversal::RankOfKey { .. })
+        {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "axis descent payload carries a rank but the traversal is not RankOfKey"
+                    .to_string(),
+            ));
+        }
+
+        // 1. Verify the secondary proof for the query's traversal,
+        //    recomputing the secondary root hash.
+        let (secondary_root_hash, walk_result) = match &axis_query.traversal {
+            AxisTraversal::TopK { k, offset } => {
+                let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
+                let res = verify_count_offset_on_range_proof(
+                    &payload.secondary_proof,
+                    &inner_range,
+                    *offset,
+                    Some(*k as u64),
+                    !axis_query.descending,
+                )
+                .unwrap()
+                .map_err(|e| {
+                    Error::InvalidProof(
+                        query.clone(),
+                        format!("axis descent: secondary count-offset proof failed: {e}"),
+                    )
+                })?;
+                let entries =
+                    decode_axis_entries_from_count_offset_items(axis, &res.returned_items)?;
+                (
+                    res.root_hash,
+                    AxisWalkResult::Entries {
+                        entries,
+                        skipped: Some(res.skipped),
+                    },
+                )
+            }
+            AxisTraversal::RankOfKey { key } => {
+                let Some(rank) = payload.rank else {
+                    return Err(Error::InvalidProof(
+                        query.clone(),
+                        "axis descent for a rank-of-key traversal must carry the rank".to_string(),
+                    ));
+                };
+                let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
+                let res = verify_count_offset_on_range_proof(
+                    &payload.secondary_proof,
+                    &inner_range,
+                    rank,
+                    Some(1),
+                    !axis_query.descending,
+                )
+                .unwrap()
+                .map_err(|e| {
+                    Error::InvalidProof(
+                        query.clone(),
+                        format!("axis descent: rank count-offset proof failed: {e}"),
+                    )
+                })?;
+                // The count commitments attest the skip; the claimed
+                // rank must be fully realized (not merely "walk ran
+                // out"), and the single yielded entry must be the
+                // queried key.
+                if res.skipped != rank {
+                    return Err(Error::InvalidProof(
+                        query.clone(),
+                        format!(
+                            "axis descent: claimed rank {rank} but the count commitments \
+                             attest {} skipped entries",
+                            res.skipped
+                        ),
+                    ));
+                }
+                let entries =
+                    decode_axis_entries_from_count_offset_items(axis, &res.returned_items)?;
+                let yielded_key = entries.first_original_key().map(|k| k.to_vec());
+                if yielded_key.as_deref() != Some(key.as_slice()) {
+                    return Err(Error::InvalidProof(
+                        query.clone(),
+                        format!(
+                            "axis descent: the entry at rank {rank} is {:?}, not the queried \
+                             key {}",
+                            yielded_key.map(hex::encode),
+                            hex::encode(key),
+                        ),
+                    ));
+                }
+                (res.root_hash, AxisWalkResult::Rank { rank })
+            }
+            AxisTraversal::Bounded { limit, .. } => {
+                let secondary_query =
+                    crate::query::axis_lowering::axis_bounded_merk_query(axis_query)?;
+                let left_to_right = secondary_query.left_to_right;
+                let (root, res) = secondary_query
+                    .execute_proof(&payload.secondary_proof, Some(*limit), left_to_right, 0)
+                    .unwrap()
+                    .map_err(|e| {
+                        Error::InvalidProof(
+                            query.clone(),
+                            format!("axis descent: secondary range proof failed: {e}"),
+                        )
+                    })?;
+                let entries = decode_axis_entries_from_result_set(axis, &res.result_set)?;
+                (
+                    root,
+                    AxisWalkResult::Entries {
+                        entries,
+                        skipped: None,
+                    },
+                )
+            }
+            AxisTraversal::RangeAggregate { lo, hi } => match axis {
+                grovedb_merk::proofs::query::IndexAxis::Count => {
+                    let inner_range = count_aggregate_inner_range(*lo, *hi);
+                    let (root, count) = verify_aggregate_count_on_range_proof(
+                        &payload.secondary_proof,
+                        &inner_range,
+                    )
+                    .unwrap()
+                    .map_err(|e| {
+                        Error::InvalidProof(
+                            query.clone(),
+                            format!("axis descent: aggregate-count proof failed: {e}"),
+                        )
+                    })?;
+                    (
+                        root,
+                        AxisWalkResult::Aggregate {
+                            value: count as i128,
+                        },
+                    )
+                }
+                grovedb_merk::proofs::query::IndexAxis::Sum => {
+                    let inner_range = sum_aggregate_inner_range(*lo, *hi);
+                    let (root, sum) =
+                        verify_aggregate_sum_on_range_proof(&payload.secondary_proof, &inner_range)
+                            .unwrap()
+                            .map_err(|e| {
+                                Error::InvalidProof(
+                                    query.clone(),
+                                    format!("axis descent: aggregate-sum proof failed: {e}"),
+                                )
+                            })?;
+                    (root, AxisWalkResult::Aggregate { value: sum as i128 })
+                }
+                grovedb_merk::proofs::query::IndexAxis::Avg => {
+                    return Err(Error::InvalidProof(
+                        query.clone(),
+                        "axis descent: range aggregates are not defined for the Avg axis"
+                            .to_string(),
+                    ));
+                }
+            },
+        };
+
+        // 2. Family check + third-input digest, with the RECOMPUTED
+        //    secondary root.
+        let digest = recompute_axis_binding_digest(
+            element_value_bytes,
+            axis,
+            &secondary_root_hash,
+            &payload.other_axes_root_hashes,
+            payload.target_is_pcpsit,
+            "axis descent",
+        )?;
+
+        // 3. Parent binding.
+        let combined = combine_hash_three(
+            value_hash(element_value_bytes).value(),
+            &payload.primary_root_hash,
+            &digest,
+        )
+        .value()
+        .to_owned();
+        if parent_committed_hash != &combined {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                format!(
+                    "axis descent binding mismatch: parent committed {}, recomputed {}",
+                    hex::encode(parent_committed_hash),
+                    hex::encode(combined),
+                ),
+            ));
+        }
+
+        axis_outcomes.push(AxisWalkOutcome {
+            path: path.iter().map(|segment| segment.to_vec()).collect(),
+            result: walk_result,
+        });
+        Ok(())
     }
 
     /// Derive a Merk layer's root hash without reporting any of its rows.
@@ -732,6 +1095,7 @@ impl GroveDb {
         limit_left: &mut Option<u16>,
         current_path: &[&[u8]],
         result: &mut Vec<T>,
+        axis_outcomes: &mut Vec<AxisWalkOutcome>,
         last_parent_tree_type: &mut Option<TreeFeatureType>,
         options: &VerifyOptions,
         current_depth: usize,
@@ -850,6 +1214,25 @@ impl GroveDb {
                             | Element::ProvableCountProvableSumIndexedTree(..) => {
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
+                                // Axis-ordered descent: the query node
+                                // governing this indexed tree carries
+                                // ReadMode::Axis, so the lower layer must be
+                                // an axis-descent payload — a proof over the
+                                // queried per-axis secondary — never a
+                                // primary descent or a terminal attestation.
+                                if let Some(axis_query) = query.axis_read_at_path(&path) {
+                                    Self::verify_axis_descent_layer(
+                                        lower_layer,
+                                        axis_query,
+                                        value_bytes,
+                                        hash,
+                                        &path,
+                                        axis_outcomes,
+                                        query,
+                                        grove_version,
+                                    )?;
+                                    continue;
+                                }
                                 if query.query_items_at_path(&path, grove_version)?.is_none() {
                                     // The indexed tree is itself a result and
                                     // nothing is queried below it. The element
@@ -1007,6 +1390,7 @@ impl GroveDb {
                                         limit_left,
                                         &path,
                                         result,
+                                        axis_outcomes,
                                         last_parent_tree_type,
                                         options,
                                         current_depth + 1,
@@ -1143,6 +1527,7 @@ impl GroveDb {
                                                     limit_left,
                                                     &path,
                                                     result,
+                                                    axis_outcomes,
                                                     last_parent_tree_type,
                                                     options,
                                                     current_depth + 1,
@@ -1199,7 +1584,8 @@ impl GroveDb {
                                             )?
                                         }
                                         ProofBytes::CountIndexedTree(_)
-                                        | ProofBytes::IndexedTreeTerminal(_) => {
+                                        | ProofBytes::IndexedTreeTerminal(_)
+                                        | ProofBytes::IndexedTreeAxisDescent(_) => {
                                             // Indexed-tree envelopes are
                                             // dispatched in the dedicated
                                             // arm above; reaching this point

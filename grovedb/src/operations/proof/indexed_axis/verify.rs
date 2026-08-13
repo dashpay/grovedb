@@ -126,6 +126,48 @@ fn verify_deepest_layer(
         execute_single_key_proof(&layer_proofs[last_idx], cidx_key, err_label)?;
     let actual_value_hash = value_hash(&cidx_value_bytes).value().to_owned();
 
+    let queried_axis_digest = recompute_axis_binding_digest(
+        &cidx_value_bytes,
+        axis,
+        secondary_root_hash,
+        other_axes_root_hashes,
+        target_is_pcpsit,
+        err_label,
+    )?;
+
+    let combined = combine_hash_three(&actual_value_hash, primary_root_hash, &queried_axis_digest)
+        .value()
+        .to_owned();
+    if combined != cidx_value_hash_recorded {
+        return Err(Error::CorruptedData(format!(
+            "{err_label}: deepest-layer chain mismatch — parent recorded value_hash {} but \
+             combine_hash_three(H(value), primary_root, axis_digest) is {}",
+            hex::encode(cidx_value_hash_recorded),
+            hex::encode(combined)
+        )));
+    }
+    Ok(layer_root)
+}
+
+/// The attestation-binding core shared by the standalone envelopes and
+/// the embedded V1 axis descent: check the proved element's family
+/// against the requested axis, then recompute the third
+/// `combine_hash_three` input — the queried secondary's (recomputed)
+/// root hash for PCIT / PSIT, or the `axes_digest` over
+/// `other_axes_root_hashes` + the queried axis's recomputed root for
+/// PCPSIT.
+///
+/// The caller performs the `combine_hash_three(H(value), primary_root,
+/// returned_digest)` comparison against whatever parent-committed hash
+/// its envelope carries.
+pub(crate) fn recompute_axis_binding_digest(
+    element_value_bytes: &[u8],
+    axis: IndexAxis,
+    secondary_root_hash: &[u8; 32],
+    other_axes_root_hashes: &[(u8, [u8; 32])],
+    target_is_pcpsit: bool,
+    err_label: &'static str,
+) -> Result<CryptoHash, Error> {
     // Bind the proved element's family to the requested axis.
     //
     // Without this, the H1-A chain check below passes for a *relabeled*
@@ -146,13 +188,14 @@ fn verify_deepest_layer(
     // digest and fails the chain check below), so the family check is
     // all that is additionally required.
     {
-        let proved_family = grovedb_element::ElementType::from_serialized_value(&cidx_value_bytes)
-            .map_err(|e| {
-                Error::CorruptedData(format!(
-                    "{err_label}: cannot determine element type of proved value: {e}"
-                ))
-            })?
-            .base();
+        let proved_family =
+            grovedb_element::ElementType::from_serialized_value(element_value_bytes)
+                .map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "{err_label}: cannot determine element type of proved value: {e}"
+                    ))
+                })?
+                .base();
         let expected_family = if target_is_pcpsit {
             grovedb_element::ElementType::ProvableCountProvableSumIndexedTree
         } else {
@@ -212,18 +255,7 @@ fn verify_deepest_layer(
         *secondary_root_hash
     };
 
-    let combined = combine_hash_three(&actual_value_hash, primary_root_hash, &queried_axis_digest)
-        .value()
-        .to_owned();
-    if combined != cidx_value_hash_recorded {
-        return Err(Error::CorruptedData(format!(
-            "{err_label}: deepest-layer chain mismatch — parent recorded value_hash {} but \
-             combine_hash_three(H(value), primary_root, axis_digest) is {}",
-            hex::encode(cidx_value_hash_recorded),
-            hex::encode(combined)
-        )));
-    }
-    Ok(layer_root)
+    Ok(queried_axis_digest)
 }
 
 /// Verify a single-key Merk proof: returns
@@ -729,7 +761,7 @@ fn verify_indexed_axis_aggregate_inner(
     })
 }
 
-fn decode_axis_entries_from_result_set(
+pub(crate) fn decode_axis_entries_from_result_set(
     axis: IndexAxis,
     result_set: &[grovedb_merk::proofs::query::ProvedKeyOptionalValue],
 ) -> Result<AxisEntries, Error> {
@@ -788,7 +820,7 @@ fn decode_axis_entries_from_result_set(
     }
 }
 
-fn decode_axis_entries_from_count_offset_items(
+pub(crate) fn decode_axis_entries_from_count_offset_items(
     axis: IndexAxis,
     items: &[grovedb_merk::proofs::query::CountOffsetReturnedItem],
 ) -> Result<AxisEntries, Error> {
@@ -844,7 +876,7 @@ fn decode_axis_entries_from_count_offset_items(
     }
 }
 
-fn count_aggregate_inner_range(lo: i128, hi: i128) -> MerkQueryItemForRange {
+pub(crate) fn count_aggregate_inner_range(lo: i128, hi: i128) -> MerkQueryItemForRange {
     // Out-of-domain (hi < 0 OR lo > u64::MAX): emit the canonical
     // empty-range shape (`u64::MAX..u64::MAX`) the prover commits via
     // `build_empty_count_aggregate_proof`. This must match exactly or
@@ -872,7 +904,7 @@ fn count_aggregate_inner_range(lo: i128, hi: i128) -> MerkQueryItemForRange {
     }
 }
 
-fn sum_aggregate_inner_range(lo: i128, hi: i128) -> MerkQueryItemForRange {
+pub(crate) fn sum_aggregate_inner_range(lo: i128, hi: i128) -> MerkQueryItemForRange {
     // Out-of-domain (hi < i64::MIN OR lo > i64::MAX): emit the canonical
     // empty-range shape the prover commits via
     // `build_empty_sum_aggregate_proof` (`encode(i64::MAX)..encode(i64::MAX)`).

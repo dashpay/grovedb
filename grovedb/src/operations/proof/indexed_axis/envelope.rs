@@ -178,6 +178,17 @@ impl AxisEntries {
     }
 
     /// Whether the result list is empty.
+    /// The first entry's original (primary) key, if any — the yielded
+    /// item of a `k = 1` page, used by rank verification.
+    pub fn first_original_key(&self) -> Option<&[u8]> {
+        match self {
+            AxisEntries::Count(entries) => entries.first().map(|(_, key)| key.as_slice()),
+            AxisEntries::Sum(entries) => entries.first().map(|(_, key)| key.as_slice()),
+            AxisEntries::Avg(entries) => entries.first().map(|(_, key)| key.as_slice()),
+        }
+    }
+
+    /// Whether there are no entries.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

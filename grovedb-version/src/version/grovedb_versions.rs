@@ -191,6 +191,30 @@ pub struct GroveDBOperationsProofVersions {
     /// non-empty **Merk** trees have required the child hash since V3 and
     /// stay bound at every version.
     pub terminal_non_merk_tree_child_hash: FeatureVersion,
+    /// Whether the V1 proof envelope carries **axis-ordered descents**
+    /// into indexed trees (`ProofBytes::IndexedTreeAxisDescent`),
+    /// serving `PathQuery`s whose query node holds `ReadMode::Axis`.
+    ///
+    /// - `0` (V1..V3): the prover refuses axis-shaped queries with
+    ///   `NotSupported` and the verifier rejects any proof/query pair
+    ///   involving one. These versions also reject the version-2
+    ///   `Query` wire encoding outright, so the slot's `0` value is the
+    ///   in-process mirror of that fail-closed decode.
+    /// - `1` (V4+): the prover emits the axis-descent layer — a proof
+    ///   over the queried per-axis **secondary** in place of the primary
+    ///   descent — and the verifier accepts it, recomputing the
+    ///   secondary-root attestation from the carried secondary proof
+    ///   (never trusting 32 raw bytes) before performing the same
+    ///   `combine_hash_three` parent binding as the other indexed
+    ///   shapes.
+    ///
+    /// Gated because it adds an acceptance rule to the live V1
+    /// envelope: an upgraded verifier accepts proof shapes a released
+    /// one rejects. Prover and verifier read the same slot, so there is
+    /// no version at which they disagree about whether the shape
+    /// exists. Indexed trees themselves cannot exist in pre-V4
+    /// production data, so `0` never rejects anything real.
+    pub axis_descent_in_v1_envelope: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
