@@ -1,6 +1,7 @@
 //! Queries
 
 pub mod aggregate_sum_path_query;
+mod axis_path_query;
 mod grove_branch_query_result;
 mod grove_trunk_query_result;
 mod path_branch_chunk_query;
@@ -12,8 +13,9 @@ use std::{
     fmt,
 };
 
-use bincode::{Decode, Encode};
 #[cfg(any(feature = "minimal", feature = "verify"))]
+pub use axis_path_query::{AxisPathQuery, AxisQuery, AxisTraversal};
+use bincode::{Decode, Encode};
 pub use grove_branch_query_result::GroveBranchQueryResult;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grove_trunk_query_result::{GroveTrunkQueryResult, LeafInfo};

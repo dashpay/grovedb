@@ -36,6 +36,7 @@ mod coverage_round7_tests;
 // and `provable_count_provable_sum_indexed_tree_tests`; the generic-write
 // rejection cases it uniquely held are ported to
 // `generic_writes_against_pcit_primary_are_rejected`.
+mod axis_path_query_tests;
 mod count_offset_paginated_tests;
 mod count_sum_tree_tests;
 mod count_tree_tests;

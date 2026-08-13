@@ -35,5 +35,9 @@ pub mod replace_subtree_root;
 #[cfg(feature = "minimal")]
 pub mod indexed_tree;
 
+/// The axis path query front door: read, prove and verify
+/// axis-ordered reads of an indexed tree.
+pub mod axis_path_query;
+
 #[cfg(feature = "minimal")]
 pub use get::{QueryItemOrSumReturnType, MAX_REFERENCE_HOPS};
