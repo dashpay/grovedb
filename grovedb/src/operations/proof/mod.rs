@@ -24,6 +24,13 @@ pub mod indexed_axis;
 /// Utility functions for proof display and conversion.
 pub mod util;
 mod verify;
+/// The unified verify entry point (`verify_path_query`), serving every
+/// provable `PathQuery` shape. Verify-reachable for light clients.
+#[cfg(any(feature = "minimal", feature = "verify"))]
+mod verify_path_query;
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use verify_path_query::VerifiedPathQuery;
 
 use std::{collections::BTreeMap, fmt};
 
@@ -269,6 +276,92 @@ pub enum ProofBytes {
     /// only ever emitted for indexed trees, which no released version can
     /// store.
     IndexedTreeTerminal(Vec<u8>),
+    /// Axis-ordered descent into an indexed tree: instead of descending
+    /// the primary (the [`ProofBytes::CountIndexedTree`] shape), the
+    /// layer carries a proof over the queried per-axis **secondary** —
+    /// the [`AxisDescentProof`] payload, encoded with the same
+    /// big-endian canonical config as the envelope itself.
+    ///
+    /// Emitted only when the query node governing this layer carries
+    /// `ReadMode::Axis` (see `PathQuery::axis_read_at_path`); gated on
+    /// `proof.axis_descent_in_v1_envelope` (GROVE_V4+). The verifier
+    /// **recomputes** the secondary-root attestation from the payload's
+    /// secondary proof rather than accepting 32 raw bytes, then
+    /// performs the same `combine_hash_three` parent binding as the
+    /// other indexed shapes.
+    ///
+    /// Appended after [`ProofBytes::IndexedTreeTerminal`] so every
+    /// existing variant keeps its discriminant.
+    IndexedTreeAxisDescent(Vec<u8>),
+}
+
+/// Payload of [`ProofBytes::IndexedTreeAxisDescent`]: everything the
+/// verifier needs to check an axis-ordered read of one indexed tree,
+/// *given* the query (which carries the axis, traversal, direction, and
+/// bounds — none of those are echoed here, matching the envelope's
+/// query-as-input philosophy).
+///
+/// Trust model per field:
+/// - `secondary_proof` is verified cryptographically; the queried
+///   axis's secondary root hash is **recomputed** from it.
+/// - `primary_root_hash` and `other_axes_root_hashes` are
+///   prover-supplied but bound: they enter `combine_hash_three(H(value),
+///   primary_root, attestation)` (with `attestation` the recomputed
+///   secondary root for PCIT/PSIT, or the axes digest over
+///   `other_axes_root_hashes` + the recomputed queried-axis root for
+///   PCPSIT), which must equal the parent-committed `value_hash` — any
+///   forgery fails that comparison.
+/// - `rank` is present iff the traversal is `RankOfKey`: the verifier
+///   needs the claimed rank to drive the count-offset verification
+///   walk, whose counted commitments then attest it (a wrong claim
+///   fails verification), and the single yielded entry must be the
+///   queried key.
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub struct AxisDescentProof {
+    /// Tag byte of the queried axis; must equal the query's axis.
+    pub axis_tag: u8,
+    /// Whether the target element is a PCPSIT (multi-axis TLV) rather
+    /// than a single-secondary PCIT / PSIT.
+    pub target_is_pcpsit: bool,
+    /// PCPSIT only: `(tag, secondary_root_hash)` for every axis the
+    /// element carries *except* the queried one. Must be empty for
+    /// PCIT / PSIT.
+    pub other_axes_root_hashes: Vec<(u8, [u8; 32])>,
+    /// Root hash of the indexed tree's primary Merk at proof time.
+    pub primary_root_hash: [u8; 32],
+    /// `RankOfKey` traversals only: the prover-computed rank.
+    pub rank: Option<u64>,
+    /// The secondary-Merk proof for the query's traversal: a
+    /// count-offset paginated proof for `TopK` / `RankOfKey`, a plain
+    /// Merk range proof for `Bounded`, an aggregate-on-range proof for
+    /// `RangeAggregate`.
+    pub secondary_proof: Vec<u8>,
+}
+
+impl AxisDescentProof {
+    /// Encode with the same big-endian config as the surrounding
+    /// envelope.
+    pub fn encode_canonical(&self) -> Result<Vec<u8>, Error> {
+        let config = bincode::config::standard().with_big_endian();
+        bincode::encode_to_vec(self, config)
+            .map_err(|e| Error::CorruptedData(format!("unable to encode axis descent: {e}")))
+    }
+
+    /// Decode with trailing-byte rejection and a payload size cap.
+    pub fn decode_canonical(bytes: &[u8]) -> Result<Self, Error> {
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_limit::<{ 16 * 1024 * 1024 }>();
+        let (decoded, consumed): (Self, usize) = bincode::decode_from_slice(bytes, config)
+            .map_err(|e| Error::CorruptedData(format!("unable to decode axis descent: {e}")))?;
+        if consumed != bytes.len() {
+            return Err(Error::CorruptedData(format!(
+                "axis descent payload has {} trailing bytes",
+                bytes.len() - consumed
+            )));
+        }
+        Ok(decoded)
+    }
 }
 
 /// A single layer of a v1 GroveDB proof supporting multiple tree types.
@@ -705,6 +798,26 @@ impl fmt::Display for ProofBytes {
                     )
                 } else {
                     write!(f, "IndexedTreeTerminal(<invalid: {} bytes>)", bytes.len())
+                }
+            }
+            ProofBytes::IndexedTreeAxisDescent(bytes) => {
+                match AxisDescentProof::decode_canonical(bytes) {
+                    Ok(payload) => write!(
+                        f,
+                        "IndexedTreeAxisDescent(axis_tag={}, pcpsit={}, other_axes={}, \
+                     primary_root={}, rank={:?}, secondary_proof={} bytes)",
+                        payload.axis_tag,
+                        payload.target_is_pcpsit,
+                        payload.other_axes_root_hashes.len(),
+                        hex::encode(payload.primary_root_hash),
+                        payload.rank,
+                        payload.secondary_proof.len(),
+                    ),
+                    Err(_) => write!(
+                        f,
+                        "IndexedTreeAxisDescent(<invalid: {} bytes>)",
+                        bytes.len()
+                    ),
                 }
             }
         }

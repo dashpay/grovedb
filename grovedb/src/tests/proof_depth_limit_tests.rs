@@ -319,6 +319,7 @@ mod tests {
         let mut limit: Option<u16> = Some(100);
         let mut last_tree_type = None;
         let mut result: Vec<PathKeyOptionalElementTrio> = Vec::new();
+        let mut axis_outcomes = Vec::new();
 
         let err = GroveDb::verify_layer_proof_v1(
             match &dummy_proof.merk_proof {
@@ -331,6 +332,7 @@ mod tests {
             &mut limit,
             &[],
             &mut result,
+            &mut axis_outcomes,
             &mut last_tree_type,
             &verify_options,
             MAX_PROOF_DEPTH + 1,
@@ -715,6 +717,7 @@ mod tests {
         let mut limit: Option<u16> = Some(100);
         let mut last_tree_type = None;
         let mut result: Vec<PathKeyOptionalElementTrio> = Vec::new();
+        let mut axis_outcomes = Vec::new();
 
         let err = GroveDb::verify_layer_proof_v1(
             match &dummy_proof.merk_proof {
@@ -727,6 +730,7 @@ mod tests {
             &mut limit,
             &[b"deep"],
             &mut result,
+            &mut axis_outcomes,
             &mut last_tree_type,
             &verify_options,
             MAX_PROOF_DEPTH,

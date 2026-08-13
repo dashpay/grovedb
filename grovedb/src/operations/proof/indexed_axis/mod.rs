@@ -65,7 +65,7 @@ mod axis_api;
 mod envelope;
 #[cfg(feature = "minimal")]
 mod generate;
-mod verify;
+pub(crate) mod verify;
 
 pub use envelope::{
     AncestorAttestation, AxisEntries, IndexedAxisAggregateProof, IndexedAxisAggregateResult,

@@ -32,6 +32,14 @@
 //!   flips a rejected/accepted outcome and because deriving the state root
 //!   costs the prover extra storage reads and hash calls.
 //!
+//! - `proof.axis_descent_in_v1_envelope: 1` — the V1 proof envelope carries
+//!   axis-ordered descents into indexed trees
+//!   (`ProofBytes::IndexedTreeAxisDescent`): a proof over the queried
+//!   per-axis secondary in place of the primary descent, with the
+//!   secondary-root attestation recomputed by the verifier rather than
+//!   supplied raw. V1..V3 refuse the shape on both sides. Gated because it
+//!   adds an acceptance rule to the live V1 envelope.
+//!
 //! - `path_query_methods.unified_read_mode: 1` — `PathQuery` read modes
 //!   (axis-ordered and sum-budget reads carried in `Query::read_mode`) are
 //!   served by the unified dispatch (`run_path_query`, and the unified
@@ -230,6 +238,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 verify_query_with_chained_path_queries: 0,
                 verify_query_get_parent_tree_info_with_options: 0,
                 terminal_non_merk_tree_child_hash: 1, // bind terminal non-Merk tree element bytes to the parent value_hash
+                axis_descent_in_v1_envelope: 1, // axis-ordered descents in the V1 envelope (ReadMode::Axis)
             },
             average_case: GroveDBOperationsAverageCaseVersions {
                 add_average_case_get_merk_at_path: 0,
