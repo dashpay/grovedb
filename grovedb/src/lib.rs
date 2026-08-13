@@ -241,7 +241,12 @@ use grovedb_storage::{Storage, StorageContext};
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "minimal")]
 use grovedb_visualize::DebugByteVectors;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+// Gated on `minimal` alone, matching `operations::indexed_tree` itself: the
+// only APIs that produce an `IndexedTopKPage` are the paginated indexed-axis
+// reads, which need storage. A verify-only build consumes proofs and can
+// never name this type, so widening the gate here to `any(minimal, verify)`
+// only breaks that cut on an unresolved import.
+#[cfg(feature = "minimal")]
 pub use operations::indexed_tree::IndexedTopKPage;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use query::{
