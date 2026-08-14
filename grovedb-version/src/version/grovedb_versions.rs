@@ -35,6 +35,24 @@ pub struct GroveDBPathQueryMethodVersions {
     pub merge: FeatureVersion,
     pub query_items_at_path: FeatureVersion,
     pub should_add_parent_tree_at_path: FeatureVersion,
+    /// Whether `PathQuery` read modes (axis-ordered and sum-budget
+    /// reads, `Query::read_mode`) are served.
+    ///
+    /// - `0` (GROVE_V1..=V3): any `PathQuery` carrying a read mode is
+    ///   rejected with `NotSupported` at every read / prove / verify
+    ///   entry point. The vocabulary itself still encodes and decodes —
+    ///   the gate is about *serving*, so a v4-built query constructed
+    ///   ahead of activation fails closed instead of being misread as
+    ///   plain key selection (an axis read has empty items; running it
+    ///   as key selection would return an empty result masquerading as
+    ///   real absence, and a proof would attest to the wrong read).
+    /// - `1` (GROVE_V4+): `run_path_query` (and, as they land, the
+    ///   unified prove/verify dispatch) serve read-mode queries.
+    ///
+    /// Prover and verifier read the same slot, so there is no version
+    /// at which the two sides can disagree about whether a read-mode
+    /// shape exists.
+    pub unified_read_mode: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -192,6 +210,11 @@ pub struct GroveDBOperationsQueryVersions {
     pub query_keys_optional: FeatureVersion,
     pub query_raw_keys_optional: FeatureVersion,
     pub follow_element: FeatureVersion,
+    /// The unified read dispatch (`GroveDb::run_path_query`). This is
+    /// the method's own algorithm slot; whether read-mode *shapes* are
+    /// served is the separate
+    /// `GroveDBPathQueryMethodVersions::unified_read_mode` gate.
+    pub run_path_query: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

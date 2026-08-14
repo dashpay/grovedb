@@ -456,6 +456,119 @@ impl GroveDb {
         Ok(bytes).wrap_with_cost(cost)
     }
 
+    /// Compute the rank of `item_key` in the directional walk over the
+    /// per-axis secondary of the indexed tree at `path` — the count of
+    /// entries strictly before it, read in O(log n) off the secondary's
+    /// count aggregates. Shared by the rank proof (which then attests
+    /// the rank via a paginated envelope at `offset = rank, k = 1`) and
+    /// the trusted read path. The returned rank has no cryptographic
+    /// guarantee on its own.
+    ///
+    /// Errors with `InvalidPath` at the root or on a non-indexed
+    /// target, and `PathKeyNotFound` when `item_key` is not in the
+    /// indexed primary.
+    pub(crate) fn compute_indexed_axis_rank_of_key<'b, B, P>(
+        &self,
+        path: P,
+        axis: IndexAxis,
+        item_key: &[u8],
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<u64, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        use crate::operations::indexed_tree::make_axis_secondary_key;
+
+        let mut cost = OperationCost::default();
+        let path: SubtreePath<B> = path.into();
+        let batch = StorageBatch::new();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let path_keys: Vec<Vec<u8>> = path.to_vec();
+        if path_keys.is_empty() {
+            return Err(Error::InvalidPath(
+                "cannot compute an indexed-axis rank at the root path".to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+
+        // 1. Read the item's element from the primary to derive its
+        //    secondary sort key (the walk position is a pure function of
+        //    the entry's (count, sum) aggregates plus its key).
+        let primary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(path.clone(), tx_ref, Some(&batch), grove_version)
+        );
+        if !primary_merk.tree_type.is_indexed_primary() {
+            return Err(Error::InvalidPath(
+                "indexed-axis rank requires the path's last segment to be an indexed-tree \
+                 element"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+        let item_element = cost_return_on_error!(
+            &mut cost,
+            Element::get(&primary_merk, item_key, true, grove_version).map_err(|e| {
+                Error::PathKeyNotFound(format!(
+                    "indexed-axis rank: item key {} not found in the indexed primary: {e}",
+                    hex::encode(item_key)
+                ))
+            })
+        );
+        let (count, sum) = item_element.count_sum_value_or_default();
+        let secondary_key = make_axis_secondary_key(axis, count, sum, item_key);
+
+        // 2. Compute the rank: the count of entries strictly before the
+        //    item in the directional walk, read O(log n) off the
+        //    secondary's count aggregates.
+        let (secondary_root_key, _, _) = cost_return_on_error!(
+            &mut cost,
+            read_queried_axis_info_with_path_keys(
+                self,
+                &path_keys,
+                axis,
+                tx_ref,
+                &batch,
+                grove_version,
+                "indexed-axis rank",
+            )
+        );
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_indexed_secondary_at_path(
+                path.clone(),
+                axis,
+                secondary_root_key,
+                tx_ref,
+                Some(&batch),
+                grove_version,
+            )
+        );
+        let before_range = if descending {
+            // Descending walk: everything with a strictly GREATER
+            // secondary key comes first.
+            MerkQueryItemForRange::RangeAfter(secondary_key.clone()..)
+        } else {
+            // Ascending walk: everything with a strictly SMALLER
+            // secondary key comes first.
+            MerkQueryItemForRange::RangeTo(..secondary_key.clone())
+        };
+        let rank = cost_return_on_error!(
+            &mut cost,
+            secondary_merk
+                .count_aggregate_on_range(&before_range, grove_version)
+                .map_err(|e| Error::CorruptedData(format!(
+                    "indexed-axis rank: counting entries before the item: {e}"
+                )))
+        );
+        Ok(rank).wrap_with_cost(cost)
+    }
+
     /// Prove that `item_key` sits at a specific rank in the directional
     /// walk of an indexed axis: rank `R` (0-based) means exactly `R`
     /// entries come strictly before it in the walk. Ties (equal axis
@@ -487,94 +600,28 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        use crate::operations::indexed_tree::make_axis_secondary_key;
-
         let mut cost = OperationCost::default();
         let path: SubtreePath<B> = path.into();
+
+        // Steps 1-2 (derive the item's secondary sort key, count the
+        // entries strictly before it in the walk direction) are shared
+        // with the trusted read path — see
+        // `compute_indexed_axis_rank_of_key`.
+        let rank = cost_return_on_error!(
+            &mut cost,
+            self.compute_indexed_axis_rank_of_key(
+                path.clone(),
+                axis,
+                item_key,
+                descending,
+                transaction,
+                grove_version,
+            )
+        );
+
         let batch = StorageBatch::new();
         let tx = TxRef::new(&self.db, transaction);
         let tx_ref = tx.as_ref();
-
-        let path_keys: Vec<Vec<u8>> = path.to_vec();
-        if path_keys.is_empty() {
-            return Err(Error::InvalidPath(
-                "cannot prove indexed-axis rank at root path".to_string(),
-            ))
-            .wrap_with_cost(cost);
-        }
-
-        // 1. Read the item's element from the primary to derive its
-        //    secondary sort key (the walk position is a pure function of
-        //    the entry's (count, sum) aggregates plus its key).
-        let primary_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_transactional_merk_at_path(path.clone(), tx_ref, Some(&batch), grove_version)
-        );
-        if !primary_merk.tree_type.is_indexed_primary() {
-            return Err(Error::InvalidPath(
-                "prove_indexed_axis_rank_of_key requires the path's last segment to be an \
-                 indexed-tree element"
-                    .to_string(),
-            ))
-            .wrap_with_cost(cost);
-        }
-        let item_element = cost_return_on_error!(
-            &mut cost,
-            Element::get(&primary_merk, item_key, true, grove_version).map_err(|e| {
-                Error::PathKeyNotFound(format!(
-                    "indexed-axis rank proof: item key {} not found in the indexed primary: {e}",
-                    hex::encode(item_key)
-                ))
-            })
-        );
-        let (count, sum) = item_element.count_sum_value_or_default();
-        let secondary_key = make_axis_secondary_key(axis, count, sum, item_key);
-
-        // 2. Compute the rank: the count of entries strictly before the
-        //    item in the directional walk, read O(log n) off the
-        //    secondary's count aggregates.
-        let (secondary_root_key, _, _) = cost_return_on_error!(
-            &mut cost,
-            read_queried_axis_info_with_path_keys(
-                self,
-                &path_keys,
-                axis,
-                tx_ref,
-                &batch,
-                grove_version,
-                "indexed-axis rank proof",
-            )
-        );
-        let secondary_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_indexed_secondary_at_path(
-                path.clone(),
-                axis,
-                secondary_root_key,
-                tx_ref,
-                Some(&batch),
-                grove_version,
-            )
-        );
-        let before_range = if descending {
-            // Descending walk: everything with a strictly GREATER
-            // secondary key comes first.
-            MerkQueryItemForRange::RangeAfter(secondary_key.clone()..)
-        } else {
-            // Ascending walk: everything with a strictly SMALLER
-            // secondary key comes first.
-            MerkQueryItemForRange::RangeTo(..secondary_key.clone())
-        };
-        let rank = cost_return_on_error!(
-            &mut cost,
-            secondary_merk
-                .count_aggregate_on_range(&before_range, grove_version)
-                .map_err(|e| Error::CorruptedData(format!(
-                    "indexed-axis rank proof: counting entries before the item: {e}"
-                )))
-        );
-        drop(secondary_merk);
-        drop(primary_merk);
 
         // 3. The rank proof IS the paginated proof at (offset = rank,
         //    k = 1): its counted commitments attest the skipped prefix

@@ -86,6 +86,7 @@ mod reference_path_tests;
 mod reference_with_sum_item_tests;
 mod replication_session_tests;
 mod replication_utils_tests;
+mod run_path_query_tests;
 mod succinctness_gap_test;
 mod test_compaction_sizes;
 mod test_provable_count_fresh;
