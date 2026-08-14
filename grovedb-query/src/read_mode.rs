@@ -100,7 +100,7 @@ impl fmt::Display for SumBudgetRead {
     }
 }
 
-/// How a [`Query`](crate::Query) node reads the tree its (sub)path
+/// How a [`Query`] node reads the tree its (sub)path
 /// names. Absent (`None` on the `Query`) means plain key selection.
 ///
 /// Wire tags are frozen: `Axis = 0`, `SumBudget = 1`.

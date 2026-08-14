@@ -93,6 +93,19 @@ pub const MAX_RANK_OF_KEY_LEN: usize = 255;
 /// How an [`AxisQuery`] walks the secondary. Wire tags are explicit and
 /// frozen: `RankedPage = 0`, `Bounded = 1`, `RankOfKey = 2`,
 /// `RangeAggregate = 3`.
+///
+/// # Cost
+///
+/// Each variant documents best / average / worst prover work, which is
+/// also the shape of the proof and so of the verifier's work. Throughout,
+/// `n` is the number of entries on the queried axis; an empty secondary
+/// short-circuits every traversal to `O(1)`.
+///
+/// The costs are worth reading before choosing a shape: none of them
+/// scale with how *deep* into the ordering the answer sits, because
+/// every axis secondary binds an aggregate count into its node hashes.
+/// Skipping and counting are read off subtree commitments rather than
+/// walked entry by entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AxisTraversal {
@@ -111,6 +124,12 @@ pub enum AxisTraversal {
     /// Skipping is attested from the secondary's counted subtree
     /// commitments rather than walked, so a large `offset` costs the
     /// same as a small one.
+    ///
+    /// **Cost** — best `O(log n)` (single-entry page), average and
+    /// worst `O(log n + k)`: descend to the page start, then emit `k`
+    /// entries. **No term in `offset`**: each skipped subtree collapses
+    /// to one counted commitment, so the skip is `O(log n)` rather than
+    /// `O(offset)` — page 10 000 costs what page 1 costs.
     RankedPage {
         /// Number of entries to return.
         k: u16,
@@ -123,6 +142,13 @@ pub enum AxisTraversal {
     /// Bounds are carried as `i128` for every axis — the convention the
     /// aggregate-range entry points use — and are validated against the
     /// axis's own domain.
+    ///
+    /// **Cost** — with `m` the entries actually inside `[lo, hi]`: best
+    /// `O(log n)` (the range matches nothing), average
+    /// `O(log n + min(limit, m))`, worst `O(log n + limit)`. Unlike
+    /// [`Self::RankedPage`] this walks the matched entries, so `limit`
+    /// is the real bound on work — an unbounded-looking range is only
+    /// as expensive as the `limit` you set.
     Bounded {
         /// Inclusive lower bound on the aggregate.
         lo: i128,
@@ -134,6 +160,19 @@ pub enum AxisTraversal {
     /// The rank of `key` in the directional walk — "where does this
     /// entry place?". Served as an `offset = rank, k = 1` page whose
     /// verifier additionally checks the yielded key equals `key`.
+    ///
+    /// The rank is *derived*, never searched for: the entry's position
+    /// is a pure function of its aggregate and its key (the secondary
+    /// is keyed `sort_key ‖ original_key`), so one point read of the
+    /// primary reconstructs its secondary key, and the entries before
+    /// it are counted off the subtree commitments.
+    ///
+    /// **Cost** — `O(log n)` in every case: one primary point read,
+    /// one counted-range count, one single-entry page proof. **No term
+    /// in the rank itself** — ranking 5-millionth costs what ranking
+    /// 5th costs. Errors with `PathKeyNotFound` when `key` is absent
+    /// from the primary: this answers where an entry *does* place, not
+    /// where a hypothetical one would.
     RankOfKey {
         /// The original (primary) key whose rank is requested.
         key: Vec<u8>,
@@ -141,6 +180,14 @@ pub enum AxisTraversal {
     /// A single aggregate over every entry whose aggregate value lies in
     /// the inclusive `[lo, hi]` range. Count and Sum axes only — the
     /// Avg axis has no meaningful sum-of-averages.
+    ///
+    /// **Cost** — `O(log n)` in every case. The walk classifies each
+    /// subtree as fully Contained, Disjoint, or Partial and folds a
+    /// Contained subtree's stored aggregate in one step, descending
+    /// only along the two range boundaries. **No term in the number of
+    /// matched entries** — summing a million in-range entries costs
+    /// what summing one costs, which is what makes this preferable to
+    /// [`Self::Bounded`] whenever only the total is wanted.
     RangeAggregate {
         /// Inclusive lower bound on the aggregate.
         lo: i128,
@@ -274,12 +321,29 @@ impl AxisQuery {
     ///
     /// `descending` chooses which end the ranking starts from: `true`
     /// gives the `k` largest by aggregate (top-k), `false` the `k`
-    /// smallest (bottom-k). See [`AxisTraversal::RankedPage`].
+    /// smallest — for which [`Self::bottom_k`] is the clearer spelling.
+    /// See [`AxisTraversal::RankedPage`] for the shape and its cost.
     pub const fn top_k(axis: IndexAxis, k: u16, offset: u64, descending: bool) -> Self {
         Self {
             axis,
             traversal: AxisTraversal::RankedPage { k, offset },
             descending,
+        }
+    }
+
+    /// The `k` **smallest** entries on `axis` by aggregate, starting at
+    /// rank `offset` — the ascending reading of
+    /// [`AxisTraversal::RankedPage`].
+    ///
+    /// Identical to [`Self::top_k`] with `descending: false`, but says
+    /// which end it starts from in the name rather than in a boolean
+    /// argument, where `top_k(.., false)` reads as a contradiction.
+    /// Same cost: `O(log n + k)`, with no term in `offset`.
+    pub const fn bottom_k(axis: IndexAxis, k: u16, offset: u64) -> Self {
+        Self {
+            axis,
+            traversal: AxisTraversal::RankedPage { k, offset },
+            descending: false,
         }
     }
 
@@ -584,9 +648,43 @@ mod tests {
     }
 
     #[test]
+    fn bottom_k_is_the_ascending_ranked_page() {
+        // `bottom_k` is exactly `top_k` with the walk reversed — same
+        // traversal, same wire bytes, only the direction differs.
+        let bottom = AxisQuery::bottom_k(IndexAxis::Sum, 5, 10);
+        assert_eq!(bottom, AxisQuery::top_k(IndexAxis::Sum, 5, 10, false));
+        assert!(!bottom.descending);
+        assert_eq!(
+            bottom.traversal,
+            AxisTraversal::RankedPage { k: 5, offset: 10 }
+        );
+        bottom.validate().expect("a bottom-k page is well formed");
+
+        // ...and is the mirror of the descending page, not a different
+        // shape: the two differ in exactly one byte on the wire.
+        let top = AxisQuery::top_k(IndexAxis::Sum, 5, 10, true);
+        let bottom_bytes = bincode::encode_to_vec(&bottom, config::standard()).unwrap();
+        let top_bytes = bincode::encode_to_vec(&top, config::standard()).unwrap();
+        assert_eq!(bottom_bytes.len(), top_bytes.len());
+        assert_eq!(
+            bottom_bytes
+                .iter()
+                .zip(&top_bytes)
+                .filter(|(a, b)| a != b)
+                .count(),
+            1,
+            "only the descending flag distinguishes the two directions"
+        );
+    }
+
+    #[test]
     fn entry_caps() {
         assert_eq!(
             AxisQuery::top_k(IndexAxis::Count, 7, 0, true).entry_cap(),
+            Some(7)
+        );
+        assert_eq!(
+            AxisQuery::bottom_k(IndexAxis::Count, 7, 0).entry_cap(),
             Some(7)
         );
         assert_eq!(
