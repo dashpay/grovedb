@@ -189,9 +189,14 @@ mod tests {
             .prove_indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 3, true, None, grove_version)
             .unwrap()
             .expect("standalone prove");
-        let standalone =
-            GroveDb::verify_indexed_sum_top_k(&standalone_bytes, &[TEST_LEAF, b"psit"], 3, true)
-                .expect("standalone verify");
+        let standalone = GroveDb::verify_indexed_sum_top_k(
+            &standalone_bytes,
+            &[TEST_LEAF, b"psit"],
+            3,
+            true,
+            grove_version,
+        )
+        .expect("standalone verify");
         assert_eq!(standalone.root_hash, verified_root);
         assert_eq!(
             entries_as_sum(&standalone.entries),
@@ -961,6 +966,7 @@ mod tests {
             b"alice",
             standalone_rank,
             true,
+            grove_version,
         )
         .expect("standalone avg rank verify");
         assert_eq!(rank, standalone_rank);

@@ -938,10 +938,16 @@ impl PathQuery {
         mut path_queries: Vec<&PathQuery>,
         grove_version: &GroveVersion,
     ) -> Result<Self, Error> {
-        check_grovedb_v0!(
-            "merge",
-            grove_version.grovedb_versions.path_query_methods.merge
-        );
+        let merge_version = grove_version.grovedb_versions.path_query_methods.merge;
+        if merge_version > 1 {
+            return Err(Error::VersionError(
+                grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                    method: "merge".to_string(),
+                    known_versions: vec![0, 1],
+                    received: merge_version,
+                },
+            ));
+        }
         if path_queries.is_empty() {
             return Err(Error::InvalidInput(
                 "merge function requires at least 1 path query",
@@ -963,6 +969,27 @@ impl PathQuery {
         }
         if path_queries.len() == 1 {
             return Ok(path_queries.remove(0).clone());
+        }
+
+        // Direction handling, version-gated. `merge` slot 0 (V1..V3)
+        // keeps the long-standing behavior: input directions are
+        // silently dropped (sub-level inputs end up under a synthesized
+        // root whose direction is the default). Slot 1 (V4+) requires
+        // every input to agree and propagates the shared direction to
+        // the merged root. Merged queries feed proofs and the verifier
+        // re-runs the same merge with the same grove version, so both
+        // sides stay in agreement at every version.
+        let shared_direction = path_queries[0].query.query.left_to_right;
+        if merge_version >= 1
+            && path_queries
+                .iter()
+                .any(|path_query| path_query.query.query.left_to_right != shared_direction)
+        {
+            return Err(Error::NotSupported(
+                "can not merge path queries with conflicting directions (left_to_right \
+                 differs); align the directions before merging"
+                    .to_string(),
+            ));
         }
 
         let (common_path, next_index) = PathQuery::get_common_path(&path_queries);
@@ -1003,7 +1030,19 @@ impl PathQuery {
                 })
         })?;
 
-        let mut merged_query = Query::merge_multiple(queries_for_common_path_this_level);
+        // Version-gated direction handling. The `merge` slot's `0`
+        // (V1..V3) keeps the long-standing silent first-wins behavior;
+        // `1` (V4+) requires every merged query to agree on
+        // `left_to_right` and propagates it, erroring on conflict —
+        // merged queries feed proofs, and the verifier re-runs the same
+        // merge with the same grove version, so both sides stay in
+        // agreement at every version.
+        let mut merged_query = match merge_version {
+            0 => Query::merge_multiple(queries_for_common_path_this_level)
+                .map_err(|e| Error::NotSupported(e.to_string()))?,
+            _ => Query::merge_multiple_directional(queries_for_common_path_this_level)
+                .map_err(|e| Error::NotSupported(e.to_string()))?,
+        };
         // add conditional subqueries
         for sub_path_query in queries_for_common_path_sub_level {
             let SubqueryBranch {
@@ -1023,7 +1062,21 @@ impl PathQuery {
                 subquery_path: rest_of_path,
                 subquery,
             };
-            merged_query.merge_conditional_boxed_subquery(QueryItem::Key(key), subquery_branch);
+            // The read-mode gate at the top of `merge` already rejected
+            // any input carrying one, so this cannot fire today —
+            // propagate rather than discard, so a future path that
+            // reaches here with a read mode surfaces it instead of
+            // silently dropping the mode.
+            merged_query
+                .merge_conditional_boxed_subquery(QueryItem::Key(key), subquery_branch)
+                .map_err(|e| Error::NotSupported(e.to_string()))?;
+        }
+
+        // V4+: the agreed direction travels to the merged root (it
+        // would otherwise be lost whenever the inputs land at a sub
+        // level under a synthesized root query).
+        if merge_version >= 1 {
+            merged_query.left_to_right = shared_direction;
         }
 
         Ok(PathQuery::new_unsized(common_path, merged_query))

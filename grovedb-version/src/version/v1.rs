@@ -4,8 +4,8 @@ use crate::version::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
         GroveDBOperationsDeleteVersions, GroveDBOperationsGetVersions,
-        GroveDBOperationsInsertVersions, GroveDBOperationsProofVersions,
-        GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
+        GroveDBOperationsIndexedAxisVersions, GroveDBOperationsInsertVersions,
+        GroveDBOperationsProofVersions, GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
         GroveDBReplicationVersions, GroveDBVersions,
     },
@@ -149,6 +149,11 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 query_raw_keys_optional: 0,
                 follow_element: 0,
                 run_path_query: 0,
+            },
+            indexed_axis: GroveDBOperationsIndexedAxisVersions {
+                read: 0,
+                prove_single_path: 0,
+                verify_single_path: 0,
             },
             proof: GroveDBOperationsProofVersions {
                 prove_query: 0,

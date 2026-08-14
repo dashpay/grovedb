@@ -55,6 +55,25 @@ pub struct GroveDBPathQueryMethodVersions {
     pub unified_read_mode: FeatureVersion,
 }
 
+/// Method versions for the standalone indexed-axis query family — the
+/// per-axis reads and the echo-based proof envelopes
+/// (`prove/verify_indexed_axis_*` and their per-axis wrappers). These
+/// entry points predate this struct and shipped unversioned; the slots
+/// exist so the first future divergence bumps a number instead of
+/// forking behavior silently. The embedded (V1-envelope) axis shapes
+/// are gated separately via
+/// `GroveDBOperationsProofVersions::axis_descent_in_v1_envelope`.
+#[derive(Clone, Debug, Default)]
+pub struct GroveDBOperationsIndexedAxisVersions {
+    /// The trusted per-axis reads (`indexed_{count,sum,avg}_*`).
+    pub read: FeatureVersion,
+    /// The standalone single-path envelope provers
+    /// (`prove_indexed_axis_{top_k,top_k_paginated,query,rank_of_key,range_aggregate}`).
+    pub prove_single_path: FeatureVersion,
+    /// The matching standalone verifiers.
+    pub verify_single_path: FeatureVersion,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct GroveDBApplyBatchVersions {
     pub apply_batch_structure: FeatureVersion,
@@ -119,6 +138,7 @@ pub struct GroveDBOperationsVersions {
     pub delete_up_tree: GroveDBOperationsDeleteUpTreeVersions,
     pub query: GroveDBOperationsQueryVersions,
     pub proof: GroveDBOperationsProofVersions,
+    pub indexed_axis: GroveDBOperationsIndexedAxisVersions,
     pub average_case: GroveDBOperationsAverageCaseVersions,
     pub worst_case: GroveDBOperationsWorstCaseVersions,
 }

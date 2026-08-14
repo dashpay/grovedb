@@ -1260,6 +1260,10 @@ impl GroveDb {
     where
         B: AsRef<[u8]> + 'b,
     {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_axis_top_k_generic",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
         let tx_ref = tx.as_ref();
@@ -1308,6 +1312,10 @@ impl GroveDb {
     where
         B: AsRef<[u8]> + 'b,
     {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_axis_top_k_paginated_generic",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
         let tx_ref = tx.as_ref();
@@ -1378,6 +1386,10 @@ impl GroveDb {
     where
         B: AsRef<[u8]> + 'b,
     {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_axis_range_generic",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
         let tx_ref = tx.as_ref();
@@ -1513,6 +1525,14 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
+        // The version gate has to precede the degenerate-range
+        // fast path below: returning the empty answer first would
+        // leave inverted bounds outside the version contract that
+        // every other input to this entry point is held to.
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_count_range",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
         let cost = OperationCost::default();
         if lo_count > hi_count {
             return Ok(Vec::new()).wrap_with_cost(cost);
@@ -1583,6 +1603,10 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_count_range_aggregate",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
         use grovedb_merk::proofs::query::QueryItem as MerkQueryItemForRange;
 
         let mut cost = OperationCost::default();
@@ -1707,6 +1731,14 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
+        // The version gate has to precede the degenerate-range
+        // fast path below: returning the empty answer first would
+        // leave inverted bounds outside the version contract that
+        // every other input to this entry point is held to.
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_sum_range",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
         let cost = OperationCost::default();
         if lo_sum > hi_sum {
             return Ok(Vec::new()).wrap_with_cost(cost);
@@ -1769,6 +1801,10 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_sum_range_aggregate",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
         use grovedb_merk::proofs::query::QueryItem as MerkQueryItemForRange;
 
         let mut cost = OperationCost::default();
@@ -1901,6 +1937,14 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
+        // The version gate has to precede the degenerate-range
+        // fast path below: returning the empty answer first would
+        // leave inverted bounds outside the version contract that
+        // every other input to this entry point is held to.
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_avg_range",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
         let cost = OperationCost::default();
         if lo_avg > hi_avg {
             return Ok(Vec::new()).wrap_with_cost(cost);

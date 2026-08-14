@@ -129,8 +129,15 @@ mod tests {
             envelope.ancestor_attestations
         );
 
-        let result = GroveDb::verify_indexed_axis_top_k(&proof, path, IndexAxis::Count, 5, true)
-            .expect("verify through an indexed ancestor");
+        let result = GroveDb::verify_indexed_axis_top_k(
+            &proof,
+            path,
+            IndexAxis::Count,
+            5,
+            true,
+            GroveVersion::latest(),
+        )
+        .expect("verify through an indexed ancestor");
         assert_eq!(
             result.root_hash,
             db.root_hash(None, gv).unwrap().expect("root hash"),
@@ -217,8 +224,15 @@ mod tests {
             envelope.ancestor_attestations
         );
 
-        let result = GroveDb::verify_indexed_axis_top_k(&proof, path, IndexAxis::Sum, 5, true)
-            .expect("verify through a sum-axis indexed ancestor");
+        let result = GroveDb::verify_indexed_axis_top_k(
+            &proof,
+            path,
+            IndexAxis::Sum,
+            5,
+            true,
+            GroveVersion::latest(),
+        )
+        .expect("verify through a sum-axis indexed ancestor");
         assert_eq!(
             result.root_hash,
             db.root_hash(None, gv).unwrap().expect("root hash"),
@@ -310,8 +324,15 @@ mod tests {
             other => panic!("expected [NotIndexed, MultiAxis], got {other:?}"),
         }
 
-        let result = GroveDb::verify_indexed_axis_top_k(&proof, path, IndexAxis::Count, 5, true)
-            .expect("verify through a multi-axis ancestor");
+        let result = GroveDb::verify_indexed_axis_top_k(
+            &proof,
+            path,
+            IndexAxis::Count,
+            5,
+            true,
+            GroveVersion::latest(),
+        )
+        .expect("verify through a multi-axis ancestor");
         assert_eq!(
             result.root_hash,
             db.root_hash(None, gv).unwrap().expect("root hash"),
@@ -382,8 +403,15 @@ mod tests {
         }
         let forged = bincode::encode_to_vec(&envelope, config).expect("re-encode");
 
-        let err = GroveDb::verify_indexed_axis_top_k(&forged, path, IndexAxis::Count, 5, true)
-            .expect_err("a truncated axes list must not verify");
+        let err = GroveDb::verify_indexed_axis_top_k(
+            &forged,
+            path,
+            IndexAxis::Count,
+            5,
+            true,
+            GroveVersion::latest(),
+        )
+        .expect_err("a truncated axes list must not verify");
         match err {
             Error::CorruptedData(message) => assert!(
                 message.contains("chain mismatch")
@@ -438,9 +466,15 @@ mod tests {
             .prove_indexed_axis_range_aggregate(path, IndexAxis::Count, -5, 10, None, gv)
             .unwrap()
             .expect("prove with a below-domain lower bound");
-        let result =
-            GroveDb::verify_indexed_axis_range_aggregate(&proof, path, IndexAxis::Count, -5, 10)
-                .expect("verify with the same bounds");
+        let result = GroveDb::verify_indexed_axis_range_aggregate(
+            &proof,
+            path,
+            IndexAxis::Count,
+            -5,
+            10,
+            GroveVersion::latest(),
+        )
+        .expect("verify with the same bounds");
         assert_eq!(
             result.aggregate, 3,
             "[-5, 10] must cover the same entries as [0, 10]"
@@ -457,9 +491,16 @@ mod tests {
             .unwrap()
             .expect("prove [0, 10]");
         assert_eq!(
-            GroveDb::verify_indexed_axis_range_aggregate(&clamped, path, IndexAxis::Count, 0, 10)
-                .expect("verify [0, 10]")
-                .aggregate,
+            GroveDb::verify_indexed_axis_range_aggregate(
+                &clamped,
+                path,
+                IndexAxis::Count,
+                0,
+                10,
+                GroveVersion::latest()
+            )
+            .expect("verify [0, 10]")
+            .aggregate,
             result.aggregate,
         );
 
@@ -471,9 +512,16 @@ mod tests {
             .unwrap()
             .expect("prove a wholly out-of-domain range");
         assert_eq!(
-            GroveDb::verify_indexed_axis_range_aggregate(&below, path, IndexAxis::Count, -20, -1)
-                .expect("verify")
-                .aggregate,
+            GroveDb::verify_indexed_axis_range_aggregate(
+                &below,
+                path,
+                IndexAxis::Count,
+                -20,
+                -1,
+                GroveVersion::latest()
+            )
+            .expect("verify")
+            .aggregate,
             0,
             "an entirely below-domain range must commit 0, not the count at 0"
         );
@@ -519,8 +567,15 @@ mod tests {
             .prove_indexed_sum_top_k_paginated(path, 10, offset, false, None, gv)
             .unwrap()
             .expect("offset far past the end must be provable via count commitments");
-        let result = GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 10, offset, false)
-            .expect("verify offset-past-end page");
+        let result = GroveDb::verify_indexed_sum_top_k_paginated(
+            &proof,
+            path,
+            10,
+            offset,
+            false,
+            GroveVersion::latest(),
+        )
+        .expect("verify offset-past-end page");
         assert_eq!(
             result.skipped, 1,
             "the whole 1-entry walk is attested as skipped"
@@ -574,8 +629,15 @@ mod tests {
             .prove_indexed_avg_top_k(path, 5, true, None, gv)
             .unwrap()
             .expect("prove avg top_k");
-        GroveDb::verify_indexed_axis_top_k(&proof, path, IndexAxis::Avg, 5, true)
-            .expect("the honest avg proof verifies");
+        GroveDb::verify_indexed_axis_top_k(
+            &proof,
+            path,
+            IndexAxis::Avg,
+            5,
+            true,
+            GroveVersion::latest(),
+        )
+        .expect("the honest avg proof verifies");
 
         let config = bincode::config::standard();
         let (mut envelope, _): (IndexedAxisRangeProof, _) =
@@ -587,8 +649,15 @@ mod tests {
         envelope.target_is_pcpsit = false;
         let forged = bincode::encode_to_vec(&envelope, config).expect("re-encode");
 
-        let err = GroveDb::verify_indexed_axis_top_k(&forged, path, IndexAxis::Avg, 5, true)
-            .expect_err("avg on a claimed single-axis target must be refused");
+        let err = GroveDb::verify_indexed_axis_top_k(
+            &forged,
+            path,
+            IndexAxis::Avg,
+            5,
+            true,
+            GroveVersion::latest(),
+        )
+        .expect_err("avg on a claimed single-axis target must be refused");
         match err {
             Error::CorruptedData(message) => assert!(
                 message.contains(
@@ -634,9 +703,15 @@ mod tests {
         envelope.axis_tag = IndexAxis::Avg.tag();
         let forged = bincode::encode_to_vec(&envelope, config).expect("re-encode");
 
-        let err =
-            GroveDb::verify_indexed_axis_range_aggregate(&forged, path, IndexAxis::Avg, 0, 10)
-                .expect_err("an avg-tagged aggregate must be refused");
+        let err = GroveDb::verify_indexed_axis_range_aggregate(
+            &forged,
+            path,
+            IndexAxis::Avg,
+            0,
+            10,
+            GroveVersion::latest(),
+        )
+        .expect_err("an avg-tagged aggregate must be refused");
         assert!(
             matches!(err, Error::NotSupported(ref m)
                 if m == "indexed-axis aggregate proofs are not defined for the Avg axis"),
@@ -666,8 +741,15 @@ mod tests {
         envelope.secondary_proof[last] ^= 0xff;
         let forged = bincode::encode_to_vec(&envelope, config).expect("re-encode");
 
-        let err = GroveDb::verify_indexed_axis_top_k(&forged, path, IndexAxis::Count, 3, true)
-            .expect_err("a mangled secondary proof must not verify");
+        let err = GroveDb::verify_indexed_axis_top_k(
+            &forged,
+            path,
+            IndexAxis::Count,
+            3,
+            true,
+            GroveVersion::latest(),
+        )
+        .expect_err("a mangled secondary proof must not verify");
         match err {
             Error::CorruptedData(message) => assert!(
                 message.contains("secondary proof failed to verify"),

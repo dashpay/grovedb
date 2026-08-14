@@ -470,7 +470,7 @@ mod tests {
         envelope.ancestor_attestations.clear();
         let tampered = bincode::encode_to_vec(&envelope, config).expect("re-encode");
 
-        let result = GroveDb::verify_indexed_count_top_k(&tampered, path, 1, true);
+        let result = GroveDb::verify_indexed_count_top_k(&tampered, path, 1, true, grove_version);
         assert!(
             matches!(&result, Err(Error::CorruptedData(msg)) if msg.contains("ancestor_attestations")),
             "expected ancestor_attestations length mismatch, got {:?}",
@@ -497,7 +497,7 @@ mod tests {
         // other_axes_root_hashes must be empty in that case. Inject one.
         envelope.other_axes_root_hashes = vec![(1, [0u8; 32])];
         let tampered = bincode::encode_to_vec(&envelope, config).expect("re-encode");
-        let result = GroveDb::verify_indexed_count_top_k(&tampered, path, 1, true);
+        let result = GroveDb::verify_indexed_count_top_k(&tampered, path, 1, true, grove_version);
         assert!(
             matches!(&result, Err(Error::CorruptedData(msg)) if msg.contains("other_axes_root_hashes")),
             "expected non-PCPSIT-with-other-axes rejection, got {:?}",
@@ -532,7 +532,7 @@ mod tests {
             .other_axes_root_hashes
             .push((IndexAxis::Count.tag(), [0u8; 32]));
         let tampered = bincode::encode_to_vec(&envelope, config).expect("re-encode");
-        let result = GroveDb::verify_indexed_count_top_k(&tampered, path, 1, true);
+        let result = GroveDb::verify_indexed_count_top_k(&tampered, path, 1, true, grove_version);
         assert!(
             matches!(&result, Err(Error::CorruptedData(msg)) if msg.contains("duplicate") || msg.contains("unsorted")),
             "expected duplicate-tag rejection, got {:?}",
@@ -558,7 +558,7 @@ mod tests {
             bincode::decode_from_slice(&proof_bytes, config).expect("decode");
         envelope.primary_root_hash[0] ^= 0xFF;
         let tampered = bincode::encode_to_vec(&envelope, config).expect("re-encode");
-        let result = GroveDb::verify_indexed_count_top_k(&tampered, path, 1, true);
+        let result = GroveDb::verify_indexed_count_top_k(&tampered, path, 1, true, grove_version);
         assert!(
             matches!(result, Err(Error::CorruptedData(_))),
             "expected primary-hash tamper rejection, got {:?}",
@@ -685,8 +685,14 @@ mod tests {
             .expect("prove");
         // verify_indexed_axis_range_aggregate with Avg must reject
         // before doing any envelope arithmetic.
-        let result =
-            GroveDb::verify_indexed_axis_range_aggregate(&proof_bytes, path, IndexAxis::Avg, 0, 10);
+        let result = GroveDb::verify_indexed_axis_range_aggregate(
+            &proof_bytes,
+            path,
+            IndexAxis::Avg,
+            0,
+            10,
+            grove_version,
+        );
         // Either axis-mismatch (envelope tag=count, expected=avg) or
         // not-supported-for-avg. The first one fires.
         assert!(matches!(
@@ -708,7 +714,8 @@ mod tests {
             .unwrap()
             .expect("prove");
         // Expect k=7 instead of 1.
-        let result = GroveDb::verify_indexed_count_top_k(&proof_bytes, path, 7, true);
+        let result =
+            GroveDb::verify_indexed_count_top_k(&proof_bytes, path, 7, true, grove_version);
         assert!(
             matches!(&result, Err(Error::CorruptedData(msg)) if msg.contains("limit")),
             "expected limit mismatch, got {:?}",
@@ -729,7 +736,8 @@ mod tests {
             .unwrap()
             .expect("prove");
         // Expected hi=99 but envelope carries 10.
-        let result = GroveDb::verify_indexed_count_range_aggregate(&proof_bytes, path, 0, 99);
+        let result =
+            GroveDb::verify_indexed_count_range_aggregate(&proof_bytes, path, 0, 99, grove_version);
         assert!(
             matches!(&result, Err(Error::CorruptedData(msg)) if msg.contains("hi")),
             "expected hi mismatch, got {:?}",
@@ -755,7 +763,14 @@ mod tests {
             .unwrap()
             .expect("prove");
         // Expected k=5 vs envelope 2.
-        let result = GroveDb::verify_indexed_count_top_k_paginated(&proof_bytes, path, 5, 0, true);
+        let result = GroveDb::verify_indexed_count_top_k_paginated(
+            &proof_bytes,
+            path,
+            5,
+            0,
+            true,
+            grove_version,
+        );
         assert!(
             matches!(&result, Err(Error::CorruptedData(msg)) if msg.contains("k") || msg.contains("limit")),
             "expected k mismatch, got {:?}",
@@ -785,7 +800,8 @@ mod tests {
         // enforces that layer_proofs.len() != path.len() OR layer_proofs
         // is empty. The "empty" arm runs.
         let path: &[&[u8]] = &[];
-        let result = GroveDb::verify_indexed_count_top_k(&bytes, path, 1, true);
+        let result =
+            GroveDb::verify_indexed_count_top_k(&bytes, path, 1, true, GroveVersion::latest());
         assert!(matches!(result, Err(Error::CorruptedData(_))));
     }
 
@@ -807,7 +823,14 @@ mod tests {
         let config = bincode::config::standard().with_limit::<{ 16 * 1024 * 1024 }>();
         let bytes = bincode::encode_to_vec(&envelope, config).expect("encode");
         let path: &[&[u8]] = &[];
-        let result = GroveDb::verify_indexed_count_top_k_paginated(&bytes, path, 1, 0, true);
+        let result = GroveDb::verify_indexed_count_top_k_paginated(
+            &bytes,
+            path,
+            1,
+            0,
+            true,
+            GroveVersion::latest(),
+        );
         assert!(matches!(result, Err(Error::CorruptedData(_))));
     }
 
@@ -828,7 +851,13 @@ mod tests {
         let config = bincode::config::standard().with_limit::<{ 16 * 1024 * 1024 }>();
         let bytes = bincode::encode_to_vec(&envelope, config).expect("encode");
         let path: &[&[u8]] = &[];
-        let result = GroveDb::verify_indexed_count_range_aggregate(&bytes, path, 0, 10);
+        let result = GroveDb::verify_indexed_count_range_aggregate(
+            &bytes,
+            path,
+            0,
+            10,
+            GroveVersion::latest(),
+        );
         assert!(matches!(result, Err(Error::CorruptedData(_))));
     }
 
@@ -850,7 +879,7 @@ mod tests {
         // Insert a bogus extra layer so len(layer_proofs) != len(path).
         envelope.layer_proofs.push(vec![0u8; 16]);
         let tampered = bincode::encode_to_vec(&envelope, config).expect("re-encode");
-        let result = GroveDb::verify_indexed_count_top_k(&tampered, path, 1, true);
+        let result = GroveDb::verify_indexed_count_top_k(&tampered, path, 1, true, grove_version);
         assert!(
             matches!(&result, Err(Error::CorruptedData(msg)) if msg.contains("layers")),
             "expected layer-count mismatch, got {:?}",
@@ -874,7 +903,14 @@ mod tests {
             bincode::decode_from_slice(&proof_bytes, config).expect("decode");
         envelope.layer_proofs.push(vec![0u8; 16]);
         let tampered = bincode::encode_to_vec(&envelope, config).expect("re-encode");
-        let result = GroveDb::verify_indexed_count_top_k_paginated(&tampered, path, 1, 0, true);
+        let result = GroveDb::verify_indexed_count_top_k_paginated(
+            &tampered,
+            path,
+            1,
+            0,
+            true,
+            grove_version,
+        );
         assert!(
             matches!(&result, Err(Error::CorruptedData(msg)) if msg.contains("layers")),
             "expected layer-count mismatch, got {:?}",
@@ -898,7 +934,8 @@ mod tests {
             bincode::decode_from_slice(&proof_bytes, config).expect("decode");
         envelope.layer_proofs.push(vec![0u8; 16]);
         let tampered = bincode::encode_to_vec(&envelope, config).expect("re-encode");
-        let result = GroveDb::verify_indexed_count_range_aggregate(&tampered, path, 0, 10);
+        let result =
+            GroveDb::verify_indexed_count_range_aggregate(&tampered, path, 0, 10, grove_version);
         assert!(
             matches!(&result, Err(Error::CorruptedData(msg)) if msg.contains("layers")),
             "expected layer-count mismatch, got {:?}",
@@ -920,8 +957,14 @@ mod tests {
             .unwrap()
             .expect("prove");
         // Call with axis=Sum on a count-axis envelope.
-        let result =
-            GroveDb::verify_indexed_axis_range_aggregate(&proof_bytes, path, IndexAxis::Sum, 0, 10);
+        let result = GroveDb::verify_indexed_axis_range_aggregate(
+            &proof_bytes,
+            path,
+            IndexAxis::Sum,
+            0,
+            10,
+            grove_version,
+        );
         assert!(
             matches!(&result, Err(Error::CorruptedData(msg)) if msg.contains("axis")),
             "expected axis mismatch, got {:?}",
@@ -947,6 +990,7 @@ mod tests {
             1,
             0,
             true,
+            grove_version,
         );
         assert!(matches!(result, Err(Error::CorruptedData(_))));
     }
@@ -963,7 +1007,14 @@ mod tests {
             .prove_indexed_count_top_k_paginated(path, 1, 0, true, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result = GroveDb::verify_indexed_count_top_k_paginated(&proof_bytes, path, 1, 0, false);
+        let result = GroveDb::verify_indexed_count_top_k_paginated(
+            &proof_bytes,
+            path,
+            1,
+            0,
+            false,
+            grove_version,
+        );
         assert!(matches!(result, Err(Error::CorruptedData(_))));
     }
 
@@ -981,8 +1032,14 @@ mod tests {
             .unwrap()
             .expect("prove");
         // Call verify_indexed_axis_query with axis=Sum.
-        let result =
-            GroveDb::verify_indexed_axis_query(&proof_bytes, path, IndexAxis::Sum, q, Some(5));
+        let result = GroveDb::verify_indexed_axis_query(
+            &proof_bytes,
+            path,
+            IndexAxis::Sum,
+            q,
+            Some(5),
+            grove_version,
+        );
         assert!(matches!(result, Err(Error::CorruptedData(_))));
     }
 
@@ -1005,7 +1062,8 @@ mod tests {
         let mut bad_q = MerkQuery::new();
         bad_q.insert_all();
         bad_q.left_to_right = false;
-        let result = GroveDb::verify_indexed_count_query(&proof_bytes, path, bad_q, Some(5));
+        let result =
+            GroveDb::verify_indexed_count_query(&proof_bytes, path, bad_q, Some(5), grove_version);
         assert!(matches!(result, Err(Error::CorruptedData(_))));
     }
 
@@ -1022,7 +1080,8 @@ mod tests {
             .prove_indexed_count_query(path, q.clone(), Some(5), None, grove_version)
             .unwrap()
             .expect("prove");
-        let result = GroveDb::verify_indexed_count_query(&proof_bytes, path, q, Some(99));
+        let result =
+            GroveDb::verify_indexed_count_query(&proof_bytes, path, q, Some(99), grove_version);
         assert!(matches!(result, Err(Error::CorruptedData(_))));
     }
 
@@ -1037,7 +1096,13 @@ mod tests {
             .prove_indexed_count_range_aggregate(path, 5, 20, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result = GroveDb::verify_indexed_count_range_aggregate(&proof_bytes, path, 99, 20);
+        let result = GroveDb::verify_indexed_count_range_aggregate(
+            &proof_bytes,
+            path,
+            99,
+            20,
+            grove_version,
+        );
         assert!(
             matches!(&result, Err(Error::CorruptedData(msg)) if msg.contains("lo")),
             "expected lo mismatch, got {:?}",
@@ -1097,7 +1162,8 @@ mod tests {
             .unwrap()
             .expect("prove");
         let result =
-            GroveDb::verify_indexed_count_top_k(&proof_bytes, path, 2, true).expect("verify");
+            GroveDb::verify_indexed_count_top_k(&proof_bytes, path, 2, true, grove_version)
+                .expect("verify");
         let entries = match &result.entries {
             AxisEntries::Count(v) => v.as_slice(),
             other => panic!("expected count entries, got {:?}", other),
@@ -1147,7 +1213,7 @@ mod tests {
             ]);
         }
         let tampered = bincode::encode_to_vec(&envelope, config).expect("re-encode");
-        let result = GroveDb::verify_indexed_count_top_k(&tampered, path, 1, true);
+        let result = GroveDb::verify_indexed_count_top_k(&tampered, path, 1, true, grove_version);
         assert!(matches!(result, Err(Error::CorruptedData(_))));
     }
 
@@ -1174,7 +1240,7 @@ mod tests {
             *att = AncestorAttestation::SingleSecondary([3u8; 32]);
         }
         let tampered = bincode::encode_to_vec(&envelope, config).expect("re-encode");
-        let result = GroveDb::verify_indexed_count_top_k(&tampered, path, 1, true);
+        let result = GroveDb::verify_indexed_count_top_k(&tampered, path, 1, true, grove_version);
         assert!(matches!(result, Err(Error::CorruptedData(_))));
     }
 
@@ -1185,7 +1251,14 @@ mod tests {
     #[test]
     fn verify_indexed_axis_paginated_rejects_truncated_buffer() {
         let path: &[&[u8]] = &[TEST_LEAF, b"x"];
-        let result = GroveDb::verify_indexed_count_top_k_paginated(&[0u8; 4], path, 1, 0, true);
+        let result = GroveDb::verify_indexed_count_top_k_paginated(
+            &[0u8; 4],
+            path,
+            1,
+            0,
+            true,
+            GroveVersion::latest(),
+        );
         assert!(
             matches!(&result, Err(Error::CorruptedData(msg)) if msg.contains("decoding")),
             "expected decoding error, got {:?}",
@@ -1196,7 +1269,13 @@ mod tests {
     #[test]
     fn verify_indexed_axis_aggregate_rejects_truncated_buffer() {
         let path: &[&[u8]] = &[TEST_LEAF, b"x"];
-        let result = GroveDb::verify_indexed_count_range_aggregate(&[0u8; 4], path, 0, 10);
+        let result = GroveDb::verify_indexed_count_range_aggregate(
+            &[0u8; 4],
+            path,
+            0,
+            10,
+            GroveVersion::latest(),
+        );
         assert!(
             matches!(&result, Err(Error::CorruptedData(msg)) if msg.contains("decoding")),
             "expected decoding error, got {:?}",
@@ -1207,7 +1286,8 @@ mod tests {
     #[test]
     fn verify_indexed_axis_range_rejects_truncated_buffer() {
         let path: &[&[u8]] = &[TEST_LEAF, b"x"];
-        let result = GroveDb::verify_indexed_count_top_k(&[0u8; 4], path, 1, true);
+        let result =
+            GroveDb::verify_indexed_count_top_k(&[0u8; 4], path, 1, true, GroveVersion::latest());
         assert!(matches!(result, Err(Error::CorruptedData(_))));
     }
 
@@ -1233,7 +1313,7 @@ mod tests {
             *b ^= 0xFF;
         }
         let tampered = bincode::encode_to_vec(&envelope, config).expect("re-encode");
-        let result = GroveDb::verify_indexed_count_top_k(&tampered, path, 1, true);
+        let result = GroveDb::verify_indexed_count_top_k(&tampered, path, 1, true, grove_version);
         assert!(matches!(result, Err(Error::CorruptedData(_))));
     }
 
@@ -1286,7 +1366,7 @@ mod tests {
             "expected at least one SingleSecondary attestation"
         );
         let tampered = bincode::encode_to_vec(&envelope, config).expect("re-encode");
-        let result = GroveDb::verify_indexed_count_top_k(&tampered, path, 1, true);
+        let result = GroveDb::verify_indexed_count_top_k(&tampered, path, 1, true, grove_version);
         assert!(matches!(result, Err(Error::CorruptedData(_))));
     }
 
@@ -1314,7 +1394,8 @@ mod tests {
             bincode::decode_from_slice(&proof_bytes, config).expect("decode");
         envelope.primary_root_hash[10] ^= 0x55;
         let tampered = bincode::encode_to_vec(&envelope, config).expect("re-encode");
-        let result = GroveDb::verify_indexed_count_range_aggregate(&tampered, path, 0, 10);
+        let result =
+            GroveDb::verify_indexed_count_range_aggregate(&tampered, path, 0, 10, grove_version);
         assert!(matches!(result, Err(Error::CorruptedData(_))));
     }
 
@@ -1805,7 +1886,8 @@ mod tests {
             .prove_indexed_count_top_k(path, 3, true, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result = GroveDb::verify_indexed_count_top_k(&proof, path, 3, true).expect("verify");
+        let result = GroveDb::verify_indexed_count_top_k(&proof, path, 3, true, grove_version)
+            .expect("verify");
         let entries = match &result.entries {
             AxisEntries::Count(v) => v.as_slice(),
             _ => panic!("expected count"),
@@ -1831,7 +1913,8 @@ mod tests {
             .prove_indexed_sum_top_k(path, 3, true, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result = GroveDb::verify_indexed_sum_top_k(&proof, path, 3, true).expect("verify");
+        let result = GroveDb::verify_indexed_sum_top_k(&proof, path, 3, true, grove_version)
+            .expect("verify");
         let entries = match &result.entries {
             AxisEntries::Sum(v) => v.as_slice(),
             _ => panic!("expected sum"),
@@ -1858,7 +1941,8 @@ mod tests {
             .prove_indexed_avg_top_k(path, 2, true, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result = GroveDb::verify_indexed_avg_top_k(&proof, path, 2, true).expect("verify");
+        let result = GroveDb::verify_indexed_avg_top_k(&proof, path, 2, true, grove_version)
+            .expect("verify");
         let entries = match &result.entries {
             AxisEntries::Avg(v) => v.as_slice(),
             _ => panic!("expected avg"),
@@ -1879,7 +1963,8 @@ mod tests {
             .prove_indexed_count_top_k(path, 10, true, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result = GroveDb::verify_indexed_count_top_k(&proof, path, 10, true).expect("verify");
+        let result = GroveDb::verify_indexed_count_top_k(&proof, path, 10, true, grove_version)
+            .expect("verify");
         let entries = match &result.entries {
             AxisEntries::Count(v) => v.as_slice(),
             _ => panic!("expected count"),
@@ -1899,8 +1984,9 @@ mod tests {
             .prove_indexed_sum_top_k_paginated(path, 2, 100, true, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result = GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 2, 100, true)
-            .expect("verify");
+        let result =
+            GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 2, 100, true, grove_version)
+                .expect("verify");
         let entries = match &result.entries {
             AxisEntries::Sum(v) => v.as_slice(),
             _ => panic!("expected sum"),
@@ -2033,8 +2119,9 @@ mod tests {
             .prove_indexed_count_range_aggregate(path, 1, 10, None, grove_version)
             .unwrap()
             .expect("prove count agg");
-        let result = GroveDb::verify_indexed_count_range_aggregate(&proof, path, 1, 10)
-            .expect("verify count agg");
+        let result =
+            GroveDb::verify_indexed_count_range_aggregate(&proof, path, 1, 10, grove_version)
+                .expect("verify count agg");
         // Each entry contributes count=1, so range [1,10] returns 3.
         assert_eq!(result.aggregate, 3);
         assert_eq!(result.axis, IndexAxis::Count);
@@ -2057,8 +2144,9 @@ mod tests {
             .prove_indexed_sum_range_aggregate(path, -100, 100, None, grove_version)
             .unwrap()
             .expect("prove sum agg");
-        let result = GroveDb::verify_indexed_sum_range_aggregate(&proof, path, -100, 100)
-            .expect("verify sum agg");
+        let result =
+            GroveDb::verify_indexed_sum_range_aggregate(&proof, path, -100, 100, grove_version)
+                .expect("verify sum agg");
         // Sum = 5 + 10 - 3 = 12.
         assert_eq!(result.aggregate, 12);
         assert_eq!(result.axis, IndexAxis::Sum);
@@ -2080,8 +2168,9 @@ mod tests {
             .prove_indexed_count_top_k_paginated(path, 2, 1, true, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result = GroveDb::verify_indexed_count_top_k_paginated(&proof, path, 2, 1, true)
-            .expect("verify");
+        let result =
+            GroveDb::verify_indexed_count_top_k_paginated(&proof, path, 2, 1, true, grove_version)
+                .expect("verify");
         let entries = match &result.entries {
             AxisEntries::Count(v) => v.as_slice(),
             _ => panic!("expected count"),
@@ -2111,7 +2200,8 @@ mod tests {
             .prove_indexed_sum_query(path, q.clone(), Some(2), None, grove_version)
             .unwrap()
             .expect("prove");
-        let result = GroveDb::verify_indexed_sum_query(&proof, path, q, Some(2)).expect("verify");
+        let result = GroveDb::verify_indexed_sum_query(&proof, path, q, Some(2), grove_version)
+            .expect("verify");
         let entries = match &result.entries {
             AxisEntries::Sum(v) => v.as_slice(),
             _ => panic!("expected sum"),
