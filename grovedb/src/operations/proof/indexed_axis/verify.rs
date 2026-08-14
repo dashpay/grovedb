@@ -514,7 +514,7 @@ impl GroveDb {
     }
 
     /// Verify an `IndexedAxisAggregateProof`-shaped aggregate proof.
-    pub fn verify_indexed_axis_range_aggregate(
+    pub fn verify_indexed_axis_aggregate_over_value_range(
         proof_bytes: &[u8],
         path: &[&[u8]],
         expected_axis: IndexAxis,
@@ -523,7 +523,7 @@ impl GroveDb {
         grove_version: &GroveVersion,
     ) -> Result<IndexedAxisAggregateResult, Error> {
         check_grovedb_v0!(
-            "verify_indexed_axis_range_aggregate",
+            "verify_indexed_axis_aggregate_over_value_range",
             grove_version
                 .grovedb_versions
                 .operations

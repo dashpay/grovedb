@@ -544,7 +544,7 @@ Ascending traversal is also supported for "smallest counts first" /
 
 ### How many entries fall in a count band
 
-`indexed_count_range_aggregate(path, lo, hi, ..)` answers **how many
+`indexed_count_aggregate_over_value_range(path, lo, hi, ..)` answers **how many
 entries have a `count_value` in `[lo, hi]`** — a bucket population, in
 which each matching entry contributes 1. It is *not* the total of those
 entries' counts: over counts `[3, 1, 5]`, the band `[2, 10]` selects the

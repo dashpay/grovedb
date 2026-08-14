@@ -233,12 +233,17 @@ mod tests {
         );
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
         let proof = db
-            .prove_indexed_count_range_aggregate(path, 5, 15, None, grove_version)
+            .prove_indexed_count_aggregate_over_value_range(path, 5, 15, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_count_range_aggregate(&proof, path, 5, 15, grove_version)
-                .expect("verify");
+        let result = GroveDb::verify_indexed_count_aggregate_over_value_range(
+            &proof,
+            path,
+            5,
+            15,
+            grove_version,
+        )
+        .expect("verify");
         // b(5) + c(10) — both in [5,15]; a(1) outside, d(20) outside.
         assert_eq!(result.aggregate, 2);
         assert_eq!(result.axis, IndexAxis::Count);
@@ -376,12 +381,17 @@ mod tests {
         );
         let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
         let proof = db
-            .prove_indexed_sum_range_aggregate(path, 0, 25, None, grove_version)
+            .prove_indexed_sum_aggregate_over_value_range(path, 0, 25, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_sum_range_aggregate(&proof, path, 0, 25, grove_version)
-                .expect("verify");
+        let result = GroveDb::verify_indexed_sum_aggregate_over_value_range(
+            &proof,
+            path,
+            0,
+            25,
+            grove_version,
+        )
+        .expect("verify");
         // In [0,25]: b(5) + c(20) = 25.
         assert_eq!(result.aggregate, 25);
         assert_eq!(result.axis, IndexAxis::Sum);
@@ -526,12 +536,17 @@ mod tests {
         );
         let path: &[&[u8]] = &[TEST_LEAF, b"pcpsit"];
         let proof = db
-            .prove_indexed_count_range_aggregate(path, 1, 1, None, grove_version)
+            .prove_indexed_count_aggregate_over_value_range(path, 1, 1, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_count_range_aggregate(&proof, path, 1, 1, grove_version)
-                .expect("verify");
+        let result = GroveDb::verify_indexed_count_aggregate_over_value_range(
+            &proof,
+            path,
+            1,
+            1,
+            grove_version,
+        )
+        .expect("verify");
         // All 3 entries have count_value=1, so [1,1] captures all 3.
         assert_eq!(result.aggregate, 3);
     }
@@ -548,12 +563,17 @@ mod tests {
         );
         let path: &[&[u8]] = &[TEST_LEAF, b"pcpsit"];
         let proof = db
-            .prove_indexed_sum_range_aggregate(path, 0, 25, None, grove_version)
+            .prove_indexed_sum_aggregate_over_value_range(path, 0, 25, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_sum_range_aggregate(&proof, path, 0, 25, grove_version)
-                .expect("verify");
+        let result = GroveDb::verify_indexed_sum_aggregate_over_value_range(
+            &proof,
+            path,
+            0,
+            25,
+            grove_version,
+        )
+        .expect("verify");
         // In [0,25]: b(10) + c(20) = 30.
         assert_eq!(result.aggregate, 30);
     }
@@ -697,7 +717,7 @@ mod tests {
         let db = make_test_grovedb(grove_version);
         build_pcpsit(&db, grove_version, &[IndexAxis::Avg.tag()], &[(b"a", 1)]);
         let result = db
-            .prove_indexed_axis_range_aggregate(
+            .prove_indexed_axis_aggregate_over_value_range(
                 [TEST_LEAF, b"pcpsit"].as_ref(),
                 IndexAxis::Avg,
                 0,
@@ -737,13 +757,18 @@ mod tests {
         build_psit(&db, grove_version, &[(b"a", 1), (b"b", 5)]);
         let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
         let mut proof = db
-            .prove_indexed_sum_range_aggregate(path, 0, 10, None, grove_version)
+            .prove_indexed_sum_aggregate_over_value_range(path, 0, 10, None, grove_version)
             .unwrap()
             .expect("prove");
         let i = proof.len() / 2;
         proof[i] ^= 0xFF;
-        let result =
-            GroveDb::verify_indexed_sum_range_aggregate(&proof, path, 0, 10, grove_version);
+        let result = GroveDb::verify_indexed_sum_aggregate_over_value_range(
+            &proof,
+            path,
+            0,
+            10,
+            grove_version,
+        );
         assert!(result.is_err(), "tampered proof should not verify");
     }
 
@@ -872,12 +897,17 @@ mod tests {
         build_pcit(&db, grove_version, &[(b"a", 5)]);
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
         let proof = db
-            .prove_indexed_count_range_aggregate(path, 10, 5, None, grove_version)
+            .prove_indexed_count_aggregate_over_value_range(path, 10, 5, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_count_range_aggregate(&proof, path, 10, 5, grove_version)
-                .expect("verify");
+        let result = GroveDb::verify_indexed_count_aggregate_over_value_range(
+            &proof,
+            path,
+            10,
+            5,
+            grove_version,
+        )
+        .expect("verify");
         assert_eq!(result.aggregate, 0);
     }
 
@@ -888,12 +918,17 @@ mod tests {
         build_psit(&db, grove_version, &[(b"a", 5)]);
         let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
         let proof = db
-            .prove_indexed_sum_range_aggregate(path, 10, 5, None, grove_version)
+            .prove_indexed_sum_aggregate_over_value_range(path, 10, 5, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_sum_range_aggregate(&proof, path, 10, 5, grove_version)
-                .expect("verify");
+        let result = GroveDb::verify_indexed_sum_aggregate_over_value_range(
+            &proof,
+            path,
+            10,
+            5,
+            grove_version,
+        )
+        .expect("verify");
         assert_eq!(result.aggregate, 0);
     }
 
@@ -1060,14 +1095,19 @@ mod tests {
         build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 5)]);
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
         let mut proof = db
-            .prove_indexed_count_range_aggregate(path, 0, 10, None, grove_version)
+            .prove_indexed_count_aggregate_over_value_range(path, 0, 10, None, grove_version)
             .unwrap()
             .expect("prove");
         // Tamper at multiple sites: front and back.
         let i = proof.len() - 4;
         proof[i] ^= 0xFF;
-        let result =
-            GroveDb::verify_indexed_count_range_aggregate(&proof, path, 0, 10, grove_version);
+        let result = GroveDb::verify_indexed_count_aggregate_over_value_range(
+            &proof,
+            path,
+            0,
+            10,
+            grove_version,
+        );
         assert!(
             result.is_err(),
             "tampered count aggregate proof should not verify"
@@ -1081,12 +1121,17 @@ mod tests {
         build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 5)]);
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
         let proof = db
-            .prove_indexed_count_range_aggregate(path, 0, 10, None, grove_version)
+            .prove_indexed_count_aggregate_over_value_range(path, 0, 10, None, grove_version)
             .unwrap()
             .expect("prove");
         // Wrong expected lo on verify.
-        let result =
-            GroveDb::verify_indexed_count_range_aggregate(&proof, path, 1, 10, grove_version);
+        let result = GroveDb::verify_indexed_count_aggregate_over_value_range(
+            &proof,
+            path,
+            1,
+            10,
+            grove_version,
+        );
         assert!(result.is_err(), "lo mismatch should be rejected");
     }
 
@@ -1097,11 +1142,16 @@ mod tests {
         build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 5)]);
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
         let proof = db
-            .prove_indexed_count_range_aggregate(path, 0, 10, None, grove_version)
+            .prove_indexed_count_aggregate_over_value_range(path, 0, 10, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_count_range_aggregate(&proof, path, 0, 11, grove_version);
+        let result = GroveDb::verify_indexed_count_aggregate_over_value_range(
+            &proof,
+            path,
+            0,
+            11,
+            grove_version,
+        );
         assert!(result.is_err(), "hi mismatch should be rejected");
     }
 
@@ -1114,13 +1164,13 @@ mod tests {
         build_psit(&db, grove_version, &[(b"a", 1)]);
         let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
         let proof = db
-            .prove_indexed_sum_range_aggregate(path, 0, 10, None, grove_version)
+            .prove_indexed_sum_aggregate_over_value_range(path, 0, 10, None, grove_version)
             .unwrap()
             .expect("prove");
         // Tamper the envelope to claim axis=Avg by reading and forging
-        // bytes is brittle; instead just call verify_indexed_axis_range_aggregate
+        // bytes is brittle; instead just call verify_indexed_axis_aggregate_over_value_range
         // expecting axis=Avg — the axis-tag mismatch fires first.
-        let result = GroveDb::verify_indexed_axis_range_aggregate(
+        let result = GroveDb::verify_indexed_axis_aggregate_over_value_range(
             &proof,
             path,
             IndexAxis::Avg,
@@ -1241,7 +1291,7 @@ mod tests {
             GroveVersion::latest(),
         );
         assert!(matches!(r2, Err(Error::CorruptedData(_))));
-        let r3 = GroveDb::verify_indexed_count_range_aggregate(
+        let r3 = GroveDb::verify_indexed_count_aggregate_over_value_range(
             &garbage,
             path,
             0,
@@ -1351,10 +1401,16 @@ mod tests {
         build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 1000), (b"c", 100)]);
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
         let proof = db
-            .prove_indexed_count_range_aggregate(path, 100, u64::MAX, None, grove_version)
+            .prove_indexed_count_aggregate_over_value_range(
+                path,
+                100,
+                u64::MAX,
+                None,
+                grove_version,
+            )
             .unwrap()
             .expect("prove");
-        let result = GroveDb::verify_indexed_count_range_aggregate(
+        let result = GroveDb::verify_indexed_count_aggregate_over_value_range(
             &proof,
             path,
             100,
@@ -1373,12 +1429,17 @@ mod tests {
         build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 2), (b"c", 5)]);
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
         let proof = db
-            .prove_indexed_count_range_aggregate(path, 0, u64::MAX, None, grove_version)
+            .prove_indexed_count_aggregate_over_value_range(path, 0, u64::MAX, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_count_range_aggregate(&proof, path, 0, u64::MAX, grove_version)
-                .expect("verify");
+        let result = GroveDb::verify_indexed_count_aggregate_over_value_range(
+            &proof,
+            path,
+            0,
+            u64::MAX,
+            grove_version,
+        )
+        .expect("verify");
         assert_eq!(result.aggregate, 3);
     }
 
@@ -1389,12 +1450,17 @@ mod tests {
         build_pcit(&db, grove_version, &[]);
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
         let proof = db
-            .prove_indexed_count_range_aggregate(path, 0, 100, None, grove_version)
+            .prove_indexed_count_aggregate_over_value_range(path, 0, 100, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_count_range_aggregate(&proof, path, 0, 100, grove_version)
-                .expect("verify");
+        let result = GroveDb::verify_indexed_count_aggregate_over_value_range(
+            &proof,
+            path,
+            0,
+            100,
+            grove_version,
+        )
+        .expect("verify");
         assert_eq!(result.aggregate, 0);
     }
 
@@ -1405,12 +1471,17 @@ mod tests {
         build_psit(&db, grove_version, &[(b"a", i64::MAX), (b"b", 0)]);
         let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
         let proof = db
-            .prove_indexed_sum_range_aggregate(path, 1, i64::MAX, None, grove_version)
+            .prove_indexed_sum_aggregate_over_value_range(path, 1, i64::MAX, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_sum_range_aggregate(&proof, path, 1, i64::MAX, grove_version)
-                .expect("verify");
+        let result = GroveDb::verify_indexed_sum_aggregate_over_value_range(
+            &proof,
+            path,
+            1,
+            i64::MAX,
+            grove_version,
+        )
+        .expect("verify");
         // Only a(i64::MAX) is in [1, i64::MAX].
         assert_eq!(result.aggregate, i64::MAX as i128);
     }
@@ -1426,12 +1497,17 @@ mod tests {
         );
         let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
         let proof = db
-            .prove_indexed_sum_range_aggregate(path, -100, -1, None, grove_version)
+            .prove_indexed_sum_aggregate_over_value_range(path, -100, -1, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_sum_range_aggregate(&proof, path, -100, -1, grove_version)
-                .expect("verify");
+        let result = GroveDb::verify_indexed_sum_aggregate_over_value_range(
+            &proof,
+            path,
+            -100,
+            -1,
+            grove_version,
+        )
+        .expect("verify");
         // -10 + -5 = -15
         assert_eq!(result.aggregate, -15);
     }
@@ -1444,7 +1520,7 @@ mod tests {
         build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 5)]);
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
         let proof = db
-            .prove_indexed_axis_range_aggregate(
+            .prove_indexed_axis_aggregate_over_value_range(
                 path,
                 IndexAxis::Count,
                 -50,
@@ -1454,7 +1530,7 @@ mod tests {
             )
             .unwrap()
             .expect("prove");
-        let result = GroveDb::verify_indexed_axis_range_aggregate(
+        let result = GroveDb::verify_indexed_axis_aggregate_over_value_range(
             &proof,
             path,
             IndexAxis::Count,
@@ -1661,7 +1737,7 @@ mod tests {
         let db = make_test_grovedb(grove_version);
         let empty: &[&[u8]] = &[];
         let result = db
-            .prove_indexed_count_range_aggregate(empty, 0, 10, None, grove_version)
+            .prove_indexed_count_aggregate_over_value_range(empty, 0, 10, None, grove_version)
             .unwrap();
         assert!(matches!(result, Err(Error::InvalidPath(_))));
     }
@@ -1708,7 +1784,7 @@ mod tests {
         .unwrap()
         .expect("create plain tree");
         let result = db
-            .prove_indexed_count_range_aggregate(
+            .prove_indexed_count_aggregate_over_value_range(
                 [TEST_LEAF, b"plain"].as_ref(),
                 0,
                 10,
@@ -1888,12 +1964,12 @@ mod tests {
     // --- Aggregate query AVG axis at the public API level ---
 
     #[test]
-    fn prove_indexed_axis_range_aggregate_avg_returns_not_supported() {
+    fn prove_indexed_axis_aggregate_over_value_range_avg_returns_not_supported() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         build_pcpsit(&db, grove_version, &[IndexAxis::Avg.tag()], &[(b"a", 1)]);
         let result = db
-            .prove_indexed_axis_range_aggregate(
+            .prove_indexed_axis_aggregate_over_value_range(
                 [TEST_LEAF, b"pcpsit"].as_ref(),
                 IndexAxis::Avg,
                 0,
@@ -1998,11 +2074,17 @@ mod tests {
         build_pcit(&db, grove_version, &[(b"a", 1)]);
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
         let proof = db
-            .prove_indexed_count_range_aggregate(path, 0, 10, None, grove_version)
+            .prove_indexed_count_aggregate_over_value_range(path, 0, 10, None, grove_version)
             .unwrap()
             .expect("prove");
         let bad: &[&[u8]] = &[TEST_LEAF];
-        let r = GroveDb::verify_indexed_count_range_aggregate(&proof, bad, 0, 10, grove_version);
+        let r = GroveDb::verify_indexed_count_aggregate_over_value_range(
+            &proof,
+            bad,
+            0,
+            10,
+            grove_version,
+        );
         assert!(matches!(r, Err(Error::CorruptedData(s)) if s.contains("layers")));
     }
 
@@ -2013,11 +2095,17 @@ mod tests {
         build_psit(&db, grove_version, &[(b"a", 1)]);
         let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
         let proof = db
-            .prove_indexed_sum_range_aggregate(path, -10, 10, None, grove_version)
+            .prove_indexed_sum_aggregate_over_value_range(path, -10, 10, None, grove_version)
             .unwrap()
             .expect("prove");
         let bad: &[&[u8]] = &[TEST_LEAF, b"psit", b"extra"];
-        let r = GroveDb::verify_indexed_sum_range_aggregate(&proof, bad, -10, 10, grove_version);
+        let r = GroveDb::verify_indexed_sum_aggregate_over_value_range(
+            &proof,
+            bad,
+            -10,
+            10,
+            grove_version,
+        );
         assert!(matches!(r, Err(Error::CorruptedData(s)) if s.contains("layers")));
     }
 
@@ -2197,10 +2285,10 @@ mod tests {
         let lo = u64::MAX as i128 + 5;
         let hi = u64::MAX as i128 + 10;
         let proof = db
-            .prove_indexed_axis_range_aggregate(path, IndexAxis::Count, lo, hi, None, v)
+            .prove_indexed_axis_aggregate_over_value_range(path, IndexAxis::Count, lo, hi, None, v)
             .unwrap()
             .expect("prove out-of-domain count aggregate");
-        let result = GroveDb::verify_indexed_axis_range_aggregate(
+        let result = GroveDb::verify_indexed_axis_aggregate_over_value_range(
             &proof,
             path,
             IndexAxis::Count,
@@ -2227,10 +2315,10 @@ mod tests {
         let lo = i64::MAX as i128 + 5;
         let hi = i64::MAX as i128 + 10;
         let proof = db
-            .prove_indexed_axis_range_aggregate(path, IndexAxis::Sum, lo, hi, None, v)
+            .prove_indexed_axis_aggregate_over_value_range(path, IndexAxis::Sum, lo, hi, None, v)
             .unwrap()
             .expect("prove out-of-domain sum aggregate");
-        let result = GroveDb::verify_indexed_axis_range_aggregate(
+        let result = GroveDb::verify_indexed_axis_aggregate_over_value_range(
             &proof,
             path,
             IndexAxis::Sum,
@@ -2256,10 +2344,10 @@ mod tests {
         let lo = i64::MIN as i128 - 10;
         let hi = i64::MIN as i128 - 5;
         let proof = db
-            .prove_indexed_axis_range_aggregate(path, IndexAxis::Sum, lo, hi, None, v)
+            .prove_indexed_axis_aggregate_over_value_range(path, IndexAxis::Sum, lo, hi, None, v)
             .unwrap()
             .expect("prove below-domain sum aggregate");
-        let result = GroveDb::verify_indexed_axis_range_aggregate(
+        let result = GroveDb::verify_indexed_axis_aggregate_over_value_range(
             &proof,
             path,
             IndexAxis::Sum,
@@ -2701,12 +2789,17 @@ mod tests {
         build_pcit(&db, grove_version, &[(b"a", 5), (b"b", 5), (b"c", 10)]);
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
         let proof = db
-            .prove_indexed_count_range_aggregate(path, 5, 5, None, grove_version)
+            .prove_indexed_count_aggregate_over_value_range(path, 5, 5, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_count_range_aggregate(&proof, path, 5, 5, grove_version)
-                .expect("verify");
+        let result = GroveDb::verify_indexed_count_aggregate_over_value_range(
+            &proof,
+            path,
+            5,
+            5,
+            grove_version,
+        )
+        .expect("verify");
         assert_eq!(result.aggregate, 2);
     }
 
@@ -2718,12 +2811,17 @@ mod tests {
         build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 2)]);
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
         let proof = db
-            .prove_indexed_count_range_aggregate(path, 100, 200, None, grove_version)
+            .prove_indexed_count_aggregate_over_value_range(path, 100, 200, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_count_range_aggregate(&proof, path, 100, 200, grove_version)
-                .expect("verify");
+        let result = GroveDb::verify_indexed_count_aggregate_over_value_range(
+            &proof,
+            path,
+            100,
+            200,
+            grove_version,
+        )
+        .expect("verify");
         assert_eq!(result.aggregate, 0);
     }
 
@@ -2758,12 +2856,17 @@ mod tests {
         );
         let path: &[&[u8]] = &[TEST_LEAF, b"outer", b"inner"];
         let proof = db
-            .prove_indexed_count_range_aggregate(path, 0, u64::MAX, None, grove_version)
+            .prove_indexed_count_aggregate_over_value_range(path, 0, u64::MAX, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_count_range_aggregate(&proof, path, 0, u64::MAX, grove_version)
-                .expect("verify");
+        let result = GroveDb::verify_indexed_count_aggregate_over_value_range(
+            &proof,
+            path,
+            0,
+            u64::MAX,
+            grove_version,
+        )
+        .expect("verify");
         assert_eq!(result.aggregate, 3);
         assert_eq!(result.root_hash, root_hash(&db, grove_version));
     }
@@ -2780,12 +2883,17 @@ mod tests {
         );
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
         let proof = db
-            .prove_indexed_count_range_aggregate(path, 0, 100, None, grove_version)
+            .prove_indexed_count_aggregate_over_value_range(path, 0, 100, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_count_range_aggregate(&proof, path, 0, 100, grove_version)
-                .expect("verify");
+        let result = GroveDb::verify_indexed_count_aggregate_over_value_range(
+            &proof,
+            path,
+            0,
+            100,
+            grove_version,
+        )
+        .expect("verify");
         // [0, 100]: a(1), b(50), c(100) = 3.
         assert_eq!(result.aggregate, 3);
         assert_eq!(result.root_hash, root_hash(&db, grove_version));
@@ -2799,12 +2907,17 @@ mod tests {
         build_pcit(&db, grove_version, &[(b"a", 0), (b"b", 0), (b"c", 5)]);
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
         let proof = db
-            .prove_indexed_count_range_aggregate(path, 0, 0, None, grove_version)
+            .prove_indexed_count_aggregate_over_value_range(path, 0, 0, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_count_range_aggregate(&proof, path, 0, 0, grove_version)
-                .expect("verify");
+        let result = GroveDb::verify_indexed_count_aggregate_over_value_range(
+            &proof,
+            path,
+            0,
+            0,
+            grove_version,
+        )
+        .expect("verify");
         assert_eq!(result.aggregate, 2, "two entries with count=0");
     }
 
@@ -2816,10 +2929,16 @@ mod tests {
         build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 100)]);
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
         let proof = db
-            .prove_indexed_count_range_aggregate(path, u64::MAX, u64::MAX, None, grove_version)
+            .prove_indexed_count_aggregate_over_value_range(
+                path,
+                u64::MAX,
+                u64::MAX,
+                None,
+                grove_version,
+            )
             .unwrap()
             .expect("prove");
-        let result = GroveDb::verify_indexed_count_range_aggregate(
+        let result = GroveDb::verify_indexed_count_aggregate_over_value_range(
             &proof,
             path,
             u64::MAX,
@@ -2841,12 +2960,17 @@ mod tests {
         );
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
         let proof = db
-            .prove_indexed_count_range_aggregate(path, 42, 42, None, grove_version)
+            .prove_indexed_count_aggregate_over_value_range(path, 42, 42, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_count_range_aggregate(&proof, path, 42, 42, grove_version)
-                .expect("verify");
+        let result = GroveDb::verify_indexed_count_aggregate_over_value_range(
+            &proof,
+            path,
+            42,
+            42,
+            grove_version,
+        )
+        .expect("verify");
         assert_eq!(result.aggregate, 4);
     }
 
@@ -3043,16 +3167,21 @@ mod tests {
         );
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
         let unproven = db
-            .indexed_count_range_aggregate(path, 3, 9, None, grove_version)
+            .indexed_count_aggregate_over_value_range(path, 3, 9, None, grove_version)
             .unwrap()
             .expect("unproven");
         let proof = db
-            .prove_indexed_count_range_aggregate(path, 3, 9, None, grove_version)
+            .prove_indexed_count_aggregate_over_value_range(path, 3, 9, None, grove_version)
             .unwrap()
             .expect("prove");
-        let proven =
-            GroveDb::verify_indexed_count_range_aggregate(&proof, path, 3, 9, grove_version)
-                .expect("verify");
+        let proven = GroveDb::verify_indexed_count_aggregate_over_value_range(
+            &proof,
+            path,
+            3,
+            9,
+            grove_version,
+        )
+        .expect("verify");
         assert_eq!(unproven as i128, proven.aggregate);
     }
 
@@ -3172,12 +3301,17 @@ mod tests {
         );
         let path: &[&[u8]] = &[TEST_LEAF, b"outer", b"mid", b"inner_cidx"];
         let proof = db
-            .prove_indexed_count_range_aggregate(path, 15, 25, None, grove_version)
+            .prove_indexed_count_aggregate_over_value_range(path, 15, 25, None, grove_version)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_count_range_aggregate(&proof, path, 15, 25, grove_version)
-                .expect("verify");
+        let result = GroveDb::verify_indexed_count_aggregate_over_value_range(
+            &proof,
+            path,
+            15,
+            25,
+            grove_version,
+        )
+        .expect("verify");
         assert_eq!(result.aggregate, 1, "only b(20) in [15,25]");
         assert_eq!(result.root_hash, root_hash(&db, grove_version));
     }

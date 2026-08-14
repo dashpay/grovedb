@@ -1029,10 +1029,10 @@ mod tests {
         );
 
         let mut aggregate = db
-            .prove_indexed_sum_range_aggregate(path, 0, 100, None, gv)
+            .prove_indexed_sum_aggregate_over_value_range(path, 0, 100, None, gv)
             .unwrap()
             .expect("prove aggregate");
-        GroveDb::verify_indexed_sum_range_aggregate(
+        GroveDb::verify_indexed_sum_aggregate_over_value_range(
             &aggregate,
             path,
             0,
@@ -1042,7 +1042,7 @@ mod tests {
         .expect("clean aggregate verifies");
         aggregate.push(0);
         assert!(
-            GroveDb::verify_indexed_sum_range_aggregate(
+            GroveDb::verify_indexed_sum_aggregate_over_value_range(
                 &aggregate,
                 path,
                 0,

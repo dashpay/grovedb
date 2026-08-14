@@ -689,11 +689,11 @@ impl GroveDb {
     /// [`IndexAxis::Avg`] returns [`Error::NotSupported`] — averaging
     /// averages over a range is not a closed-form aggregate (callers
     /// should compute it client-side from
-    /// `indexed_count_range_aggregate` + `indexed_sum_range_aggregate`
+    /// `indexed_count_aggregate_over_value_range` + `indexed_sum_aggregate_over_value_range`
     /// against the same path).
     ///
     /// `lo > hi` is a degenerate range; the proof commits `0`.
-    pub fn prove_indexed_axis_range_aggregate<'b, B, P>(
+    pub fn prove_indexed_axis_aggregate_over_value_range<'b, B, P>(
         &self,
         path: P,
         axis: IndexAxis,
@@ -707,7 +707,7 @@ impl GroveDb {
         P: Into<SubtreePath<'b, B>>,
     {
         grovedb_version::check_grovedb_v0_with_cost!(
-            "prove_indexed_axis_range_aggregate",
+            "prove_indexed_axis_aggregate_over_value_range",
             grove_version
                 .grovedb_versions
                 .operations
@@ -1092,7 +1092,7 @@ impl GroveDb {
         );
         if !primary_merk.tree_type.is_indexed_primary() {
             return Err(Error::InvalidPath(
-                "prove_indexed_axis_range_aggregate requires the path's last segment to be an \
+                "prove_indexed_axis_aggregate_over_value_range requires the path's last segment to be an \
                  indexed-tree element"
                     .to_string(),
             ))
@@ -1362,7 +1362,7 @@ impl GroveDb {
                     sec_result.proof
                 }
             }
-            AxisTraversal::RangeAggregate { lo, hi } => match axis {
+            AxisTraversal::AggregateOverValueRange { lo, hi } => match axis {
                 IndexAxis::Count => {
                     // classify() rejects wholly-out-of-domain ranges, so
                     // clamping cannot collapse onto a boundary key here.
@@ -1395,7 +1395,7 @@ impl GroveDb {
                 }
                 IndexAxis::Avg => {
                     return Err(Error::NotSupported(
-                        "axis descent: range aggregates are not defined for the Avg axis"
+                        "axis descent: value-range aggregates are not defined for the Avg axis"
                             .to_string(),
                     ))
                     .wrap_with_cost(cost);

@@ -106,7 +106,7 @@ pub enum VerifiedPathQuery {
         /// The attested rank.
         rank: u64,
     },
-    /// `RangeAggregate`: the attested aggregate over the entries the
+    /// `AggregateOverValueRange`: the attested aggregate over the entries the
     /// value range selected.
     AxisAggregate {
         /// Reconstructed GroveDB root hash.
@@ -489,9 +489,10 @@ impl GroveDb {
             (AxisWalkResult::Rank { rank }, AxisTraversal::RankOfKey { .. }) => {
                 Ok(VerifiedPathQuery::AxisRank { root_hash, rank })
             }
-            (AxisWalkResult::Aggregate { value }, AxisTraversal::RangeAggregate { .. }) => {
-                Ok(VerifiedPathQuery::AxisAggregate { root_hash, value })
-            }
+            (
+                AxisWalkResult::Aggregate { value },
+                AxisTraversal::AggregateOverValueRange { .. },
+            ) => Ok(VerifiedPathQuery::AxisAggregate { root_hash, value }),
             _ => Err(Error::InvalidProof(
                 path_query.clone(),
                 "the verified axis outcome does not match the query's traversal".to_string(),

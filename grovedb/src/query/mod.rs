@@ -627,9 +627,9 @@ impl PathQuery {
     /// answer is the total of the selected sums, on the **count** axis
     /// it is how many entries were selected (a bucket population), not
     /// the total of their counts. See
-    /// [`AxisTraversal::RangeAggregate`](grovedb_query::AxisTraversal::RangeAggregate)
+    /// [`AxisTraversal::AggregateOverValueRange`](grovedb_query::AxisTraversal::AggregateOverValueRange)
     /// for worked examples of both.
-    pub fn new_axis_range_aggregate(
+    pub fn new_axis_aggregate_over_value_range(
         path: Vec<Vec<u8>>,
         axis: IndexAxis,
         lo: i128,
@@ -637,7 +637,7 @@ impl PathQuery {
     ) -> Self {
         Self::new_unsized(
             path,
-            Self::axis_read_node(AxisQuery::range_aggregate(axis, lo, hi)),
+            Self::axis_read_node(AxisQuery::aggregate_over_value_range(axis, lo, hi)),
         )
     }
 

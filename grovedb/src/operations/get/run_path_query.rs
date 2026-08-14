@@ -93,7 +93,7 @@ pub enum PathQueryRun {
     BranchedAxisEntries(Vec<(Vec<u8>, Option<AxisEntries>)>),
     /// `RankOfKey` traversal: the item's 0-based rank in the walk.
     AxisRank(u64),
-    /// `RangeAggregate` traversal: one scalar over the value range.
+    /// `AggregateOverValueRange` traversal: one scalar over the value range.
     AxisAggregate(AxisAggregateValue),
     /// Sum-budget read: the budgeted walk's matches and stop state.
     SumBudget(AggregateSumQueryResult),
@@ -406,12 +406,12 @@ impl GroveDb {
                 );
                 Ok(PathQueryRun::AxisRank(rank)).wrap_with_cost(cost)
             }
-            AxisTraversal::RangeAggregate { lo, hi } => match axis {
+            AxisTraversal::AggregateOverValueRange { lo, hi } => match axis {
                 IndexAxis::Count => {
                     let (lo_count, hi_count) = clamp_count_bounds(*lo, *hi);
                     let value = cost_return_on_error!(
                         &mut cost,
-                        self.indexed_count_range_aggregate(
+                        self.indexed_count_aggregate_over_value_range(
                             path,
                             lo_count,
                             hi_count,
@@ -428,7 +428,7 @@ impl GroveDb {
                     let (lo_sum, hi_sum) = clamp_sum_bounds(*lo, *hi);
                     let value = cost_return_on_error!(
                         &mut cost,
-                        self.indexed_sum_range_aggregate(
+                        self.indexed_sum_aggregate_over_value_range(
                             path,
                             lo_sum,
                             hi_sum,

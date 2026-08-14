@@ -1589,9 +1589,9 @@ impl GroveDb {
     /// indexed-tree have?". This call has no cryptographic guarantee —
     /// the returned count is whatever the merk reports. For a
     /// verifiable count, use
-    /// [`Self::prove_indexed_count_range_aggregate`] +
-    /// [`Self::verify_indexed_count_range_aggregate`].
-    pub fn indexed_count_range_aggregate<'b, B, P>(
+    /// [`Self::prove_indexed_count_aggregate_over_value_range`] +
+    /// [`Self::verify_indexed_count_aggregate_over_value_range`].
+    pub fn indexed_count_aggregate_over_value_range<'b, B, P>(
         &self,
         path: P,
         lo_count: u64,
@@ -1604,7 +1604,7 @@ impl GroveDb {
         P: Into<SubtreePath<'b, B>>,
     {
         grovedb_version::check_grovedb_v0_with_cost!(
-            "indexed_count_range_aggregate",
+            "indexed_count_aggregate_over_value_range",
             grove_version.grovedb_versions.operations.indexed_axis.read
         );
         use grovedb_merk::proofs::query::QueryItem as MerkQueryItemForRange;
@@ -1789,7 +1789,7 @@ impl GroveDb {
     /// indexed-tree". Like the count counterpart, this call has no
     /// cryptographic guarantee; for a verifiable sum use the
     /// proof-bound variant in the proof submodule.
-    pub fn indexed_sum_range_aggregate<'b, B, P>(
+    pub fn indexed_sum_aggregate_over_value_range<'b, B, P>(
         &self,
         path: P,
         lo_sum: i64,
@@ -1802,7 +1802,7 @@ impl GroveDb {
         P: Into<SubtreePath<'b, B>>,
     {
         grovedb_version::check_grovedb_v0_with_cost!(
-            "indexed_sum_range_aggregate",
+            "indexed_sum_aggregate_over_value_range",
             grove_version.grovedb_versions.operations.indexed_axis.read
         );
         use grovedb_merk::proofs::query::QueryItem as MerkQueryItemForRange;
@@ -1918,10 +1918,10 @@ impl GroveDb {
     /// vector. `lo_avg == i128::MIN && hi_avg == i128::MAX` is
     /// equivalent to a full scan.
     ///
-    /// No `indexed_avg_range_aggregate` exists — averaging an average
+    /// No `indexed_avg_aggregate_over_value_range` exists — averaging an average
     /// over a range is not a closed-form aggregate. Callers that need
     /// "aggregate avg in range" should compute it client-side from
-    /// `indexed_count_range_aggregate` + `indexed_sum_range_aggregate`
+    /// `indexed_count_aggregate_over_value_range` + `indexed_sum_aggregate_over_value_range`
     /// against the same path's count and sum secondaries.
     pub fn indexed_avg_range<'b, B, P>(
         &self,

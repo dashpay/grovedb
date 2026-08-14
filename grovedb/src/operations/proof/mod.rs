@@ -400,7 +400,7 @@ pub struct AxisDescentProof {
     /// The secondary-Merk proof for the query's traversal: a
     /// count-offset paginated proof for `TopK` / `RankOfKey`, a plain
     /// Merk range proof for `Bounded`, an aggregate-on-range proof for
-    /// `RangeAggregate`.
+    /// `AggregateOverValueRange`.
     pub secondary_proof: Vec<u8>,
 }
 

@@ -208,12 +208,12 @@ mod tests {
             db.indexed_sum_range(path.as_ref(), 0, 100, true, 10, None, &bad)
         );
         assert_version_rejected!(
-            "indexed_sum_range_aggregate",
-            db.indexed_sum_range_aggregate(path.as_ref(), 0, 100, None, &bad)
+            "indexed_sum_aggregate_over_value_range",
+            db.indexed_sum_aggregate_over_value_range(path.as_ref(), 0, 100, None, &bad)
         );
         assert_version_rejected!(
-            "indexed_count_range_aggregate",
-            db.indexed_count_range_aggregate(path.as_ref(), 0, 100, None, &bad)
+            "indexed_count_aggregate_over_value_range",
+            db.indexed_count_aggregate_over_value_range(path.as_ref(), 0, 100, None, &bad)
         );
         // Sanity: the same calls succeed at the real version, so the
         // rejections above are the gate firing and not a broken fixture.
@@ -275,8 +275,8 @@ mod tests {
             )
         );
         assert_version_rejected!(
-            "prove_indexed_count_range_aggregate",
-            db.prove_indexed_count_range_aggregate(path.as_ref(), 0, 100, None, &bad)
+            "prove_indexed_count_aggregate_over_value_range",
+            db.prove_indexed_count_aggregate_over_value_range(path.as_ref(), 0, 100, None, &bad)
         );
     }
 
@@ -343,8 +343,8 @@ mod tests {
             )
         );
         assert_version_rejected!(
-            "verify_indexed_axis_range_aggregate",
-            crate::GroveDb::verify_indexed_axis_range_aggregate(
+            "verify_indexed_axis_aggregate_over_value_range",
+            crate::GroveDb::verify_indexed_axis_aggregate_over_value_range(
                 &garbage,
                 &path,
                 IndexAxis::Count,
@@ -479,12 +479,12 @@ mod tests {
         // The aggregate readers already gated before their fast path;
         // pin that so a future refactor cannot reintroduce the same gap.
         assert_version_rejected!(
-            "indexed_sum_range_aggregate",
-            db.indexed_sum_range_aggregate(path.as_ref(), 100, 0, None, &bad)
+            "indexed_sum_aggregate_over_value_range",
+            db.indexed_sum_aggregate_over_value_range(path.as_ref(), 100, 0, None, &bad)
         );
         assert_version_rejected!(
-            "indexed_count_range_aggregate",
-            db.indexed_count_range_aggregate(path.as_ref(), 100, 0, None, &bad)
+            "indexed_count_aggregate_over_value_range",
+            db.indexed_count_aggregate_over_value_range(path.as_ref(), 100, 0, None, &bad)
         );
 
         // At the real version an inverted range still answers empty

@@ -463,10 +463,10 @@ mod tests {
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
 
         let proof = db
-            .prove_indexed_axis_range_aggregate(path, IndexAxis::Count, -5, 10, None, gv)
+            .prove_indexed_axis_aggregate_over_value_range(path, IndexAxis::Count, -5, 10, None, gv)
             .unwrap()
             .expect("prove with a below-domain lower bound");
-        let result = GroveDb::verify_indexed_axis_range_aggregate(
+        let result = GroveDb::verify_indexed_axis_aggregate_over_value_range(
             &proof,
             path,
             IndexAxis::Count,
@@ -487,11 +487,11 @@ mod tests {
 
         // Identical to the in-domain request it clamps to.
         let clamped = db
-            .prove_indexed_axis_range_aggregate(path, IndexAxis::Count, 0, 10, None, gv)
+            .prove_indexed_axis_aggregate_over_value_range(path, IndexAxis::Count, 0, 10, None, gv)
             .unwrap()
             .expect("prove [0, 10]");
         assert_eq!(
-            GroveDb::verify_indexed_axis_range_aggregate(
+            GroveDb::verify_indexed_axis_aggregate_over_value_range(
                 &clamped,
                 path,
                 IndexAxis::Count,
@@ -508,11 +508,18 @@ mod tests {
         // commit zero rather than clamp onto the boundary and count the rows
         // sitting there.
         let below = db
-            .prove_indexed_axis_range_aggregate(path, IndexAxis::Count, -20, -1, None, gv)
+            .prove_indexed_axis_aggregate_over_value_range(
+                path,
+                IndexAxis::Count,
+                -20,
+                -1,
+                None,
+                gv,
+            )
             .unwrap()
             .expect("prove a wholly out-of-domain range");
         assert_eq!(
-            GroveDb::verify_indexed_axis_range_aggregate(
+            GroveDb::verify_indexed_axis_aggregate_over_value_range(
                 &below,
                 path,
                 IndexAxis::Count,
@@ -682,7 +689,7 @@ mod tests {
 
         // The prover refuses up front.
         let prove_err = db
-            .prove_indexed_axis_range_aggregate(path, IndexAxis::Avg, 0, 10, None, gv)
+            .prove_indexed_axis_aggregate_over_value_range(path, IndexAxis::Avg, 0, 10, None, gv)
             .unwrap()
             .expect_err("no avg aggregate proof exists");
         assert!(
@@ -694,7 +701,7 @@ mod tests {
         // Relabel a count aggregate envelope so the axis-tag echo check passes
         // and the verifier reaches its own axis-support rule.
         let proof = db
-            .prove_indexed_axis_range_aggregate(path, IndexAxis::Count, 0, 10, None, gv)
+            .prove_indexed_axis_aggregate_over_value_range(path, IndexAxis::Count, 0, 10, None, gv)
             .unwrap()
             .expect("prove count aggregate");
         let config = bincode::config::standard();
@@ -703,7 +710,7 @@ mod tests {
         envelope.axis_tag = IndexAxis::Avg.tag();
         let forged = bincode::encode_to_vec(&envelope, config).expect("re-encode");
 
-        let err = GroveDb::verify_indexed_axis_range_aggregate(
+        let err = GroveDb::verify_indexed_axis_aggregate_over_value_range(
             &forged,
             path,
             IndexAxis::Avg,

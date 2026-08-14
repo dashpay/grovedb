@@ -92,7 +92,7 @@ pub const MAX_RANK_OF_KEY_LEN: usize = 255;
 
 /// How an [`AxisQuery`] walks the secondary. Wire tags are explicit and
 /// frozen: `RankedPage = 0`, `Bounded = 1`, `RankOfKey = 2`,
-/// `RangeAggregate = 3`.
+/// `AggregateOverValueRange = 3`.
 ///
 /// # Cost
 ///
@@ -187,11 +187,11 @@ pub enum AxisTraversal {
     /// own tree type does, so:
     ///
     /// * **Sum axis** — the answer is the TOTAL of the selected
-    ///   entries' sums. `RangeAggregate { lo: 0, hi: 100 }` over sums
+    ///   entries' sums. `AggregateOverValueRange { lo: 0, hi: 100 }` over sums
     ///   `[40, -10, 25]` selects `40` and `25` and answers `65`.
     /// * **Count axis** — the answer is HOW MANY entries were
     ///   selected, each contributing 1. It is a bucket population, NOT
-    ///   the total of their counts. `RangeAggregate { lo: 2, hi: 10 }`
+    ///   the total of their counts. `AggregateOverValueRange { lo: 2, hi: 10 }`
     ///   over counts `[3, 1, 5]` selects the `3` and the `5` and
     ///   answers **2**, not 8.
     ///
@@ -207,13 +207,13 @@ pub enum AxisTraversal {
     /// matched entries** — aggregating a million in-range entries costs
     /// what aggregating one costs, which is what makes this preferable
     /// to [`Self::Bounded`] whenever only the total is wanted.
-    RangeAggregate {
+    AggregateOverValueRange {
         /// Inclusive lower bound on the entry's own axis VALUE (its
         /// count on the count axis, its sum on the sum axis) — not on
         /// the aggregate this traversal returns.
         lo: i128,
         /// Inclusive upper bound on the entry's own axis value. See
-        /// [`Self::RangeAggregate::lo`].
+        /// [`Self::AggregateOverValueRange::lo`].
         hi: i128,
     },
 }
@@ -236,7 +236,7 @@ impl Encode for AxisTraversal {
                 2u8.encode(encoder)?;
                 key.encode(encoder)
             }
-            AxisTraversal::RangeAggregate { lo, hi } => {
+            AxisTraversal::AggregateOverValueRange { lo, hi } => {
                 3u8.encode(encoder)?;
                 lo.encode(encoder)?;
                 hi.encode(encoder)
@@ -266,7 +266,7 @@ impl<Context> Decode<Context> for AxisTraversal {
                 }
                 Ok(AxisTraversal::RankOfKey { key })
             }
-            3 => Ok(AxisTraversal::RangeAggregate {
+            3 => Ok(AxisTraversal::AggregateOverValueRange {
                 lo: i128::decode(decoder)?,
                 hi: i128::decode(decoder)?,
             }),
@@ -396,10 +396,10 @@ impl AxisQuery {
     /// A single aggregate over entries whose value is in `[lo, hi]`.
     /// Direction does not affect the answer; constructors set
     /// `descending = false`.
-    pub const fn range_aggregate(axis: IndexAxis, lo: i128, hi: i128) -> Self {
+    pub const fn aggregate_over_value_range(axis: IndexAxis, lo: i128, hi: i128) -> Self {
         Self {
             axis,
-            traversal: AxisTraversal::RangeAggregate { lo, hi },
+            traversal: AxisTraversal::AggregateOverValueRange { lo, hi },
             descending: false,
         }
     }
@@ -440,7 +440,7 @@ impl AxisQuery {
                     ));
                 }
             }
-            AxisTraversal::RangeAggregate { lo, hi } => {
+            AxisTraversal::AggregateOverValueRange { lo, hi } => {
                 if self.axis == IndexAxis::Avg {
                     return Err(Error::InvalidOperation(
                         "axis query: the Avg axis has no range aggregate — a sum of averages \
@@ -454,7 +454,7 @@ impl AxisQuery {
     }
 
     /// Shared bound rules for [`AxisTraversal::Bounded`] and
-    /// [`AxisTraversal::RangeAggregate`].
+    /// [`AxisTraversal::AggregateOverValueRange`].
     fn validate_bounds(&self, lo: i128, hi: i128) -> Result<(), Error> {
         if lo > hi {
             return Err(Error::InvalidOperation(
@@ -484,14 +484,14 @@ impl AxisQuery {
 
     /// The number of entries this query can return, when that is a
     /// fixed property of the traversal (`None` for
-    /// [`AxisTraversal::RangeAggregate`], which returns one scalar, not
+    /// [`AxisTraversal::AggregateOverValueRange`], which returns one scalar, not
     /// entries).
     pub const fn entry_cap(&self) -> Option<u16> {
         match &self.traversal {
             AxisTraversal::RankedPage { k, .. } => Some(*k),
             AxisTraversal::Bounded { limit, .. } => Some(*limit),
             AxisTraversal::RankOfKey { .. } => Some(1),
-            AxisTraversal::RangeAggregate { .. } => None,
+            AxisTraversal::AggregateOverValueRange { .. } => None,
         }
     }
 }
@@ -508,8 +508,8 @@ impl fmt::Display for AxisTraversal {
             AxisTraversal::RankOfKey { key } => {
                 write!(f, "RankOfKey {{ key: {} }}", crate::hex_to_ascii(key))
             }
-            AxisTraversal::RangeAggregate { lo, hi } => {
-                write!(f, "RangeAggregate {{ lo: {lo}, hi: {hi} }}")
+            AxisTraversal::AggregateOverValueRange { lo, hi } => {
+                write!(f, "AggregateOverValueRange {{ lo: {lo}, hi: {hi} }}")
             }
         }
     }
@@ -568,7 +568,7 @@ mod tests {
             AxisTraversal::RankOfKey {
                 key: b"alice".to_vec(),
             },
-            AxisTraversal::RangeAggregate { lo: 0, hi: 50 },
+            AxisTraversal::AggregateOverValueRange { lo: 0, hi: 50 },
         ]
     }
 
@@ -644,13 +644,15 @@ mod tests {
             .validate()
             .is_err());
         // Wholly out of domain: beyond i64 for sums.
-        assert!(
-            AxisQuery::range_aggregate(IndexAxis::Sum, i64::MAX as i128 + 1, i128::MAX)
-                .validate()
-                .is_err()
-        );
-        // Range aggregate on Avg.
-        assert!(AxisQuery::range_aggregate(IndexAxis::Avg, 0, 10)
+        assert!(AxisQuery::aggregate_over_value_range(
+            IndexAxis::Sum,
+            i64::MAX as i128 + 1,
+            i128::MAX
+        )
+        .validate()
+        .is_err());
+        // Aggregate over the value range on Avg.
+        assert!(AxisQuery::aggregate_over_value_range(IndexAxis::Avg, 0, 10)
             .validate()
             .is_err());
         // Empty rank key.
@@ -718,7 +720,7 @@ mod tests {
             Some(1)
         );
         assert_eq!(
-            AxisQuery::range_aggregate(IndexAxis::Sum, 0, 1).entry_cap(),
+            AxisQuery::aggregate_over_value_range(IndexAxis::Sum, 0, 1).entry_cap(),
             None
         );
     }

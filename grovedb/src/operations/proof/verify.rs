@@ -56,7 +56,7 @@ pub(crate) enum AxisWalkResult {
     },
     /// `RankOfKey`: the attested 0-based rank of the queried key.
     Rank { rank: u64 },
-    /// `RangeAggregate`: the attested aggregate over the value range.
+    /// `AggregateOverValueRange`: the attested aggregate over the value range.
     Aggregate { value: i128 },
     /// Sum-budget window: the matched `(key, value)` pairs, their net
     /// total, and the replay-attested stop condition.
@@ -1014,7 +1014,7 @@ impl GroveDb {
                     )
                 }
             }
-            AxisTraversal::RangeAggregate { lo, hi } => match axis {
+            AxisTraversal::AggregateOverValueRange { lo, hi } => match axis {
                 grovedb_merk::proofs::query::IndexAxis::Count => {
                     let inner_range = count_aggregate_inner_range(*lo, *hi);
                     let (root, count) = verify_aggregate_count_on_range_proof(
@@ -1051,7 +1051,7 @@ impl GroveDb {
                 grovedb_merk::proofs::query::IndexAxis::Avg => {
                     return Err(Error::InvalidProof(
                         query.clone(),
-                        "axis descent: range aggregates are not defined for the Avg axis"
+                        "axis descent: value-range aggregates are not defined for the Avg axis"
                             .to_string(),
                     ));
                 }

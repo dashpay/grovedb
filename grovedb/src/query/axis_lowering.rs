@@ -111,7 +111,8 @@ mod tests {
     fn non_bounded_traversals_do_not_lower() {
         assert!(axis_bounded_merk_query(&AxisQuery::top_k(IndexAxis::Count, 1, 0, true)).is_err());
         assert!(
-            axis_bounded_merk_query(&AxisQuery::range_aggregate(IndexAxis::Sum, 0, 1)).is_err()
+            axis_bounded_merk_query(&AxisQuery::aggregate_over_value_range(IndexAxis::Sum, 0, 1))
+                .is_err()
         );
     }
 }

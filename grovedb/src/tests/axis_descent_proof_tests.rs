@@ -299,15 +299,15 @@ mod tests {
             }
         }
 
-        // Range aggregate over the sum axis.
-        let pq = PathQuery::new_axis_range_aggregate(psit_path(), IndexAxis::Sum, 0, 40);
+        // Aggregate over the value range over the sum axis.
+        let pq = PathQuery::new_axis_aggregate_over_value_range(psit_path(), IndexAxis::Sum, 0, 40);
         match GroveDb::verify_path_query(&prove(&db, &pq, grove_version), &pq, grove_version)
             .expect("aggregate verifies")
         {
             VerifiedPathQuery::AxisAggregate { root_hash, value } => {
                 assert_eq!(root_hash, root);
                 let direct = db
-                    .indexed_sum_range_aggregate(
+                    .indexed_sum_aggregate_over_value_range(
                         [TEST_LEAF, b"psit"].as_ref(),
                         0,
                         40,
@@ -658,8 +658,9 @@ mod tests {
             other => panic!("expected AxisEntries, got {other:?}"),
         }
 
-        // RangeAggregate.
-        let pq = PathQuery::new_axis_range_aggregate(psit_path(), IndexAxis::Sum, 0, 100);
+        // AggregateOverValueRange.
+        let pq =
+            PathQuery::new_axis_aggregate_over_value_range(psit_path(), IndexAxis::Sum, 0, 100);
         match GroveDb::verify_path_query(&prove(&db, &pq, grove_version), &pq, grove_version)
             .expect("range aggregate over an empty secondary verifies")
         {
@@ -849,16 +850,23 @@ mod tests {
         let root = root_hash(&db, grove_version);
         let path = [TEST_LEAF, b"pcit"];
 
-        // Range aggregate on the COUNT axis: a different prover builder
+        // Aggregate over the value range on the COUNT axis: a different prover builder
         // and a different verifier decoder from the sum axis.
-        let pq = PathQuery::new_axis_range_aggregate(pcit_path(), IndexAxis::Count, 2, 10);
+        let pq =
+            PathQuery::new_axis_aggregate_over_value_range(pcit_path(), IndexAxis::Count, 2, 10);
         match GroveDb::verify_path_query(&prove(&db, &pq, grove_version), &pq, grove_version)
             .expect("count range aggregate verifies")
         {
             VerifiedPathQuery::AxisAggregate { root_hash, value } => {
                 assert_eq!(root_hash, root);
                 let direct = db
-                    .indexed_count_range_aggregate(path.as_ref(), 2, 10, None, grove_version)
+                    .indexed_count_aggregate_over_value_range(
+                        path.as_ref(),
+                        2,
+                        10,
+                        None,
+                        grove_version,
+                    )
                     .unwrap()
                     .expect("direct count range aggregate");
                 assert_eq!(value, direct as i128);

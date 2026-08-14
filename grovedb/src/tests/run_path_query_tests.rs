@@ -294,18 +294,24 @@ mod tests {
     }
 
     #[test]
-    fn axis_range_aggregate_matches_direct_primitive() {
+    fn axis_aggregate_over_value_range_matches_direct_primitive() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         build_psit(&db, grove_version, PSIT_ENTRIES);
 
         let direct = db
-            .indexed_sum_range_aggregate([TEST_LEAF, b"psit"].as_ref(), 0, 40, None, grove_version)
+            .indexed_sum_aggregate_over_value_range(
+                [TEST_LEAF, b"psit"].as_ref(),
+                0,
+                40,
+                None,
+                grove_version,
+            )
             .unwrap()
             .expect("direct range aggregate");
         let run = db
             .run_path_query(
-                &PathQuery::new_axis_range_aggregate(psit_path(), IndexAxis::Sum, 0, 40),
+                &PathQuery::new_axis_aggregate_over_value_range(psit_path(), IndexAxis::Sum, 0, 40),
                 true,
                 true,
                 true,
@@ -576,7 +582,7 @@ mod tests {
     // The other two axes
     //
     // The dispatch fans out per axis inside `axis_top_k_paginated_entries`
-    // / `axis_bounded_entries` / the range-aggregate arm, so exercising
+    // / `axis_bounded_entries` / the aggregate-over-value-range arm, so exercising
     // only the sum axis leaves two thirds of each fan-out — and the whole
     // count-bounds clamp — unexecuted.
     // -----------------------------------------------------------------
@@ -680,14 +686,19 @@ mod tests {
             .expect("unified count bounded");
         assert_eq!(run_entries(run), AxisEntries::Count(direct));
 
-        // Range aggregate on the count axis.
+        // Aggregate over the value range on the count axis.
         let direct = db
-            .indexed_count_range_aggregate(path.as_ref(), 0, 10, None, grove_version)
+            .indexed_count_aggregate_over_value_range(path.as_ref(), 0, 10, None, grove_version)
             .unwrap()
             .expect("direct count range aggregate");
         let run = db
             .run_path_query(
-                &PathQuery::new_axis_range_aggregate(pcit_path(), IndexAxis::Count, 0, 10),
+                &PathQuery::new_axis_aggregate_over_value_range(
+                    pcit_path(),
+                    IndexAxis::Count,
+                    0,
+                    10,
+                ),
                 true,
                 true,
                 true,
@@ -1359,13 +1370,13 @@ mod tests {
 
     #[test]
     fn branched_non_entry_listing_traversal_is_rejected_at_classification() {
-        // A branched read whose terminal is rank-of-key or range-aggregate
+        // A branched read whose terminal is rank-of-key or aggregate-over-value-range
         // has no per-branch entry list to return. It must be refused as a
         // malformed query, not reach the dispatch and surface as an
         // internal CorruptedCodeExecution.
         for axis_query in [
             AxisQuery::rank_of_key(IndexAxis::Sum, b"alice".to_vec(), true),
-            AxisQuery::range_aggregate(IndexAxis::Sum, 0, 10),
+            AxisQuery::aggregate_over_value_range(IndexAxis::Sum, 0, 10),
         ] {
             let pq = PathQuery::new_branched_axis(
                 vec![TEST_LEAF.to_vec()],
