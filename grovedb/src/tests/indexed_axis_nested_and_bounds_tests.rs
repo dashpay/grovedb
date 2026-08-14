@@ -16,6 +16,7 @@
 #[cfg(test)]
 mod tests {
     use grovedb_element::indexed::IndexAxis;
+    use grovedb_merk::proofs::query::AggregateFold;
     use grovedb_version::version::GroveVersion;
 
     use crate::{
@@ -463,7 +464,15 @@ mod tests {
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
 
         let proof = db
-            .prove_indexed_axis_aggregate_over_value_range(path, IndexAxis::Count, -5, 10, None, gv)
+            .prove_indexed_axis_aggregate_over_value_range(
+                path,
+                IndexAxis::Count,
+                -5,
+                10,
+                AggregateFold::Population,
+                None,
+                gv,
+            )
             .unwrap()
             .expect("prove with a below-domain lower bound");
         let result = GroveDb::verify_indexed_axis_aggregate_over_value_range(
@@ -472,6 +481,7 @@ mod tests {
             IndexAxis::Count,
             -5,
             10,
+            AggregateFold::Population,
             GroveVersion::latest(),
         )
         .expect("verify with the same bounds");
@@ -487,7 +497,15 @@ mod tests {
 
         // Identical to the in-domain request it clamps to.
         let clamped = db
-            .prove_indexed_axis_aggregate_over_value_range(path, IndexAxis::Count, 0, 10, None, gv)
+            .prove_indexed_axis_aggregate_over_value_range(
+                path,
+                IndexAxis::Count,
+                0,
+                10,
+                AggregateFold::Population,
+                None,
+                gv,
+            )
             .unwrap()
             .expect("prove [0, 10]");
         assert_eq!(
@@ -497,6 +515,7 @@ mod tests {
                 IndexAxis::Count,
                 0,
                 10,
+                AggregateFold::Population,
                 GroveVersion::latest()
             )
             .expect("verify [0, 10]")
@@ -513,6 +532,7 @@ mod tests {
                 IndexAxis::Count,
                 -20,
                 -1,
+                AggregateFold::Population,
                 None,
                 gv,
             )
@@ -525,6 +545,7 @@ mod tests {
                 IndexAxis::Count,
                 -20,
                 -1,
+                AggregateFold::Population,
                 GroveVersion::latest()
             )
             .expect("verify")
@@ -689,7 +710,15 @@ mod tests {
 
         // The prover refuses up front.
         let prove_err = db
-            .prove_indexed_axis_aggregate_over_value_range(path, IndexAxis::Avg, 0, 10, None, gv)
+            .prove_indexed_axis_aggregate_over_value_range(
+                path,
+                IndexAxis::Avg,
+                0,
+                10,
+                AggregateFold::Population,
+                None,
+                gv,
+            )
             .unwrap()
             .expect_err("no avg aggregate proof exists");
         assert!(
@@ -701,7 +730,15 @@ mod tests {
         // Relabel a count aggregate envelope so the axis-tag echo check passes
         // and the verifier reaches its own axis-support rule.
         let proof = db
-            .prove_indexed_axis_aggregate_over_value_range(path, IndexAxis::Count, 0, 10, None, gv)
+            .prove_indexed_axis_aggregate_over_value_range(
+                path,
+                IndexAxis::Count,
+                0,
+                10,
+                AggregateFold::Population,
+                None,
+                gv,
+            )
             .unwrap()
             .expect("prove count aggregate");
         let config = bincode::config::standard();
@@ -716,6 +753,7 @@ mod tests {
             IndexAxis::Avg,
             0,
             10,
+            AggregateFold::Population,
             GroveVersion::latest(),
         )
         .expect_err("an avg-tagged aggregate must be refused");

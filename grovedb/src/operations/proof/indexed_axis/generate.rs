@@ -8,21 +8,22 @@
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use grovedb_element::indexed::{encode_count_sort_key, encode_sum_sort_key, IndexAxis};
+use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::{
     element::get::ElementFetchFromStorageExtensions,
     proofs::{encode_into, query::QueryItem as MerkQueryItemForRange, Query as MerkQuery},
 };
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
-use grovedb_query::QueryItem as MerkQueryItem;
+use grovedb_query::{AggregateFold, QueryItem as MerkQueryItem};
 use grovedb_storage::StorageBatch;
 use grovedb_version::version::GroveVersion;
 
 use crate::{util::TxRef, Element, Error, GroveDb, Transaction, TransactionArg};
 
 use super::{
-    aggregate_range_out_of_domain, AncestorAttestation, IndexedAxisAggregateProof,
-    IndexedAxisPaginatedProof, IndexedAxisRangeProof,
+    verify::{count_aggregate_inner_range, sum_aggregate_inner_range},
+    AncestorAttestation, IndexedAxisAggregateProof, IndexedAxisPaginatedProof,
+    IndexedAxisRangeProof,
 };
 use crate::operations::proof::AxisDescentProof;
 
@@ -699,6 +700,7 @@ impl GroveDb {
         axis: IndexAxis,
         lo: i128,
         hi: i128,
+        fold: AggregateFold,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error>
@@ -736,6 +738,7 @@ impl GroveDb {
                 axis,
                 lo,
                 hi,
+                fold,
                 tx_ref,
                 &batch,
                 grove_version,
@@ -1028,6 +1031,7 @@ impl GroveDb {
         axis: IndexAxis,
         lo: i128,
         hi: i128,
+        fold: AggregateFold,
         transaction: &'db Transaction,
         batch: &'db StorageBatch,
         grove_version: &GroveVersion,
@@ -1123,70 +1127,18 @@ impl GroveDb {
                 grove_version,
             )
         );
-        let serialized = match axis {
-            IndexAxis::Count => {
-                // count_value ∈ [0, u64::MAX]. A range whose whole span is
-                // outside that domain (hi < 0 OR lo > u64::MAX) must commit
-                // an EMPTY (count = 0) proof — clamping the bounds into the
-                // domain would otherwise collapse the range onto a boundary
-                // key (e.g. lo = u64::MAX + 5, hi = u64::MAX + 10 → query
-                // `count == u64::MAX`) and erroneously count entries
-                // sitting exactly on the boundary.
-                if aggregate_range_out_of_domain(IndexAxis::Count, lo, hi) {
-                    cost_return_on_error_no_add!(
-                        cost,
-                        build_empty_count_aggregate_proof(
-                            &secondary_merk,
-                            grove_version,
-                            &mut cost,
-                        )
-                    )
-                } else {
-                    let lo_u = if lo < 0 {
-                        0u64
-                    } else {
-                        lo.min(u64::MAX as i128) as u64
-                    };
-                    let hi_u = hi.min(u64::MAX as i128) as u64;
-                    cost_return_on_error_no_add!(
-                        cost,
-                        build_count_aggregate_secondary_proof(
-                            &secondary_merk,
-                            lo_u,
-                            hi_u,
-                            grove_version,
-                            &mut cost,
-                        )
-                    )
-                }
-            }
-            IndexAxis::Sum => {
-                // sum_value ∈ [i64::MIN, i64::MAX]. As with count, a range
-                // entirely above or below that domain must commit an EMPTY
-                // (sum = 0) proof rather than clamping onto i64::MAX /
-                // i64::MIN (which would count/sum boundary entries).
-                if aggregate_range_out_of_domain(IndexAxis::Sum, lo, hi) {
-                    cost_return_on_error_no_add!(
-                        cost,
-                        build_empty_sum_aggregate_proof(&secondary_merk, grove_version, &mut cost)
-                    )
-                } else {
-                    let lo_i = lo.max(i64::MIN as i128).min(i64::MAX as i128) as i64;
-                    let hi_i = hi.max(i64::MIN as i128).min(i64::MAX as i128) as i64;
-                    cost_return_on_error_no_add!(
-                        cost,
-                        build_sum_aggregate_secondary_proof(
-                            &secondary_merk,
-                            lo_i,
-                            hi_i,
-                            grove_version,
-                            &mut cost,
-                        )
-                    )
-                }
-            }
-            IndexAxis::Avg => unreachable!("avg axis rejected by public entry point"),
-        };
+        let serialized = cost_return_on_error_no_add!(
+            cost,
+            build_aggregate_secondary_proof(
+                &secondary_merk,
+                axis,
+                lo,
+                hi,
+                fold,
+                grove_version,
+                &mut cost,
+            )
+        );
 
         Ok(IndexedAxisAggregateProof {
             axis_tag: axis.tag(),
@@ -1198,6 +1150,7 @@ impl GroveDb {
             secondary_proof: serialized,
             lo,
             hi,
+            fold_tag: fold.tag(),
         })
         .wrap_with_cost(cost)
     }
@@ -1362,45 +1315,24 @@ impl GroveDb {
                     sec_result.proof
                 }
             }
-            AxisTraversal::AggregateOverValueRange { lo, hi } => match axis {
-                IndexAxis::Count => {
-                    // classify() rejects wholly-out-of-domain ranges, so
-                    // clamping cannot collapse onto a boundary key here.
-                    let lo_count = (*lo).clamp(0, u64::MAX as i128) as u64;
-                    let hi_count = (*hi).clamp(0, u64::MAX as i128) as u64;
-                    cost_return_on_error_no_add!(
-                        cost,
-                        build_count_aggregate_secondary_proof(
-                            &secondary_merk,
-                            lo_count,
-                            hi_count,
-                            grove_version,
-                            &mut cost,
-                        )
+            AxisTraversal::AggregateOverValueRange { lo, hi, fold } => {
+                // classify() rejects wholly-out-of-domain ranges and the
+                // Avg axis before a descent is ever built; the builder
+                // still fails closed on both, plus on (Count, Total)
+                // until issue #806 lands.
+                cost_return_on_error_no_add!(
+                    cost,
+                    build_aggregate_secondary_proof(
+                        &secondary_merk,
+                        axis,
+                        *lo,
+                        *hi,
+                        *fold,
+                        grove_version,
+                        &mut cost,
                     )
-                }
-                IndexAxis::Sum => {
-                    let lo_sum = (*lo).clamp(i64::MIN as i128, i64::MAX as i128) as i64;
-                    let hi_sum = (*hi).clamp(i64::MIN as i128, i64::MAX as i128) as i64;
-                    cost_return_on_error_no_add!(
-                        cost,
-                        build_sum_aggregate_secondary_proof(
-                            &secondary_merk,
-                            lo_sum,
-                            hi_sum,
-                            grove_version,
-                            &mut cost,
-                        )
-                    )
-                }
-                IndexAxis::Avg => {
-                    return Err(Error::NotSupported(
-                        "axis descent: value-range aggregates are not defined for the Avg axis"
-                            .to_string(),
-                    ))
-                    .wrap_with_cost(cost);
-                }
-            },
+                )
+            }
         };
 
         Ok(AxisDescentProof {
@@ -1455,142 +1387,70 @@ where
     Ok(serialized)
 }
 
-fn build_count_aggregate_secondary_proof<'db, S>(
+/// The secondary-side aggregate proof for
+/// [`AxisTraversal::AggregateOverValueRange`]: the byte range follows
+/// the AXIS (its sort-key encoding, via the same
+/// [`count_aggregate_inner_range`] / [`sum_aggregate_inner_range`]
+/// reconstructors the verifier uses, so the two sides cannot drift on
+/// clamping, degenerate, or out-of-domain shapes), and the walker
+/// follows the FOLD ([`AggregateFold::Population`] proves the count
+/// aggregate, [`AggregateFold::Total`] the sum aggregate).
+///
+/// `(Count, Total)` is refused until the count secondary carries a sum
+/// aggregate (issue #806): the walker would need
+/// `prove_aggregate_sum_on_range` against a tree type that is not
+/// sum-bearing. `Avg` is refused for both folds, mirroring
+/// `AxisQuery::validate`.
+fn build_aggregate_secondary_proof<'db, S>(
     secondary_merk: &grovedb_merk::Merk<S>,
-    lo_count: u64,
-    hi_count: u64,
+    axis: IndexAxis,
+    lo: i128,
+    hi: i128,
+    fold: AggregateFold,
     grove_version: &GroveVersion,
     cost: &mut OperationCost,
 ) -> Result<Vec<u8>, Error>
 where
     S: grovedb_storage::StorageContext<'db>,
 {
-    if lo_count > hi_count {
-        // Degenerate; build a guaranteed-empty range so the merk still
-        // emits a proof that hashes to the actual secondary root.
-        let lo_bytes = hi_count.saturating_add(1).to_be_bytes().to_vec();
-        let inner_range = MerkQueryItemForRange::Range(lo_bytes.clone()..lo_bytes);
-        let (ops, _) = secondary_merk
-            .prove_aggregate_count_on_range(&inner_range, grove_version)
-            .unwrap_add_cost(cost)
-            .map_err(|e| {
-                Error::CorruptedData(format!(
-                    "indexed-axis count-aggregate degenerate-range proof: {e}"
-                ))
-            })?;
-        let mut serialized = Vec::with_capacity(128);
-        encode_into(ops.iter(), &mut serialized);
-        return Ok(serialized);
-    }
-    let lo_bytes = encode_count_sort_key(lo_count).to_vec();
-    let inner_range = if hi_count == u64::MAX {
-        MerkQueryItemForRange::RangeFrom(lo_bytes..)
-    } else {
-        let upper_bytes = encode_count_sort_key(hi_count + 1).to_vec();
-        MerkQueryItemForRange::Range(lo_bytes..upper_bytes)
+    let inner_range = match axis {
+        IndexAxis::Count => {
+            if fold == AggregateFold::Total {
+                return Err(Error::NotSupported(
+                    "a TOTAL over the count axis needs a sum-bearing count secondary; \
+                     tracked in issue #806"
+                        .to_string(),
+                ));
+            }
+            count_aggregate_inner_range(lo, hi)
+        }
+        IndexAxis::Sum => sum_aggregate_inner_range(lo, hi),
+        IndexAxis::Avg => {
+            return Err(Error::NotSupported(
+                "value-range aggregates are not defined for the Avg axis".to_string(),
+            ));
+        }
     };
-    let (ops, _) = secondary_merk
-        .prove_aggregate_count_on_range(&inner_range, grove_version)
-        .unwrap_add_cost(cost)
-        .map_err(|e| {
-            Error::CorruptedData(format!("indexed-axis count-aggregate range proof: {e}"))
-        })?;
-    let mut serialized = Vec::with_capacity(128);
-    encode_into(ops.iter(), &mut serialized);
-    Ok(serialized)
-}
-
-fn build_empty_count_aggregate_proof<'db, S>(
-    secondary_merk: &grovedb_merk::Merk<S>,
-    grove_version: &GroveVersion,
-    cost: &mut OperationCost,
-) -> Result<Vec<u8>, Error>
-where
-    S: grovedb_storage::StorageContext<'db>,
-{
-    // Empty range = "count = 0", emitted as a guaranteed-empty range
-    // so the secondary root is still committed.
-    let bytes = u64::MAX.to_be_bytes().to_vec();
-    let inner_range = MerkQueryItemForRange::Range(bytes.clone()..bytes);
-    let (ops, _) = secondary_merk
-        .prove_aggregate_count_on_range(&inner_range, grove_version)
-        .unwrap_add_cost(cost)
-        .map_err(|e| {
-            Error::CorruptedData(format!(
-                "indexed-axis count-aggregate empty-range proof: {e}"
-            ))
-        })?;
-    let mut serialized = Vec::with_capacity(128);
-    encode_into(ops.iter(), &mut serialized);
-    Ok(serialized)
-}
-
-fn build_sum_aggregate_secondary_proof<'db, S>(
-    secondary_merk: &grovedb_merk::Merk<S>,
-    lo_sum: i64,
-    hi_sum: i64,
-    grove_version: &GroveVersion,
-    cost: &mut OperationCost,
-) -> Result<Vec<u8>, Error>
-where
-    S: grovedb_storage::StorageContext<'db>,
-{
-    if lo_sum > hi_sum {
-        // Degenerate: emit an empty-range proof against the secondary.
-        let bytes = encode_sum_sort_key(hi_sum.saturating_add(1)).to_vec();
-        let inner_range = MerkQueryItemForRange::Range(bytes.clone()..bytes);
-        let (ops, _) = secondary_merk
-            .prove_aggregate_sum_on_range(&inner_range, grove_version)
-            .unwrap_add_cost(cost)
-            .map_err(|e| {
-                Error::CorruptedData(format!(
-                    "indexed-axis sum-aggregate degenerate-range proof: {e}"
-                ))
-            })?;
-        let mut serialized = Vec::with_capacity(128);
-        encode_into(ops.iter(), &mut serialized);
-        return Ok(serialized);
-    }
-    let lo_bytes = encode_sum_sort_key(lo_sum).to_vec();
-    let inner_range = if hi_sum == i64::MAX {
-        MerkQueryItemForRange::RangeFrom(lo_bytes..)
-    } else {
-        let upper_bytes = encode_sum_sort_key(hi_sum + 1).to_vec();
-        MerkQueryItemForRange::Range(lo_bytes..upper_bytes)
+    let ops = match fold {
+        AggregateFold::Population => {
+            secondary_merk
+                .prove_aggregate_count_on_range(&inner_range, grove_version)
+                .unwrap_add_cost(cost)
+                .map_err(|e| {
+                    Error::CorruptedData(format!("indexed-axis population-over-range proof: {e}"))
+                })?
+                .0
+        }
+        AggregateFold::Total => {
+            secondary_merk
+                .prove_aggregate_sum_on_range(&inner_range, grove_version)
+                .unwrap_add_cost(cost)
+                .map_err(|e| {
+                    Error::CorruptedData(format!("indexed-axis total-over-range proof: {e}"))
+                })?
+                .0
+        }
     };
-    let (ops, _) = secondary_merk
-        .prove_aggregate_sum_on_range(&inner_range, grove_version)
-        .unwrap_add_cost(cost)
-        .map_err(|e| {
-            Error::CorruptedData(format!("indexed-axis sum-aggregate range proof: {e}"))
-        })?;
-    let mut serialized = Vec::with_capacity(128);
-    encode_into(ops.iter(), &mut serialized);
-    Ok(serialized)
-}
-
-/// Canonical empty (sum = 0) aggregate proof for the sum axis. Emits a
-/// guaranteed-empty range `[encode(i64::MAX) .. encode(i64::MAX))` so
-/// the secondary root is still committed. Mirrors
-/// [`build_empty_count_aggregate_proof`] for the sum axis; the verifier
-/// reconstructs the identical range in [`sum_aggregate_inner_range`]'s
-/// out-of-domain branch.
-fn build_empty_sum_aggregate_proof<'db, S>(
-    secondary_merk: &grovedb_merk::Merk<S>,
-    grove_version: &GroveVersion,
-    cost: &mut OperationCost,
-) -> Result<Vec<u8>, Error>
-where
-    S: grovedb_storage::StorageContext<'db>,
-{
-    let bytes = encode_sum_sort_key(i64::MAX).to_vec();
-    let inner_range = MerkQueryItemForRange::Range(bytes.clone()..bytes);
-    let (ops, _) = secondary_merk
-        .prove_aggregate_sum_on_range(&inner_range, grove_version)
-        .unwrap_add_cost(cost)
-        .map_err(|e| {
-            Error::CorruptedData(format!("indexed-axis sum-aggregate empty-range proof: {e}"))
-        })?;
     let mut serialized = Vec::with_capacity(128);
     encode_into(ops.iter(), &mut serialized);
     Ok(serialized)

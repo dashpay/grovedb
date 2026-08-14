@@ -9,6 +9,8 @@
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
+    use grovedb_merk::proofs::query::AggregateFold;
     use grovedb_merk::proofs::{query::query_item::QueryItem, Query};
     use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 
@@ -69,7 +71,7 @@ mod tests {
 
     #[test]
     fn query_level_merges_reject_read_modes() {
-        use grovedb_merk::proofs::query::{AxisQuery, IndexAxis, ReadMode};
+        use grovedb_merk::proofs::query::{AggregateFold, AxisQuery, IndexAxis, ReadMode};
 
         let mut axis_query = Query::new();
         axis_query.read_mode = Some(Box::new(ReadMode::Axis(AxisQuery::top_k(
@@ -212,6 +214,10 @@ mod tests {
             db.indexed_sum_aggregate_over_value_range(path.as_ref(), 0, 100, None, &bad)
         );
         assert_version_rejected!(
+            "indexed_sum_population_over_value_range",
+            db.indexed_sum_population_over_value_range(path.as_ref(), 0, 100, None, &bad)
+        );
+        assert_version_rejected!(
             "indexed_count_aggregate_over_value_range",
             db.indexed_count_aggregate_over_value_range(path.as_ref(), 0, 100, None, &bad)
         );
@@ -350,6 +356,7 @@ mod tests {
                 IndexAxis::Count,
                 0,
                 100,
+                AggregateFold::Population,
                 &bad,
             )
         );
@@ -481,6 +488,10 @@ mod tests {
         assert_version_rejected!(
             "indexed_sum_aggregate_over_value_range",
             db.indexed_sum_aggregate_over_value_range(path.as_ref(), 100, 0, None, &bad)
+        );
+        assert_version_rejected!(
+            "indexed_sum_population_over_value_range",
+            db.indexed_sum_population_over_value_range(path.as_ref(), 100, 0, None, &bad)
         );
         assert_version_rejected!(
             "indexed_count_aggregate_over_value_range",

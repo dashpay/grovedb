@@ -21,7 +21,7 @@ use grovedb_merk::{
     },
     tree::{axes_digest, combine_hash, combine_hash_three, value_hash, CryptoHash},
 };
-use grovedb_query::QueryItem as MerkQueryItem;
+use grovedb_query::{AggregateFold, QueryItem as MerkQueryItem};
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 use crate::{Error, GroveDb};
@@ -520,6 +520,7 @@ impl GroveDb {
         expected_axis: IndexAxis,
         expected_lo: i128,
         expected_hi: i128,
+        expected_fold: AggregateFold,
         grove_version: &GroveVersion,
     ) -> Result<IndexedAxisAggregateResult, Error> {
         check_grovedb_v0!(
@@ -550,6 +551,15 @@ impl GroveDb {
                 "indexed-axis aggregate proofs are not defined for the Avg axis".to_string(),
             ));
         }
+        if envelope.fold_tag != expected_fold.tag() {
+            return Err(Error::CorruptedData(format!(
+                "indexed-axis aggregate proof fold mismatch: expected {expected_fold} \
+                 (tag={}), envelope carries tag={} — a population proof cannot answer a \
+                 question about a total, or vice versa",
+                expected_fold.tag(),
+                envelope.fold_tag
+            )));
+        }
         if envelope.lo != expected_lo {
             return Err(Error::CorruptedData(format!(
                 "indexed-axis aggregate proof lo mismatch: expected {}, envelope carries {}",
@@ -562,7 +572,7 @@ impl GroveDb {
                 expected_hi, envelope.hi
             )));
         }
-        verify_indexed_axis_aggregate_inner(envelope, expected_axis, path)
+        verify_indexed_axis_aggregate_inner(envelope, expected_axis, expected_fold, path)
     }
 }
 
@@ -725,6 +735,7 @@ fn verify_indexed_axis_paginated_inner(
 fn verify_indexed_axis_aggregate_inner(
     envelope: IndexedAxisAggregateProof,
     axis: IndexAxis,
+    fold: AggregateFold,
     path: &[&[u8]],
 ) -> Result<IndexedAxisAggregateResult, Error> {
     if envelope.layer_proofs.len() != path.len() {
@@ -740,37 +751,52 @@ fn verify_indexed_axis_aggregate_inner(
         ));
     }
 
-    let (secondary_root_hash, aggregate_value) = match axis {
+    // The byte range follows the AXIS; the walker follows the FOLD —
+    // the same split the prover's `build_aggregate_secondary_proof`
+    // makes, sharing these exact range reconstructors so the two sides
+    // cannot drift on clamping, degenerate, or out-of-domain shapes.
+    let inner_range = match axis {
         IndexAxis::Count => {
-            let inner_range = count_aggregate_inner_range(envelope.lo, envelope.hi);
+            if fold == AggregateFold::Total {
+                return Err(Error::NotSupported(
+                    "a TOTAL over the count axis needs a sum-bearing count secondary; \
+                     tracked in issue #806"
+                        .to_string(),
+                ));
+            }
+            count_aggregate_inner_range(envelope.lo, envelope.hi)
+        }
+        IndexAxis::Sum => sum_aggregate_inner_range(envelope.lo, envelope.hi),
+        IndexAxis::Avg => {
+            return Err(Error::NotSupported(
+                "indexed-axis aggregate proofs are not defined for the Avg axis".to_string(),
+            ));
+        }
+    };
+    let (secondary_root_hash, aggregate_value) = match fold {
+        AggregateFold::Population => {
             let (root, count) =
                 verify_aggregate_count_on_range_proof(&envelope.secondary_proof, &inner_range)
                     .unwrap()
                     .map_err(|e| {
                         Error::CorruptedData(format!(
-                            "indexed-axis aggregate proof: secondary aggregate-count proof \
+                            "indexed-axis aggregate proof: secondary population proof \
                              failed to verify: {e}"
                         ))
                     })?;
             (root, count as i128)
         }
-        IndexAxis::Sum => {
-            let inner_range = sum_aggregate_inner_range(envelope.lo, envelope.hi);
+        AggregateFold::Total => {
             let (root, sum) =
                 verify_aggregate_sum_on_range_proof(&envelope.secondary_proof, &inner_range)
                     .unwrap()
                     .map_err(|e| {
                         Error::CorruptedData(format!(
-                            "indexed-axis aggregate proof: secondary aggregate-sum proof failed \
+                            "indexed-axis aggregate proof: secondary total proof failed \
                              to verify: {e}"
                         ))
                     })?;
             (root, sum as i128)
-        }
-        IndexAxis::Avg => {
-            return Err(Error::NotSupported(
-                "indexed-axis aggregate proofs are not defined for the Avg axis".to_string(),
-            ));
         }
     };
 

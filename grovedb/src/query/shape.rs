@@ -449,6 +449,7 @@ pub(crate) fn read_mode_validation_error(e: grovedb_query::error::Error) -> Erro
 
 #[cfg(test)]
 mod tests {
+    use grovedb_merk::proofs::query::AggregateFold;
     use grovedb_merk::proofs::{query::query_item::QueryItem, Query};
 
     use super::*;
@@ -744,7 +745,13 @@ mod tests {
             PathQuery::new_axis_top_k(path(), IndexAxis::Count, 5, 0, true),
             PathQuery::new_axis_bounded(path(), IndexAxis::Sum, -10, 10, 3, false),
             PathQuery::new_axis_rank_of_key(path(), IndexAxis::Avg, b"alice".to_vec(), true),
-            PathQuery::new_axis_aggregate_over_value_range(path(), IndexAxis::Sum, 0, 100),
+            PathQuery::new_axis_aggregate_over_value_range(
+                path(),
+                IndexAxis::Sum,
+                0,
+                100,
+                AggregateFold::Total,
+            ),
         ];
         for pq in queries {
             match pq.classify().expect("axis constructor must classify") {
@@ -842,7 +849,13 @@ mod tests {
                 PathQuery::new_unsized(path(), q)
             }),
             ("range aggregate on the Avg axis", {
-                PathQuery::new_axis_aggregate_over_value_range(path(), IndexAxis::Avg, 0, 10)
+                PathQuery::new_axis_aggregate_over_value_range(
+                    path(),
+                    IndexAxis::Avg,
+                    0,
+                    10,
+                    AggregateFold::Population,
+                )
             }),
             ("branched: range item selecting branches", {
                 let mut q = Query::new_single_query_item(range_item());

@@ -5,7 +5,7 @@
 #[cfg(test)]
 mod tests {
     use grovedb_merk::proofs::{
-        query::{query_item::QueryItem, AggregateSumQuery, AxisQuery, IndexAxis},
+        query::{query_item::QueryItem, AggregateFold, AggregateSumQuery, AxisQuery, IndexAxis},
         Query,
     };
     use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
@@ -311,7 +311,13 @@ mod tests {
             .expect("direct range aggregate");
         let run = db
             .run_path_query(
-                &PathQuery::new_axis_aggregate_over_value_range(psit_path(), IndexAxis::Sum, 0, 40),
+                &PathQuery::new_axis_aggregate_over_value_range(
+                    psit_path(),
+                    IndexAxis::Sum,
+                    0,
+                    40,
+                    AggregateFold::Total,
+                ),
                 true,
                 true,
                 true,
@@ -322,7 +328,7 @@ mod tests {
             .unwrap()
             .expect("unified range aggregate");
         match run {
-            PathQueryRun::AxisAggregate(AxisAggregateValue::Sum(sum)) => assert_eq!(sum, direct),
+            PathQueryRun::AxisAggregate(AxisAggregateValue::Total(sum)) => assert_eq!(sum, direct),
             other => panic!("expected AxisAggregate(Sum), got {other:?}"),
         }
     }
@@ -698,6 +704,7 @@ mod tests {
                     IndexAxis::Count,
                     0,
                     10,
+                    AggregateFold::Population,
                 ),
                 true,
                 true,
@@ -709,7 +716,7 @@ mod tests {
             .unwrap()
             .expect("unified count range aggregate");
         match run {
-            PathQueryRun::AxisAggregate(AxisAggregateValue::Count(value)) => {
+            PathQueryRun::AxisAggregate(AxisAggregateValue::Population(value)) => {
                 assert_eq!(value, direct)
             }
             other => panic!("expected AxisAggregate(Count), got {other:?}"),
@@ -1376,7 +1383,7 @@ mod tests {
         // internal CorruptedCodeExecution.
         for axis_query in [
             AxisQuery::rank_of_key(IndexAxis::Sum, b"alice".to_vec(), true),
-            AxisQuery::aggregate_over_value_range(IndexAxis::Sum, 0, 10),
+            AxisQuery::aggregate_over_value_range(IndexAxis::Sum, 0, 10, AggregateFold::Total),
         ] {
             let pq = PathQuery::new_branched_axis(
                 vec![TEST_LEAF.to_vec()],

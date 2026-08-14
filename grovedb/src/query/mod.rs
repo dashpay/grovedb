@@ -22,7 +22,7 @@ pub use grove_trunk_query_result::{GroveTrunkQueryResult, LeafInfo};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_merk::proofs::query::query_item::QueryItem;
 use grovedb_merk::proofs::query::{
-    AxisQuery, IndexAxis, Key, ReadMode, SubqueryBranch, SumBudgetRead,
+    AggregateFold, AxisQuery, IndexAxis, Key, ReadMode, SubqueryBranch, SumBudgetRead,
 };
 
 use grovedb_merk::proofs::Query;
@@ -620,24 +620,27 @@ impl PathQuery {
     }
 
     /// `[lo, hi]` selects the entries of the indexed tree at `path` by
-    /// their own `axis` value; the answer is that axis's aggregate over
-    /// exactly those entries. Count and Sum axes only.
+    /// their own `axis` value; `fold` says which scalar over exactly
+    /// those entries is the answer. Count and Sum axes only.
     ///
-    /// The two axes aggregate differently — on the **sum** axis the
-    /// answer is the total of the selected sums, on the **count** axis
-    /// it is how many entries were selected (a bucket population), not
-    /// the total of their counts. See
+    /// The fold is explicit because both readings are meaningful on
+    /// both axes and the "obvious" one flips per axis. Over counts
+    /// `[3, 1, 5]`, the band `[2, 10]` selects the `3` and the `5`:
+    /// [`AggregateFold::Population`](grovedb_query::AggregateFold)
+    /// answers `2`, [`AggregateFold::Total`](grovedb_query::AggregateFold)
+    /// answers `8`. See
     /// [`AxisTraversal::AggregateOverValueRange`](grovedb_query::AxisTraversal::AggregateOverValueRange)
-    /// for worked examples of both.
+    /// for the full matrix.
     pub fn new_axis_aggregate_over_value_range(
         path: Vec<Vec<u8>>,
         axis: IndexAxis,
         lo: i128,
         hi: i128,
+        fold: AggregateFold,
     ) -> Self {
         Self::new_unsized(
             path,
-            Self::axis_read_node(AxisQuery::aggregate_over_value_range(axis, lo, hi)),
+            Self::axis_read_node(AxisQuery::aggregate_over_value_range(axis, lo, hi, fold)),
         )
     }
 
@@ -1652,6 +1655,7 @@ impl<'a> SinglePathSubquery<'a> {
 #[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
+    use grovedb_merk::proofs::query::AggregateFold;
     use std::{borrow::Cow, ops::RangeFull};
 
     use bincode::{config::standard, decode_from_slice, encode_to_vec};

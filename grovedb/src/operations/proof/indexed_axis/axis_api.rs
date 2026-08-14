@@ -9,6 +9,7 @@ use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::proofs::Query as MerkQuery;
 #[cfg(feature = "minimal")]
 use grovedb_path::SubtreePath;
+use grovedb_query::AggregateFold;
 use grovedb_version::version::GroveVersion;
 
 #[cfg(feature = "minimal")]
@@ -115,6 +116,7 @@ impl GroveDb {
             IndexAxis::Count,
             lo_count as i128,
             hi_count as i128,
+            AggregateFold::Population,
             transaction,
             grove_version,
         )
@@ -190,6 +192,7 @@ impl GroveDb {
             IndexAxis::Count,
             expected_lo_count as i128,
             expected_hi_count as i128,
+            AggregateFold::Population,
             grove_version,
         )
     }
@@ -293,6 +296,7 @@ impl GroveDb {
             IndexAxis::Sum,
             lo_sum as i128,
             hi_sum as i128,
+            AggregateFold::Total,
             transaction,
             grove_version,
         )
@@ -368,6 +372,7 @@ impl GroveDb {
             IndexAxis::Sum,
             expected_lo_sum as i128,
             expected_hi_sum as i128,
+            AggregateFold::Total,
             grove_version,
         )
     }

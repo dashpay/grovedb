@@ -14,6 +14,7 @@
 #[cfg(test)]
 mod tests {
     use grovedb_element::indexed::IndexAxis;
+    use grovedb_merk::proofs::query::AggregateFold;
     use grovedb_merk::proofs::{query::QueryItem as MerkQueryItem, Query as MerkQuery};
     use grovedb_version::version::GroveVersion;
 
@@ -722,6 +723,7 @@ mod tests {
                 IndexAxis::Avg,
                 0,
                 100,
+                AggregateFold::Population,
                 None,
                 grove_version,
             )
@@ -1176,6 +1178,7 @@ mod tests {
             IndexAxis::Avg,
             0,
             10,
+            AggregateFold::Population,
             grove_version,
         );
         assert!(matches!(result, Err(Error::CorruptedData(_))));
@@ -1525,6 +1528,7 @@ mod tests {
                 IndexAxis::Count,
                 -50,
                 -10,
+                AggregateFold::Population,
                 None,
                 grove_version,
             )
@@ -1536,6 +1540,7 @@ mod tests {
             IndexAxis::Count,
             -50,
             -10,
+            AggregateFold::Population,
             grove_version,
         )
         .expect("verify");
@@ -1974,6 +1979,7 @@ mod tests {
                 IndexAxis::Avg,
                 0,
                 100,
+                AggregateFold::Population,
                 None,
                 grove_version,
             )
@@ -2285,7 +2291,15 @@ mod tests {
         let lo = u64::MAX as i128 + 5;
         let hi = u64::MAX as i128 + 10;
         let proof = db
-            .prove_indexed_axis_aggregate_over_value_range(path, IndexAxis::Count, lo, hi, None, v)
+            .prove_indexed_axis_aggregate_over_value_range(
+                path,
+                IndexAxis::Count,
+                lo,
+                hi,
+                AggregateFold::Population,
+                None,
+                v,
+            )
             .unwrap()
             .expect("prove out-of-domain count aggregate");
         let result = GroveDb::verify_indexed_axis_aggregate_over_value_range(
@@ -2294,6 +2308,7 @@ mod tests {
             IndexAxis::Count,
             lo,
             hi,
+            AggregateFold::Population,
             GroveVersion::latest(),
         )
         .expect("verify out-of-domain count aggregate");
@@ -2315,7 +2330,15 @@ mod tests {
         let lo = i64::MAX as i128 + 5;
         let hi = i64::MAX as i128 + 10;
         let proof = db
-            .prove_indexed_axis_aggregate_over_value_range(path, IndexAxis::Sum, lo, hi, None, v)
+            .prove_indexed_axis_aggregate_over_value_range(
+                path,
+                IndexAxis::Sum,
+                lo,
+                hi,
+                AggregateFold::Total,
+                None,
+                v,
+            )
             .unwrap()
             .expect("prove out-of-domain sum aggregate");
         let result = GroveDb::verify_indexed_axis_aggregate_over_value_range(
@@ -2324,6 +2347,7 @@ mod tests {
             IndexAxis::Sum,
             lo,
             hi,
+            AggregateFold::Total,
             GroveVersion::latest(),
         )
         .expect("verify out-of-domain sum aggregate");
@@ -2344,7 +2368,15 @@ mod tests {
         let lo = i64::MIN as i128 - 10;
         let hi = i64::MIN as i128 - 5;
         let proof = db
-            .prove_indexed_axis_aggregate_over_value_range(path, IndexAxis::Sum, lo, hi, None, v)
+            .prove_indexed_axis_aggregate_over_value_range(
+                path,
+                IndexAxis::Sum,
+                lo,
+                hi,
+                AggregateFold::Total,
+                None,
+                v,
+            )
             .unwrap()
             .expect("prove below-domain sum aggregate");
         let result = GroveDb::verify_indexed_axis_aggregate_over_value_range(
@@ -2353,6 +2385,7 @@ mod tests {
             IndexAxis::Sum,
             lo,
             hi,
+            AggregateFold::Total,
             GroveVersion::latest(),
         )
         .expect("verify below-domain sum aggregate");

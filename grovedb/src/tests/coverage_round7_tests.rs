@@ -10,6 +10,7 @@
 #[cfg(test)]
 mod tests {
     use grovedb_element::indexed::IndexAxis;
+    use grovedb_merk::proofs::query::AggregateFold;
     use grovedb_merk::proofs::Query as MerkQuery;
     use grovedb_version::version::GroveVersion;
 
@@ -691,6 +692,7 @@ mod tests {
             IndexAxis::Avg,
             0,
             10,
+            AggregateFold::Population,
             grove_version,
         );
         // Either axis-mismatch (envelope tag=count, expected=avg) or
@@ -852,6 +854,7 @@ mod tests {
             secondary_proof: vec![],
             lo: 0,
             hi: 10,
+            fold_tag: AggregateFold::Population.tag(),
         };
         let config = bincode::config::standard().with_limit::<{ 16 * 1024 * 1024 }>();
         let bytes = bincode::encode_to_vec(&envelope, config).expect("encode");
@@ -973,6 +976,7 @@ mod tests {
             IndexAxis::Sum,
             0,
             10,
+            AggregateFold::Total,
             grove_version,
         );
         assert!(

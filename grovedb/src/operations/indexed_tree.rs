@@ -1838,6 +1838,69 @@ impl GroveDb {
         Ok(sum).wrap_with_cost(cost)
     }
 
+    /// How many entries of the sum axis fall in the inclusive sum band
+    /// `[lo_sum, hi_sum]` — the POPULATION of the band, each selected
+    /// entry contributing 1 regardless of its value. The
+    /// [`AggregateFold::Population`](grovedb_query::AggregateFold)
+    /// counterpart of [`Self::indexed_sum_aggregate_over_value_range`],
+    /// answered off the sum secondary's count aggregate (the sum
+    /// secondary is count-bearing — `ProvableCountProvableSumTree` —
+    /// which is also what makes its offset pagination provable).
+    ///
+    /// `O(log n)`: the walk folds contained subtrees' stored counts and
+    /// descends only along the two band boundaries.
+    pub fn indexed_sum_population_over_value_range<'b, B, P>(
+        &self,
+        path: P,
+        lo_sum: i64,
+        hi_sum: i64,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<u64, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        // The version gate precedes the degenerate-range fast path:
+        // every input to this entry point is held to the same version
+        // contract, inverted bounds included.
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_sum_population_over_value_range",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
+        use grovedb_merk::proofs::query::QueryItem as MerkQueryItemForRange;
+
+        let mut cost = OperationCost::default();
+        if lo_sum > hi_sum {
+            return Ok(0u64).wrap_with_cost(cost);
+        }
+        let path: SubtreePath<B> = path.into();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_validated_axis_secondary(path, IndexAxis::Sum, tx_ref, grove_version)
+        );
+
+        let lo_bytes = encode_sum_sort_key(lo_sum).to_vec();
+        let inner_range = if hi_sum == i64::MAX {
+            MerkQueryItemForRange::RangeFrom(lo_bytes..)
+        } else {
+            let upper_bytes = encode_sum_sort_key(hi_sum + 1).to_vec();
+            MerkQueryItemForRange::Range(lo_bytes..upper_bytes)
+        };
+
+        let population = cost_return_on_error!(
+            &mut cost,
+            secondary_merk
+                .count_aggregate_on_range(&inner_range, grove_version)
+                .map_err(|e| Error::CorruptedData(format!("indexed sum population on range: {e}")))
+        );
+
+        Ok(population).wrap_with_cost(cost)
+    }
+
     // ---- avg axis (PCPSIT-only) ----
 
     /// Iterate the avg-axis secondary in avg-order and return the
