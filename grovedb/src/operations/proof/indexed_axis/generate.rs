@@ -24,6 +24,7 @@ use super::{
     aggregate_range_out_of_domain, AncestorAttestation, IndexedAxisAggregateProof,
     IndexedAxisPaginatedProof, IndexedAxisRangeProof,
 };
+use crate::operations::proof::AxisDescentProof;
 
 /// Build the per-ancestor attestation list for a path of length N: the
 /// list has length N-1 (one entry per intermediate layer). For each
@@ -1160,6 +1161,258 @@ impl GroveDb {
         })
         .wrap_with_cost(cost)
     }
+
+    /// Build the [`AxisDescentProof`] payload for an axis-ordered read
+    /// of the indexed tree at `path` — the embedded (V1-envelope) form
+    /// of an axis proof. Unlike the standalone envelope builders above,
+    /// no path-walk layers or ancestor attestations are collected here:
+    /// in the V1 envelope those are ordinary layers of the general
+    /// proof walk, and this payload covers only the indexed element's
+    /// own axis read.
+    ///
+    /// The traversal is taken from the query and NOT echoed into the
+    /// payload (the V1 envelope's query-as-input philosophy); the one
+    /// exception is `RankOfKey`, whose computed rank must travel so the
+    /// verifier can drive the count-offset verification walk — the
+    /// count commitments then attest it.
+    pub(crate) fn build_axis_descent_payload<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        axis_query: &grovedb_query::AxisQuery,
+        transaction: &'db Transaction,
+        batch: &'db StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<AxisDescentProof, Error> {
+        use grovedb_query::AxisTraversal;
+
+        let mut cost = OperationCost::default();
+        let axis = axis_query.axis;
+
+        let path_keys: Vec<Vec<u8>> = path.to_vec();
+        if path_keys.is_empty() {
+            return Err(Error::InvalidPath(
+                "cannot build an axis descent at the root path".to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+
+        // Per-axis validation + secondary root key + non-queried axes.
+        let (secondary_root_key, other_axes_root_hashes, target_is_pcpsit) = cost_return_on_error!(
+            &mut cost,
+            read_queried_axis_info_with_path_keys(
+                self,
+                &path_keys,
+                axis,
+                transaction,
+                batch,
+                grove_version,
+                "axis descent",
+            )
+        );
+
+        // Primary root hash (an empty primary commits NULL_HASH
+        // naturally).
+        let primary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                path.clone(),
+                transaction,
+                Some(batch),
+                grove_version
+            )
+        );
+        if !primary_merk.tree_type.is_indexed_primary() {
+            return Err(Error::InvalidPath(
+                "axis descent requires the path's last segment to be an indexed-tree element"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+        let (primary_root_hash, _, _) = cost_return_on_error!(
+            &mut cost,
+            primary_merk
+                .root_hash_key_and_aggregate_data()
+                .map_err(|e| Error::CorruptedData(format!("axis descent: primary root hash: {e}")))
+        );
+
+        // Rank first (it opens its own merks), so the secondary borrow
+        // below doesn't overlap.
+        let rank = match &axis_query.traversal {
+            AxisTraversal::RankOfKey { key } => Some(cost_return_on_error!(
+                &mut cost,
+                self.compute_indexed_axis_rank_of_key(
+                    path.clone(),
+                    axis,
+                    key,
+                    axis_query.descending,
+                    Some(transaction),
+                    grove_version,
+                )
+            )),
+            _ => None,
+        };
+
+        // The secondary proof for the query's traversal.
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_indexed_secondary_at_path(
+                path,
+                axis,
+                secondary_root_key,
+                transaction,
+                Some(batch),
+                grove_version,
+            )
+        );
+        let secondary_proof = match &axis_query.traversal {
+            AxisTraversal::RankedPage { k, offset } => {
+                cost_return_on_error_no_add!(
+                    cost,
+                    build_paginated_secondary_proof(
+                        &secondary_merk,
+                        *offset,
+                        *k,
+                        axis_query.descending,
+                        axis,
+                        grove_version,
+                        &mut cost,
+                    )
+                )
+            }
+            AxisTraversal::RankOfKey { .. } => {
+                // rank computed above; the rank proof IS the paginated
+                // proof at (offset = rank, k = 1).
+                let rank_offset = rank.expect("set above for RankOfKey");
+                cost_return_on_error_no_add!(
+                    cost,
+                    build_paginated_secondary_proof(
+                        &secondary_merk,
+                        rank_offset,
+                        1,
+                        axis_query.descending,
+                        axis,
+                        grove_version,
+                        &mut cost,
+                    )
+                )
+            }
+            AxisTraversal::Bounded { limit, .. } => {
+                // An empty secondary cannot carry a Merk range proof
+                // (`Merk::prove` refuses empty trees), so — mirroring
+                // the count-offset and aggregate-on-range empty
+                // conventions — the payload carries EMPTY proof bytes,
+                // which the verifier resolves to a NULL_HASH secondary
+                // root. The parent binding then only passes if the
+                // element genuinely commits an empty secondary.
+                if cost_return_on_error!(&mut cost, secondary_merk.is_empty_tree().map(Ok)) {
+                    Vec::new()
+                } else {
+                    let secondary_query = cost_return_on_error_no_add!(
+                        cost,
+                        crate::query::axis_lowering::axis_bounded_merk_query(axis_query)
+                    );
+                    let sec_result = cost_return_on_error!(
+                        &mut cost,
+                        secondary_merk
+                            .prove(secondary_query, Some(*limit), grove_version)
+                            .map_err(|e| Error::CorruptedData(format!(
+                                "axis descent: secondary range proof: {e}"
+                            )))
+                    );
+                    sec_result.proof
+                }
+            }
+            AxisTraversal::RangeAggregate { lo, hi } => match axis {
+                IndexAxis::Count => {
+                    // classify() rejects wholly-out-of-domain ranges, so
+                    // clamping cannot collapse onto a boundary key here.
+                    let lo_count = (*lo).clamp(0, u64::MAX as i128) as u64;
+                    let hi_count = (*hi).clamp(0, u64::MAX as i128) as u64;
+                    cost_return_on_error_no_add!(
+                        cost,
+                        build_count_aggregate_secondary_proof(
+                            &secondary_merk,
+                            lo_count,
+                            hi_count,
+                            grove_version,
+                            &mut cost,
+                        )
+                    )
+                }
+                IndexAxis::Sum => {
+                    let lo_sum = (*lo).clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+                    let hi_sum = (*hi).clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+                    cost_return_on_error_no_add!(
+                        cost,
+                        build_sum_aggregate_secondary_proof(
+                            &secondary_merk,
+                            lo_sum,
+                            hi_sum,
+                            grove_version,
+                            &mut cost,
+                        )
+                    )
+                }
+                IndexAxis::Avg => {
+                    return Err(Error::NotSupported(
+                        "axis descent: range aggregates are not defined for the Avg axis"
+                            .to_string(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
+            },
+        };
+
+        Ok(AxisDescentProof {
+            axis_tag: axis.tag(),
+            target_is_pcpsit,
+            other_axes_root_hashes,
+            primary_root_hash,
+            rank,
+            secondary_proof,
+        })
+        .wrap_with_cost(cost)
+    }
+}
+
+/// The count-offset paginated secondary proof shared by the `TopK` and
+/// `RankOfKey` embedded traversals — the same shape step 4 of
+/// `build_indexed_axis_paginated_proof` emits.
+fn build_paginated_secondary_proof<'db, S>(
+    secondary_merk: &grovedb_merk::Merk<S>,
+    offset: u64,
+    k: u16,
+    descending: bool,
+    axis: IndexAxis,
+    grove_version: &GroveVersion,
+    cost: &mut OperationCost,
+) -> Result<Vec<u8>, Error>
+where
+    S: grovedb_storage::StorageContext<'db>,
+{
+    if !secondary_merk.tree_type.is_count_bearing() {
+        return Err(Error::NotSupported(format!(
+            "axis descent: the {axis:?} axis secondary ({:?}) does not carry a provable count \
+             aggregate, so offset pagination cannot be attested",
+            secondary_merk.tree_type
+        )));
+    }
+    let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
+    let prove_result = secondary_merk
+        .prove_count_offset_on_range(
+            &inner_range,
+            offset,
+            Some(k as u64),
+            !descending,
+            grove_version,
+        )
+        .unwrap_add_cost(cost)
+        .map_err(|e| {
+            Error::CorruptedData(format!("axis descent: secondary count-offset proof: {e}"))
+        })?;
+    let mut serialized = Vec::with_capacity(128);
+    encode_into(prove_result.ops.iter(), &mut serialized);
+    Ok(serialized)
 }
 
 fn build_count_aggregate_secondary_proof<'db, S>(

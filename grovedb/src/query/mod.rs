@@ -1,11 +1,12 @@
 //! Queries
 
 pub mod aggregate_sum_path_query;
+pub(crate) mod axis_lowering;
 mod grove_branch_query_result;
 mod grove_trunk_query_result;
 mod path_branch_chunk_query;
 mod path_trunk_chunk_query;
-mod shape;
+pub(crate) mod shape;
 
 use std::{
     borrow::{Cow, Cow::Borrowed},
@@ -618,9 +619,16 @@ impl PathQuery {
         )
     }
 
-    /// A single aggregate over every entry of the indexed tree at
-    /// `path` whose `axis` value is in the inclusive `[lo, hi]`.
-    /// Count and Sum axes only.
+    /// `[lo, hi]` selects the entries of the indexed tree at `path` by
+    /// their own `axis` value; the answer is that axis's aggregate over
+    /// exactly those entries. Count and Sum axes only.
+    ///
+    /// The two axes aggregate differently — on the **sum** axis the
+    /// answer is the total of the selected sums, on the **count** axis
+    /// it is how many entries were selected (a bucket population), not
+    /// the total of their counts. See
+    /// [`AxisTraversal::RangeAggregate`](grovedb_query::AxisTraversal::RangeAggregate)
+    /// for worked examples of both.
     pub fn new_axis_range_aggregate(
         path: Vec<Vec<u8>>,
         axis: IndexAxis,
@@ -1204,6 +1212,89 @@ impl PathQuery {
                 recursive_should_add_parent_tree_at_path(&self.query.query, &path[self_path_len..])
             }
         })
+    }
+
+    /// Returns the axis read governing the subtree at `path`, if the
+    /// query node resolved at exactly that path carries
+    /// [`ReadMode::Axis`]. `path` is a full path from the GroveDB root
+    /// (the same convention as [`Self::query_items_at_path`]).
+    ///
+    /// This is how the proof walk — prover and verifier alike — learns
+    /// that a layer is an axis-ordered read of an indexed tree rather
+    /// than a key-selecting descent into its primary. Both sides
+    /// resolve from the same query through this one function, so they
+    /// cannot disagree about which layers are axis reads.
+    ///
+    /// Positions *inside* a subquery branch's `subquery_path` resolve
+    /// to `None` (a read mode lives on a query node, never mid-path),
+    /// as do paths that diverge from the query entirely.
+    pub fn axis_read_at_path(&self, path: &[&[u8]]) -> Option<&AxisQuery> {
+        /// Resolve the query NODE at exactly `path` below `query`,
+        /// following conditional and default subquery branches the same
+        /// way `query_items_at_path`'s resolver does — but returning
+        /// the node itself rather than its per-layer view, and `None`
+        /// for mid-`subquery_path` positions.
+        fn resolve_node_at_path<'b>(query: &'b Query, path: &[&[u8]]) -> Option<&'b Query> {
+            if path.is_empty() {
+                return Some(query);
+            }
+            let key = path[0];
+            let rest = &path[1..];
+
+            if let Some(conditional_branches) = &query.conditional_subquery_branches {
+                for (query_item, subquery_branch) in conditional_branches {
+                    if query_item.contains(key) {
+                        return resolve_branch_at_path(subquery_branch, rest);
+                    }
+                }
+            }
+            resolve_branch_at_path(&query.default_subquery_branch, rest)
+        }
+
+        fn resolve_branch_at_path<'b>(
+            branch: &'b SubqueryBranch,
+            rest: &[&[u8]],
+        ) -> Option<&'b Query> {
+            match &branch.subquery_path {
+                Some(subquery_path) => {
+                    if rest.len() < subquery_path.len() {
+                        // Mid-subquery_path: no query node here.
+                        return None;
+                    }
+                    if !rest
+                        .iter()
+                        .take(subquery_path.len())
+                        .zip(subquery_path)
+                        .all(|(a, b)| *a == b.as_slice())
+                    {
+                        return None;
+                    }
+                    let after = &rest[subquery_path.len()..];
+                    branch
+                        .subquery
+                        .as_deref()
+                        .and_then(|subquery| resolve_node_at_path(subquery, after))
+                }
+                None => branch
+                    .subquery
+                    .as_deref()
+                    .and_then(|subquery| resolve_node_at_path(subquery, rest)),
+            }
+        }
+
+        let self_path_len = self.path.len();
+        if path.len() < self_path_len {
+            // Above the query root: nothing can carry a read mode.
+            return None;
+        }
+        if !self.path.iter().zip(path).all(|(a, b)| a.as_slice() == *b) {
+            return None;
+        }
+        let node = resolve_node_at_path(&self.query.query, &path[self_path_len..])?;
+        match node.read_mode.as_deref() {
+            Some(ReadMode::Axis(axis_query)) => Some(axis_query),
+            _ => None,
+        }
     }
 
     /// Returns the query items applicable at the given path, if any.

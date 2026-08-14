@@ -340,6 +340,22 @@ impl PathQuery {
                          (at least one)",
                     ));
                 }
+                // Duplicate branch keys would produce contradictory
+                // per-branch rows (one Some, one None) from a single
+                // valid proof; reject them for reader, prover, and
+                // verifier at once.
+                {
+                    let mut seen = std::collections::BTreeSet::new();
+                    for item in &query.items {
+                        if let QueryItem::Key(branch_key) = item
+                            && !seen.insert(branch_key.as_slice())
+                        {
+                            return Err(Error::InvalidQuery(
+                                "a branched axis read may not name the same branch key twice",
+                            ));
+                        }
+                    }
+                }
                 let branch = &query.default_subquery_branch;
                 let Some(suffix) = branch.subquery_path.as_deref() else {
                     return Err(Error::InvalidQuery(
@@ -421,8 +437,9 @@ fn has_conditional_branches(query: &grovedb_merk::proofs::Query) -> bool {
 
 /// Projects the vocabulary crate's validation error (always
 /// `InvalidOperation(&'static str)`) into this crate's `InvalidQuery`,
-/// preserving the message.
-fn read_mode_validation_error(e: grovedb_query::error::Error) -> Error {
+/// preserving the message. Shared with the axis-bounds lowering, which
+/// runs the same validation on the prover/verifier side.
+pub(crate) fn read_mode_validation_error(e: grovedb_query::error::Error) -> Error {
     match e {
         grovedb_query::error::Error::InvalidOperation(msg) => Error::InvalidQuery(msg),
         _ => Error::InvalidQuery("read-mode validation failed"),

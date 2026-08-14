@@ -76,15 +76,26 @@ fn query_raw_rejects_read_mode_queries() {
 }
 
 #[test]
-fn prove_query_rejects_read_mode_queries() {
-    let grove_version = GroveVersion::latest();
+fn prove_query_gates_read_mode_queries() {
     let db = make_empty_grovedb();
-    for path_query in all_read_mode_queries() {
+
+    // Axis shapes are served from GROVE_V4 (round-trip coverage lives
+    // in axis_descent_proof_tests); below V4 the prover refuses them.
+    let v3 = &grovedb_version::version::GROVE_VERSIONS[2];
+    assert_eq!(v3.protocol_version, 3);
+    for path_query in [axis_path_query(), branched_axis_path_query()] {
         assert_not_supported(
-            db.prove_query(&path_query, None, grove_version).unwrap(),
-            "prove_query",
+            db.prove_query(&path_query, None, v3).unwrap(),
+            "prove_query (axis, V3)",
         );
     }
+
+    // Sum-budget shapes have no proof form at any version yet.
+    assert_not_supported(
+        db.prove_query(&sum_budget_path_query(), None, GroveVersion::latest())
+            .unwrap(),
+        "prove_query (sum budget)",
+    );
 }
 
 #[test]

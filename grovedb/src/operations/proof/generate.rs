@@ -109,12 +109,35 @@ impl GroveDb {
         prove_options: Option<ProveOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<GroveDBProof, Error> {
-        // Read-mode gate: axis / sum-budget reads are not served by this
-        // prover. Fail closed rather than misreading such a query as key
-        // selection and returning a proof about the wrong thing.
-        if let Err(e) = path_query.reject_unserved_read_mode() {
-            return Err(e).wrap_with_cost(OperationCost::default());
-        }
+        // Read-mode dispatch. Axis shapes are served by the V1 envelope
+        // — validated here (classify runs the full shape grammar) and
+        // gated below once `prove_version` is known. Sum-budget shapes
+        // have no proof form yet. Anything malformed fails closed
+        // rather than being misread as key selection.
+        let is_axis_shape = if path_query.query.query.has_read_mode_anywhere() {
+            match path_query.classify() {
+                Ok(crate::PathQueryShape::AxisRead { .. })
+                | Ok(crate::PathQueryShape::BranchedAxisRead { .. }) => true,
+                Ok(crate::PathQueryShape::SumBudget { .. }) => {
+                    return Err(Error::NotSupported(
+                        "sum-budget path queries have no proof form yet; prove the underlying \
+                         items with a key-selection query and fold client-side, or use the \
+                         trusted read (run_path_query)"
+                            .to_string(),
+                    ))
+                    .wrap_with_cost(OperationCost::default());
+                }
+                Ok(_) => {
+                    return Err(Error::CorruptedCodeExecution(
+                        "a read-mode-bearing query classified as a non-read-mode shape",
+                    ))
+                    .wrap_with_cost(OperationCost::default());
+                }
+                Err(e) => return Err(e).wrap_with_cost(OperationCost::default()),
+            }
+        } else {
+            false
+        };
         // Aggregate-count gate: validate at entry so malformed ACOR
         // queries (invalid inner range, ACOR-hidden-in-subquery, etc.) are
         // rejected up front instead of being skipped when the recursive
@@ -161,6 +184,35 @@ impl GroveDb {
         // refusing the combination here keeps callers from accidentally
         // emitting a V0 ACOR proof that the verifier would (correctly)
         // reject.
+        // Axis shapes are V1-envelope-only, and a V4 capability: refuse
+        // the V0 envelope (same contract as the aggregate gates below)
+        // and pre-V4 versions up front, mirroring the verifier's
+        // envelope gate so both sides agree at every version.
+        if is_axis_shape {
+            if prove_version == 0 {
+                return Err(Error::NotSupported(
+                    "axis-ordered path queries require V1 proof envelopes; upgrade the grove \
+                     version producing the proof"
+                        .to_string(),
+                ))
+                .wrap_with_cost(OperationCost::default());
+            }
+            if grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .axis_descent_in_v1_envelope
+                != 1
+            {
+                return Err(Error::NotSupported(
+                    "axis-ordered descents in the V1 proof envelope are not emitted at this \
+                     grove version"
+                        .to_string(),
+                ))
+                .wrap_with_cost(OperationCost::default());
+            }
+        }
+
         if is_acor_query && prove_version == 0 {
             return Err(Error::NotSupported(
                 "AggregateCountOnRange proofs require V1 proof envelopes; upgrade the grove \
@@ -1355,6 +1407,43 @@ impl GroveDb {
             )
         );
 
+        // A single-path axis read has exactly one answer — the axis
+        // descent at the queried path. The generic walk cannot produce
+        // one when the target is missing or is not an indexed tree; it
+        // returns `Ok` with an ordinary (or empty) layer instead, and
+        // the verifier then rejects the result as "must verify exactly
+        // one axis layer, got 0". Fail generation here instead, so the
+        // prover never hands out a proof that cannot answer the query
+        // it was asked.
+        //
+        // Branched axis reads are deliberately excluded: an absent
+        // branch key legitimately produces no descent, and its absence
+        // is what the branching-level Merk proof authenticates.
+        if matches!(
+            path_query.classify(),
+            Ok(crate::PathQueryShape::AxisRead { .. })
+        ) {
+            fn count_axis_descents(layer: &LayerProof) -> usize {
+                usize::from(matches!(
+                    layer.merk_proof,
+                    ProofBytes::IndexedTreeAxisDescent(_)
+                )) + layer
+                    .lower_layers
+                    .values()
+                    .map(count_axis_descents)
+                    .sum::<usize>()
+            }
+            let descents = count_axis_descents(&root_layer);
+            if descents != 1 {
+                return Err(Error::InvalidPath(format!(
+                    "a single-path axis read must produce exactly one axis descent at the \
+                     queried path, but the walk produced {descents} — the path does not \
+                     name an indexed tree carrying that axis"
+                )))
+                .wrap_with_cost(cost);
+            }
+        }
+
         Ok(GroveDBProof::V1(GroveDBProofV1 { root_layer })).wrap_with_cost(cost)
     }
 
@@ -1956,6 +2045,81 @@ impl GroveDb {
 
                                 has_a_result_at_level |= true;
                                 lower_layers.insert(key.clone(), layer_proof);
+                            }
+
+                            // Axis-ordered read of an indexed tree: the
+                            // query node governing this element carries
+                            // ReadMode::Axis, so instead of descending the
+                            // primary the layer carries an axis-descent
+                            // payload — a proof over the queried per-axis
+                            // secondary. Matched before the primary-descent
+                            // arms below so an axis read can never be
+                            // silently served as a primary descent; matches
+                            // empty primaries too (the payload commits
+                            // NULL_HASH roots naturally).
+                            Ok(Element::ProvableCountIndexedTree(..))
+                            | Ok(Element::ProvableSumIndexedTree(..))
+                            | Ok(Element::ProvableCountProvableSumIndexedTree(..))
+                                if !done_with_results && {
+                                    let mut lower_path = path.clone();
+                                    lower_path.push(key.as_slice());
+                                    path_query.axis_read_at_path(&lower_path).is_some()
+                                } =>
+                            {
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+                                let Some(axis_query) = path_query.axis_read_at_path(&lower_path)
+                                else {
+                                    return Err(Error::CorruptedCodeExecution(
+                                        "axis read vanished between the match guard and the arm",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                };
+
+                                // The axis descent is a GROVE_V4 envelope
+                                // capability; older versions refuse to emit
+                                // it, mirroring the verifier-side gate.
+                                if grove_version
+                                    .grovedb_versions
+                                    .operations
+                                    .proof
+                                    .axis_descent_in_v1_envelope
+                                    != 1
+                                {
+                                    return Err(Error::NotSupported(
+                                        "axis-ordered descents in the V1 proof envelope are \
+                                         not emitted at this grove version"
+                                            .to_string(),
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+
+                                let payload_batch = grovedb_storage::StorageBatch::new();
+                                let lower_subtree_path: grovedb_path::SubtreePath<&[u8]> =
+                                    lower_path.as_slice().into();
+                                let payload = cost_return_on_error!(
+                                    &mut cost,
+                                    self.build_axis_descent_payload(
+                                        lower_subtree_path,
+                                        axis_query,
+                                        &tx,
+                                        &payload_batch,
+                                        grove_version,
+                                    )
+                                );
+                                let payload_bytes =
+                                    cost_return_on_error_no_add!(cost, payload.encode_canonical());
+                                lower_layers.insert(
+                                    key.clone(),
+                                    LayerProof {
+                                        merk_proof:
+                                            crate::operations::proof::ProofBytes::IndexedTreeAxisDescent(
+                                                payload_bytes,
+                                            ),
+                                        lower_layers: Default::default(),
+                                    },
+                                );
+                                has_a_result_at_level |= true;
                             }
 
                             // Subquery into CountIndexedTree: descend into

@@ -36,6 +36,7 @@ mod coverage_round7_tests;
 // and `provable_count_provable_sum_indexed_tree_tests`; the generic-write
 // rejection cases it uniquely held are ported to
 // `generic_writes_against_pcit_primary_are_rejected`.
+mod axis_descent_proof_tests;
 mod count_offset_paginated_tests;
 mod count_sum_tree_tests;
 mod count_tree_tests;
@@ -95,6 +96,7 @@ mod trunk_proof_tests;
 mod v1_cidx_descent_tests;
 mod v1_proof_tests;
 mod verify_grovedb_indexed_tests;
+mod verify_path_query_shape_tests;
 mod visualize_tests;
 
 use std::{
