@@ -333,6 +333,79 @@ mod tests {
         }
     }
 
+    #[test]
+    fn axis_population_over_value_range_matches_direct_primitive() {
+        // The Population fold over the same sum band routes to the
+        // count aggregate of the (PCPS) sum secondary — a different
+        // dispatch arm and a different trusted reader than Total.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_psit(&db, grove_version, PSIT_ENTRIES);
+
+        let direct = db
+            .indexed_sum_population_over_value_range(
+                [TEST_LEAF, b"psit"].as_ref(),
+                0,
+                40,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("direct population over range");
+        let run = db
+            .run_path_query(
+                &PathQuery::new_axis_aggregate_over_value_range(
+                    psit_path(),
+                    IndexAxis::Sum,
+                    0,
+                    40,
+                    AggregateFold::Population,
+                ),
+                true,
+                true,
+                true,
+                QueryResultType::QueryKeyElementPairResultType,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("unified population over range");
+        match run {
+            PathQueryRun::AxisAggregate(AxisAggregateValue::Population(population)) => {
+                // [0, 40] over sums [40, -10, 25, 40, 5] selects four.
+                assert_eq!(population, direct);
+                assert_eq!(population, 4);
+            }
+            other => panic!("expected AxisAggregate(Population), got {other:?}"),
+        }
+
+        // The reader's own edge shapes, direct: inverted bounds answer
+        // an empty population, and hi = i64::MAX takes the unbounded
+        // upper branch.
+        let inverted = db
+            .indexed_sum_population_over_value_range(
+                [TEST_LEAF, b"psit"].as_ref(),
+                40,
+                0,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("inverted bounds are a valid empty answer");
+        assert_eq!(inverted, 0);
+        let unbounded = db
+            .indexed_sum_population_over_value_range(
+                [TEST_LEAF, b"psit"].as_ref(),
+                i64::MIN,
+                i64::MAX,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("full-domain population");
+        assert_eq!(unbounded, 5, "every PSIT entry is in the full domain");
+    }
+
     // -----------------------------------------------------------------
     // Branched axis reads
     // -----------------------------------------------------------------

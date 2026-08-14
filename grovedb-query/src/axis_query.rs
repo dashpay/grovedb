@@ -247,6 +247,14 @@ pub enum AxisTraversal {
     /// selects `40` and `25`: `Population` answers `2`, `Total` answers
     /// `65`.
     ///
+    /// **Currently unsupported: `Total` on the count axis.** The query
+    /// validates and serializes (the vocabulary is stable), but every
+    /// execution surface — trusted read, embedded prover/verifier,
+    /// standalone prover/verifier — refuses it with a typed
+    /// `NotSupported` naming issue #806 until the count secondary
+    /// becomes sum-bearing (#806 part 2, which removes this paragraph).
+    /// The other three (axis, fold) cells are served today.
+    ///
     /// **Cost** — `O(log n)` in every case, either fold. The walk
     /// classifies each subtree as fully Contained, Disjoint, or Partial
     /// and folds a Contained subtree's stored aggregate in one step,

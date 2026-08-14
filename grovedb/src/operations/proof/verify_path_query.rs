@@ -112,12 +112,15 @@ pub enum VerifiedPathQuery {
         /// Reconstructed GroveDB root hash.
         root_hash: CryptoHash,
         /// The attested aggregate, whose meaning follows the queried
-        /// axis: on the **sum** axis the signed TOTAL of the selected
-        /// entries' sums; on the **count** axis HOW MANY entries the
-        /// range selected (`>= 0`, each entry contributing 1) — a
-        /// bucket population, not the total of their counts. The query
-        /// names the axis, so the caller already knows which reading
-        /// applies.
+        /// FOLD, not the axis:
+        ///
+        /// * `AggregateFold::Population` — HOW MANY entries the value
+        ///   range selected (`>= 0`, each entry contributing 1).
+        /// * `AggregateFold::Total` — the signed sum of the selected
+        ///   entries' axis values.
+        ///
+        /// The query carries the fold, so the caller already knows
+        /// which reading applies.
         value: i128,
     },
     /// Sum-budget read: the proved window's matched sum items, their

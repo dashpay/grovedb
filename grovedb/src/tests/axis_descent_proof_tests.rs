@@ -1624,6 +1624,67 @@ mod tests {
             grove_version,
         )
         .expect_err("standalone count+Total verification must be refused");
+
+        // The refusal must also fire in the VERIFIERS' own arms, not
+        // just upstream of them. Embedded: a genuine count+Population
+        // proof against a count+Total query reaches the descent
+        // verifier's (Count, Total) arm — the query is where the fold
+        // lives, so this is the exact shape a confused (or hostile)
+        // client would produce.
+        let population_pq = PathQuery::new_axis_aggregate_over_value_range(
+            vec![TEST_LEAF.to_vec(), b"pcpsit".to_vec()],
+            IndexAxis::Count,
+            0,
+            10,
+            AggregateFold::Population,
+        );
+        let population_proof = prove(&db, &population_pq, grove_version);
+        match GroveDb::verify_path_query(&population_proof, &pq, grove_version) {
+            Err(Error::NotSupported(message)) => {
+                assert!(message.contains("806"), "got: {message}")
+            }
+            other => panic!("the descent verifier must refuse count+Total, got {other:?}"),
+        }
+
+        // Standalone: relabel a genuine count+Population envelope's
+        // fold echo to Total. The echo check passes (expected == echo),
+        // so the inner dispatch's (Count, Total) rejection is what must
+        // stop it.
+        let standalone = db
+            .prove_indexed_axis_aggregate_over_value_range(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                IndexAxis::Count,
+                0,
+                10,
+                AggregateFold::Population,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("standalone count+Population prove");
+        let config = bincode::config::standard().with_limit::<{ 16 * 1024 * 1024 }>();
+        let (mut envelope, _): (
+            crate::operations::proof::indexed_axis::IndexedAxisAggregateProof,
+            usize,
+        ) = bincode::decode_from_slice(&standalone, config).expect("decode envelope");
+        envelope.fold_tag = AggregateFold::Total.tag();
+        let relabeled = bincode::encode_to_vec(&envelope, config).expect("re-encode");
+        match GroveDb::verify_indexed_axis_aggregate_over_value_range(
+            &relabeled,
+            &[TEST_LEAF, b"pcpsit"],
+            IndexAxis::Count,
+            0,
+            10,
+            AggregateFold::Total,
+            grove_version,
+        ) {
+            Err(Error::NotSupported(message)) => {
+                assert!(message.contains("806"), "got: {message}")
+            }
+            other => panic!(
+                "a relabeled count envelope must hit the inner count+Total refusal: {other:?}"
+            ),
+        }
     }
 
     #[test]

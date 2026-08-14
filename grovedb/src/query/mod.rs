@@ -630,7 +630,9 @@ impl PathQuery {
     /// answers `2`, [`AggregateFold::Total`](grovedb_query::AggregateFold)
     /// answers `8`. See
     /// [`AxisTraversal::AggregateOverValueRange`](grovedb_query::AxisTraversal::AggregateOverValueRange)
-    /// for the full matrix.
+    /// for the full matrix — including the one cell every execution
+    /// surface currently refuses with `NotSupported`: `Total` on the
+    /// count axis, pending issue #806 part 2.
     pub fn new_axis_aggregate_over_value_range(
         path: Vec<Vec<u8>>,
         axis: IndexAxis,
