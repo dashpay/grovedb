@@ -144,8 +144,10 @@ pub struct IndexedAxisAggregateProof {
     /// Same as [`IndexedAxisRangeProof::target_is_pcpsit`].
     pub target_is_pcpsit: bool,
     /// Encoded aggregate proof bytes for the per-axis secondary.
-    /// For count axis: `prove_aggregate_count_on_range` output.
-    /// For sum axis: `prove_aggregate_sum_on_range` output.
+    /// The walker follows the FOLD, not the axis:
+    /// `AggregateFold::Population` → `prove_aggregate_count_on_range`
+    /// output; `AggregateFold::Total` → `prove_aggregate_sum_on_range`
+    /// output. The byte range the proof covers follows the axis.
     pub secondary_proof: Vec<u8>,
     /// Echoed inclusive lower bound on the secondary's sort-value
     /// (i.e. `count_value` for count axis, `sum_value` for sum axis).
@@ -153,6 +155,11 @@ pub struct IndexedAxisAggregateProof {
     pub lo: i128,
     /// Echoed inclusive upper bound.
     pub hi: i128,
+    /// Echoed [`AggregateFold::tag`](grovedb_query::AggregateFold::tag)
+    /// of the fold the proof answers. The verifier authenticates this
+    /// against the caller's `expected_fold` — a population proof must
+    /// not satisfy a question about a total, or vice versa.
+    pub fold_tag: u8,
 }
 
 /// Sort-value variants per axis. Returned in

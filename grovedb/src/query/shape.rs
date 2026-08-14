@@ -392,18 +392,19 @@ impl PathQuery {
                         // A branched read answers with one entry list per
                         // branch, so its terminal must be an
                         // entry-listing traversal. Rank-of-key and
-                        // range-aggregate produce a single scalar about
+                        // aggregate-over-value-range produce a single scalar about
                         // one tree and have no per-branch list to fill;
                         // rejecting them here keeps the reader and the
                         // verifier from having to treat "impossible"
                         // shapes as internal errors.
                         if matches!(
                             axis.traversal,
-                            AxisTraversal::RankOfKey { .. } | AxisTraversal::RangeAggregate { .. }
+                            AxisTraversal::RankOfKey { .. }
+                                | AxisTraversal::AggregateOverValueRange { .. }
                         ) {
                             return Err(Error::InvalidQuery(
                                 "a branched axis read serves entry-listing traversals \
-                                 (RankedPage / Bounded) only; rank-of-key and range-aggregate \
+                                 (RankedPage / Bounded) only; rank-of-key and aggregate-over-value-range \
                                  are single-path reads",
                             ));
                         }
@@ -448,6 +449,7 @@ pub(crate) fn read_mode_validation_error(e: grovedb_query::error::Error) -> Erro
 
 #[cfg(test)]
 mod tests {
+    use grovedb_merk::proofs::query::AggregateFold;
     use grovedb_merk::proofs::{query::query_item::QueryItem, Query};
 
     use super::*;
@@ -743,7 +745,13 @@ mod tests {
             PathQuery::new_axis_top_k(path(), IndexAxis::Count, 5, 0, true),
             PathQuery::new_axis_bounded(path(), IndexAxis::Sum, -10, 10, 3, false),
             PathQuery::new_axis_rank_of_key(path(), IndexAxis::Avg, b"alice".to_vec(), true),
-            PathQuery::new_axis_range_aggregate(path(), IndexAxis::Sum, 0, 100),
+            PathQuery::new_axis_aggregate_over_value_range(
+                path(),
+                IndexAxis::Sum,
+                0,
+                100,
+                AggregateFold::Total,
+            ),
         ];
         for pq in queries {
             match pq.classify().expect("axis constructor must classify") {
@@ -841,7 +849,13 @@ mod tests {
                 PathQuery::new_unsized(path(), q)
             }),
             ("range aggregate on the Avg axis", {
-                PathQuery::new_axis_range_aggregate(path(), IndexAxis::Avg, 0, 10)
+                PathQuery::new_axis_aggregate_over_value_range(
+                    path(),
+                    IndexAxis::Avg,
+                    0,
+                    10,
+                    AggregateFold::Population,
+                )
             }),
             ("branched: range item selecting branches", {
                 let mut q = Query::new_single_query_item(range_item());

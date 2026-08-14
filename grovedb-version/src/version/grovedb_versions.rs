@@ -68,7 +68,7 @@ pub struct GroveDBOperationsIndexedAxisVersions {
     /// The trusted per-axis reads (`indexed_{count,sum,avg}_*`).
     pub read: FeatureVersion,
     /// The standalone single-path envelope provers
-    /// (`prove_indexed_axis_{top_k,top_k_paginated,query,rank_of_key,range_aggregate}`).
+    /// (`prove_indexed_axis_{top_k,top_k_paginated,query,rank_of_key,aggregate_over_value_range}`).
     pub prove_single_path: FeatureVersion,
     /// The matching standalone verifiers.
     pub verify_single_path: FeatureVersion,

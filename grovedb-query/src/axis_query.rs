@@ -90,9 +90,64 @@ impl IndexAxis {
 /// through the traversal.
 pub const MAX_RANK_OF_KEY_LEN: usize = 255;
 
+/// Which aggregate an [`AxisTraversal::AggregateOverValueRange`] folds
+/// over the entries the value band selects. Wire bytes are explicit and
+/// frozen: `Population = 0`, `Total = 1`.
+///
+/// The fold is EXPLICIT because the two readings genuinely differ and
+/// the "obvious" one flips per axis: over counts `[3, 1, 5]`, the band
+/// `[2, 10]` selects the `3` and the `5`, so `Population` answers **2**
+/// (each selected entry contributes 1) while `Total` answers **8** (the
+/// selected values are summed). Making the caller say which they mean
+/// removes the ambiguity that an axis-default fold invited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum AggregateFold {
+    /// How many entries the band selects; each contributes 1.
+    /// Entries, not distinct values: two entries sharing the same axis
+    /// value are two nodes of the secondary (it is keyed
+    /// `sort_key ‖ original_key`) and count as 2. Answered by the
+    /// secondary's count aggregate, so it needs a count-bearing
+    /// secondary.
+    Population,
+    /// The sum of the selected entries' axis values. Answered by the
+    /// secondary's sum aggregate, so it needs a sum-bearing secondary.
+    Total,
+}
+
+impl AggregateFold {
+    /// The frozen wire byte.
+    #[inline]
+    pub const fn tag(&self) -> u8 {
+        match self {
+            AggregateFold::Population => 0,
+            AggregateFold::Total => 1,
+        }
+    }
+
+    /// Inverse of [`Self::tag`]; any byte outside `0..=1` is an error.
+    #[inline]
+    pub const fn try_from_tag(b: u8) -> Result<Self, u8> {
+        match b {
+            0 => Ok(AggregateFold::Population),
+            1 => Ok(AggregateFold::Total),
+            other => Err(other),
+        }
+    }
+}
+
+impl fmt::Display for AggregateFold {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AggregateFold::Population => write!(f, "population"),
+            AggregateFold::Total => write!(f, "total"),
+        }
+    }
+}
+
 /// How an [`AxisQuery`] walks the secondary. Wire tags are explicit and
 /// frozen: `RankedPage = 0`, `Bounded = 1`, `RankOfKey = 2`,
-/// `RangeAggregate = 3`.
+/// `AggregateOverValueRange = 3`.
 ///
 /// # Cost
 ///
@@ -177,44 +232,50 @@ pub enum AxisTraversal {
         /// The original (primary) key whose rank is requested.
         key: Vec<u8>,
     },
-    /// `[lo, hi]` selects the entries; the axis's own secondary
-    /// aggregate over exactly those entries is the answer. Count and
-    /// Sum axes only — the Avg axis has no meaningful
-    /// average-of-averages.
+    /// `[lo, hi]` selects the entries by their own axis value; `fold`
+    /// says which aggregate over exactly those entries is the answer.
+    /// Count and Sum axes only — the Avg axis has no meaningful
+    /// aggregate-of-averages.
     ///
-    /// **The aggregation differs per axis, and the count axis is the
-    /// one that reads wrong.** Each secondary aggregates the way its
-    /// own tree type does, so:
+    /// The fold is explicit because both readings are meaningful on
+    /// both axes and the "obvious" one flips per axis. Over counts
+    /// `[3, 1, 5]`, the band `[2, 10]` selects the `3` and the `5`:
     ///
-    /// * **Sum axis** — the answer is the TOTAL of the selected
-    ///   entries' sums. `RangeAggregate { lo: 0, hi: 100 }` over sums
-    ///   `[40, -10, 25]` selects `40` and `25` and answers `65`.
-    /// * **Count axis** — the answer is HOW MANY entries were
-    ///   selected, each contributing 1. It is a bucket population, NOT
-    ///   the total of their counts. `RangeAggregate { lo: 2, hi: 10 }`
-    ///   over counts `[3, 1, 5]` selects the `3` and the `5` and
-    ///   answers **2**, not 8.
+    /// * [`AggregateFold::Population`] answers **2** — how many entries
+    ///   fall in the band, each contributing 1.
+    /// * [`AggregateFold::Total`] answers **8** — the selected values
+    ///   summed.
     ///
-    /// Reach for the count axis here to ask "how many entries fall in
-    /// this band?". There is no traversal that totals the counts in a
-    /// band — [`Self::Bounded`] lists the selected entries with their
-    /// values, and the caller sums them.
+    /// The same pair over sums `[40, -10, 25]` with band `[0, 100]`
+    /// selects `40` and `25`: `Population` answers `2`, `Total` answers
+    /// `65`.
     ///
-    /// **Cost** — `O(log n)` in every case. The walk classifies each
-    /// subtree as fully Contained, Disjoint, or Partial and folds a
-    /// Contained subtree's stored aggregate in one step, descending
-    /// only along the two range boundaries. **No term in the number of
-    /// matched entries** — aggregating a million in-range entries costs
-    /// what aggregating one costs, which is what makes this preferable
-    /// to [`Self::Bounded`] whenever only the total is wanted.
-    RangeAggregate {
+    /// **Currently unsupported: `Total` on the count axis.** The query
+    /// validates and serializes (the vocabulary is stable), but every
+    /// execution surface — trusted read, embedded prover/verifier,
+    /// standalone prover/verifier — refuses it with a typed
+    /// `NotSupported` naming issue #806 until the count secondary
+    /// becomes sum-bearing (#806 part 2, which removes this paragraph).
+    /// The other three (axis, fold) cells are served today.
+    ///
+    /// **Cost** — `O(log n)` in every case, either fold. The walk
+    /// classifies each subtree as fully Contained, Disjoint, or Partial
+    /// and folds a Contained subtree's stored aggregate in one step,
+    /// descending only along the two range boundaries. **No term in the
+    /// number of matched entries** — aggregating a million in-range
+    /// entries costs what aggregating one costs, which is what makes
+    /// this preferable to [`Self::Bounded`] whenever only the scalar is
+    /// wanted.
+    AggregateOverValueRange {
         /// Inclusive lower bound on the entry's own axis VALUE (its
         /// count on the count axis, its sum on the sum axis) — not on
         /// the aggregate this traversal returns.
         lo: i128,
         /// Inclusive upper bound on the entry's own axis value. See
-        /// [`Self::RangeAggregate::lo`].
+        /// [`Self::AggregateOverValueRange::lo`].
         hi: i128,
+        /// The aggregate to fold over the selected entries.
+        fold: AggregateFold,
     },
 }
 
@@ -236,10 +297,11 @@ impl Encode for AxisTraversal {
                 2u8.encode(encoder)?;
                 key.encode(encoder)
             }
-            AxisTraversal::RangeAggregate { lo, hi } => {
+            AxisTraversal::AggregateOverValueRange { lo, hi, fold } => {
                 3u8.encode(encoder)?;
                 lo.encode(encoder)?;
-                hi.encode(encoder)
+                hi.encode(encoder)?;
+                fold.tag().encode(encoder)
             }
         }
     }
@@ -266,9 +328,11 @@ impl<Context> Decode<Context> for AxisTraversal {
                 }
                 Ok(AxisTraversal::RankOfKey { key })
             }
-            3 => Ok(AxisTraversal::RangeAggregate {
+            3 => Ok(AxisTraversal::AggregateOverValueRange {
                 lo: i128::decode(decoder)?,
                 hi: i128::decode(decoder)?,
+                fold: AggregateFold::try_from_tag(u8::decode(decoder)?)
+                    .map_err(|_| DecodeError::Other("unknown aggregate fold tag"))?,
             }),
             _ => Err(DecodeError::Other("unknown axis traversal tag")),
         }
@@ -393,13 +457,20 @@ impl AxisQuery {
         }
     }
 
-    /// A single aggregate over entries whose value is in `[lo, hi]`.
-    /// Direction does not affect the answer; constructors set
+    /// A single `fold` aggregate over the entries whose axis value is
+    /// in `[lo, hi]` — [`AggregateFold::Population`] for how many,
+    /// [`AggregateFold::Total`] for the sum of their values. Direction
+    /// does not affect the answer; constructors set
     /// `descending = false`.
-    pub const fn range_aggregate(axis: IndexAxis, lo: i128, hi: i128) -> Self {
+    pub const fn aggregate_over_value_range(
+        axis: IndexAxis,
+        lo: i128,
+        hi: i128,
+        fold: AggregateFold,
+    ) -> Self {
         Self {
             axis,
-            traversal: AxisTraversal::RangeAggregate { lo, hi },
+            traversal: AxisTraversal::AggregateOverValueRange { lo, hi, fold },
             descending: false,
         }
     }
@@ -440,11 +511,16 @@ impl AxisQuery {
                     ));
                 }
             }
-            AxisTraversal::RangeAggregate { lo, hi } => {
+            AxisTraversal::AggregateOverValueRange { lo, hi, fold: _ } => {
+                // Both folds are rejected on the Avg axis: a total of
+                // averages is not meaningful, and a population over the
+                // avg ordering is served by the other two axes' bands
+                // in every use case seen so far — permit it later if
+                // one appears (additive).
                 if self.axis == IndexAxis::Avg {
                     return Err(Error::InvalidOperation(
-                        "axis query: the Avg axis has no range aggregate — a sum of averages \
-                         is not meaningful",
+                        "axis query: the Avg axis has no value-range aggregate — an \
+                         aggregate of averages is not meaningful",
                     ));
                 }
                 self.validate_bounds(*lo, *hi)?;
@@ -454,7 +530,7 @@ impl AxisQuery {
     }
 
     /// Shared bound rules for [`AxisTraversal::Bounded`] and
-    /// [`AxisTraversal::RangeAggregate`].
+    /// [`AxisTraversal::AggregateOverValueRange`].
     fn validate_bounds(&self, lo: i128, hi: i128) -> Result<(), Error> {
         if lo > hi {
             return Err(Error::InvalidOperation(
@@ -484,14 +560,14 @@ impl AxisQuery {
 
     /// The number of entries this query can return, when that is a
     /// fixed property of the traversal (`None` for
-    /// [`AxisTraversal::RangeAggregate`], which returns one scalar, not
+    /// [`AxisTraversal::AggregateOverValueRange`], which returns one scalar, not
     /// entries).
     pub const fn entry_cap(&self) -> Option<u16> {
         match &self.traversal {
             AxisTraversal::RankedPage { k, .. } => Some(*k),
             AxisTraversal::Bounded { limit, .. } => Some(*limit),
             AxisTraversal::RankOfKey { .. } => Some(1),
-            AxisTraversal::RangeAggregate { .. } => None,
+            AxisTraversal::AggregateOverValueRange { .. } => None,
         }
     }
 }
@@ -508,8 +584,11 @@ impl fmt::Display for AxisTraversal {
             AxisTraversal::RankOfKey { key } => {
                 write!(f, "RankOfKey {{ key: {} }}", crate::hex_to_ascii(key))
             }
-            AxisTraversal::RangeAggregate { lo, hi } => {
-                write!(f, "RangeAggregate {{ lo: {lo}, hi: {hi} }}")
+            AxisTraversal::AggregateOverValueRange { lo, hi, fold } => {
+                write!(
+                    f,
+                    "AggregateOverValueRange {{ lo: {lo}, hi: {hi}, fold: {fold} }}"
+                )
             }
         }
     }
@@ -568,7 +647,16 @@ mod tests {
             AxisTraversal::RankOfKey {
                 key: b"alice".to_vec(),
             },
-            AxisTraversal::RangeAggregate { lo: 0, hi: 50 },
+            AxisTraversal::AggregateOverValueRange {
+                lo: 0,
+                hi: 50,
+                fold: AggregateFold::Population,
+            },
+            AxisTraversal::AggregateOverValueRange {
+                lo: 0,
+                hi: 50,
+                fold: AggregateFold::Total,
+            },
         ]
     }
 
@@ -599,7 +687,7 @@ mod tests {
             .into_iter()
             .map(|t| bincode::encode_to_vec(&t, config::standard()).unwrap()[0])
             .collect();
-        assert_eq!(tags, vec![0, 1, 2, 3]);
+        assert_eq!(tags, vec![0, 1, 2, 3, 3]);
         // First byte of an AxisQuery encoding is the axis tag byte.
         let q = AxisQuery::top_k(IndexAxis::Avg, 1, 0, true);
         let bytes = bincode::encode_to_vec(&q, config::standard()).unwrap();
@@ -626,6 +714,30 @@ mod tests {
     }
 
     #[test]
+    fn decode_rejects_unknown_fold_bytes() {
+        // tag 3, lo = 0, hi = 0 (i128s), then a fold byte outside 0..=1:
+        // fail closed, exactly like an unknown traversal tag.
+        let good = bincode::encode_to_vec(
+            &AxisTraversal::AggregateOverValueRange {
+                lo: 0,
+                hi: 0,
+                fold: AggregateFold::Total,
+            },
+            config::standard(),
+        )
+        .unwrap();
+        let mut bad = good.clone();
+        *bad.last_mut().unwrap() = 2;
+        assert!(
+            bincode::decode_from_slice::<AxisTraversal, _>(&bad, config::standard()).is_err(),
+            "an unknown fold byte must not decode"
+        );
+        // Sanity: the honest bytes decode, and the last byte IS the fold.
+        assert_eq!(*good.last().unwrap(), 1, "Total = 1 on the wire");
+        assert!(bincode::decode_from_slice::<AxisTraversal, _>(&good, config::standard()).is_ok());
+    }
+
+    #[test]
     fn validate_rejects_unanswerable_queries() {
         // k = 0.
         assert!(AxisQuery::top_k(IndexAxis::Count, 0, 0, true)
@@ -644,15 +756,22 @@ mod tests {
             .validate()
             .is_err());
         // Wholly out of domain: beyond i64 for sums.
-        assert!(
-            AxisQuery::range_aggregate(IndexAxis::Sum, i64::MAX as i128 + 1, i128::MAX)
-                .validate()
-                .is_err()
-        );
-        // Range aggregate on Avg.
-        assert!(AxisQuery::range_aggregate(IndexAxis::Avg, 0, 10)
-            .validate()
-            .is_err());
+        assert!(AxisQuery::aggregate_over_value_range(
+            IndexAxis::Sum,
+            i64::MAX as i128 + 1,
+            i128::MAX,
+            AggregateFold::Total
+        )
+        .validate()
+        .is_err());
+        // Aggregate over the value range on Avg — both folds.
+        for fold in [AggregateFold::Population, AggregateFold::Total] {
+            assert!(
+                AxisQuery::aggregate_over_value_range(IndexAxis::Avg, 0, 10, fold)
+                    .validate()
+                    .is_err()
+            );
+        }
         // Empty rank key.
         assert!(AxisQuery::rank_of_key(IndexAxis::Count, vec![], true)
             .validate()
@@ -717,9 +836,11 @@ mod tests {
             AxisQuery::rank_of_key(IndexAxis::Sum, b"k".to_vec(), true).entry_cap(),
             Some(1)
         );
-        assert_eq!(
-            AxisQuery::range_aggregate(IndexAxis::Sum, 0, 1).entry_cap(),
-            None
-        );
+        for fold in [AggregateFold::Population, AggregateFold::Total] {
+            assert_eq!(
+                AxisQuery::aggregate_over_value_range(IndexAxis::Sum, 0, 1, fold).entry_cap(),
+                None
+            );
+        }
     }
 }

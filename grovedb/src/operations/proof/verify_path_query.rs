@@ -106,18 +106,21 @@ pub enum VerifiedPathQuery {
         /// The attested rank.
         rank: u64,
     },
-    /// `RangeAggregate`: the attested aggregate over the entries the
+    /// `AggregateOverValueRange`: the attested aggregate over the entries the
     /// value range selected.
     AxisAggregate {
         /// Reconstructed GroveDB root hash.
         root_hash: CryptoHash,
         /// The attested aggregate, whose meaning follows the queried
-        /// axis: on the **sum** axis the signed TOTAL of the selected
-        /// entries' sums; on the **count** axis HOW MANY entries the
-        /// range selected (`>= 0`, each entry contributing 1) — a
-        /// bucket population, not the total of their counts. The query
-        /// names the axis, so the caller already knows which reading
-        /// applies.
+        /// FOLD, not the axis:
+        ///
+        /// * `AggregateFold::Population` — HOW MANY entries the value
+        ///   range selected (`>= 0`, each entry contributing 1).
+        /// * `AggregateFold::Total` — the signed sum of the selected
+        ///   entries' axis values.
+        ///
+        /// The query carries the fold, so the caller already knows
+        /// which reading applies.
         value: i128,
     },
     /// Sum-budget read: the proved window's matched sum items, their
@@ -489,9 +492,10 @@ impl GroveDb {
             (AxisWalkResult::Rank { rank }, AxisTraversal::RankOfKey { .. }) => {
                 Ok(VerifiedPathQuery::AxisRank { root_hash, rank })
             }
-            (AxisWalkResult::Aggregate { value }, AxisTraversal::RangeAggregate { .. }) => {
-                Ok(VerifiedPathQuery::AxisAggregate { root_hash, value })
-            }
+            (
+                AxisWalkResult::Aggregate { value },
+                AxisTraversal::AggregateOverValueRange { .. },
+            ) => Ok(VerifiedPathQuery::AxisAggregate { root_hash, value }),
             _ => Err(Error::InvalidProof(
                 path_query.clone(),
                 "the verified axis outcome does not match the query's traversal".to_string(),

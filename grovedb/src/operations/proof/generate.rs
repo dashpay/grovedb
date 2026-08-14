@@ -2369,8 +2369,8 @@ impl GroveDb {
                                         "aggregate-on-range carrier queries cannot descend \
                                          through an indexed tree (PCIT / PSIT / PCPSIT); use \
                                          the dedicated indexed-axis aggregate proofs \
-                                         (prove_indexed_count_range_aggregate / \
-                                         prove_indexed_sum_range_aggregate) instead"
+                                         (prove_indexed_count_aggregate_over_value_range / \
+                                         prove_indexed_sum_aggregate_over_value_range) instead"
                                             .to_string(),
                                     ))
                                     .wrap_with_cost(cost);
@@ -2481,8 +2481,8 @@ impl GroveDb {
                                         "aggregate-on-range carrier queries cannot descend \
                                          through an indexed tree (PCIT / PSIT / PCPSIT); use \
                                          the dedicated indexed-axis aggregate proofs \
-                                         (prove_indexed_count_range_aggregate / \
-                                         prove_indexed_sum_range_aggregate) instead"
+                                         (prove_indexed_count_aggregate_over_value_range / \
+                                         prove_indexed_sum_aggregate_over_value_range) instead"
                                             .to_string(),
                                     ))
                                     .wrap_with_cost(cost);
@@ -2585,8 +2585,8 @@ impl GroveDb {
                                         "aggregate-on-range carrier queries cannot descend \
                                          through an indexed tree (PCIT / PSIT / PCPSIT); use \
                                          the dedicated indexed-axis aggregate proofs \
-                                         (prove_indexed_count_range_aggregate / \
-                                         prove_indexed_sum_range_aggregate) instead"
+                                         (prove_indexed_count_aggregate_over_value_range / \
+                                         prove_indexed_sum_aggregate_over_value_range) instead"
                                             .to_string(),
                                     ))
                                     .wrap_with_cost(cost);

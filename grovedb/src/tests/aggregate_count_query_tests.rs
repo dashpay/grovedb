@@ -2086,7 +2086,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_nested_carrier_range_range_aggregate_count() {
+    fn rejects_nested_carrier_aggregate_over_value_range_count() {
         // Out of scope: a "Range × Range × AggregateCountOnRange"
         // shape — an outer carrier whose subquery is *itself* another
         // carrier. This is the `IN × IN`-on-prefix case the spec

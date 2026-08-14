@@ -27,7 +27,7 @@
 //! unified proof dispatch arrives separately.
 
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt};
-use grovedb_merk::proofs::query::{AxisTraversal, IndexAxis};
+use grovedb_merk::proofs::query::{AggregateFold, AxisTraversal, IndexAxis};
 use grovedb_path::SubtreePath;
 use grovedb_version::{
     check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
@@ -45,10 +45,10 @@ use crate::{
 /// secondary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AxisAggregateValue {
-    /// Count of matching entries (count axis).
-    Count(u64),
-    /// Signed sum of matching entries (sum axis).
-    Sum(i64),
+    /// How many entries the value band selected; each contributes 1.
+    Population(u64),
+    /// The signed sum of the selected entries' axis values.
+    Total(i64),
 }
 
 /// The typed answer to [`GroveDb::run_path_query`] — one variant per
@@ -93,7 +93,7 @@ pub enum PathQueryRun {
     BranchedAxisEntries(Vec<(Vec<u8>, Option<AxisEntries>)>),
     /// `RankOfKey` traversal: the item's 0-based rank in the walk.
     AxisRank(u64),
-    /// `RangeAggregate` traversal: one scalar over the value range.
+    /// `AggregateOverValueRange` traversal: one scalar over the value range.
     AxisAggregate(AxisAggregateValue),
     /// Sum-budget read: the budgeted walk's matches and stop state.
     SumBudget(AggregateSumQueryResult),
@@ -406,12 +406,12 @@ impl GroveDb {
                 );
                 Ok(PathQueryRun::AxisRank(rank)).wrap_with_cost(cost)
             }
-            AxisTraversal::RangeAggregate { lo, hi } => match axis {
-                IndexAxis::Count => {
+            AxisTraversal::AggregateOverValueRange { lo, hi, fold } => match (axis, fold) {
+                (IndexAxis::Count, AggregateFold::Population) => {
                     let (lo_count, hi_count) = clamp_count_bounds(*lo, *hi);
                     let value = cost_return_on_error!(
                         &mut cost,
-                        self.indexed_count_range_aggregate(
+                        self.indexed_count_aggregate_over_value_range(
                             path,
                             lo_count,
                             hi_count,
@@ -419,16 +419,16 @@ impl GroveDb {
                             grove_version
                         )
                     );
-                    Ok(PathQueryRun::AxisAggregate(AxisAggregateValue::Count(
+                    Ok(PathQueryRun::AxisAggregate(AxisAggregateValue::Population(
                         value,
                     )))
                     .wrap_with_cost(cost)
                 }
-                IndexAxis::Sum => {
+                (IndexAxis::Sum, AggregateFold::Total) => {
                     let (lo_sum, hi_sum) = clamp_sum_bounds(*lo, *hi);
                     let value = cost_return_on_error!(
                         &mut cost,
-                        self.indexed_sum_range_aggregate(
+                        self.indexed_sum_aggregate_over_value_range(
                             path,
                             lo_sum,
                             hi_sum,
@@ -436,12 +436,37 @@ impl GroveDb {
                             grove_version
                         )
                     );
-                    Ok(PathQueryRun::AxisAggregate(AxisAggregateValue::Sum(value)))
-                        .wrap_with_cost(cost)
+                    Ok(PathQueryRun::AxisAggregate(AxisAggregateValue::Total(
+                        value,
+                    )))
+                    .wrap_with_cost(cost)
                 }
-                // classify rejects range aggregates on the Avg axis.
-                IndexAxis::Avg => Err(Error::CorruptedCodeExecution(
-                    "range aggregate on the Avg axis survived classification",
+                (IndexAxis::Sum, AggregateFold::Population) => {
+                    let (lo_sum, hi_sum) = clamp_sum_bounds(*lo, *hi);
+                    let value = cost_return_on_error!(
+                        &mut cost,
+                        self.indexed_sum_population_over_value_range(
+                            path,
+                            lo_sum,
+                            hi_sum,
+                            transaction,
+                            grove_version
+                        )
+                    );
+                    Ok(PathQueryRun::AxisAggregate(AxisAggregateValue::Population(
+                        value,
+                    )))
+                    .wrap_with_cost(cost)
+                }
+                (IndexAxis::Count, AggregateFold::Total) => Err(Error::NotSupported(
+                    "a TOTAL over the count axis needs a sum-bearing count secondary; \
+                     tracked in issue #806"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost),
+                // classify rejects value-range aggregates on the Avg axis.
+                (IndexAxis::Avg, _) => Err(Error::CorruptedCodeExecution(
+                    "value-range aggregate on the Avg axis survived classification",
                 ))
                 .wrap_with_cost(cost),
             },

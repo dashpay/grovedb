@@ -1110,7 +1110,7 @@ mod tests {
 
         // Aggregate count [2, 4]: 3 entries.
         let agg = db
-            .indexed_count_range_aggregate(
+            .indexed_count_aggregate_over_value_range(
                 [TEST_LEAF, b"pcpsit"].as_ref(),
                 2,
                 4,
@@ -1123,7 +1123,7 @@ mod tests {
 
         // Aggregate full scan = 5.
         let total = db
-            .indexed_count_range_aggregate(
+            .indexed_count_aggregate_over_value_range(
                 [TEST_LEAF, b"pcpsit"].as_ref(),
                 0,
                 u64::MAX,
@@ -1217,7 +1217,7 @@ mod tests {
 
         // Aggregate sum in [0, 10]: 0 + 9 + 10 = 19.
         let agg = db
-            .indexed_sum_range_aggregate(
+            .indexed_sum_aggregate_over_value_range(
                 [TEST_LEAF, b"pcpsit"].as_ref(),
                 0,
                 10,
@@ -1230,7 +1230,7 @@ mod tests {
 
         // Aggregate full sum: -25 + 0 + 9 + 10 + 100 = 94.
         let total = db
-            .indexed_sum_range_aggregate(
+            .indexed_sum_aggregate_over_value_range(
                 [TEST_LEAF, b"pcpsit"].as_ref(),
                 i64::MIN,
                 i64::MAX,

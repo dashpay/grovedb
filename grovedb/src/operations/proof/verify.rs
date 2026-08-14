@@ -56,7 +56,7 @@ pub(crate) enum AxisWalkResult {
     },
     /// `RankOfKey`: the attested 0-based rank of the queried key.
     Rank { rank: u64 },
-    /// `RangeAggregate`: the attested aggregate over the value range.
+    /// `AggregateOverValueRange`: the attested aggregate over the value range.
     Aggregate { value: i128 },
     /// Sum-budget window: the matched `(key, value)` pairs, their net
     /// total, and the replay-attested stop condition.
@@ -1014,48 +1014,71 @@ impl GroveDb {
                     )
                 }
             }
-            AxisTraversal::RangeAggregate { lo, hi } => match axis {
-                grovedb_merk::proofs::query::IndexAxis::Count => {
-                    let inner_range = count_aggregate_inner_range(*lo, *hi);
-                    let (root, count) = verify_aggregate_count_on_range_proof(
-                        &payload.secondary_proof,
-                        &inner_range,
-                    )
-                    .unwrap()
-                    .map_err(|e| {
-                        Error::InvalidProof(
+            AxisTraversal::AggregateOverValueRange { lo, hi, fold } => {
+                // The byte range follows the AXIS; the walker follows
+                // the FOLD — the same split the prover makes, through
+                // the same range reconstructors, so the two sides
+                // cannot drift on clamping, degenerate, or
+                // out-of-domain shapes.
+                let inner_range = match axis {
+                    grovedb_merk::proofs::query::IndexAxis::Count => {
+                        if *fold == grovedb_merk::proofs::query::AggregateFold::Total {
+                            return Err(Error::NotSupported(
+                                "a TOTAL over the count axis needs a sum-bearing count \
+                                 secondary; tracked in issue #806"
+                                    .to_string(),
+                            ));
+                        }
+                        count_aggregate_inner_range(*lo, *hi)
+                    }
+                    grovedb_merk::proofs::query::IndexAxis::Sum => {
+                        sum_aggregate_inner_range(*lo, *hi)
+                    }
+                    grovedb_merk::proofs::query::IndexAxis::Avg => {
+                        return Err(Error::InvalidProof(
                             query.clone(),
-                            format!("axis descent: aggregate-count proof failed: {e}"),
+                            "axis descent: value-range aggregates are not defined for the \
+                             Avg axis"
+                                .to_string(),
+                        ));
+                    }
+                };
+                match fold {
+                    grovedb_merk::proofs::query::AggregateFold::Population => {
+                        let (root, count) = verify_aggregate_count_on_range_proof(
+                            &payload.secondary_proof,
+                            &inner_range,
                         )
-                    })?;
-                    (
-                        root,
-                        AxisWalkResult::Aggregate {
-                            value: count as i128,
-                        },
-                    )
+                        .unwrap()
+                        .map_err(|e| {
+                            Error::InvalidProof(
+                                query.clone(),
+                                format!("axis descent: population proof failed: {e}"),
+                            )
+                        })?;
+                        (
+                            root,
+                            AxisWalkResult::Aggregate {
+                                value: count as i128,
+                            },
+                        )
+                    }
+                    grovedb_merk::proofs::query::AggregateFold::Total => {
+                        let (root, sum) = verify_aggregate_sum_on_range_proof(
+                            &payload.secondary_proof,
+                            &inner_range,
+                        )
+                        .unwrap()
+                        .map_err(|e| {
+                            Error::InvalidProof(
+                                query.clone(),
+                                format!("axis descent: total proof failed: {e}"),
+                            )
+                        })?;
+                        (root, AxisWalkResult::Aggregate { value: sum as i128 })
+                    }
                 }
-                grovedb_merk::proofs::query::IndexAxis::Sum => {
-                    let inner_range = sum_aggregate_inner_range(*lo, *hi);
-                    let (root, sum) =
-                        verify_aggregate_sum_on_range_proof(&payload.secondary_proof, &inner_range)
-                            .unwrap()
-                            .map_err(|e| {
-                                Error::InvalidProof(
-                                    query.clone(),
-                                    format!("axis descent: aggregate-sum proof failed: {e}"),
-                                )
-                            })?;
-                    (root, AxisWalkResult::Aggregate { value: sum as i128 })
-                }
-                grovedb_merk::proofs::query::IndexAxis::Avg => {
-                    return Err(Error::InvalidProof(
-                        query.clone(),
-                        "axis descent: range aggregates are not defined for the Avg axis"
-                            .to_string(),
-                    ));
-                }
-            },
+            }
         };
 
         // 2. Family check + third-input digest, with the RECOMPUTED
