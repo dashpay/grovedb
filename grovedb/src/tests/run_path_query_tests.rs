@@ -360,7 +360,17 @@ mod tests {
         let PathQueryRun::BranchedAxisEntries(branches) = run else {
             panic!("expected BranchedAxisEntries");
         };
-        assert_eq!(branches.len(), 3);
+        // The slots are documented as "per branch key, in query order",
+        // so pin the order itself — matching each key by value would let
+        // a reordering regression through.
+        assert_eq!(
+            branches
+                .iter()
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>(),
+            vec![b"alice".to_vec(), b"bob".to_vec(), b"carol".to_vec()],
+            "branch slots must follow query order"
+        );
 
         // Present branches equal the single-path primitive.
         for (branch_key, entries) in &branches {
@@ -1143,6 +1153,31 @@ mod tests {
                 "the dispatch must surface classify's error verbatim"
             ),
             Ok(run) => panic!("malformed query must be rejected, got {run:?}"),
+        }
+    }
+
+    #[test]
+    fn branched_non_entry_listing_traversal_is_rejected_at_classification() {
+        // A branched read whose terminal is rank-of-key or range-aggregate
+        // has no per-branch entry list to return. It must be refused as a
+        // malformed query, not reach the dispatch and surface as an
+        // internal CorruptedCodeExecution.
+        for axis_query in [
+            AxisQuery::rank_of_key(IndexAxis::Sum, b"alice".to_vec(), true),
+            AxisQuery::range_aggregate(IndexAxis::Sum, 0, 10),
+        ] {
+            let pq = PathQuery::new_branched_axis(
+                vec![TEST_LEAF.to_vec()],
+                vec![b"alice".to_vec()],
+                vec![b"scores".to_vec()],
+                axis_query,
+            );
+            match pq.classify() {
+                Err(Error::InvalidQuery(m)) => {
+                    assert!(m.contains("entry-listing"), "got: {m}")
+                }
+                other => panic!("must be rejected at classification, got {other:?}"),
+            }
         }
     }
 

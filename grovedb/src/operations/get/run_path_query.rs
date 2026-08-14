@@ -223,6 +223,13 @@ impl GroveDb {
                 suffix,
                 axis,
             } => {
+                // Hoisted: the branching prefix is the same for every
+                // branch key, so it is built once rather than per branch.
+                let prefix_refs: Vec<&[u8]> = path_query
+                    .path
+                    .iter()
+                    .map(|segment| segment.as_slice())
+                    .collect();
                 let mut branches = Vec::with_capacity(branch_items.len());
                 for item in branch_items {
                     let grovedb_merk::proofs::query::query_item::QueryItem::Key(branch_key) = item
@@ -237,11 +244,6 @@ impl GroveDb {
                     // key missing at the branching level yields None
                     // rather than an error, so partially-populated
                     // branch sets read the same way they prove.
-                    let prefix_refs: Vec<&[u8]> = path_query
-                        .path
-                        .iter()
-                        .map(|segment| segment.as_slice())
-                        .collect();
                     let present = cost_return_on_error!(
                         &mut cost,
                         self.get_raw_optional(
