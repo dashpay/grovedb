@@ -47,10 +47,6 @@ pub struct AggregateSumQueryResult {
     /// the query completed naturally. When true, more results may exist
     /// beyond what was returned.
     pub hard_limit_reached: bool,
-    /// Total elements the walk encountered (matched or skipped),
-    /// including the element that tripped the hard limit if it did. The
-    /// sum-budget proof shape uses this as its window size.
-    pub elements_scanned: u16,
 }
 
 /// Options controlling how an aggregate sum query is executed.
@@ -306,7 +302,6 @@ impl ElementAggregateSumQueryExtensions for Element {
             return Ok(AggregateSumQueryResult {
                 results,
                 hard_limit_reached: false,
-                elements_scanned: 0,
             })
             .wrap_with_cost(cost);
         }
@@ -381,7 +376,6 @@ impl ElementAggregateSumQueryExtensions for Element {
 
         Ok(AggregateSumQueryResult {
             hard_limit_reached: elements_scanned > max_elements_scanned,
-            elements_scanned,
             results,
         })
         .wrap_with_cost(cost)

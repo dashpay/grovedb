@@ -38,17 +38,13 @@ use crate::{axis_query::AxisQuery, error::Error, query::Query};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SumBudgetRead {
-    /// Stop once the running **net** sum of matched sum-item values
-    /// reaches this. Distinct from a result-count limit: how many
-    /// entries that takes depends on the data (and negative values give
-    /// budget back). Must fit in `i64` — the budget arithmetic is the
-    /// engine's signed saturating subtraction.
+    /// Stop once the running sum of matched sum-item values reaches
+    /// this. Distinct from a result-count limit: how many entries that
+    /// takes depends on the data.
     pub sum_limit: u64,
-    /// Stop after this many **matched** sum items, regardless of
-    /// budget. `None` = no match cap. (Elements scanned but skipped —
-    /// non-sum elements, references — do not count; the grove-version
-    /// global scan cap bounds those separately.)
-    pub match_limit: Option<u16>,
+    /// Cap on elements scanned (matched or skipped), on top of the
+    /// grove-version global scan cap. `None` = only the global cap.
+    pub max_items_checked: Option<u16>,
 }
 
 impl SumBudgetRead {
@@ -60,16 +56,10 @@ impl SumBudgetRead {
                  selecting anything",
             ));
         }
-        if self.sum_limit > i64::MAX as u64 {
+        if self.max_items_checked == Some(0) {
             return Err(Error::InvalidOperation(
-                "sum-budget read: `sum_limit` must fit in i64 — the budget arithmetic is \
-                 signed",
-            ));
-        }
-        if self.match_limit == Some(0) {
-            return Err(Error::InvalidOperation(
-                "sum-budget read: `match_limit` must be at least 1 when set; a zero match cap \
-                 selects nothing",
+                "sum-budget read: `max_items_checked` must be at least 1 when set; a zero \
+                 scan cap selects nothing",
             ));
         }
         Ok(())
@@ -79,7 +69,7 @@ impl SumBudgetRead {
 impl Encode for SumBudgetRead {
     fn encode<E: Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
         self.sum_limit.encode(encoder)?;
-        self.match_limit.encode(encoder)
+        self.max_items_checked.encode(encoder)
     }
 }
 
@@ -87,7 +77,7 @@ impl<Context> Decode<Context> for SumBudgetRead {
     fn decode<D: Decoder<Context = Context>>(decoder: &mut D) -> Result<Self, DecodeError> {
         Ok(Self {
             sum_limit: u64::decode(decoder)?,
-            match_limit: Option::<u16>::decode(decoder)?,
+            max_items_checked: Option::<u16>::decode(decoder)?,
         })
     }
 }
@@ -104,8 +94,8 @@ impl fmt::Display for SumBudgetRead {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "SumBudget {{ sum_limit: {}, match_limit: {:?} }}",
-            self.sum_limit, self.match_limit
+            "SumBudget {{ sum_limit: {}, max_items_checked: {:?} }}",
+            self.sum_limit, self.max_items_checked
         )
     }
 }
@@ -219,11 +209,11 @@ mod tests {
             ReadMode::Axis(AxisQuery::top_k(IndexAxis::Sum, 10, 20, true)),
             ReadMode::SumBudget(SumBudgetRead {
                 sum_limit: 1000,
-                match_limit: Some(50),
+                max_items_checked: Some(50),
             }),
             ReadMode::SumBudget(SumBudgetRead {
                 sum_limit: 1,
-                match_limit: None,
+                max_items_checked: None,
             }),
         ];
         for mode in modes {
@@ -244,7 +234,7 @@ mod tests {
         );
         let budget = ReadMode::SumBudget(SumBudgetRead {
             sum_limit: 1,
-            match_limit: None,
+            max_items_checked: None,
         });
         assert_eq!(
             bincode::encode_to_vec(&budget, config::standard()).unwrap()[0],
@@ -260,19 +250,19 @@ mod tests {
     fn sum_budget_validation() {
         assert!(SumBudgetRead {
             sum_limit: 0,
-            match_limit: None
+            max_items_checked: None
         }
         .validate()
         .is_err());
         assert!(SumBudgetRead {
             sum_limit: 1,
-            match_limit: Some(0)
+            max_items_checked: Some(0)
         }
         .validate()
         .is_err());
         assert!(SumBudgetRead {
             sum_limit: 1,
-            match_limit: Some(1)
+            max_items_checked: Some(1)
         }
         .validate()
         .is_ok());

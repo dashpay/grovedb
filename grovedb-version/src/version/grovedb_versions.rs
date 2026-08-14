@@ -215,21 +215,6 @@ pub struct GroveDBOperationsProofVersions {
     /// exists. Indexed trees themselves cannot exist in pre-V4
     /// production data, so `0` never rejects anything real.
     pub axis_descent_in_v1_envelope: FeatureVersion,
-    /// Whether the V1 proof envelope carries **sum-budget windows**
-    /// (`ProofBytes::SumBudgetWindow`), serving `PathQuery`s whose root
-    /// query node holds `ReadMode::SumBudget` — an ordinary Merk proof
-    /// over exactly the window the budget walk scanned, replayed by the
-    /// verifier with the engine's own fold arithmetic.
-    ///
-    /// - `0` (V1..V3): the prover refuses sum-budget queries and the
-    ///   verifier rejects any proof/query pair involving one.
-    /// - `1` (V4+): served, with the fold replay attesting the stop
-    ///   condition (budget reached / match limit / hard scan cap /
-    ///   range exhausted).
-    ///
-    /// Gated because it adds an acceptance rule to the live V1
-    /// envelope, same as `axis_descent_in_v1_envelope`.
-    pub sum_budget_in_v1_envelope: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

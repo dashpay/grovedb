@@ -44,7 +44,7 @@ pub(crate) struct AxisWalkOutcome {
     pub(crate) result: AxisWalkResult,
 }
 
-/// The verified answer of one read-mode layer, by shape family.
+/// The verified answer of one axis-ordered layer, by traversal family.
 #[derive(Debug)]
 pub(crate) enum AxisWalkResult {
     /// `TopK` / `Bounded`: the entries in walk order. `skipped` is the
@@ -58,28 +58,6 @@ pub(crate) enum AxisWalkResult {
     Rank { rank: u64 },
     /// `RangeAggregate`: the attested aggregate over the value range.
     Aggregate { value: i128 },
-    /// Sum-budget window: the matched `(key, value)` pairs, their net
-    /// total, and the replay-attested stop condition.
-    SumBudget {
-        matches: Vec<(Vec<u8>, i64)>,
-        total: i64,
-        stop: SumBudgetStop,
-    },
-}
-
-/// Why a verified sum-budget walk stopped — attested by the verifier's
-/// fold replay over the proved window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SumBudgetStop {
-    /// The running net sum reached the budget.
-    BudgetReached,
-    /// The match cap fired first.
-    MatchLimitReached,
-    /// The grove-version global scan cap fired first; more elements may
-    /// exist beyond the window.
-    HardScanCapReached,
-    /// The query's ranges were exhausted before any stop condition.
-    Exhausted,
 }
 
 impl GroveDb {
@@ -785,8 +763,7 @@ impl GroveDb {
             | ProofBytes::CommitmentTree(_)
             | ProofBytes::CountIndexedTree(_)
             | ProofBytes::IndexedTreeTerminal(_)
-            | ProofBytes::IndexedTreeAxisDescent(_)
-            | ProofBytes::SumBudgetWindow(_) => Err(Error::InvalidProof(
+            | ProofBytes::IndexedTreeAxisDescent(_) => Err(Error::InvalidProof(
                 query.clone(),
                 "Expected Merk proof at this layer, got non-Merk proof type".to_string(),
             )),
@@ -1093,193 +1070,6 @@ impl GroveDb {
             result: walk_result,
         });
         Ok(())
-    }
-
-    /// Verify one sum-budget window layer: execute the carried Merk
-    /// proof with the query's own items and **replay the budget fold**
-    /// — the exact per-element arithmetic of the trusted read engine,
-    /// with the provable semantics (skip non-sum elements, skip
-    /// references) — over the proved elements in walk order.
-    ///
-    /// The replay attests the stop condition: a window that continues
-    /// past a fired stop, claims exhaustion while a stop fired, or
-    /// claims a stop that never fired is rejected. Returns the window
-    /// proof's reconstructed root hash, which the surrounding walk
-    /// binds through the ordinary `combine_hash(H(value), child_root)`
-    /// parent check.
-    fn verify_sum_budget_window_layer(
-        payload_bytes: &[u8],
-        path: &[&[u8]],
-        axis_outcomes: &mut Vec<AxisWalkOutcome>,
-        query: &PathQuery,
-        grove_version: &GroveVersion,
-    ) -> Result<CryptoHash, Error> {
-        use crate::operations::proof::SumBudgetWindowProof;
-
-        // Envelope gate: sum-budget windows are a V4 acceptance rule.
-        if grove_version
-            .grovedb_versions
-            .operations
-            .proof
-            .sum_budget_in_v1_envelope
-            != 1
-        {
-            return Err(Error::NotSupported(
-                "sum-budget windows in the V1 proof envelope are not accepted at this grove \
-                 version"
-                    .to_string(),
-            ));
-        }
-        let Some(budget) = query.sum_budget_read_at_path(path).copied() else {
-            return Err(Error::InvalidProof(
-                query.clone(),
-                "the proof carries a sum-budget window at a path whose query node is not a \
-                 sum-budget read"
-                    .to_string(),
-            ));
-        };
-        let node = &query.query.query;
-
-        let payload = SumBudgetWindowProof::decode_canonical(payload_bytes)?;
-
-        // Execute the window proof with the query's own items and
-        // direction. When the prover claims exhaustion the proof must
-        // stand WITHOUT a limit (the range end is proven); otherwise it
-        // is limited to the claimed window.
-        let mut window_query = Query::new_with_direction(node.left_to_right);
-        window_query.items = node.items.clone();
-        let execute_limit = if payload.exhausted {
-            None
-        } else {
-            Some(payload.window_len)
-        };
-        let (window_root, window_result) = window_query
-            .execute_proof(
-                &payload.merk_proof,
-                execute_limit,
-                node.left_to_right,
-                PROOF_VERSION_LATEST,
-            )
-            .unwrap()
-            .map_err(|e| {
-                Error::InvalidProof(
-                    query.clone(),
-                    format!("sum-budget window proof failed to execute: {e}"),
-                )
-            })?;
-
-        // Present rows only, in walk order; absent keys (value None)
-        // are covered by the proof but never scanned by the engine.
-        let window: Vec<(&Vec<u8>, &Vec<u8>)> = window_result
-            .result_set
-            .iter()
-            .filter_map(|row| row.value.as_ref().map(|value| (&row.key, value)))
-            .collect();
-        if window.len() != payload.window_len as usize {
-            return Err(Error::InvalidProof(
-                query.clone(),
-                format!(
-                    "sum-budget window claims {} scanned elements but the proof yields {}",
-                    payload.window_len,
-                    window.len()
-                ),
-            ));
-        }
-
-        // Replay the budget fold with the engine's exact arithmetic.
-        let mut remaining: i64 = i64::try_from(budget.sum_limit)
-            .map_err(|_| Error::InvalidQuery("sum-budget limit must fit in i64"))?;
-        let mut matches_left = budget.match_limit;
-        let global_cap = grove_version
-            .grovedb_versions
-            .query_limits
-            .max_aggregate_sum_query_elements_scanned;
-        let mut scanned: u16 = 0;
-        let mut matches: Vec<(Vec<u8>, i64)> = Vec::new();
-        let mut hard_cap_tripped = false;
-
-        for (key, value_bytes) in &window {
-            // Pre-element conditions (the engine's loop guards): a
-            // window that continues past a fired stop hides where the
-            // walk really ended.
-            if remaining <= 0 || matches_left == Some(0) || hard_cap_tripped {
-                return Err(Error::InvalidProof(
-                    query.clone(),
-                    "sum-budget window continues past its stop condition".to_string(),
-                ));
-            }
-            scanned = scanned.saturating_add(1);
-            if scanned > global_cap {
-                // The engine counts the tripping element but does not
-                // process it.
-                hard_cap_tripped = true;
-                continue;
-            }
-            let element = Element::deserialize(value_bytes, grove_version)?;
-            // Provable fold semantics: references and non-sum elements
-            // are skipped (they cannot be replayed / do not contribute).
-            if element.is_reference() || !element.is_sum_item() {
-                continue;
-            }
-            let value = match element.into_underlying() {
-                Element::SumItem(value, _) => value,
-                Element::ItemWithSumItem(_, value, _) => value,
-                _ => {
-                    return Err(Error::InvalidProof(
-                        query.clone(),
-                        "sum-budget window element passed the sum-item check but carries no \
-                         sum value"
-                            .to_string(),
-                    ));
-                }
-            };
-            matches.push(((*key).clone(), value));
-            if let Some(limit) = matches_left.as_mut() {
-                *limit = limit.saturating_sub(1);
-            }
-            remaining = remaining.saturating_sub(value);
-        }
-
-        let stop_fired = remaining <= 0 || matches_left == Some(0) || hard_cap_tripped;
-        if payload.exhausted && stop_fired {
-            return Err(Error::InvalidProof(
-                query.clone(),
-                "sum-budget window claims exhaustion but a stop condition fired within it"
-                    .to_string(),
-            ));
-        }
-        if !payload.exhausted && !stop_fired {
-            return Err(Error::InvalidProof(
-                query.clone(),
-                "sum-budget window claims a stop condition but none fired within it — the \
-                 window is short of the real stop"
-                    .to_string(),
-            ));
-        }
-
-        let stop = if payload.exhausted {
-            SumBudgetStop::Exhausted
-        } else if remaining <= 0 {
-            SumBudgetStop::BudgetReached
-        } else if matches_left == Some(0) {
-            SumBudgetStop::MatchLimitReached
-        } else {
-            SumBudgetStop::HardScanCapReached
-        };
-        let total = matches
-            .iter()
-            .map(|(_, value)| *value)
-            .fold(0i64, |acc, v| acc.saturating_add(v));
-
-        axis_outcomes.push(AxisWalkOutcome {
-            path: path.iter().map(|segment| segment.to_vec()).collect(),
-            result: AxisWalkResult::SumBudget {
-                matches,
-                total,
-                stop,
-            },
-        });
-        Ok(window_root)
     }
 
     /// Derive a Merk layer's root hash without reporting any of its rows.
@@ -1779,20 +1569,6 @@ impl GroveDb {
                                     // query, which only ever selects rows.
                                     let lower_hash = match &lower_layer.merk_proof {
                                         ProofBytes::Merk(_) => {
-                                            // A sum-budget layer must carry
-                                            // the window envelope; a plain
-                                            // Merk descent here would let a
-                                            // prover serve a read-mode query
-                                            // as key selection.
-                                            if query.sum_budget_read_at_path(&path).is_some() {
-                                                return Err(Error::InvalidProof(
-                                                    query.clone(),
-                                                    "the query node at this tree is a \
-                                                     sum-budget read; its lower layer must \
-                                                     carry ProofBytes::SumBudgetWindow"
-                                                        .to_string(),
-                                                ));
-                                            }
                                             // Standard Merk subtree - recurse
                                             let merk_bytes =
                                                 Self::merk_bytes_of_layer(lower_layer, query)?;
@@ -1814,23 +1590,6 @@ impl GroveDb {
                                             } else {
                                                 Self::merk_layer_root_hash(merk_bytes, query)?
                                             }
-                                        }
-                                        ProofBytes::SumBudgetWindow(payload_bytes) => {
-                                            if !lower_layer.lower_layers.is_empty() {
-                                                return Err(Error::InvalidProof(
-                                                    query.clone(),
-                                                    "a sum-budget window is terminal and must \
-                                                     not carry further lower layers"
-                                                        .to_string(),
-                                                ));
-                                            }
-                                            Self::verify_sum_budget_window_layer(
-                                                payload_bytes,
-                                                &path,
-                                                axis_outcomes,
-                                                query,
-                                                grove_version,
-                                            )?
                                         }
                                         ProofBytes::MMR(mmr_bytes) => Self::verify_mmr_lower_layer(
                                             mmr_bytes,

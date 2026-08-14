@@ -9,12 +9,8 @@
 //! Axis shapes verify **GroveDBProof V1** envelopes carrying
 //! [`ProofBytes::IndexedTreeAxisDescent`](crate::operations::proof::ProofBytes)
 //! layers, gated on `proof.axis_descent_in_v1_envelope` (GROVE_V4+).
-//! Sum-budget shapes verify V1 envelopes carrying
-//! [`ProofBytes::SumBudgetWindow`](crate::operations::proof::ProofBytes)
-//! layers, gated on `proof.sum_budget_in_v1_envelope` (GROVE_V4+), with
-//! the stop condition attested by the verifier's fold replay.
 //! Key-selection and aggregate shapes route to the existing verifiers
-//! unchanged.
+//! unchanged. Sum-budget shapes have no proof form yet.
 
 use grovedb_merk::{proofs::query::AxisTraversal, CryptoHash};
 use grovedb_version::version::GroveVersion;
@@ -30,8 +26,6 @@ use crate::{
     query_result_type::PathKeyOptionalElementTrio,
     Error, GroveDb, PathQuery,
 };
-
-pub use crate::operations::proof::verify::SumBudgetStop;
 
 /// The verified answer to any provable [`PathQuery`] shape — one
 /// variant per shape family. Every variant carries the reconstructed
@@ -114,18 +108,6 @@ pub enum VerifiedPathQuery {
         /// a signed sum for the sum axis.
         value: i128,
     },
-    /// Sum-budget read: the proved window's matched sum items, their
-    /// net total, and the replay-attested stop condition.
-    SumBudget {
-        /// Reconstructed GroveDB root hash.
-        root_hash: CryptoHash,
-        /// The matched `(key, value)` pairs, in walk order.
-        matches: Vec<(Vec<u8>, i64)>,
-        /// Net total of the matched values (saturating).
-        total: i64,
-        /// Why the walk stopped, attested by the fold replay.
-        stop: SumBudgetStop,
-    },
 }
 
 impl VerifiedPathQuery {
@@ -140,8 +122,7 @@ impl VerifiedPathQuery {
             | VerifiedPathQuery::AxisEntries { root_hash, .. }
             | VerifiedPathQuery::BranchedAxisEntries { root_hash, .. }
             | VerifiedPathQuery::AxisRank { root_hash, .. }
-            | VerifiedPathQuery::AxisAggregate { root_hash, .. }
-            | VerifiedPathQuery::SumBudget { root_hash, .. } => root_hash,
+            | VerifiedPathQuery::AxisAggregate { root_hash, .. } => root_hash,
         }
     }
 }
@@ -374,63 +355,11 @@ impl GroveDb {
                     branches,
                 })
             }
-            PathQueryShape::SumBudget { .. } => {
-                if grove_version
-                    .grovedb_versions
-                    .operations
-                    .proof
-                    .sum_budget_in_v1_envelope
-                    != 1
-                {
-                    return Err(Error::NotSupported(
-                        "sum-budget windows in the V1 proof envelope are not accepted at this \
-                         grove version"
-                            .to_string(),
-                    ));
-                }
-                let decoded = decode_grovedb_proof_canonical(proof)?;
-                let GroveDBProof::V1(proof_v1) = decoded else {
-                    return Err(Error::NotSupported(
-                        "sum-budget path queries require V1 proof envelopes".to_string(),
-                    ));
-                };
-                let (root_hash, _, outcomes) =
-                    Self::verify_proof_v1_with_axis_outcomes(&proof_v1, path_query, grove_version)?;
-                let [outcome]: [AxisWalkOutcome; 1] =
-                    outcomes.try_into().map_err(|outcomes: Vec<_>| {
-                        Error::InvalidProof(
-                            path_query.clone(),
-                            format!(
-                                "a sum-budget read must verify exactly one window layer, got {}",
-                                outcomes.len()
-                            ),
-                        )
-                    })?;
-                if outcome.path != path_query.path {
-                    return Err(Error::InvalidProof(
-                        path_query.clone(),
-                        "the verified sum-budget window is not at the queried path".to_string(),
-                    ));
-                }
-                let AxisWalkResult::SumBudget {
-                    matches,
-                    total,
-                    stop,
-                } = outcome.result
-                else {
-                    return Err(Error::InvalidProof(
-                        path_query.clone(),
-                        "the verified outcome does not match the query's sum-budget shape"
-                            .to_string(),
-                    ));
-                };
-                Ok(VerifiedPathQuery::SumBudget {
-                    root_hash,
-                    matches,
-                    total,
-                    stop,
-                })
-            }
+            PathQueryShape::SumBudget { .. } => Err(Error::NotSupported(
+                "sum-budget path queries have no proof form yet; use the trusted read \
+                 (run_path_query)"
+                    .to_string(),
+            )),
         }
     }
 

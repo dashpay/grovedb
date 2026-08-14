@@ -30,8 +30,6 @@ mod verify;
 mod verify_path_query;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
-pub use verify::SumBudgetStop;
-#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use verify_path_query::VerifiedPathQuery;
 
 use std::{collections::BTreeMap, fmt};
@@ -295,70 +293,6 @@ pub enum ProofBytes {
     /// Appended after [`ProofBytes::IndexedTreeTerminal`] so every
     /// existing variant keeps its discriminant.
     IndexedTreeAxisDescent(Vec<u8>),
-    /// Sum-budget window: the layer for a merk-backed tree whose query
-    /// node carries `ReadMode::SumBudget`. The payload
-    /// ([`SumBudgetWindowProof`]) carries an ordinary Merk proof over
-    /// exactly the window of elements the budget walk scanned, plus the
-    /// window's size and whether the walk exhausted the range; the
-    /// verifier re-executes the proof with the query's own items and
-    /// **replays the budget fold** over the proved elements, so a
-    /// window that stops early, runs long, or hides elements fails.
-    /// The layer's root binds through the ordinary
-    /// `combine_hash(H(value), child_root)` parent check.
-    ///
-    /// Gated on `proof.sum_budget_in_v1_envelope` (GROVE_V4+). Appended
-    /// last so every existing variant keeps its discriminant.
-    SumBudgetWindow(Vec<u8>),
-}
-
-/// Payload of [`ProofBytes::SumBudgetWindow`].
-///
-/// Trust model: `merk_proof` is verified cryptographically against the
-/// query's items. `window_len` and `exhausted` are prover-supplied but
-/// attested by the fold replay — a lying `window_len` disagrees with
-/// the executed result set, and a lying `exhausted` either fails the
-/// merk execution (a limited proof executed without a limit demands
-/// data it does not carry) or contradicts the replayed stop condition.
-#[derive(Debug, Clone, PartialEq, Encode, Decode)]
-pub struct SumBudgetWindowProof {
-    /// Whether the walk ended because the query's ranges were exhausted
-    /// (`true`) rather than because a stop condition fired (`false`).
-    /// Decides the limit the verifier executes the merk proof with:
-    /// none when exhausted, `window_len` otherwise.
-    pub exhausted: bool,
-    /// Number of elements the walk scanned — the proof's window size.
-    pub window_len: u16,
-    /// Ordinary Merk proof over the window, built with the query's own
-    /// items and direction.
-    pub merk_proof: Vec<u8>,
-}
-
-impl SumBudgetWindowProof {
-    /// Encode with the same big-endian config as the surrounding
-    /// envelope.
-    pub fn encode_canonical(&self) -> Result<Vec<u8>, Error> {
-        let config = bincode::config::standard().with_big_endian();
-        bincode::encode_to_vec(self, config)
-            .map_err(|e| Error::CorruptedData(format!("unable to encode sum-budget window: {e}")))
-    }
-
-    /// Decode with trailing-byte rejection and a payload size cap.
-    pub fn decode_canonical(bytes: &[u8]) -> Result<Self, Error> {
-        let config = bincode::config::standard()
-            .with_big_endian()
-            .with_limit::<{ 16 * 1024 * 1024 }>();
-        let (decoded, consumed): (Self, usize) = bincode::decode_from_slice(bytes, config)
-            .map_err(|e| {
-                Error::CorruptedData(format!("unable to decode sum-budget window: {e}"))
-            })?;
-        if consumed != bytes.len() {
-            return Err(Error::CorruptedData(format!(
-                "sum-budget window payload has {} trailing bytes",
-                bytes.len() - consumed
-            )));
-        }
-        Ok(decoded)
-    }
 }
 
 /// Payload of [`ProofBytes::IndexedTreeAxisDescent`]: everything the
@@ -864,18 +798,6 @@ impl fmt::Display for ProofBytes {
                     )
                 } else {
                     write!(f, "IndexedTreeTerminal(<invalid: {} bytes>)", bytes.len())
-                }
-            }
-            ProofBytes::SumBudgetWindow(bytes) => {
-                match SumBudgetWindowProof::decode_canonical(bytes) {
-                    Ok(payload) => write!(
-                        f,
-                        "SumBudgetWindow(exhausted={}, window_len={}, merk_proof={} bytes)",
-                        payload.exhausted,
-                        payload.window_len,
-                        payload.merk_proof.len(),
-                    ),
-                    Err(_) => write!(f, "SumBudgetWindow(<invalid: {} bytes>)", bytes.len()),
                 }
             }
             ProofBytes::IndexedTreeAxisDescent(bytes) => {

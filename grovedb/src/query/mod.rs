@@ -659,13 +659,13 @@ impl PathQuery {
         items: Vec<QueryItem>,
         left_to_right: bool,
         sum_limit: u64,
-        match_limit: Option<u16>,
+        max_items_checked: Option<u16>,
     ) -> Self {
         let mut query = Query::new_with_direction(left_to_right);
         query.items = items;
         query.read_mode = Some(ReadMode::SumBudget(SumBudgetRead {
             sum_limit,
-            match_limit,
+            max_items_checked,
         }));
         Self::new_unsized(path, query)
     }
@@ -1218,34 +1218,6 @@ impl PathQuery {
     /// to `None` (a read mode lives on a query node, never mid-path),
     /// as do paths that diverge from the query entirely.
     pub fn axis_read_at_path(&self, path: &[&[u8]]) -> Option<&AxisQuery> {
-        match self.read_mode_at_path(path) {
-            Some(ReadMode::Axis(axis_query)) => Some(axis_query),
-            _ => None,
-        }
-    }
-
-    /// The sum-budget read governing the subtree at `path`, if any —
-    /// the sum-budget sibling of [`Self::axis_read_at_path`]. The
-    /// budget's items live on the same node; callers re-resolve them
-    /// from the query root (a sum-budget read only classifies at the
-    /// root node).
-    pub fn sum_budget_read_at_path(&self, path: &[&[u8]]) -> Option<&SumBudgetRead> {
-        match self.read_mode_at_path(path) {
-            Some(ReadMode::SumBudget(budget)) => Some(budget),
-            _ => None,
-        }
-    }
-
-    /// Returns the read mode of the query node resolved at exactly
-    /// `path`, if any. `path` is a full path from the GroveDB root (the
-    /// same convention as [`Self::query_items_at_path`]).
-    ///
-    /// This is how the proof walk — prover and verifier alike — learns
-    /// that a layer is a read-mode layer rather than a key-selecting
-    /// descent. Both sides resolve from the same query through this one
-    /// function, so they cannot disagree about which layers carry read
-    /// modes.
-    fn read_mode_at_path(&self, path: &[&[u8]]) -> Option<&ReadMode> {
         /// Resolve the query NODE at exactly `path` below `query`,
         /// following conditional and default subquery branches the same
         /// way `query_items_at_path`'s resolver does — but returning
@@ -1308,7 +1280,10 @@ impl PathQuery {
             return None;
         }
         let node = resolve_node_at_path(&self.query.query, &path[self_path_len..])?;
-        node.read_mode.as_ref()
+        match &node.read_mode {
+            Some(ReadMode::Axis(axis_query)) => Some(axis_query),
+            _ => None,
+        }
     }
 
     /// Returns the query items applicable at the given path, if any.
