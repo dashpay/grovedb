@@ -103,8 +103,11 @@ pub const MAX_RANK_OF_KEY_LEN: usize = 255;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AggregateFold {
-    /// How many entries the band selects; each contributes 1. Answered
-    /// by the secondary's count aggregate, so it needs a count-bearing
+    /// How many entries the band selects; each contributes 1.
+    /// Entries, not distinct values: two entries sharing the same axis
+    /// value are two nodes of the secondary (it is keyed
+    /// `sort_key ‖ original_key`) and count as 2. Answered by the
+    /// secondary's count aggregate, so it needs a count-bearing
     /// secondary.
     Population,
     /// The sum of the selected entries' axis values. Answered by the

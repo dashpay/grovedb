@@ -1462,6 +1462,8 @@ mod tests {
         {
             VerifiedPathQuery::AxisAggregate { root_hash, value } => {
                 assert_eq!(root_hash, root);
+                // alice and dave BOTH sit at 40: population counts
+                // entries, not distinct values — 4, not 3.
                 assert_eq!(value, 4);
                 // ...equal to the trusted read over the same state.
                 let direct = db
