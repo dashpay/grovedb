@@ -1204,6 +1204,135 @@ mod tests {
         tx.commit().expect("tx commit");
     }
 
+    /// Rebind a PCIT's parent element so its `secondary_root_key` names a
+    /// key that does not exist in the count secondary, leaving every row
+    /// and hash otherwise intact. Produces the state a counted read must
+    /// treat as corruption: the element is readable and valid, but the
+    /// root it names resolves to nothing.
+    fn rebind_count_secondary_root_key_to(
+        db: &TempGroveDb,
+        pcit_path: &[&[u8]],
+        bogus_key: Vec<u8>,
+        gv: &GroveVersion,
+    ) {
+        use grovedb_merk::element::reconstruct::ElementReconstructExtensions;
+
+        let tx = db.start_transaction();
+        let batch = StorageBatch::new();
+        let owned: Vec<&[u8]> = pcit_path.to_vec();
+        let path: SubtreePath<&[u8]> = owned.as_slice().into();
+        let (parent_path, pcit_key) = path.derive_parent().expect("non-root PCIT");
+
+        let (primary_root_hash, primary_root_key, primary_aggregate) = {
+            let primary = db
+                .open_transactional_merk_at_path(path.clone(), &tx, Some(&batch), gv)
+                .unwrap()
+                .expect("open PCIT primary");
+            primary
+                .root_hash_key_and_aggregate_data()
+                .unwrap()
+                .expect("primary root state")
+        };
+
+        let mut parent_merk = db
+            .open_transactional_merk_at_path(parent_path.clone(), &tx, Some(&batch), gv)
+            .unwrap()
+            .expect("open parent merk");
+        let pcit_element = Element::get(&parent_merk, pcit_key, true, gv)
+            .unwrap()
+            .expect("PCIT element");
+        let secondary_root_key = match pcit_element.underlying() {
+            Element::ProvableCountIndexedTree(_, s, ..) => s.clone(),
+            other => panic!("not a PCIT element: {other:?}"),
+        };
+        let secondary_root_hash = {
+            let secondary = db
+                .open_indexed_secondary_at_path(
+                    path.clone(),
+                    IndexAxis::Count,
+                    secondary_root_key,
+                    &tx,
+                    Some(&batch),
+                    gv,
+                )
+                .unwrap()
+                .expect("open count secondary");
+            let (hash, _, _) = secondary
+                .root_hash_key_and_aggregate_data()
+                .unwrap()
+                .expect("secondary root state");
+            hash
+        };
+
+        let rebound = pcit_element
+            .reconstruct_with_two_root_keys(primary_root_key, Some(bogus_key), primary_aggregate)
+            .expect("reconstruct PCIT element");
+        rebound
+            .insert_count_indexed_subtree(
+                &mut parent_merk,
+                pcit_key,
+                primary_root_hash,
+                secondary_root_hash,
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("rebind PCIT element");
+
+        let mut merk_cache = std::collections::HashMap::new();
+        merk_cache.insert(parent_path.clone(), parent_merk);
+        db.propagate_changes_with_transaction(merk_cache, parent_path, &tx, &batch, gv)
+            .unwrap()
+            .expect("propagate rebind");
+        db.db
+            .commit_multi_context_batch(batch, Some(&tx))
+            .unwrap()
+            .expect("commit rebind");
+        tx.commit().expect("tx commit");
+    }
+
+    /// A parent element whose `secondary_root_key` names a node that does
+    /// not exist must fail loud through the counted path. The pinned view
+    /// read the element itself, so a dangling root key is corruption, not
+    /// a race to retry through — and it must never be silently served as
+    /// an empty or truncated page. The offset-0 iterator path, which
+    /// never consults the root key, still reads the physical rows: the
+    /// contrast is the two-views posture the design doc records.
+    #[test]
+    fn a_dangling_secondary_root_key_fails_loud_through_the_counted_path() {
+        let gv = GroveVersion::latest();
+        let db = make_test_grovedb(gv);
+        make_pcit_with(&db, b"pcit", &[b"a", b"b"], gv);
+        rebind_count_secondary_root_key_to(
+            &db,
+            &[TEST_LEAF, b"pcit"],
+            b"no-such-node".to_vec(),
+            gv,
+        );
+
+        let err = db
+            .indexed_count_top_k_paginated([TEST_LEAF, b"pcit"].as_ref(), 1, 1, false, None, gv)
+            .unwrap()
+            .expect_err("a dangling secondary root key must error, not serve a page");
+        match err {
+            Error::CorruptedData(message) => assert!(
+                message.contains("absent from the same read snapshot"),
+                "unexpected corruption message: {message}"
+            ),
+            other => panic!("expected CorruptedData, got {other:?}"),
+        }
+
+        // The iterator path reads the physical keyspace and is untouched
+        // by the dangling root key.
+        assert_eq!(
+            db.indexed_count_top_k_paginated([TEST_LEAF, b"pcit"].as_ref(), 2, 0, false, None, gv)
+                .unwrap()
+                .expect("offset-0 path reads physical rows")
+                .entries,
+            vec![(1u64, b"a".to_vec()), (1u64, b"b".to_vec())],
+        );
+    }
+
     /// PSIT: an orphan row in the sum secondary is removed and the root
     /// returns to the pristine twin's — the repair covers the sum axis, not
     /// just count.
