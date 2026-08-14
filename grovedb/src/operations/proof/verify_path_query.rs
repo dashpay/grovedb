@@ -299,13 +299,22 @@ impl GroveDb {
                         None => {
                             // No axis layer for this branch: the
                             // branching-level Merk proof must have
-                            // authenticated the key's ABSENCE — any
-                            // present-element trio for it means a hidden
-                            // branch.
+                            // authenticated the key's ABSENCE. Any
+                            // present-element trio for the branch key
+                            // itself — or anywhere under its subtree —
+                            // means the proof shows the branch present
+                            // while withholding its axis layer, i.e. a
+                            // hidden branch dressed up as absence.
                             let present = trios.iter().any(|(trio_path, trio_key, element)| {
-                                trio_path == &path_query.path
-                                    && trio_key == branch_key
-                                    && element.is_some()
+                                if element.is_none() {
+                                    return false;
+                                }
+                                // The branch key at the branching level…
+                                (trio_path == &path_query.path && trio_key == branch_key)
+                                    // …or anything below prefix/branch_key.
+                                    || (trio_path.len() > path_query.path.len()
+                                        && trio_path[..path_query.path.len()] == path_query.path
+                                        && trio_path[path_query.path.len()] == *branch_key)
                             });
                             if present {
                                 return Err(Error::InvalidProof(

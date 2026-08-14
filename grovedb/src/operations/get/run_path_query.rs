@@ -233,33 +233,41 @@ impl GroveDb {
                         ))
                         .wrap_with_cost(cost);
                     };
-                    // Mirror the branched proof's absence slots: a branch
-                    // key missing at the branching level yields None
-                    // rather than an error, so partially-populated
-                    // branch sets read the same way they prove.
-                    let prefix_refs: Vec<&[u8]> = path_query
+                    // Mirror the branched proof's absence slots: a
+                    // branch key — or any suffix segment under it —
+                    // missing yields None rather than an error, so
+                    // partially-populated branch sets read exactly the
+                    // way they prove (the proof authenticates the
+                    // absence at whichever level the chain breaks).
+                    let mut resolved: Vec<&[u8]> = path_query
                         .path
                         .iter()
                         .map(|segment| segment.as_slice())
                         .collect();
-                    let present = cost_return_on_error!(
-                        &mut cost,
-                        self.get_raw_optional(
-                            SubtreePath::from(prefix_refs.as_slice()),
-                            branch_key,
-                            transaction,
-                            grove_version,
-                        )
-                    );
-                    if present.is_none() {
+                    let mut chain_broken = false;
+                    for segment in std::iter::once(branch_key.as_slice())
+                        .chain(suffix.iter().map(|segment| segment.as_slice()))
+                    {
+                        let present = cost_return_on_error!(
+                            &mut cost,
+                            self.get_raw_optional(
+                                SubtreePath::from(resolved.as_slice()),
+                                segment,
+                                transaction,
+                                grove_version,
+                            )
+                        );
+                        if present.is_none() {
+                            chain_broken = true;
+                            break;
+                        }
+                        resolved.push(segment);
+                    }
+                    if chain_broken {
                         branches.push((branch_key.clone(), None));
                         continue;
                     }
-                    let mut full_path: Vec<&[u8]> =
-                        Vec::with_capacity(path_query.path.len() + 1 + suffix.len());
-                    full_path.extend(path_query.path.iter().map(|segment| segment.as_slice()));
-                    full_path.push(branch_key.as_slice());
-                    full_path.extend(suffix.iter().map(|segment| segment.as_slice()));
+                    let full_path = resolved;
                     let run = cost_return_on_error!(
                         &mut cost,
                         self.run_axis_read(full_path.as_slice(), axis, transaction, grove_version)

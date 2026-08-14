@@ -1297,19 +1297,30 @@ impl GroveDb {
                 )
             }
             AxisTraversal::Bounded { limit, .. } => {
-                let secondary_query = cost_return_on_error_no_add!(
-                    cost,
-                    crate::query::axis_lowering::axis_bounded_merk_query(axis_query)
-                );
-                let sec_result = cost_return_on_error!(
-                    &mut cost,
-                    secondary_merk
-                        .prove(secondary_query, Some(*limit), grove_version)
-                        .map_err(|e| Error::CorruptedData(format!(
-                            "axis descent: secondary range proof: {e}"
-                        )))
-                );
-                sec_result.proof
+                // An empty secondary cannot carry a Merk range proof
+                // (`Merk::prove` refuses empty trees), so — mirroring
+                // the count-offset and aggregate-on-range empty
+                // conventions — the payload carries EMPTY proof bytes,
+                // which the verifier resolves to a NULL_HASH secondary
+                // root. The parent binding then only passes if the
+                // element genuinely commits an empty secondary.
+                if cost_return_on_error!(&mut cost, secondary_merk.is_empty_tree().map(Ok)) {
+                    Vec::new()
+                } else {
+                    let secondary_query = cost_return_on_error_no_add!(
+                        cost,
+                        crate::query::axis_lowering::axis_bounded_merk_query(axis_query)
+                    );
+                    let sec_result = cost_return_on_error!(
+                        &mut cost,
+                        secondary_merk
+                            .prove(secondary_query, Some(*limit), grove_version)
+                            .map_err(|e| Error::CorruptedData(format!(
+                                "axis descent: secondary range proof: {e}"
+                            )))
+                    );
+                    sec_result.proof
+                }
             }
             AxisTraversal::RangeAggregate { lo, hi } => match axis {
                 IndexAxis::Count => {

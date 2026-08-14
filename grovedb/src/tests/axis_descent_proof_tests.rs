@@ -546,6 +546,161 @@ mod tests {
             .expect_err("hiding a present branch must be rejected");
     }
 
+    #[test]
+    fn hiding_a_present_but_empty_branch_is_rejected() {
+        // Audit finding: a branch whose indexed tree exists but is EMPTY
+        // fails `is_non_empty_tree`, so before the axis check was hoisted
+        // above the lower-layer lookup, stripping its axis layer slipped
+        // every guard and the verifier endorsed a false `None`
+        // ("proven absent") slot under the genuine root hash.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_branched_psits(
+            &db,
+            grove_version,
+            &[
+                (b"alice", &[] as &[(&[u8], i64)]), // created, NO entries
+                (b"carol", &[(b"m1", 7)]),
+            ],
+        );
+        let pq = PathQuery::new_branched_axis(
+            vec![TEST_LEAF.to_vec()],
+            vec![b"alice".to_vec(), b"carol".to_vec()],
+            vec![b"scores".to_vec()],
+            AxisQuery::top_k(IndexAxis::Sum, 1, 0, true),
+        );
+        let proof = prove(&db, &pq, grove_version);
+
+        // Honest verification reports alice PRESENT with empty entries,
+        // never absent.
+        match GroveDb::verify_path_query(&proof, &pq, grove_version)
+            .expect("honest empty-branch proof verifies")
+        {
+            VerifiedPathQuery::BranchedAxisEntries { branches, .. } => {
+                let alice = branches
+                    .iter()
+                    .find(|(key, _)| key == b"alice")
+                    .expect("alice slot");
+                assert!(
+                    matches!(&alice.1, Some(entries) if entries.is_empty()),
+                    "an existing empty indexed tree must report Some(empty), got {:?}",
+                    alice.1
+                );
+            }
+            other => panic!("expected BranchedAxisEntries, got {other:?}"),
+        }
+
+        // Stripping alice's axis layer must be rejected, not endorsed as
+        // absence.
+        let config = bincode::config::standard().with_big_endian();
+        let (mut decoded, _): (GroveDBProof, usize) =
+            bincode::decode_from_slice(&proof, config).expect("decode envelope");
+        let GroveDBProof::V1(ref mut v1) = decoded else {
+            panic!("expected V1 envelope");
+        };
+        fn strip_key(layer: &mut LayerProof, key: &[u8]) -> bool {
+            if layer.lower_layers.remove(key).is_some() {
+                return true;
+            }
+            layer
+                .lower_layers
+                .values_mut()
+                .any(|lower| strip_key(lower, key))
+        }
+        assert!(strip_key(&mut v1.root_layer, b"scores".as_slice()));
+        let tampered = bincode::encode_to_vec(&decoded, config).expect("re-encode");
+        GroveDb::verify_path_query(&tampered, &pq, grove_version)
+            .expect_err("hiding a present-but-empty branch must be rejected");
+    }
+
+    #[test]
+    fn empty_indexed_tree_round_trips_for_every_traversal() {
+        // Audit finding: the Bounded traversal hard-errored on an empty
+        // secondary (Merk::prove refuses empty trees) while every other
+        // traversal — and the trusted read — handled it. All four must
+        // round-trip against a freshly created, never-populated indexed
+        // tree.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_psit(&db, grove_version, &[]);
+        let root = root_hash(&db, grove_version);
+
+        // Bounded (the previously-broken one).
+        let pq = PathQuery::new_axis_bounded(psit_path(), IndexAxis::Sum, 0, 100, 5, true);
+        match GroveDb::verify_path_query(&prove(&db, &pq, grove_version), &pq, grove_version)
+            .expect("bounded over an empty secondary verifies")
+        {
+            VerifiedPathQuery::AxisEntries {
+                root_hash, entries, ..
+            } => {
+                assert_eq!(root_hash, root);
+                assert!(entries.is_empty());
+            }
+            other => panic!("expected AxisEntries, got {other:?}"),
+        }
+
+        // TopK.
+        let pq = PathQuery::new_axis_top_k(psit_path(), IndexAxis::Sum, 3, 0, true);
+        match GroveDb::verify_path_query(&prove(&db, &pq, grove_version), &pq, grove_version)
+            .expect("top-k over an empty secondary verifies")
+        {
+            VerifiedPathQuery::AxisEntries {
+                root_hash, entries, ..
+            } => {
+                assert_eq!(root_hash, root);
+                assert!(entries.is_empty());
+            }
+            other => panic!("expected AxisEntries, got {other:?}"),
+        }
+
+        // RangeAggregate.
+        let pq = PathQuery::new_axis_range_aggregate(psit_path(), IndexAxis::Sum, 0, 100);
+        match GroveDb::verify_path_query(&prove(&db, &pq, grove_version), &pq, grove_version)
+            .expect("range aggregate over an empty secondary verifies")
+        {
+            VerifiedPathQuery::AxisAggregate { root_hash, value } => {
+                assert_eq!(root_hash, root);
+                assert_eq!(value, 0);
+            }
+            other => panic!("expected AxisAggregate, got {other:?}"),
+        }
+
+        // RankOfKey errors cleanly (the key cannot exist in an empty
+        // tree) rather than producing a bogus proof.
+        let pq =
+            PathQuery::new_axis_rank_of_key(psit_path(), IndexAxis::Sum, b"ghost".to_vec(), true);
+        db.prove_query(&pq, None, grove_version)
+            .unwrap()
+            .expect_err("rank of a key in an empty indexed tree must error");
+    }
+
+    #[test]
+    fn duplicate_branch_keys_are_rejected_at_classification() {
+        // Audit finding: duplicate branch keys would produce
+        // contradictory per-branch rows (one Some, one None) from a
+        // single valid proof. The constructor dedups via `insert_key`,
+        // so hand-build the malformed query the way a hostile or buggy
+        // caller could.
+        use grovedb_merk::proofs::{
+            query::{query_item::QueryItem, ReadMode},
+            Query,
+        };
+        let mut terminal = Query::new();
+        terminal.read_mode = Some(ReadMode::Axis(AxisQuery::top_k(IndexAxis::Sum, 1, 0, true)));
+        let mut branching = Query::new();
+        branching.items.push(QueryItem::Key(b"alice".to_vec()));
+        branching.items.push(QueryItem::Key(b"alice".to_vec()));
+        branching.set_subquery_path(vec![b"scores".to_vec()]);
+        branching.set_subquery(terminal);
+        let pq = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], branching);
+        match pq.classify() {
+            Err(Error::InvalidQuery(message)) => {
+                assert!(message.contains("same branch key"), "got: {message}")
+            }
+            other => panic!("duplicate branch keys must be rejected, got {other:?}"),
+        }
+    }
+
     // -----------------------------------------------------------------
     // Gates
     // -----------------------------------------------------------------
