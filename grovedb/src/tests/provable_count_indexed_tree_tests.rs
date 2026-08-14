@@ -1221,7 +1221,7 @@ mod tests {
     }
 
     #[test]
-    fn indexed_count_range_aggregate_counts_in_range() {
+    fn indexed_count_aggregate_over_value_range_counts_in_range() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         insert_empty_pcit(&db, b"cidx", grove_version);
@@ -1229,7 +1229,7 @@ mod tests {
 
         // [5, 12]: alice + dave + bob = 3 entries.
         let count = db
-            .indexed_count_range_aggregate(
+            .indexed_count_aggregate_over_value_range(
                 [TEST_LEAF, b"cidx"].as_ref(),
                 5,
                 12,
@@ -1242,7 +1242,7 @@ mod tests {
 
         // [0, u64::MAX]: total count of entries (5).
         let total = db
-            .indexed_count_range_aggregate(
+            .indexed_count_aggregate_over_value_range(
                 [TEST_LEAF, b"cidx"].as_ref(),
                 0,
                 u64::MAX,
@@ -1255,7 +1255,7 @@ mod tests {
 
         // [100, 200]: nothing in this range → 0.
         let none = db
-            .indexed_count_range_aggregate(
+            .indexed_count_aggregate_over_value_range(
                 [TEST_LEAF, b"cidx"].as_ref(),
                 100,
                 200,
@@ -1268,7 +1268,7 @@ mod tests {
 
         // lo > hi: 0 (degenerate).
         let degenerate = db
-            .indexed_count_range_aggregate(
+            .indexed_count_aggregate_over_value_range(
                 [TEST_LEAF, b"cidx"].as_ref(),
                 100,
                 10,

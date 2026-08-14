@@ -171,7 +171,7 @@ mod tests {
                     key.as_slice(),
                     None,
                     false,
-                    TreeType::ProvableCountTree,
+                    TreeType::ProvableCountProvableSumTree,
                     gv,
                 )
                 .unwrap()

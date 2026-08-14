@@ -54,20 +54,41 @@ use grovedb_version::version::GroveVersion;
 use crate::{util::TxRef, Element, Error, GroveDb, Transaction, TransactionArg};
 
 /// Per-axis Merk tree type to open the secondary with.
+///
+/// Every axis uses the dual-aggregate
+/// [`TreeType::ProvableCountProvableSumTree`]: the count half is what
+/// makes positional queries provable in `O(log n)` (the count-offset
+/// proof primitive skips whole subtrees via counted node commitments),
+/// and the sum half is what makes a TOTAL over a value band answerable
+/// as one committed scalar ([`AggregateFold::Total`], issue #806).
 #[inline]
 pub(crate) fn axis_secondary_tree_type(axis: IndexAxis) -> TreeType {
     match axis {
-        // Each count entry contributes count = 1.
-        IndexAxis::Count => TreeType::ProvableCountTree,
-        // Each sum entry contributes (count = 1, sum = its own SumValue).
-        // The count half is what makes positional queries against the sum
-        // ranking provable in O(log n): the count-offset proof primitive
-        // skips whole subtrees via counted node commitments, which needs
-        // every secondary node to carry a hash-bound count aggregate.
+        // Each count entry contributes (count = 1, sum = its
+        // count_value as an i64) — the sum half is the band-total.
+        IndexAxis::Count => TreeType::ProvableCountProvableSumTree,
+        // Each sum entry contributes (count = 1, sum = its own
+        // SumValue).
         IndexAxis::Sum => TreeType::ProvableCountProvableSumTree,
         // Each avg entry contributes (count = 1, sum = item's SumValue).
         IndexAxis::Avg => TreeType::ProvableCountProvableSumTree,
     }
+}
+
+/// The count-axis secondary stores each entry's `count_value` as its
+/// sum item, and sum items are `i64`: a count above `i64::MAX` cannot
+/// be mirrored faithfully, so it FAILS CLOSED rather than clamping —
+/// a clamped total would silently lie through authenticated state.
+/// Unreachable for any real tree (a count is bounded by the number of
+/// elements), so the guard is a type-level seam, not a live limit.
+#[inline]
+pub(crate) fn count_value_as_sum(count: u64) -> Result<i64, Error> {
+    i64::try_from(count).map_err(|_| {
+        Error::CorruptedData(format!(
+            "count value {count} exceeds i64::MAX and cannot be mirrored into the \
+             count-axis secondary's sum aggregate"
+        ))
+    })
 }
 
 /// Build the secondary key bytes for an entry at `item_key` under the
@@ -1022,7 +1043,10 @@ impl GroveDb {
             for (key, (count, sum)) in &entries {
                 let secondary_key = make_axis_secondary_key(axis, *count, *sum, key);
                 let payload = match axis {
-                    IndexAxis::Count => Element::new_item(Vec::new()),
+                    IndexAxis::Count => Element::new_sum_item(cost_return_on_error_no_add!(
+                        cost,
+                        count_value_as_sum(*count)
+                    )),
                     IndexAxis::Sum => Element::new_sum_item(*sum),
                     IndexAxis::Avg => Element::new_item_with_sum_item(Vec::new(), *sum),
                 };
@@ -1261,6 +1285,10 @@ impl GroveDb {
     where
         B: AsRef<[u8]> + 'b,
     {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_axis_top_k_generic",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
         let tx_ref = tx.as_ref();
@@ -1288,6 +1316,10 @@ impl GroveDb {
     where
         B: AsRef<[u8]> + 'b,
     {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_axis_top_k_paginated_generic",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
         let tx_ref = tx.as_ref();
@@ -1423,6 +1455,10 @@ impl GroveDb {
     where
         B: AsRef<[u8]> + 'b,
     {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_axis_range_generic",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
         let tx_ref = tx.as_ref();
@@ -1564,6 +1600,14 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
+        // The version gate has to precede the degenerate-range
+        // fast path below: returning the empty answer first would
+        // leave inverted bounds outside the version contract that
+        // every other input to this entry point is held to.
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_count_range",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
         let cost = OperationCost::default();
         if lo_count > hi_count {
             return Ok(Vec::new()).wrap_with_cost(cost);
@@ -1620,9 +1664,9 @@ impl GroveDb {
     /// indexed-tree have?". This call has no cryptographic guarantee —
     /// the returned count is whatever the merk reports. For a
     /// verifiable count, use
-    /// [`Self::prove_indexed_count_range_aggregate`] +
-    /// [`Self::verify_indexed_count_range_aggregate`].
-    pub fn indexed_count_range_aggregate<'b, B, P>(
+    /// [`Self::prove_indexed_count_aggregate_over_value_range`] +
+    /// [`Self::verify_indexed_count_aggregate_over_value_range`].
+    pub fn indexed_count_aggregate_over_value_range<'b, B, P>(
         &self,
         path: P,
         lo_count: u64,
@@ -1634,6 +1678,10 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_count_aggregate_over_value_range",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
         use grovedb_merk::proofs::query::QueryItem as MerkQueryItemForRange;
 
         let mut cost = OperationCost::default();
@@ -1760,6 +1808,14 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
+        // The version gate has to precede the degenerate-range
+        // fast path below: returning the empty answer first would
+        // leave inverted bounds outside the version contract that
+        // every other input to this entry point is held to.
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_sum_range",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
         let cost = OperationCost::default();
         if lo_sum > hi_sum {
             return Ok(Vec::new()).wrap_with_cost(cost);
@@ -1810,7 +1866,7 @@ impl GroveDb {
     /// indexed-tree". Like the count counterpart, this call has no
     /// cryptographic guarantee; for a verifiable sum use the
     /// proof-bound variant in the proof submodule.
-    pub fn indexed_sum_range_aggregate<'b, B, P>(
+    pub fn indexed_sum_aggregate_over_value_range<'b, B, P>(
         &self,
         path: P,
         lo_sum: i64,
@@ -1822,6 +1878,10 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_sum_aggregate_over_value_range",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
         use grovedb_merk::proofs::query::QueryItem as MerkQueryItemForRange;
 
         let mut cost = OperationCost::default();
@@ -1853,6 +1913,131 @@ impl GroveDb {
         );
 
         Ok(sum).wrap_with_cost(cost)
+    }
+
+    /// How many entries of the sum axis fall in the inclusive sum band
+    /// `[lo_sum, hi_sum]` — the POPULATION of the band, each selected
+    /// entry contributing 1 regardless of its value. The
+    /// [`AggregateFold::Population`](grovedb_query::AggregateFold)
+    /// counterpart of [`Self::indexed_sum_aggregate_over_value_range`],
+    /// answered off the sum secondary's count aggregate (the sum
+    /// secondary is count-bearing — `ProvableCountProvableSumTree` —
+    /// which is also what makes its offset pagination provable).
+    ///
+    /// `O(log n)`: the walk folds contained subtrees' stored counts and
+    /// descends only along the two band boundaries.
+    pub fn indexed_sum_population_over_value_range<'b, B, P>(
+        &self,
+        path: P,
+        lo_sum: i64,
+        hi_sum: i64,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<u64, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        // The version gate precedes the degenerate-range fast path:
+        // every input to this entry point is held to the same version
+        // contract, inverted bounds included.
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_sum_population_over_value_range",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
+        use grovedb_merk::proofs::query::QueryItem as MerkQueryItemForRange;
+
+        let mut cost = OperationCost::default();
+        if lo_sum > hi_sum {
+            return Ok(0u64).wrap_with_cost(cost);
+        }
+        let path: SubtreePath<B> = path.into();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_validated_axis_secondary(path, IndexAxis::Sum, tx_ref, grove_version)
+        );
+
+        let lo_bytes = encode_sum_sort_key(lo_sum).to_vec();
+        let inner_range = if hi_sum == i64::MAX {
+            MerkQueryItemForRange::RangeFrom(lo_bytes..)
+        } else {
+            let upper_bytes = encode_sum_sort_key(hi_sum + 1).to_vec();
+            MerkQueryItemForRange::Range(lo_bytes..upper_bytes)
+        };
+
+        let population = cost_return_on_error!(
+            &mut cost,
+            secondary_merk
+                .count_aggregate_on_range(&inner_range, grove_version)
+                .map_err(|e| Error::CorruptedData(format!("indexed sum population on range: {e}")))
+        );
+
+        Ok(population).wrap_with_cost(cost)
+    }
+
+    /// The TOTAL of the count values of every entry whose `count_value`
+    /// falls in the inclusive band `[lo_count, hi_count]` — the
+    /// [`AggregateFold::Total`](grovedb_query::AggregateFold)
+    /// counterpart of [`Self::indexed_count_aggregate_over_value_range`]
+    /// (which answers the band's POPULATION), enabled by the count
+    /// secondary mirroring each entry's `count_value` into its sum half
+    /// (issue #806).
+    ///
+    /// `O(log n)`: the walk folds contained subtrees' stored sums and
+    /// descends only along the two band boundaries.
+    pub fn indexed_count_total_over_value_range<'b, B, P>(
+        &self,
+        path: P,
+        lo_count: u64,
+        hi_count: u64,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<i64, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        // The version gate precedes the degenerate-range fast path:
+        // every input to this entry point is held to the same version
+        // contract, inverted bounds included.
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_count_total_over_value_range",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
+        use grovedb_merk::proofs::query::QueryItem as MerkQueryItemForRange;
+
+        let mut cost = OperationCost::default();
+        if lo_count > hi_count {
+            return Ok(0i64).wrap_with_cost(cost);
+        }
+        let path: SubtreePath<B> = path.into();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_validated_axis_secondary(path, IndexAxis::Count, tx_ref, grove_version)
+        );
+
+        let lo_bytes = encode_count_sort_key(lo_count).to_vec();
+        let inner_range = if hi_count == u64::MAX {
+            MerkQueryItemForRange::RangeFrom(lo_bytes..)
+        } else {
+            let upper_bytes = encode_count_sort_key(hi_count + 1).to_vec();
+            MerkQueryItemForRange::Range(lo_bytes..upper_bytes)
+        };
+
+        let total = cost_return_on_error!(
+            &mut cost,
+            secondary_merk
+                .sum_aggregate_on_range(&inner_range, grove_version)
+                .map_err(|e| Error::CorruptedData(format!("indexed count total on range: {e}")))
+        );
+
+        Ok(total).wrap_with_cost(cost)
     }
 
     // ---- avg axis (PCPSIT-only) ----
@@ -1939,10 +2124,10 @@ impl GroveDb {
     /// vector. `lo_avg == i128::MIN && hi_avg == i128::MAX` is
     /// equivalent to a full scan.
     ///
-    /// No `indexed_avg_range_aggregate` exists — averaging an average
+    /// No `indexed_avg_aggregate_over_value_range` exists — averaging an average
     /// over a range is not a closed-form aggregate. Callers that need
     /// "aggregate avg in range" should compute it client-side from
-    /// `indexed_count_range_aggregate` + `indexed_sum_range_aggregate`
+    /// `indexed_count_aggregate_over_value_range` + `indexed_sum_aggregate_over_value_range`
     /// against the same path's count and sum secondaries.
     pub fn indexed_avg_range<'b, B, P>(
         &self,
@@ -1958,6 +2143,14 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
+        // The version gate has to precede the degenerate-range
+        // fast path below: returning the empty answer first would
+        // leave inverted bounds outside the version contract that
+        // every other input to this entry point is held to.
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_avg_range",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
         let cost = OperationCost::default();
         if lo_avg > hi_avg {
             return Ok(Vec::new()).wrap_with_cost(cost);
@@ -2258,12 +2451,16 @@ pub(crate) fn mirror_indexed_axis_to_secondary<'db, S: StorageContext<'db>>(
     // - Count → constant empty Item (contributes count = 1)
     // - Sum   → SumItem(sum)
     // - Avg   → ItemWithSumItem(empty, sum) (contributes (1, sum))
-    let axis_payload = |sum: i64| -> Element {
-        match axis {
-            IndexAxis::Count => Element::new_item(Vec::new()),
+    // The payload is a function of BOTH aggregates now: the count axis
+    // mirrors count_value into its sum half, so a closure over `sum`
+    // alone could not see a count-only change and the fast path below
+    // would silently skip a real payload update.
+    let axis_payload = |count: u64, sum: i64| -> Result<Element, Error> {
+        Ok(match axis {
+            IndexAxis::Count => Element::new_sum_item(count_value_as_sum(count)?),
             IndexAxis::Sum => Element::new_sum_item(sum),
             IndexAxis::Avg => Element::new_item_with_sum_item(Vec::new(), sum),
-        }
+        })
     };
 
     // Compute old and new sort keys. Either may be None (no entry).
@@ -2289,8 +2486,11 @@ pub(crate) fn mirror_indexed_axis_to_secondary<'db, S: StorageContext<'db>>(
     // former key-only check and preserves the fast path for the common
     // case.
     if old_key == new_key && new_key.is_some() {
-        let payload_unchanged = match (old_sum, new_sum) {
-            (Some(os), Some(ns)) => axis_payload(os) == axis_payload(ns),
+        let payload_unchanged = match ((old_count, old_sum), (new_count, new_sum)) {
+            ((Some(oc), Some(os)), (Some(nc), Some(ns))) => {
+                cost_return_on_error_no_add!(cost, axis_payload(oc, os))
+                    == cost_return_on_error_no_add!(cost, axis_payload(nc, ns))
+            }
             _ => false,
         };
         if payload_unchanged {
@@ -2315,16 +2515,16 @@ pub(crate) fn mirror_indexed_axis_to_secondary<'db, S: StorageContext<'db>>(
             .map_err(Error::MerkError)
         );
     }
-    if let (Some(nk), Some(new_sum_val)) = (&new_key, new_sum) {
+    if let (Some(nk), Some(new_count_val), Some(new_sum_val)) = (&new_key, new_count, new_sum) {
         // Derived by the same `axis_payload` closure the fast-path
-        // equality check above uses, so the two stay in lockstep:
-        // - Count → empty Item (secondary is a ProvableCountTree; every
-        //   entry contributes count = 1)
-        // - Sum   → SumItem(sum) (secondary is a
-        //   ProvableCountProvableSumTree; contributes (1, sum))
-        // - Avg   → ItemWithSumItem(empty, sum) (secondary is a
-        //   ProvableCountProvableSumTree; contributes (1, sum))
-        let entry = axis_payload(new_sum_val);
+        // equality check above uses, so the two stay in lockstep.
+        // Every axis's secondary is a dual-aggregate
+        // ProvableCountProvableSumTree:
+        // - Count → SumItem(count_value) — contributes (1, count), so a
+        //   band TOTAL is one committed scalar (issue #806)
+        // - Sum   → SumItem(sum) — contributes (1, sum)
+        // - Avg   → ItemWithSumItem(empty, sum) — contributes (1, sum)
+        let entry = cost_return_on_error_no_add!(cost, axis_payload(new_count_val, new_sum_val));
         cost_return_on_error!(
             &mut cost,
             entry
@@ -2958,6 +3158,27 @@ impl GroveDb {
         }
 
         Ok(results).wrap_with_cost(cost)
+    }
+}
+
+#[cfg(test)]
+mod count_value_as_sum_tests {
+    //! The count-axis secondary stores count_value as an i64 sum item;
+    //! the conversion FAILS CLOSED above i64::MAX rather than clamping,
+    //! because a clamped value would flow into hash-bound authenticated
+    //! state as a silently wrong total.
+
+    use super::count_value_as_sum;
+
+    #[test]
+    fn converts_in_domain_and_fails_closed_above_i64_max() {
+        assert_eq!(count_value_as_sum(0).unwrap(), 0);
+        assert_eq!(count_value_as_sum(8).unwrap(), 8);
+        assert_eq!(count_value_as_sum(i64::MAX as u64).unwrap(), i64::MAX);
+        let err = count_value_as_sum(i64::MAX as u64 + 1)
+            .expect_err("one past i64::MAX must fail closed");
+        assert!(err.to_string().contains("cannot be mirrored"), "{err}");
+        count_value_as_sum(u64::MAX).expect_err("u64::MAX must fail closed");
     }
 }
 

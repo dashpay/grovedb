@@ -32,6 +32,36 @@
 //!   flips a rejected/accepted outcome and because deriving the state root
 //!   costs the prover extra storage reads and hash calls.
 //!
+//! - `proof.axis_descent_in_v1_envelope: 1` — the V1 proof envelope carries
+//!   axis-ordered descents into indexed trees
+//!   (`ProofBytes::IndexedTreeAxisDescent`): a proof over the queried
+//!   per-axis secondary in place of the primary descent, with the
+//!   secondary-root attestation recomputed by the verifier rather than
+//!   supplied raw. V1..V3 refuse the shape on both sides. Gated because it
+//!   adds an acceptance rule to the live V1 envelope.
+//!
+//! - `proof.sum_budget_in_v1_envelope: 1` — the V1 proof envelope carries
+//!   sum-budget windows (`ProofBytes::SumBudgetWindow`): an ordinary Merk
+//!   proof over exactly the window the budget walk scanned, whose stop
+//!   condition the verifier attests by replaying the engine's fold over the
+//!   proved elements. V1..V3 refuse the shape on both sides. Gated because
+//!   it adds an acceptance rule to the live V1 envelope.
+//!
+//! - `path_query_methods.merge: 1` — `PathQuery::merge` requires every input
+//!   to agree on `left_to_right` (typed error on conflict) and propagates the
+//!   shared direction to the merged root. V1..V3 keep the long-standing
+//!   silent behavior (input directions dropped; sub-level merges take the
+//!   synthesized default). Gated because merged queries feed proofs and both
+//!   sides must re-derive the identical merged query.
+//!
+//! - `path_query_methods.unified_read_mode: 1` — `PathQuery` read modes
+//!   (axis-ordered and sum-budget reads carried in `Query::read_mode`) are
+//!   served by the unified dispatch (`run_path_query`, and the unified
+//!   prove/verify as they land). V1..V3 reject any read-mode-bearing query
+//!   with `NotSupported` at every entry point — those versions also reject
+//!   the version-2 `Query` wire encoding outright, so the slot's `0` value
+//!   is the in-process mirror of that fail-closed decode.
+//!
 //! Note that `GroveVersion::latest()` resolves to this version, so anything
 //! defaulting to "latest" — tests, benchmarks, tools — exercises every gate
 //! listed above rather than V3 behaviour.
@@ -54,8 +84,8 @@ use crate::version::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
         GroveDBOperationsDeleteVersions, GroveDBOperationsGetVersions,
-        GroveDBOperationsInsertVersions, GroveDBOperationsProofVersions,
-        GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
+        GroveDBOperationsIndexedAxisVersions, GroveDBOperationsInsertVersions,
+        GroveDBOperationsProofVersions, GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
         GroveDBReplicationVersions, GroveDBVersions,
     },
@@ -202,6 +232,12 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 query_keys_optional: 0,
                 query_raw_keys_optional: 0,
                 follow_element: 0,
+                run_path_query: 0,
+            },
+            indexed_axis: GroveDBOperationsIndexedAxisVersions {
+                read: 0,
+                prove_single_path: 0,
+                verify_single_path: 0,
             },
             proof: GroveDBOperationsProofVersions {
                 prove_query: 0,
@@ -221,6 +257,8 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 verify_query_with_chained_path_queries: 0,
                 verify_query_get_parent_tree_info_with_options: 0,
                 terminal_non_merk_tree_child_hash: 1, // bind terminal non-Merk tree element bytes to the parent value_hash
+                axis_descent_in_v1_envelope: 1, // axis-ordered descents in the V1 envelope (ReadMode::Axis)
+                sum_budget_in_v1_envelope: 1, // sum-budget windows in the V1 envelope (ReadMode::SumBudget)
             },
             average_case: GroveDBOperationsAverageCaseVersions {
                 add_average_case_get_merk_at_path: 0,
@@ -255,9 +293,10 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
         aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions { merge: 0 },
         path_query_methods: GroveDBPathQueryMethodVersions {
             terminal_keys: 0,
-            merge: 0,
+            merge: 1, // direction-aware merge: agreement required and propagated (V4+)
             query_items_at_path: 0,
             should_add_parent_tree_at_path: 0,
+            unified_read_mode: 1,
         },
         replication: GroveDBReplicationVersions {
             get_subtrees_metadata: 0,

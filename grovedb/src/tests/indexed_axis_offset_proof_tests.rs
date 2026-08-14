@@ -133,16 +133,28 @@ mod tests {
                 .prove_indexed_sum_top_k(path, 3, descending, None, gv)
                 .unwrap()
                 .expect("prove top-k");
-            let top_k_result = GroveDb::verify_indexed_sum_top_k(&top_k, path, 3, descending)
-                .expect("verify top-k");
+            let top_k_result = GroveDb::verify_indexed_sum_top_k(
+                &top_k,
+                path,
+                3,
+                descending,
+                GroveVersion::latest(),
+            )
+            .expect("verify top-k");
 
             let paginated = db
                 .prove_indexed_sum_top_k_paginated(path, 3, 0, descending, None, gv)
                 .unwrap()
                 .expect("prove paginated offset 0");
-            let paginated_result =
-                GroveDb::verify_indexed_sum_top_k_paginated(&paginated, path, 3, 0, descending)
-                    .expect("verify paginated offset 0");
+            let paginated_result = GroveDb::verify_indexed_sum_top_k_paginated(
+                &paginated,
+                path,
+                3,
+                0,
+                descending,
+                GroveVersion::latest(),
+            )
+            .expect("verify paginated offset 0");
 
             assert_eq!(paginated_result.skipped, 0);
             assert_eq!(
@@ -171,8 +183,15 @@ mod tests {
             .prove_indexed_sum_top_k_paginated(path, 3, 3, true, None, gv)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 3, 3, true).expect("verify");
+        let result = GroveDb::verify_indexed_sum_top_k_paginated(
+            &proof,
+            path,
+            3,
+            3,
+            true,
+            GroveVersion::latest(),
+        )
+        .expect("verify");
         assert_eq!(result.skipped, 3);
         assert_eq!(
             entries_as_sum(&result.entries),
@@ -189,8 +208,15 @@ mod tests {
             .prove_indexed_sum_top_k_paginated(path, 2, 4, false, None, gv)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 2, 4, false).expect("verify");
+        let result = GroveDb::verify_indexed_sum_top_k_paginated(
+            &proof,
+            path,
+            2,
+            4,
+            false,
+            GroveVersion::latest(),
+        )
+        .expect("verify");
         assert_eq!(result.skipped, 4);
         assert_eq!(
             entries_as_sum(&result.entries),
@@ -216,8 +242,15 @@ mod tests {
             .prove_indexed_sum_top_k_paginated(path, 5, 8, true, None, gv)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 5, 8, true).expect("verify");
+        let result = GroveDb::verify_indexed_sum_top_k_paginated(
+            &proof,
+            path,
+            5,
+            8,
+            true,
+            GroveVersion::latest(),
+        )
+        .expect("verify");
         assert_eq!(result.skipped, 8);
         assert_eq!(
             entries_as_sum(&result.entries),
@@ -247,9 +280,15 @@ mod tests {
                 .prove_indexed_sum_top_k_paginated(path, 3, offset, descending, None, gv)
                 .unwrap()
                 .expect("prove offset past end");
-            let result =
-                GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 3, offset, descending)
-                    .expect("verify offset past end");
+            let result = GroveDb::verify_indexed_sum_top_k_paginated(
+                &proof,
+                path,
+                3,
+                offset,
+                descending,
+                GroveVersion::latest(),
+            )
+            .expect("verify offset past end");
             assert_eq!(
                 result.skipped, 10,
                 "the attested skipped count is the total population"
@@ -268,8 +307,15 @@ mod tests {
             .prove_indexed_sum_top_k_paginated(path, 3, 10, false, None, gv)
             .unwrap()
             .expect("prove offset == population");
-        let result = GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 3, 10, false)
-            .expect("verify offset == population");
+        let result = GroveDb::verify_indexed_sum_top_k_paginated(
+            &proof,
+            path,
+            3,
+            10,
+            false,
+            GroveVersion::latest(),
+        )
+        .expect("verify offset == population");
         assert_eq!(result.skipped, 10);
         assert!(result.entries.is_empty());
     }
@@ -287,8 +333,15 @@ mod tests {
             .prove_indexed_sum_top_k_paginated(path, 3, 5, false, None, gv)
             .unwrap()
             .expect("prove on empty");
-        let result = GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 3, 5, false)
-            .expect("verify on empty");
+        let result = GroveDb::verify_indexed_sum_top_k_paginated(
+            &proof,
+            path,
+            3,
+            5,
+            false,
+            GroveVersion::latest(),
+        )
+        .expect("verify on empty");
         assert_eq!(result.skipped, 0);
         assert!(result.entries.is_empty());
         assert_eq!(result.root_hash, root_hash(&db, gv));
@@ -310,8 +363,15 @@ mod tests {
             .prove_indexed_sum_top_k_paginated(path, 1, 3, true, None, gv)
             .unwrap()
             .expect("prove 4th biggest");
-        let result = GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 1, 3, true)
-            .expect("verify 4th biggest");
+        let result = GroveDb::verify_indexed_sum_top_k_paginated(
+            &proof,
+            path,
+            1,
+            3,
+            true,
+            GroveVersion::latest(),
+        )
+        .expect("verify 4th biggest");
         assert_eq!(result.skipped, 3);
         assert_eq!(
             entries_as_sum(&result.entries),
@@ -343,6 +403,7 @@ mod tests {
                 1,
                 rank_zero_based as u64,
                 true,
+                GroveVersion::latest(),
             )
             .expect("verify rank window");
             assert_eq!(result.skipped, rank_zero_based as u64);
@@ -387,8 +448,15 @@ mod tests {
             .prove_indexed_sum_top_k_paginated(path, 3, 4, false, None, gv)
             .unwrap()
             .expect("prove mid-tie ascending");
-        let result = GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 3, 4, false)
-            .expect("verify mid-tie ascending");
+        let result = GroveDb::verify_indexed_sum_top_k_paginated(
+            &proof,
+            path,
+            3,
+            4,
+            false,
+            GroveVersion::latest(),
+        )
+        .expect("verify mid-tie ascending");
         assert_eq!(result.skipped, 4);
         assert_eq!(
             entries_as_sum(&result.entries),
@@ -406,8 +474,15 @@ mod tests {
             .prove_indexed_sum_top_k_paginated(path, 3, 3, true, None, gv)
             .unwrap()
             .expect("prove mid-tie descending");
-        let result = GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 3, 3, true)
-            .expect("verify mid-tie descending");
+        let result = GroveDb::verify_indexed_sum_top_k_paginated(
+            &proof,
+            path,
+            3,
+            3,
+            true,
+            GroveVersion::latest(),
+        )
+        .expect("verify mid-tie descending");
         assert_eq!(result.skipped, 3);
         assert_eq!(
             entries_as_sum(&result.entries),
@@ -453,8 +528,15 @@ mod tests {
             .prove_indexed_sum_top_k_paginated(path, 3, 1, false, None, gv)
             .unwrap()
             .expect("prove");
-        let result =
-            GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 3, 1, false).expect("verify");
+        let result = GroveDb::verify_indexed_sum_top_k_paginated(
+            &proof,
+            path,
+            3,
+            1,
+            false,
+            GroveVersion::latest(),
+        )
+        .expect("verify");
         assert_eq!(result.skipped, 1);
         assert_eq!(
             entries_as_sum(&result.entries),
@@ -471,8 +553,15 @@ mod tests {
             .prove_indexed_sum_top_k_paginated(path, 3, 99, true, None, gv)
             .unwrap()
             .expect("prove past end");
-        let result = GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 3, 99, true)
-            .expect("verify past end");
+        let result = GroveDb::verify_indexed_sum_top_k_paginated(
+            &proof,
+            path,
+            3,
+            99,
+            true,
+            GroveVersion::latest(),
+        )
+        .expect("verify past end");
         assert_eq!(result.skipped, 6, "total population attested");
         assert!(result.entries.is_empty());
     }
@@ -497,8 +586,15 @@ mod tests {
             .prove_indexed_sum_top_k_paginated(path, 3, 3, true, None, gv)
             .unwrap()
             .expect("prove");
-        let baseline = GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 3, 3, true)
-            .expect("baseline verifies");
+        let baseline = GroveDb::verify_indexed_sum_top_k_paginated(
+            &proof,
+            path,
+            3,
+            3,
+            true,
+            GroveVersion::latest(),
+        )
+        .expect("baseline verifies");
         assert_eq!(baseline.root_hash, expected_root);
         let baseline_entries = entries_as_sum(&baseline.entries).to_vec();
 
@@ -507,7 +603,14 @@ mod tests {
             for bit in 0..8u8 {
                 let mut mutated = proof.clone();
                 mutated[byte_idx] ^= 1 << bit;
-                match GroveDb::verify_indexed_sum_top_k_paginated(&mutated, path, 3, 3, true) {
+                match GroveDb::verify_indexed_sum_top_k_paginated(
+                    &mutated,
+                    path,
+                    3,
+                    3,
+                    true,
+                    GroveVersion::latest(),
+                ) {
                     Err(_) => {}
                     Ok(result) => {
                         if result.root_hash == expected_root
@@ -553,14 +656,30 @@ mod tests {
 
         let truncated = &proof[..proof.len() - 1];
         assert!(
-            GroveDb::verify_indexed_sum_top_k_paginated(truncated, path, 2, 2, false).is_err(),
+            GroveDb::verify_indexed_sum_top_k_paginated(
+                truncated,
+                path,
+                2,
+                2,
+                false,
+                GroveVersion::latest()
+            )
+            .is_err(),
             "truncated proof must not verify"
         );
 
         let mut extended = proof.clone();
         extended.extend_from_slice(b"garbage");
         assert!(
-            GroveDb::verify_indexed_sum_top_k_paginated(&extended, path, 2, 2, false).is_err(),
+            GroveDb::verify_indexed_sum_top_k_paginated(
+                &extended,
+                path,
+                2,
+                2,
+                false,
+                GroveVersion::latest()
+            )
+            .is_err(),
             "garbage-extended proof must not verify"
         );
     }
@@ -580,15 +699,39 @@ mod tests {
             .expect("prove");
 
         assert!(
-            GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 4, 2, true).is_err(),
+            GroveDb::verify_indexed_sum_top_k_paginated(
+                &proof,
+                path,
+                4,
+                2,
+                true,
+                GroveVersion::latest()
+            )
+            .is_err(),
             "wrong k must be rejected"
         );
         assert!(
-            GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 3, 3, true).is_err(),
+            GroveDb::verify_indexed_sum_top_k_paginated(
+                &proof,
+                path,
+                3,
+                3,
+                true,
+                GroveVersion::latest()
+            )
+            .is_err(),
             "wrong offset must be rejected"
         );
         assert!(
-            GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 3, 2, false).is_err(),
+            GroveDb::verify_indexed_sum_top_k_paginated(
+                &proof,
+                path,
+                3,
+                2,
+                false,
+                GroveVersion::latest()
+            )
+            .is_err(),
             "wrong direction must be rejected"
         );
     }
@@ -630,6 +773,7 @@ mod tests {
                     key,
                     expected_rank,
                     descending,
+                    GroveVersion::latest(),
                 )
                 .expect("verify rank of key");
                 assert_eq!(result.root_hash, expected_root);
@@ -663,8 +807,16 @@ mod tests {
             .unwrap()
             .expect("prove");
         assert_eq!(rank, 2);
-        GroveDb::verify_indexed_axis_rank_of_key(&proof, path, IndexAxis::Sum, b"t_b", 2, false)
-            .expect("verify ascending mid-tie rank");
+        GroveDb::verify_indexed_axis_rank_of_key(
+            &proof,
+            path,
+            IndexAxis::Sum,
+            b"t_b",
+            2,
+            false,
+            GroveVersion::latest(),
+        )
+        .expect("verify ascending mid-tie rank");
 
         // Descending walk: hi t_c t_b t_a lo → t_b has rank 2 there too
         // (symmetric fixture), t_c has rank 1.
@@ -673,8 +825,16 @@ mod tests {
             .unwrap()
             .expect("prove");
         assert_eq!(rank, 1);
-        GroveDb::verify_indexed_axis_rank_of_key(&proof, path, IndexAxis::Sum, b"t_c", 1, true)
-            .expect("verify descending mid-tie rank");
+        GroveDb::verify_indexed_axis_rank_of_key(
+            &proof,
+            path,
+            IndexAxis::Sum,
+            b"t_c",
+            1,
+            true,
+            GroveVersion::latest(),
+        )
+        .expect("verify descending mid-tie rank");
     }
 
     /// A rank proof only verifies for the exact (key, rank) pair it was
@@ -694,18 +854,42 @@ mod tests {
         assert_eq!(rank, 3);
 
         assert!(
-            GroveDb::verify_indexed_axis_rank_of_key(&proof, path, IndexAxis::Sum, b"g", 4, true)
-                .is_err(),
+            GroveDb::verify_indexed_axis_rank_of_key(
+                &proof,
+                path,
+                IndexAxis::Sum,
+                b"g",
+                4,
+                true,
+                GroveVersion::latest()
+            )
+            .is_err(),
             "a different rank claim must be rejected (offset echo mismatch)"
         );
         assert!(
-            GroveDb::verify_indexed_axis_rank_of_key(&proof, path, IndexAxis::Sum, b"h", 3, true)
-                .is_err(),
+            GroveDb::verify_indexed_axis_rank_of_key(
+                &proof,
+                path,
+                IndexAxis::Sum,
+                b"h",
+                3,
+                true,
+                GroveVersion::latest()
+            )
+            .is_err(),
             "a different key claim must be rejected (the entry at rank 3 is g)"
         );
         assert!(
-            GroveDb::verify_indexed_axis_rank_of_key(&proof, path, IndexAxis::Sum, b"g", 3, false)
-                .is_err(),
+            GroveDb::verify_indexed_axis_rank_of_key(
+                &proof,
+                path,
+                IndexAxis::Sum,
+                b"g",
+                3,
+                false,
+                GroveVersion::latest()
+            )
+            .is_err(),
             "a different direction must be rejected"
         );
     }
@@ -776,11 +960,26 @@ mod tests {
             .prove_indexed_sum_top_k_paginated(path, 1, 99, false, None, gv)
             .unwrap()
             .expect("prove offset past end");
-        GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 1, 99, false)
-            .expect("paginated shape verifies");
+        GroveDb::verify_indexed_sum_top_k_paginated(
+            &proof,
+            path,
+            1,
+            99,
+            false,
+            GroveVersion::latest(),
+        )
+        .expect("paginated shape verifies");
         assert!(
-            GroveDb::verify_indexed_axis_rank_of_key(&proof, path, IndexAxis::Sum, b"a", 99, false)
-                .is_err(),
+            GroveDb::verify_indexed_axis_rank_of_key(
+                &proof,
+                path,
+                IndexAxis::Sum,
+                b"a",
+                99,
+                false,
+                GroveVersion::latest()
+            )
+            .is_err(),
             "a rank claim past the population must be rejected (skipped < rank)"
         );
 
@@ -791,8 +990,16 @@ mod tests {
             .unwrap()
             .expect("prove offset == population");
         assert!(
-            GroveDb::verify_indexed_axis_rank_of_key(&proof, path, IndexAxis::Sum, b"a", 10, false)
-                .is_err(),
+            GroveDb::verify_indexed_axis_rank_of_key(
+                &proof,
+                path,
+                IndexAxis::Sum,
+                b"a",
+                10,
+                false,
+                GroveVersion::latest()
+            )
+            .is_err(),
             "a rank claim equal to the population must be rejected (no yielded entry)"
         );
     }
@@ -812,22 +1019,37 @@ mod tests {
             .prove_indexed_sum_top_k(path, 3, true, None, gv)
             .unwrap()
             .expect("prove top-k");
-        GroveDb::verify_indexed_sum_top_k(&top_k, path, 3, true).expect("clean top-k verifies");
+        GroveDb::verify_indexed_sum_top_k(&top_k, path, 3, true, GroveVersion::latest())
+            .expect("clean top-k verifies");
         top_k.push(0);
         assert!(
-            GroveDb::verify_indexed_sum_top_k(&top_k, path, 3, true).is_err(),
+            GroveDb::verify_indexed_sum_top_k(&top_k, path, 3, true, GroveVersion::latest())
+                .is_err(),
             "trailing byte after the range envelope must be rejected"
         );
 
         let mut aggregate = db
-            .prove_indexed_sum_range_aggregate(path, 0, 100, None, gv)
+            .prove_indexed_sum_aggregate_over_value_range(path, 0, 100, None, gv)
             .unwrap()
             .expect("prove aggregate");
-        GroveDb::verify_indexed_sum_range_aggregate(&aggregate, path, 0, 100)
-            .expect("clean aggregate verifies");
+        GroveDb::verify_indexed_sum_aggregate_over_value_range(
+            &aggregate,
+            path,
+            0,
+            100,
+            GroveVersion::latest(),
+        )
+        .expect("clean aggregate verifies");
         aggregate.push(0);
         assert!(
-            GroveDb::verify_indexed_sum_range_aggregate(&aggregate, path, 0, 100).is_err(),
+            GroveDb::verify_indexed_sum_aggregate_over_value_range(
+                &aggregate,
+                path,
+                0,
+                100,
+                GroveVersion::latest()
+            )
+            .is_err(),
             "trailing byte after the aggregate envelope must be rejected"
         );
     }

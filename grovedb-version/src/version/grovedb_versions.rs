@@ -35,6 +35,43 @@ pub struct GroveDBPathQueryMethodVersions {
     pub merge: FeatureVersion,
     pub query_items_at_path: FeatureVersion,
     pub should_add_parent_tree_at_path: FeatureVersion,
+    /// Whether `PathQuery` read modes (axis-ordered and sum-budget
+    /// reads, `Query::read_mode`) are served.
+    ///
+    /// - `0` (GROVE_V1..=V3): any `PathQuery` carrying a read mode is
+    ///   rejected with `NotSupported` at every read / prove / verify
+    ///   entry point. The vocabulary itself still encodes and decodes —
+    ///   the gate is about *serving*, so a v4-built query constructed
+    ///   ahead of activation fails closed instead of being misread as
+    ///   plain key selection (an axis read has empty items; running it
+    ///   as key selection would return an empty result masquerading as
+    ///   real absence, and a proof would attest to the wrong read).
+    /// - `1` (GROVE_V4+): `run_path_query` (and, as they land, the
+    ///   unified prove/verify dispatch) serve read-mode queries.
+    ///
+    /// Prover and verifier read the same slot, so there is no version
+    /// at which the two sides can disagree about whether a read-mode
+    /// shape exists.
+    pub unified_read_mode: FeatureVersion,
+}
+
+/// Method versions for the standalone indexed-axis query family — the
+/// per-axis reads and the echo-based proof envelopes
+/// (`prove/verify_indexed_axis_*` and their per-axis wrappers). These
+/// entry points predate this struct and shipped unversioned; the slots
+/// exist so the first future divergence bumps a number instead of
+/// forking behavior silently. The embedded (V1-envelope) axis shapes
+/// are gated separately via
+/// `GroveDBOperationsProofVersions::axis_descent_in_v1_envelope`.
+#[derive(Clone, Debug, Default)]
+pub struct GroveDBOperationsIndexedAxisVersions {
+    /// The trusted per-axis reads (`indexed_{count,sum,avg}_*`).
+    pub read: FeatureVersion,
+    /// The standalone single-path envelope provers
+    /// (`prove_indexed_axis_{top_k,top_k_paginated,query,rank_of_key,aggregate_over_value_range}`).
+    pub prove_single_path: FeatureVersion,
+    /// The matching standalone verifiers.
+    pub verify_single_path: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -101,6 +138,7 @@ pub struct GroveDBOperationsVersions {
     pub delete_up_tree: GroveDBOperationsDeleteUpTreeVersions,
     pub query: GroveDBOperationsQueryVersions,
     pub proof: GroveDBOperationsProofVersions,
+    pub indexed_axis: GroveDBOperationsIndexedAxisVersions,
     pub average_case: GroveDBOperationsAverageCaseVersions,
     pub worst_case: GroveDBOperationsWorstCaseVersions,
 }
@@ -173,6 +211,45 @@ pub struct GroveDBOperationsProofVersions {
     /// non-empty **Merk** trees have required the child hash since V3 and
     /// stay bound at every version.
     pub terminal_non_merk_tree_child_hash: FeatureVersion,
+    /// Whether the V1 proof envelope carries **axis-ordered descents**
+    /// into indexed trees (`ProofBytes::IndexedTreeAxisDescent`),
+    /// serving `PathQuery`s whose query node holds `ReadMode::Axis`.
+    ///
+    /// - `0` (V1..V3): the prover refuses axis-shaped queries with
+    ///   `NotSupported` and the verifier rejects any proof/query pair
+    ///   involving one. These versions also reject the version-2
+    ///   `Query` wire encoding outright, so the slot's `0` value is the
+    ///   in-process mirror of that fail-closed decode.
+    /// - `1` (V4+): the prover emits the axis-descent layer — a proof
+    ///   over the queried per-axis **secondary** in place of the primary
+    ///   descent — and the verifier accepts it, recomputing the
+    ///   secondary-root attestation from the carried secondary proof
+    ///   (never trusting 32 raw bytes) before performing the same
+    ///   `combine_hash_three` parent binding as the other indexed
+    ///   shapes.
+    ///
+    /// Gated because it adds an acceptance rule to the live V1
+    /// envelope: an upgraded verifier accepts proof shapes a released
+    /// one rejects. Prover and verifier read the same slot, so there is
+    /// no version at which they disagree about whether the shape
+    /// exists. Indexed trees themselves cannot exist in pre-V4
+    /// production data, so `0` never rejects anything real.
+    pub axis_descent_in_v1_envelope: FeatureVersion,
+    /// Whether the V1 proof envelope carries **sum-budget windows**
+    /// (`ProofBytes::SumBudgetWindow`), serving `PathQuery`s whose root
+    /// query node holds `ReadMode::SumBudget` — an ordinary Merk proof
+    /// over exactly the window the budget walk scanned, replayed by the
+    /// verifier with the engine's own fold arithmetic.
+    ///
+    /// - `0` (V1..V3): the prover refuses sum-budget queries and the
+    ///   verifier rejects any proof/query pair involving one.
+    /// - `1` (V4+): served, with the fold replay attesting the stop
+    ///   condition (budget reached / match limit / hard scan cap /
+    ///   range exhausted).
+    ///
+    /// Gated because it adds an acceptance rule to the live V1
+    /// envelope, same as `axis_descent_in_v1_envelope`.
+    pub sum_budget_in_v1_envelope: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -192,6 +269,11 @@ pub struct GroveDBOperationsQueryVersions {
     pub query_keys_optional: FeatureVersion,
     pub query_raw_keys_optional: FeatureVersion,
     pub follow_element: FeatureVersion,
+    /// The unified read dispatch (`GroveDb::run_path_query`). This is
+    /// the method's own algorithm slot; whether read-mode *shapes* are
+    /// served is the separate
+    /// `GroveDBPathQueryMethodVersions::unified_read_mode` gate.
+    pub run_path_query: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

@@ -9,7 +9,7 @@ use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::proofs::Query as MerkQuery;
 #[cfg(feature = "minimal")]
 use grovedb_path::SubtreePath;
-#[cfg(feature = "minimal")]
+use grovedb_query::AggregateFold;
 use grovedb_version::version::GroveVersion;
 
 #[cfg(feature = "minimal")]
@@ -99,7 +99,7 @@ impl GroveDb {
     /// Prove the aggregate count of entries whose `count_value` is in
     /// `[lo_count, hi_count]`.
     #[cfg(feature = "minimal")]
-    pub fn prove_indexed_count_range_aggregate<'b, B, P>(
+    pub fn prove_indexed_count_aggregate_over_value_range<'b, B, P>(
         &self,
         path: P,
         lo_count: u64,
@@ -111,11 +111,12 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        self.prove_indexed_axis_range_aggregate(
+        self.prove_indexed_axis_aggregate_over_value_range(
             path,
             IndexAxis::Count,
             lo_count as i128,
             hi_count as i128,
+            AggregateFold::Population,
             transaction,
             grove_version,
         )
@@ -127,6 +128,7 @@ impl GroveDb {
         path: &[&[u8]],
         expected_k: u16,
         expected_descending: bool,
+        grove_version: &GroveVersion,
     ) -> Result<IndexedAxisQueryResult, Error> {
         Self::verify_indexed_axis_top_k(
             proof_bytes,
@@ -134,6 +136,7 @@ impl GroveDb {
             IndexAxis::Count,
             expected_k,
             expected_descending,
+            grove_version,
         )
     }
 
@@ -144,6 +147,7 @@ impl GroveDb {
         expected_k: u16,
         expected_offset: u64,
         expected_descending: bool,
+        grove_version: &GroveVersion,
     ) -> Result<IndexedAxisPaginatedResult, Error> {
         Self::verify_indexed_axis_top_k_paginated(
             proof_bytes,
@@ -152,6 +156,7 @@ impl GroveDb {
             expected_k,
             expected_offset,
             expected_descending,
+            grove_version,
         )
     }
 
@@ -161,6 +166,7 @@ impl GroveDb {
         path: &[&[u8]],
         secondary_query: MerkQuery,
         expected_limit: Option<u16>,
+        grove_version: &GroveVersion,
     ) -> Result<IndexedAxisQueryResult, Error> {
         Self::verify_indexed_axis_query(
             proof_bytes,
@@ -168,22 +174,26 @@ impl GroveDb {
             IndexAxis::Count,
             secondary_query,
             expected_limit,
+            grove_version,
         )
     }
 
     /// Verify a count-axis aggregate proof.
-    pub fn verify_indexed_count_range_aggregate(
+    pub fn verify_indexed_count_aggregate_over_value_range(
         proof_bytes: &[u8],
         path: &[&[u8]],
         expected_lo_count: u64,
         expected_hi_count: u64,
+        grove_version: &GroveVersion,
     ) -> Result<IndexedAxisAggregateResult, Error> {
-        Self::verify_indexed_axis_range_aggregate(
+        Self::verify_indexed_axis_aggregate_over_value_range(
             proof_bytes,
             path,
             IndexAxis::Count,
             expected_lo_count as i128,
             expected_hi_count as i128,
+            AggregateFold::Population,
+            grove_version,
         )
     }
 
@@ -269,7 +279,7 @@ impl GroveDb {
     /// Prove the aggregate sum of entries whose `sum_value` is in
     /// `[lo_sum, hi_sum]`.
     #[cfg(feature = "minimal")]
-    pub fn prove_indexed_sum_range_aggregate<'b, B, P>(
+    pub fn prove_indexed_sum_aggregate_over_value_range<'b, B, P>(
         &self,
         path: P,
         lo_sum: i64,
@@ -281,11 +291,12 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        self.prove_indexed_axis_range_aggregate(
+        self.prove_indexed_axis_aggregate_over_value_range(
             path,
             IndexAxis::Sum,
             lo_sum as i128,
             hi_sum as i128,
+            AggregateFold::Total,
             transaction,
             grove_version,
         )
@@ -297,6 +308,7 @@ impl GroveDb {
         path: &[&[u8]],
         expected_k: u16,
         expected_descending: bool,
+        grove_version: &GroveVersion,
     ) -> Result<IndexedAxisQueryResult, Error> {
         Self::verify_indexed_axis_top_k(
             proof_bytes,
@@ -304,6 +316,7 @@ impl GroveDb {
             IndexAxis::Sum,
             expected_k,
             expected_descending,
+            grove_version,
         )
     }
 
@@ -314,6 +327,7 @@ impl GroveDb {
         expected_k: u16,
         expected_offset: u64,
         expected_descending: bool,
+        grove_version: &GroveVersion,
     ) -> Result<IndexedAxisPaginatedResult, Error> {
         Self::verify_indexed_axis_top_k_paginated(
             proof_bytes,
@@ -322,6 +336,7 @@ impl GroveDb {
             expected_k,
             expected_offset,
             expected_descending,
+            grove_version,
         )
     }
 
@@ -331,6 +346,7 @@ impl GroveDb {
         path: &[&[u8]],
         secondary_query: MerkQuery,
         expected_limit: Option<u16>,
+        grove_version: &GroveVersion,
     ) -> Result<IndexedAxisQueryResult, Error> {
         Self::verify_indexed_axis_query(
             proof_bytes,
@@ -338,22 +354,26 @@ impl GroveDb {
             IndexAxis::Sum,
             secondary_query,
             expected_limit,
+            grove_version,
         )
     }
 
     /// Verify a sum-axis aggregate proof.
-    pub fn verify_indexed_sum_range_aggregate(
+    pub fn verify_indexed_sum_aggregate_over_value_range(
         proof_bytes: &[u8],
         path: &[&[u8]],
         expected_lo_sum: i64,
         expected_hi_sum: i64,
+        grove_version: &GroveVersion,
     ) -> Result<IndexedAxisAggregateResult, Error> {
-        Self::verify_indexed_axis_range_aggregate(
+        Self::verify_indexed_axis_aggregate_over_value_range(
             proof_bytes,
             path,
             IndexAxis::Sum,
             expected_lo_sum as i128,
             expected_hi_sum as i128,
+            AggregateFold::Total,
+            grove_version,
         )
     }
 
@@ -441,6 +461,7 @@ impl GroveDb {
         path: &[&[u8]],
         expected_k: u16,
         expected_descending: bool,
+        grove_version: &GroveVersion,
     ) -> Result<IndexedAxisQueryResult, Error> {
         Self::verify_indexed_axis_top_k(
             proof_bytes,
@@ -448,6 +469,7 @@ impl GroveDb {
             IndexAxis::Avg,
             expected_k,
             expected_descending,
+            grove_version,
         )
     }
 
@@ -458,6 +480,7 @@ impl GroveDb {
         expected_k: u16,
         expected_offset: u64,
         expected_descending: bool,
+        grove_version: &GroveVersion,
     ) -> Result<IndexedAxisPaginatedResult, Error> {
         Self::verify_indexed_axis_top_k_paginated(
             proof_bytes,
@@ -466,6 +489,7 @@ impl GroveDb {
             expected_k,
             expected_offset,
             expected_descending,
+            grove_version,
         )
     }
 
@@ -475,6 +499,7 @@ impl GroveDb {
         path: &[&[u8]],
         secondary_query: MerkQuery,
         expected_limit: Option<u16>,
+        grove_version: &GroveVersion,
     ) -> Result<IndexedAxisQueryResult, Error> {
         Self::verify_indexed_axis_query(
             proof_bytes,
@@ -482,6 +507,7 @@ impl GroveDb {
             IndexAxis::Avg,
             secondary_query,
             expected_limit,
+            grove_version,
         )
     }
 }

@@ -542,11 +542,19 @@ which is what `indexed_count_top_k(path, k, descending = true, ..)` produces.
 Ascending traversal is also supported for "smallest counts first" /
 "items with the lowest counts in [a, b]" patterns.
 
-### Lookup of count for a key
+### How many entries fall in a count band
 
-`indexed_count_range_aggregate(path, lo, hi, ..)` returns the count without returning the
-value. It can be answered by reading the primary node's feature type
-(which carries `count_value`). No secondary lookup needed; one Merk read.
+`indexed_count_aggregate_over_value_range(path, lo, hi, ..)` answers **how many
+entries have a `count_value` in `[lo, hi]`** — a bucket population, in
+which each matching entry contributes 1. It is *not* the total of those
+entries' counts: over counts `[3, 1, 5]`, the band `[2, 10]` selects the
+`3` and the `5` and answers `2`, not `8`. If you want the total, use
+`indexed_count_range(path, lo, hi, ..)` to list the selected entries
+with their counts and sum them caller-side.
+
+The walk folds each fully-contained subtree's stored aggregate in one
+step and descends only along the two range boundaries, so the cost is
+`O(log n)` with no term in the number of matching entries.
 
 ### Subqueries
 

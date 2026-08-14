@@ -241,6 +241,11 @@ use grovedb_storage::{Storage, StorageContext};
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "minimal")]
 use grovedb_visualize::DebugByteVectors;
+/// The unified read dispatch's result types. `operations::get` is
+/// crate-private, so without this re-export `run_path_query` would be
+/// callable from outside the crate but its return type unnameable.
+#[cfg(feature = "minimal")]
+pub use operations::get::{AxisAggregateValue, PathQueryRun};
 // Gated on `minimal` alone, matching `operations::indexed_tree` itself: the
 // only APIs that produce an `IndexedTopKPage` are the paginated indexed-axis
 // reads, which need storage. A verify-only build consumes proofs and can
@@ -250,8 +255,9 @@ use grovedb_visualize::DebugByteVectors;
 pub use operations::indexed_tree::IndexedTopKPage;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use query::{
-    aggregate_sum_path_query::AggregateSumPathQuery, GroveBranchQueryResult, GroveTrunkQueryResult,
-    LeafInfo, PathBranchChunkQuery, PathQuery, PathTrunkChunkQuery, SizedQuery,
+    aggregate_sum_path_query::AggregateSumPathQuery, AggregateKind, GroveBranchQueryResult,
+    GroveTrunkQueryResult, LeafInfo, PathBranchChunkQuery, PathQuery, PathQueryShape,
+    PathTrunkChunkQuery, SizedQuery,
 };
 #[cfg(feature = "minimal")]
 use reference_path::path_from_reference_path_type;
@@ -1693,7 +1699,9 @@ impl GroveDb {
             // under the right key but carrying the wrong value is caught too
             // — the key alone does not pin the stored aggregate.
             let payload = match axis {
-                grovedb_element::indexed::IndexAxis::Count => Element::new_item(Vec::new()),
+                grovedb_element::indexed::IndexAxis::Count => Element::new_sum_item(
+                    crate::operations::indexed_tree::count_value_as_sum(count)?,
+                ),
                 grovedb_element::indexed::IndexAxis::Sum => Element::new_sum_item(sum),
                 grovedb_element::indexed::IndexAxis::Avg => {
                     Element::new_item_with_sum_item(Vec::new(), sum)

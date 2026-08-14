@@ -1003,6 +1003,23 @@ impl QueryItem {
         }
     }
 
+    /// Returns `true` if this query item is any aggregate meta-variant
+    /// (`AggregateCountOnRange`, `AggregateSumOnRange`, or
+    /// `AggregateCountAndSumOnRange`).
+    ///
+    /// Aggregate meta-variants change the *interpretation* of the wrapped
+    /// range (return a count/sum instead of the elements), so they must
+    /// never be range-merged with other query items — merging would erase
+    /// the wrapper and silently turn the query into a plain range query.
+    pub const fn is_aggregate(&self) -> bool {
+        matches!(
+            self,
+            QueryItem::AggregateCountOnRange(_)
+                | QueryItem::AggregateSumOnRange(_)
+                | QueryItem::AggregateCountAndSumOnRange(_)
+        )
+    }
+
     /// Returns `true` if this query item is the count-only meta-variant.
     pub const fn is_aggregate_count_on_range(&self) -> bool {
         matches!(self, QueryItem::AggregateCountOnRange(_))

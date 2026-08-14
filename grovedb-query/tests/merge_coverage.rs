@@ -1,6 +1,8 @@
 use indexmap::IndexMap;
 
-use grovedb_query::{Query, QueryItem, SubqueryBranch};
+use grovedb_query::{
+    AxisQuery, IndexAxis, Query, QueryItem, ReadMode, SubqueryBranch, SumBudgetRead,
+};
 
 fn k(v: u8) -> Vec<u8> {
     vec![v]
@@ -20,7 +22,7 @@ fn merge_branch_both_paths_none_both_subqueries_none() {
         subquery_path: None,
         subquery: None,
     };
-    let merged = a.merge(&b);
+    let merged = a.merge(&b).expect("no read modes involved");
     assert_eq!(merged.subquery_path, None);
     assert_eq!(merged.subquery, None);
 }
@@ -36,7 +38,7 @@ fn merge_branch_both_paths_none_self_has_subquery() {
         subquery_path: None,
         subquery: None,
     };
-    let merged = a.merge(&b);
+    let merged = a.merge(&b).expect("no read modes involved");
     assert_eq!(merged.subquery_path, None);
     assert_eq!(merged.subquery, Some(Box::new(sq)));
 }
@@ -52,7 +54,7 @@ fn merge_branch_both_paths_none_other_has_subquery() {
         subquery_path: None,
         subquery: Some(Box::new(sq.clone())),
     };
-    let merged = a.merge(&b);
+    let merged = a.merge(&b).expect("no read modes involved");
     assert_eq!(merged.subquery_path, None);
     assert_eq!(merged.subquery, Some(Box::new(sq)));
 }
@@ -69,7 +71,7 @@ fn merge_branch_both_paths_none_both_have_subqueries() {
         subquery_path: None,
         subquery: Some(Box::new(sq_b)),
     };
-    let merged = a.merge(&b);
+    let merged = a.merge(&b).expect("no read modes involved");
     assert_eq!(merged.subquery_path, None);
     let mq = merged.subquery.expect("merged subquery should exist");
     // Both keys should be present in the merged query items
@@ -92,7 +94,7 @@ fn merge_branch_same_paths_merges_subqueries() {
         subquery_path: Some(path.clone()),
         subquery: Some(Box::new(Query::new_single_key(k(2)))),
     };
-    let merged = a.merge(&b);
+    let merged = a.merge(&b).expect("no read modes involved");
     assert_eq!(merged.subquery_path, Some(path));
     let mq = merged.subquery.unwrap();
     assert!(mq.items.contains(&QueryItem::Key(k(1))));
@@ -114,7 +116,7 @@ fn merge_branch_divergent_paths_both_have_leftovers() {
         subquery_path: Some(vec![k(10), k(30)]),
         subquery: Some(Box::new(Query::new_single_key(k(2)))),
     };
-    let merged = a.merge(&b);
+    let merged = a.merge(&b).expect("no read modes involved");
     assert_eq!(merged.subquery_path, Some(vec![k(10)]));
     let mq = merged.subquery.unwrap();
     // Should have conditional subquery branches for keys 20 and 30
@@ -135,7 +137,7 @@ fn merge_branch_divergent_paths_multi_segment_leftovers() {
         subquery_path: Some(vec![k(10), k(30)]),
         subquery: Some(Box::new(Query::new_single_key(k(2)))),
     };
-    let merged = a.merge(&b);
+    let merged = a.merge(&b).expect("no read modes involved");
     assert_eq!(merged.subquery_path, Some(vec![k(10)]));
     let mq = merged.subquery.unwrap();
     let conds = mq.conditional_subquery_branches.as_ref().unwrap();
@@ -158,7 +160,7 @@ fn merge_branch_divergent_paths_no_common_prefix() {
         subquery_path: Some(vec![k(2)]),
         subquery: Some(Box::new(Query::new_single_key(k(20)))),
     };
-    let merged = a.merge(&b);
+    let merged = a.merge(&b).expect("no read modes involved");
     // No common path
     assert_eq!(merged.subquery_path, None);
     let mq = merged.subquery.unwrap();
@@ -182,7 +184,7 @@ fn merge_branch_our_path_longer_right_empty_leftovers() {
         subquery_path: Some(vec![k(10), k(20)]),
         subquery: Some(Box::new(Query::new_single_key(k(2)))),
     };
-    let merged = a.merge(&b);
+    let merged = a.merge(&b).expect("no read modes involved");
     assert_eq!(merged.subquery_path, Some(vec![k(10), k(20)]));
     let mq = merged.subquery.unwrap();
     let conds = mq.conditional_subquery_branches.as_ref().unwrap();
@@ -200,7 +202,7 @@ fn merge_branch_their_path_longer_left_empty_leftovers() {
         subquery_path: Some(vec![k(10), k(20), k(40)]),
         subquery: Some(Box::new(Query::new_single_key(k(2)))),
     };
-    let merged = a.merge(&b);
+    let merged = a.merge(&b).expect("no read modes involved");
     assert_eq!(merged.subquery_path, Some(vec![k(10), k(20)]));
     let mq = merged.subquery.unwrap();
     let conds = mq.conditional_subquery_branches.as_ref().unwrap();
@@ -221,7 +223,7 @@ fn merge_branch_ours_has_path_theirs_none() {
         subquery_path: None,
         subquery: Some(Box::new(Query::new_single_key(k(20)))),
     };
-    let merged = a.merge(&b);
+    let merged = a.merge(&b).expect("no read modes involved");
     // Path should be None (dropped to the shorter level)
     assert_eq!(merged.subquery_path, None);
     let mq = merged.subquery.unwrap();
@@ -241,7 +243,7 @@ fn merge_branch_ours_none_theirs_has_path() {
         subquery_path: Some(vec![k(7), k(8)]),
         subquery: Some(Box::new(Query::new_single_key(k(20)))),
     };
-    let merged = a.merge(&b);
+    let merged = a.merge(&b).expect("no read modes involved");
     assert_eq!(merged.subquery_path, None);
     let mq = merged.subquery.unwrap();
     let conds = mq.conditional_subquery_branches.as_ref().unwrap();
@@ -260,7 +262,7 @@ fn merge_branch_ours_has_single_segment_path_theirs_none() {
         subquery_path: None,
         subquery: Some(Box::new(Query::new_single_key(k(20)))),
     };
-    let merged = a.merge(&b);
+    let merged = a.merge(&b).expect("no read modes involved");
     assert_eq!(merged.subquery_path, None);
     let mq = merged.subquery.unwrap();
     let conds = mq.conditional_subquery_branches.as_ref().unwrap();
@@ -462,7 +464,7 @@ fn merge_multiple_two_queries_with_items_and_conditionals() {
         Some(Query::new_single_key(k(50))),
     );
 
-    let merged = Query::merge_multiple(vec![q1, q2]);
+    let merged = Query::merge_multiple(vec![q1, q2]).expect("merge must succeed");
     // All four keys should be present
     assert!(merged.items.contains(&QueryItem::Key(k(1))));
     assert!(merged.items.contains(&QueryItem::Key(k(2))));
@@ -483,7 +485,7 @@ fn merge_multiple_three_queries() {
     let mut q3 = Query::new_single_key(k(3));
     q3.set_subquery_path(vec![k(30)]);
 
-    let merged = Query::merge_multiple(vec![q1, q2, q3]);
+    let merged = Query::merge_multiple(vec![q1, q2, q3]).expect("merge must succeed");
     assert_eq!(merged.items.len(), 3);
     assert!(merged.items.contains(&QueryItem::Key(k(1))));
     assert!(merged.items.contains(&QueryItem::Key(k(2))));
@@ -521,7 +523,8 @@ fn merge_conditional_branches_none_existing_direct_insert() {
             subquery_path: Some(vec![k(10)]),
             subquery: None,
         },
-    );
+    )
+    .expect("no read modes involved");
     assert_eq!(merged.len(), 1);
     assert!(merged.contains_key(&QueryItem::Key(k(5))));
 }
@@ -545,7 +548,8 @@ fn merge_conditional_branches_exact_overlap_no_leftovers() {
             subquery_path: Some(vec![k(20)]),
             subquery: None,
         },
-    );
+    )
+    .expect("no read modes involved");
     // Exact overlap — single merged entry
     assert_eq!(merged.len(), 1);
     assert!(merged.contains_key(&QueryItem::Range(k(1)..k(5))));
@@ -570,7 +574,8 @@ fn merge_conditional_branches_ours_extends_left_only() {
             subquery_path: Some(vec![k(20)]),
             subquery: None,
         },
-    );
+    )
+    .expect("no read modes involved");
     assert_eq!(merged.len(), 2);
     assert!(merged.contains_key(&QueryItem::Range(k(1)..k(3))));
     assert!(merged.contains_key(&QueryItem::Range(k(3)..k(5))));
@@ -595,7 +600,8 @@ fn merge_conditional_branches_ours_extends_right_only() {
             subquery_path: Some(vec![k(20)]),
             subquery: None,
         },
-    );
+    )
+    .expect("no read modes involved");
     assert_eq!(merged.len(), 2);
     assert!(merged.contains_key(&QueryItem::Range(k(1)..k(3))));
 }
@@ -619,7 +625,8 @@ fn merge_conditional_branches_ours_contains_theirs() {
             subquery_path: Some(vec![k(20)]),
             subquery: None,
         },
-    );
+    )
+    .expect("no read modes involved");
     // Should have left piece, intersection, and right piece
     assert!(merged.len() >= 2);
     assert!(merged.contains_key(&QueryItem::Key(k(5))));
@@ -644,7 +651,8 @@ fn merge_conditional_branches_theirs_contains_ours() {
             subquery_path: Some(vec![k(20)]),
             subquery: None,
         },
-    );
+    )
+    .expect("no read modes involved");
     // Should have left piece from theirs, intersection at Key(5), right piece from theirs
     assert!(merged.len() >= 2);
     assert!(merged.contains_key(&QueryItem::Key(k(5))));
@@ -669,7 +677,8 @@ fn merge_conditional_branches_theirs_extends_right_only() {
             subquery_path: Some(vec![k(20)]),
             subquery: None,
         },
-    );
+    )
+    .expect("no read modes involved");
     assert_eq!(merged.len(), 2);
     assert!(merged.contains_key(&QueryItem::Range(k(3)..k(5))));
     assert!(merged.contains_key(&QueryItem::Range(k(5)..k(7))));
@@ -694,7 +703,8 @@ fn merge_conditional_branches_theirs_extends_left_only() {
             subquery_path: Some(vec![k(20)]),
             subquery: None,
         },
-    );
+    )
+    .expect("no read modes involved");
     assert_eq!(merged.len(), 2);
     assert!(merged.contains_key(&QueryItem::Range(k(3)..k(5))));
     assert!(merged.contains_key(&QueryItem::Range(k(1)..k(3))));
@@ -719,7 +729,8 @@ fn merge_conditional_branches_no_overlap_appends() {
             subquery_path: Some(vec![k(20)]),
             subquery: None,
         },
-    );
+    )
+    .expect("no read modes involved");
     assert_eq!(merged.len(), 2);
     assert!(merged.contains_key(&QueryItem::Range(k(1)..k(3))));
     assert!(merged.contains_key(&QueryItem::Range(k(5)..k(7))));
@@ -751,7 +762,8 @@ fn merge_conditional_branches_incoming_spans_multiple_existing() {
             subquery_path: Some(vec![k(30)]),
             subquery: None,
         },
-    );
+    )
+    .expect("no read modes involved");
     // Should have entries for: the overlap with first range, the overlap with
     // second range, and the leftover pieces from the incoming range
     assert!(merged.len() >= 3);
@@ -769,7 +781,7 @@ fn merge_multiple_preserves_add_parent_tree_on_subquery() {
     let mut q2 = Query::new_single_key(k(2));
     q2.add_parent_tree_on_subquery = true;
 
-    let merged = Query::merge_multiple(vec![q1, q2]);
+    let merged = Query::merge_multiple(vec![q1, q2]).expect("merge must succeed");
     assert!(
         merged.add_parent_tree_on_subquery,
         "merge_multiple should preserve add_parent_tree_on_subquery when any query sets it"
@@ -784,7 +796,7 @@ fn merge_with_preserves_add_parent_tree_on_subquery() {
     let mut q2 = Query::new_single_key(k(2));
     q2.add_parent_tree_on_subquery = true;
 
-    q1.merge_with(q2);
+    q1.merge_with(q2).expect("merge must succeed");
     assert!(
         q1.add_parent_tree_on_subquery,
         "merge_with should preserve add_parent_tree_on_subquery when other query sets it"
@@ -809,7 +821,7 @@ fn merge_with_both_have_conditional_branches() {
         Some(Query::new_single_key(k(200))),
     );
 
-    q1.merge_with(q2);
+    q1.merge_with(q2).expect("merge must succeed");
     assert!(q1.items.contains(&QueryItem::Key(k(1))));
     assert!(q1.items.contains(&QueryItem::Key(k(2))));
     let conds = q1.conditional_subquery_branches.as_ref().unwrap();
@@ -835,7 +847,7 @@ fn merge_with_overlapping_conditional_items_intersect() {
         Some(Query::new_single_key(k(200))),
     );
 
-    q1.merge_with(q2);
+    q1.merge_with(q2).expect("merge must succeed");
     // Items should be merged (ranges unioned)
     assert!(!q1.items.is_empty());
     // Conditional branches should exist covering the overlapping and
@@ -870,7 +882,7 @@ fn merge_multiple_overlapping_items_get_both_defaults() {
         subquery: Some(Box::new(Query::new_single_key(vec![b'b']))),
     };
 
-    let merged = Query::merge_multiple(vec![query_a, query_b]);
+    let merged = Query::merge_multiple(vec![query_a, query_b]).expect("merge must succeed");
 
     // All three keys should be present
     assert!(merged.items.contains(&QueryItem::Key(k(1))));
@@ -940,7 +952,7 @@ fn merge_multiple_non_overlapping_items_get_own_defaults() {
         subquery: Some(Box::new(Query::new_single_key(vec![b'b']))),
     };
 
-    let merged = Query::merge_multiple(vec![query_a, query_b]);
+    let merged = Query::merge_multiple(vec![query_a, query_b]).expect("merge must succeed");
 
     // Key(1): only in A → uses default "a" (no conditional needed)
     // Key(2): only in B → conditional "b"
@@ -986,7 +998,7 @@ fn merge_with_overlapping_items_get_both_defaults() {
         subquery: Some(Box::new(Query::new_single_key(vec![b'b']))),
     };
 
-    query_a.merge_with(query_b);
+    query_a.merge_with(query_b).expect("merge must succeed");
 
     let conds = query_a
         .conditional_subquery_branches
@@ -1040,7 +1052,7 @@ fn merge_multiple_three_queries_pairwise_overlaps() {
         subquery: Some(Box::new(Query::new_single_key(vec![b'c']))),
     };
 
-    let merged = Query::merge_multiple(vec![qa, qb, qc]);
+    let merged = Query::merge_multiple(vec![qa, qb, qc]).expect("merge must succeed");
 
     assert_eq!(merged.items.len(), 5);
 
@@ -1136,7 +1148,7 @@ fn merge_multiple_overlapping_ranges_get_correct_defaults() {
         subquery: Some(Box::new(Query::new_single_key(vec![b'b']))),
     };
 
-    let merged = Query::merge_multiple(vec![query_a, query_b]);
+    let merged = Query::merge_multiple(vec![query_a, query_b]).expect("merge must succeed");
 
     let conds = merged
         .conditional_subquery_branches
@@ -1197,7 +1209,7 @@ fn merge_multiple_existing_conditional_not_polluted_by_default() {
         subquery: Some(Box::new(Query::new_single_key(vec![b'b']))),
     };
 
-    let merged = Query::merge_multiple(vec![query_a, query_b]);
+    let merged = Query::merge_multiple(vec![query_a, query_b]).expect("merge must succeed");
 
     let conds = merged
         .conditional_subquery_branches
@@ -1251,7 +1263,7 @@ fn merge_with_existing_conditional_not_polluted_by_default() {
         subquery: Some(Box::new(Query::new_single_key(vec![b'b']))),
     };
 
-    query_a.merge_with(query_b);
+    query_a.merge_with(query_b).expect("merge must succeed");
 
     let conds = query_a
         .conditional_subquery_branches
@@ -1302,7 +1314,7 @@ fn merge_multiple_incoming_conditional_overrides_old_default() {
         Some(Query::new_single_key(vec![b'x'])),
     );
 
-    let merged = Query::merge_multiple(vec![query_a, query_b]);
+    let merged = Query::merge_multiple(vec![query_a, query_b]).expect("merge must succeed");
 
     let conds = merged
         .conditional_subquery_branches
@@ -1362,7 +1374,7 @@ fn merge_multiple_one_empty_default_no_panic() {
         subquery: Some(Box::new(Query::new_single_key(vec![b'b']))),
     };
 
-    let merged = Query::merge_multiple(vec![query_a, query_b]);
+    let merged = Query::merge_multiple(vec![query_a, query_b]).expect("merge must succeed");
 
     // Key(2) overlaps, but A has empty default → Key(2) should just get B's default
     let conds = merged.conditional_subquery_branches.as_ref().unwrap();
@@ -1464,4 +1476,207 @@ fn query_item_merge_range_inclusive_with_range() {
     let b = QueryItem::Range(k(3)..k(8));
     let merged = a.merge(&b);
     assert_eq!(merged, QueryItem::Range(k(1)..k(8)));
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Read modes in branch merges
+//
+// Branch merges combine subqueries field by field, and `read_mode` is
+// not one of the combined fields — an unchecked merge silently drops
+// it, answering key selection where the caller asked for an axis or
+// sum-budget read. Every public branch-merge entry point must refuse
+// instead. Both mode kinds are covered: they are separate enum
+// variants, and a check that pattern-matched only one would pass a
+// Axis-only suite while dropping sum-budget reads.
+// ───────────────────────────────────────────────────────────────────────
+
+fn axis_subquery() -> Query {
+    let mut query = Query::new_single_key(k(1));
+    query.read_mode = Some(Box::new(ReadMode::Axis(AxisQuery::top_k(
+        IndexAxis::Sum,
+        1,
+        0,
+        true,
+    ))));
+    query
+}
+
+fn sum_budget_subquery() -> Query {
+    let mut query = Query::new_single_key(k(1));
+    query.read_mode = Some(Box::new(ReadMode::SumBudget(SumBudgetRead {
+        sum_limit: 100,
+        match_limit: None,
+    })));
+    query
+}
+
+fn branch_with(subquery: Query) -> SubqueryBranch {
+    SubqueryBranch {
+        subquery_path: None,
+        subquery: Some(Box::new(subquery)),
+    }
+}
+
+fn plain_branch() -> SubqueryBranch {
+    branch_with(Query::new_single_key(k(2)))
+}
+
+#[test]
+fn subquery_branch_merge_refuses_read_modes_on_either_side() {
+    for mode in [axis_subquery(), sum_budget_subquery()] {
+        let moded = branch_with(mode);
+
+        // Incoming side carries the mode.
+        match plain_branch().merge(&moded) {
+            Err(grovedb_query::error::Error::NotSupported(message)) => {
+                assert!(message.contains("read mode"), "got: {message}")
+            }
+            other => panic!("merging in a read-mode branch must be refused, got {other:?}"),
+        }
+        // Receiving side carries it — dropping either side is equally
+        // wrong, so the check is not one-sided.
+        match moded.merge(&plain_branch()) {
+            Err(grovedb_query::error::Error::NotSupported(_)) => {}
+            other => panic!("merging onto a read-mode branch must be refused, got {other:?}"),
+        }
+    }
+
+    // Two plain branches still merge, so the guard is not blanket.
+    plain_branch()
+        .merge(&plain_branch())
+        .expect("plain branches still merge");
+}
+
+#[test]
+fn subquery_branch_merge_refuses_nested_read_modes() {
+    // The mode is one level down, inside the branch subquery's own
+    // default branch — `has_read_mode_anywhere` must find it there too.
+    let mut nested = Query::new_single_key(k(3));
+    nested.set_subquery(axis_subquery());
+    match plain_branch().merge(&branch_with(nested)) {
+        Err(grovedb_query::error::Error::NotSupported(_)) => {}
+        other => panic!("a nested read mode must be refused, got {other:?}"),
+    }
+}
+
+#[test]
+fn default_subquery_branch_merge_refuses_read_modes() {
+    for mode in [axis_subquery(), sum_budget_subquery()] {
+        // Incoming default branch carries the mode.
+        let mut target = Query::new_single_key(k(9));
+        target.default_subquery_branch = plain_branch();
+        match target.merge_default_subquery_branch(branch_with(mode.clone())) {
+            Err(grovedb_query::error::Error::NotSupported(message)) => {
+                assert!(message.contains("read mode"), "got: {message}")
+            }
+            other => panic!("merging in a read-mode default branch must be refused, got {other:?}"),
+        }
+
+        // Existing default branch carries it.
+        let mut target = Query::new_single_key(k(9));
+        target.default_subquery_branch = branch_with(mode);
+        match target.merge_default_subquery_branch(plain_branch()) {
+            Err(grovedb_query::error::Error::NotSupported(_)) => {}
+            other => {
+                panic!("merging onto a read-mode default branch must be refused, got {other:?}")
+            }
+        }
+    }
+
+    let mut target = Query::new_single_key(k(9));
+    target.default_subquery_branch = plain_branch();
+    target
+        .merge_default_subquery_branch(plain_branch())
+        .expect("plain default branches still merge");
+}
+
+#[test]
+fn conditional_subquery_branch_merges_refuse_read_modes() {
+    for mode in [axis_subquery(), sum_budget_subquery()] {
+        let mut target = Query::new_single_key(k(9));
+        match target
+            .merge_conditional_boxed_subquery(QueryItem::Key(k(1)), branch_with(mode.clone()))
+        {
+            Err(grovedb_query::error::Error::NotSupported(message)) => {
+                assert!(message.contains("read mode"), "got: {message}")
+            }
+            other => panic!("a read-mode conditional branch must be refused, got {other:?}"),
+        }
+
+        match Query::merge_conditional_subquery_branches_with_new_at_query_item(
+            None,
+            QueryItem::Key(k(1)),
+            branch_with(mode),
+        ) {
+            Err(grovedb_query::error::Error::NotSupported(_)) => {}
+            other => panic!("a read-mode conditional branch must be refused, got {other:?}"),
+        }
+    }
+
+    let mut target = Query::new_single_key(k(9));
+    target
+        .merge_conditional_boxed_subquery(QueryItem::Key(k(1)), plain_branch())
+        .expect("plain conditional branches still merge");
+}
+
+#[test]
+fn conditional_merges_refuse_read_modes_on_the_existing_side_too() {
+    // Review finding: the guard only inspected the INCOMING branch. An
+    // overlapping merge splits both sides' branches and recombines them
+    // through the unchecked machinery, so an existing read mode can end
+    // up governing a different key range than the caller established.
+    // The boundary has to be total, matching the two-sided checks on
+    // `SubqueryBranch::merge` and `merge_default_subquery_branch`.
+    for mode in [axis_subquery(), sum_budget_subquery()] {
+        // Same key.
+        let mut target = Query::new_single_key(k(9));
+        target.add_conditional_subquery(QueryItem::Key(k(1)), None, Some(mode.clone()));
+        match target.merge_conditional_boxed_subquery(QueryItem::Key(k(1)), plain_branch()) {
+            Err(grovedb_query::error::Error::NotSupported(message)) => {
+                assert!(message.contains("read mode"), "got: {message}")
+            }
+            other => panic!("an existing read-mode conditional must be refused, got {other:?}"),
+        }
+
+        // Overlapping range — the shape that actually reaches
+        // `merge_subquery` -> `merge_with_unchecked`.
+        let mut target = Query::new_single_key(k(9));
+        target.add_conditional_subquery(QueryItem::Range(k(1)..k(5)), None, Some(mode.clone()));
+        match target.merge_conditional_boxed_subquery(QueryItem::Range(k(3)..k(8)), plain_branch())
+        {
+            Err(grovedb_query::error::Error::NotSupported(_)) => {}
+            other => panic!("an overlapping read-mode conditional must be refused, got {other:?}"),
+        }
+
+        // The associated-fn form takes the existing map as an argument,
+        // so it has to inspect that map rather than only the incoming
+        // branch.
+        let mut existing = IndexMap::new();
+        existing.insert(
+            QueryItem::Key(k(1)),
+            SubqueryBranch {
+                subquery_path: None,
+                subquery: Some(Box::new(mode)),
+            },
+        );
+        match Query::merge_conditional_subquery_branches_with_new_at_query_item(
+            Some(existing),
+            QueryItem::Key(k(2)),
+            plain_branch(),
+        ) {
+            Err(grovedb_query::error::Error::NotSupported(_)) => {}
+            other => panic!("an existing read-mode branch map must be refused, got {other:?}"),
+        }
+    }
+
+    // Plain on both sides still merges, so the guard is not blanket.
+    let mut target = Query::new_single_key(k(9));
+    target.add_conditional_subquery(
+        QueryItem::Key(k(1)),
+        None,
+        Some(Query::new_single_key(k(7))),
+    );
+    target
+        .merge_conditional_boxed_subquery(QueryItem::Key(k(2)), plain_branch())
+        .expect("plain conditional merges still work");
 }
