@@ -47,6 +47,13 @@
 //!   proved elements. V1..V3 refuse the shape on both sides. Gated because
 //!   it adds an acceptance rule to the live V1 envelope.
 //!
+//! - `path_query_methods.merge: 1` — `PathQuery::merge` requires every input
+//!   to agree on `left_to_right` (typed error on conflict) and propagates the
+//!   shared direction to the merged root. V1..V3 keep the long-standing
+//!   silent behavior (input directions dropped; sub-level merges take the
+//!   synthesized default). Gated because merged queries feed proofs and both
+//!   sides must re-derive the identical merged query.
+//!
 //! - `path_query_methods.unified_read_mode: 1` — `PathQuery` read modes
 //!   (axis-ordered and sum-budget reads carried in `Query::read_mode`) are
 //!   served by the unified dispatch (`run_path_query`, and the unified
@@ -77,8 +84,8 @@ use crate::version::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
         GroveDBOperationsDeleteVersions, GroveDBOperationsGetVersions,
-        GroveDBOperationsInsertVersions, GroveDBOperationsProofVersions,
-        GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
+        GroveDBOperationsIndexedAxisVersions, GroveDBOperationsInsertVersions,
+        GroveDBOperationsProofVersions, GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
         GroveDBReplicationVersions, GroveDBVersions,
     },
@@ -227,6 +234,11 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 follow_element: 0,
                 run_path_query: 0,
             },
+            indexed_axis: GroveDBOperationsIndexedAxisVersions {
+                read: 0,
+                prove_single_path: 0,
+                verify_single_path: 0,
+            },
             proof: GroveDBOperationsProofVersions {
                 prove_query: 0,
                 prove_query_many: 0,
@@ -281,7 +293,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
         aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions { merge: 0 },
         path_query_methods: GroveDBPathQueryMethodVersions {
             terminal_keys: 0,
-            merge: 0,
+            merge: 1, // direction-aware merge: agreement required and propagated (V4+)
             query_items_at_path: 0,
             should_add_parent_tree_at_path: 0,
             unified_read_mode: 1,

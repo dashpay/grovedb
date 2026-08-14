@@ -339,6 +339,14 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "prove_indexed_axis_top_k",
+            grove_version
+                .grovedb_versions
+                .operations
+                .indexed_axis
+                .prove_single_path
+        );
         let mut full_range = MerkQuery::new();
         full_range.insert_all();
         full_range.left_to_right = !descending;
@@ -362,6 +370,14 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "prove_indexed_axis_query",
+            grove_version
+                .grovedb_versions
+                .operations
+                .indexed_axis
+                .prove_single_path
+        );
         let mut cost = OperationCost::default();
         let path: SubtreePath<B> = path.into();
         let batch = StorageBatch::new();
@@ -427,6 +443,14 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "prove_indexed_axis_top_k_paginated",
+            grove_version
+                .grovedb_versions
+                .operations
+                .indexed_axis
+                .prove_single_path
+        );
         let mut cost = OperationCost::default();
         let path: SubtreePath<B> = path.into();
         let batch = StorageBatch::new();
@@ -601,6 +625,14 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "prove_indexed_axis_rank_of_key",
+            grove_version
+                .grovedb_versions
+                .operations
+                .indexed_axis
+                .prove_single_path
+        );
         let mut cost = OperationCost::default();
         let path: SubtreePath<B> = path.into();
 
@@ -674,6 +706,14 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "prove_indexed_axis_range_aggregate",
+            grove_version
+                .grovedb_versions
+                .operations
+                .indexed_axis
+                .prove_single_path
+        );
         let mut cost = OperationCost::default();
         match axis {
             IndexAxis::Count | IndexAxis::Sum => {}

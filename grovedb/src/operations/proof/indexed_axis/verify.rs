@@ -22,6 +22,7 @@ use grovedb_merk::{
     tree::{axes_digest, combine_hash, combine_hash_three, value_hash, CryptoHash},
 };
 use grovedb_query::QueryItem as MerkQueryItem;
+use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 use crate::{Error, GroveDb};
 
@@ -304,7 +305,16 @@ impl GroveDb {
         expected_axis: IndexAxis,
         expected_k: u16,
         expected_descending: bool,
+        grove_version: &GroveVersion,
     ) -> Result<IndexedAxisQueryResult, Error> {
+        check_grovedb_v0!(
+            "verify_indexed_axis_top_k",
+            grove_version
+                .grovedb_versions
+                .operations
+                .indexed_axis
+                .verify_single_path
+        );
         let envelope = decode_range_envelope(proof_bytes)?;
         if envelope.axis_tag != expected_axis.tag() {
             return Err(Error::CorruptedData(format!(
@@ -345,7 +355,16 @@ impl GroveDb {
         expected_axis: IndexAxis,
         secondary_query: MerkQuery,
         expected_limit: Option<u16>,
+        grove_version: &GroveVersion,
     ) -> Result<IndexedAxisQueryResult, Error> {
+        check_grovedb_v0!(
+            "verify_indexed_axis_query",
+            grove_version
+                .grovedb_versions
+                .operations
+                .indexed_axis
+                .verify_single_path
+        );
         let envelope = decode_range_envelope(proof_bytes)?;
         if envelope.axis_tag != expected_axis.tag() {
             return Err(Error::CorruptedData(format!(
@@ -381,7 +400,16 @@ impl GroveDb {
         expected_k: u16,
         expected_offset: u64,
         expected_descending: bool,
+        grove_version: &GroveVersion,
     ) -> Result<IndexedAxisPaginatedResult, Error> {
+        check_grovedb_v0!(
+            "verify_indexed_axis_top_k_paginated",
+            grove_version
+                .grovedb_versions
+                .operations
+                .indexed_axis
+                .verify_single_path
+        );
         let config = bincode::config::standard().with_limit::<{ 16 * 1024 * 1024 }>();
         let (envelope, consumed): (IndexedAxisPaginatedProof, _) =
             bincode::decode_from_slice(proof_bytes, config).map_err(|e| {
@@ -444,6 +472,7 @@ impl GroveDb {
         item_key: &[u8],
         expected_rank: u64,
         expected_descending: bool,
+        grove_version: &GroveVersion,
     ) -> Result<IndexedAxisPaginatedResult, Error> {
         let result = Self::verify_indexed_axis_top_k_paginated(
             proof_bytes,
@@ -452,6 +481,7 @@ impl GroveDb {
             1,
             expected_rank,
             expected_descending,
+            grove_version,
         )?;
         if result.skipped != expected_rank {
             return Err(Error::CorruptedData(format!(
@@ -490,7 +520,16 @@ impl GroveDb {
         expected_axis: IndexAxis,
         expected_lo: i128,
         expected_hi: i128,
+        grove_version: &GroveVersion,
     ) -> Result<IndexedAxisAggregateResult, Error> {
+        check_grovedb_v0!(
+            "verify_indexed_axis_range_aggregate",
+            grove_version
+                .grovedb_versions
+                .operations
+                .indexed_axis
+                .verify_single_path
+        );
         let config = bincode::config::standard().with_limit::<{ 16 * 1024 * 1024 }>();
         let (envelope, consumed): (IndexedAxisAggregateProof, _) =
             bincode::decode_from_slice(proof_bytes, config).map_err(|e| {

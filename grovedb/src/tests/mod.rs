@@ -61,6 +61,7 @@ mod indexed_axis_proof_tests;
 mod indexed_tree_secondary_drift_tests;
 mod indexed_tree_security_regression_tests;
 mod is_empty_tree_tests;
+mod merge_versioning_tests;
 mod misc_coverage_tests;
 mod mmr_tree_tests;
 mod non_counted_tests;
