@@ -177,21 +177,43 @@ pub enum AxisTraversal {
         /// The original (primary) key whose rank is requested.
         key: Vec<u8>,
     },
-    /// A single aggregate over every entry whose aggregate value lies in
-    /// the inclusive `[lo, hi]` range. Count and Sum axes only — the
-    /// Avg axis has no meaningful sum-of-averages.
+    /// `[lo, hi]` selects the entries; the axis's own secondary
+    /// aggregate over exactly those entries is the answer. Count and
+    /// Sum axes only — the Avg axis has no meaningful
+    /// average-of-averages.
+    ///
+    /// **The aggregation differs per axis, and the count axis is the
+    /// one that reads wrong.** Each secondary aggregates the way its
+    /// own tree type does, so:
+    ///
+    /// * **Sum axis** — the answer is the TOTAL of the selected
+    ///   entries' sums. `RangeAggregate { lo: 0, hi: 100 }` over sums
+    ///   `[40, -10, 25]` selects `40` and `25` and answers `65`.
+    /// * **Count axis** — the answer is HOW MANY entries were
+    ///   selected, each contributing 1. It is a bucket population, NOT
+    ///   the total of their counts. `RangeAggregate { lo: 2, hi: 10 }`
+    ///   over counts `[3, 1, 5]` selects the `3` and the `5` and
+    ///   answers **2**, not 8.
+    ///
+    /// Reach for the count axis here to ask "how many entries fall in
+    /// this band?". There is no traversal that totals the counts in a
+    /// band — [`Self::Bounded`] lists the selected entries with their
+    /// values, and the caller sums them.
     ///
     /// **Cost** — `O(log n)` in every case. The walk classifies each
     /// subtree as fully Contained, Disjoint, or Partial and folds a
     /// Contained subtree's stored aggregate in one step, descending
     /// only along the two range boundaries. **No term in the number of
-    /// matched entries** — summing a million in-range entries costs
-    /// what summing one costs, which is what makes this preferable to
-    /// [`Self::Bounded`] whenever only the total is wanted.
+    /// matched entries** — aggregating a million in-range entries costs
+    /// what aggregating one costs, which is what makes this preferable
+    /// to [`Self::Bounded`] whenever only the total is wanted.
     RangeAggregate {
-        /// Inclusive lower bound on the aggregate.
+        /// Inclusive lower bound on the entry's own axis VALUE (its
+        /// count on the count axis, its sum on the sum axis) — not on
+        /// the aggregate this traversal returns.
         lo: i128,
-        /// Inclusive upper bound on the aggregate.
+        /// Inclusive upper bound on the entry's own axis value. See
+        /// [`Self::RangeAggregate::lo`].
         hi: i128,
     },
 }

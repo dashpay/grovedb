@@ -619,9 +619,16 @@ impl PathQuery {
         )
     }
 
-    /// A single aggregate over every entry of the indexed tree at
-    /// `path` whose `axis` value is in the inclusive `[lo, hi]`.
-    /// Count and Sum axes only.
+    /// `[lo, hi]` selects the entries of the indexed tree at `path` by
+    /// their own `axis` value; the answer is that axis's aggregate over
+    /// exactly those entries. Count and Sum axes only.
+    ///
+    /// The two axes aggregate differently — on the **sum** axis the
+    /// answer is the total of the selected sums, on the **count** axis
+    /// it is how many entries were selected (a bucket population), not
+    /// the total of their counts. See
+    /// [`AxisTraversal::RangeAggregate`](grovedb_query::AxisTraversal::RangeAggregate)
+    /// for worked examples of both.
     pub fn new_axis_range_aggregate(
         path: Vec<Vec<u8>>,
         axis: IndexAxis,

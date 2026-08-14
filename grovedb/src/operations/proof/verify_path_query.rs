@@ -100,12 +100,18 @@ pub enum VerifiedPathQuery {
         /// The attested rank.
         rank: u64,
     },
-    /// `RangeAggregate`: the attested aggregate over the value range.
+    /// `RangeAggregate`: the attested aggregate over the entries the
+    /// value range selected.
     AxisAggregate {
         /// Reconstructed GroveDB root hash.
         root_hash: CryptoHash,
-        /// The attested aggregate: a count (`>= 0`) for the count axis,
-        /// a signed sum for the sum axis.
+        /// The attested aggregate, whose meaning follows the queried
+        /// axis: on the **sum** axis the signed TOTAL of the selected
+        /// entries' sums; on the **count** axis HOW MANY entries the
+        /// range selected (`>= 0`, each entry contributing 1) — a
+        /// bucket population, not the total of their counts. The query
+        /// names the axis, so the caller already knows which reading
+        /// applies.
         value: i128,
     },
 }
