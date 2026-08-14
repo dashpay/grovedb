@@ -2654,8 +2654,14 @@ fn counted_skip_page<I: RawIterator>(
         limit_remaining: limit,
         left_to_right,
     };
+    // Pre-allocation is a hint, not a promise: `limit` is caller-supplied
+    // and `population` comes from an on-disk aggregate, so an unclamped
+    // capacity would let a huge limit (or a forged aggregate) reserve
+    // memory the page can never fill. The vector grows past the clamp
+    // only by actually being filled, one visited node at a time.
+    const PAGE_CAPACITY_CLAMP: usize = 1024;
     let page_len = (population - offset).min(limit) as usize;
-    let mut out = Vec::with_capacity(page_len);
+    let mut out = Vec::with_capacity(page_len.min(PAGE_CAPACITY_CLAMP));
     cost_return_on_error!(
         &mut cost,
         counted_skip_collect(&mut iter, &root, &mut state, &mut out, 0, grove_version)

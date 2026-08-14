@@ -195,12 +195,13 @@ What the numbers establish:
 - **Offset 0 has zero regression** — identical seeks, bytes, and wall-clock in both directions
   and at both `k` values, at every N (the fast path *is* the old code, and the always-on
   `paginated_offset_zero_costs_exactly_plain_top_k` test pins the equality).
-- **The deep-offset seek count is the tree depth**: 11 → 15 → 18 → 22 across N = 1e3 → 1e6,
-  logarithmic exactly as designed; wall-clock 15–36 µs against the linear walk's 268 µs–378 ms.
-- **Past-the-end — the DoS lever — is flat 3 seeks / 366 B / 4 µs at every N**: the root
-  aggregate answers it with zero descent.
+- **The deep-offset seek count is the tree depth plus the two pinned-view discovery reads**:
+  13 → 17 → 20 → 24 across N = 1e3 → 1e6, logarithmic exactly as designed; wall-clock 14–37 µs
+  against the linear walk's 268 µs–312 ms.
+- **Past-the-end — the DoS lever — is flat 5 seeks / ~817 B / ≤ 11 µs at every N**: the
+  in-view element and root reads alone answer it with zero descent.
 - Against the previously measured prove-then-verify route (78–129 µs flat, plus its proof
-  construction/serialization/verification CPU), the counted read measures 4–36 µs at `k = 1` —
+  construction/serialization/verification CPU), the counted read measures 6–37 µs at `k = 1` —
   the "unproved is even faster" claim is now measured, not modeled.
 - **The one corner where the old path was faster, measured and accepted:** tiny positive offsets.
   At `offset = 1, k = 100` the counted path costs 107–112 seeks / ~14 KB / 141–155 µs against the
