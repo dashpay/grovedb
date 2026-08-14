@@ -89,6 +89,7 @@ mod replication_session_tests;
 mod replication_utils_tests;
 mod run_path_query_tests;
 mod succinctness_gap_test;
+mod sum_budget_proof_tests;
 mod test_compaction_sizes;
 mod test_provable_count_fresh;
 mod tree_hashes_tests;
