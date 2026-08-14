@@ -3,6 +3,7 @@
 #[cfg(feature = "estimated_costs")]
 mod average_case;
 
+mod aggregate_per_key;
 mod query;
 mod run_path_query;
 use grovedb_storage::Storage;
