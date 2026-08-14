@@ -262,11 +262,15 @@ mod tests {
                 cost_0.storage_loaded_bytes,
             );
 
-            // Past the end: the root aggregate (resident from the open)
-            // alone proves the offset exceeds the population — no descent at
-            // all. Offset 0 costs open + iterator seek + K collect steps, so
-            // "no descent" pins as: past-end + the collect work still fits
-            // inside the offset-0 budget.
+            // Past the end: the root aggregate alone proves the offset
+            // exceeds the population — no descent at all. The counted path
+            // pays the open plus exactly two pinned-view discovery reads
+            // (the indexed element carrying the authoritative secondary
+            // root key, then the root node itself, both through the one
+            // snapshot the whole page is served from). Offset 0 costs open
+            // + iterator seek + K collect steps, so "no descent" pins as:
+            // past-end + the collect work fits inside the offset-0 budget
+            // plus those two discovery reads.
             let CostContext {
                 value: past,
                 cost: cost_past,
@@ -288,9 +292,9 @@ mod tests {
                 "past-end must report the true population, not echo the request"
             );
             assert!(
-                cost_past.seek_count + u32::from(K) <= cost_0.seek_count,
+                cost_past.seek_count + u32::from(K) <= cost_0.seek_count + 2,
                 "past-end offset must not descend (descending={descending}): seek_count {} vs \
-                 {} at offset 0 (k = {K})",
+                 {} at offset 0 (k = {K}, 2 pinned-view discovery reads allowed)",
                 cost_past.seek_count,
                 cost_0.seek_count,
             );

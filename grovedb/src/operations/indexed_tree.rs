@@ -1294,7 +1294,7 @@ impl GroveDb {
 
         let secondary_merk = cost_return_on_error!(
             &mut cost,
-            self.open_validated_axis_secondary(path, axis, tx_ref, grove_version)
+            self.open_validated_axis_secondary(path.clone(), axis, tx_ref, grove_version)
         );
 
         // `offset == 0` is the overwhelmingly common shape, and the raw
@@ -1312,18 +1312,76 @@ impl GroveDb {
                 })
                 .add_cost(cost);
         }
+        // The open above serves validation (path shape, element variant,
+        // axis compatibility) and the offset-0 fast path only. For the
+        // counted read, nothing it loaded is trusted as page data.
+        drop(secondary_merk);
 
-        // `offset > 0`: counted skip. Walk the secondary merk itself,
-        // consuming the offset through link aggregate counts — a subtree
-        // whose whole population fits inside the remaining offset is
-        // skipped without ever being fetched — then collect up to `k`
-        // keys in directional order. One root-to-position descent plus
-        // `k` node loads, instead of one storage-iterator step per
-        // skipped entry.
+        // `offset > 0`: counted skip. NOTHING THE PAGE IS BUILT FROM IS
+        // READ OUTSIDE ONE PINNED VIEW: a single raw iterator (implicit
+        // RocksDB snapshot at creation, plus the transaction's own
+        // uncommitted writes) serves the indexed element's re-read — the
+        // authoritative secondary root key — and then, retargeted to the
+        // secondary's prefix, the root node and every descent and collect
+        // fetch. Discovering the root key outside the view would let a
+        // commit that rotates the secondary root between discovery and
+        // traversal leave the old root key resolving to a *demoted child*
+        // in the newer view: an internally consistent subtree that every
+        // count check accepts, silently truncating the page. Re-reading
+        // the element inside the view closes that hole.
+        let Some((parent_path, indexed_key)) = path.derive_parent() else {
+            // Unreachable: the validated open above already rejected the
+            // root path.
+            return Err(Error::InvalidPath(
+                "cannot query an indexed tree at the root path".to_string(),
+            ))
+            .wrap_with_cost(cost);
+        };
+        let parent_prefix =
+            RocksDbStorage::build_prefix(parent_path.clone()).unwrap_add_cost(&mut cost);
+        let primary_prefix = RocksDbStorage::build_prefix(path).unwrap_add_cost(&mut cost);
+        let secondary_prefix = RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
+            .unwrap_add_cost(&mut cost);
+        let parent_ctx = self
+            .db
+            .get_transactional_storage_context_by_subtree_prefix(parent_prefix, None, tx_ref)
+            .unwrap_add_cost(&mut cost);
+
+        // The pinned view. Created under the parent merk's prefix to read
+        // the indexed element, then retargeted to the secondary's prefix
+        // for the traversal — same underlying iterator, same snapshot.
+        let mut view = parent_ctx.raw_iter();
+        let parent_node = match cost_return_on_error!(
+            &mut cost,
+            snapshot_fetch_node(&mut view, indexed_key, grove_version)
+        ) {
+            Some(node) => node,
+            None => {
+                return Err(Error::CorruptedData(
+                    "indexed-tree element is absent from the read snapshot — the tree was \
+                     removed between validation and read"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+        };
+        let element = cost_return_on_error_no_add!(
+            cost,
+            Element::deserialize(parent_node.value_as_slice(), grove_version).map_err(|e| {
+                Error::CorruptedData(format!("indexed-tree element failed to deserialize: {e}"))
+            })
+        );
+        let secondary_root_key = cost_return_on_error_no_add!(
+            cost,
+            axis_secondary_root_key_from_element(axis, &element)
+        );
+        let view = view.retarget(secondary_prefix);
+
         let (secondary_keys, skipped) = cost_return_on_error!(
             &mut cost,
             counted_skip_page(
-                &secondary_merk,
+                view,
+                secondary_root_key,
                 offset,
                 u64::from(k),
                 !descending,
@@ -2018,34 +2076,7 @@ impl GroveDb {
             &mut cost,
             Element::get(&parent_merk, indexed_key, true, grove_version).map_err(Error::MerkError)
         );
-        match (axis, element.underlying()) {
-            // PCIT carries a single secondary; only Count axis is valid.
-            (IndexAxis::Count, Element::ProvableCountIndexedTree(_, secondary, ..)) => {
-                Ok(secondary.clone()).wrap_with_cost(cost)
-            }
-            // PSIT carries a single secondary; only Sum axis is valid.
-            (IndexAxis::Sum, Element::ProvableSumIndexedTree(_, secondary, ..)) => {
-                Ok(secondary.clone()).wrap_with_cost(cost)
-            }
-            // PCPSIT carries a TLV of 1..=3 axis-tagged secondaries; the
-            // requested axis must appear in the TLV.
-            (_, Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _)) => {
-                let want_tag = axis.tag();
-                match axes.iter().find(|(t, _)| *t == want_tag) {
-                    Some((_, sec)) => Ok(sec.clone()).wrap_with_cost(cost),
-                    None => Err(Error::InvalidPath(format!(
-                        "{:?} axis not indexed at this path",
-                        axis
-                    )))
-                    .wrap_with_cost(cost),
-                }
-            }
-            _ => Err(Error::InvalidPath(format!(
-                "{:?} axis not indexed at this path",
-                axis
-            )))
-            .wrap_with_cost(cost),
-        }
+        axis_secondary_root_key_from_element(axis, &element).wrap_with_cost(cost)
     }
 
     /// Delete an item from a `CountIndexedTree` element. Removes the
@@ -2496,6 +2527,43 @@ struct CountedPageState {
     left_to_right: bool,
 }
 
+/// Pure extraction of the per-axis `secondary_root_key` from an
+/// indexed-tree element. Shared by the merk-backed reader (which drives
+/// every per-axis query API's validation) and by the counted paginated
+/// path's pinned-view re-read, so the two agree on axis-compatibility by
+/// construction.
+fn axis_secondary_root_key_from_element(
+    axis: IndexAxis,
+    element: &Element,
+) -> Result<Option<Vec<u8>>, Error> {
+    match (axis, element.underlying()) {
+        // PCIT carries a single secondary; only Count axis is valid.
+        (IndexAxis::Count, Element::ProvableCountIndexedTree(_, secondary, ..)) => {
+            Ok(secondary.clone())
+        }
+        // PSIT carries a single secondary; only Sum axis is valid.
+        (IndexAxis::Sum, Element::ProvableSumIndexedTree(_, secondary, ..)) => {
+            Ok(secondary.clone())
+        }
+        // PCPSIT carries a TLV of 1..=3 axis-tagged secondaries; the
+        // requested axis must appear in the TLV.
+        (_, Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _)) => {
+            let want_tag = axis.tag();
+            match axes.iter().find(|(t, _)| *t == want_tag) {
+                Some((_, sec)) => Ok(sec.clone()),
+                None => Err(Error::InvalidPath(format!(
+                    "{:?} axis not indexed at this path",
+                    axis
+                ))),
+            }
+        }
+        _ => Err(Error::InvalidPath(format!(
+            "{:?} axis not indexed at this path",
+            axis
+        ))),
+    }
+}
+
 /// Recursion ceiling for the counted descent. An AVL tree cannot exceed
 /// 1.44·64 ≈ 93 levels even at the u64 population limit, so anything
 /// deeper means a corrupt link structure (e.g. a cyclic link) — fail with
@@ -2526,19 +2594,22 @@ fn provable_count_from_link(link: Option<&grovedb_merk::tree::Link>) -> Result<u
 /// count, `min(offset, population)`; values are never needed — the
 /// caller decodes keys exactly as the iterator path does.
 ///
-/// **Every node in the page comes from one pinned view.** All fetches —
-/// the root re-read, the descent, and the collect — go through a single
-/// raw iterator, and a RocksDB transaction iterator pins an implicit
-/// snapshot of the committed state at creation plus the transaction's
-/// own uncommitted writes. That is the same consistency guarantee the
-/// replaced linear scan had from its single `KVIterator`. Independent
-/// point-gets through the (snapshotless) transaction would not have it:
-/// a commit landing mid-descent could hand back a child from a newer
-/// state than its resident parent, and merk's child loads do not verify
-/// the child against the parent's recorded link hash, so the result
-/// would be a silently mixed page rather than an error.
-fn counted_skip_page<'db, S: StorageContext<'db>>(
-    merk: &Merk<S>,
+/// **Every node in the page comes from one pinned view.** The caller
+/// hands in the raw iterator already carrying the view that the
+/// secondary root key was discovered in (retargeted to the secondary's
+/// prefix), and the root fetch, descent, and collect all go through it.
+/// A RocksDB transaction iterator pins an implicit snapshot of the
+/// committed state at creation plus the transaction's own uncommitted
+/// writes — the same consistency guarantee the replaced linear scan had
+/// from its single `KVIterator`. Independent point-gets through the
+/// (snapshotless) transaction would not have it: a commit landing
+/// mid-descent could hand back a child from a newer state than its
+/// resident parent, and merk's child loads do not verify the child
+/// against the parent's recorded link hash, so the result would be a
+/// silently mixed page rather than an error.
+fn counted_skip_page<I: RawIterator>(
+    mut iter: I,
+    root_key: Option<Vec<u8>>,
     offset: u64,
     limit: u64,
     left_to_right: bool,
@@ -2546,18 +2617,13 @@ fn counted_skip_page<'db, S: StorageContext<'db>>(
 ) -> CostResult<(Vec<Vec<u8>>, u64), Error> {
     let mut cost = OperationCost::default();
 
-    let Some(root_key) = merk.root_key() else {
+    let Some(root_key) = root_key else {
         // Empty secondary: nothing to skip, nothing to return.
         return Ok((Vec::new(), 0)).wrap_with_cost(cost);
     };
 
-    // The pinned view for the whole read.
-    let mut iter = merk.storage.raw_iter();
-
-    // Re-fetch the root through the iterator so the root itself belongs
-    // to the pinned view rather than to the earlier open. A miss means
-    // the tree's root key moved between the open and iterator creation —
-    // fail loud instead of mixing the two states.
+    // The root key was read from the indexed element inside this same
+    // view, so a miss here is corruption, not a race.
     let root = match cost_return_on_error!(
         &mut cost,
         snapshot_fetch_node(&mut iter, &root_key, grove_version)
@@ -2565,8 +2631,8 @@ fn counted_skip_page<'db, S: StorageContext<'db>>(
         Some(root) => root,
         None => {
             return Err(Error::CorruptedData(
-                "secondary root node is absent from the read snapshot — the tree moved \
-                 between open and read"
+                "secondary root node named by the indexed element is absent from the same \
+                 read snapshot"
                     .to_string(),
             ))
             .wrap_with_cost(cost);

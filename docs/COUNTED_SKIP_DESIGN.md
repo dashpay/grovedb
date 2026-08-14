@@ -126,15 +126,23 @@ differed on two points:
   parent's recorded link hash — and the count cross-checks cannot see a same-population update —
   the result was a *silently mixed page*. (The proved path survives the same torn reads because
   verification's ancestor-chain reconciliation rejects them; the unproved read has no such
-  check, which is exactly why it needed the snapshot.) The counted walk now serves **every**
-  node fetch — root re-read, descent, and collect — through one raw iterator, whose RocksDB
-  transaction iterator pins an implicit snapshot of committed state plus the transaction's own
-  uncommitted writes: the same guarantee, from the same mechanism, that the replaced
-  single-`KVIterator` linear scan had. The transaction-overlay half is pinned by an always-on
-  test; the commit-interleaving half is not deterministically testable (no way to pause a
-  synchronous read between fetches) and rests on RocksDB's iterator-snapshot contract, as the
-  old code's guarantee did. The open→iterator window can at worst produce a loud
-  `CorruptedData` (root key moved), never a mixed page.
+  check, which is exactly why it needed the snapshot.) A second review round tightened the
+  boundary further: pinning only the traversal still left **root-key discovery** outside the
+  view, and a commit rotating the secondary root between discovery and traversal could leave the
+  old root key resolving to a *demoted child* in the newer view — an internally consistent
+  subtree that every count check accepts, silently truncating the page. The final shape
+  therefore pins the *entire read*: one raw iterator (implicit RocksDB snapshot at creation plus
+  the transaction's uncommitted-write overlay) is created under the parent merk's prefix,
+  re-reads the indexed element to obtain the authoritative secondary root key, is retargeted to
+  the secondary's prefix (`PrefixedRocksDbRawIterator::retarget`, same underlying iterator, same
+  snapshot), and then serves the root fetch, the descent, and the collect. **Nothing the page is
+  built from is read outside that one view**; the ordinary validated open still runs first, but
+  purely for validation and the offset-0 fast path — none of its loads are trusted as page data.
+  This restores, and slightly exceeds, the guarantee the replaced single-`KVIterator` linear
+  scan had. The transaction-overlay half is pinned by an always-on test; the
+  commit-interleaving half is not deterministically testable (no way to pause a synchronous
+  read between fetches) and rests on RocksDB's iterator-snapshot contract, as the old code's
+  guarantee did.
 - **One function, two views.** `offset == 0` serves the storage-iterator view; `offset > 0`
   serves the merk-tree view. Identical on any clean secondary; in a drifted one, a caller paging
   `offset = 0, k, 2k, …` could see a discontinuity between the first page and the rest. Accepted:
@@ -173,12 +181,14 @@ harness output):
 | N | offset | counted (seeks / bytes / µs) | linear (seeks / bytes / µs) |
 |---:|---:|---:|---:|
 | 1e6 | 0 | 5 / 629 / 7 | 5 / 629 / 6 |
-| 1e6 | N−1 | 23 / 5,811 / 32 | 1,000,004 / 316 MB / 316,420 |
-| 1e6 | ≥ N | 4 / 643 / 7 | 1,000,004 / 316 MB / 308,299 |
+| 1e6 | N−1 | 24 / 5,985 / 32 | 1,000,004 / 316 MB / 306,699 |
+| 1e6 | ≥ N | 5 / 817 / 9 | 1,000,004 / 316 MB / 312,300 |
 
-(Numbers are from the final snapshot-consistent implementation; relative to the pre-snapshot
-point-get walk, the pinned-view fetches cost one extra seek — the root re-read through the
-iterator — and charge full prefixed key bytes per fetch, leaving wall-clock unchanged.)
+(Numbers are from the final fully-pinned implementation. Relative to the original point-get
+walk, the pinned view costs two extra seeks — the in-view re-read of the indexed element that
+carries the authoritative secondary root key, and the root node fetch — and charges full
+prefixed key bytes per fetch. Wall-clock is unchanged; the past-the-end shape stays flat at
+every N.)
 
 What the numbers establish:
 
