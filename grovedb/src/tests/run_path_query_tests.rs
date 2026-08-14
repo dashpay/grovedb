@@ -898,7 +898,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_carrier_count_matches_per_key_reader_and_others_are_refused() {
+    fn aggregate_carrier_all_kinds_match_their_per_key_readers() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         // Two outer keys, each holding a provable count tree.
@@ -957,22 +957,222 @@ mod tests {
             other => panic!("expected AggregateCountPerKey, got {other:?}"),
         }
 
-        // The sum and combined carriers have no trusted per-key reader
-        // yet; the dispatch must refuse them by name rather than
-        // silently answering something else.
-        for subquery in [
-            Query::new_aggregate_sum_on_range(QueryItem::Range(b"a".to_vec()..b"z".to_vec())),
-            Query::new_aggregate_count_and_sum_on_range(QueryItem::Range(
-                b"a".to_vec()..b"z".to_vec(),
-            )),
-        ] {
-            let mut carrier = Query::new();
-            carrier.insert_key(b"one".to_vec());
-            carrier.set_subquery(subquery);
-            let pq = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], carrier);
-            match db
+        // Sum carrier: outer keys holding ProvableSumTrees. Before the
+        // per-key sum reader existed this arm returned NotSupported;
+        // now it must route and agree with the dedicated reader.
+        for outer in [b"sone", b"stwo"] {
+            db.insert(
+                [TEST_LEAF].as_ref(),
+                outer,
+                Element::empty_provable_sum_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create sum carrier outer");
+            for (key, sum) in [(b"a", 11i64), (b"b", -4)] {
+                db.insert(
+                    [TEST_LEAF, outer].as_ref(),
+                    key,
+                    Element::new_sum_item(sum),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert carrier sum item");
+            }
+        }
+        let mut sum_carrier = Query::new();
+        sum_carrier.insert_key(b"sone".to_vec());
+        sum_carrier.insert_key(b"stwo".to_vec());
+        sum_carrier.set_subquery(Query::new_aggregate_sum_on_range(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        let sum_carrier_pq = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], sum_carrier);
+
+        let direct_sums = db
+            .query_aggregate_sum_per_key(&sum_carrier_pq, None, grove_version)
+            .unwrap()
+            .expect("direct per-key sums");
+        match db
+            .run_path_query(
+                &sum_carrier_pq,
+                true,
+                true,
+                true,
+                QueryResultType::QueryKeyElementPairResultType,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("unified per-key sums")
+        {
+            PathQueryRun::AggregateSumPerKey(per_key) => {
+                assert_eq!(per_key, direct_sums);
+                // Sanity-check the value itself, not just the agreement:
+                // 11 + (-4) = 7 per outer key.
+                assert_eq!(
+                    per_key,
+                    vec![(b"sone".to_vec(), 7i64), (b"stwo".to_vec(), 7)]
+                );
+            }
+            other => panic!("expected AggregateSumPerKey, got {other:?}"),
+        }
+
+        // Combined carrier: outer keys holding PCPS trees — the only
+        // tree type that can terminate a dual-axis walk.
+        for outer in [b"cone", b"ctwo"] {
+            db.insert(
+                [TEST_LEAF].as_ref(),
+                outer,
+                Element::empty_provable_count_provable_sum_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create combined carrier outer");
+            for (key, sum) in [(b"a", 11i64), (b"b", -4)] {
+                db.insert(
+                    [TEST_LEAF, outer].as_ref(),
+                    key,
+                    Element::new_sum_item(sum),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert carrier PCPS sum item");
+            }
+        }
+        let mut combined_carrier = Query::new();
+        combined_carrier.insert_key(b"cone".to_vec());
+        combined_carrier.insert_key(b"ctwo".to_vec());
+        combined_carrier.set_subquery(Query::new_aggregate_count_and_sum_on_range(
+            QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
+        ));
+        let combined_carrier_pq =
+            PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], combined_carrier);
+
+        let direct_combined = db
+            .query_aggregate_count_and_sum_per_key(&combined_carrier_pq, None, grove_version)
+            .unwrap()
+            .expect("direct per-key combined");
+        match db
+            .run_path_query(
+                &combined_carrier_pq,
+                true,
+                true,
+                true,
+                QueryResultType::QueryKeyElementPairResultType,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("unified per-key combined")
+        {
+            PathQueryRun::AggregateCountAndSumPerKey(per_key) => {
+                assert_eq!(per_key, direct_combined);
+                assert_eq!(
+                    per_key,
+                    vec![
+                        (b"cone".to_vec(), 2u64, 7i64),
+                        (b"ctwo".to_vec(), 2u64, 7i64)
+                    ]
+                );
+            }
+            other => panic!("expected AggregateCountAndSumPerKey, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn aggregate_carrier_per_key_dispatch_surfaces_reader_errors() {
+        // The dispatch must not paper over the readers' rejections: a
+        // carrier whose outer match is a non-tree element, and a
+        // combined carrier terminating in a single-axis host, must fail
+        // through `run_path_query` exactly as they fail through the
+        // dedicated readers.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"item",
+            Element::new_item(b"not a tree".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert non-tree outer");
+        // Single-axis host under a combined carrier.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pst",
+            Element::empty_provable_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create single-axis host");
+        db.insert(
+            [TEST_LEAF, b"pst"].as_ref(),
+            b"a",
+            Element::new_sum_item(5),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert sum item");
+
+        let mut non_tree_carrier = Query::new();
+        non_tree_carrier.insert_key(b"item".to_vec());
+        non_tree_carrier.set_subquery(Query::new_aggregate_sum_on_range(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        let non_tree_pq = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], non_tree_carrier);
+
+        let mut single_axis_carrier = Query::new();
+        single_axis_carrier.insert_key(b"pst".to_vec());
+        single_axis_carrier.set_subquery(Query::new_aggregate_count_and_sum_on_range(
+            QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
+        ));
+        let single_axis_pq = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], single_axis_carrier);
+
+        // Pair each query with the reader the dispatch should route it
+        // to, so the comparison is explicit rather than inferred from
+        // the query's shape.
+        let cases: [(&PathQuery, Box<dyn Fn() -> Error>, &str); 2] = [
+            (
+                &non_tree_pq,
+                Box::new(|| {
+                    db.query_aggregate_sum_per_key(&non_tree_pq, None, grove_version)
+                        .unwrap()
+                        .map(|_| ())
+                        .expect_err("non-tree outer must be rejected")
+                }),
+                "non-tree outer match",
+            ),
+            (
+                &single_axis_pq,
+                Box::new(|| {
+                    db.query_aggregate_count_and_sum_per_key(&single_axis_pq, None, grove_version)
+                        .unwrap()
+                        .map(|_| ())
+                        .expect_err("single-axis host must be rejected")
+                }),
+                "single-axis host under combined carrier",
+            ),
+        ];
+
+        for (pq, direct_reader, label) in cases {
+            let direct = direct_reader();
+            let unified = db
                 .run_path_query(
-                    &pq,
+                    pq,
                     true,
                     true,
                     true,
@@ -981,12 +1181,13 @@ mod tests {
                     grove_version,
                 )
                 .unwrap()
-            {
-                Err(Error::NotSupported(message)) => {
-                    assert!(message.contains("per-key"), "got: {message}")
-                }
-                other => panic!("sum/combined carriers must be refused, got {other:?}"),
-            }
+                .map(|_| ())
+                .expect_err(label);
+            assert_eq!(
+                unified.to_string(),
+                direct.to_string(),
+                "dispatch must surface the reader's error verbatim for {label}"
+            );
         }
     }
 

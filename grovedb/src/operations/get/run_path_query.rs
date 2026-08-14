@@ -4,10 +4,15 @@
 //! [`GroveDb::run_path_query`] classifies the query once
 //! ([`PathQuery::classify`]) and routes it to the engine that already
 //! serves that shape — the key-selection reader, the aggregate-on-range
-//! readers, the indexed-axis primitives, or the budgeted sum reader.
-//! It returns a [`PathQueryRun`] whose variant mirrors the shape, so a
-//! caller holding an arbitrary `PathQuery` gets a typed answer without
-//! knowing in advance which of the specialized entry points serves it.
+//! readers (leaf and per-key carrier, on all three axes), the
+//! indexed-axis primitives, or the budgeted sum reader. It returns a
+//! [`PathQueryRun`] whose variant mirrors the shape, so a caller holding
+//! an arbitrary `PathQuery` gets a typed answer without knowing in
+//! advance which of the specialized entry points serves it.
+//!
+//! Every classified shape now has a reader behind it: the dispatch
+//! returns no `NotSupported` of its own except the read-mode version
+//! gate below.
 //!
 //! Read-mode shapes (axis and sum-budget reads) are gated on
 //! `path_query_methods.unified_read_mode` — `0` before GROVE_V4 means
@@ -72,6 +77,12 @@ pub enum PathQueryRun {
     },
     /// Carrier `AggregateCountOnRange`: one count per matched outer key.
     AggregateCountPerKey(Vec<(Vec<u8>, u64)>),
+    /// Carrier `AggregateSumOnRange`: one signed sum per matched outer
+    /// key.
+    AggregateSumPerKey(Vec<(Vec<u8>, i64)>),
+    /// Carrier `AggregateCountAndSumOnRange`: both metrics per matched
+    /// outer key, each from one walk over that key's leaf.
+    AggregateCountAndSumPerKey(Vec<(Vec<u8>, u64, i64)>),
     /// Single-path axis read (`TopK` / `Bounded` traversals): the
     /// entries in walk order.
     AxisEntries(AxisEntries),
@@ -201,13 +212,24 @@ impl GroveDb {
                     );
                     Ok(PathQueryRun::AggregateCountPerKey(per_key)).wrap_with_cost(cost)
                 }
-                AggregateKind::Sum | AggregateKind::CountAndSum => Err(Error::NotSupported(
-                    "carrier aggregate-sum reads have no trusted per-key read primitive; use \
-                     prove_query with verify_aggregate_sum_query_per_key / \
-                     verify_aggregate_count_and_sum_query_per_key"
-                        .to_string(),
-                ))
-                .wrap_with_cost(cost),
+                AggregateKind::Sum => {
+                    let per_key = cost_return_on_error!(
+                        &mut cost,
+                        self.query_aggregate_sum_per_key(path_query, transaction, grove_version)
+                    );
+                    Ok(PathQueryRun::AggregateSumPerKey(per_key)).wrap_with_cost(cost)
+                }
+                AggregateKind::CountAndSum => {
+                    let per_key = cost_return_on_error!(
+                        &mut cost,
+                        self.query_aggregate_count_and_sum_per_key(
+                            path_query,
+                            transaction,
+                            grove_version
+                        )
+                    );
+                    Ok(PathQueryRun::AggregateCountAndSumPerKey(per_key)).wrap_with_cost(cost)
+                }
             },
             PathQueryShape::AxisRead { axis } => {
                 let path_refs: Vec<&[u8]> = path_query
