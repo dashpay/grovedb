@@ -91,18 +91,27 @@ impl IndexAxis {
 pub const MAX_RANK_OF_KEY_LEN: usize = 255;
 
 /// How an [`AxisQuery`] walks the secondary. Wire tags are explicit and
-/// frozen: `TopK = 0`, `Bounded = 1`, `RankOfKey = 2`,
+/// frozen: `RankedPage = 0`, `Bounded = 1`, `RankOfKey = 2`,
 /// `RangeAggregate = 3`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AxisTraversal {
-    /// The `k` entries starting at rank `offset` in the walk direction —
-    /// the "top-k" reading (`offset = 0` for the first page).
+    /// The `k` entries starting at rank `offset` **in the walk
+    /// direction** (`offset = 0` for the first page).
+    ///
+    /// The direction is [`AxisQuery::descending`], not part of this
+    /// variant, so one shape serves both readings:
+    ///
+    /// - `descending: true` → the `k` **largest** by aggregate (top-k),
+    /// - `descending: false` → the `k` **smallest** (bottom-k).
+    ///
+    /// Named for what it is — a page at a rank — rather than "top-k",
+    /// which would read as a contradiction in the ascending case.
     ///
     /// Skipping is attested from the secondary's counted subtree
     /// commitments rather than walked, so a large `offset` costs the
     /// same as a small one.
-    TopK {
+    RankedPage {
         /// Number of entries to return.
         k: u16,
         /// Rank the returned page starts at.
@@ -143,7 +152,7 @@ pub enum AxisTraversal {
 impl Encode for AxisTraversal {
     fn encode<E: Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
         match self {
-            AxisTraversal::TopK { k, offset } => {
+            AxisTraversal::RankedPage { k, offset } => {
                 0u8.encode(encoder)?;
                 k.encode(encoder)?;
                 offset.encode(encoder)
@@ -170,7 +179,7 @@ impl Encode for AxisTraversal {
 impl<Context> Decode<Context> for AxisTraversal {
     fn decode<D: Decoder<Context = Context>>(decoder: &mut D) -> Result<Self, DecodeError> {
         match u8::decode(decoder)? {
-            0 => Ok(AxisTraversal::TopK {
+            0 => Ok(AxisTraversal::RankedPage {
                 k: u16::decode(decoder)?,
                 offset: u64::decode(decoder)?,
             }),
@@ -261,11 +270,15 @@ impl<'de, Context> BorrowDecode<'de, Context> for AxisQuery {
 }
 
 impl AxisQuery {
-    /// The `k` best entries on `axis`, starting at rank `offset`.
+    /// A page of `k` entries on `axis`, starting at rank `offset`.
+    ///
+    /// `descending` chooses which end the ranking starts from: `true`
+    /// gives the `k` largest by aggregate (top-k), `false` the `k`
+    /// smallest (bottom-k). See [`AxisTraversal::RankedPage`].
     pub const fn top_k(axis: IndexAxis, k: u16, offset: u64, descending: bool) -> Self {
         Self {
             axis,
-            traversal: AxisTraversal::TopK { k, offset },
+            traversal: AxisTraversal::RankedPage { k, offset },
             descending,
         }
     }
@@ -313,7 +326,7 @@ impl AxisQuery {
     /// disagree on what is well-formed.
     pub fn validate(&self) -> Result<(), Error> {
         match &self.traversal {
-            AxisTraversal::TopK { k, .. } => {
+            AxisTraversal::RankedPage { k, .. } => {
                 if *k == 0 {
                     return Err(Error::InvalidOperation(
                         "axis query: `k` must be at least 1; a zero-length page selects nothing",
@@ -389,7 +402,7 @@ impl AxisQuery {
     /// entries).
     pub const fn entry_cap(&self) -> Option<u16> {
         match &self.traversal {
-            AxisTraversal::TopK { k, .. } => Some(*k),
+            AxisTraversal::RankedPage { k, .. } => Some(*k),
             AxisTraversal::Bounded { limit, .. } => Some(*limit),
             AxisTraversal::RankOfKey { .. } => Some(1),
             AxisTraversal::RangeAggregate { .. } => None,
@@ -400,8 +413,8 @@ impl AxisQuery {
 impl fmt::Display for AxisTraversal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AxisTraversal::TopK { k, offset } => {
-                write!(f, "TopK {{ k: {k}, offset: {offset} }}")
+            AxisTraversal::RankedPage { k, offset } => {
+                write!(f, "RankedPage {{ k: {k}, offset: {offset} }}")
             }
             AxisTraversal::Bounded { lo, hi, limit } => {
                 write!(f, "Bounded {{ lo: {lo}, hi: {hi}, limit: {limit} }}")
@@ -460,7 +473,7 @@ mod tests {
 
     fn all_traversals() -> Vec<AxisTraversal> {
         vec![
-            AxisTraversal::TopK { k: 5, offset: 100 },
+            AxisTraversal::RankedPage { k: 5, offset: 100 },
             AxisTraversal::Bounded {
                 lo: -7,
                 hi: 12,

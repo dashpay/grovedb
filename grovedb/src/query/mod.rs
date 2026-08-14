@@ -567,9 +567,13 @@ impl PathQuery {
         }
     }
 
-    /// An axis-ordered read of the indexed tree at `path`: the `k` best
-    /// entries on `axis`, starting at rank `offset` (0 = first page).
-    /// `descending = true` walks from the largest aggregate down.
+    /// An axis-ordered read of the indexed tree at `path`: a page of
+    /// `k` entries on `axis`, starting at rank `offset` (0 = first
+    /// page).
+    ///
+    /// `descending` chooses which end the ranking starts from: `true`
+    /// gives the `k` largest by aggregate (top-k), `false` the `k`
+    /// smallest (bottom-k).
     pub fn new_axis_top_k(
         path: Vec<Vec<u8>>,
         axis: IndexAxis,
