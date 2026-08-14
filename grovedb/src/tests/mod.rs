@@ -81,6 +81,7 @@ mod provable_sum_indexed_tree_tests;
 mod provable_sum_tree_tests;
 mod query_indexed_tree_dispatch_tests;
 mod query_result_type_tests;
+mod read_mode_gate_tests;
 mod reference_path_tests;
 mod reference_with_sum_item_tests;
 mod replication_session_tests;
@@ -4696,6 +4697,7 @@ mod general_tests {
                     conditional_subquery_branches: None,
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: None,
                 offset: None,

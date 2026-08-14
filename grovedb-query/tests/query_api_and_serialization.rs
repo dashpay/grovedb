@@ -75,7 +75,7 @@ fn query_encode_decode_and_borrow_decode_round_trip() {
 
 #[test]
 fn query_decode_rejects_unsupported_version() {
-    let err = decode_from_slice::<Query, _>(&[2_u8], standard()).expect_err("must fail");
+    let err = decode_from_slice::<Query, _>(&[3_u8], standard()).expect_err("must fail");
     assert!(err
         .to_string()
         .contains("unsupported Query encoding version"));
@@ -83,7 +83,7 @@ fn query_decode_rejects_unsupported_version() {
 
 #[test]
 fn query_borrow_decode_rejects_unsupported_version() {
-    let err = borrow_decode_from_slice::<Query, _>(&[2_u8], standard()).expect_err("must fail");
+    let err = borrow_decode_from_slice::<Query, _>(&[3_u8], standard()).expect_err("must fail");
     assert!(err
         .to_string()
         .contains("unsupported Query encoding version"));

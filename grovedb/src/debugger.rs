@@ -747,6 +747,11 @@ fn query_to_grovedb(query: Query) -> crate::Query {
         ),
         left_to_right: query.left_to_right,
         add_parent_tree_on_subquery: query.add_parent_tree_on_subquery,
+        // The grovedbg wire type has no read-mode vocabulary (the
+        // debugger UI cannot express axis or sum-budget reads, same as
+        // it cannot express aggregate items), so debugger-issued
+        // queries are always plain key selection.
+        read_mode: None,
     }
 }
 

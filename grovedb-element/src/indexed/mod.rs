@@ -23,23 +23,19 @@ use crate::error::ElementError;
 ///
 /// The TLV-encoded `axes` field on a `ProvableCountProvableSumIndexedTree`
 /// is a canonical list of `(tag, secondary_root_key)` pairs sorted by
-/// tag, with 1..=3 entries and no duplicate tags. The numeric values
-/// below are the on-disk tag bytes:
+/// tag, with 1..=3 entries and no duplicate tags.
 ///
-/// - `0` = `Count`: secondary keyed by `(count_be ‖ original_key)`.
-/// - `1` = `Sum`:   secondary keyed by `(sum_sortable_be ‖ original_key)`.
-/// - `2` = `Avg`:   secondary keyed by `(avg_sortable_be ‖ original_key)`.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-#[repr(u8)]
-pub enum IndexAxis {
-    /// Count axis. Secondary entries are ordered by aggregate count.
-    Count = 0,
-    /// Sum axis. Secondary entries are ordered by aggregate sum (signed).
-    Sum = 1,
-    /// Average axis. Secondary entries are ordered by the fixed-point
-    /// average `floor(sum * SCALE / count)`. See
-    /// [`sort_keys::AVG_FIXED_POINT_SCALE`] for the scale rationale.
-    Avg = 2,
+/// The enum itself is defined in `grovedb-query` (re-exported here so
+/// existing paths keep working), because the query vocabulary names
+/// axes too and the tag byte must have exactly one definition. The
+/// numeric values are the on-disk tag bytes: `0` = Count, `1` = Sum,
+/// `2` = Avg — see the definition for the secondary key layouts.
+pub use grovedb_query::axis_query::{IndexAxis, UnknownAxisTag};
+
+impl From<UnknownAxisTag> for ElementError {
+    fn from(err: UnknownAxisTag) -> Self {
+        ElementError::CorruptedData(err.to_string())
+    }
 }
 
 /// One entry in a `ProvableCountProvableSumIndexedTree`'s `axes` TLV list:
@@ -54,48 +50,18 @@ pub type IndexedTreeAxisEntry = (u8, Option<Vec<u8>>);
 /// encoding.
 pub type IndexedTreeAxes = Vec<IndexedTreeAxisEntry>;
 
-impl IndexAxis {
-    /// On-disk tag byte for this axis.
-    #[inline]
-    pub const fn tag(self) -> u8 {
-        self as u8
-    }
-
-    /// Inverse of [`tag`]: parse an on-disk tag byte into the axis. Returns
-    /// `Err(ElementError::CorruptedData)` for any byte outside the
-    /// `0..=2` range.
-    #[inline]
-    pub fn try_from_tag(b: u8) -> Result<Self, ElementError> {
-        match b {
-            0 => Ok(IndexAxis::Count),
-            1 => Ok(IndexAxis::Sum),
-            2 => Ok(IndexAxis::Avg),
-            _ => Err(ElementError::CorruptedData(format!("unknown axis tag {b}"))),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn axis_tag_round_trip() {
-        for a in [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg] {
-            assert_eq!(IndexAxis::try_from_tag(a.tag()).unwrap(), a);
+    fn unknown_axis_tag_converts_to_element_error() {
+        // The tag round-trip tests live with the enum in `grovedb-query`;
+        // what this crate owns is the error-boundary conversion.
+        let err: ElementError = IndexAxis::try_from_tag(9).unwrap_err().into();
+        match err {
+            ElementError::CorruptedData(msg) => assert_eq!(msg, "unknown axis tag 9"),
+            other => panic!("expected CorruptedData, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn axis_tag_rejects_unknown_byte() {
-        assert!(IndexAxis::try_from_tag(3).is_err());
-        assert!(IndexAxis::try_from_tag(255).is_err());
-    }
-
-    #[test]
-    fn axis_ordering_is_canonical() {
-        // The canonical order required by the on-disk TLV: Count < Sum < Avg.
-        assert!(IndexAxis::Count < IndexAxis::Sum);
-        assert!(IndexAxis::Sum < IndexAxis::Avg);
     }
 }

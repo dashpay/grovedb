@@ -1325,6 +1325,14 @@ where {
             "query_raw",
             grove_version.grovedb_versions.operations.query.query_raw
         );
+        // Read-mode gate: axis / sum-budget reads are not served by the
+        // key-selection read path. Fail closed rather than walking an
+        // axis query's (empty) items and returning an empty result that
+        // looks like real absence. `query_raw` is the funnel every
+        // key-selection read entry point flows through.
+        if let Err(e) = path_query.reject_unserved_read_mode() {
+            return Err(e).wrap_with_cost(OperationCost::default());
+        }
         Element::get_path_query(
             &self.db,
             path_query,

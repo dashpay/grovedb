@@ -20,7 +20,9 @@ pub use grove_branch_query_result::GroveBranchQueryResult;
 pub use grove_trunk_query_result::{GroveTrunkQueryResult, LeafInfo};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_merk::proofs::query::query_item::QueryItem;
-use grovedb_merk::proofs::query::{Key, SubqueryBranch};
+use grovedb_merk::proofs::query::{
+    AxisQuery, IndexAxis, Key, ReadMode, SubqueryBranch, SumBudgetRead,
+};
 
 use grovedb_merk::proofs::Query;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
@@ -556,6 +558,144 @@ impl PathQuery {
         Self::new_unsized(path, Query::new_aggregate_count_and_sum_on_range(range))
     }
 
+    /// A `Query` node whose whole read is `axis_query` — the terminal
+    /// node of every axis-read shape.
+    fn axis_read_node(axis_query: AxisQuery) -> Query {
+        Query {
+            read_mode: Some(Box::new(ReadMode::Axis(axis_query))),
+            ..Query::new()
+        }
+    }
+
+    /// An axis-ordered read of the indexed tree at `path`: a page of
+    /// `k` entries on `axis`, starting at rank `offset` (0 = first
+    /// page).
+    ///
+    /// `descending` chooses which end the ranking starts from: `true`
+    /// gives the `k` largest by aggregate (top-k), `false` the `k`
+    /// smallest (bottom-k).
+    pub fn new_axis_top_k(
+        path: Vec<Vec<u8>>,
+        axis: IndexAxis,
+        k: u16,
+        offset: u64,
+        descending: bool,
+    ) -> Self {
+        Self::new_unsized(
+            path,
+            Self::axis_read_node(AxisQuery::top_k(axis, k, offset, descending)),
+        )
+    }
+
+    /// An axis-ordered read of the indexed tree at `path`: every entry
+    /// whose `axis` aggregate is in the inclusive `[lo, hi]`, up to
+    /// `limit` entries.
+    pub fn new_axis_bounded(
+        path: Vec<Vec<u8>>,
+        axis: IndexAxis,
+        lo: i128,
+        hi: i128,
+        limit: u16,
+        descending: bool,
+    ) -> Self {
+        Self::new_unsized(
+            path,
+            Self::axis_read_node(AxisQuery::bounded(axis, lo, hi, limit, descending)),
+        )
+    }
+
+    /// The rank of `key` in the directional walk over `axis` of the
+    /// indexed tree at `path`.
+    pub fn new_axis_rank_of_key(
+        path: Vec<Vec<u8>>,
+        axis: IndexAxis,
+        key: Vec<u8>,
+        descending: bool,
+    ) -> Self {
+        Self::new_unsized(
+            path,
+            Self::axis_read_node(AxisQuery::rank_of_key(axis, key, descending)),
+        )
+    }
+
+    /// A single aggregate over every entry of the indexed tree at
+    /// `path` whose `axis` value is in the inclusive `[lo, hi]`.
+    /// Count and Sum axes only.
+    pub fn new_axis_range_aggregate(
+        path: Vec<Vec<u8>>,
+        axis: IndexAxis,
+        lo: i128,
+        hi: i128,
+    ) -> Self {
+        Self::new_unsized(
+            path,
+            Self::axis_read_node(AxisQuery::range_aggregate(axis, lo, hi)),
+        )
+    }
+
+    /// The same axis read fanned over N sibling branches: for each key
+    /// in `branch_keys` (selected under `prefix`), descend the shared
+    /// `suffix` to an indexed tree and perform `axis_query` on it.
+    ///
+    /// This is the query form of the branched indexed-axis proof:
+    /// `prefix / branch_key_i / suffix -> axis read`.
+    pub fn new_branched_axis(
+        prefix: Vec<Vec<u8>>,
+        branch_keys: Vec<Vec<u8>>,
+        suffix: Vec<Vec<u8>>,
+        axis_query: AxisQuery,
+    ) -> Self {
+        let mut query = Query::new();
+        for key in branch_keys {
+            query.insert_key(key);
+        }
+        query.set_subquery_path(suffix);
+        query.set_subquery(Self::axis_read_node(axis_query));
+        Self::new_unsized(prefix, query)
+    }
+
+    /// A key-ordered read of `items` under `path` that stops once the
+    /// running sum of matched sum-item values reaches `sum_limit` —
+    /// the unified form of `AggregateSumPathQuery`.
+    pub fn new_sum_budget(
+        path: Vec<Vec<u8>>,
+        items: Vec<QueryItem>,
+        left_to_right: bool,
+        sum_limit: u64,
+        max_items_checked: Option<u16>,
+    ) -> Self {
+        let mut query = Query::new_with_direction(left_to_right);
+        query.items = items;
+        query.read_mode = Some(Box::new(ReadMode::SumBudget(SumBudgetRead {
+            sum_limit,
+            max_items_checked,
+        })));
+        Self::new_unsized(path, query)
+    }
+
+    /// Whether this query — at any nesting level — carries a
+    /// [`ReadMode`]. Entry points that don't serve read modes use this
+    /// to fail closed instead of silently running a read-mode query as
+    /// plain key selection.
+    pub fn has_read_mode(&self) -> bool {
+        self.query.query.has_read_mode_anywhere()
+    }
+
+    /// Fail-closed gate for entry points that don't (yet) serve
+    /// read-mode queries. Serving arrives with the unified read/prove
+    /// dispatch; until then every existing entry point rejects rather
+    /// than misreading an axis or sum-budget query as key selection.
+    pub(crate) fn reject_unserved_read_mode(&self) -> Result<(), Error> {
+        if self.has_read_mode() {
+            Err(Error::NotSupported(
+                "this entry point does not serve read-mode (axis / sum-budget) path queries"
+                    .to_string(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Validates that this `PathQuery` is a well-formed
     /// `AggregateCountOnRange` query in either the leaf or carrier shape.
     /// On success, returns a reference to the leaf inner range item.
@@ -797,6 +937,20 @@ impl PathQuery {
         if path_queries.is_empty() {
             return Err(Error::InvalidInput(
                 "merge function requires at least 1 path query",
+            ));
+        }
+        // Read-mode queries do not merge (yet): the underlying
+        // Query::merge_multiple machinery would silently drop the read
+        // mode and mangle an axis or sum-budget read into key
+        // selection. Merging sibling axis reads into the branched shape
+        // arrives with explicit read-mode merge rules.
+        if path_queries
+            .iter()
+            .any(|path_query| path_query.has_read_mode())
+        {
+            return Err(Error::NotSupported(
+                "can not merge path queries carrying read modes (axis / sum-budget reads)"
+                    .to_string(),
             ));
         }
         if path_queries.len() == 1 {
@@ -2033,6 +2187,7 @@ mod tests {
             left_to_right: true,
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         };
 
         // Constructing the PathQuery
@@ -2051,6 +2206,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -2216,6 +2372,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(100),
                 offset: None,
@@ -2288,6 +2445,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: Some(conditional_subquery_branches),
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(100),
                 offset: None,
@@ -2338,6 +2496,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 })),
             },
         )]);
@@ -2356,6 +2515,7 @@ mod tests {
                         left_to_right: true,
                         conditional_subquery_branches: None,
                         add_parent_tree_on_subquery: false,
+                        read_mode: None,
                     })),
                 },
             ),
@@ -2374,6 +2534,7 @@ mod tests {
                         ),
                         left_to_right: true,
                         add_parent_tree_on_subquery: false,
+                        read_mode: None,
                     })),
                 },
             ),
@@ -2391,6 +2552,7 @@ mod tests {
                     conditional_subquery_branches: Some(conditional_subquery_branches.clone()),
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(100),
                 offset: None,
@@ -2520,6 +2682,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: None,
                 offset: None,
@@ -2543,6 +2706,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     left_to_right: false,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(10),
                 offset: Some(2),
@@ -2566,6 +2730,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(5),
                 offset: None,
@@ -2598,6 +2763,7 @@ mod tests {
                     conditional_subquery_branches: Some(conditional_branches),
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: None,
                 offset: None,
@@ -2642,6 +2808,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: None,
                 offset: None,
@@ -2665,6 +2832,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     left_to_right: false,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(100),
                 offset: Some(10),
@@ -2690,6 +2858,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 })),
             },
         );
@@ -2703,6 +2872,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     left_to_right: false,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 })),
             },
         );
@@ -2716,6 +2886,7 @@ mod tests {
                     conditional_subquery_branches: Some(conditional_branches),
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(50),
                 offset: Some(5),
@@ -2743,11 +2914,13 @@ mod tests {
                             conditional_subquery_branches: None,
                             left_to_right: true,
                             add_parent_tree_on_subquery: false,
+                            read_mode: None,
                         })),
                     },
                     conditional_subquery_branches: None,
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: None,
                 offset: None,
@@ -2771,6 +2944,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(20),
                 offset: None,
