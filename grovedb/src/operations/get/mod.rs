@@ -4,8 +4,10 @@
 mod average_case;
 
 mod query;
+mod run_path_query;
 use grovedb_storage::Storage;
 pub use query::QueryItemOrSumReturnType;
+pub use run_path_query::{AxisAggregateValue, PathQueryRun};
 #[cfg(feature = "estimated_costs")]
 mod worst_case;
 

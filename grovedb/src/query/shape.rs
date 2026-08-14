@@ -31,7 +31,7 @@
 //!   verification time. Classification is purely syntactic.
 
 use grovedb_merk::proofs::query::{
-    query_item::QueryItem, AxisQuery, ReadMode, SumBudgetRead as SumBudgetReadSpec,
+    query_item::QueryItem, AxisQuery, AxisTraversal, ReadMode, SumBudgetRead as SumBudgetReadSpec,
 };
 
 use crate::{Error, PathQuery};
@@ -373,6 +373,24 @@ impl PathQuery {
                             ));
                         }
                         axis.validate().map_err(read_mode_validation_error)?;
+                        // A branched read answers with one entry list per
+                        // branch, so its terminal must be an
+                        // entry-listing traversal. Rank-of-key and
+                        // range-aggregate produce a single scalar about
+                        // one tree and have no per-branch list to fill;
+                        // rejecting them here keeps the reader and the
+                        // verifier from having to treat "impossible"
+                        // shapes as internal errors.
+                        if matches!(
+                            axis.traversal,
+                            AxisTraversal::RankOfKey { .. } | AxisTraversal::RangeAggregate { .. }
+                        ) {
+                            return Err(Error::InvalidQuery(
+                                "a branched axis read serves entry-listing traversals \
+                                 (RankedPage / Bounded) only; rank-of-key and range-aggregate \
+                                 are single-path reads",
+                            ));
+                        }
                         Ok(PathQueryShape::BranchedAxisRead {
                             branch_items: &query.items,
                             suffix,

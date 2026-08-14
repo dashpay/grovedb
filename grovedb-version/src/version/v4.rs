@@ -32,6 +32,14 @@
 //!   flips a rejected/accepted outcome and because deriving the state root
 //!   costs the prover extra storage reads and hash calls.
 //!
+//! - `path_query_methods.unified_read_mode: 1` — `PathQuery` read modes
+//!   (axis-ordered and sum-budget reads carried in `Query::read_mode`) are
+//!   served by the unified dispatch (`run_path_query`, and the unified
+//!   prove/verify as they land). V1..V3 reject any read-mode-bearing query
+//!   with `NotSupported` at every entry point — those versions also reject
+//!   the version-2 `Query` wire encoding outright, so the slot's `0` value
+//!   is the in-process mirror of that fail-closed decode.
+//!
 //! Note that `GroveVersion::latest()` resolves to this version, so anything
 //! defaulting to "latest" — tests, benchmarks, tools — exercises every gate
 //! listed above rather than V3 behaviour.
@@ -202,6 +210,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 query_keys_optional: 0,
                 query_raw_keys_optional: 0,
                 follow_element: 0,
+                run_path_query: 0,
             },
             proof: GroveDBOperationsProofVersions {
                 prove_query: 0,
@@ -258,6 +267,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             merge: 0,
             query_items_at_path: 0,
             should_add_parent_tree_at_path: 0,
+            unified_read_mode: 1,
         },
         replication: GroveDBReplicationVersions {
             get_subtrees_metadata: 0,

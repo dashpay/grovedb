@@ -241,6 +241,11 @@ use grovedb_storage::{Storage, StorageContext};
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "minimal")]
 use grovedb_visualize::DebugByteVectors;
+/// The unified read dispatch's result types. `operations::get` is
+/// crate-private, so without this re-export `run_path_query` would be
+/// callable from outside the crate but its return type unnameable.
+#[cfg(feature = "minimal")]
+pub use operations::get::{AxisAggregateValue, PathQueryRun};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use query::{
     aggregate_sum_path_query::AggregateSumPathQuery, AggregateKind, GroveBranchQueryResult,
