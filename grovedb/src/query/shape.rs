@@ -783,7 +783,7 @@ mod tests {
         match pq.classify().expect("sum-budget constructor must classify") {
             PathQueryShape::SumBudget { budget, items } => {
                 assert_eq!(budget.sum_limit, 500);
-                assert_eq!(budget.max_items_checked, Some(20));
+                assert_eq!(budget.match_limit, Some(20));
                 assert_eq!(items.len(), 1);
             }
             other => panic!("expected SumBudget, got {other:?}"),
@@ -872,7 +872,7 @@ mod tests {
                 let mut terminal = Query::new_single_query_item(range_item());
                 terminal.read_mode = Some(Box::new(ReadMode::SumBudget(SumBudgetRead {
                     sum_limit: 1,
-                    max_items_checked: None,
+                    match_limit: None,
                 })));
                 let mut q = Query::new_single_key(b"b".to_vec());
                 q.set_subquery_path(vec![b"s".to_vec()]);
@@ -971,7 +971,7 @@ mod tests {
             Some(Box::new(ReadMode::SumBudget(
                 grovedb_merk::proofs::query::SumBudgetRead {
                     sum_limit: 10,
-                    max_items_checked: None,
+                    match_limit: None,
                 },
             ))),
         ];
