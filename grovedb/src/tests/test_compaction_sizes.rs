@@ -23,7 +23,14 @@ mod tests {
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == extension))
             // Background compaction can delete a file between the read_dir
             // listing and the metadata() call; skip vanished files.
-            .filter_map(|entry| entry.metadata().ok())
+            .filter_map(|entry| match entry.metadata() {
+                Ok(metadata) => Some(metadata),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => panic!(
+                    "cannot read metadata for {}: {error}",
+                    entry.path().display()
+                ),
+            })
             .map(|metadata| metadata.len())
             .sum()
     }
