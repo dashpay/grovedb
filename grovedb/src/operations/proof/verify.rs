@@ -1217,48 +1217,71 @@ impl GroveDb {
 
                     verified_keys.insert(key.clone());
 
-                    // Axis-ordered read: resolved BEFORE the lower-layer
-                    // lookup, so that a prover cannot omit the
-                    // axis-descent layer to fabricate an absence. If the
-                    // query node governing this indexed tree carries
-                    // ReadMode::Axis, the layer MUST exist and MUST be an
-                    // axis descent — a missing layer is a hard error, not
-                    // a silent skip (which the branched shape would
-                    // endorse as a `None`, i.e. proven-absent, slot).
+                    // Axis-ordered read: resolved from the QUERY first —
+                    // before the element type is consulted and before
+                    // the lower-layer lookup — so that neither a
+                    // wrong-typed element nor a missing layer can
+                    // fabricate an absence. If the query node governing
+                    // this key carries ReadMode::Axis then this key is
+                    // an axis read, and the only proof that answers it
+                    // is an axis descent over an indexed tree:
                     //
-                    // This also makes an empty indexed tree report an
-                    // empty axis result (verify_axis_descent_layer proves
-                    // it against a NULL-hash secondary), matching the
-                    // honest prover and the trusted read rather than
-                    // reporting the branch absent.
-                    if element.is_indexed_tree() {
-                        let mut axis_path = current_path.to_vec();
-                        axis_path.push(key);
-                        if let Some(axis_query) = query.axis_read_at_path(&axis_path) {
-                            let Some(lower_layer) = lower_layers.get(key) else {
-                                return Err(Error::InvalidProof(
-                                    query.clone(),
-                                    format!(
-                                        "V1 axis read at key {} has no axis-descent lower \
-                                         layer; the element cannot be reported as absent",
-                                        hex::encode(key),
-                                    ),
-                                ));
-                            };
-                            path.push(key);
-                            *last_parent_tree_type = element.tree_feature_type();
-                            Self::verify_axis_descent_layer(
-                                lower_layer,
-                                axis_query,
-                                value_bytes,
-                                hash,
-                                &path,
-                                axis_outcomes,
-                                query,
-                                grove_version,
-                            )?;
-                            continue;
+                    //   * a non-indexed element here is a hard error. It
+                    //     used to fall through to the ordinary descent,
+                    //     which yields no trio for a present normal tree
+                    //     — so the branched shape saw neither an axis
+                    //     layer nor a present element and endorsed the
+                    //     branch as `None`, i.e. proven absent, while the
+                    //     trusted read rejects the same state as
+                    //     unindexed.
+                    //   * a missing layer is a hard error, not a silent
+                    //     skip (which the branched shape would likewise
+                    //     endorse as a proven-absent slot).
+                    //
+                    // An empty indexed tree still reports an EMPTY axis
+                    // result (verify_axis_descent_layer proves it against
+                    // a NULL-hash secondary), matching the honest prover
+                    // and the trusted read rather than reporting the
+                    // branch absent.
+                    let mut axis_path = current_path.to_vec();
+                    axis_path.push(key);
+                    if let Some(axis_query) = query.axis_read_at_path(&axis_path) {
+                        if !element.is_indexed_tree() {
+                            return Err(Error::InvalidProof(
+                                query.clone(),
+                                format!(
+                                    "V1 axis read at key {} resolves to a non-indexed \
+                                     element ({}); an axis-ordered read has no meaning \
+                                     there, so the proof cannot answer this query — and \
+                                     the key must not be reported as absent",
+                                    hex::encode(key),
+                                    element.type_str(),
+                                ),
+                            ));
                         }
+                        let Some(lower_layer) = lower_layers.get(key) else {
+                            return Err(Error::InvalidProof(
+                                query.clone(),
+                                format!(
+                                    "V1 axis read at key {} has no axis-descent lower \
+                                     layer; the element cannot be reported as absent",
+                                    hex::encode(key),
+                                ),
+                            ));
+                        };
+                        path.push(key);
+                        *last_parent_tree_type = element.tree_feature_type();
+                        Self::verify_axis_descent_layer(
+                            lower_layer,
+                            axis_query,
+                            value_bytes,
+                            hash,
+                            &path,
+                            axis_outcomes,
+                            query,
+                            grove_version,
+                        )?;
+                        continue;
                     }
 
                     if let Some(lower_layer) = lower_layers.get(key) {

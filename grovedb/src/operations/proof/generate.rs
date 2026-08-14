@@ -1407,6 +1407,43 @@ impl GroveDb {
             )
         );
 
+        // A single-path axis read has exactly one answer — the axis
+        // descent at the queried path. The generic walk cannot produce
+        // one when the target is missing or is not an indexed tree; it
+        // returns `Ok` with an ordinary (or empty) layer instead, and
+        // the verifier then rejects the result as "must verify exactly
+        // one axis layer, got 0". Fail generation here instead, so the
+        // prover never hands out a proof that cannot answer the query
+        // it was asked.
+        //
+        // Branched axis reads are deliberately excluded: an absent
+        // branch key legitimately produces no descent, and its absence
+        // is what the branching-level Merk proof authenticates.
+        if matches!(
+            path_query.classify(),
+            Ok(crate::PathQueryShape::AxisRead { .. })
+        ) {
+            fn count_axis_descents(layer: &LayerProof) -> usize {
+                usize::from(matches!(
+                    layer.merk_proof,
+                    ProofBytes::IndexedTreeAxisDescent(_)
+                )) + layer
+                    .lower_layers
+                    .values()
+                    .map(count_axis_descents)
+                    .sum::<usize>()
+            }
+            let descents = count_axis_descents(&root_layer);
+            if descents != 1 {
+                return Err(Error::InvalidPath(format!(
+                    "a single-path axis read must produce exactly one axis descent at the \
+                     queried path, but the walk produced {descents} — the path does not \
+                     name an indexed tree carrying that axis"
+                )))
+                .wrap_with_cost(cost);
+            }
+        }
+
         Ok(GroveDBProof::V1(GroveDBProofV1 { root_layer })).wrap_with_cost(cost)
     }
 
