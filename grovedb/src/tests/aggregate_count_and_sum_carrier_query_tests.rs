@@ -778,7 +778,7 @@ mod tests {
     #[test]
     fn no_proof_per_key_combined_empty_carrier_result_set() {
         // No outer key matches at all → empty result vector, not an
-        // error.
+        // error, and the proved path agrees.
         let v = GroveVersion::latest();
         let (db, _root) = setup_brand_value_pcps_carrier_tree(v, &[b"brand_000"], 10);
         let mut carrier = Query::new();
@@ -797,6 +797,16 @@ mod tests {
             .unwrap()
             .expect("empty carrier result set must not be an error");
         assert!(no_proof.is_empty());
+
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+        let (_root, proved) =
+            GroveDb::verify_aggregate_count_and_sum_query_per_key(&proof, &path_query, v)
+                .expect("verify should succeed");
+        assert_eq!(no_proof, proved, "empty result sets must agree too");
     }
 
     #[test]

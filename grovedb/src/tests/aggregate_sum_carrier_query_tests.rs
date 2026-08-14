@@ -734,6 +734,15 @@ mod tests {
             .unwrap()
             .expect("empty carrier result set must not be an error");
         assert!(no_proof.is_empty());
+
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+        let (_root, proved) = GroveDb::verify_aggregate_sum_query_per_key(&proof, &path_query, v)
+            .expect("verify should succeed");
+        assert_eq!(no_proof, proved, "empty result sets must agree too");
     }
 
     #[test]

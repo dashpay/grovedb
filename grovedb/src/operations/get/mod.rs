@@ -3,6 +3,7 @@
 #[cfg(feature = "estimated_costs")]
 mod average_case;
 
+mod aggregate_per_key;
 mod query;
 use grovedb_storage::Storage;
 pub use query::QueryItemOrSumReturnType;
