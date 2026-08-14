@@ -23,17 +23,25 @@ use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
 use super::{read_entry_aggregates, AggregatePair, AggregateTransition};
-use crate::{operations::indexed_tree::make_axis_secondary_key, Element, Error};
+use crate::{
+    operations::indexed_tree::{count_value_as_sum, make_axis_secondary_key},
+    Element, Error,
+};
 
 /// The per-axis payload stored alongside the sort key. The key encodes the
 /// ordering value; the payload carries what the secondary's own aggregate
-/// must sum to, which is why the sum and avg axes cannot store a bare item.
-fn axis_row_payload(axis: IndexAxis, sum: i64) -> Element {
-    match axis {
-        IndexAxis::Count => Element::new_item(Vec::new()),
+/// must sum to, which is why NO axis can store a bare item: every
+/// secondary is a dual-aggregate `ProvableCountProvableSumTree`, and the
+/// count axis mirrors its `count_value` into the sum half so a band
+/// TOTAL is one committed scalar (issue #806).
+///
+/// Fallible only through [`count_value_as_sum`]'s fail-closed guard.
+fn axis_row_payload(axis: IndexAxis, count: u64, sum: i64) -> Result<Element, Error> {
+    Ok(match axis {
+        IndexAxis::Count => Element::new_sum_item(count_value_as_sum(count)?),
         IndexAxis::Sum => Element::new_sum_item(sum),
         IndexAxis::Avg => Element::new_item_with_sum_item(Vec::new(), sum),
-    }
+    })
 }
 
 /// Enforce the precise per-axis item-key bound: avg prepends a 16-byte sort
@@ -101,18 +109,18 @@ fn build_axis_mirror_batch(
     let secondary_tree_type = crate::operations::indexed_tree::axis_secondary_tree_type(axis);
     let mut secondary_batch: Vec<BatchEntry<Vec<u8>>> = Vec::with_capacity(transitions.len() * 2);
     for (key, old_aggregates, new_aggregates) in transitions {
-        let old_entry = old_aggregates.map(|(c, s)| {
-            (
-                make_axis_secondary_key(axis, c, s, key),
-                axis_row_payload(axis, s),
-            )
-        });
-        let new_entry = new_aggregates.map(|(c, s)| {
-            (
-                make_axis_secondary_key(axis, c, s, key),
-                axis_row_payload(axis, s),
-            )
-        });
+        let entry_for = |aggregates: &AggregatePair| -> Result<_, Error> {
+            aggregates
+                .map(|(c, s)| {
+                    Ok((
+                        make_axis_secondary_key(axis, c, s, key),
+                        axis_row_payload(axis, c, s)?,
+                    ))
+                })
+                .transpose()
+        };
+        let old_entry = cost_return_on_error_no_add!(cost, entry_for(old_aggregates));
+        let new_entry = cost_return_on_error_no_add!(cost, entry_for(new_aggregates));
         if old_entry == new_entry {
             continue;
         }

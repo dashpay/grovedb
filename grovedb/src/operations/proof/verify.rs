@@ -1022,13 +1022,6 @@ impl GroveDb {
                 // out-of-domain shapes.
                 let inner_range = match axis {
                     grovedb_merk::proofs::query::IndexAxis::Count => {
-                        if *fold == grovedb_merk::proofs::query::AggregateFold::Total {
-                            return Err(Error::NotSupported(
-                                "a TOTAL over the count axis needs a sum-bearing count \
-                                 secondary; tracked in issue #806"
-                                    .to_string(),
-                            ));
-                        }
                         count_aggregate_inner_range(*lo, *hi)
                     }
                     grovedb_merk::proofs::query::IndexAxis::Sum => {

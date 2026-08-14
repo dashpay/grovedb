@@ -413,11 +413,11 @@ impl GroveDb {
     /// in the directional walk.
     ///
     /// Every axis's secondary carries a hash-bound count aggregate
-    /// (count axis: `ProvableCountTree`; sum and avg axes:
-    /// `ProvableCountProvableSumTree`), so the secondary proof always
-    /// uses `Merk::prove_count_offset_on_range` — the skipped prefix is
-    /// attested by counted subtree commitments (`HashWithCount` /
-    /// `HashWithCountAndSum`) instead of enumeration, giving
+    /// (every axis is a dual-aggregate `ProvableCountProvableSumTree`),
+    /// so the secondary proof always uses
+    /// `Merk::prove_count_offset_on_range` — the skipped prefix is
+    /// attested by counted subtree commitments (`HashWithCountAndSum`)
+    /// instead of enumeration, giving
     /// O(log n + k) proof size regardless of `offset`.
     ///
     /// Ties (equal axis values) break by `original_key` in walk
@@ -1396,11 +1396,10 @@ where
 /// follows the FOLD ([`AggregateFold::Population`] proves the count
 /// aggregate, [`AggregateFold::Total`] the sum aggregate).
 ///
-/// `(Count, Total)` is refused until the count secondary carries a sum
-/// aggregate (issue #806): the walker would need
-/// `prove_aggregate_sum_on_range` against a tree type that is not
-/// sum-bearing. `Avg` is refused for both folds, mirroring
-/// `AxisQuery::validate`.
+/// Every (Count/Sum, fold) cell is served: all secondaries are
+/// dual-aggregate `ProvableCountProvableSumTree`s, the count axis
+/// mirroring its `count_value` into the sum half (issue #806). `Avg`
+/// is refused for both folds, mirroring `AxisQuery::validate`.
 fn build_aggregate_secondary_proof<'db, S>(
     secondary_merk: &grovedb_merk::Merk<S>,
     axis: IndexAxis,
@@ -1414,16 +1413,7 @@ where
     S: grovedb_storage::StorageContext<'db>,
 {
     let inner_range = match axis {
-        IndexAxis::Count => {
-            if fold == AggregateFold::Total {
-                return Err(Error::NotSupported(
-                    "a TOTAL over the count axis needs a sum-bearing count secondary; \
-                     tracked in issue #806"
-                        .to_string(),
-                ));
-            }
-            count_aggregate_inner_range(lo, hi)
-        }
+        IndexAxis::Count => count_aggregate_inner_range(lo, hi),
         IndexAxis::Sum => sum_aggregate_inner_range(lo, hi),
         IndexAxis::Avg => {
             return Err(Error::NotSupported(

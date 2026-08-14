@@ -1692,7 +1692,9 @@ impl GroveDb {
             // under the right key but carrying the wrong value is caught too
             // — the key alone does not pin the stored aggregate.
             let payload = match axis {
-                grovedb_element::indexed::IndexAxis::Count => Element::new_item(Vec::new()),
+                grovedb_element::indexed::IndexAxis::Count => Element::new_sum_item(
+                    crate::operations::indexed_tree::count_value_as_sum(count)?,
+                ),
                 grovedb_element::indexed::IndexAxis::Sum => Element::new_sum_item(sum),
                 grovedb_element::indexed::IndexAxis::Avg => {
                     Element::new_item_with_sum_item(Vec::new(), sum)

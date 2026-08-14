@@ -1563,30 +1563,38 @@ mod tests {
     }
 
     #[test]
-    fn count_total_is_refused_by_name_until_the_secondary_is_sum_bearing() {
-        // (Count, Total) is the missing cell of the matrix until issue
-        // #806's secondary upgrade lands: every surface must refuse it
-        // by name, not silently answer the population instead.
+    fn count_total_over_value_range_round_trips_everywhere() {
+        // Issue #806, closed: the count secondary mirrors each entry's
+        // count_value into its sum half, so the TOTAL of the counts in
+        // a band is one committed scalar. This is the original example
+        // from the issue verbatim: counts [3, 1, 5], band [2, 10]
+        // selects the 3 and the 5 — Population answers 2, Total
+        // answers 8.
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
-        build_pcpsit(&db, grove_version, PSIT_ENTRIES);
-        let pcpsit_path = vec![TEST_LEAF.to_vec(), b"pcpsit".to_vec()];
+        build_pcit(
+            &db,
+            grove_version,
+            &[(b"alpha", 3), (b"beta", 1), (b"gamma", 5)],
+        );
+        let root = root_hash(&db, grove_version);
+        let path = [TEST_LEAF, b"pcit"];
 
+        // Trusted read.
+        let direct = db
+            .indexed_count_total_over_value_range(path.as_ref(), 2, 10, None, grove_version)
+            .unwrap()
+            .expect("trusted count total");
+        assert_eq!(direct, 8);
+
+        // Unified read dispatch.
         let pq = PathQuery::new_axis_aggregate_over_value_range(
-            pcpsit_path,
+            pcit_path(),
             IndexAxis::Count,
-            0,
+            2,
             10,
             AggregateFold::Total,
         );
-        // The prover refuses...
-        match db.prove_query(&pq, None, grove_version).unwrap() {
-            Err(Error::NotSupported(message)) => {
-                assert!(message.contains("806"), "got: {message}")
-            }
-            other => panic!("count+Total proving must be refused, got {other:?}"),
-        }
-        // ...the trusted read refuses...
         match db
             .run_path_query(
                 &pq,
@@ -1598,95 +1606,95 @@ mod tests {
                 grove_version,
             )
             .unwrap()
+            .expect("unified count total")
         {
-            Err(Error::NotSupported(message)) => {
-                assert!(message.contains("806"), "got: {message}")
-            }
-            other => panic!("count+Total reading must be refused, got {other:?}"),
+            crate::operations::get::PathQueryRun::AxisAggregate(
+                crate::operations::get::AxisAggregateValue::Total(total),
+            ) => assert_eq!(total, 8),
+            other => panic!("expected AxisAggregate(Total), got {other:?}"),
         }
-        // ...and the standalone family refuses on both sides.
-        db.prove_indexed_axis_aggregate_over_value_range(
-            [TEST_LEAF, b"pcpsit"].as_ref(),
-            IndexAxis::Count,
-            0,
-            10,
-            AggregateFold::Total,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect_err("standalone count+Total proving must be refused");
-        GroveDb::verify_indexed_axis_aggregate_over_value_range(
-            &[0u8; 4],
-            &[TEST_LEAF, b"pcpsit"],
-            IndexAxis::Count,
-            0,
-            10,
-            AggregateFold::Total,
-            grove_version,
-        )
-        .expect_err("standalone count+Total verification must be refused");
 
-        // The refusal must also fire in the VERIFIERS' own arms, not
-        // just upstream of them. Embedded: a genuine count+Population
-        // proof against a count+Total query reaches the descent
-        // verifier's (Count, Total) arm — the query is where the fold
-        // lives, so this is the exact shape a confused (or hostile)
-        // client would produce.
+        // Embedded proof round trip.
+        match GroveDb::verify_path_query(&prove(&db, &pq, grove_version), &pq, grove_version)
+            .expect("embedded count total verifies")
+        {
+            VerifiedPathQuery::AxisAggregate { root_hash, value } => {
+                assert_eq!(root_hash, root);
+                assert_eq!(value, 8);
+            }
+            other => panic!("expected AxisAggregate, got {other:?}"),
+        }
+
+        // The Population fold over the same band still answers 2 — the
+        // two questions stay distinct.
         let population_pq = PathQuery::new_axis_aggregate_over_value_range(
-            vec![TEST_LEAF.to_vec(), b"pcpsit".to_vec()],
+            pcit_path(),
             IndexAxis::Count,
-            0,
+            2,
             10,
             AggregateFold::Population,
         );
-        let population_proof = prove(&db, &population_pq, grove_version);
-        match GroveDb::verify_path_query(&population_proof, &pq, grove_version) {
-            Err(Error::NotSupported(message)) => {
-                assert!(message.contains("806"), "got: {message}")
-            }
-            other => panic!("the descent verifier must refuse count+Total, got {other:?}"),
+        match GroveDb::verify_path_query(
+            &prove(&db, &population_pq, grove_version),
+            &population_pq,
+            grove_version,
+        )
+        .expect("embedded count population verifies")
+        {
+            VerifiedPathQuery::AxisAggregate { value, .. } => assert_eq!(value, 2),
+            other => panic!("expected AxisAggregate, got {other:?}"),
         }
 
-        // Standalone: relabel a genuine count+Population envelope's
-        // fold echo to Total. The echo check passes (expected == echo),
-        // so the inner dispatch's (Count, Total) rejection is what must
-        // stop it.
+        // Standalone envelope round trip, with the fold echo honest.
         let standalone = db
             .prove_indexed_axis_aggregate_over_value_range(
-                [TEST_LEAF, b"pcpsit"].as_ref(),
+                path.as_ref(),
                 IndexAxis::Count,
-                0,
+                2,
                 10,
-                AggregateFold::Population,
+                AggregateFold::Total,
                 None,
                 grove_version,
             )
             .unwrap()
-            .expect("standalone count+Population prove");
-        let config = bincode::config::standard().with_limit::<{ 16 * 1024 * 1024 }>();
-        let (mut envelope, _): (
-            crate::operations::proof::indexed_axis::IndexedAxisAggregateProof,
-            usize,
-        ) = bincode::decode_from_slice(&standalone, config).expect("decode envelope");
-        envelope.fold_tag = AggregateFold::Total.tag();
-        let relabeled = bincode::encode_to_vec(&envelope, config).expect("re-encode");
-        match GroveDb::verify_indexed_axis_aggregate_over_value_range(
-            &relabeled,
-            &[TEST_LEAF, b"pcpsit"],
+            .expect("standalone count total prove");
+        let result = GroveDb::verify_indexed_axis_aggregate_over_value_range(
+            &standalone,
+            &path,
             IndexAxis::Count,
-            0,
+            2,
             10,
             AggregateFold::Total,
             grove_version,
-        ) {
-            Err(Error::NotSupported(message)) => {
-                assert!(message.contains("806"), "got: {message}")
-            }
-            other => panic!(
-                "a relabeled count envelope must hit the inner count+Total refusal: {other:?}"
-            ),
-        }
+        )
+        .expect("standalone count total verifies");
+        assert_eq!(result.root_hash, root);
+        assert_eq!(result.aggregate, 8);
+
+        // Deleting gamma (count 5) drops the band total to 3 — the
+        // mirror keeps the sum half live through mutations, not just at
+        // first insert.
+        db.delete_from_count_indexed_tree(path.as_ref(), b"gamma", None, grove_version)
+            .unwrap()
+            .expect("delete gamma");
+        let after = db
+            .indexed_count_total_over_value_range(path.as_ref(), 2, 10, None, grove_version)
+            .unwrap()
+            .expect("trusted count total after delete");
+        assert_eq!(after, 3);
+
+        // The reader's own edge shapes: inverted bounds answer an empty
+        // total, and hi = u64::MAX takes the unbounded upper branch.
+        let inverted = db
+            .indexed_count_total_over_value_range(path.as_ref(), 10, 2, None, grove_version)
+            .unwrap()
+            .expect("inverted bounds are a valid empty answer");
+        assert_eq!(inverted, 0);
+        let unbounded = db
+            .indexed_count_total_over_value_range(path.as_ref(), 0, u64::MAX, None, grove_version)
+            .unwrap()
+            .expect("full-domain total");
+        assert_eq!(unbounded, 4, "alpha(3) + beta(1) after gamma's deletion");
     }
 
     #[test]
@@ -1738,5 +1746,187 @@ mod tests {
             }
             other => panic!("a fold-mismatched envelope must be rejected, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_full_axis_fold_matrix_is_served_and_consistent() {
+        // All four (Count/Sum, fold) cells, each read three ways —
+        // trusted, embedded proof, standalone envelope — must agree.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(
+            &db,
+            grove_version,
+            &[(b"alpha", 3), (b"beta", 1), (b"gamma", 5)],
+        );
+        build_psit(&db, grove_version, PSIT_ENTRIES);
+
+        // (path, axis, lo, hi, fold, expected)
+        let matrix: Vec<(Vec<Vec<u8>>, IndexAxis, i128, i128, AggregateFold, i128)> = vec![
+            // counts [3, 1, 5], band [2, 10] selects 3 and 5.
+            (
+                pcit_path(),
+                IndexAxis::Count,
+                2,
+                10,
+                AggregateFold::Population,
+                2,
+            ),
+            (
+                pcit_path(),
+                IndexAxis::Count,
+                2,
+                10,
+                AggregateFold::Total,
+                8,
+            ),
+            // sums [40, -10, 25, 40, 5], band [0, 40] selects 40, 25, 40, 5.
+            (
+                psit_path(),
+                IndexAxis::Sum,
+                0,
+                40,
+                AggregateFold::Population,
+                4,
+            ),
+            (
+                psit_path(),
+                IndexAxis::Sum,
+                0,
+                40,
+                AggregateFold::Total,
+                110,
+            ),
+        ];
+        for (path, axis, lo, hi, fold, expected) in matrix {
+            let pq =
+                PathQuery::new_axis_aggregate_over_value_range(path.clone(), axis, lo, hi, fold);
+            let verified =
+                GroveDb::verify_path_query(&prove(&db, &pq, grove_version), &pq, grove_version)
+                    .unwrap_or_else(|e| panic!("({axis:?}, {fold}) must verify: {e}"));
+            let VerifiedPathQuery::AxisAggregate { value, .. } = verified else {
+                panic!("({axis:?}, {fold}): expected AxisAggregate");
+            };
+            assert_eq!(value, expected, "embedded ({axis:?}, {fold})");
+
+            let path_refs: Vec<&[u8]> = path.iter().map(|segment| segment.as_slice()).collect();
+            let standalone_bytes = db
+                .prove_indexed_axis_aggregate_over_value_range(
+                    path_refs.as_slice(),
+                    axis,
+                    lo,
+                    hi,
+                    fold,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .unwrap_or_else(|e| panic!("({axis:?}, {fold}) standalone prove: {e}"));
+            let standalone = GroveDb::verify_indexed_axis_aggregate_over_value_range(
+                &standalone_bytes,
+                path_refs.as_slice(),
+                axis,
+                lo,
+                hi,
+                fold,
+                grove_version,
+            )
+            .unwrap_or_else(|e| panic!("({axis:?}, {fold}) standalone verify: {e}"));
+            assert_eq!(
+                standalone.aggregate, expected,
+                "standalone ({axis:?}, {fold})"
+            );
+        }
+    }
+
+    #[test]
+    fn verify_grovedb_holds_across_count_secondary_mutations() {
+        // The PCPS count secondary — payload = SumItem(count_value) —
+        // must satisfy verify_grovedb's primary<->secondary walk through
+        // inserts, count changes, and deletes; the expected-payload
+        // check in verify_indexed_axis_content is what would flag a
+        // drifted mirror.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(
+            &db,
+            grove_version,
+            &[(b"alpha", 3), (b"beta", 1), (b"gamma", 5)],
+        );
+        let clean = db
+            .verify_grovedb(None, true, true, grove_version)
+            .expect("verify runs");
+        assert!(clean.is_empty(), "fresh PCIT verifies: {clean:?}");
+
+        // Change alpha's count by adding a child (3 -> 4), then delete
+        // beta outright.
+        db.insert(
+            [TEST_LEAF, b"pcit", b"alpha"].as_ref(),
+            b"extra",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("grow alpha");
+        db.delete_from_count_indexed_tree(
+            [TEST_LEAF, b"pcit"].as_ref(),
+            b"beta",
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("delete beta");
+
+        let after = db
+            .verify_grovedb(None, true, true, grove_version)
+            .expect("verify runs");
+        assert!(after.is_empty(), "mutated PCIT verifies: {after:?}");
+        // And the totals moved with the mutations: counts are now
+        // [4, 5]; band [2, 10] totals 9.
+        let total = db
+            .indexed_count_total_over_value_range(
+                [TEST_LEAF, b"pcit"].as_ref(),
+                2,
+                10,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("total after mutations");
+        assert_eq!(total, 9);
+    }
+
+    #[test]
+    fn a_tampered_count_secondary_sum_fails_the_descent_binding() {
+        // The count secondary's sum half is hash-bound: a prover cannot
+        // overstate a band total by tampering the sum inside the carried
+        // secondary proof, because the recomputed secondary root then
+        // breaks the combine_hash_three parent binding.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(
+            &db,
+            grove_version,
+            &[(b"alpha", 3), (b"beta", 1), (b"gamma", 5)],
+        );
+        let pq = PathQuery::new_axis_aggregate_over_value_range(
+            pcit_path(),
+            IndexAxis::Count,
+            2,
+            10,
+            AggregateFold::Total,
+        );
+        let proof = prove(&db, &pq, grove_version);
+        GroveDb::verify_path_query(&proof, &pq, grove_version).expect("untampered verifies");
+
+        // Flip one byte in the middle of the secondary proof bytes.
+        let tampered = tamper_axis_payload(&proof, |payload| {
+            let len = payload.secondary_proof.len();
+            payload.secondary_proof[len / 2] ^= 0x01;
+        });
+        GroveDb::verify_path_query(&tampered, &pq, grove_version)
+            .expect_err("a tampered count-secondary sum must be rejected");
     }
 }
