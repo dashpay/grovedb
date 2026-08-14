@@ -207,7 +207,7 @@ mod tests {
                 .expect("unified top-k");
             assert_eq!(
                 run_entries(run),
-                AxisEntries::Sum(direct),
+                AxisEntries::Sum(direct.entries),
                 "top-k k={k} offset={offset} descending={descending}"
             );
         }
@@ -475,7 +475,7 @@ mod tests {
                         .expect("direct branch read");
                     assert_eq!(
                         entries.as_ref().expect("present branch"),
-                        &AxisEntries::Sum(direct),
+                        &AxisEntries::Sum(direct.entries),
                         "branch {}",
                         String::from_utf8_lossy(present)
                     );
@@ -735,7 +735,7 @@ mod tests {
             )
             .unwrap()
             .expect("unified count top-k");
-        assert_eq!(run_entries(run), AxisEntries::Count(direct));
+        assert_eq!(run_entries(run), AxisEntries::Count(direct.entries));
 
         // Bounded on the count axis, with bounds deliberately below and
         // above the u64 domain so the count clamp is exercised (the sum
@@ -842,7 +842,7 @@ mod tests {
             )
             .unwrap()
             .expect("unified avg top-k");
-        assert_eq!(run_entries(run), AxisEntries::Avg(direct));
+        assert_eq!(run_entries(run), AxisEntries::Avg(direct.entries));
 
         // Bounded on the avg axis takes the i128 bounds unclamped — the
         // avg domain is the whole i128 range.

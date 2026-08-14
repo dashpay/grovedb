@@ -607,7 +607,12 @@ mod tests {
                         .unwrap()
                         .expect("prove page");
                     let proved = GroveDb::verify_indexed_count_top_k_paginated(
-                        &proof, path, k, offset, descending,
+                        &proof,
+                        path,
+                        k,
+                        offset,
+                        descending,
+                        grove_version,
                     )
                     .expect("verify page");
 
