@@ -243,8 +243,9 @@ use grovedb_version::version::GroveVersion;
 use grovedb_visualize::DebugByteVectors;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use query::{
-    aggregate_sum_path_query::AggregateSumPathQuery, GroveBranchQueryResult, GroveTrunkQueryResult,
-    LeafInfo, PathBranchChunkQuery, PathQuery, PathTrunkChunkQuery, SizedQuery,
+    aggregate_sum_path_query::AggregateSumPathQuery, AggregateKind, GroveBranchQueryResult,
+    GroveTrunkQueryResult, LeafInfo, PathBranchChunkQuery, PathQuery, PathQueryShape,
+    PathTrunkChunkQuery, SizedQuery,
 };
 #[cfg(feature = "minimal")]
 use reference_path::path_from_reference_path_type;
