@@ -51,11 +51,21 @@ pub struct Query {
     /// Placement rules (which items/branches may accompany a read mode,
     /// where in a `PathQuery` it may appear) are enforced by
     /// `PathQuery::classify` in the `grovedb` crate.
+    ///
+    /// **Boxed deliberately.** A read mode is absent from virtually
+    /// every query, but `AxisQuery`'s `i128` bounds make it 64 bytes
+    /// inline — which would fatten every `Query` (and through
+    /// `PathQuery`, the `Error::InvalidProof` variant and so every
+    /// `CostResult` in the crate) whether or not a read mode is
+    /// present. The indirection costs one allocation on the rare
+    /// read-mode path and keeps `Query` cheap to clone, which the
+    /// engine does constantly. It is invisible on the wire and in
+    /// serde: `Box<T>` encodes exactly as `T`.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub read_mode: Option<ReadMode>,
+    pub read_mode: Option<Box<ReadMode>>,
 }
 
 impl Encode for Query {
@@ -172,7 +182,7 @@ impl Query {
         // Version 2 carries a read mode; version 1 never does. No
         // presence flag — the version byte is the flag.
         let read_mode = if version == 2 {
-            Some(ReadMode::decode(decoder)?)
+            Some(Box::new(ReadMode::decode(decoder)?))
         } else {
             None
         };
@@ -234,7 +244,7 @@ impl Query {
 
         // Version 2 carries a read mode; version 1 never does.
         let read_mode = if version == 2 {
-            Some(ReadMode::borrow_decode(decoder)?)
+            Some(Box::new(ReadMode::borrow_decode(decoder)?))
         } else {
             None
         };

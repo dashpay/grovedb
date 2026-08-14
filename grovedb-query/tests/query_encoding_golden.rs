@@ -9,9 +9,7 @@
 //! wire break, not a refactor.
 
 use bincode::config;
-use grovedb_query::{
-    AxisQuery, IndexAxis, Query, QueryItem, ReadMode, SubqueryBranch, SumBudgetRead,
-};
+use grovedb_query::{AxisQuery, IndexAxis, Query, QueryItem, ReadMode, SumBudgetRead};
 
 fn encode(query: &Query) -> Vec<u8> {
     bincode::encode_to_vec(query, config::standard()).expect("query must encode")
@@ -80,21 +78,21 @@ fn queries_without_read_mode_stay_on_version_1() {
 #[test]
 fn read_mode_queries_use_version_2_and_round_trip() {
     let mut axis_query = Query::new();
-    axis_query.read_mode = Some(ReadMode::Axis(AxisQuery::top_k(
+    axis_query.read_mode = Some(Box::new(ReadMode::Axis(AxisQuery::top_k(
         IndexAxis::Sum,
         10,
         5,
         true,
-    )));
+    ))));
     let bytes = encode(&axis_query);
     assert_eq!(bytes[0], 2, "read-mode queries encode as version 2");
     assert_eq!(decode(&bytes), axis_query);
 
     let mut budget_query = Query::new_single_query_item(QueryItem::RangeFull(..));
-    budget_query.read_mode = Some(ReadMode::SumBudget(SumBudgetRead {
+    budget_query.read_mode = Some(Box::new(ReadMode::SumBudget(SumBudgetRead {
         sum_limit: 500,
         max_items_checked: Some(100),
-    }));
+    })));
     let bytes = encode(&budget_query);
     assert_eq!(bytes[0], 2);
     assert_eq!(decode(&bytes), budget_query);

@@ -275,12 +275,12 @@ mod tests {
 
         // Directly on the node.
         let mut direct = Query::new();
-        direct.read_mode = Some(ReadMode::Axis(AxisQuery::top_k(
+        direct.read_mode = Some(Box::new(ReadMode::Axis(AxisQuery::top_k(
             IndexAxis::Count,
             1,
             0,
             true,
-        )));
+        ))));
         assert!(direct.has_read_mode_anywhere());
 
         // Hidden in the default subquery branch.

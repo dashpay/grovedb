@@ -562,7 +562,7 @@ impl PathQuery {
     /// node of every axis-read shape.
     fn axis_read_node(axis_query: AxisQuery) -> Query {
         Query {
-            read_mode: Some(ReadMode::Axis(axis_query)),
+            read_mode: Some(Box::new(ReadMode::Axis(axis_query))),
             ..Query::new()
         }
     }
@@ -662,10 +662,10 @@ impl PathQuery {
     ) -> Self {
         let mut query = Query::new_with_direction(left_to_right);
         query.items = items;
-        query.read_mode = Some(ReadMode::SumBudget(SumBudgetRead {
+        query.read_mode = Some(Box::new(ReadMode::SumBudget(SumBudgetRead {
             sum_limit,
             max_items_checked,
-        }));
+        })));
         Self::new_unsized(path, query)
     }
 

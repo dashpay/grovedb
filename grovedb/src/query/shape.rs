@@ -252,7 +252,7 @@ impl PathQuery {
             ));
         }
 
-        match &query.read_mode {
+        match query.read_mode.as_deref() {
             // Shape: single-path axis read. The axis query is the whole
             // read; the node selects nothing by key.
             Some(ReadMode::Axis(axis)) => {
@@ -359,7 +359,7 @@ impl PathQuery {
                          the axis-read terminal",
                     ));
                 };
-                match &inner.read_mode {
+                match inner.read_mode.as_deref() {
                     Some(ReadMode::Axis(axis)) => {
                         if !inner.items.is_empty()
                             || inner.default_subquery_branch.subquery.is_some()
@@ -761,12 +761,12 @@ mod tests {
 
         fn axis_node() -> Query {
             let mut q = Query::new();
-            q.read_mode = Some(ReadMode::Axis(AxisQuery::top_k(
+            q.read_mode = Some(Box::new(ReadMode::Axis(AxisQuery::top_k(
                 IndexAxis::Count,
                 1,
                 0,
                 true,
-            )));
+            ))));
             q
         }
 
@@ -797,12 +797,12 @@ mod tests {
             }),
             ("invalid axis payload (k = 0)", {
                 let mut q = Query::new();
-                q.read_mode = Some(ReadMode::Axis(AxisQuery::top_k(
+                q.read_mode = Some(Box::new(ReadMode::Axis(AxisQuery::top_k(
                     IndexAxis::Count,
                     0,
                     0,
                     true,
-                )));
+                ))));
                 PathQuery::new_unsized(path(), q)
             }),
             ("range aggregate on the Avg axis", {
@@ -835,10 +835,10 @@ mod tests {
             }),
             ("sum budget below the root", {
                 let mut terminal = Query::new_single_query_item(range_item());
-                terminal.read_mode = Some(ReadMode::SumBudget(SumBudgetRead {
+                terminal.read_mode = Some(Box::new(ReadMode::SumBudget(SumBudgetRead {
                     sum_limit: 1,
                     max_items_checked: None,
-                }));
+                })));
                 let mut q = Query::new_single_key(b"b".to_vec());
                 q.set_subquery_path(vec![b"s".to_vec()]);
                 q.set_subquery(terminal);
@@ -910,7 +910,12 @@ mod tests {
         ];
         let axis_terminal = {
             let mut q = Query::new();
-            q.read_mode = Some(ReadMode::Axis(AxisQuery::top_k(IndexAxis::Sum, 2, 0, true)));
+            q.read_mode = Some(Box::new(ReadMode::Axis(AxisQuery::top_k(
+                IndexAxis::Sum,
+                2,
+                0,
+                true,
+            ))));
             q
         };
         let subqueries: Vec<Option<Query>> = vec![
@@ -920,20 +925,20 @@ mod tests {
             Some(leaf_aggregate_query(AggregateKind::Sum)),
             Some(axis_terminal.clone()),
         ];
-        let read_modes: Vec<Option<ReadMode>> = vec![
+        let read_modes: Vec<Option<Box<ReadMode>>> = vec![
             None,
-            Some(ReadMode::Axis(AxisQuery::top_k(
+            Some(Box::new(ReadMode::Axis(AxisQuery::top_k(
                 IndexAxis::Count,
                 1,
                 0,
                 false,
-            ))),
-            Some(ReadMode::SumBudget(
+            )))),
+            Some(Box::new(ReadMode::SumBudget(
                 grovedb_merk::proofs::query::SumBudgetRead {
                     sum_limit: 10,
                     max_items_checked: None,
                 },
-            )),
+            ))),
         ];
         let limits = [None, Some(0u16), Some(7)];
         let offsets = [None, Some(0u16), Some(7)];
@@ -951,7 +956,7 @@ mod tests {
                                 q.items = items.clone();
                                 if let Some(sub) = subquery {
                                     q.set_subquery(sub.clone());
-                                    if matches!(sub.read_mode, Some(ReadMode::Axis(_))) {
+                                    if matches!(sub.read_mode.as_deref(), Some(ReadMode::Axis(_))) {
                                         q.set_subquery_path(vec![b"suffix".to_vec()]);
                                     }
                                 }
