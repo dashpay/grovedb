@@ -20,7 +20,7 @@ use crate::{
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     reference_path::ReferencePathType,
     util::TxRef,
-    Element, Error, GroveDb, PathQuery, SizedQuery, TransactionArg,
+    Element, Error, GroveDb, PathQuery, QueryItem, SizedQuery, Transaction, TransactionArg,
 };
 use grovedb_costs::cost_return_on_error_default;
 #[cfg(feature = "minimal")]
@@ -28,7 +28,11 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "minimal")]
+use grovedb_merk::{error::Error as GrovedbMerkError, Merk};
+#[cfg(feature = "minimal")]
 use grovedb_path::SubtreePath;
+#[cfg(feature = "minimal")]
+use grovedb_storage::rocksdb_storage::PrefixedRocksDbTransactionContext;
 use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
 #[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
@@ -1018,6 +1022,135 @@ where {
         Ok(count_and_sum).wrap_with_cost(cost)
     }
 
+    /// Shared carrier walk behind the three `query_aggregate_*_per_key`
+    /// entry points.
+    ///
+    /// Everything the carrier shape needs is aggregate-agnostic: the
+    /// "shallow" outer-key enumeration (deliberately *not* descending
+    /// into the subquery), the `SizedQuery::limit` propagation, the
+    /// non-tree-match rejection, the `path / outer_key /
+    /// subquery_path...` leaf-path assembly, and the per-match merk
+    /// open. The only axis-specific step is which merk-level aggregate
+    /// primitive terminates each walk, supplied by the caller as
+    /// `merk_walk` — one of [`Merk::count_aggregate_on_range`],
+    /// [`Merk::sum_aggregate_on_range`], or
+    /// [`Merk::count_and_sum_aggregate_on_range`]. All three share the
+    /// same signature shape and the same O(log n) Contained / Disjoint
+    /// short-circuit, so the driver never needs to know which axis it is
+    /// running; `T` is the axis's per-key payload (`u64`, `i64`, or
+    /// `(u64, i64)`).
+    ///
+    /// This helper performs **no** shape validation of its own. Callers
+    /// must have already run the matching
+    /// `validate_aggregate_*_on_range` (which is where `inner_range`
+    /// comes from, and where `SizedQuery::offset` is rejected) and must
+    /// have handled the leaf shape before calling — this drives the
+    /// carrier shape only.
+    ///
+    /// `non_tree_match_error` is the axis-specific message used when an
+    /// outer-key match resolves to a non-tree element;
+    /// `Error::InvalidQuery` carries a `&'static str`, so the message
+    /// cannot be formatted here.
+    fn query_aggregate_carrier_per_key<'db, T, WalkFn>(
+        &'db self,
+        path_query: &PathQuery,
+        inner_range: &QueryItem,
+        non_tree_match_error: &'static str,
+        merk_walk: WalkFn,
+        tx: &'db Transaction,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(Vec<u8>, T)>, Error>
+    where
+        WalkFn: Fn(
+            &Merk<PrefixedRocksDbTransactionContext<'db>>,
+            &QueryItem,
+            &GroveVersion,
+        ) -> CostResult<T, GrovedbMerkError>,
+    {
+        let mut cost = OperationCost::default();
+
+        // Enumerate matched outer keys at the carrier subtree, then per
+        // match navigate `subquery_path` and run the merk-level
+        // aggregate walk on the leaf.
+        let q = &path_query.query.query;
+        let outer_items = q.items.clone();
+        let subquery_path = q
+            .default_subquery_branch
+            .subquery_path
+            .clone()
+            .unwrap_or_default();
+        let left_to_right = q.left_to_right;
+
+        // Build a "shallow" path query that enumerates the carrier's
+        // outer items at `path_query.path` without descending into the
+        // subquery — we want just the matched outer keys, not the
+        // (unproven) results of the leaf aggregate.
+        //
+        // Propagate `SizedQuery::limit` (validated as carrier-only by
+        // the caller): it caps the number of outer-key matches the walk
+        // returns. Each matched outer key still produces a complete
+        // leaf aggregate below. `offset` is rejected at validation, so
+        // we don't propagate it here.
+        let mut shallow_query = grovedb_query::Query::new_with_direction(left_to_right);
+        shallow_query.items = outer_items;
+        let shallow_pq = PathQuery::new(
+            path_query.path.clone(),
+            SizedQuery::new(shallow_query, path_query.query.limit, None),
+        );
+
+        let (matched, _skipped) = cost_return_on_error!(
+            &mut cost,
+            self.query_raw(
+                &shallow_pq,
+                true,  // allow_cache
+                false, // decrease_limit_on_range_with_no_sub_elements
+                true,  // error_if_intermediate_path_tree_not_present
+                QueryResultType::QueryKeyElementPairResultType,
+                transaction,
+                grove_version,
+            )
+        );
+
+        let key_elements = matched.to_key_elements();
+        let mut results: Vec<(Vec<u8>, T)> = Vec::with_capacity(key_elements.len());
+
+        for (key, element) in key_elements {
+            // Refuse non-tree matches: every aggregate axis requires
+            // descending into the matched element to find the leaf
+            // aggregate subtree.
+            if !element.is_any_tree() {
+                return Err(Error::InvalidQuery(non_tree_match_error)).wrap_with_cost(cost);
+            }
+
+            // Build the path to the leaf aggregate subtree:
+            // `path_query.path / outer_key / subquery_path...`.
+            let mut leaf_path_owned: Vec<Vec<u8>> = path_query.path.clone();
+            leaf_path_owned.push(key.clone());
+            leaf_path_owned.extend(subquery_path.iter().cloned());
+            let leaf_path: Vec<&[u8]> = leaf_path_owned.iter().map(|p| p.as_slice()).collect();
+
+            let leaf_subtree = cost_return_on_error!(
+                &mut cost,
+                self.open_transactional_merk_at_path(
+                    SubtreePath::from(leaf_path.as_slice()),
+                    tx,
+                    None,
+                    grove_version,
+                )
+            );
+
+            let value = cost_return_on_error!(
+                &mut cost,
+                merk_walk(&leaf_subtree, inner_range, grove_version).map_err(Error::MerkError)
+            );
+
+            results.push((key, value));
+        }
+
+        Ok(results).wrap_with_cost(cost)
+    }
+
     /// Executes an `AggregateCountOnRange` query in either the **leaf** or
     /// **carrier** shape without generating a proof, returning one
     /// `(outer_key, count)` pair per matched outer key.
@@ -1033,7 +1166,8 @@ where {
     /// same `u64` [`Self::query_aggregate_count`] would have returned.
     /// This matches the per-key verifier's leaf behavior, so callers
     /// that always handle `Vec<(Vec<u8>, u64)>` don't need to branch on
-    /// the shape.
+    /// the shape. See [`Self::query_aggregate_sum_per_key`] for why the
+    /// empty stand-in key is deliberate rather than incidental.
     ///
     /// For a **carrier** query the outer items must be `Key(_)` /
     /// `Range*(_)` and the `default_subquery_branch.subquery` must
@@ -1099,90 +1233,258 @@ where {
             return Ok(vec![(Vec::new(), count)]).wrap_with_cost(cost);
         }
 
-        // Carrier shape: enumerate matched outer keys at the carrier
-        // subtree, then per match navigate `subquery_path` and run the
-        // merk-level count walk on the leaf.
-        let q = &path_query.query.query;
-        let outer_items = q.items.clone();
-        let subquery_path = q
-            .default_subquery_branch
-            .subquery_path
-            .clone()
-            .unwrap_or_default();
-        let left_to_right = q.left_to_right;
-
-        // Build a "shallow" path query that enumerates the carrier's
-        // outer items at `path_query.path` without descending into the
-        // subquery — we want just the matched outer keys, not the
-        // (unproven) results of the leaf aggregate-count.
-        //
-        // Propagate `SizedQuery::limit` (validated as carrier-only
-        // above): it caps the number of outer-key matches the walk
-        // returns. Each matched outer key still produces a complete
-        // leaf-ACOR `u64` below. `offset` is rejected at validation, so
-        // we don't propagate it here.
-        let mut shallow_query = grovedb_query::Query::new_with_direction(left_to_right);
-        shallow_query.items = outer_items;
-        let shallow_pq = PathQuery::new(
-            path_query.path.clone(),
-            SizedQuery::new(shallow_query, path_query.query.limit, None),
-        );
-
-        let (matched, _skipped) = cost_return_on_error!(
+        // Carrier shape: delegate to the shared carrier driver, which
+        // terminates each per-key walk in the count primitive.
+        let tx = TxRef::new(&self.db, transaction);
+        let results = cost_return_on_error!(
             &mut cost,
-            self.query_raw(
-                &shallow_pq,
-                true,  // allow_cache
-                false, // decrease_limit_on_range_with_no_sub_elements
-                true,  // error_if_intermediate_path_tree_not_present
-                QueryResultType::QueryKeyElementPairResultType,
+            self.query_aggregate_carrier_per_key(
+                path_query,
+                &inner_range,
+                "carrier aggregate-count matched a non-tree element; outer items must resolve \
+                 to tree elements",
+                Merk::count_aggregate_on_range,
+                tx.as_ref(),
                 transaction,
                 grove_version,
             )
         );
 
-        let key_elements = matched.to_key_elements();
-        let mut results: Vec<(Vec<u8>, u64)> = Vec::with_capacity(key_elements.len());
-        let tx = TxRef::new(&self.db, transaction);
+        Ok(results).wrap_with_cost(cost)
+    }
 
-        for (key, element) in key_elements {
-            // Refuse non-tree matches: aggregate-count requires
-            // descending into the matched element to find the leaf
-            // count subtree.
-            if !element.is_any_tree() {
-                return Err(Error::InvalidQuery(
-                    "carrier aggregate-count matched a non-tree element; outer items must \
-                     resolve to tree elements",
-                ))
-                .wrap_with_cost(cost);
-            }
+    /// Executes an `AggregateSumOnRange` query in either the **leaf** or
+    /// **carrier** shape without generating a proof, returning one
+    /// `(outer_key, sum)` pair per matched outer key.
+    ///
+    /// Sum-axis mirror of [`Self::query_aggregate_count_per_key`], and
+    /// the no-proof counterpart of
+    /// [`GroveDb::verify_aggregate_sum_query_per_key`]: it performs the
+    /// same merk-level boundary walks the per-key verifier reconstructs
+    /// from a proof but skips proof generation, encoding, decoding, and
+    /// chain verification entirely.
+    ///
+    /// For a **leaf** query the returned vector contains exactly one
+    /// entry whose key is an empty byte string and whose sum is the same
+    /// `i64` [`Self::query_aggregate_sum`] would have returned.
+    ///
+    /// The empty stand-in key in the leaf shape is deliberate: it is the
+    /// convention the three per-key *verifiers* already collapse a leaf
+    /// proof to, so keeping it here is what lets a caller swap
+    /// `query_aggregate_*_per_key` for `prove_query` +
+    /// `verify_aggregate_*_query_per_key` (or back) and compare results
+    /// element-for-element without branching on the shape. A leaf query
+    /// has no outer key to report, so *some* stand-in is unavoidable;
+    /// matching the already-shipped proof-side convention is worth more
+    /// than a prettier one. Callers that need to distinguish "leaf" from
+    /// "carrier whose outer key happens to be empty" should classify the
+    /// query — outer keys are never empty in a valid carrier, since
+    /// [`PathQuery::validate_aggregate_sum_on_range`] requires every
+    /// `subquery_path` element to be a non-empty key.
+    ///
+    /// For a **carrier** query the outer items must be `Key(_)` /
+    /// `Range*(_)` and the `default_subquery_branch.subquery` must
+    /// validate as a leaf `AggregateSumOnRange`. The optional
+    /// `subquery_path` is followed exactly (single-key step per element)
+    /// before the sum walk. The returned vector has one entry per
+    /// matched outer key in query-direction order (ascending lex when
+    /// `left_to_right = true`, descending otherwise). Outer-key
+    /// candidates that don't exist contribute no entry; outer-key
+    /// candidates whose leaf subtree is empty contribute `(key, 0)`.
+    ///
+    /// `path_query` must satisfy
+    /// [`PathQuery::validate_aggregate_sum_on_range`] in either shape.
+    /// Pagination rules differ by shape: for **leaf** queries both
+    /// `SizedQuery::limit` and `SizedQuery::offset` are rejected (a leaf
+    /// returns a single `i64` and pagination would silently change the
+    /// answer); for **carrier** queries `SizedQuery::limit` is accepted
+    /// and caps the number of outer-key matches the walk returns (each
+    /// matched outer key still produces a complete leaf-ASOR `i64`, the
+    /// inner range is not capped), while `SizedQuery::offset` is still
+    /// rejected. Each leaf subtree the walk terminates in must be a
+    /// `ProvableSumTree` or `ProvableCountProvableSumTree` — the
+    /// merk-level walk rejects any other tree type.
+    ///
+    /// The returned sums are **not** independently verifiable — callers
+    /// are trusting their own merk read path. For verifiable sums, use
+    /// [`Self::prove_query`] +
+    /// [`GroveDb::verify_aggregate_sum_query_per_key`].
+    pub fn query_aggregate_sum_per_key(
+        &self,
+        path_query: &PathQuery,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(Vec<u8>, i64)>, Error> {
+        check_grovedb_v0_with_cost!(
+            "query_aggregate_sum_per_key",
+            grove_version
+                .grovedb_versions
+                .operations
+                .query
+                .query_aggregate_sum_on_range
+        );
 
-            // Build the path to the leaf count subtree:
-            // `path_query.path / outer_key / subquery_path...`.
-            let mut leaf_path_owned: Vec<Vec<u8>> = path_query.path.clone();
-            leaf_path_owned.push(key.clone());
-            leaf_path_owned.extend(subquery_path.iter().cloned());
-            let leaf_path: Vec<&[u8]> = leaf_path_owned.iter().map(|p| p.as_slice()).collect();
+        let mut cost = OperationCost::default();
 
-            let leaf_subtree = cost_return_on_error!(
+        // Up-front shape validation: accept both leaf and carrier
+        // shapes. We classify by what the top-level query owns: a direct
+        // `AggregateSumOnRange` item means leaf; otherwise the validator
+        // has confirmed a valid carrier subquery exists.
+        let inner_range = cost_return_on_error_no_add!(
+            cost,
+            path_query.validate_aggregate_sum_on_range().cloned()
+        );
+
+        if path_query.query.query.aggregate_sum_on_range().is_some() {
+            // Leaf shape: delegate to the existing single-`i64` entry
+            // point and wrap as a one-entry vector with an empty key.
+            let sum = cost_return_on_error!(
                 &mut cost,
-                self.open_transactional_merk_at_path(
-                    SubtreePath::from(leaf_path.as_slice()),
-                    tx.as_ref(),
-                    None,
-                    grove_version,
-                )
+                self.query_aggregate_sum(path_query, transaction, grove_version)
             );
-
-            let count = cost_return_on_error!(
-                &mut cost,
-                leaf_subtree
-                    .count_aggregate_on_range(&inner_range, grove_version)
-                    .map_err(Error::MerkError)
-            );
-
-            results.push((key, count));
+            return Ok(vec![(Vec::new(), sum)]).wrap_with_cost(cost);
         }
+
+        // Carrier shape: delegate to the shared carrier driver, which
+        // terminates each per-key walk in the sum primitive.
+        let tx = TxRef::new(&self.db, transaction);
+        let results = cost_return_on_error!(
+            &mut cost,
+            self.query_aggregate_carrier_per_key(
+                path_query,
+                &inner_range,
+                "carrier aggregate-sum matched a non-tree element; outer items must resolve to \
+                 tree elements",
+                Merk::sum_aggregate_on_range,
+                tx.as_ref(),
+                transaction,
+                grove_version,
+            )
+        );
+
+        Ok(results).wrap_with_cost(cost)
+    }
+
+    /// Executes an `AggregateCountAndSumOnRange` query in either the
+    /// **leaf** or **carrier** shape without generating a proof,
+    /// returning one `(outer_key, count, sum)` triple per matched outer
+    /// key.
+    ///
+    /// Combined-axis mirror of [`Self::query_aggregate_count_per_key`]
+    /// and [`Self::query_aggregate_sum_per_key`], and the no-proof
+    /// counterpart of
+    /// [`GroveDb::verify_aggregate_count_and_sum_query_per_key`]: it
+    /// performs the same merk-level boundary walks the per-key verifier
+    /// reconstructs from a proof but skips proof generation, encoding,
+    /// decoding, and chain verification entirely.
+    ///
+    /// Each matched outer key costs **one** classification walk over its
+    /// leaf merk (the same shape the combined prover walks) with both
+    /// axes accumulated in parallel — strictly cheaper than calling
+    /// [`Self::query_aggregate_count_per_key`] and
+    /// [`Self::query_aggregate_sum_per_key`] separately.
+    ///
+    /// For a **leaf** query the returned vector contains exactly one
+    /// entry whose key is an empty byte string and whose `(count, sum)`
+    /// is the same pair [`Self::query_aggregate_count_and_sum`] would
+    /// have returned — see [`Self::query_aggregate_sum_per_key`] for why
+    /// the empty stand-in key is deliberate.
+    ///
+    /// For a **carrier** query the outer items must be `Key(_)` /
+    /// `Range*(_)` and the `default_subquery_branch.subquery` must
+    /// validate as a leaf `AggregateCountAndSumOnRange`. The optional
+    /// `subquery_path` is followed exactly (single-key step per element)
+    /// before the combined walk. The returned vector has one entry per
+    /// matched outer key in query-direction order (ascending lex when
+    /// `left_to_right = true`, descending otherwise). Outer-key
+    /// candidates that don't exist contribute no entry; outer-key
+    /// candidates whose leaf subtree is empty contribute `(key, 0, 0)`.
+    ///
+    /// `path_query` must satisfy
+    /// [`PathQuery::validate_aggregate_count_and_sum_on_range`] in
+    /// either shape. Pagination rules differ by shape: for **leaf**
+    /// queries both `SizedQuery::limit` and `SizedQuery::offset` are
+    /// rejected (a leaf returns a single `(u64, i64)` and pagination
+    /// would silently change both answers); for **carrier** queries
+    /// `SizedQuery::limit` is accepted and caps the number of outer-key
+    /// matches the walk returns (each matched outer key still produces a
+    /// complete leaf pair, the inner range is not capped), while
+    /// `SizedQuery::offset` is still rejected. Each leaf subtree the
+    /// walk terminates in must be a `ProvableCountProvableSumTree` —
+    /// PCPS is the only tree type whose node hash binds *both*
+    /// aggregates, so the merk-level walk rejects every single-axis host.
+    ///
+    /// The returned pairs are **not** independently verifiable — callers
+    /// are trusting their own merk read path. For verifiable pairs, use
+    /// [`Self::prove_query`] +
+    /// [`GroveDb::verify_aggregate_count_and_sum_query_per_key`].
+    pub fn query_aggregate_count_and_sum_per_key(
+        &self,
+        path_query: &PathQuery,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(Vec<u8>, u64, i64)>, Error> {
+        check_grovedb_v0_with_cost!(
+            "query_aggregate_count_and_sum_per_key",
+            grove_version
+                .grovedb_versions
+                .operations
+                .query
+                .query_aggregate_count_and_sum_on_range
+        );
+
+        let mut cost = OperationCost::default();
+
+        // Up-front shape validation: accept both leaf and carrier
+        // shapes. We classify by what the top-level query owns: a direct
+        // `AggregateCountAndSumOnRange` item means leaf; otherwise the
+        // validator has confirmed a valid carrier subquery exists.
+        let inner_range = cost_return_on_error_no_add!(
+            cost,
+            path_query
+                .validate_aggregate_count_and_sum_on_range()
+                .cloned()
+        );
+
+        if path_query
+            .query
+            .query
+            .aggregate_count_and_sum_on_range()
+            .is_some()
+        {
+            // Leaf shape: delegate to the existing single-pair entry
+            // point and wrap as a one-entry vector with an empty key.
+            let (count, sum) = cost_return_on_error!(
+                &mut cost,
+                self.query_aggregate_count_and_sum(path_query, transaction, grove_version)
+            );
+            return Ok(vec![(Vec::new(), count, sum)]).wrap_with_cost(cost);
+        }
+
+        // Carrier shape: delegate to the shared carrier driver, which
+        // terminates each per-key walk in the combined primitive. The
+        // driver is generic over the per-key payload, so the `(u64,
+        // i64)` pairs come back tupled and are flattened to triples
+        // here to match the per-key verifier's surface.
+        let tx = TxRef::new(&self.db, transaction);
+        let pairs = cost_return_on_error!(
+            &mut cost,
+            self.query_aggregate_carrier_per_key(
+                path_query,
+                &inner_range,
+                "carrier aggregate-count-and-sum matched a non-tree element; outer items must \
+                 resolve to tree elements",
+                Merk::count_and_sum_aggregate_on_range,
+                tx.as_ref(),
+                transaction,
+                grove_version,
+            )
+        );
+
+        let results = pairs
+            .into_iter()
+            .map(|(key, (count, sum))| (key, count, sum))
+            .collect();
 
         Ok(results).wrap_with_cost(cost)
     }
