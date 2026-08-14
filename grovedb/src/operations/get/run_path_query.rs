@@ -458,12 +458,23 @@ impl GroveDb {
                     )))
                     .wrap_with_cost(cost)
                 }
-                (IndexAxis::Count, AggregateFold::Total) => Err(Error::NotSupported(
-                    "a TOTAL over the count axis needs a sum-bearing count secondary; \
-                     tracked in issue #806"
-                        .to_string(),
-                ))
-                .wrap_with_cost(cost),
+                (IndexAxis::Count, AggregateFold::Total) => {
+                    let (lo_count, hi_count) = clamp_count_bounds(*lo, *hi);
+                    let value = cost_return_on_error!(
+                        &mut cost,
+                        self.indexed_count_total_over_value_range(
+                            path,
+                            lo_count,
+                            hi_count,
+                            transaction,
+                            grove_version
+                        )
+                    );
+                    Ok(PathQueryRun::AxisAggregate(AxisAggregateValue::Total(
+                        value,
+                    )))
+                    .wrap_with_cost(cost)
+                }
                 // classify rejects value-range aggregates on the Avg axis.
                 (IndexAxis::Avg, _) => Err(Error::CorruptedCodeExecution(
                     "value-range aggregate on the Avg axis survived classification",

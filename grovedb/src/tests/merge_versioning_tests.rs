@@ -218,6 +218,10 @@ mod tests {
             db.indexed_sum_population_over_value_range(path.as_ref(), 0, 100, None, &bad)
         );
         assert_version_rejected!(
+            "indexed_count_total_over_value_range",
+            db.indexed_count_total_over_value_range(path.as_ref(), 0, 100, None, &bad)
+        );
+        assert_version_rejected!(
             "indexed_count_aggregate_over_value_range",
             db.indexed_count_aggregate_over_value_range(path.as_ref(), 0, 100, None, &bad)
         );
@@ -492,6 +496,10 @@ mod tests {
         assert_version_rejected!(
             "indexed_sum_population_over_value_range",
             db.indexed_sum_population_over_value_range(path.as_ref(), 100, 0, None, &bad)
+        );
+        assert_version_rejected!(
+            "indexed_count_total_over_value_range",
+            db.indexed_count_total_over_value_range(path.as_ref(), 100, 0, None, &bad)
         );
         assert_version_rejected!(
             "indexed_count_aggregate_over_value_range",

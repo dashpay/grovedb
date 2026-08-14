@@ -90,12 +90,11 @@ pub struct IndexedAxisRangeProof {
 /// indexed-tree's per-axis secondary.
 ///
 /// Every axis's secondary binds a count aggregate into its node hashes
-/// (count axis: `ProvableCountTree`; sum and avg axes: dual-axis
-/// `ProvableCountProvableSumTree`), so the secondary proof is always
-/// produced by `Merk::prove_count_offset_on_range`: the skipped prefix
-/// is attested by counted subtree commitments (`HashWithCount` /
-/// `HashWithCountAndSum`), giving `O(log n + k)` proof size regardless
-/// of `offset`.
+/// (every axis is a dual-aggregate `ProvableCountProvableSumTree`), so
+/// the secondary proof is always produced by
+/// `Merk::prove_count_offset_on_range`: the skipped prefix is attested
+/// by counted subtree commitments (`HashWithCountAndSum`), giving
+/// `O(log n + k)` proof size regardless of `offset`.
 #[derive(Encode, Decode, Debug)]
 pub struct IndexedAxisPaginatedProof {
     /// Echoed [`IndexAxis::tag`] of the queried axis. The verifier

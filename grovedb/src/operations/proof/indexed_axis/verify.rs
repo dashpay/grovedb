@@ -682,7 +682,7 @@ fn verify_indexed_axis_paginated_inner(
     }
 
     // Every axis's secondary binds a count aggregate into its node
-    // hashes (count axis: ProvableCountTree; sum and avg axes:
+    // hashes (every axis is a dual-aggregate
     // ProvableCountProvableSumTree), so all three verify through the
     // count-offset primitive: the skipped prefix is independently
     // re-derived from the counted subtree commitments, making `skipped`
@@ -756,16 +756,7 @@ fn verify_indexed_axis_aggregate_inner(
     // makes, sharing these exact range reconstructors so the two sides
     // cannot drift on clamping, degenerate, or out-of-domain shapes.
     let inner_range = match axis {
-        IndexAxis::Count => {
-            if fold == AggregateFold::Total {
-                return Err(Error::NotSupported(
-                    "a TOTAL over the count axis needs a sum-bearing count secondary; \
-                     tracked in issue #806"
-                        .to_string(),
-                ));
-            }
-            count_aggregate_inner_range(envelope.lo, envelope.hi)
-        }
+        IndexAxis::Count => count_aggregate_inner_range(envelope.lo, envelope.hi),
         IndexAxis::Sum => sum_aggregate_inner_range(envelope.lo, envelope.hi),
         IndexAxis::Avg => {
             return Err(Error::NotSupported(

@@ -90,7 +90,7 @@ mod tests {
                 secondary_key,
                 None,
                 false,
-                TreeType::ProvableCountTree,
+                TreeType::ProvableCountProvableSumTree,
                 grove_version,
             )
             .unwrap()
