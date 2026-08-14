@@ -178,6 +178,15 @@ impl AxisEntries {
     }
 
     /// Whether the result list is empty.
+    /// An empty entry list of the right variant for `axis`.
+    pub fn empty_for_axis(axis: grovedb_element::indexed::IndexAxis) -> Self {
+        match axis {
+            grovedb_element::indexed::IndexAxis::Count => AxisEntries::Count(Vec::new()),
+            grovedb_element::indexed::IndexAxis::Sum => AxisEntries::Sum(Vec::new()),
+            grovedb_element::indexed::IndexAxis::Avg => AxisEntries::Avg(Vec::new()),
+        }
+    }
+
     /// The first entry's original (primary) key, if any — the yielded
     /// item of a `k = 1` page, used by rank verification.
     pub fn first_original_key(&self) -> Option<&[u8]> {

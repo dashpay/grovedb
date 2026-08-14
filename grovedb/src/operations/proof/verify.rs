@@ -866,7 +866,7 @@ impl GroveDb {
         // 1. Verify the secondary proof for the query's traversal,
         //    recomputing the secondary root hash.
         let (secondary_root_hash, walk_result) = match &axis_query.traversal {
-            AxisTraversal::TopK { k, offset } => {
+            AxisTraversal::RankedPage { k, offset } => {
                 let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
                 let res = verify_count_offset_on_range_proof(
                     &payload.secondary_proof,
@@ -945,26 +945,51 @@ impl GroveDb {
                 (res.root_hash, AxisWalkResult::Rank { rank })
             }
             AxisTraversal::Bounded { limit, .. } => {
-                let secondary_query =
-                    crate::query::axis_lowering::axis_bounded_merk_query(axis_query)?;
-                let left_to_right = secondary_query.left_to_right;
-                let (root, res) = secondary_query
-                    .execute_proof(&payload.secondary_proof, Some(*limit), left_to_right, 0)
-                    .unwrap()
-                    .map_err(|e| {
-                        Error::InvalidProof(
-                            query.clone(),
-                            format!("axis descent: secondary range proof failed: {e}"),
-                        )
-                    })?;
-                let entries = decode_axis_entries_from_result_set(axis, &res.result_set)?;
-                (
-                    root,
-                    AxisWalkResult::Entries {
-                        entries,
-                        skipped: None,
-                    },
-                )
+                if payload.secondary_proof.is_empty() {
+                    // Empty-secondary convention (mirrors the
+                    // count-offset and aggregate-on-range verifiers):
+                    // empty proof bytes resolve to a NULL_HASH secondary
+                    // root and no entries. Sound because the binding
+                    // below only passes when the element genuinely
+                    // commits an empty secondary — claiming emptiness
+                    // for a populated one needs a Blake3 second
+                    // preimage.
+                    (
+                        NULL_HASH,
+                        AxisWalkResult::Entries {
+                            entries: AxisEntries::empty_for_axis(axis),
+                            skipped: None,
+                        },
+                    )
+                } else {
+                    let secondary_query =
+                        crate::query::axis_lowering::axis_bounded_merk_query(axis_query)?;
+                    let left_to_right = secondary_query.left_to_right;
+                    // proof_version 0 (lenient) matches the standalone
+                    // envelope's choice and is safe HERE because the
+                    // axis decoders consume only `proved.key` — bound
+                    // into the recomputed secondary root — never
+                    // `proved.value`. If a future change starts reading
+                    // secondary VALUES, it must move to
+                    // PROOF_VERSION_LATEST first.
+                    let (root, res) = secondary_query
+                        .execute_proof(&payload.secondary_proof, Some(*limit), left_to_right, 0)
+                        .unwrap()
+                        .map_err(|e| {
+                            Error::InvalidProof(
+                                query.clone(),
+                                format!("axis descent: secondary range proof failed: {e}"),
+                            )
+                        })?;
+                    let entries = decode_axis_entries_from_result_set(axis, &res.result_set)?;
+                    (
+                        root,
+                        AxisWalkResult::Entries {
+                            entries,
+                            skipped: None,
+                        },
+                    )
+                }
             }
             AxisTraversal::RangeAggregate { lo, hi } => match axis {
                 grovedb_merk::proofs::query::IndexAxis::Count => {
@@ -1192,6 +1217,50 @@ impl GroveDb {
 
                     verified_keys.insert(key.clone());
 
+                    // Axis-ordered read: resolved BEFORE the lower-layer
+                    // lookup, so that a prover cannot omit the
+                    // axis-descent layer to fabricate an absence. If the
+                    // query node governing this indexed tree carries
+                    // ReadMode::Axis, the layer MUST exist and MUST be an
+                    // axis descent — a missing layer is a hard error, not
+                    // a silent skip (which the branched shape would
+                    // endorse as a `None`, i.e. proven-absent, slot).
+                    //
+                    // This also makes an empty indexed tree report an
+                    // empty axis result (verify_axis_descent_layer proves
+                    // it against a NULL-hash secondary), matching the
+                    // honest prover and the trusted read rather than
+                    // reporting the branch absent.
+                    if element.is_indexed_tree() {
+                        let mut axis_path = current_path.to_vec();
+                        axis_path.push(key);
+                        if let Some(axis_query) = query.axis_read_at_path(&axis_path) {
+                            let Some(lower_layer) = lower_layers.get(key) else {
+                                return Err(Error::InvalidProof(
+                                    query.clone(),
+                                    format!(
+                                        "V1 axis read at key {} has no axis-descent lower \
+                                         layer; the element cannot be reported as absent",
+                                        hex::encode(key),
+                                    ),
+                                ));
+                            };
+                            path.push(key);
+                            *last_parent_tree_type = element.tree_feature_type();
+                            Self::verify_axis_descent_layer(
+                                lower_layer,
+                                axis_query,
+                                value_bytes,
+                                hash,
+                                &path,
+                                axis_outcomes,
+                                query,
+                                grove_version,
+                            )?;
+                            continue;
+                        }
+                    }
+
                     if let Some(lower_layer) = lower_layers.get(key) {
                         // MmrTree/BulkAppendTree have root_key=None (no child Merk data),
                         // so they match on (..) rather than (Some(_), ..)
@@ -1212,27 +1281,12 @@ impl GroveDb {
                             Element::ProvableCountIndexedTree(..)
                             | Element::ProvableSumIndexedTree(..)
                             | Element::ProvableCountProvableSumIndexedTree(..) => {
+                                // An axis-read indexed tree was already
+                                // handled (and `continue`d) above, before
+                                // this lower-layer lookup, so here the
+                                // query descends the primary as usual.
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
-                                // Axis-ordered descent: the query node
-                                // governing this indexed tree carries
-                                // ReadMode::Axis, so the lower layer must be
-                                // an axis-descent payload — a proof over the
-                                // queried per-axis secondary — never a
-                                // primary descent or a terminal attestation.
-                                if let Some(axis_query) = query.axis_read_at_path(&path) {
-                                    Self::verify_axis_descent_layer(
-                                        lower_layer,
-                                        axis_query,
-                                        value_bytes,
-                                        hash,
-                                        &path,
-                                        axis_outcomes,
-                                        query,
-                                        grove_version,
-                                    )?;
-                                    continue;
-                                }
                                 if query.query_items_at_path(&path, grove_version)?.is_none() {
                                     // The indexed tree is itself a result and
                                     // nothing is queried below it. The element

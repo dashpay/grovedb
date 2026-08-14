@@ -340,6 +340,22 @@ impl PathQuery {
                          (at least one)",
                     ));
                 }
+                // Duplicate branch keys would produce contradictory
+                // per-branch rows (one Some, one None) from a single
+                // valid proof; reject them for reader, prover, and
+                // verifier at once.
+                {
+                    let mut seen = std::collections::BTreeSet::new();
+                    for item in &query.items {
+                        if let QueryItem::Key(branch_key) = item
+                            && !seen.insert(branch_key.as_slice())
+                        {
+                            return Err(Error::InvalidQuery(
+                                "a branched axis read may not name the same branch key twice",
+                            ));
+                        }
+                    }
+                }
                 let branch = &query.default_subquery_branch;
                 let Some(suffix) = branch.subquery_path.as_deref() else {
                     return Err(Error::InvalidQuery(

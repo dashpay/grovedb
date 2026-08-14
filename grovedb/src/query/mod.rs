@@ -1284,7 +1284,7 @@ impl PathQuery {
             return None;
         }
         let node = resolve_node_at_path(&self.query.query, &path[self_path_len..])?;
-        match &node.read_mode {
+        match node.read_mode.as_deref() {
             Some(ReadMode::Axis(axis_query)) => Some(axis_query),
             _ => None,
         }
