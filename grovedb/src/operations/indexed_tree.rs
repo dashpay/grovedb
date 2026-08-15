@@ -2489,7 +2489,18 @@ pub(crate) fn mirror_indexed_axis_to_secondary<'db, S: StorageContext<'db>>(
         }
     }
 
-    if let Some(ok) = &old_key {
+    // A payload change at a FIXED key (avg axis only: a proportional
+    // (count, sum) change keeps the average) must replace in place.
+    // Deleting and reinserting the same key rebalances the AVL twice
+    // and can settle a DIFFERENT shape than the batch mirror's single
+    // replacement write — two write paths committing different
+    // secondary (hence grove) root hashes for identical data, which
+    // `direct_and_batch_agree_on_root_for_a_fixed_key_avg_payload_change`
+    // reproduced on an interior node before this skip existed. The
+    // insert below overwrites the value in place, exactly like the
+    // batch path's put.
+    let key_moved = old_key != new_key;
+    if let (true, Some(ok)) = (key_moved, &old_key) {
         cost_return_on_error!(
             &mut cost,
             Element::delete(
@@ -2676,34 +2687,37 @@ mod axis_row_payload_tests {
 
     #[test]
     fn serialized_bytes_are_stable() {
-        // The exact bytes the mirror hash-commits, golden-pinned for
-        // one representative of each axis.
+        // The exact bytes the mirror hash-commits, pinned as FIXED
+        // vectors — not re-serialized at assertion time, so a
+        // serialization-format change cannot move both sides of the
+        // comparison and slip through. If this test fails, payload
+        // bytes in authenticated state have changed: that is a
+        // consensus event, not a refactor.
         let grove_version = GroveVersion::latest();
-        let count_bytes = axis_row_payload(IndexAxis::Count, 7, 0)
-            .unwrap()
-            .serialize(grove_version)
-            .unwrap();
-        let sum_bytes = axis_row_payload(IndexAxis::Sum, 1, -3)
-            .unwrap()
-            .serialize(grove_version)
-            .unwrap();
-        let avg_bytes = axis_row_payload(IndexAxis::Avg, 1, 5)
-            .unwrap()
-            .serialize(grove_version)
-            .unwrap();
         assert_eq!(
-            count_bytes,
-            Element::new_sum_item(7).serialize(grove_version).unwrap()
-        );
-        assert_eq!(
-            sum_bytes,
-            Element::new_sum_item(-3).serialize(grove_version).unwrap()
-        );
-        assert_eq!(
-            avg_bytes,
-            Element::new_item_with_sum_item(Vec::new(), 5)
-                .serialize(grove_version)
+            axis_row_payload(IndexAxis::Count, 7, 0)
                 .unwrap()
+                .serialize(grove_version)
+                .unwrap(),
+            vec![3, 14, 0],
+            "count axis: SumItem(7) as [variant, zigzag-varint 7, no flags]"
+        );
+        assert_eq!(
+            axis_row_payload(IndexAxis::Sum, 1, -3)
+                .unwrap()
+                .serialize(grove_version)
+                .unwrap(),
+            vec![3, 5, 0],
+            "sum axis: SumItem(-3) as [variant, zigzag-varint -3, no flags]"
+        );
+        assert_eq!(
+            axis_row_payload(IndexAxis::Avg, 1, 5)
+                .unwrap()
+                .serialize(grove_version)
+                .unwrap(),
+            vec![9, 0, 10, 0],
+            "avg axis: ItemWithSumItem(empty, 5) as [variant, empty item, \
+             zigzag-varint 5, no flags]"
         );
     }
 }
