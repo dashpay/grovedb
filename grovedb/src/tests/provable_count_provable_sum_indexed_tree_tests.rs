@@ -1395,7 +1395,7 @@ mod tests {
             .unwrap()
             .expect("page 1");
         assert_eq!(
-            page1,
+            page1.entries,
             vec![
                 (25 * AVG_SCALE, b"bob".to_vec()),
                 (5 * AVG_SCALE, b"alice".to_vec()),
@@ -1415,7 +1415,7 @@ mod tests {
             .unwrap()
             .expect("page 2");
         assert_eq!(
-            page2,
+            page2.entries,
             vec![(3 * AVG_SCALE, b"eve".to_vec()), (0, b"dave".to_vec())]
         );
 
@@ -1431,7 +1431,7 @@ mod tests {
             )
             .unwrap()
             .expect("beyond");
-        assert!(beyond.is_empty());
+        assert!(beyond.entries.is_empty());
     }
 
     #[test]

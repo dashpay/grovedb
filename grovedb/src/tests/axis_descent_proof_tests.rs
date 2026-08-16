@@ -182,7 +182,7 @@ mod tests {
             )
             .unwrap()
             .expect("direct read");
-        assert_eq!(entries_as_sum(&entries), direct.as_slice());
+        assert_eq!(entries_as_sum(&entries), direct.entries.as_slice());
 
         // ...and to the standalone envelope over the same state.
         let standalone_bytes = db
@@ -234,7 +234,7 @@ mod tests {
                     )
                     .unwrap()
                     .expect("direct");
-                assert_eq!(entries_as_sum(&entries), direct.as_slice());
+                assert_eq!(entries_as_sum(&entries), direct.entries.as_slice());
             }
             other => panic!("expected AxisEntries, got {other:?}"),
         }
@@ -358,7 +358,7 @@ mod tests {
                     )
                     .unwrap()
                     .expect("direct");
-                assert_eq!(entries_as_sum(&entries), direct.as_slice());
+                assert_eq!(entries_as_sum(&entries), direct.entries.as_slice());
             }
             other => panic!("expected AxisEntries, got {other:?}"),
         }
@@ -411,7 +411,7 @@ mod tests {
                                 .expect("direct");
                             assert_eq!(
                                 entries_as_sum(entries.as_ref().expect("present")),
-                                direct.as_slice()
+                                direct.entries.as_slice()
                             );
                         }
                     }
@@ -906,7 +906,7 @@ mod tests {
                     .indexed_count_top_k_paginated(path.as_ref(), 2, 0, true, None, grove_version)
                     .unwrap()
                     .expect("direct count top-k");
-                assert_eq!(entries, AxisEntries::Count(direct));
+                assert_eq!(entries, AxisEntries::Count(direct.entries));
             }
             other => panic!("expected AxisEntries, got {other:?}"),
         }

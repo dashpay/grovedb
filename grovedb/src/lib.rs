@@ -246,6 +246,13 @@ use grovedb_visualize::DebugByteVectors;
 /// callable from outside the crate but its return type unnameable.
 #[cfg(feature = "minimal")]
 pub use operations::get::{AxisAggregateValue, PathQueryRun};
+// Gated on `minimal` alone, matching `operations::indexed_tree` itself: the
+// only APIs that produce an `IndexedTopKPage` are the paginated indexed-axis
+// reads, which need storage. A verify-only build consumes proofs and can
+// never name this type, so widening the gate here to `any(minimal, verify)`
+// only breaks that cut on an unresolved import.
+#[cfg(feature = "minimal")]
+pub use operations::indexed_tree::IndexedTopKPage;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use query::{
     aggregate_sum_path_query::AggregateSumPathQuery, AggregateKind, GroveBranchQueryResult,

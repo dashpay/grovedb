@@ -509,6 +509,7 @@ impl GroveDb {
                     transaction,
                     grove_version
                 )
+                .map_ok(|page| page.entries)
             )),
             IndexAxis::Sum => AxisEntries::Sum(cost_return_on_error!(
                 &mut cost,
@@ -520,6 +521,7 @@ impl GroveDb {
                     transaction,
                     grove_version
                 )
+                .map_ok(|page| page.entries)
             )),
             IndexAxis::Avg => AxisEntries::Avg(cost_return_on_error!(
                 &mut cost,
@@ -531,6 +533,7 @@ impl GroveDb {
                     transaction,
                     grove_version
                 )
+                .map_ok(|page| page.entries)
             )),
         };
         Ok(entries).wrap_with_cost(cost)
