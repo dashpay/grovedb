@@ -37,6 +37,7 @@ mod private_document_store_tests;
 // and `provable_count_provable_sum_indexed_tree_tests`; the generic-write
 // rejection cases it uniquely held are ported to
 // `generic_writes_against_pcit_primary_are_rejected`.
+mod axis_descent_proof_tests;
 mod count_offset_paginated_tests;
 mod count_sum_tree_tests;
 mod count_tree_tests;
@@ -56,10 +57,13 @@ mod estimated_costs_worst_case_tests;
 mod get_cost_estimator_tests;
 mod grove_query_result_tests;
 mod indexed_axis_nested_and_bounds_tests;
+mod indexed_axis_offset_proof_tests;
+mod indexed_axis_paginated_cost_tests;
 mod indexed_axis_proof_tests;
 mod indexed_tree_secondary_drift_tests;
 mod indexed_tree_security_regression_tests;
 mod is_empty_tree_tests;
+mod merge_versioning_tests;
 mod misc_coverage_tests;
 mod mmr_tree_tests;
 mod non_counted_tests;
@@ -81,11 +85,14 @@ mod provable_sum_indexed_tree_tests;
 mod provable_sum_tree_tests;
 mod query_indexed_tree_dispatch_tests;
 mod query_result_type_tests;
+mod read_mode_gate_tests;
 mod reference_path_tests;
 mod reference_with_sum_item_tests;
 mod replication_session_tests;
 mod replication_utils_tests;
+mod run_path_query_tests;
 mod succinctness_gap_test;
+mod sum_budget_proof_tests;
 mod test_compaction_sizes;
 mod test_provable_count_fresh;
 mod tree_hashes_tests;
@@ -93,6 +100,7 @@ mod trunk_proof_tests;
 mod v1_cidx_descent_tests;
 mod v1_proof_tests;
 mod verify_grovedb_indexed_tests;
+mod verify_path_query_shape_tests;
 mod visualize_tests;
 
 use std::{
@@ -4696,6 +4704,7 @@ mod general_tests {
                     conditional_subquery_branches: None,
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: None,
                 offset: None,

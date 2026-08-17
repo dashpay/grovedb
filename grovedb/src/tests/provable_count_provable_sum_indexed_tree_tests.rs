@@ -1110,7 +1110,7 @@ mod tests {
 
         // Aggregate count [2, 4]: 3 entries.
         let agg = db
-            .indexed_count_range_aggregate(
+            .indexed_count_aggregate_over_value_range(
                 [TEST_LEAF, b"pcpsit"].as_ref(),
                 2,
                 4,
@@ -1123,7 +1123,7 @@ mod tests {
 
         // Aggregate full scan = 5.
         let total = db
-            .indexed_count_range_aggregate(
+            .indexed_count_aggregate_over_value_range(
                 [TEST_LEAF, b"pcpsit"].as_ref(),
                 0,
                 u64::MAX,
@@ -1217,7 +1217,7 @@ mod tests {
 
         // Aggregate sum in [0, 10]: 0 + 9 + 10 = 19.
         let agg = db
-            .indexed_sum_range_aggregate(
+            .indexed_sum_aggregate_over_value_range(
                 [TEST_LEAF, b"pcpsit"].as_ref(),
                 0,
                 10,
@@ -1230,7 +1230,7 @@ mod tests {
 
         // Aggregate full sum: -25 + 0 + 9 + 10 + 100 = 94.
         let total = db
-            .indexed_sum_range_aggregate(
+            .indexed_sum_aggregate_over_value_range(
                 [TEST_LEAF, b"pcpsit"].as_ref(),
                 i64::MIN,
                 i64::MAX,
@@ -1395,7 +1395,7 @@ mod tests {
             .unwrap()
             .expect("page 1");
         assert_eq!(
-            page1,
+            page1.entries,
             vec![
                 (25 * AVG_SCALE, b"bob".to_vec()),
                 (5 * AVG_SCALE, b"alice".to_vec()),
@@ -1415,7 +1415,7 @@ mod tests {
             .unwrap()
             .expect("page 2");
         assert_eq!(
-            page2,
+            page2.entries,
             vec![(3 * AVG_SCALE, b"eve".to_vec()), (0, b"dave".to_vec())]
         );
 
@@ -1431,7 +1431,7 @@ mod tests {
             )
             .unwrap()
             .expect("beyond");
-        assert!(beyond.is_empty());
+        assert!(beyond.entries.is_empty());
     }
 
     #[test]
@@ -2182,6 +2182,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: None,
                 offset: None,
@@ -2206,6 +2207,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: None,
                 offset: None,

@@ -2,41 +2,30 @@
 //! V4 gate.
 //!
 //! A batch `DeleteTree` op carries a caller-declared `TreeType`, which on
-//! V1..V3 is taken at face value (reading the stored element costs an extra
-//! seek + load per op, and cost feeds fees on the released versions). On V4+
-//! the stored element is read and its ACTUAL type selects the cleanup
-//! namespaces — a declared type that hid a stored indexed primary would skip
-//! the per-axis secondary sweep and leave authenticated stale rows.
+//! V1..V3 is taken at face value. On V4+ the stored element's ACTUAL type
+//! selects the cleanup namespaces — a declared type that hid a stored indexed
+//! primary would skip the per-axis secondary sweep and leave authenticated
+//! stale rows. The stored element comes from data already loaded on every
+//! path that needs it (the emptiness pre-scan's own read, or the old value
+//! the merk delete surfaces through the old-value observer), so V4 charges
+//! exactly what V1..V3 charge.
 
-use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
-use grovedb_merk::{
-    element::{get::ElementFetchFromStorageExtensions, tree_type::ElementTreeTypeExtensions},
-    TreeType,
-};
-use grovedb_storage::StorageContext;
-use grovedb_version::version::GroveVersion;
+use grovedb_merk::{element::tree_type::ElementTreeTypeExtensions, TreeType};
 
 use crate::{Element, Error};
 
 /// Treat the tree type carried by `DeleteTree` as a checked claim, not as
 /// storage-ownership authority. Cleanup namespaces must be selected from the
-/// element that is actually stored at the target key.
-pub(crate) fn validate_delete_tree_type<'db, S: StorageContext<'db>>(
-    parent_storage: &S,
-    key: &[u8],
+/// element that is actually stored at the target key — which the caller has
+/// already loaded (this function performs no reads and charges no cost).
+pub(crate) fn validate_delete_tree_type(
+    stored_element: &Element,
     declared_tree_type: TreeType,
-    grove_version: &GroveVersion,
-) -> CostResult<TreeType, Error> {
-    let mut cost = OperationCost::default();
-    let stored_element = cost_return_on_error!(
-        &mut cost,
-        Element::get_from_storage(parent_storage, key, grove_version).map_err(Error::MerkError)
-    );
+) -> Result<TreeType, Error> {
     let Some(actual_tree_type) = stored_element.tree_type() else {
         return Err(Error::InvalidBatchOperation(
             "DeleteTree target exists but is not a tree element",
-        ))
-        .wrap_with_cost(cost);
+        ));
     };
     // Reject a mismatch only when an indexed tree is involved on either
     // side. The security property this guards is cleanup-namespace
@@ -58,8 +47,7 @@ pub(crate) fn validate_delete_tree_type<'db, S: StorageContext<'db>>(
     {
         return Err(Error::InvalidBatchOperation(
             "DeleteTree declared tree type does not match the stored element",
-        ))
-        .wrap_with_cost(cost);
+        ));
     }
-    Ok(actual_tree_type).wrap_with_cost(cost)
+    Ok(actual_tree_type)
 }

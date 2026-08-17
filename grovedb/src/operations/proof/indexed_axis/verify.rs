@@ -21,7 +21,8 @@ use grovedb_merk::{
     },
     tree::{axes_digest, combine_hash, combine_hash_three, value_hash, CryptoHash},
 };
-use grovedb_query::QueryItem as MerkQueryItem;
+use grovedb_query::{AggregateFold, QueryItem as MerkQueryItem};
+use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 use crate::{Error, GroveDb};
 
@@ -126,6 +127,48 @@ fn verify_deepest_layer(
         execute_single_key_proof(&layer_proofs[last_idx], cidx_key, err_label)?;
     let actual_value_hash = value_hash(&cidx_value_bytes).value().to_owned();
 
+    let queried_axis_digest = recompute_axis_binding_digest(
+        &cidx_value_bytes,
+        axis,
+        secondary_root_hash,
+        other_axes_root_hashes,
+        target_is_pcpsit,
+        err_label,
+    )?;
+
+    let combined = combine_hash_three(&actual_value_hash, primary_root_hash, &queried_axis_digest)
+        .value()
+        .to_owned();
+    if combined != cidx_value_hash_recorded {
+        return Err(Error::CorruptedData(format!(
+            "{err_label}: deepest-layer chain mismatch — parent recorded value_hash {} but \
+             combine_hash_three(H(value), primary_root, axis_digest) is {}",
+            hex::encode(cidx_value_hash_recorded),
+            hex::encode(combined)
+        )));
+    }
+    Ok(layer_root)
+}
+
+/// The attestation-binding core shared by the standalone envelopes and
+/// the embedded V1 axis descent: check the proved element's family
+/// against the requested axis, then recompute the third
+/// `combine_hash_three` input — the queried secondary's (recomputed)
+/// root hash for PCIT / PSIT, or the `axes_digest` over
+/// `other_axes_root_hashes` + the queried axis's recomputed root for
+/// PCPSIT.
+///
+/// The caller performs the `combine_hash_three(H(value), primary_root,
+/// returned_digest)` comparison against whatever parent-committed hash
+/// its envelope carries.
+pub(crate) fn recompute_axis_binding_digest(
+    element_value_bytes: &[u8],
+    axis: IndexAxis,
+    secondary_root_hash: &[u8; 32],
+    other_axes_root_hashes: &[(u8, [u8; 32])],
+    target_is_pcpsit: bool,
+    err_label: &'static str,
+) -> Result<CryptoHash, Error> {
     // Bind the proved element's family to the requested axis.
     //
     // Without this, the H1-A chain check below passes for a *relabeled*
@@ -146,13 +189,14 @@ fn verify_deepest_layer(
     // digest and fails the chain check below), so the family check is
     // all that is additionally required.
     {
-        let proved_family = grovedb_element::ElementType::from_serialized_value(&cidx_value_bytes)
-            .map_err(|e| {
-                Error::CorruptedData(format!(
-                    "{err_label}: cannot determine element type of proved value: {e}"
-                ))
-            })?
-            .base();
+        let proved_family =
+            grovedb_element::ElementType::from_serialized_value(element_value_bytes)
+                .map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "{err_label}: cannot determine element type of proved value: {e}"
+                    ))
+                })?
+                .base();
         let expected_family = if target_is_pcpsit {
             grovedb_element::ElementType::ProvableCountProvableSumIndexedTree
         } else {
@@ -212,18 +256,7 @@ fn verify_deepest_layer(
         *secondary_root_hash
     };
 
-    let combined = combine_hash_three(&actual_value_hash, primary_root_hash, &queried_axis_digest)
-        .value()
-        .to_owned();
-    if combined != cidx_value_hash_recorded {
-        return Err(Error::CorruptedData(format!(
-            "{err_label}: deepest-layer chain mismatch — parent recorded value_hash {} but \
-             combine_hash_three(H(value), primary_root, axis_digest) is {}",
-            hex::encode(cidx_value_hash_recorded),
-            hex::encode(combined)
-        )));
-    }
-    Ok(layer_root)
+    Ok(queried_axis_digest)
 }
 
 /// Verify a single-key Merk proof: returns
@@ -272,7 +305,16 @@ impl GroveDb {
         expected_axis: IndexAxis,
         expected_k: u16,
         expected_descending: bool,
+        grove_version: &GroveVersion,
     ) -> Result<IndexedAxisQueryResult, Error> {
+        check_grovedb_v0!(
+            "verify_indexed_axis_top_k",
+            grove_version
+                .grovedb_versions
+                .operations
+                .indexed_axis
+                .verify_single_path
+        );
         let envelope = decode_range_envelope(proof_bytes)?;
         if envelope.axis_tag != expected_axis.tag() {
             return Err(Error::CorruptedData(format!(
@@ -313,7 +355,16 @@ impl GroveDb {
         expected_axis: IndexAxis,
         secondary_query: MerkQuery,
         expected_limit: Option<u16>,
+        grove_version: &GroveVersion,
     ) -> Result<IndexedAxisQueryResult, Error> {
+        check_grovedb_v0!(
+            "verify_indexed_axis_query",
+            grove_version
+                .grovedb_versions
+                .operations
+                .indexed_axis
+                .verify_single_path
+        );
         let envelope = decode_range_envelope(proof_bytes)?;
         if envelope.axis_tag != expected_axis.tag() {
             return Err(Error::CorruptedData(format!(
@@ -349,12 +400,22 @@ impl GroveDb {
         expected_k: u16,
         expected_offset: u64,
         expected_descending: bool,
+        grove_version: &GroveVersion,
     ) -> Result<IndexedAxisPaginatedResult, Error> {
+        check_grovedb_v0!(
+            "verify_indexed_axis_top_k_paginated",
+            grove_version
+                .grovedb_versions
+                .operations
+                .indexed_axis
+                .verify_single_path
+        );
         let config = bincode::config::standard().with_limit::<{ 16 * 1024 * 1024 }>();
-        let (envelope, _): (IndexedAxisPaginatedProof, _) =
+        let (envelope, consumed): (IndexedAxisPaginatedProof, _) =
             bincode::decode_from_slice(proof_bytes, config).map_err(|e| {
                 Error::CorruptedData(format!("decoding indexed-axis paginated proof: {e}"))
             })?;
+        reject_trailing_envelope_bytes(consumed, proof_bytes.len(), "paginated")?;
         if envelope.axis_tag != expected_axis.tag() {
             return Err(Error::CorruptedData(format!(
                 "indexed-axis paginated proof axis mismatch: expected {:?} (tag={}), envelope \
@@ -386,19 +447,96 @@ impl GroveDb {
         verify_indexed_axis_paginated_inner(envelope, expected_axis, path)
     }
 
+    /// Verify a rank-of-key proof produced by
+    /// `prove_indexed_axis_rank_of_key`: the claim "exactly
+    /// `expected_rank` entries come strictly before `item_key` in the
+    /// directional walk of this axis".
+    ///
+    /// The proof is an offset-paginated envelope with
+    /// `offset = expected_rank, k = 1`. On top of the paginated
+    /// verification this additionally requires:
+    /// - the attested skipped count equals `expected_rank` exactly (a
+    ///   truncated skip would mean the walk has fewer than
+    ///   `expected_rank` entries, so no entry can sit at that rank),
+    /// - exactly one entry was yielded, and its original key is
+    ///   `item_key` (binding the rank to the claimed key rather than
+    ///   whatever happens to sit at that position).
+    ///
+    /// Returns the paginated result whose single entry carries the
+    /// item's axis value; `root_hash` must be compared against the
+    /// trusted GroveDB root as usual.
+    pub fn verify_indexed_axis_rank_of_key(
+        proof_bytes: &[u8],
+        path: &[&[u8]],
+        expected_axis: IndexAxis,
+        item_key: &[u8],
+        expected_rank: u64,
+        expected_descending: bool,
+        grove_version: &GroveVersion,
+    ) -> Result<IndexedAxisPaginatedResult, Error> {
+        let result = Self::verify_indexed_axis_top_k_paginated(
+            proof_bytes,
+            path,
+            expected_axis,
+            1,
+            expected_rank,
+            expected_descending,
+            grove_version,
+        )?;
+        if result.skipped != expected_rank {
+            return Err(Error::CorruptedData(format!(
+                "indexed-axis rank proof: the walk attests only {} entries before the window, \
+                 but rank {} was claimed — the walk is shorter than the claimed rank",
+                result.skipped, expected_rank
+            )));
+        }
+        let yielded_key: &[u8] = match &result.entries {
+            AxisEntries::Count(v) if v.len() == 1 => &v[0].1,
+            AxisEntries::Sum(v) if v.len() == 1 => &v[0].1,
+            AxisEntries::Avg(v) if v.len() == 1 => &v[0].1,
+            other => {
+                return Err(Error::CorruptedData(format!(
+                    "indexed-axis rank proof: expected exactly one yielded entry at the rank \
+                     window, got {}",
+                    other.len()
+                )));
+            }
+        };
+        if yielded_key != item_key {
+            return Err(Error::CorruptedData(format!(
+                "indexed-axis rank proof: the entry at rank {} is {}, not the claimed key {}",
+                expected_rank,
+                hex::encode(yielded_key),
+                hex::encode(item_key)
+            )));
+        }
+        Ok(result)
+    }
+
     /// Verify an `IndexedAxisAggregateProof`-shaped aggregate proof.
-    pub fn verify_indexed_axis_range_aggregate(
+    pub fn verify_indexed_axis_aggregate_over_value_range(
         proof_bytes: &[u8],
         path: &[&[u8]],
         expected_axis: IndexAxis,
         expected_lo: i128,
         expected_hi: i128,
+        expected_fold: AggregateFold,
+        grove_version: &GroveVersion,
     ) -> Result<IndexedAxisAggregateResult, Error> {
+        check_grovedb_v0!(
+            "verify_indexed_axis_aggregate_over_value_range",
+            grove_version
+                .grovedb_versions
+                .operations
+                .indexed_axis
+                .verify_single_path
+        );
         let config = bincode::config::standard().with_limit::<{ 16 * 1024 * 1024 }>();
-        let (envelope, _): (IndexedAxisAggregateProof, _) =
+        let (envelope, consumed): (IndexedAxisAggregateProof, _) =
             bincode::decode_from_slice(proof_bytes, config).map_err(|e| {
                 Error::CorruptedData(format!("decoding indexed-axis aggregate proof: {e}"))
             })?;
+        reject_trailing_envelope_bytes(consumed, proof_bytes.len(), "aggregate")?;
         if envelope.axis_tag != expected_axis.tag() {
             return Err(Error::CorruptedData(format!(
                 "indexed-axis aggregate proof axis mismatch: expected {:?} (tag={}), envelope \
@@ -413,6 +551,15 @@ impl GroveDb {
                 "indexed-axis aggregate proofs are not defined for the Avg axis".to_string(),
             ));
         }
+        if envelope.fold_tag != expected_fold.tag() {
+            return Err(Error::CorruptedData(format!(
+                "indexed-axis aggregate proof fold mismatch: expected {expected_fold} \
+                 (tag={}), envelope carries tag={} — a population proof cannot answer a \
+                 question about a total, or vice versa",
+                expected_fold.tag(),
+                envelope.fold_tag
+            )));
+        }
         if envelope.lo != expected_lo {
             return Err(Error::CorruptedData(format!(
                 "indexed-axis aggregate proof lo mismatch: expected {}, envelope carries {}",
@@ -425,15 +572,36 @@ impl GroveDb {
                 expected_hi, envelope.hi
             )));
         }
-        verify_indexed_axis_aggregate_inner(envelope, expected_axis, path)
+        verify_indexed_axis_aggregate_inner(envelope, expected_axis, expected_fold, path)
     }
 }
 
 fn decode_range_envelope(proof_bytes: &[u8]) -> Result<IndexedAxisRangeProof, Error> {
     let config = bincode::config::standard().with_limit::<{ 16 * 1024 * 1024 }>();
-    let (envelope, _): (IndexedAxisRangeProof, _) = bincode::decode_from_slice(proof_bytes, config)
-        .map_err(|e| Error::CorruptedData(format!("decoding indexed-axis range proof: {e}")))?;
+    let (envelope, consumed): (IndexedAxisRangeProof, _) =
+        bincode::decode_from_slice(proof_bytes, config)
+            .map_err(|e| Error::CorruptedData(format!("decoding indexed-axis range proof: {e}")))?;
+    reject_trailing_envelope_bytes(consumed, proof_bytes.len(), "range")?;
     Ok(envelope)
+}
+
+/// Reject an envelope whose decode did not consume the whole buffer.
+/// Trailing bytes never change the verified content, but tolerating
+/// them makes the proof byte-malleable — two distinct byte strings
+/// would verify as the same proof, which breaks any caller that
+/// dedups, caches, or consensus-compares proofs by their bytes.
+fn reject_trailing_envelope_bytes(
+    consumed: usize,
+    total: usize,
+    shape: &'static str,
+) -> Result<(), Error> {
+    if consumed != total {
+        return Err(Error::CorruptedData(format!(
+            "indexed-axis {shape} proof has {} trailing byte(s) after the envelope",
+            total - consumed
+        )));
+    }
+    Ok(())
 }
 
 fn verify_indexed_axis_range_inner(
@@ -513,84 +681,30 @@ fn verify_indexed_axis_paginated_inner(
         ));
     }
 
-    let (secondary_root_hash, entries, skipped) = match axis {
-        IndexAxis::Count | IndexAxis::Avg => {
-            let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
-            let count_offset_result = verify_count_offset_on_range_proof(
-                &envelope.secondary_proof,
-                &inner_range,
-                envelope.requested_offset,
-                Some(envelope.requested_k as u64),
-                !envelope.descending,
-            )
-            .unwrap()
-            .map_err(|e| {
-                Error::CorruptedData(format!(
-                    "indexed-axis paginated proof: secondary count-offset proof failed to \
-                     verify: {e}"
-                ))
-            })?;
-            let entries = decode_axis_entries_from_count_offset_items(
-                axis,
-                &count_offset_result.returned_items,
-            )?;
-            (
-                count_offset_result.root_hash,
-                entries,
-                count_offset_result.skipped,
-            )
-        }
-        IndexAxis::Sum => {
-            // Sum-axis paginated: regular range proof with limit = offset+k.
-            // Verifier reconstructs same range proof, then post-skips the
-            // first `requested_offset` items in directional order.
-            let mut full_range = MerkQuery::new();
-            full_range.insert_all();
-            full_range.left_to_right = !envelope.descending;
-            // Mirror the prover: an envelope whose offset + k overflows u16
-            // cannot be honestly produced, so reject rather than verify a
-            // silently-short page.
-            let combined =
-                (envelope.requested_offset as u128).saturating_add(envelope.requested_k as u128);
-            if combined > u16::MAX as u128 {
-                return Err(Error::CorruptedData(format!(
-                    "indexed-axis paginated proof (sum): offset + k = {combined} exceeds the {} \
-                     entry limit a single page can prove",
-                    u16::MAX
-                )));
-            }
-            let combined_limit = combined as u16;
-            let (secondary_root_hash, sec_result) = full_range
-                .execute_proof(
-                    &envelope.secondary_proof,
-                    Some(combined_limit),
-                    !envelope.descending,
-                    0,
-                )
-                .unwrap()
-                .map_err(|e| {
-                    Error::CorruptedData(format!(
-                        "indexed-axis paginated proof: secondary regular proof (sum) failed to \
-                         verify: {e}"
-                    ))
-                })?;
-            let mut all_entries =
-                decode_axis_entries_from_result_set(IndexAxis::Sum, &sec_result.result_set)?;
-            let total_returned = all_entries.len() as u64;
-            let skip = envelope.requested_offset.min(total_returned);
-            // Trim the first `skip` items off the front of the result set.
-            match &mut all_entries {
-                AxisEntries::Sum(v) => {
-                    v.drain(0..skip as usize);
-                    if v.len() > envelope.requested_k as usize {
-                        v.truncate(envelope.requested_k as usize);
-                    }
-                }
-                _ => unreachable!("axis is Sum here"),
-            }
-            (secondary_root_hash, all_entries, skip)
-        }
-    };
+    // Every axis's secondary binds a count aggregate into its node
+    // hashes (every axis is a dual-aggregate
+    // ProvableCountProvableSumTree), so all three verify through the
+    // count-offset primitive: the skipped prefix is independently
+    // re-derived from the counted subtree commitments, making `skipped`
+    // cryptographically attested for every axis.
+    let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
+    let count_offset_result = verify_count_offset_on_range_proof(
+        &envelope.secondary_proof,
+        &inner_range,
+        envelope.requested_offset,
+        Some(envelope.requested_k as u64),
+        !envelope.descending,
+    )
+    .unwrap()
+    .map_err(|e| {
+        Error::CorruptedData(format!(
+            "indexed-axis paginated proof: secondary count-offset proof failed to verify: {e}"
+        ))
+    })?;
+    let entries =
+        decode_axis_entries_from_count_offset_items(axis, &count_offset_result.returned_items)?;
+    let (secondary_root_hash, skipped) =
+        (count_offset_result.root_hash, count_offset_result.skipped);
 
     let initial_root = verify_deepest_layer(
         &envelope.layer_proofs,
@@ -621,6 +735,7 @@ fn verify_indexed_axis_paginated_inner(
 fn verify_indexed_axis_aggregate_inner(
     envelope: IndexedAxisAggregateProof,
     axis: IndexAxis,
+    fold: AggregateFold,
     path: &[&[u8]],
 ) -> Result<IndexedAxisAggregateResult, Error> {
     if envelope.layer_proofs.len() != path.len() {
@@ -636,37 +751,43 @@ fn verify_indexed_axis_aggregate_inner(
         ));
     }
 
-    let (secondary_root_hash, aggregate_value) = match axis {
-        IndexAxis::Count => {
-            let inner_range = count_aggregate_inner_range(envelope.lo, envelope.hi);
+    // The byte range follows the AXIS; the walker follows the FOLD —
+    // the same split the prover's `build_aggregate_secondary_proof`
+    // makes, sharing these exact range reconstructors so the two sides
+    // cannot drift on clamping, degenerate, or out-of-domain shapes.
+    let inner_range = match axis {
+        IndexAxis::Count => count_aggregate_inner_range(envelope.lo, envelope.hi),
+        IndexAxis::Sum => sum_aggregate_inner_range(envelope.lo, envelope.hi),
+        IndexAxis::Avg => {
+            return Err(Error::NotSupported(
+                "indexed-axis aggregate proofs are not defined for the Avg axis".to_string(),
+            ));
+        }
+    };
+    let (secondary_root_hash, aggregate_value) = match fold {
+        AggregateFold::Population => {
             let (root, count) =
                 verify_aggregate_count_on_range_proof(&envelope.secondary_proof, &inner_range)
                     .unwrap()
                     .map_err(|e| {
                         Error::CorruptedData(format!(
-                            "indexed-axis aggregate proof: secondary aggregate-count proof \
+                            "indexed-axis aggregate proof: secondary population proof \
                              failed to verify: {e}"
                         ))
                     })?;
             (root, count as i128)
         }
-        IndexAxis::Sum => {
-            let inner_range = sum_aggregate_inner_range(envelope.lo, envelope.hi);
+        AggregateFold::Total => {
             let (root, sum) =
                 verify_aggregate_sum_on_range_proof(&envelope.secondary_proof, &inner_range)
                     .unwrap()
                     .map_err(|e| {
                         Error::CorruptedData(format!(
-                            "indexed-axis aggregate proof: secondary aggregate-sum proof failed \
+                            "indexed-axis aggregate proof: secondary total proof failed \
                              to verify: {e}"
                         ))
                     })?;
             (root, sum as i128)
-        }
-        IndexAxis::Avg => {
-            return Err(Error::NotSupported(
-                "indexed-axis aggregate proofs are not defined for the Avg axis".to_string(),
-            ));
         }
     };
 
@@ -696,7 +817,7 @@ fn verify_indexed_axis_aggregate_inner(
     })
 }
 
-fn decode_axis_entries_from_result_set(
+pub(crate) fn decode_axis_entries_from_result_set(
     axis: IndexAxis,
     result_set: &[grovedb_merk::proofs::query::ProvedKeyOptionalValue],
 ) -> Result<AxisEntries, Error> {
@@ -755,7 +876,7 @@ fn decode_axis_entries_from_result_set(
     }
 }
 
-fn decode_axis_entries_from_count_offset_items(
+pub(crate) fn decode_axis_entries_from_count_offset_items(
     axis: IndexAxis,
     items: &[grovedb_merk::proofs::query::CountOffsetReturnedItem],
 ) -> Result<AxisEntries, Error> {
@@ -794,12 +915,24 @@ fn decode_axis_entries_from_count_offset_items(
             Ok(AxisEntries::Avg(entries))
         }
         IndexAxis::Sum => {
-            unreachable!("count-offset proof does not apply to the sum axis")
+            let mut entries: Vec<(i64, Vec<u8>)> = Vec::with_capacity(items.len());
+            for it in items {
+                if it.key.len() < 8 {
+                    return Err(Error::CorruptedData(format!(
+                        "indexed-axis (sum) paginated secondary key shorter than 8 bytes: {:?}",
+                        it.key
+                    )));
+                }
+                let mut sum_bytes = [0u8; 8];
+                sum_bytes.copy_from_slice(&it.key[..8]);
+                entries.push((decode_sum_sort_key(&sum_bytes), it.key[8..].to_vec()));
+            }
+            Ok(AxisEntries::Sum(entries))
         }
     }
 }
 
-fn count_aggregate_inner_range(lo: i128, hi: i128) -> MerkQueryItemForRange {
+pub(crate) fn count_aggregate_inner_range(lo: i128, hi: i128) -> MerkQueryItemForRange {
     // Out-of-domain (hi < 0 OR lo > u64::MAX): emit the canonical
     // empty-range shape (`u64::MAX..u64::MAX`) the prover commits via
     // `build_empty_count_aggregate_proof`. This must match exactly or
@@ -827,7 +960,7 @@ fn count_aggregate_inner_range(lo: i128, hi: i128) -> MerkQueryItemForRange {
     }
 }
 
-fn sum_aggregate_inner_range(lo: i128, hi: i128) -> MerkQueryItemForRange {
+pub(crate) fn sum_aggregate_inner_range(lo: i128, hi: i128) -> MerkQueryItemForRange {
     // Out-of-domain (hi < i64::MIN OR lo > i64::MAX): emit the canonical
     // empty-range shape the prover commits via
     // `build_empty_sum_aggregate_proof` (`encode(i64::MAX)..encode(i64::MAX)`).

@@ -4,8 +4,9 @@ use crate::version::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
         GroveDBOperationsDeleteVersions, GroveDBOperationsGetVersions,
-        GroveDBOperationsInsertVersions, GroveDBOperationsPrivateDocumentStoreVersions,
-        GroveDBOperationsProofVersions, GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
+        GroveDBOperationsIndexedAxisVersions, GroveDBOperationsInsertVersions,
+        GroveDBOperationsPrivateDocumentStoreVersions, GroveDBOperationsProofVersions,
+        GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
         GroveDBReplicationVersions, GroveDBVersions,
     },
@@ -148,6 +149,12 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 query_keys_optional: 0,
                 query_raw_keys_optional: 0,
                 follow_element: 0,
+                run_path_query: 0,
+            },
+            indexed_axis: GroveDBOperationsIndexedAxisVersions {
+                read: 0,
+                prove_single_path: 0,
+                verify_single_path: 0,
             },
             proof: GroveDBOperationsProofVersions {
                 prove_query: 0,
@@ -167,6 +174,8 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 verify_query_with_chained_path_queries: 0,
                 verify_query_get_parent_tree_info_with_options: 0,
                 terminal_non_merk_tree_child_hash: 0,
+                axis_descent_in_v1_envelope: 0,
+                sum_budget_in_v1_envelope: 0,
             },
             average_case: GroveDBOperationsAverageCaseVersions {
                 add_average_case_get_merk_at_path: 0,
@@ -212,6 +221,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
             merge: 0,
             query_items_at_path: 0,
             should_add_parent_tree_at_path: 0,
+            unified_read_mode: 0,
         },
         replication: GroveDBReplicationVersions {
             get_subtrees_metadata: 0,

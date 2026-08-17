@@ -109,6 +109,28 @@ impl GroveDb {
         prove_options: Option<ProveOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<GroveDBProof, Error> {
+        // Read-mode dispatch. Axis shapes are served by the V1 envelope
+        // — validated here (classify runs the full shape grammar) and
+        // gated below once `prove_version` is known. Sum-budget shapes
+        // have no proof form yet. Anything malformed fails closed
+        // rather than being misread as key selection.
+        let (is_axis_shape, is_sum_budget_shape) =
+            if path_query.query.query.has_read_mode_anywhere() {
+                match path_query.classify() {
+                    Ok(crate::PathQueryShape::AxisRead { .. })
+                    | Ok(crate::PathQueryShape::BranchedAxisRead { .. }) => (true, false),
+                    Ok(crate::PathQueryShape::SumBudget { .. }) => (false, true),
+                    Ok(_) => {
+                        return Err(Error::CorruptedCodeExecution(
+                            "a read-mode-bearing query classified as a non-read-mode shape",
+                        ))
+                        .wrap_with_cost(OperationCost::default());
+                    }
+                    Err(e) => return Err(e).wrap_with_cost(OperationCost::default()),
+                }
+            } else {
+                (false, false)
+            };
         // Aggregate-count gate: validate at entry so malformed ACOR
         // queries (invalid inner range, ACOR-hidden-in-subquery, etc.) are
         // rejected up front instead of being skipped when the recursive
@@ -155,6 +177,62 @@ impl GroveDb {
         // refusing the combination here keeps callers from accidentally
         // emitting a V0 ACOR proof that the verifier would (correctly)
         // reject.
+        // Axis shapes are V1-envelope-only, and a V4 capability: refuse
+        // the V0 envelope (same contract as the aggregate gates below)
+        // and pre-V4 versions up front, mirroring the verifier's
+        // envelope gate so both sides agree at every version.
+        if is_axis_shape {
+            if prove_version == 0 {
+                return Err(Error::NotSupported(
+                    "axis-ordered path queries require V1 proof envelopes; upgrade the grove \
+                     version producing the proof"
+                        .to_string(),
+                ))
+                .wrap_with_cost(OperationCost::default());
+            }
+            if grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .axis_descent_in_v1_envelope
+                != 1
+            {
+                return Err(Error::NotSupported(
+                    "axis-ordered descents in the V1 proof envelope are not emitted at this \
+                     grove version"
+                        .to_string(),
+                ))
+                .wrap_with_cost(OperationCost::default());
+            }
+        }
+
+        // Sum-budget shapes mirror the axis gates: V1 envelope only, and
+        // a GROVE_V4 capability on both sides.
+        if is_sum_budget_shape {
+            if prove_version == 0 {
+                return Err(Error::NotSupported(
+                    "sum-budget path queries require V1 proof envelopes; upgrade the grove \
+                     version producing the proof"
+                        .to_string(),
+                ))
+                .wrap_with_cost(OperationCost::default());
+            }
+            if grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .sum_budget_in_v1_envelope
+                != 1
+            {
+                return Err(Error::NotSupported(
+                    "sum-budget windows in the V1 proof envelope are not emitted at this \
+                     grove version"
+                        .to_string(),
+                ))
+                .wrap_with_cost(OperationCost::default());
+            }
+        }
+
         if is_acor_query && prove_version == 0 {
             return Err(Error::NotSupported(
                 "AggregateCountOnRange proofs require V1 proof envelopes; upgrade the grove \
@@ -233,6 +311,117 @@ impl GroveDb {
     /// from a purely syntactic gate — gives callers an unstable
     /// error contract that depends on whether the merk happens to
     /// exist.
+    /// Build the [`SumBudgetWindowProof`] payload for the sum-budget
+    /// read at `target_path` (which is `path_query.path` — classify
+    /// admits the sum-budget node at the query root only).
+    ///
+    /// Runs the budget walk with the **provable** fold semantics (skip
+    /// non-sum elements, ignore references — the two behaviors a window
+    /// proof can replay deterministically; reference targets live
+    /// outside the window and cannot be) to learn the scanned window
+    /// size and stop condition, then emits an ordinary Merk proof over
+    /// exactly that window: limited to the window size when a stop
+    /// condition fired, unlimited when the walk exhausted the ranges
+    /// (so the proof itself attests exhaustion).
+    fn build_sum_budget_window_payload(
+        &self,
+        target_path: &[&[u8]],
+        path_query: &PathQuery,
+        transaction: &Transaction,
+        grove_version: &GroveVersion,
+    ) -> CostResult<crate::operations::proof::SumBudgetWindowProof, Error> {
+        use grovedb_merk::proofs::query::{AggregateSumQuery, ReadMode};
+
+        use crate::element::aggregate_sum_query::{
+            AggregateSumQueryOptions, ElementAggregateSumQueryExtensions,
+        };
+
+        let mut cost = OperationCost::default();
+
+        let node = &path_query.query.query;
+        let Some(ReadMode::SumBudget(budget)) = node.read_mode.as_deref() else {
+            return Err(Error::CorruptedCodeExecution(
+                "sum-budget window build without a root sum-budget read",
+            ))
+            .wrap_with_cost(cost);
+        };
+
+        // 1. Run the budget walk with the provable fold semantics.
+        let aggregate_sum_path_query = crate::AggregateSumPathQuery {
+            path: target_path.iter().map(|segment| segment.to_vec()).collect(),
+            aggregate_sum_query: AggregateSumQuery {
+                items: node.items.clone(),
+                left_to_right: node.left_to_right,
+                sum_limit: budget.sum_limit,
+                limit_of_items_to_check: budget.match_limit,
+            },
+        };
+        let provable_options = AggregateSumQueryOptions {
+            allow_cache: true,
+            error_if_intermediate_path_tree_not_present: true,
+            error_if_non_sum_item_found: false,
+            ignore_references: true,
+        };
+        let walk = cost_return_on_error!(
+            &mut cost,
+            Element::get_aggregate_sum_query(
+                &self.db,
+                &aggregate_sum_path_query,
+                provable_options,
+                Some(transaction),
+                grove_version,
+            )
+        );
+
+        // 2. Determine the stop condition the verifier will replay.
+        let mut remaining: i64 = cost_return_on_error_no_add!(
+            cost,
+            i64::try_from(budget.sum_limit)
+                .map_err(|_| Error::InvalidQuery("sum-budget limit must fit in i64"))
+        );
+        for (_, value) in &walk.results {
+            remaining = remaining.saturating_sub(*value);
+        }
+        let budget_reached = remaining <= 0;
+        let match_limit_reached = budget
+            .match_limit
+            .is_some_and(|limit| walk.results.len() >= limit as usize);
+        let exhausted = !budget_reached && !match_limit_reached && !walk.hard_limit_reached;
+
+        // 3. Emit the Merk window proof with the query's own items.
+        let target_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                target_path.into(),
+                transaction,
+                None,
+                grove_version
+            )
+        );
+        let mut window_query = grovedb_merk::proofs::Query::new_with_direction(node.left_to_right);
+        window_query.items = node.items.clone();
+        let window_limit = if exhausted {
+            None
+        } else {
+            Some(walk.elements_scanned)
+        };
+        let proof_result = cost_return_on_error!(
+            &mut cost,
+            target_merk
+                .prove(window_query, window_limit, grove_version)
+                .map_err(|e| Error::CorruptedData(format!(
+                    "sum-budget window: merk proof over the scanned window: {e}"
+                )))
+        );
+
+        Ok(crate::operations::proof::SumBudgetWindowProof {
+            exhausted,
+            window_len: walk.elements_scanned,
+            merk_proof: proof_result.proof,
+        })
+        .wrap_with_cost(cost)
+    }
+
     fn check_count_offset_target_tree_type(
         &self,
         path_query: &PathQuery,
@@ -1352,6 +1541,43 @@ impl GroveDb {
             )
         );
 
+        // A single-path axis read has exactly one answer — the axis
+        // descent at the queried path. The generic walk cannot produce
+        // one when the target is missing or is not an indexed tree; it
+        // returns `Ok` with an ordinary (or empty) layer instead, and
+        // the verifier then rejects the result as "must verify exactly
+        // one axis layer, got 0". Fail generation here instead, so the
+        // prover never hands out a proof that cannot answer the query
+        // it was asked.
+        //
+        // Branched axis reads are deliberately excluded: an absent
+        // branch key legitimately produces no descent, and its absence
+        // is what the branching-level Merk proof authenticates.
+        if matches!(
+            path_query.classify(),
+            Ok(crate::PathQueryShape::AxisRead { .. })
+        ) {
+            fn count_axis_descents(layer: &LayerProof) -> usize {
+                usize::from(matches!(
+                    layer.merk_proof,
+                    ProofBytes::IndexedTreeAxisDescent(_)
+                )) + layer
+                    .lower_layers
+                    .values()
+                    .map(count_axis_descents)
+                    .sum::<usize>()
+            }
+            let descents = count_axis_descents(&root_layer);
+            if descents != 1 {
+                return Err(Error::InvalidPath(format!(
+                    "a single-path axis read must produce exactly one axis descent at the \
+                     queried path, but the walk produced {descents} — the path does not \
+                     name an indexed tree carrying that axis"
+                )))
+                .wrap_with_cost(cost);
+            }
+        }
+
         Ok(GroveDBProof::V1(GroveDBProofV1 { root_layer })).wrap_with_cost(cost)
     }
 
@@ -1848,6 +2074,80 @@ impl GroveDb {
                                 has_a_result_at_level |= true;
                             }
 
+                            // Sum-budget read of a merk-backed tree: the
+                            // query node governing this element carries
+                            // ReadMode::SumBudget, so the layer carries a
+                            // sum-budget window — an ordinary Merk proof
+                            // over exactly the window the budget walk
+                            // scanned — instead of a key-selection
+                            // descent. Matched before every other tree arm
+                            // so the shape can never be silently served as
+                            // a plain descent.
+                            Ok(ref elem)
+                                if !done_with_results && {
+                                    let mut lower_path = path.clone();
+                                    lower_path.push(key.as_slice());
+                                    path_query.sum_budget_read_at_path(&lower_path).is_some()
+                                } =>
+                            {
+                                use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
+
+                                if matches!(
+                                    elem,
+                                    Element::MmrTree(..)
+                                        | Element::BulkAppendTree(..)
+                                        | Element::DenseAppendOnlyFixedSizeTree(..)
+                                        | Element::CommitmentTree(..)
+                                ) || elem.tree_type().is_none()
+                                {
+                                    return Err(Error::NotSupported(
+                                        "sum-budget reads target merk-backed trees; the query \
+                                         path names a different element kind"
+                                            .to_string(),
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+                                if grove_version
+                                    .grovedb_versions
+                                    .operations
+                                    .proof
+                                    .sum_budget_in_v1_envelope
+                                    != 1
+                                {
+                                    return Err(Error::NotSupported(
+                                        "sum-budget windows in the V1 proof envelope are not \
+                                         emitted at this grove version"
+                                            .to_string(),
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+                                let payload = cost_return_on_error!(
+                                    &mut cost,
+                                    self.build_sum_budget_window_payload(
+                                        &lower_path,
+                                        path_query,
+                                        &tx,
+                                        grove_version,
+                                    )
+                                );
+                                let payload_bytes =
+                                    cost_return_on_error_no_add!(cost, payload.encode_canonical());
+                                lower_layers.insert(
+                                    key.clone(),
+                                    LayerProof {
+                                        merk_proof:
+                                            crate::operations::proof::ProofBytes::SumBudgetWindow(
+                                                payload_bytes,
+                                            ),
+                                        lower_layers: Default::default(),
+                                    },
+                                );
+                                has_a_result_at_level |= true;
+                            }
+
                             // MmrTree with subquery → generate MMR proof
                             // root_key is always None for MmrTree (no child Merk data)
                             Ok(Element::MmrTree(mmr_size, _))
@@ -1974,6 +2274,81 @@ impl GroveDb {
                                 .wrap_with_cost(cost);
                             }
 
+                            // Axis-ordered read of an indexed tree: the
+                            // query node governing this element carries
+                            // ReadMode::Axis, so instead of descending the
+                            // primary the layer carries an axis-descent
+                            // payload — a proof over the queried per-axis
+                            // secondary. Matched before the primary-descent
+                            // arms below so an axis read can never be
+                            // silently served as a primary descent; matches
+                            // empty primaries too (the payload commits
+                            // NULL_HASH roots naturally).
+                            Ok(Element::ProvableCountIndexedTree(..))
+                            | Ok(Element::ProvableSumIndexedTree(..))
+                            | Ok(Element::ProvableCountProvableSumIndexedTree(..))
+                                if !done_with_results && {
+                                    let mut lower_path = path.clone();
+                                    lower_path.push(key.as_slice());
+                                    path_query.axis_read_at_path(&lower_path).is_some()
+                                } =>
+                            {
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+                                let Some(axis_query) = path_query.axis_read_at_path(&lower_path)
+                                else {
+                                    return Err(Error::CorruptedCodeExecution(
+                                        "axis read vanished between the match guard and the arm",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                };
+
+                                // The axis descent is a GROVE_V4 envelope
+                                // capability; older versions refuse to emit
+                                // it, mirroring the verifier-side gate.
+                                if grove_version
+                                    .grovedb_versions
+                                    .operations
+                                    .proof
+                                    .axis_descent_in_v1_envelope
+                                    != 1
+                                {
+                                    return Err(Error::NotSupported(
+                                        "axis-ordered descents in the V1 proof envelope are \
+                                         not emitted at this grove version"
+                                            .to_string(),
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+
+                                let payload_batch = grovedb_storage::StorageBatch::new();
+                                let lower_subtree_path: grovedb_path::SubtreePath<&[u8]> =
+                                    lower_path.as_slice().into();
+                                let payload = cost_return_on_error!(
+                                    &mut cost,
+                                    self.build_axis_descent_payload(
+                                        lower_subtree_path,
+                                        axis_query,
+                                        &tx,
+                                        &payload_batch,
+                                        grove_version,
+                                    )
+                                );
+                                let payload_bytes =
+                                    cost_return_on_error_no_add!(cost, payload.encode_canonical());
+                                lower_layers.insert(
+                                    key.clone(),
+                                    LayerProof {
+                                        merk_proof:
+                                            crate::operations::proof::ProofBytes::IndexedTreeAxisDescent(
+                                                payload_bytes,
+                                            ),
+                                        lower_layers: Default::default(),
+                                    },
+                                );
+                                has_a_result_at_level |= true;
+                            }
+
                             // Subquery into CountIndexedTree: descend into
                             // the primary like a regular tree, then wrap
                             // the resulting Merk proof bytes with a 32-byte
@@ -2016,8 +2391,8 @@ impl GroveDb {
                                         "aggregate-on-range carrier queries cannot descend \
                                          through an indexed tree (PCIT / PSIT / PCPSIT); use \
                                          the dedicated indexed-axis aggregate proofs \
-                                         (prove_indexed_count_range_aggregate / \
-                                         prove_indexed_sum_range_aggregate) instead"
+                                         (prove_indexed_count_aggregate_over_value_range / \
+                                         prove_indexed_sum_aggregate_over_value_range) instead"
                                             .to_string(),
                                     ))
                                     .wrap_with_cost(cost);
@@ -2128,8 +2503,8 @@ impl GroveDb {
                                         "aggregate-on-range carrier queries cannot descend \
                                          through an indexed tree (PCIT / PSIT / PCPSIT); use \
                                          the dedicated indexed-axis aggregate proofs \
-                                         (prove_indexed_count_range_aggregate / \
-                                         prove_indexed_sum_range_aggregate) instead"
+                                         (prove_indexed_count_aggregate_over_value_range / \
+                                         prove_indexed_sum_aggregate_over_value_range) instead"
                                             .to_string(),
                                     ))
                                     .wrap_with_cost(cost);
@@ -2232,8 +2607,8 @@ impl GroveDb {
                                         "aggregate-on-range carrier queries cannot descend \
                                          through an indexed tree (PCIT / PSIT / PCPSIT); use \
                                          the dedicated indexed-axis aggregate proofs \
-                                         (prove_indexed_count_range_aggregate / \
-                                         prove_indexed_sum_range_aggregate) instead"
+                                         (prove_indexed_count_aggregate_over_value_range / \
+                                         prove_indexed_sum_aggregate_over_value_range) instead"
                                             .to_string(),
                                     ))
                                     .wrap_with_cost(cost);

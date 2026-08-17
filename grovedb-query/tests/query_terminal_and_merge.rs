@@ -118,7 +118,7 @@ fn merge_apis_cover_default_and_conditional_paths() {
     other.insert_key(k(2));
     other.set_subquery_path(vec![k(9)]);
 
-    base.merge_with(other);
+    base.merge_with(other).expect("merge must succeed");
     assert_eq!(base.items.len(), 2);
     assert!(base.items.contains(&QueryItem::Key(k(1))));
     assert!(base.items.contains(&QueryItem::Key(k(2))));
@@ -129,7 +129,7 @@ fn merge_apis_cover_default_and_conditional_paths() {
         .expect("conditional branch should be created");
     assert!(conditional.contains_key(&QueryItem::Key(k(2))));
 
-    let merged_empty = Query::merge_multiple(vec![]);
+    let merged_empty = Query::merge_multiple(vec![]).expect("merge must succeed");
     assert!(merged_empty.items.is_empty());
 
     let mut left = Query::new_single_key(k(10));
@@ -172,7 +172,8 @@ fn merge_conditional_subquery_branches_splits_intersections() {
             subquery_path: Some(vec![p(b"a")]),
             subquery: None,
         },
-    );
+    )
+    .expect("no read modes involved");
 
     assert_eq!(merged.len(), 3);
     assert!(merged.contains_key(&QueryItem::Range(k(1)..k(3))));

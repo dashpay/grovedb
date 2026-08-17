@@ -126,8 +126,9 @@ impl AggregateSumQuery {
     /// Adds a range of all potential values to the query, so that the query
     /// will return all values
     ///
-    /// All other items in the query will be discarded as you are now getting
-    /// back all elements.
+    /// All other plain key/range items in the query will be discarded as you
+    /// are now getting back all elements. Aggregate meta-items
+    /// (`AggregateCountOnRange` etc.) are kept — see [`Self::insert_item`].
     pub fn insert_all(&mut self) {
         let range = QueryItem::RangeFull(RangeFull);
         self.insert_item(range);
@@ -138,17 +139,32 @@ impl AggregateSumQuery {
     /// then merged together so that the query includes the minimum number of
     /// items (with no items covering any duplicate parts of keyspace) while
     /// still including every key or range that has been added to the query.
+    ///
+    /// Aggregate meta-variants (`AggregateCountOnRange`,
+    /// `AggregateSumOnRange`, `AggregateCountAndSumOnRange`) are **never**
+    /// range-merged: merging would erase the aggregate wrapper and silently
+    /// turn the item into a plain range. An exact structural duplicate is
+    /// deduplicated; anything else that overlaps an aggregate item is kept
+    /// as a separate item. (Aggregate meta-variants are not valid
+    /// `AggregateSumQuery` items in the first place, so this only preserves
+    /// the invalid shape for downstream rejection instead of laundering it
+    /// into a valid-looking plain range.)
     pub fn insert_item(&mut self, mut item: QueryItem) {
-        // since `QueryItem::eq` considers items equal if they collide at all
-        // (including keys within ranges or ranges which partially overlap),
-        // `items.take` will remove the first item which collides
+        let item_is_aggregate = item.is_aggregate();
 
         self.items = self
             .items
             .iter()
             .filter_map(|our_item| {
-                if our_item.is_key() && item.is_key() && our_item == &item {
+                if our_item == &item {
+                    // Exact structural duplicate (key, range, or aggregate):
+                    // drop the existing copy, `item` replaces it below.
                     None
+                } else if item_is_aggregate || our_item.is_aggregate() {
+                    // Aggregate wrappers are not mergeable with anything —
+                    // keep both items instead of silently dropping the
+                    // wrapper.
+                    Some(our_item.clone())
                 } else if our_item.collides_with(&item) {
                     item.merge_assign(our_item);
                     None
@@ -159,9 +175,11 @@ impl AggregateSumQuery {
             .collect();
 
         // Insert item at the correct sorted position.
-        // Ord-equal items are always removed by the collision filter above,
-        // so binary_search always returns Err. We use unwrap_or_else to
-        // extract the insertion index from either variant without panicking.
+        // `QueryItem::cmp` compares by covered range, so an aggregate item
+        // and a plain item covering the same range are Ord-equal while being
+        // kept as distinct items above; binary_search may therefore return
+        // either Ok or Err. We use unwrap_or_else to extract the insertion
+        // index from either variant without panicking.
         let pos = self.items.binary_search(&item).unwrap_or_else(|e| e);
         self.items.insert(pos, item);
     }

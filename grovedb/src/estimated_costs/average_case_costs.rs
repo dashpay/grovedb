@@ -550,7 +550,7 @@ impl GroveDb {
             // their fixed worst-case varint width, so `i64::MAX` here is the
             // upper bound, not an average.
             let worst_case_row = match axis {
-                grovedb_element::indexed::IndexAxis::Count => Element::new_item(vec![]),
+                grovedb_element::indexed::IndexAxis::Count => Element::new_sum_item(i64::MAX),
                 grovedb_element::indexed::IndexAxis::Sum => Element::new_sum_item(i64::MAX),
                 grovedb_element::indexed::IndexAxis::Avg => {
                     Element::new_item_with_sum_item(vec![], i64::MAX)

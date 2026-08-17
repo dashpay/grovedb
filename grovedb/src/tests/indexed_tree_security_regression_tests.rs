@@ -280,27 +280,17 @@ fn batch_overwrite_cleans_psit_and_pcpsit_namespaces() {
     assert_verify_passes(&pcpsit, grove_version);
 }
 
-/// DEFERRED — documents a known-open issue, not current behaviour.
+/// Overwriting an indexed tree with a bare `Reference` schedules the per-axis
+/// secondary cleanup like every other overwrite-capable op (closes issue
+/// https://github.com/dashpay/grovedb/issues/776).
 ///
-/// Overwriting an indexed tree with a bare `Reference` does not schedule the
-/// per-axis secondary cleanup, so the secondary namespace is orphaned. The fix
-/// is to route reference overwrites through `inspect_cidx_overwrite` like every
-/// other overwrite-capable op — but that costs one extra stored-element read on
-/// EVERY reference overwrite (+1 seek, +79 storage_loaded_bytes, measured by
-/// `single_insert_cost_tests::test_batch_root_one_update_item_*_with_refresh_reference`).
-/// Cost feeds fees, and references over plain trees are shipped functionality on
-/// GROVE_V1/V2/V3, so paying that read unconditionally changes live behaviour.
-///
-/// The hole requires an indexed tree to be the overwritten element, which cannot
-/// happen on any released version — indexed trees are introduced by this PR. It
-/// should therefore be closed together with the protocol version that activates
-/// indexed trees, gated so live versions keep today's cost. Un-ignore this test
-/// as part of that change.
+/// This used to be deferred because routing reference overwrites through the
+/// classifier started with a dedicated stored-element read (+1 seek, +79
+/// storage_loaded_bytes on every reference overwrite — a live cost change).
+/// The V4 gate now classifies from the old value the merk walk already
+/// fetched, so including references costs nothing and the hole is closed on
+/// V4+ while V1..V3 keep their released behaviour.
 #[test]
-#[ignore = "deferred, tracked in \
-            https://github.com/dashpay/grovedb/issues/776 — closing this changes \
-            reference-overwrite cost on live versions; gate with the protocol \
-            version that activates indexed trees"]
 fn bare_reference_overwrite_cleans_indexed_storage() {
     let grove_version = GroveVersion::latest();
     let db = make_test_grovedb(grove_version);
@@ -659,11 +649,12 @@ fn batch_patch_cannot_forge_a_rootless_aggregate() {
 /// The DeleteTree cleanup-type fix is gated on V4: active there, absent on the
 /// released versions.
 ///
-/// Reading the stored element to select cleanup namespaces costs an extra seek
-/// and load per op, so applying it to V1..V3 would change tracked costs — and
-/// therefore fees — on a shipped path. This pins both halves of the gate, so a
-/// future change cannot quietly extend it to a released version (which would
-/// be a consensus divergence) or drop it from V4 (which would reopen the
+/// The check derives the stored type from data the apply already loads, so it
+/// no longer costs anything — but it still flips an accepted/rejected
+/// outcome: a mismatched declare that V1..V3 accept is refused on V4+ when an
+/// indexed tree is involved. This pins both halves of the gate, so a future
+/// change cannot quietly extend it to a released version (which would be a
+/// consensus divergence) or drop it from V4 (which would reopen the
 /// type-confusion).
 #[test]
 fn delete_tree_cleanup_type_gate_is_v4_only() {
@@ -684,7 +675,7 @@ fn delete_tree_cleanup_type_gate_is_v4_only() {
             .apply_batch
             .delete_tree_cleanup_type_source,
         1,
-        "V4 must read the stored element to select cleanup namespaces"
+        "V4 must select cleanup namespaces from the stored element's type"
     );
 
     // Behaviour: a mismatched declared type on a populated PCIT.

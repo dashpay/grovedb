@@ -918,7 +918,7 @@ mod tests {
             .unwrap()
             .expect("page 1");
         assert_eq!(
-            page1,
+            page1.entries,
             vec![(100i64, b"frank".to_vec()), (12, b"bob".to_vec())]
         );
 
@@ -934,7 +934,7 @@ mod tests {
             .unwrap()
             .expect("page 2");
         assert_eq!(
-            page2,
+            page2.entries,
             vec![(5i64, b"alice".to_vec()), (0, b"dave".to_vec())]
         );
 
@@ -950,7 +950,7 @@ mod tests {
             )
             .unwrap()
             .expect("beyond");
-        assert!(beyond.is_empty());
+        assert!(beyond.entries.is_empty());
 
         // offset=0 ≡ plain top_k.
         let plain = db
@@ -968,7 +968,7 @@ mod tests {
             )
             .unwrap()
             .expect("pag offset 0");
-        assert_eq!(plain, pag);
+        assert_eq!(plain, pag.entries);
     }
 
     #[test]
@@ -1109,7 +1109,7 @@ mod tests {
     }
 
     #[test]
-    fn indexed_sum_range_aggregate_sums_in_range() {
+    fn indexed_sum_aggregate_over_value_range_sums_in_range() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         insert_empty_psit_at_test_leaf(&db, b"psit", grove_version);
@@ -1117,14 +1117,20 @@ mod tests {
 
         // Sum in [-1, 12]: -1 + 0 + 5 + 12 = 16.
         let agg = db
-            .indexed_sum_range_aggregate([TEST_LEAF, b"psit"].as_ref(), -1, 12, None, grove_version)
+            .indexed_sum_aggregate_over_value_range(
+                [TEST_LEAF, b"psit"].as_ref(),
+                -1,
+                12,
+                None,
+                grove_version,
+            )
             .unwrap()
             .expect("agg");
         assert_eq!(agg, 16);
 
         // Total sum [i64::MIN, i64::MAX]: -7 + -1 + 0 + 5 + 12 + 100 = 109.
         let total = db
-            .indexed_sum_range_aggregate(
+            .indexed_sum_aggregate_over_value_range(
                 [TEST_LEAF, b"psit"].as_ref(),
                 i64::MIN,
                 i64::MAX,
@@ -1137,7 +1143,7 @@ mod tests {
 
         // Empty range [200, 300]: 0.
         let none = db
-            .indexed_sum_range_aggregate(
+            .indexed_sum_aggregate_over_value_range(
                 [TEST_LEAF, b"psit"].as_ref(),
                 200,
                 300,
@@ -1150,7 +1156,7 @@ mod tests {
 
         // lo > hi: 0.
         let degenerate = db
-            .indexed_sum_range_aggregate(
+            .indexed_sum_aggregate_over_value_range(
                 [TEST_LEAF, b"psit"].as_ref(),
                 100,
                 10,
@@ -1163,7 +1169,7 @@ mod tests {
 
         // Negative-only [-100, 0]: -7 + -1 + 0 = -8.
         let neg = db
-            .indexed_sum_range_aggregate(
+            .indexed_sum_aggregate_over_value_range(
                 [TEST_LEAF, b"psit"].as_ref(),
                 -100,
                 0,
@@ -1663,6 +1669,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: None,
                 offset: None,
@@ -1686,6 +1693,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: None,
                 offset: None,
@@ -1796,6 +1804,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: None,
                 offset: None,

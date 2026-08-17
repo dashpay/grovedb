@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn pcit_batch_overwrite_existing_pcit_with_empty_pcit_clears_secondary() {
-        // Per `inspect_cidx_overwrite`: cidx → empty cidx is the safe
+        // Per `classify_cidx_overwrite`: cidx → empty cidx is the safe
         // subset and must succeed via batch (post-apply cleanup
         // clears the old secondary namespace at
         // Blake3(primary_prefix ‖ 0x01)).
@@ -473,7 +473,7 @@ mod tests {
     #[test]
     fn pcit_batch_overwrite_existing_pcit_with_non_empty_pcit_is_rejected() {
         // indexed → non-empty indexed must be rejected by
-        // `inspect_cidx_overwrite` (storage-pointer ambiguity: the new
+        // `classify_cidx_overwrite` (storage-pointer ambiguity: the new
         // root keys would refer to on-disk data that post-apply
         // cleanup of the OLD cidx also clears).
         let grove_version = GroveVersion::latest();
@@ -497,12 +497,15 @@ mod tests {
                 grove_version,
             )
             .unwrap();
+        // Refused by the ungated empty-at-batch-insertion guard (a non-empty
+        // indexed element cannot enter a batch at all); the overwrite
+        // classifier's NotSupported stays as defense in depth behind it.
         match result {
-            Err(Error::NotSupported(msg)) => assert!(
-                msg.contains("NON-EMPTY indexed tree"),
-                "expected NotSupported, got: {msg}"
+            Err(Error::InvalidBatchOperation(msg)) => assert!(
+                msg.contains("must be empty at the moment of batch insertion"),
+                "expected the empty-at-insertion refusal, got: {msg}"
             ),
-            other => panic!("expected NotSupported, got {:?}", other),
+            other => panic!("expected InvalidBatchOperation, got {:?}", other),
         }
     }
 
@@ -1037,7 +1040,7 @@ mod tests {
             .unwrap()
             .expect("page 1");
         assert_eq!(
-            page1,
+            page1.entries,
             vec![(20u64, b"eve".to_vec()), (12u64, b"bob".to_vec())]
         );
 
@@ -1054,7 +1057,7 @@ mod tests {
             .unwrap()
             .expect("page 2");
         assert_eq!(
-            page2,
+            page2.entries,
             vec![(7u64, b"dave".to_vec()), (5u64, b"alice".to_vec())]
         );
 
@@ -1070,7 +1073,7 @@ mod tests {
             )
             .unwrap()
             .expect("page 3");
-        assert_eq!(page3, vec![(1u64, b"carol".to_vec())]);
+        assert_eq!(page3.entries, vec![(1u64, b"carol".to_vec())]);
 
         // Offset beyond total → empty.
         let beyond = db
@@ -1084,7 +1087,7 @@ mod tests {
             )
             .unwrap()
             .expect("offset beyond");
-        assert!(beyond.is_empty());
+        assert!(beyond.entries.is_empty());
 
         // offset=0 ≡ plain top_k.
         let plain = db
@@ -1102,7 +1105,7 @@ mod tests {
             )
             .unwrap()
             .expect("paginated offset 0");
-        assert_eq!(plain, paginated);
+        assert_eq!(plain, paginated.entries);
     }
 
     #[test]
@@ -1218,7 +1221,7 @@ mod tests {
     }
 
     #[test]
-    fn indexed_count_range_aggregate_counts_in_range() {
+    fn indexed_count_aggregate_over_value_range_counts_in_range() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         insert_empty_pcit(&db, b"cidx", grove_version);
@@ -1226,7 +1229,7 @@ mod tests {
 
         // [5, 12]: alice + dave + bob = 3 entries.
         let count = db
-            .indexed_count_range_aggregate(
+            .indexed_count_aggregate_over_value_range(
                 [TEST_LEAF, b"cidx"].as_ref(),
                 5,
                 12,
@@ -1239,7 +1242,7 @@ mod tests {
 
         // [0, u64::MAX]: total count of entries (5).
         let total = db
-            .indexed_count_range_aggregate(
+            .indexed_count_aggregate_over_value_range(
                 [TEST_LEAF, b"cidx"].as_ref(),
                 0,
                 u64::MAX,
@@ -1252,7 +1255,7 @@ mod tests {
 
         // [100, 200]: nothing in this range → 0.
         let none = db
-            .indexed_count_range_aggregate(
+            .indexed_count_aggregate_over_value_range(
                 [TEST_LEAF, b"cidx"].as_ref(),
                 100,
                 200,
@@ -1265,7 +1268,7 @@ mod tests {
 
         // lo > hi: 0 (degenerate).
         let degenerate = db
-            .indexed_count_range_aggregate(
+            .indexed_count_aggregate_over_value_range(
                 [TEST_LEAF, b"cidx"].as_ref(),
                 100,
                 10,

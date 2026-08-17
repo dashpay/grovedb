@@ -171,7 +171,7 @@ mod tests {
                     key.as_slice(),
                     None,
                     false,
-                    TreeType::ProvableCountTree,
+                    TreeType::ProvableCountProvableSumTree,
                     gv,
                 )
                 .unwrap()
@@ -795,16 +795,19 @@ mod tests {
     }
 
     /// A secondary row whose key is shorter than the axis's 8-byte sort prefix
-    /// carries no recoverable `(count, original_key)` pair. Every direct count
-    /// query must raise `CorruptedData` naming the axis and the expected width
-    /// — dropping the row instead would let a short-key row silently shrink a
-    /// top-k page or a range listing while the caller sees a successful result.
+    /// carries no recoverable `(count, original_key)` pair. Every place that
+    /// decodes a row must raise `CorruptedData` naming the axis and the
+    /// expected width — dropping the row instead would let a short-key row
+    /// silently shrink a top-k page or a range listing while the caller sees a
+    /// successful result.
     ///
-    /// Each of the three query shapes decodes in a different place — the plain
-    /// walk, the pagination *skip* loop, the pagination *collect* loop, and the
-    /// range walk — so all four are driven here.
+    /// The decode sites driven here: the plain top-k walk, the paginated
+    /// collect at `offset == 0`, and the range walk. A paginated read with
+    /// `offset > 0` skips by counted descent and decodes only *returned* rows,
+    /// so its skip phase deliberately does not error — that contract is
+    /// asserted here too.
     #[test]
-    fn a_short_secondary_key_is_reported_by_every_count_query_shape() {
+    fn a_short_secondary_key_is_reported_by_every_shape_that_decodes_it() {
         let gv = GroveVersion::latest();
         let db = make_test_grovedb(gv);
         make_pcit_with(&db, b"pcit", &[b"a", b"b"], gv);
@@ -833,11 +836,23 @@ mod tests {
                 .expect_err("paginated collect must surface the malformed row"),
             "paginated (offset 0, collect loop)",
         );
-        assert_short_key_corruption(
+        // A paginated read with `offset > 0` skips by counted descent over
+        // the secondary merk: skipped rows are consumed from aggregate
+        // counts and their keys are never decoded. The malformed row is a
+        // real tree row here, so it still occupies its position (descending
+        // order is [0xff…, b, a] and offset 1 lands on b — the same
+        // position the storage iterator would assign), but only *returned*
+        // rows are decoded, so the skip no longer surfaces it as an error.
+        // Detecting malformed rows in the skipped region is
+        // `verify_grovedb`'s job (asserted above) and the collect loops'
+        // (asserted below for every shape that reads the row itself).
+        assert_eq!(
             db.indexed_count_top_k_paginated([TEST_LEAF, b"pcit"].as_ref(), 1, 1, true, None, gv)
                 .unwrap()
-                .expect_err("paginated skip must surface the malformed row"),
-            "paginated (offset 1, skip loop)",
+                .expect("counted skip passes the malformed row without decoding it")
+                .entries,
+            vec![(1u64, b"b".to_vec())],
+            "descending order is [0xff…, b, a]; the malformed row is counted at offset 0",
         );
         assert_short_key_corruption(
             db.indexed_count_range(
@@ -852,6 +867,17 @@ mod tests {
             .unwrap()
             .expect_err("range must surface the malformed row"),
             "range",
+        );
+
+        // When the malformed row is the RETURNED position of a counted read
+        // (ascending order is [a, b, 0xff…]; offset 2 selects it), the
+        // counted path must decode-and-refuse it exactly as the iterator
+        // paths do — skipped rows go undecoded, returned rows never do.
+        assert_short_key_corruption(
+            db.indexed_count_top_k_paginated([TEST_LEAF, b"pcit"].as_ref(), 1, 2, false, None, gv)
+                .unwrap()
+                .expect_err("a returned malformed row must surface through the counted path"),
+            "paginated (offset 2, counted path, returned row)",
         );
 
         // Ascending top-k stops before reaching the malformed row, so the
@@ -1176,6 +1202,135 @@ mod tests {
             .unwrap()
             .expect("commit axis drift");
         tx.commit().expect("tx commit");
+    }
+
+    /// Rebind a PCIT's parent element so its `secondary_root_key` names a
+    /// key that does not exist in the count secondary, leaving every row
+    /// and hash otherwise intact. Produces the state a counted read must
+    /// treat as corruption: the element is readable and valid, but the
+    /// root it names resolves to nothing.
+    fn rebind_count_secondary_root_key_to(
+        db: &TempGroveDb,
+        pcit_path: &[&[u8]],
+        bogus_key: Vec<u8>,
+        gv: &GroveVersion,
+    ) {
+        use grovedb_merk::element::reconstruct::ElementReconstructExtensions;
+
+        let tx = db.start_transaction();
+        let batch = StorageBatch::new();
+        let owned: Vec<&[u8]> = pcit_path.to_vec();
+        let path: SubtreePath<&[u8]> = owned.as_slice().into();
+        let (parent_path, pcit_key) = path.derive_parent().expect("non-root PCIT");
+
+        let (primary_root_hash, primary_root_key, primary_aggregate) = {
+            let primary = db
+                .open_transactional_merk_at_path(path.clone(), &tx, Some(&batch), gv)
+                .unwrap()
+                .expect("open PCIT primary");
+            primary
+                .root_hash_key_and_aggregate_data()
+                .unwrap()
+                .expect("primary root state")
+        };
+
+        let mut parent_merk = db
+            .open_transactional_merk_at_path(parent_path.clone(), &tx, Some(&batch), gv)
+            .unwrap()
+            .expect("open parent merk");
+        let pcit_element = Element::get(&parent_merk, pcit_key, true, gv)
+            .unwrap()
+            .expect("PCIT element");
+        let secondary_root_key = match pcit_element.underlying() {
+            Element::ProvableCountIndexedTree(_, s, ..) => s.clone(),
+            other => panic!("not a PCIT element: {other:?}"),
+        };
+        let secondary_root_hash = {
+            let secondary = db
+                .open_indexed_secondary_at_path(
+                    path.clone(),
+                    IndexAxis::Count,
+                    secondary_root_key,
+                    &tx,
+                    Some(&batch),
+                    gv,
+                )
+                .unwrap()
+                .expect("open count secondary");
+            let (hash, _, _) = secondary
+                .root_hash_key_and_aggregate_data()
+                .unwrap()
+                .expect("secondary root state");
+            hash
+        };
+
+        let rebound = pcit_element
+            .reconstruct_with_two_root_keys(primary_root_key, Some(bogus_key), primary_aggregate)
+            .expect("reconstruct PCIT element");
+        rebound
+            .insert_count_indexed_subtree(
+                &mut parent_merk,
+                pcit_key,
+                primary_root_hash,
+                secondary_root_hash,
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("rebind PCIT element");
+
+        let mut merk_cache = std::collections::HashMap::new();
+        merk_cache.insert(parent_path.clone(), parent_merk);
+        db.propagate_changes_with_transaction(merk_cache, parent_path, &tx, &batch, gv)
+            .unwrap()
+            .expect("propagate rebind");
+        db.db
+            .commit_multi_context_batch(batch, Some(&tx))
+            .unwrap()
+            .expect("commit rebind");
+        tx.commit().expect("tx commit");
+    }
+
+    /// A parent element whose `secondary_root_key` names a node that does
+    /// not exist must fail loud through the counted path. The pinned view
+    /// read the element itself, so a dangling root key is corruption, not
+    /// a race to retry through — and it must never be silently served as
+    /// an empty or truncated page. The offset-0 iterator path, which
+    /// never consults the root key, still reads the physical rows: the
+    /// contrast is the two-views posture the design doc records.
+    #[test]
+    fn a_dangling_secondary_root_key_fails_loud_through_the_counted_path() {
+        let gv = GroveVersion::latest();
+        let db = make_test_grovedb(gv);
+        make_pcit_with(&db, b"pcit", &[b"a", b"b"], gv);
+        rebind_count_secondary_root_key_to(
+            &db,
+            &[TEST_LEAF, b"pcit"],
+            b"no-such-node".to_vec(),
+            gv,
+        );
+
+        let err = db
+            .indexed_count_top_k_paginated([TEST_LEAF, b"pcit"].as_ref(), 1, 1, false, None, gv)
+            .unwrap()
+            .expect_err("a dangling secondary root key must error, not serve a page");
+        match err {
+            Error::CorruptedData(message) => assert!(
+                message.contains("absent from the same read snapshot"),
+                "unexpected corruption message: {message}"
+            ),
+            other => panic!("expected CorruptedData, got {other:?}"),
+        }
+
+        // The iterator path reads the physical keyspace and is untouched
+        // by the dangling root key.
+        assert_eq!(
+            db.indexed_count_top_k_paginated([TEST_LEAF, b"pcit"].as_ref(), 2, 0, false, None, gv)
+                .unwrap()
+                .expect("offset-0 path reads physical rows")
+                .entries,
+            vec![(1u64, b"a".to_vec()), (1u64, b"b".to_vec())],
+        );
     }
 
     /// PSIT: an orphan row in the sum secondary is removed and the root

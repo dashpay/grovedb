@@ -59,7 +59,7 @@ use kv::KV;
 #[cfg(feature = "minimal")]
 pub use link::Link;
 #[cfg(feature = "minimal")]
-pub use ops::{AuxMerkBatch, BatchEntry, MerkBatch, Op, PanicSource};
+pub use ops::{AuxMerkBatch, BatchEntry, MerkBatch, OldValueDisposition, Op, PanicSource};
 #[cfg(feature = "minimal")]
 pub use tree_feature_type::AggregateData;
 #[cfg(any(feature = "minimal", feature = "verify"))]

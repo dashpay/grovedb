@@ -14,7 +14,7 @@ use crate::{
     merk::NodeType,
     tree::{
         kv::{ValueDefinedCostType, KV},
-        AuxMerkBatch, Walker,
+        AuxMerkBatch, OldValueDisposition, Walker,
     },
     Error, Merk, MerkBatch, MerkOptions, TreeType,
 };
@@ -346,6 +346,64 @@ where
         ) -> Result<(bool, Option<ValueDefinedCostType>), Error>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
+        self.apply_unchecked_with_old_value_observer(
+            batch,
+            aux,
+            options,
+            old_specialized_cost,
+            value_defined_cost_fn,
+            get_temp_new_value_with_old_flags,
+            update_tree_value_based_on_costs,
+            section_removal_bytes,
+            &mut |_, _, _| {},
+            grove_version,
+        )
+    }
+
+    /// Same as [`apply_unchecked`](Self::apply_unchecked), with an additional
+    /// `old_value_observer` called as `(key, old_value, disposition)` for
+    /// every batch op that overwrites or deletes an EXISTING node.
+    ///
+    /// The observed bytes are the node's stored value, which the tree walk
+    /// had to fetch anyway to rewrite or remove the node — the observer
+    /// therefore costs no extra storage read and adds nothing to the tracked
+    /// [`OperationCost`](grovedb_costs::OperationCost). Callers that need the
+    /// pre-op element (e.g. to select cleanup namespaces from the ACTUAL
+    /// stored type) should use this instead of issuing a separate charged
+    /// read before the apply.
+    ///
+    /// Ops on keys that do not exist in the tree never invoke the observer.
+    ///
+    /// # Safety
+    /// Same contract as [`apply_unchecked`](Self::apply_unchecked): keys in
+    /// `batch` must be sorted and unique.
+    pub fn apply_unchecked_with_old_value_observer<KB, KA, C, V, T, U, R, O>(
+        &mut self,
+        batch: &MerkBatch<KB>,
+        aux: &AuxMerkBatch<KA>,
+        options: Option<MerkOptions>,
+        old_specialized_cost: &C,
+        value_defined_cost_fn: Option<&V>,
+        get_temp_new_value_with_old_flags: &T,
+        update_tree_value_based_on_costs: &mut U,
+        section_removal_bytes: &mut R,
+        old_value_observer: &mut O,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>
+    where
+        KB: AsRef<[u8]>,
+        KA: AsRef<[u8]>,
+        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        T: Fn(&Vec<u8>, &Vec<u8>) -> Result<Option<Vec<u8>>, Error>,
+        U: FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<(bool, Option<ValueDefinedCostType>), Error>,
+        R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
+        O: FnMut(&[u8], &[u8], OldValueDisposition),
+    {
         // A PrivateDocumentStore's Merk must stay empty forever — its
         // entries live in the non-Merk data namespace and immutability is
         // enforced by the type. The element-insert entry points already
@@ -384,6 +442,7 @@ where
             get_temp_new_value_with_old_flags,
             update_tree_value_based_on_costs,
             section_removal_bytes,
+            old_value_observer,
             grove_version,
         )
         .flat_map_ok(|(maybe_tree, key_updates)| {

@@ -10,7 +10,7 @@
 //! back out through top-k. Each op variant that can carry a caller-supplied
 //! element therefore needs its own regression test; `Replace` is one of them.
 //!
-//! `inspect_cidx_overwrite` runs when tree-override protection is off and
+//! `classify_cidx_overwrite` runs when tree-override protection is off and
 //! decides whether replacing an existing indexed tree is safe. Indexed → empty
 //! indexed and indexed → non-indexed are allowed and schedule the old tree's
 //! storage for cleanup; indexed → *non-empty* indexed is refused because the
@@ -48,7 +48,7 @@ mod tests {
         tags.into_iter().map(|t| (t, None)).collect()
     }
 
-    /// Tree-override protection off — the mode in which `inspect_cidx_overwrite`
+    /// Tree-override protection off — the mode in which `classify_cidx_overwrite`
     /// is consulted at all.
     fn overwrite_allowed() -> BatchApplyOptions {
         BatchApplyOptions {
@@ -325,15 +325,15 @@ mod tests {
             )
             .unwrap()
             .expect_err("indexed -> non-empty indexed is ambiguous and must be refused");
+        // The refusal comes from the ungated empty-at-batch-insertion guard,
+        // which runs before the overwrite classification ever sees the op —
+        // a non-empty indexed element cannot enter a batch at all.
         match err {
-            Error::NotSupported(message) => assert!(
-                message.starts_with(
-                    "overwriting an existing indexed tree with a NON-EMPTY indexed tree via the \
-                     batch path is not supported"
-                ),
+            Error::InvalidBatchOperation(message) => assert!(
+                message.contains("must be empty at the moment of batch insertion"),
                 "unexpected message: {message}"
             ),
-            other => panic!("expected NotSupported, got {other:?}"),
+            other => panic!("expected InvalidBatchOperation, got {other:?}"),
         }
         assert_eq!(
             db.root_hash(None, gv).unwrap().expect("root hash"),
