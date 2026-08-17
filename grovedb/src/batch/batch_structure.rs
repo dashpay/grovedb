@@ -30,6 +30,35 @@ pub type OpsByPath = BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, GroveOp>>;
 #[cfg(feature = "minimal")]
 pub type OpsByLevelPath = IntMap<u32, OpsByPath>;
 
+/// Build the synthetic key under which a keyless append-only op is filed.
+///
+/// The `MaxKeySize` variant sizes estimates with the real tree-key length,
+/// while the 8-byte big-endian op-index prefix in `unique_id` keeps several
+/// appends to the same tree from collapsing into a single `BTreeMap` entry
+/// (each append must be charged). [`keyless_op_tree_key`] is the inverse.
+#[cfg(feature = "minimal")]
+pub(in crate::batch) fn keyless_op_synthetic_key(op_index: usize, tree_key: &KeyInfo) -> KeyInfo {
+    let mut unique_id = (op_index as u64).to_be_bytes().to_vec();
+    unique_id.extend_from_slice(tree_key.as_slice());
+    KeyInfo::MaxKeySize {
+        unique_id,
+        max_size: tree_key.max_length(),
+    }
+}
+
+/// Recover the real tree-key bytes from a [`keyless_op_synthetic_key`].
+///
+/// Only meaningful for keys of ops that arrive keyless (the append-only tree
+/// ops) — a user-supplied `MaxKeySize` key on a keyed op has no such
+/// structure, so callers must check the op type before trusting the result.
+#[cfg(feature = "minimal")]
+pub(in crate::batch) fn keyless_op_tree_key(key: &KeyInfo) -> Option<&[u8]> {
+    match key {
+        KeyInfo::MaxKeySize { unique_id, .. } => unique_id.get(8..),
+        KeyInfo::KnownKey(_) => None,
+    }
+}
+
 /// Batch structure
 #[cfg(feature = "minimal")]
 pub(super) struct BatchStructure<C, F, SR> {
@@ -135,12 +164,12 @@ where
             // dispatch. Silently dropping them here (as this code used to do)
             // made every append estimate as free — see issue #812.
             //
-            // The synthetic `MaxKeySize` key sizes estimates with the real
-            // tree-key length while the op-index prefix keeps several appends
-            // to the same tree from collapsing into a single BTreeMap entry
-            // (each append must be charged). If such an op ever reaches real
-            // execution, `execute_ops_on_path` rejects it with "should have
-            // been preprocessed" — a loud failure instead of a silent drop.
+            // The synthetic key (see `keyless_op_synthetic_key`) sizes
+            // estimates with the real tree-key length while keeping one map
+            // entry per op, so each append is charged. If such an op ever
+            // reaches real execution, `execute_ops_on_path` rejects it with
+            // "should have been preprocessed" — a loud failure instead of a
+            // silent drop.
             let (op_path, key, is_keyless_append) = match op_key {
                 Some(k) => (op_path, k, false),
                 None => {
@@ -152,12 +181,7 @@ where
                         ))
                         .wrap_with_cost(cost);
                     };
-                    let mut unique_id = (op_index as u64).to_be_bytes().to_vec();
-                    unique_id.extend_from_slice(tree_key.as_slice());
-                    let key = KeyInfo::MaxKeySize {
-                        unique_id,
-                        max_size: tree_key.max_length(),
-                    };
+                    let key = keyless_op_synthetic_key(op_index, &tree_key);
                     (path, key, true)
                 }
             };

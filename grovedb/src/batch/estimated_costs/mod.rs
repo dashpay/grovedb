@@ -73,18 +73,23 @@ pub const MAX_SINSEMILLA_HASHES_PER_APPEND: u32 = FRONTIER_DEPTH + FRONTIER_DEPT
 #[cfg(feature = "minimal")]
 pub const MAX_FRONTIER_SIZE: u32 = 1 + 8 + 32 + 1 + FRONTIER_DEPTH * 32;
 
-/// Largest `chunk_power` the CommitmentTreeInsert estimate covers
-/// (2^10 = 1024-entry epochs, the recommended default). The dense
-/// buffer's per-append root recompute and the epoch-compaction blob
-/// both scale with `2^chunk_power`, which the op does not carry, so the
-/// estimator charges this documented cap. Estimates for trees created
-/// with a larger `chunk_power` are NOT upper bounds.
+/// Largest `chunk_power` the CommitmentTreeInsert estimate charges when
+/// the actual value is not declared: the cap enforced by the validated
+/// element constructors ([`grovedb_element::MAX_COMMITMENT_TREE_CHUNK_POWER`],
+/// 2^11 = 2048-entry epochs), so no creatable tree exceeds the fallback
+/// estimate. The average-case estimator uses the ACTUAL chunk power
+/// instead when the caller declares the tree's own layer with
+/// `TreeType::CommitmentTree(chunk_power)` in the estimation paths.
 #[cfg(feature = "minimal")]
-pub const MAX_ESTIMATED_CHUNK_POWER: u32 = 10;
+pub const MAX_ESTIMATED_CHUNK_POWER: u8 = grovedb_element::MAX_COMMITMENT_TREE_CHUNK_POWER;
 
-/// Epoch size implied by [`MAX_ESTIMATED_CHUNK_POWER`].
+/// Physical ceiling on `chunk_power`: the dense buffer's `u16` count
+/// limits the underlying tree height to 16, and `BulkAppendTree`
+/// construction rejects anything larger, so no tree beyond this can
+/// exist on disk. Declared chunk powers are clamped here to keep the
+/// `1 << chunk_power` epoch arithmetic in range.
 #[cfg(feature = "minimal")]
-const MAX_EPOCH_SIZE: u32 = 1 << MAX_ESTIMATED_CHUNK_POWER;
+const PHYSICAL_MAX_CHUNK_POWER: u8 = 16;
 
 /// Per-put storage overhead charged on data-storage writes: the 32-byte
 /// blake3 path prefix, the logical key (dense positions, MMR indices,
@@ -99,6 +104,12 @@ const PER_PUT_OVERHEAD: u32 = 50;
 /// root recompute), and a full epoch compaction (chunk-blob write plus
 /// MMR merge cascade).
 ///
+/// `chunk_power` is the tree's declared epoch scale: the average-case
+/// estimator reads it from the tree's own layer in the estimation paths
+/// (`TreeType::CommitmentTree(chunk_power)`); pass `None` when it is
+/// unknown — the [`MAX_ESTIMATED_CHUNK_POWER`] cap, which the validated
+/// element constructors enforce at creation, is charged instead.
+///
 /// Used by BOTH the average-case and the worst-case estimators. The
 /// append cost is position-dependent and the position is
 /// adversary-controlled, so an "average" here is not a meaningful
@@ -106,9 +117,20 @@ const PER_PUT_OVERHEAD: u32 = 50;
 /// non-interchangeable, which is a consensus fault for admission
 /// control (see issue #812).
 #[cfg(feature = "minimal")]
-pub(in crate::batch) fn commitment_tree_insert_op_cost(payload_len: u32) -> OperationCost {
+pub(in crate::batch) fn commitment_tree_insert_op_cost(
+    payload_len: u32,
+    chunk_power: Option<u8>,
+) -> OperationCost {
     // A stored note entry: cmx (32) || rho (32) || cv_net (32) || payload.
     let entry_size = 96 + payload_len;
+
+    // Epoch size for the compaction and dense-recompute bounds. Clamped
+    // to the physical ceiling so hand-built layer information cannot
+    // overflow the shift.
+    let epoch_size: u32 = 1u32
+        << chunk_power
+            .unwrap_or(MAX_ESTIMATED_CHUNK_POWER)
+            .min(PHYSICAL_MAX_CHUNK_POWER);
 
     // Chunk-blob serialization overhead per entry (length prefix) and
     // per blob (entry count, MMR leaf node framing).
@@ -135,7 +157,7 @@ pub(in crate::batch) fn commitment_tree_insert_op_cost(payload_len: u32) -> Oper
             //   cascade's internal nodes.
             added_bytes: (entry_size + PER_PUT_OVERHEAD)
                 + (MAX_FRONTIER_SIZE + PER_PUT_OVERHEAD)
-                + (MAX_EPOCH_SIZE * (entry_size + CHUNK_ENTRY_OVERHEAD)
+                + (epoch_size * (entry_size + CHUNK_ENTRY_OVERHEAD)
                     + CHUNK_BLOB_OVERHEAD
                     + PER_PUT_OVERHEAD)
                 + FRONTIER_DEPTH * (MMR_INTERNAL_NODE_SIZE + PER_PUT_OVERHEAD),
@@ -151,7 +173,7 @@ pub(in crate::batch) fn commitment_tree_insert_op_cost(payload_len: u32) -> Oper
         // slot (2 hashes each, up to a full buffer), plus on compaction
         // the chunk-leaf hash and MMR merge cascade, plus the bulk
         // state root and the ct_state binding hash.
-        hash_node_calls: 2 * (MAX_EPOCH_SIZE - 1) + FRONTIER_DEPTH + 4,
+        hash_node_calls: 2 * (epoch_size - 1) + FRONTIER_DEPTH + 4,
         sinsemilla_hash_calls: MAX_SINSEMILLA_HASHES_PER_APPEND,
     }
 }

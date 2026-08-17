@@ -17,6 +17,19 @@ use bincode::{Decode, Encode};
 
 use crate::{element_type::ElementType, reference_path::ReferencePathType};
 
+/// Largest `chunk_power` accepted when creating a commitment tree
+/// (2^11 = 2048-entry epochs, matching the largest deployed value — Dash
+/// Platform's shielded notes pool).
+///
+/// This is the authoritative cap that GroveDB's estimated-cost model for
+/// `CommitmentTreeInsert` covers when the actual chunk power is not
+/// declared in the estimation layer information: the per-append dense
+/// buffer recompute and the epoch-compaction blob both scale with
+/// `2^chunk_power`, so a creatable tree must never exceed what the
+/// estimator charges (issue #812). Raising this constant loosens that
+/// fallback estimate proportionally.
+pub const MAX_COMMITMENT_TREE_CHUNK_POWER: u8 = 11;
+
 /// Optional meta-data to be stored per element
 pub type ElementFlags = Vec<u8>;
 

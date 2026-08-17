@@ -198,7 +198,10 @@ impl GroveOp {
                 // replacement in the parent Merk; the append work itself
                 // (frontier I/O, Sinsemilla hashing, note write, epoch
                 // compaction) is charged by the shared upper-bound model with
-                // constants derived from the frontier depth. See
+                // constants derived from the frontier depth. The epoch scale
+                // is the constructor-enforced cap: unlike the average-case
+                // paths, `WorstCaseLayerInformation` carries no tree type, so
+                // the tree's actual chunk power cannot be declared here. See
                 // `commitment_tree_insert_op_cost`.
                 GroveDb::worst_case_merk_replace_tree(
                     key,
@@ -208,7 +211,10 @@ impl GroveOp {
                     propagate,
                     grove_version,
                 )
-                .add_cost(super::commitment_tree_insert_op_cost(payload.len() as u32))
+                .add_cost(super::commitment_tree_insert_op_cost(
+                    payload.len() as u32,
+                    None,
+                ))
             }
             GroveOp::MmrTreeAppend { value } => {
                 // Cost of updating parent element in the Merk

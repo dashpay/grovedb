@@ -22,12 +22,16 @@
 use std::collections::HashMap;
 
 use grovedb_commitment_tree::{DashMemo, NoteBytesData, TransmittedNoteCiphertext};
-use grovedb_costs::{storage_cost::removal::StorageRemovedBytes::NoStorageRemoval, OperationCost};
+use grovedb_costs::{
+    storage_cost::removal::StorageRemovedBytes::NoStorageRemoval, CostContext, OperationCost,
+};
 use grovedb_merk::{
     estimated_costs::{
         average_case_costs::{
-            EstimatedLayerCount::EstimatedLevel, EstimatedLayerInformation,
-            EstimatedLayerSizes::AllSubtrees, EstimatedSumTrees::NoSumTrees,
+            EstimatedLayerCount::EstimatedLevel,
+            EstimatedLayerInformation,
+            EstimatedLayerSizes::{AllItems, AllSubtrees},
+            EstimatedSumTrees::NoSumTrees,
         },
         worst_case_costs::WorstCaseLayerInformation::MaxElementsNumber,
     },
@@ -82,9 +86,13 @@ fn ct_op(index: u32) -> QualifiedGroveDbOp {
 }
 
 /// Average-case estimate for a batch of `ops` against a root layer holding a
-/// handful of subtrees.
-fn average_case_estimate(
+/// handful of subtrees. When `declared_chunk_power` is set, the commitment
+/// tree's own layer is declared with `TreeType::CommitmentTree(chunk_power)`
+/// — the shape Dash Platform registers — so the estimator charges the tree's
+/// actual epoch scale instead of the constructor-enforced cap.
+fn average_case_estimate_with_layers(
     ops: Vec<QualifiedGroveDbOp>,
+    declared_chunk_power: Option<u8>,
     grove_version: &GroveVersion,
 ) -> OperationCost {
     let mut paths = HashMap::new();
@@ -96,6 +104,16 @@ fn average_case_estimate(
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         },
     );
+    if let Some(chunk_power) = declared_chunk_power {
+        paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![b"pool".to_vec()]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::CommitmentTree(chunk_power),
+                estimated_layer_count: EstimatedLevel(16, false),
+                estimated_layer_sizes: AllItems(8, 312, None),
+            },
+        );
+    }
     GroveDb::estimated_case_operations_for_batch(
         AverageCaseCostsType(paths),
         ops,
@@ -106,6 +124,15 @@ fn average_case_estimate(
     )
     .cost_as_result()
     .expect("expected to compute average case costs for CommitmentTreeInsert")
+}
+
+/// Average-case estimate without declaring the tree's own layer, so the
+/// estimator falls back to the constructor-enforced chunk-power cap.
+fn average_case_estimate(
+    ops: Vec<QualifiedGroveDbOp>,
+    grove_version: &GroveVersion,
+) -> OperationCost {
+    average_case_estimate_with_layers(ops, None, grove_version)
 }
 
 /// Worst-case estimate for a batch of `ops` against a small root layer.
@@ -197,7 +224,11 @@ fn test_commitment_tree_insert_estimated_covers_actual_positions_chunk_power_4()
         let op = ct_op(next_index);
         let average = average_case_estimate(vec![op.clone()], grove_version);
         let worst = worst_case_estimate(vec![op.clone()], grove_version);
-        let actual = db.apply_batch(vec![op], None, None, grove_version).cost;
+        let CostContext {
+            value,
+            cost: actual,
+        } = db.apply_batch(vec![op], None, None, grove_version);
+        value.expect("append should succeed");
         next_index += 1;
 
         assert_estimates_dominate(target, CHUNK_POWER, &average, &worst, &actual);
@@ -205,15 +236,17 @@ fn test_commitment_tree_insert_estimated_covers_actual_positions_chunk_power_4()
 }
 
 /// Cross the epoch boundary at the estimator's chunk-power cap
-/// (`MAX_ESTIMATED_CHUNK_POWER` = 10): position 1022 maximizes the dense
-/// buffer's per-append root recompute, and position 1023 triggers compaction
-/// of a full 1024-entry epoch — the single most expensive append a
-/// cap-conforming tree can produce.
+/// (`MAX_COMMITMENT_TREE_CHUNK_POWER` = 11, the value Dash Platform's
+/// shielded notes pool uses): position 2046 maximizes the dense buffer's
+/// per-append root recompute, and position 2047 triggers compaction of a
+/// full 2048-entry epoch — the single most expensive append a creatable
+/// tree can produce.
 #[test]
-fn test_commitment_tree_insert_estimated_covers_actual_epoch_boundary_chunk_power_10() {
+fn test_commitment_tree_insert_estimated_covers_actual_epoch_boundary_at_cap() {
     let grove_version = GroveVersion::latest();
     let db = make_empty_grovedb();
-    const CHUNK_POWER: u8 = 10;
+    const CHUNK_POWER: u8 = grovedb_element::MAX_COMMITMENT_TREE_CHUNK_POWER;
+    const EPOCH: u32 = 1 << CHUNK_POWER as u32;
 
     db.insert(
         EMPTY_PATH,
@@ -226,20 +259,85 @@ fn test_commitment_tree_insert_estimated_covers_actual_epoch_boundary_chunk_powe
     .unwrap()
     .expect("insert commitment tree");
 
-    // Seed to position 1022 in one bulk batch.
-    let seed_ops: Vec<_> = (0..1022).map(ct_op).collect();
+    // Seed to two positions before the compaction boundary in one bulk batch.
+    let seed_ops: Vec<_> = (0..EPOCH - 2).map(ct_op).collect();
     db.apply_batch(seed_ops, None, None, grove_version)
         .unwrap()
         .expect("seeding appends should succeed");
 
-    for index in [1022u32, 1023, 1024] {
+    for index in [EPOCH - 2, EPOCH - 1, EPOCH] {
         let op = ct_op(index);
         let average = average_case_estimate(vec![op.clone()], grove_version);
+        let declared =
+            average_case_estimate_with_layers(vec![op.clone()], Some(CHUNK_POWER), grove_version);
         let worst = worst_case_estimate(vec![op.clone()], grove_version);
-        let actual = db.apply_batch(vec![op], None, None, grove_version).cost;
+        let CostContext {
+            value,
+            cost: actual,
+        } = db.apply_batch(vec![op], None, None, grove_version);
+        value.expect("append should succeed");
 
         assert_estimates_dominate(index as u64, CHUNK_POWER, &average, &worst, &actual);
+        // The declared-layer estimate (the shape Platform registers) must
+        // also dominate at the tree's own epoch scale.
+        assert!(
+            declared.worse_or_eq_than(&actual),
+            "declared-chunk-power estimate must dominate actual at position {index};\nestimated \
+             {declared:?}\nactual {actual:?}",
+        );
     }
+}
+
+/// Declaring the tree's own layer (as Dash Platform does) makes the
+/// average-case estimate use the tree's actual epoch scale: at a small
+/// chunk power the declared estimate is far tighter than the cap-based
+/// fallback, while still dominating the actual cost at the compaction
+/// position — the most expensive append such a tree can produce.
+#[test]
+fn test_commitment_tree_insert_declared_chunk_power_tightens_estimate() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+    const CHUNK_POWER: u8 = 4;
+
+    db.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(CHUNK_POWER).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert commitment tree");
+
+    // Seed to one position before the compaction boundary at 15.
+    let seed_ops: Vec<_> = (0..15).map(ct_op).collect();
+    db.apply_batch(seed_ops, None, None, grove_version)
+        .unwrap()
+        .expect("seeding appends should succeed");
+
+    let op = ct_op(15);
+    let declared =
+        average_case_estimate_with_layers(vec![op.clone()], Some(CHUNK_POWER), grove_version);
+    let fallback = average_case_estimate(vec![op.clone()], grove_version);
+    let CostContext {
+        value,
+        cost: actual,
+    } = db.apply_batch(vec![op], None, None, grove_version);
+    value.expect("compaction append should succeed");
+
+    // Tighter than the cap-based fallback (2^4 vs 2^11 epoch)...
+    assert!(
+        declared.storage_cost.added_bytes < fallback.storage_cost.added_bytes / 8,
+        "declared estimate should be far tighter than the fallback; declared {declared:?}\
+         \nfallback {fallback:?}",
+    );
+    // ...while still an upper bound of the compaction append.
+    assert!(
+        declared.worse_or_eq_than(&actual),
+        "declared-chunk-power estimate must dominate actual at the compaction \
+         position;\nestimated {declared:?}\nactual {actual:?}",
+    );
 }
 
 /// A batch with several appends to the SAME tree must charge every append —
@@ -310,7 +408,11 @@ fn test_commitment_tree_insert_estimated_covers_actual_multi_op_batch() {
     let ops: Vec<_> = (14..18).map(ct_op).collect();
     let average = average_case_estimate(ops.clone(), grove_version);
     let worst = worst_case_estimate(ops.clone(), grove_version);
-    let actual = db.apply_batch(ops, None, None, grove_version).cost;
+    let CostContext {
+        value,
+        cost: actual,
+    } = db.apply_batch(ops, None, None, grove_version);
+    value.expect("multi-op batch should succeed");
 
     assert_estimates_dominate(14, CHUNK_POWER, &average, &worst, &actual);
 }

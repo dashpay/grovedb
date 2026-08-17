@@ -45,6 +45,11 @@ impl GroveOp {
         &self,
         key: &KeyInfo,
         layer_element_estimates: &EstimatedLayerInformation,
+        // The declared chunk power of the commitment tree a
+        // `CommitmentTreeInsert` op targets (from the tree's own layer in
+        // the estimation paths), or `None` to charge the constructor-
+        // enforced cap. Ignored by every other op type.
+        ct_chunk_power: Option<u8>,
         propagate: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -219,11 +224,14 @@ impl GroveOp {
                 GroveDb::average_case_merk_replace_tree(
                     key,
                     layer_element_estimates,
-                    TreeType::CommitmentTree(0),
+                    TreeType::CommitmentTree(ct_chunk_power.unwrap_or(0)),
                     propagate,
                     grove_version,
                 )
-                .add_cost(super::commitment_tree_insert_op_cost(payload.len() as u32))
+                .add_cost(super::commitment_tree_insert_op_cost(
+                    payload.len() as u32,
+                    ct_chunk_power,
+                ))
             }
             GroveOp::MmrTreeAppend { value } => {
                 // Cost of updating parent element in the Merk
@@ -565,9 +573,33 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             .count();
 
         for (key, op) in ops_at_path_by_key.into_iter() {
+            // A CommitmentTreeInsert arrives under a synthetic key carrying
+            // the real tree key (see `keyless_op_synthetic_key`). When the
+            // caller declared the tree's own layer with
+            // `TreeType::CommitmentTree(chunk_power)` — as Dash Platform
+            // does — the estimate uses the tree's ACTUAL epoch scale
+            // instead of the constructor-enforced cap.
+            let ct_chunk_power = if matches!(op, GroveOp::CommitmentTreeInsert { .. }) {
+                crate::batch::batch_structure::keyless_op_tree_key(&key).and_then(|tree_key| {
+                    let mut tree_path = path.clone();
+                    tree_path.push(KeyInfo::KnownKey(tree_key.to_vec()));
+                    match self.paths.get(&tree_path).map(|layer| layer.tree_type) {
+                        Some(TreeType::CommitmentTree(chunk_power)) => Some(chunk_power),
+                        _ => None,
+                    }
+                })
+            } else {
+                None
+            };
             cost_return_on_error!(
                 &mut cost,
-                op.average_case_cost(&key, layer_element_estimates, false, grove_version)
+                op.average_case_cost(
+                    &key,
+                    layer_element_estimates,
+                    ct_chunk_power,
+                    false,
+                    grove_version
+                )
             );
         }
 
@@ -1625,7 +1657,7 @@ mod tests {
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
         let cost = op
-            .average_case_cost(&key, &layer_info, false, grove_version)
+            .average_case_cost(&key, &layer_info, None, false, grove_version)
             .cost_as_result()
             .expect("expected cost for commitment tree insert");
         // CommitmentTreeInsert includes frontier I/O and buffer writes plus
@@ -1672,7 +1704,7 @@ mod tests {
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
         let cost = op
-            .average_case_cost(&key, &layer_info, false, grove_version)
+            .average_case_cost(&key, &layer_info, None, false, grove_version)
             .cost_as_result()
             .expect("expected cost for mmr tree append");
         // MmrTreeAppend includes parent replace cost plus MMR node I/O.
@@ -1713,7 +1745,7 @@ mod tests {
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
         let cost = op
-            .average_case_cost(&key, &layer_info, false, grove_version)
+            .average_case_cost(&key, &layer_info, None, false, grove_version)
             .cost_as_result()
             .expect("expected cost for bulk append");
         // BulkAppend includes parent replace cost plus buffer write + running
@@ -1749,7 +1781,7 @@ mod tests {
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
         let cost = op
-            .average_case_cost(&key, &layer_info, false, grove_version)
+            .average_case_cost(&key, &layer_info, None, false, grove_version)
             .cost_as_result()
             .expect("expected cost for dense tree insert");
         // DenseTreeInsert includes parent replace cost plus value write and
@@ -1793,7 +1825,7 @@ mod tests {
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
         let cost = op
-            .average_case_cost(&key, &layer_info, false, grove_version)
+            .average_case_cost(&key, &layer_info, None, false, grove_version)
             .cost_as_result()
             .expect("expected cost for replace non-merk tree root");
         // ReplaceNonMerkTreeRoot delegates to average_case_merk_replace_tree.
@@ -1828,7 +1860,7 @@ mod tests {
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
         let cost = op
-            .average_case_cost(&key, &layer_info, false, grove_version)
+            .average_case_cost(&key, &layer_info, None, false, grove_version)
             .cost_as_result()
             .expect("expected cost for insert non-merk tree");
         // InsertNonMerkTree delegates to average_case_merk_insert_tree.
@@ -1877,7 +1909,7 @@ mod tests {
                 not_summed,
                 not_counted_or_summed,
             };
-            op.average_case_cost(&key, &layer_info, false, grove_version)
+            op.average_case_cost(&key, &layer_info, None, false, grove_version)
                 .cost_as_result()
                 .expect("expected cost for InsertTreeWithRootHash")
         };
@@ -1931,7 +1963,7 @@ mod tests {
                 meta: NonMerkTreeMeta::MmrTree { mmr_size: 50 },
                 non_counted,
             };
-            op.average_case_cost(&key, &layer_info, false, grove_version)
+            op.average_case_cost(&key, &layer_info, None, false, grove_version)
                 .cost_as_result()
                 .expect("expected cost for InsertNonMerkTree")
         };
@@ -1970,7 +2002,7 @@ mod tests {
             axes: vec![(0u8, [0xEFu8; 32], Some(b"srk".to_vec()))],
         };
         let cost_count = op_count
-            .average_case_cost(&key, &layer_info, false, grove_version)
+            .average_case_cost(&key, &layer_info, None, false, grove_version)
             .cost_as_result()
             .expect("expected average case cost for Count cidx replace");
         assert!(cost_count.seek_count > 0 || cost_count.hash_node_calls > 0);
@@ -1982,7 +2014,7 @@ mod tests {
             axes: vec![(0u8, [8u8; 32], None)],
         };
         let cost_pcount = op_pcount
-            .average_case_cost(&key, &layer_info, true, grove_version)
+            .average_case_cost(&key, &layer_info, None, true, grove_version)
             .cost_as_result()
             .expect("expected average case cost for ProvableCount cidx replace (propagate)");
         assert!(
