@@ -22,7 +22,7 @@ use grovedb_merk::{
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "minimal")]
 use grovedb_storage::worst_case_costs::WorstKeyLength;
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 #[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
 #[cfg(feature = "minimal")]
@@ -215,87 +215,14 @@ impl GroveOp {
                 grove_version,
             ),
             GroveOp::CommitmentTreeInsert { payload, .. } => {
-                // Version-gated cost model — downstream the estimate is an
-                // admission bound, so historical blocks admitted under the
-                // legacy numbers must re-validate identically on replay.
-                if grove_version
-                    .grovedb_versions
-                    .operations
-                    .average_case
-                    .average_case_commitment_tree_insert
-                    == 0
-                {
-                    // Legacy (V1..V3) model: averages, NOT upper bounds.
-                    // Kept byte-for-byte for replay of historical admission
-                    // decisions; unreachable from the batch estimation path
-                    // on those versions (keyless ops are skipped there) but
-                    // reachable through direct dispatch.
-                    let item_cost = GroveDb::average_case_merk_replace_tree(
-                        key,
-                        layer_element_estimates,
-                        TreeType::CommitmentTree(0),
-                        propagate,
-                        grove_version,
-                    );
-                    use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
-                    // Average frontier size with ~16 ommers:
-                    // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 16*32
-                    const AVG_FRONTIER_SIZE: u32 = 554;
-                    // Buffer entry: cmx (32) + rho (32) + cv_net (32) + payload
-                    let buffer_entry_size = 96 + payload.len() as u32;
-                    // 32 (root computation) + 1 (avg ommer updates) = 33
-                    const AVG_SINSEMILLA_HASHES: u32 = 33;
-                    // 1 blake3 for the running buffer hash
-                    const AVG_BLAKE3_HASHES: u32 = 1;
-                    return item_cost.add_cost(OperationCost {
-                        seek_count: 3, // frontier load + frontier save + buffer write
-                        storage_cost: StorageCost {
-                            added_bytes: buffer_entry_size,
-                            replaced_bytes: AVG_FRONTIER_SIZE,
-                            removed_bytes: StorageRemovedBytes::NoStorageRemoval,
-                        },
-                        storage_loaded_bytes: AVG_FRONTIER_SIZE as u64,
-                        hash_node_calls: AVG_BLAKE3_HASHES,
-                        sinsemilla_hash_calls: AVG_SINSEMILLA_HASHES,
-                    });
-                }
-                // V4+: in the apply path, preprocessing rewrites this op
-                // into ReplaceNonMerkTreeRoot. The base cost is a tree root
-                // key replacement in the parent Merk; the append work itself
-                // (frontier I/O, Sinsemilla hashing, note write, epoch
-                // compaction) is charged by the shared upper-bound model —
-                // deliberately NOT an average, since the append cost is
-                // position-dependent and the position is adversary-chosen.
-                // See `commitment_tree_insert_op_cost`.
-                //
-                // The preprocessing read of the stored element loads its
-                // caller-supplied flags too; bound them with the parent
-                // layer's declared flags size — the same metadata the
-                // parent-node replace below uses, so an undeclared flag
-                // size undercounts both consistently.
-                let element_flags_load_bound = match layer_element_estimates
-                    .estimated_layer_sizes
-                    .layered_flags_size()
-                {
-                    Ok(flags_size) => flags_size
-                        .map(|f| f + f.required_space() as u32)
-                        .unwrap_or_default(),
-                    Err(e) => {
-                        return Err(Error::MerkError(e)).wrap_with_cost(OperationCost::default())
-                    }
-                };
-                GroveDb::average_case_merk_replace_tree(
+                Self::average_case_commitment_tree_insert(
+                    payload,
                     key,
                     layer_element_estimates,
-                    TreeType::CommitmentTree(ct_chunk_power.unwrap_or(0)),
+                    ct_chunk_power,
                     propagate,
                     grove_version,
                 )
-                .add_cost(super::commitment_tree_insert_op_cost(
-                    payload.len() as u32,
-                    ct_chunk_power,
-                    element_flags_load_bound,
-                ))
             }
             GroveOp::MmrTreeAppend { value } => {
                 // Cost of updating parent element in the Merk
@@ -460,6 +387,151 @@ impl GroveOp {
                 )
             }
         }
+    }
+
+    /// Versioned cost of a `CommitmentTreeInsert` op in the average-case
+    /// estimator. Downstream the estimate is an admission bound, so
+    /// historical blocks admitted under the legacy numbers must re-validate
+    /// identically on replay — the model is dispatched on
+    /// `average_case_commitment_tree_insert`.
+    fn average_case_commitment_tree_insert(
+        payload: &[u8],
+        key: &KeyInfo,
+        layer_element_estimates: &EstimatedLayerInformation,
+        ct_chunk_power: Option<u8>,
+        propagate: bool,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        match grove_version
+            .grovedb_versions
+            .operations
+            .average_case
+            .average_case_commitment_tree_insert
+        {
+            0 => Self::average_case_commitment_tree_insert_v0(
+                payload,
+                key,
+                layer_element_estimates,
+                propagate,
+                grove_version,
+            ),
+            1 => Self::average_case_commitment_tree_insert_v1(
+                payload,
+                key,
+                layer_element_estimates,
+                ct_chunk_power,
+                propagate,
+                grove_version,
+            ),
+            version => Err(Error::VersionError(
+                GroveVersionError::UnknownVersionMismatch {
+                    method: "average_case_commitment_tree_insert".to_string(),
+                    known_versions: vec![0, 1],
+                    received: version,
+                },
+            ))
+            .wrap_with_cost(OperationCost::default()),
+        }
+    }
+
+    /// Legacy (V1..V3) model: averages, NOT upper bounds. Kept byte-for-byte
+    /// for replay of historical admission decisions; unreachable from the
+    /// batch estimation path on those versions (keyless ops are skipped
+    /// there) but reachable through direct dispatch.
+    fn average_case_commitment_tree_insert_v0(
+        payload: &[u8],
+        key: &KeyInfo,
+        layer_element_estimates: &EstimatedLayerInformation,
+        propagate: bool,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        let item_cost = GroveDb::average_case_merk_replace_tree(
+            key,
+            layer_element_estimates,
+            TreeType::CommitmentTree(0),
+            propagate,
+            grove_version,
+        );
+        use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+        // Average frontier size with ~16 ommers:
+        // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 16*32
+        const AVG_FRONTIER_SIZE: u32 = 554;
+        // Buffer entry: cmx (32) + rho (32) + cv_net (32) + payload
+        let buffer_entry_size = 96 + payload.len() as u32;
+        // 32 (root computation) + 1 (avg ommer updates) = 33
+        const AVG_SINSEMILLA_HASHES: u32 = 33;
+        // 1 blake3 for the running buffer hash
+        const AVG_BLAKE3_HASHES: u32 = 1;
+        item_cost.add_cost(OperationCost {
+            seek_count: 3, // frontier load + frontier save + buffer write
+            storage_cost: StorageCost {
+                added_bytes: buffer_entry_size,
+                replaced_bytes: AVG_FRONTIER_SIZE,
+                removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+            },
+            storage_loaded_bytes: AVG_FRONTIER_SIZE as u64,
+            hash_node_calls: AVG_BLAKE3_HASHES,
+            sinsemilla_hash_calls: AVG_SINSEMILLA_HASHES,
+        })
+    }
+
+    /// V4+ model: in the apply path, preprocessing rewrites the op into
+    /// ReplaceNonMerkTreeRoot. The base cost is a tree root key replacement
+    /// in the parent Merk; the append work itself (frontier I/O, Sinsemilla
+    /// hashing, note write, epoch compaction) is charged by the shared
+    /// upper-bound model — deliberately NOT an average, since the append
+    /// cost is position-dependent and the position is adversary-chosen. See
+    /// `commitment_tree_insert_op_cost`.
+    fn average_case_commitment_tree_insert_v1(
+        payload: &[u8],
+        key: &KeyInfo,
+        layer_element_estimates: &EstimatedLayerInformation,
+        ct_chunk_power: Option<u8>,
+        propagate: bool,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        // The dense-recompute and compaction terms scale with 2^chunk_power,
+        // which the op does not carry, so the tree's own layer MUST be
+        // declared with `TreeType::CommitmentTree(chunk_power)` in the
+        // estimation paths — the same declare-your-layers contract every
+        // other estimated op follows. A silent fallback here would either
+        // under-bound (too small) or grotesquely over-reserve (the physical
+        // ceiling), both worse than a loud error at integration time.
+        let Some(chunk_power) = ct_chunk_power else {
+            return Err(Error::PathNotFoundInCacheForEstimatedCosts(
+                "CommitmentTreeInsert estimation requires the commitment tree's own layer \
+                 declared with TreeType::CommitmentTree(chunk_power) in the estimated layer \
+                 information"
+                    .to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        };
+        // The preprocessing read of the stored element loads its
+        // caller-supplied flags too; bound them with the parent layer's
+        // declared flags size — the same metadata the parent-node replace
+        // below uses, so an undeclared flag size undercounts both
+        // consistently.
+        let element_flags_load_bound = match layer_element_estimates
+            .estimated_layer_sizes
+            .layered_flags_size()
+        {
+            Ok(flags_size) => flags_size
+                .map(|f| f + f.required_space() as u32)
+                .unwrap_or_default(),
+            Err(e) => return Err(Error::MerkError(e)).wrap_with_cost(OperationCost::default()),
+        };
+        GroveDb::average_case_merk_replace_tree(
+            key,
+            layer_element_estimates,
+            TreeType::CommitmentTree(chunk_power),
+            propagate,
+            grove_version,
+        )
+        .add_cost(super::commitment_tree_insert_op_cost(
+            payload.len() as u32,
+            chunk_power,
+            element_flags_load_bound,
+        ))
     }
 }
 
@@ -1720,8 +1792,14 @@ mod tests {
             estimated_layer_count: ApproximateElements(10),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
-        let cost = op
+        // The V4+ model requires the tree's chunk power (normally read from
+        // the tree's own declared layer); an undeclared dispatch errors.
+        assert!(op
             .average_case_cost(&key, &layer_info, None, false, grove_version)
+            .cost_as_result()
+            .is_err());
+        let cost = op
+            .average_case_cost(&key, &layer_info, Some(10), false, grove_version)
             .cost_as_result()
             .expect("expected cost for commitment tree insert");
         // CommitmentTreeInsert includes frontier I/O and buffer writes plus

@@ -73,23 +73,15 @@ pub const MAX_SINSEMILLA_HASHES_PER_APPEND: u32 = FRONTIER_DEPTH + FRONTIER_DEPT
 #[cfg(feature = "minimal")]
 pub const MAX_FRONTIER_SIZE: u32 = 1 + 8 + 32 + 1 + FRONTIER_DEPTH * 32;
 
-/// Largest `chunk_power` the CommitmentTreeInsert estimate charges when
-/// the actual value is not declared: the cap enforced by the validated
-/// element constructors ([`grovedb_element::MAX_COMMITMENT_TREE_CHUNK_POWER`],
-/// 2^11 = 2048-entry epochs), so no creatable tree exceeds the fallback
-/// estimate. The average-case estimator uses the ACTUAL chunk power
-/// instead when the caller declares the tree's own layer with
-/// `TreeType::CommitmentTree(chunk_power)` in the estimation paths.
-#[cfg(feature = "minimal")]
-pub const MAX_ESTIMATED_CHUNK_POWER: u8 = grovedb_element::MAX_COMMITMENT_TREE_CHUNK_POWER;
-
 /// Physical ceiling on `chunk_power`: the dense buffer's `u16` count
 /// limits the underlying tree height to 16, and `BulkAppendTree`
 /// construction rejects anything larger, so no tree beyond this can
-/// exist on disk. Declared chunk powers are clamped here to keep the
-/// `1 << chunk_power` epoch arithmetic in range.
+/// function on disk. The worst-case estimator (which has no channel for
+/// the tree's declared shape) charges this ceiling, and declared chunk
+/// powers are clamped here to keep the `1 << chunk_power` epoch
+/// arithmetic in range.
 #[cfg(feature = "minimal")]
-const PHYSICAL_MAX_CHUNK_POWER: u8 = 16;
+pub const PHYSICAL_MAX_CHUNK_POWER: u8 = 16;
 
 /// Per-put storage overhead charged on data-storage writes: the 32-byte
 /// blake3 path prefix, the logical key (dense positions, MMR indices,
@@ -112,11 +104,12 @@ const CT_ELEMENT_LOAD_BASE: u32 = 256;
 /// root recompute), and a full epoch compaction (chunk-blob write plus
 /// MMR merge cascade).
 ///
-/// `chunk_power` is the tree's declared epoch scale: the average-case
-/// estimator reads it from the tree's own layer in the estimation paths
-/// (`TreeType::CommitmentTree(chunk_power)`); pass `None` when it is
-/// unknown — the [`MAX_ESTIMATED_CHUNK_POWER`] cap, which the validated
-/// element constructors enforce at creation, is charged instead.
+/// `chunk_power` is the tree's epoch scale: the average-case estimator
+/// requires it declared in the tree's own layer in the estimation paths
+/// (`TreeType::CommitmentTree(chunk_power)`) and errors when it is
+/// missing; the worst-case estimator, which has no declaration channel,
+/// passes [`PHYSICAL_MAX_CHUNK_POWER`]. Values above the physical
+/// ceiling are clamped to it.
 ///
 /// `element_flags_load_bound` bounds the caller-supplied flags on the
 /// stored `CommitmentTree` element, which the preprocessing read loads:
@@ -133,7 +126,7 @@ const CT_ELEMENT_LOAD_BASE: u32 = 256;
 #[cfg(feature = "minimal")]
 pub(in crate::batch) fn commitment_tree_insert_op_cost(
     payload_len: u32,
-    chunk_power: Option<u8>,
+    chunk_power: u8,
     element_flags_load_bound: u32,
 ) -> OperationCost {
     // A stored note entry: cmx (32) || rho (32) || cv_net (32) || payload.
@@ -142,10 +135,7 @@ pub(in crate::batch) fn commitment_tree_insert_op_cost(
     // Epoch size for the compaction and dense-recompute bounds. Clamped
     // to the physical ceiling so hand-built layer information cannot
     // overflow the shift.
-    let epoch_size: u32 = 1u32
-        << chunk_power
-            .unwrap_or(MAX_ESTIMATED_CHUNK_POWER)
-            .min(PHYSICAL_MAX_CHUNK_POWER);
+    let epoch_size: u32 = 1u32 << chunk_power.min(PHYSICAL_MAX_CHUNK_POWER);
 
     // Chunk-blob serialization overhead per entry (length prefix) and
     // per blob (entry count, MMR leaf node framing).

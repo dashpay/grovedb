@@ -23,7 +23,7 @@ use grovedb_merk::{
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "minimal")]
 use grovedb_storage::worst_case_costs::WorstKeyLength;
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 #[cfg(feature = "minimal")]
 use itertools::Itertools;
 
@@ -193,78 +193,14 @@ impl GroveOp {
                 grove_version,
             ),
             GroveOp::CommitmentTreeInsert { payload, .. } => {
-                // Version-gated cost model — downstream the estimate is an
-                // admission bound, so historical blocks admitted under the
-                // legacy numbers must re-validate identically on replay.
-                if grove_version
-                    .grovedb_versions
-                    .operations
-                    .worst_case
-                    .worst_case_commitment_tree_insert
-                    == 0
-                {
-                    // Legacy (V1..V3) model: depth-correct Sinsemilla and
-                    // frontier bounds but no dense-buffer recompute or epoch
-                    // compaction. Kept byte-for-byte for replay of historical
-                    // admission decisions; unreachable from the batch
-                    // estimation path on those versions (keyless ops are
-                    // skipped there) but reachable through direct dispatch.
-                    let item_cost = GroveDb::worst_case_merk_replace_tree(
-                        key,
-                        TreeType::CommitmentTree(0),
-                        in_parent_tree_type,
-                        worst_case_layer_element_estimates,
-                        propagate,
-                        grove_version,
-                    );
-                    use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
-                    // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 32*32
-                    const MAX_FRONTIER_SIZE: u32 = 1066;
-                    // Buffer entry: cmx (32) + rho (32) + cv_net (32) + payload
-                    let buffer_entry_size = 96 + payload.len() as u32;
-                    // 32 (root computation) + 32 (all ommers cascade) = 64
-                    const MAX_SINSEMILLA_HASHES: u32 = 64;
-                    // 1 blake3 for the running buffer hash
-                    const MAX_BLAKE3_HASHES: u32 = 1;
-                    return item_cost.add_cost(OperationCost {
-                        seek_count: 3, // frontier load + frontier save + buffer write
-                        storage_cost: StorageCost {
-                            added_bytes: buffer_entry_size,
-                            replaced_bytes: MAX_FRONTIER_SIZE,
-                            removed_bytes: StorageRemovedBytes::NoStorageRemoval,
-                        },
-                        storage_loaded_bytes: MAX_FRONTIER_SIZE as u64,
-                        hash_node_calls: MAX_BLAKE3_HASHES,
-                        sinsemilla_hash_calls: MAX_SINSEMILLA_HASHES,
-                    });
-                }
-                // V4+: in the apply path, preprocessing rewrites this op
-                // into ReplaceNonMerkTreeRoot. The base cost is a tree root
-                // key replacement in the parent Merk; the append work itself
-                // (frontier I/O, Sinsemilla hashing, note write, epoch
-                // compaction) is charged by the shared upper-bound model with
-                // constants derived from the frontier depth. The epoch scale
-                // is the constructor-enforced cap: unlike the average-case
-                // paths, `WorstCaseLayerInformation` carries no tree type, so
-                // the tree's actual chunk power cannot be declared here. See
-                // `commitment_tree_insert_op_cost`.
-                GroveDb::worst_case_merk_replace_tree(
+                Self::worst_case_commitment_tree_insert(
+                    payload,
                     key,
-                    TreeType::CommitmentTree(0),
                     in_parent_tree_type,
                     worst_case_layer_element_estimates,
                     propagate,
                     grove_version,
                 )
-                .add_cost(super::commitment_tree_insert_op_cost(
-                    payload.len() as u32,
-                    None,
-                    // Caller-supplied element flags have no declared bound
-                    // in the worst-case paths — charge the largest value a
-                    // Merk node can store, consistent with the rest of the
-                    // worst-case machinery.
-                    MERK_BIGGEST_VALUE_SIZE,
-                ))
             }
             GroveOp::MmrTreeAppend { value } => {
                 // Cost of updating parent element in the Merk
@@ -445,6 +381,131 @@ impl GroveOp {
                 grove_version,
             ),
         }
+    }
+
+    /// Versioned cost of a `CommitmentTreeInsert` op in the worst-case
+    /// estimator. Downstream the estimate is an admission bound, so
+    /// historical blocks admitted under the legacy numbers must re-validate
+    /// identically on replay — the model is dispatched on
+    /// `worst_case_commitment_tree_insert`.
+    fn worst_case_commitment_tree_insert(
+        payload: &[u8],
+        key: &KeyInfo,
+        in_parent_tree_type: TreeType,
+        worst_case_layer_element_estimates: &WorstCaseLayerInformation,
+        propagate: bool,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        match grove_version
+            .grovedb_versions
+            .operations
+            .worst_case
+            .worst_case_commitment_tree_insert
+        {
+            0 => Self::worst_case_commitment_tree_insert_v0(
+                payload,
+                key,
+                in_parent_tree_type,
+                worst_case_layer_element_estimates,
+                propagate,
+                grove_version,
+            ),
+            1 => Self::worst_case_commitment_tree_insert_v1(
+                payload,
+                key,
+                in_parent_tree_type,
+                worst_case_layer_element_estimates,
+                propagate,
+                grove_version,
+            ),
+            version => Err(Error::VersionError(
+                GroveVersionError::UnknownVersionMismatch {
+                    method: "worst_case_commitment_tree_insert".to_string(),
+                    known_versions: vec![0, 1],
+                    received: version,
+                },
+            ))
+            .wrap_with_cost(OperationCost::default()),
+        }
+    }
+
+    /// Legacy (V1..V3) model: depth-correct Sinsemilla and frontier bounds
+    /// but no dense-buffer recompute or epoch compaction. Kept byte-for-byte
+    /// for replay of historical admission decisions; unreachable from the
+    /// batch estimation path on those versions (keyless ops are skipped
+    /// there) but reachable through direct dispatch.
+    fn worst_case_commitment_tree_insert_v0(
+        payload: &[u8],
+        key: &KeyInfo,
+        in_parent_tree_type: TreeType,
+        worst_case_layer_element_estimates: &WorstCaseLayerInformation,
+        propagate: bool,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        let item_cost = GroveDb::worst_case_merk_replace_tree(
+            key,
+            TreeType::CommitmentTree(0),
+            in_parent_tree_type,
+            worst_case_layer_element_estimates,
+            propagate,
+            grove_version,
+        );
+        use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+        // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 32*32
+        const MAX_FRONTIER_SIZE: u32 = 1066;
+        // Buffer entry: cmx (32) + rho (32) + cv_net (32) + payload
+        let buffer_entry_size = 96 + payload.len() as u32;
+        // 32 (root computation) + 32 (all ommers cascade) = 64
+        const MAX_SINSEMILLA_HASHES: u32 = 64;
+        // 1 blake3 for the running buffer hash
+        const MAX_BLAKE3_HASHES: u32 = 1;
+        item_cost.add_cost(OperationCost {
+            seek_count: 3, // frontier load + frontier save + buffer write
+            storage_cost: StorageCost {
+                added_bytes: buffer_entry_size,
+                replaced_bytes: MAX_FRONTIER_SIZE,
+                removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+            },
+            storage_loaded_bytes: MAX_FRONTIER_SIZE as u64,
+            hash_node_calls: MAX_BLAKE3_HASHES,
+            sinsemilla_hash_calls: MAX_SINSEMILLA_HASHES,
+        })
+    }
+
+    /// V4+ model: in the apply path, preprocessing rewrites the op into
+    /// ReplaceNonMerkTreeRoot. The base cost is a tree root key replacement
+    /// in the parent Merk; the append work itself (frontier I/O, Sinsemilla
+    /// hashing, note write, epoch compaction) is charged by the shared
+    /// upper-bound model with constants derived from the frontier depth. The
+    /// epoch scale is the PHYSICAL ceiling (2^16, the dense buffer's u16
+    /// count limit — no tree beyond it can function): unlike the
+    /// average-case paths, `WorstCaseLayerInformation` carries no tree type,
+    /// so the tree's actual chunk power cannot be declared here. See
+    /// `commitment_tree_insert_op_cost`.
+    fn worst_case_commitment_tree_insert_v1(
+        payload: &[u8],
+        key: &KeyInfo,
+        in_parent_tree_type: TreeType,
+        worst_case_layer_element_estimates: &WorstCaseLayerInformation,
+        propagate: bool,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        GroveDb::worst_case_merk_replace_tree(
+            key,
+            TreeType::CommitmentTree(0),
+            in_parent_tree_type,
+            worst_case_layer_element_estimates,
+            propagate,
+            grove_version,
+        )
+        .add_cost(super::commitment_tree_insert_op_cost(
+            payload.len() as u32,
+            super::PHYSICAL_MAX_CHUNK_POWER,
+            // Caller-supplied element flags have no declared bound in the
+            // worst-case paths — charge the largest value a Merk node can
+            // store, consistent with the rest of the worst-case machinery.
+            MERK_BIGGEST_VALUE_SIZE,
+        ))
     }
 }
 

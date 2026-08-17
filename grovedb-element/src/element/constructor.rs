@@ -2,10 +2,7 @@
 //! Functions for setting an element's type
 
 use crate::{
-    element::{
-        BigSumValue, CountValue, Element, ElementFlags, MaxReferenceHop, SumValue,
-        MAX_COMMITMENT_TREE_CHUNK_POWER,
-    },
+    element::{BigSumValue, CountValue, Element, ElementFlags, MaxReferenceHop, SumValue},
     error::ElementError,
     reference_path::ReferencePathType,
 };
@@ -411,28 +408,23 @@ impl Element {
 
     /// Set element to an empty commitment tree.
     ///
-    /// Returns `InvalidInput` if `chunk_power >
-    /// MAX_COMMITMENT_TREE_CHUNK_POWER` (11) — the estimated-cost model
-    /// only covers epochs up to that size, and an estimate that is not
-    /// an upper bound is an admission-control bypass for consumers.
+    /// Returns `InvalidInput` if `chunk_power > 31`.
     pub fn empty_commitment_tree(chunk_power: u8) -> Result<Self, ElementError> {
-        if chunk_power > MAX_COMMITMENT_TREE_CHUNK_POWER {
-            return Err(ElementError::InvalidInput("chunk_power must be <= 11"));
+        if chunk_power > 31 {
+            return Err(ElementError::InvalidInput("chunk_power must be <= 31"));
         }
         Ok(Element::CommitmentTree(0, chunk_power, None))
     }
 
     /// Set element to an empty commitment tree with flags.
     ///
-    /// Returns `InvalidInput` if `chunk_power >
-    /// MAX_COMMITMENT_TREE_CHUNK_POWER` (11) — see
-    /// [`empty_commitment_tree`](Self::empty_commitment_tree).
+    /// Returns `InvalidInput` if `chunk_power > 31`.
     pub fn empty_commitment_tree_with_flags(
         chunk_power: u8,
         flags: Option<ElementFlags>,
     ) -> Result<Self, ElementError> {
-        if chunk_power > MAX_COMMITMENT_TREE_CHUNK_POWER {
-            return Err(ElementError::InvalidInput("chunk_power must be <= 11"));
+        if chunk_power > 31 {
+            return Err(ElementError::InvalidInput("chunk_power must be <= 31"));
         }
         Ok(Element::CommitmentTree(0, chunk_power, flags))
     }
