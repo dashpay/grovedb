@@ -193,39 +193,22 @@ impl GroveOp {
                 grove_version,
             ),
             GroveOp::CommitmentTreeInsert { payload, .. } => {
-                // After preprocessing, CommitmentTreeInsert becomes
+                // In the apply path, preprocessing rewrites this op into
                 // ReplaceNonMerkTreeRoot. The base cost is a tree root key
-                // replacement in the parent Merk.
-                let item_cost = GroveDb::worst_case_merk_replace_tree(
+                // replacement in the parent Merk; the append work itself
+                // (frontier I/O, Sinsemilla hashing, note write, epoch
+                // compaction) is charged by the shared upper-bound model with
+                // constants derived from the frontier depth. See
+                // `commitment_tree_insert_op_cost`.
+                GroveDb::worst_case_merk_replace_tree(
                     key,
                     TreeType::CommitmentTree(0),
                     in_parent_tree_type,
                     worst_case_layer_element_estimates,
                     propagate,
                     grove_version,
-                );
-                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
-                // Worst-case frontier size with 32 ommers (max depth):
-                // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 32*32 = 1066
-                const MAX_FRONTIER_SIZE: u32 = 1066;
-                // Buffer entry: cmx (32) + rho (32) + cv_net (32) + payload
-                let buffer_entry_size = 96 + payload.len() as u32;
-                // Worst-case Sinsemilla hashes per append:
-                // 32 (root computation) + 32 (all ommers cascade) = 64
-                const MAX_SINSEMILLA_HASHES: u32 = 64;
-                // 1 blake3 hash for running buffer hash
-                const MAX_BLAKE3_HASHES: u32 = 1;
-                item_cost.add_cost(OperationCost {
-                    seek_count: 3, // frontier load + frontier save + buffer write
-                    storage_cost: StorageCost {
-                        added_bytes: buffer_entry_size,
-                        replaced_bytes: MAX_FRONTIER_SIZE,
-                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
-                    },
-                    storage_loaded_bytes: MAX_FRONTIER_SIZE as u64,
-                    hash_node_calls: MAX_BLAKE3_HASHES,
-                    sinsemilla_hash_calls: MAX_SINSEMILLA_HASHES,
-                })
+                )
+                .add_cost(super::commitment_tree_insert_op_cost(payload.len() as u32))
             }
             GroveOp::MmrTreeAppend { value } => {
                 // Cost of updating parent element in the Merk

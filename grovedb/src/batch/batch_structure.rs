@@ -11,6 +11,8 @@ use grovedb_costs::{
 };
 use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 #[cfg(feature = "minimal")]
+use grovedb_storage::worst_case_costs::WorstKeyLength;
+#[cfg(feature = "minimal")]
 use grovedb_visualize::{DebugByteVectors, DebugBytes};
 #[cfg(feature = "minimal")]
 use intmap::IntMap;
@@ -117,18 +119,47 @@ where
         // qualified paths meaning path + key
         let mut ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, GroveOp> = BTreeMap::new();
 
-        for op in ops.into_iter() {
+        for (op_index, op) in ops.into_iter().enumerate() {
             let QualifiedGroveDbOp {
                 path: op_path,
                 key: op_key,
                 op: grove_op,
             } = op;
 
-            // Keyless ops (append-only tree ops) are handled by preprocessing.
-            // In estimated-cost paths they have no cost model yet — skip.
-            let key = match op_key {
-                Some(k) => k,
-                None => continue,
+            // Keyless ops (append-only tree ops: CommitmentTreeInsert,
+            // MmrTreeAppend, BulkAppend, DenseTreeInsert) carry the tree key
+            // as the last segment of `path`. In the apply path they are
+            // rewritten into keyed ops by preprocessing before reaching here;
+            // in the estimated-cost paths there is no preprocessing, so split
+            // the tree key off the path and let the op flow to the cost
+            // dispatch. Silently dropping them here (as this code used to do)
+            // made every append estimate as free — see issue #812.
+            //
+            // The synthetic `MaxKeySize` key sizes estimates with the real
+            // tree-key length while the op-index prefix keeps several appends
+            // to the same tree from collapsing into a single BTreeMap entry
+            // (each append must be charged). If such an op ever reaches real
+            // execution, `execute_ops_on_path` rejects it with "should have
+            // been preprocessed" — a loud failure instead of a silent drop.
+            let (op_path, key, is_keyless_append) = match op_key {
+                Some(k) => (op_path, k, false),
+                None => {
+                    let mut path = op_path;
+                    let Some(tree_key) = path.0.pop() else {
+                        return Err(Error::InvalidBatchOperation(
+                            "keyless append-only op must have the tree key as its path's last \
+                             segment",
+                        ))
+                        .wrap_with_cost(cost);
+                    };
+                    let mut unique_id = (op_index as u64).to_be_bytes().to_vec();
+                    unique_id.extend_from_slice(tree_key.as_slice());
+                    let key = KeyInfo::MaxKeySize {
+                        unique_id,
+                        max_size: tree_key.max_length(),
+                    };
+                    (path, key, true)
+                }
             };
 
             // Validate key length: Merk link encoding stores key length as a
@@ -141,10 +172,15 @@ where
                     .wrap_with_cost(cost);
             }
 
-            // Build qualified path (path + key) for reference lookups
-            let mut qualified_path = op_path.clone();
-            qualified_path.push(key.clone());
-            ops_by_qualified_paths.insert(qualified_path.to_path_consume(), grove_op.clone());
+            // Build qualified path (path + key) for reference lookups.
+            // Keyless append ops are skipped: they are not elements a
+            // reference can target, and their synthetic keys must not
+            // shadow the tree element itself.
+            if !is_keyless_append {
+                let mut qualified_path = op_path.clone();
+                qualified_path.push(key.clone());
+                ops_by_qualified_paths.insert(qualified_path.to_path_consume(), grove_op.clone());
+            }
 
             let op_cost = OperationCost::default();
             let op_result = match &grove_op {

@@ -22,6 +22,7 @@ mod batch_unit_tests;
 mod bulk_append_tree_tests;
 mod checkpoint_tests;
 mod chunk_branch_proof_tests;
+mod commitment_tree_cost_bound_tests;
 mod commitment_tree_tests;
 mod coverage_round7_tests;
 // NOTE: the former `count_indexed_tree_tests` (~12.3k LOC) was written
