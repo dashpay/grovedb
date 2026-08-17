@@ -452,3 +452,23 @@ fn test_other_keyless_append_ops_reach_estimation() {
         );
     }
 }
+
+/// The validated constructors enforce the chunk-power cap the estimator
+/// charges as its fallback, so no creatable tree can exceed the estimate.
+/// A revert to the old `<= 31` bound must fail here.
+#[test]
+fn test_commitment_tree_creation_rejects_chunk_power_above_estimator_cap() {
+    const CAP: u8 = grovedb_element::MAX_COMMITMENT_TREE_CHUNK_POWER;
+
+    assert!(Element::empty_commitment_tree(CAP).is_ok());
+    assert!(Element::empty_commitment_tree_with_flags(CAP, Some(vec![1])).is_ok());
+    assert!(
+        Element::empty_commitment_tree(CAP + 1).is_err(),
+        "chunk_power above MAX_COMMITMENT_TREE_CHUNK_POWER must be rejected",
+    );
+    assert!(
+        Element::empty_commitment_tree_with_flags(CAP + 1, Some(vec![1])).is_err(),
+        "chunk_power above MAX_COMMITMENT_TREE_CHUNK_POWER must be rejected",
+    );
+    assert!(Element::empty_commitment_tree(31).is_err());
+}
