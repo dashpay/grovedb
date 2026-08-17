@@ -193,9 +193,54 @@ impl GroveOp {
                 grove_version,
             ),
             GroveOp::CommitmentTreeInsert { payload, .. } => {
-                // In the apply path, preprocessing rewrites this op into
-                // ReplaceNonMerkTreeRoot. The base cost is a tree root key
-                // replacement in the parent Merk; the append work itself
+                // Version-gated cost model — downstream the estimate is an
+                // admission bound, so historical blocks admitted under the
+                // legacy numbers must re-validate identically on replay.
+                if grove_version
+                    .grovedb_versions
+                    .operations
+                    .worst_case
+                    .worst_case_commitment_tree_insert
+                    == 0
+                {
+                    // Legacy (V1..V3) model: depth-correct Sinsemilla and
+                    // frontier bounds but no dense-buffer recompute or epoch
+                    // compaction. Kept byte-for-byte for replay of historical
+                    // admission decisions; unreachable from the batch
+                    // estimation path on those versions (keyless ops are
+                    // skipped there) but reachable through direct dispatch.
+                    let item_cost = GroveDb::worst_case_merk_replace_tree(
+                        key,
+                        TreeType::CommitmentTree(0),
+                        in_parent_tree_type,
+                        worst_case_layer_element_estimates,
+                        propagate,
+                        grove_version,
+                    );
+                    use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                    // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 32*32
+                    const MAX_FRONTIER_SIZE: u32 = 1066;
+                    // Buffer entry: cmx (32) + rho (32) + cv_net (32) + payload
+                    let buffer_entry_size = 96 + payload.len() as u32;
+                    // 32 (root computation) + 32 (all ommers cascade) = 64
+                    const MAX_SINSEMILLA_HASHES: u32 = 64;
+                    // 1 blake3 for the running buffer hash
+                    const MAX_BLAKE3_HASHES: u32 = 1;
+                    return item_cost.add_cost(OperationCost {
+                        seek_count: 3, // frontier load + frontier save + buffer write
+                        storage_cost: StorageCost {
+                            added_bytes: buffer_entry_size,
+                            replaced_bytes: MAX_FRONTIER_SIZE,
+                            removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+                        },
+                        storage_loaded_bytes: MAX_FRONTIER_SIZE as u64,
+                        hash_node_calls: MAX_BLAKE3_HASHES,
+                        sinsemilla_hash_calls: MAX_SINSEMILLA_HASHES,
+                    });
+                }
+                // V4+: in the apply path, preprocessing rewrites this op
+                // into ReplaceNonMerkTreeRoot. The base cost is a tree root
+                // key replacement in the parent Merk; the append work itself
                 // (frontier I/O, Sinsemilla hashing, note write, epoch
                 // compaction) is charged by the shared upper-bound model with
                 // constants derived from the frontier depth. The epoch scale
@@ -1554,6 +1599,72 @@ mod tests {
              count={:?}",
             cost_pcount,
             cost_count,
+        );
+    }
+
+    /// Replay guarantee: the V1..V3 worst-case CommitmentTreeInsert arm
+    /// must keep producing the LEGACY numbers byte-for-byte — 64 Sinsemilla
+    /// hashes, a 1066-byte frontier charged as replaced and loaded bytes,
+    /// 1 blake3, 3 seeks on top of the parent-node replace, no epoch
+    /// compaction — because historical admission bounds were computed with
+    /// them. The upper-bound model is gated to V4+
+    /// (`worst_case_commitment_tree_insert`).
+    #[test]
+    fn test_commitment_tree_insert_worst_case_cost_pinned_before_v4() {
+        use grovedb_costs::{
+            storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
+            OperationCost,
+        };
+        use grovedb_version::version::v3::GROVE_V3;
+        let grove_version = &GROVE_V3;
+
+        let payload_len: u32 = 216;
+        let op = GroveOp::CommitmentTreeInsert {
+            cmx: [1u8; 32],
+            rho: [2u8; 32],
+            cv_net: [3u8; 32],
+            payload: vec![0u8; payload_len as usize],
+        };
+        let key = KeyInfo::KnownKey(b"pool".to_vec());
+        let layer_info = MaxElementsNumber(100);
+
+        let arm_cost = op
+            .worst_case_cost(
+                &key,
+                TreeType::NormalTree,
+                &layer_info,
+                false,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected V3 worst case cost");
+
+        let replace_part = GroveDb::worst_case_merk_replace_tree(
+            &key,
+            grovedb_merk::tree_type::TreeType::CommitmentTree(0),
+            TreeType::NormalTree,
+            &layer_info,
+            false,
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected replace-tree part");
+        let legacy_flat = OperationCost {
+            seek_count: 3,
+            storage_cost: StorageCost {
+                added_bytes: 96 + payload_len,
+                replaced_bytes: 1066,
+                removed_bytes: NoStorageRemoval,
+            },
+            storage_loaded_bytes: 1066,
+            hash_node_calls: 1,
+            sinsemilla_hash_calls: 64,
+        };
+        assert_eq!(
+            arm_cost,
+            replace_part + legacy_flat,
+            "V3 worst-case CommitmentTreeInsert output changed — this breaks replay of \
+             historical admission bounds",
         );
     }
 }

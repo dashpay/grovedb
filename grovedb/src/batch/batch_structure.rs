@@ -13,6 +13,8 @@ use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 #[cfg(feature = "minimal")]
 use grovedb_storage::worst_case_costs::WorstKeyLength;
 #[cfg(feature = "minimal")]
+use grovedb_version::version::GroveVersion;
+#[cfg(feature = "minimal")]
 use grovedb_visualize::{DebugByteVectors, DebugBytes};
 #[cfg(feature = "minimal")]
 use intmap::IntMap;
@@ -121,6 +123,7 @@ where
         update_element_flags_function: F,
         split_remove_bytes_function: SR,
         merk_tree_cache: C,
+        grove_version: &GroveVersion,
     ) -> CostResult<BatchStructure<C, F, SR>, Error> {
         Self::continue_from_ops(
             None,
@@ -128,6 +131,7 @@ where
             update_element_flags_function,
             split_remove_bytes_function,
             merk_tree_cache,
+            grove_version,
         )
     }
 
@@ -138,7 +142,13 @@ where
         update_element_flags_function: F,
         split_remove_bytes_function: SR,
         mut merk_tree_cache: C,
+        grove_version: &GroveVersion,
     ) -> CostResult<BatchStructure<C, F, SR>, Error> {
+        let keyless_ops_reach_cost_dispatch = grove_version
+            .grovedb_versions
+            .apply_batch
+            .keyless_op_cost_dispatch
+            >= 1;
         let mut cost = OperationCost::default();
 
         let mut ops_by_level_paths: OpsByLevelPath = previous_ops.unwrap_or_default();
@@ -161,8 +171,11 @@ where
             // rewritten into keyed ops by preprocessing before reaching here;
             // in the estimated-cost paths there is no preprocessing, so split
             // the tree key off the path and let the op flow to the cost
-            // dispatch. Silently dropping them here (as this code used to do)
-            // made every append estimate as free — see issue #812.
+            // dispatch. Silently dropping them (as V1..V3 do below) makes
+            // every append estimate as free — see issue #812. The old skip
+            // is version-gated, not deleted: downstream the estimate is an
+            // admission bound, and historical blocks admitted under the old
+            // under-estimate must re-validate identically on replay.
             //
             // The synthetic key (see `keyless_op_synthetic_key`) sizes
             // estimates with the real tree-key length while keeping one map
@@ -172,6 +185,7 @@ where
             // silent drop.
             let (op_path, key, is_keyless_append) = match op_key {
                 Some(k) => (op_path, k, false),
+                None if !keyless_ops_reach_cost_dispatch => continue,
                 None => {
                     let mut path = op_path;
                     let Some(tree_key) = path.0.pop() else {

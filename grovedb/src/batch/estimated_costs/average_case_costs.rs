@@ -215,9 +215,53 @@ impl GroveOp {
                 grove_version,
             ),
             GroveOp::CommitmentTreeInsert { payload, .. } => {
-                // In the apply path, preprocessing rewrites this op into
-                // ReplaceNonMerkTreeRoot. The base cost is a tree root key
-                // replacement in the parent Merk; the append work itself
+                // Version-gated cost model — downstream the estimate is an
+                // admission bound, so historical blocks admitted under the
+                // legacy numbers must re-validate identically on replay.
+                if grove_version
+                    .grovedb_versions
+                    .operations
+                    .average_case
+                    .average_case_commitment_tree_insert
+                    == 0
+                {
+                    // Legacy (V1..V3) model: averages, NOT upper bounds.
+                    // Kept byte-for-byte for replay of historical admission
+                    // decisions; unreachable from the batch estimation path
+                    // on those versions (keyless ops are skipped there) but
+                    // reachable through direct dispatch.
+                    let item_cost = GroveDb::average_case_merk_replace_tree(
+                        key,
+                        layer_element_estimates,
+                        TreeType::CommitmentTree(0),
+                        propagate,
+                        grove_version,
+                    );
+                    use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                    // Average frontier size with ~16 ommers:
+                    // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 16*32
+                    const AVG_FRONTIER_SIZE: u32 = 554;
+                    // Buffer entry: cmx (32) + rho (32) + cv_net (32) + payload
+                    let buffer_entry_size = 96 + payload.len() as u32;
+                    // 32 (root computation) + 1 (avg ommer updates) = 33
+                    const AVG_SINSEMILLA_HASHES: u32 = 33;
+                    // 1 blake3 for the running buffer hash
+                    const AVG_BLAKE3_HASHES: u32 = 1;
+                    return item_cost.add_cost(OperationCost {
+                        seek_count: 3, // frontier load + frontier save + buffer write
+                        storage_cost: StorageCost {
+                            added_bytes: buffer_entry_size,
+                            replaced_bytes: AVG_FRONTIER_SIZE,
+                            removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+                        },
+                        storage_loaded_bytes: AVG_FRONTIER_SIZE as u64,
+                        hash_node_calls: AVG_BLAKE3_HASHES,
+                        sinsemilla_hash_calls: AVG_SINSEMILLA_HASHES,
+                    });
+                }
+                // V4+: in the apply path, preprocessing rewrites this op
+                // into ReplaceNonMerkTreeRoot. The base cost is a tree root
+                // key replacement in the parent Merk; the append work itself
                 // (frontier I/O, Sinsemilla hashing, note write, epoch
                 // compaction) is charged by the shared upper-bound model —
                 // deliberately NOT an average, since the append cost is
@@ -2425,6 +2469,71 @@ mod tests {
             "estimated storage_loaded_bytes {} must not be under actual {}",
             est.storage_loaded_bytes,
             actual.storage_loaded_bytes
+        );
+    }
+
+    /// Replay guarantee: the V1..V3 average-case CommitmentTreeInsert arm
+    /// must keep producing the LEGACY numbers byte-for-byte — 33 Sinsemilla
+    /// hashes, a 554-byte frontier charged as replaced and loaded bytes,
+    /// 1 blake3, 3 seeks on top of the parent-node replace — because
+    /// historical admission bounds were computed with them. The upper-bound
+    /// model is gated to V4+ (`average_case_commitment_tree_insert`).
+    #[test]
+    fn test_commitment_tree_insert_average_case_cost_pinned_before_v4() {
+        use grovedb_version::version::v3::GROVE_V3;
+        let grove_version = &GROVE_V3;
+
+        let payload_len: u32 = 216;
+        let op = GroveOp::CommitmentTreeInsert {
+            cmx: [1u8; 32],
+            rho: [2u8; 32],
+            cv_net: [3u8; 32],
+            payload: vec![0u8; payload_len as usize],
+        };
+        let key = KeyInfo::KnownKey(b"pool".to_vec());
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLevel(1, false),
+            estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+        };
+
+        let arm_cost = op
+            .average_case_cost(&key, &layer_info, None, false, grove_version)
+            .cost_as_result()
+            .expect("expected V3 average case cost");
+        // A declared chunk power must not change the V3 output — the
+        // declared-layer machinery is part of the V4+ model only.
+        let arm_cost_with_declared_chunk_power = op
+            .average_case_cost(&key, &layer_info, Some(4), false, grove_version)
+            .cost_as_result()
+            .expect("expected V3 average case cost with declared chunk power");
+        assert_eq!(arm_cost, arm_cost_with_declared_chunk_power);
+
+        let replace_part = GroveDb::average_case_merk_replace_tree(
+            &key,
+            &layer_info,
+            grovedb_merk::tree_type::TreeType::CommitmentTree(0),
+            false,
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected replace-tree part");
+        let legacy_flat = OperationCost {
+            seek_count: 3,
+            storage_cost: StorageCost {
+                added_bytes: 96 + payload_len,
+                replaced_bytes: 554,
+                removed_bytes: NoStorageRemoval,
+            },
+            storage_loaded_bytes: 554,
+            hash_node_calls: 1,
+            sinsemilla_hash_calls: 33,
+        };
+        assert_eq!(
+            arm_cost,
+            replace_part + legacy_flat,
+            "V3 average-case CommitmentTreeInsert output changed — this breaks replay of \
+             historical admission bounds",
         );
     }
 }

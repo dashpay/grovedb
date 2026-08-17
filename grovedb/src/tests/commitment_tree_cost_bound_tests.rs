@@ -453,6 +453,37 @@ fn test_other_keyless_append_ops_reach_estimation() {
     }
 }
 
+/// Replay guarantee: on grove versions at or below V3 the estimated-cost
+/// batch structure must keep SKIPPING keyless append ops — the append
+/// contributes zero, exactly the (under-counting) estimate historical
+/// blocks were admitted under. The new cost dispatch is V4-gated
+/// (`apply_batch.keyless_op_cost_dispatch`); flipping it for old versions
+/// would change historical admission bounds and brick chain sync replay.
+#[test]
+fn test_keyless_append_ops_still_estimate_as_free_before_v4() {
+    use grovedb_version::version::v3::GROVE_V3;
+
+    for op in [
+        ct_op(0),
+        QualifiedGroveDbOp::mmr_tree_append_op(vec![b"mmr".to_vec()], vec![1u8; 64]),
+        QualifiedGroveDbOp::bulk_append_op(vec![b"bulk".to_vec()], vec![2u8; 64]),
+        QualifiedGroveDbOp::dense_tree_insert_op(vec![b"dense".to_vec()], vec![3u8; 64]),
+    ] {
+        let average = average_case_estimate(vec![op.clone()], &GROVE_V3);
+        assert_eq!(
+            average,
+            OperationCost::default(),
+            "V3 average-case estimate for a keyless append op must stay zero (op {op:?})",
+        );
+        let worst = worst_case_estimate(vec![op.clone()], &GROVE_V3);
+        assert_eq!(
+            worst,
+            OperationCost::default(),
+            "V3 worst-case estimate for a keyless append op must stay zero (op {op:?})",
+        );
+    }
+}
+
 /// A commitment tree with large caller-supplied flags: the preprocessing
 /// read loads the flags too, so the estimate's element-load bound must
 /// cover them. The average-case estimator derives the bound from the
