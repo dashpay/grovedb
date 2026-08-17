@@ -453,6 +453,65 @@ fn test_other_keyless_append_ops_reach_estimation() {
     }
 }
 
+/// A commitment tree with large caller-supplied flags: the preprocessing
+/// read loads the flags too, so the estimate's element-load bound must
+/// cover them. The average-case estimator derives the bound from the
+/// parent layer's declared flags size (the same metadata the parent-node
+/// replace uses); the worst-case estimator assumes the largest Merk
+/// value. Before this bound existed, flags above a fixed 512-byte
+/// allowance broke `estimated >= actual` on `storage_loaded_bytes`.
+#[test]
+fn test_commitment_tree_insert_estimated_covers_actual_with_large_flags() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+    const CHUNK_POWER: u8 = 4;
+    const FLAGS_LEN: usize = 2000;
+
+    db.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree_with_flags(CHUNK_POWER, Some(vec![7u8; FLAGS_LEN]))
+            .expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert commitment tree with flags");
+
+    let op = ct_op(0);
+
+    // Average case with the flags size declared in the parent layer.
+    let mut paths = HashMap::new();
+    paths.insert(
+        KeyInfoPath(vec![]),
+        EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLevel(1, false),
+            estimated_layer_sizes: AllSubtrees(4, NoSumTrees, Some(FLAGS_LEN as u32)),
+        },
+    );
+    let average = GroveDb::estimated_case_operations_for_batch(
+        AverageCaseCostsType(paths),
+        vec![op.clone()],
+        None,
+        |_cost, _old_flags, _new_flags| Ok(false),
+        |_flags, _removed_key_bytes, _removed_value_bytes| Ok((NoStorageRemoval, NoStorageRemoval)),
+        grove_version,
+    )
+    .cost_as_result()
+    .expect("expected average case costs with declared flags size");
+
+    let worst = worst_case_estimate(vec![op.clone()], grove_version);
+    let CostContext {
+        value,
+        cost: actual,
+    } = db.apply_batch(vec![op], None, None, grove_version);
+    value.expect("append to flagged tree should succeed");
+
+    assert_estimates_dominate(0, CHUNK_POWER, &average, &worst, &actual);
+}
+
 /// The validated constructors enforce the chunk-power cap the estimator
 /// charges as its fallback, so no creatable tree can exceed the estimate.
 /// A revert to the old `<= 31` bound must fail here.

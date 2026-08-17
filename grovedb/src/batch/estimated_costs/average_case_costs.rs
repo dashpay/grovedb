@@ -24,6 +24,8 @@ use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_storage::worst_case_costs::WorstKeyLength;
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "minimal")]
+use integer_encoding::VarInt;
+#[cfg(feature = "minimal")]
 use itertools::Itertools;
 
 use crate::Element;
@@ -221,6 +223,23 @@ impl GroveOp {
                 // deliberately NOT an average, since the append cost is
                 // position-dependent and the position is adversary-chosen.
                 // See `commitment_tree_insert_op_cost`.
+                //
+                // The preprocessing read of the stored element loads its
+                // caller-supplied flags too; bound them with the parent
+                // layer's declared flags size — the same metadata the
+                // parent-node replace below uses, so an undeclared flag
+                // size undercounts both consistently.
+                let element_flags_load_bound = match layer_element_estimates
+                    .estimated_layer_sizes
+                    .layered_flags_size()
+                {
+                    Ok(flags_size) => flags_size
+                        .map(|f| f + f.required_space() as u32)
+                        .unwrap_or_default(),
+                    Err(e) => {
+                        return Err(Error::MerkError(e)).wrap_with_cost(OperationCost::default())
+                    }
+                };
                 GroveDb::average_case_merk_replace_tree(
                     key,
                     layer_element_estimates,
@@ -231,6 +250,7 @@ impl GroveOp {
                 .add_cost(super::commitment_tree_insert_op_cost(
                     payload.len() as u32,
                     ct_chunk_power,
+                    element_flags_load_bound,
                 ))
             }
             GroveOp::MmrTreeAppend { value } => {

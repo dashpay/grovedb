@@ -214,6 +214,11 @@ impl GroveOp {
                 .add_cost(super::commitment_tree_insert_op_cost(
                     payload.len() as u32,
                     None,
+                    // Caller-supplied element flags have no declared bound
+                    // in the worst-case paths — charge the largest value a
+                    // Merk node can store, consistent with the rest of the
+                    // worst-case machinery.
+                    MERK_BIGGEST_VALUE_SIZE,
                 ))
             }
             GroveOp::MmrTreeAppend { value } => {

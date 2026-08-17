@@ -97,6 +97,14 @@ const PHYSICAL_MAX_CHUNK_POWER: u8 = 16;
 #[cfg(feature = "minimal")]
 const PER_PUT_OVERHEAD: u32 = 50;
 
+/// Bytes loaded when reading the stored `CommitmentTree` element sans
+/// flags: the serialized fields (variant, varint total count, chunk
+/// power, flags option) plus the Merk node framing (hashes, key,
+/// length prefixes) — measured ~87, with margin. Caller-supplied flags
+/// are bounded separately via `element_flags_load_bound`.
+#[cfg(feature = "minimal")]
+const CT_ELEMENT_LOAD_BASE: u32 = 256;
+
 /// Upper-bound cost of the append work a single `CommitmentTreeInsert`
 /// performs outside the parent Merk (which is charged separately via
 /// `average/worst_case_merk_replace_tree`): frontier I/O and Sinsemilla
@@ -110,6 +118,12 @@ const PER_PUT_OVERHEAD: u32 = 50;
 /// unknown — the [`MAX_ESTIMATED_CHUNK_POWER`] cap, which the validated
 /// element constructors enforce at creation, is charged instead.
 ///
+/// `element_flags_load_bound` bounds the caller-supplied flags on the
+/// stored `CommitmentTree` element, which the preprocessing read loads:
+/// the average-case estimator derives it from the parent layer's
+/// declared flags size (the same metadata the parent-node replace
+/// uses), the worst-case estimator passes the largest Merk value size.
+///
 /// Used by BOTH the average-case and the worst-case estimators. The
 /// append cost is position-dependent and the position is
 /// adversary-controlled, so an "average" here is not a meaningful
@@ -120,6 +134,7 @@ const PER_PUT_OVERHEAD: u32 = 50;
 pub(in crate::batch) fn commitment_tree_insert_op_cost(
     payload_len: u32,
     chunk_power: Option<u8>,
+    element_flags_load_bound: u32,
 ) -> OperationCost {
     // A stored note entry: cmx (32) || rho (32) || cv_net (32) || payload.
     let entry_size = 96 + payload_len;
@@ -166,9 +181,13 @@ pub(in crate::batch) fn commitment_tree_insert_op_cost(
             replaced_bytes: 0,
             removed_bytes: StorageRemovedBytes::NoStorageRemoval,
         },
-        // Reads: the CommitmentTree element (generous margin for
-        // caller-supplied element flags) + the serialized frontier.
-        storage_loaded_bytes: (512 + MAX_FRONTIER_SIZE + PER_PUT_OVERHEAD) as u64,
+        // Reads: the stored CommitmentTree element (fixed serialized
+        // fields + Merk node framing, plus the caller-supplied flags
+        // bound) + the serialized frontier.
+        storage_loaded_bytes: (CT_ELEMENT_LOAD_BASE
+            + element_flags_load_bound
+            + MAX_FRONTIER_SIZE
+            + PER_PUT_OVERHEAD) as u64,
         // Blake3: the dense buffer's root recompute visits every filled
         // slot (2 hashes each, up to a full buffer), plus on compaction
         // the chunk-leaf hash and MMR merge cascade, plus the bulk
