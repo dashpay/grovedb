@@ -1728,4 +1728,38 @@ mod tests {
              historical admission bounds",
         );
     }
+
+    /// Boundary test for the saturating epoch arithmetic: a hand-built op
+    /// with an oversized payload (the op type is public; the apply path only
+    /// rejects wrong-sized payloads later) drives the physical-ceiling epoch
+    /// term past u32. The estimate must saturate at u32::MAX — never panic
+    /// in debug builds nor wrap in release builds, since a wrapped
+    /// added_bytes would silently UNDER-estimate.
+    #[test]
+    fn test_commitment_tree_insert_worst_case_cost_oversized_payload_saturates() {
+        let grove_version = GroveVersion::latest();
+        let op = GroveOp::CommitmentTreeInsert {
+            cmx: [1u8; 32],
+            rho: [2u8; 32],
+            cv_net: [3u8; 32],
+            // 2^16 epoch x (96 + 70_000 + 16) bytes ≈ 4.6e9 > u32::MAX.
+            payload: vec![0u8; 70_000],
+        };
+        let key = KeyInfo::KnownKey(b"tree_key".to_vec());
+        let cost = op
+            .worst_case_cost(
+                &key,
+                TreeType::NormalTree,
+                &MaxElementsNumber(100),
+                false,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected worst case cost for oversized payload");
+        assert_eq!(
+            cost.storage_cost.added_bytes,
+            u32::MAX,
+            "oversized-payload estimate must saturate, not wrap",
+        );
+    }
 }

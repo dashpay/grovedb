@@ -130,7 +130,7 @@ pub(in crate::batch) fn commitment_tree_insert_op_cost(
     element_flags_load_bound: u32,
 ) -> OperationCost {
     // A stored note entry: cmx (32) || rho (32) || cv_net (32) || payload.
-    let entry_size = 96 + payload_len;
+    let entry_size = 96u64 + payload_len as u64;
 
     // Epoch size for the compaction and dense-recompute bounds. Clamped
     // to the physical ceiling so hand-built layer information cannot
@@ -139,10 +139,24 @@ pub(in crate::batch) fn commitment_tree_insert_op_cost(
 
     // Chunk-blob serialization overhead per entry (length prefix) and
     // per blob (entry count, MMR leaf node framing).
-    const CHUNK_ENTRY_OVERHEAD: u32 = 16;
-    const CHUNK_BLOB_OVERHEAD: u32 = 64;
+    const CHUNK_ENTRY_OVERHEAD: u64 = 16;
+    const CHUNK_BLOB_OVERHEAD: u64 = 64;
     // An MMR internal node: 1 (flag) + 32 (hash).
-    const MMR_INTERNAL_NODE_SIZE: u32 = 33;
+    const MMR_INTERNAL_NODE_SIZE: u64 = 33;
+
+    // The epoch term multiplies the entry size by up to 2^16, which
+    // overflows u32 for hand-built ops with oversized payloads (the op
+    // is public; the apply path only rejects wrong-sized payloads
+    // later). Sum in u64 and saturate at u32::MAX — a wrapped
+    // added_bytes would silently UNDER-estimate, the exact failure this
+    // model exists to prevent, while a saturated one merely
+    // over-reserves for an op the apply would reject anyway.
+    let added_bytes_u64: u64 = (entry_size + PER_PUT_OVERHEAD as u64)
+        + (MAX_FRONTIER_SIZE as u64 + PER_PUT_OVERHEAD as u64)
+        + (epoch_size as u64 * (entry_size + CHUNK_ENTRY_OVERHEAD)
+            + CHUNK_BLOB_OVERHEAD
+            + PER_PUT_OVERHEAD as u64)
+        + FRONTIER_DEPTH as u64 * (MMR_INTERNAL_NODE_SIZE + PER_PUT_OVERHEAD as u64);
 
     OperationCost {
         // 2 reads (CommitmentTree element + frontier) and up to
@@ -160,12 +174,7 @@ pub(in crate::batch) fn commitment_tree_insert_op_cost(
             // - on compaction: the epoch's chunk blob (every entry is
             //   re-written once into the blob) and the MMR merge
             //   cascade's internal nodes.
-            added_bytes: (entry_size + PER_PUT_OVERHEAD)
-                + (MAX_FRONTIER_SIZE + PER_PUT_OVERHEAD)
-                + (epoch_size * (entry_size + CHUNK_ENTRY_OVERHEAD)
-                    + CHUNK_BLOB_OVERHEAD
-                    + PER_PUT_OVERHEAD)
-                + FRONTIER_DEPTH * (MMR_INTERNAL_NODE_SIZE + PER_PUT_OVERHEAD),
+            added_bytes: u32::try_from(added_bytes_u64).unwrap_or(u32::MAX),
             // The parent-Merk node replacement is charged by the
             // replace_tree part; the append itself replaces nothing.
             replaced_bytes: 0,
