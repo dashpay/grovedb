@@ -152,32 +152,43 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
             .wrap_with_cost(cost);
         }
 
-        let bulk_result = match self.bulk_tree.append(entry) {
+        // Run the single entry through the batch path rather than
+        // `BulkAppendTree::append`.
+        //
+        // `BulkAppendTree::append` walks the dense buffer TWICE per entry:
+        // once inside `append_no_state_root`, whose dense root nothing here
+        // reads, and again in `compute_current_state_root` to derive the root
+        // we actually return. It also returns a plain `Result`, so the second
+        // walk's storage reads and hash calls are discarded outright — a
+        // one-entry append billed 4 hash calls while performing 6. The
+        // deferred path walks once and bills what it walks, and sharing one
+        // implementation keeps the single and batch paths from drifting.
+        let many = match self
+            .append_many(core::iter::once(entry))
+            .unwrap_add_cost(&mut cost)
+        {
             Ok(r) => r,
-            Err(e) => {
-                return Err(PrivateDocumentStoreError::InvalidData(format!(
-                    "bulk append: {}",
-                    e
-                )))
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
+
+        let global_position = match many.last_global_position {
+            Some(p) => p,
+            None => {
+                // Unreachable: exactly one entry was supplied and its size was
+                // validated above, so `append_many` recorded a position.
+                return Err(PrivateDocumentStoreError::InvalidData(
+                    "single append recorded no position".to_string(),
+                ))
                 .wrap_with_cost(cost);
             }
         };
-        cost.hash_node_calls += bulk_result.hash_count;
-
-        // `bulk_result.hash_count` covers the BulkAppendTree work INCLUDING
-        // its own state-root blake3. The composite `pds_state` root below is
-        // an ADDITIONAL blake3 on top of it — charge it, or every append
-        // under-reports one hash call.
-        let state_root =
-            compute_private_document_store_state_root(&self.config_hash, &bulk_result.state_root);
-        cost.hash_node_calls += 1;
 
         Ok(PrivateDocumentStoreAppendResult {
-            state_root,
-            bulk_state_root: bulk_result.state_root,
-            global_position: bulk_result.global_position,
-            hash_count: bulk_result.hash_count,
-            compacted: bulk_result.compacted,
+            state_root: many.state_root,
+            bulk_state_root: many.bulk_state_root,
+            global_position,
+            hash_count: many.hash_count,
+            compacted: many.compacted,
         })
         .wrap_with_cost(cost)
     }
@@ -675,10 +686,75 @@ mod atomicity_tests {
         // RocksDB storage by
         // `test_private_document_store_reopened_reads_are_billed` in the
         // grovedb crate.
-        assert!(
-            cost.hash_node_calls > 0,
-            "the dense walk and root hashes must be billed, got {:?}",
+        // Pinned exactly rather than `> 0`: a loose bound is what let a
+        // double-charge of the dense walk sit here unnoticed. With
+        // `chunk_power = 2` the buffer holds 3 and an epoch is 4, so 6 total
+        // entries leave one completed chunk (mmr_size 1, which takes the
+        // single-element path and bags no peaks) and 2 live buffer
+        // positions. `hash_node` bills a value hash and a node hash per
+        // filled position, so the dense walk is 4; the bulk state root and
+        // the composite `pds_state` root are one each.
+        assert_eq!(
+            cost.hash_node_calls, 6,
+            "expected 2*2 dense-walk hashes + 1 bulk state root + 1 composite \
+             pds_state root, got {:?}",
             cost
+        );
+    }
+
+    /// The hash accounting for an append, pinned entry by entry.
+    ///
+    /// Every figure here is derived from what the code actually hashes, so a
+    /// change to either the model or the charging breaks this test rather
+    /// than silently shifting fees.
+    #[test]
+    fn append_bills_exactly_the_hashes_it_performs() {
+        // `chunk_power = 4` gives a 15-slot buffer, so none of these appends
+        // compacts and the MMR stays empty (its root is the zero hash, taken
+        // without hashing).
+        let mut store = PrivateDocumentStore::new(8, 4, MemStorageContext::new())
+            .unwrap()
+            .expect("new");
+
+        // First append: the dense walk visits 1 filled position (2 hashes),
+        // then the bulk state root (1) and the composite pds_state root (1).
+        let ctx = store.append(&[1u8; 8]);
+        ctx.value.expect("append");
+        assert_eq!(
+            ctx.cost.hash_node_calls, 4,
+            "2 dense + 1 bulk root + 1 composite, got {:?}",
+            ctx.cost
+        );
+
+        // Second append: 2 filled positions now, so the walk costs 4.
+        let ctx = store.append(&[2u8; 8]);
+        ctx.value.expect("append");
+        assert_eq!(
+            ctx.cost.hash_node_calls, 6,
+            "4 dense + 1 bulk root + 1 composite, got {:?}",
+            ctx.cost
+        );
+
+        // Third: 6 dense + 2 roots.
+        let ctx = store.append(&[3u8; 8]);
+        ctx.value.expect("append");
+        assert_eq!(
+            ctx.cost.hash_node_calls, 8,
+            "6 dense + 1 bulk root + 1 composite, got {:?}",
+            ctx.cost
+        );
+    }
+
+    /// Opening a store derives the committed-config hash, which is real work
+    /// and must not be free.
+    #[test]
+    fn opening_a_store_bills_the_config_hash() {
+        let ctx = PrivateDocumentStore::new(8, 4, MemStorageContext::new());
+        ctx.value.expect("new");
+        assert_eq!(
+            ctx.cost.hash_node_calls, 1,
+            "the committed-config blake3, got {:?}",
+            ctx.cost
         );
     }
 

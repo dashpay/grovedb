@@ -205,10 +205,10 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// [`compute_current_state_root`](Self::compute_current_state_root).
     ///
     /// Identical result; the difference is that the dense-tree root walk's
-    /// storage reads reach the caller instead of being discarded, and the
-    /// hash calls it performs (two per filled buffer position, plus the
-    /// state-root blake3) are charged. Callers that bill work — anything
-    /// returning a `CostResult` — should prefer this.
+    /// storage reads and hash calls reach the caller instead of being
+    /// discarded, and the final state-root blake3 is charged on top of them.
+    /// Callers that bill work — anything returning a `CostResult` — should
+    /// prefer this.
     pub fn compute_current_state_root_with_cost(&self) -> CostResult<[u8; 32], BulkAppendError> {
         let mut cost = OperationCost::default();
         let mmr_root = match self.last_mmr_root {
@@ -230,12 +230,11 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                 .wrap_with_cost(cost);
             }
         };
-        // The root walk hashes every filled position twice, then one blake3
-        // combines the MMR and dense roots into the state root.
-        cost.hash_node_calls = cost
-            .hash_node_calls
-            .saturating_add(self.dense_tree.count() as u32 * 2)
-            .saturating_add(1);
+        // `root_hash` already charged the walk itself: `hash_node` bills a
+        // value hash and a node hash for every filled position it visits, and
+        // those reached us through `unwrap_add_cost` above. Only the final
+        // blake3 combining the MMR and dense roots is still unbilled.
+        cost.hash_node_calls = cost.hash_node_calls.saturating_add(1);
         Ok(compute_state_root(&mmr_root, &dense_root)).wrap_with_cost(cost)
     }
 

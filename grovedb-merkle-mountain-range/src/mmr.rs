@@ -145,6 +145,13 @@ impl<S: MMRStoreReadOps> MMR<S> {
             Ok(p) => p,
             Err(e) => return Err(e).wrap_with_cost(cost),
         };
+        // `bag_peaks` folds the peaks right-to-left with one `MmrNode::merge`
+        // — a blake3 — per fold, so it performs `peaks - 1` hashes. Reading
+        // the peaks was billed above but the merges were not, which made a
+        // multi-peak root look free beyond its I/O.
+        cost.hash_node_calls = cost
+            .hash_node_calls
+            .saturating_add(peaks.len().saturating_sub(1) as u32);
         match bag_peaks(peaks) {
             Ok(Some(root)) => Ok(root).wrap_with_cost(cost),
             Ok(None) => Err(Error::InconsistentStore).wrap_with_cost(cost),

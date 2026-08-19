@@ -324,14 +324,24 @@ impl GroveOp {
                     MAX_DENSE_HASHES + MAX_MMR_MERGES + ROOT_AND_CONFIG_HASHES;
                 // Writes: buffer entry + chunk blob + MMR nodes
                 const MAX_WRITES: u32 = 1 + 1 + MAX_MMR_MERGES;
-                const MAX_READS: u32 = 64; // MMR sibling reads
-                                           // A compacted epoch is not stored as a bare payload: the
-                                           // chunk blob carries a 9-byte header, sits inside a 37-byte
-                                           // MMR leaf envelope, and every internal MMR node the push
-                                           // creates costs a further 33 bytes. Counting only the raw
-                                           // payload made the "upper bound" fall short — for
-                                           // `entry_size = 1` the very first compaction already exceeded
-                                           // it.
+                const MAX_MMR_READS: u32 = 64; // MMR sibling reads
+                /// Dense-buffer reads, which dominate the seek count and are
+                /// easy to miss: the buffer lives in storage, so BOTH the
+                /// dense-root walk and compaction read it position by
+                /// position. A reopened store at `chunk_power = 16` walks up
+                /// to `2^16 - 1` filled positions to derive the root, and a
+                /// compacting append reads the whole epoch again to build the
+                /// chunk blob. Counting only the MMR's 64 sibling reads left
+                /// `seek_count` three orders of magnitude below the true
+                /// worst case, which is not an upper bound at all.
+                const MAX_DENSE_READS: u32 = 2 * (MAX_EPOCH_ENTRIES - 1);
+                // A compacted epoch is not stored as a bare payload: the
+                // chunk blob carries a 9-byte header, sits inside a 37-byte
+                // MMR leaf envelope, and every internal MMR node the push
+                // creates costs a further 33 bytes. Counting only the raw
+                // payload made the "upper bound" fall short — for
+                // `entry_size = 1` the very first compaction already exceeded
+                // it.
                 const CHUNK_HEADER_BYTES: u32 = 9;
                 const MMR_LEAF_ENVELOPE_BYTES: u32 = 37;
                 const MMR_INTERNAL_NODE_BYTES: u32 = 33;
@@ -347,7 +357,9 @@ impl GroveOp {
                     .saturating_mul(entry_size)
                     .saturating_add(MMR_SERIALIZATION_OVERHEAD);
                 item_cost.add_cost(OperationCost {
-                    seek_count: MAX_WRITES + MAX_READS,
+                    seek_count: MAX_WRITES
+                        .saturating_add(MAX_MMR_READS)
+                        .saturating_add(MAX_DENSE_READS),
                     storage_cost: StorageCost {
                         // +1 for the NonCounted wrapper byte a preserved
                         // wrapper adds to the replaced parent element; the op
@@ -359,7 +371,12 @@ impl GroveOp {
                         replaced_bytes: 0,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
-                    storage_loaded_bytes: (33 * MAX_READS) as u64 + max_compaction_blob as u64,
+                    // Each dense read returns one entry, so the bytes those
+                    // reads load scale with the committed entry size. This
+                    // product exceeds u32, hence the u64 arithmetic.
+                    storage_loaded_bytes: (33 * MAX_MMR_READS) as u64
+                        + max_compaction_blob as u64
+                        + (MAX_DENSE_READS as u64).saturating_mul(entry_size as u64),
                     hash_node_calls: MAX_HASH_CALLS,
                     sinsemilla_hash_calls: 0,
                 })

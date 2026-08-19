@@ -295,3 +295,60 @@ fn verify_and_get_root_surfaces_calculate_root_error() {
         msg
     );
 }
+
+// =============================================================================
+// mmr.rs: get_root bills the peak-bagging merges
+// =============================================================================
+
+/// `get_root` reads the peaks with cost, but folding them into a single root
+/// calls `MmrNode::merge` — a blake3 — once per extra peak. Those merges went
+/// uncharged, so a multi-peak root looked free beyond its I/O.
+#[test]
+fn get_root_charges_one_hash_per_peak_merge() {
+    // 1 leaf: mmr_size 1 takes the single-element path, no bagging at all.
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+    mmr.push(leaf(0)).unwrap().expect("push");
+    let ctx = mmr.get_root();
+    ctx.value.expect("root");
+    assert_eq!(
+        ctx.cost.hash_node_calls, 0,
+        "a single-element MMR bags nothing"
+    );
+
+    // 2 leaves: one perfect peak, so still nothing to fold.
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+    for i in 0..2 {
+        mmr.push(leaf(i)).unwrap().expect("push");
+    }
+    let ctx = mmr.get_root();
+    ctx.value.expect("root");
+    assert_eq!(ctx.cost.hash_node_calls, 0, "one peak needs no merge");
+
+    // 3 leaves: two peaks, so exactly one merge.
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+    for i in 0..3 {
+        mmr.push(leaf(i)).unwrap().expect("push");
+    }
+    let ctx = mmr.get_root();
+    ctx.value.expect("root");
+    assert_eq!(
+        ctx.cost.hash_node_calls, 1,
+        "two peaks fold with one blake3 merge"
+    );
+
+    // 7 leaves: three peaks (4 + 2 + 1), so two merges.
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+    for i in 0..7 {
+        mmr.push(leaf(i)).unwrap().expect("push");
+    }
+    let ctx = mmr.get_root();
+    ctx.value.expect("root");
+    assert_eq!(
+        ctx.cost.hash_node_calls, 2,
+        "three peaks fold with two blake3 merges"
+    );
+}

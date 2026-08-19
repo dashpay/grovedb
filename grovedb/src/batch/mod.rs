@@ -3072,6 +3072,13 @@ where
                                     .get_feature_type(in_tree_type)
                                     .wrap_with_cost(OperationCost::default())
                             );
+                            // Deriving the empty root performs two blake3
+                            // calls — the committed-config hash and the
+                            // composite `pds_state` hash — neither of which
+                            // the helper can bill, since it returns a bare
+                            // array. Charge them here so creating a store
+                            // through a batch matches the direct path.
+                            cost.hash_node_calls = cost.hash_node_calls.saturating_add(2);
                             cost_return_on_error_into!(
                                 &mut cost,
                                 element.insert_subtree_into_batch_operations(

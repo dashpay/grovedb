@@ -224,6 +224,12 @@ impl GroveDb {
                     ))
                     .wrap_with_cost(cost);
                 }
+                // Deriving the empty root performs two blake3 calls — the
+                // committed-config hash and the composite `pds_state` hash —
+                // neither of which the helper can bill, since it returns a
+                // bare array. Charge them here so creating a store is not
+                // two hashes cheaper than it really is.
+                cost.hash_node_calls = cost.hash_node_calls.saturating_add(2);
                 cost_return_on_error_into!(
                     &mut cost,
                     element.insert_subtree(

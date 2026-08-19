@@ -1568,3 +1568,76 @@ fn test_private_document_store_reopened_reads_are_billed() {
         cost
     );
 }
+
+/// Creating a store derives its empty state root, which is two blake3 calls:
+/// the committed-config hash and the composite `pds_state` hash. Neither is
+/// visible to `insert_subtree`, which receives an already-computed array, so
+/// both have to be charged at the creation site or the operation is billed two
+/// hashes short.
+///
+/// Asserted as a difference against a `BulkAppendTree` creation rather than as
+/// an absolute figure: that type creates from `NULL_HASH` and so performs
+/// neither hash, while every other part of the insert — the parent Merk write,
+/// the element value hash — is the same work. The gap is therefore exactly the
+/// two hashes under test, and the test does not break when unrelated Merk
+/// costs shift.
+#[test]
+fn test_private_document_store_creation_bills_its_two_hashes() {
+    let grove_version = GroveVersion::latest();
+
+    let pds_cost = {
+        let db = make_empty_grovedb();
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert root tree");
+        db.insert(
+            &[b"root"],
+            b"store",
+            Element::empty_private_document_store(TEST_ENTRY_SIZE, TEST_CHUNK_POWER)
+                .expect("valid config"),
+            None,
+            None,
+            grove_version,
+        )
+        .cost
+    };
+
+    let bulk_cost = {
+        let db = make_empty_grovedb();
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert root tree");
+        db.insert(
+            &[b"root"],
+            b"store",
+            Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid config"),
+            None,
+            None,
+            grove_version,
+        )
+        .cost
+    };
+
+    assert_eq!(
+        pds_cost.hash_node_calls,
+        bulk_cost.hash_node_calls + 2,
+        "store creation must bill the config hash and the composite root \
+         hash (pds {:?} vs bulk {:?})",
+        pds_cost,
+        bulk_cost
+    );
+}
