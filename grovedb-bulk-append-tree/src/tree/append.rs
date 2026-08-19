@@ -5,6 +5,7 @@ use grovedb_merkle_mountain_range::{
     hash_count_for_push, mmr_size_to_leaf_count, MmrKeySize, MmrNode, MmrStore, MMR,
 };
 use grovedb_storage::StorageContext;
+use grovedb_version::version::GroveVersion;
 
 use super::{
     capacity_for_height, hash::compute_state_root, AppendNoStateRootResult, AppendResult,
@@ -149,6 +150,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     pub fn append_deferred_roots(
         &mut self,
         value: &[u8],
+        grove_version: &GroveVersion,
     ) -> CostResult<AppendNoStateRootResult, BulkAppendError> {
         let mut cost = OperationCost::default();
         let global_position = self.total_count;
@@ -178,7 +180,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                 // The model counter this returns is deliberately unused — see
                 // the `hash_count` derivation below.
                 let (_model_hash_count, mmr_root) = match self
-                    .compact_with_value_with_cost(value)
+                    .compact_with_value_with_cost(value, grove_version)
                     .unwrap_add_cost(&mut cost)
                 {
                     Ok(r) => r,
@@ -238,13 +240,19 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// discarded, and the final state-root blake3 is charged on top of them.
     /// Callers that bill work — anything returning a `CostResult` — should
     /// prefer this.
-    pub fn compute_current_state_root_with_cost(&self) -> CostResult<[u8; 32], BulkAppendError> {
+    pub fn compute_current_state_root_with_cost(
+        &self,
+        grove_version: &GroveVersion,
+    ) -> CostResult<[u8; 32], BulkAppendError> {
         let mut cost = OperationCost::default();
         let mmr_root = match self.last_mmr_root {
             Some(r) => r,
             // Lazy path: a reopened tree has no cached root, so this read is
             // real I/O and must be billed.
-            None => match self.get_mmr_root_with_cost().unwrap_add_cost(&mut cost) {
+            None => match self
+                .get_mmr_root_with_cost(grove_version)
+                .unwrap_add_cost(&mut cost)
+            {
                 Ok(r) => r,
                 Err(e) => return Err(e).wrap_with_cost(cost),
             },
@@ -276,7 +284,13 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// Kept so the released `append_no_state_root` path bills exactly what it
     /// always has — its costs are dropped here, not at the call site.
     fn compact_with_value(&mut self, new_value: &[u8]) -> Result<(u32, [u8; 32]), BulkAppendError> {
-        self.compact_with_value_with_cost(new_value).unwrap()
+        // Pinned to the first grove version, i.e. the shipped MMR hash
+        // accounting. This wrapper discards the cost anyway, so the choice is
+        // unobservable here — but pinning states the intent: the released
+        // `append_no_state_root` path (and therefore CommitmentTree) must not
+        // pick up a newer charge just because one exists.
+        self.compact_with_value_with_cost(new_value, GroveVersion::first())
+            .unwrap()
     }
 
     /// Compact the buffer plus `new_value` into a chunk, propagating cost.
@@ -288,6 +302,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     fn compact_with_value_with_cost(
         &mut self,
         new_value: &[u8],
+        grove_version: &GroveVersion,
     ) -> CostResult<(u32, [u8; 32]), BulkAppendError> {
         let mut cost = OperationCost::default();
         let mut hash_count: u32 = 0;
@@ -343,7 +358,9 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             let mut mmr =
                 MMR::new_with_overlay(mmr_size, &mmr_store, std::mem::take(&mut self.mmr_overlay));
 
-            let push_result = mmr.push(leaf).unwrap_add_cost(&mut cost);
+            let push_result = mmr
+                .push_with_version(leaf, grove_version)
+                .unwrap_add_cost(&mut cost);
             if let Err(e) = push_result {
                 // Restore overlay before returning error
                 self.mmr_overlay = mmr.batch.take_overlay();
@@ -351,7 +368,9 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                     .wrap_with_cost(cost);
             }
 
-            let root_result = mmr.get_root().unwrap_add_cost(&mut cost);
+            let root_result = mmr
+                .get_root_with_version(grove_version)
+                .unwrap_add_cost(&mut cost);
             let root = match root_result {
                 Ok(node) => node.hash(),
                 Err(e) => {
@@ -378,7 +397,9 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
 
     /// Get the MMR root hash, or `[0; 32]` if no chunks exist.
     pub(crate) fn get_mmr_root(&self) -> Result<[u8; 32], BulkAppendError> {
-        self.get_mmr_root_with_cost().unwrap()
+        // Cost discarded here, so the version is unobservable; pinned to the
+        // shipped accounting to match the released callers.
+        self.get_mmr_root_with_cost(GroveVersion::first()).unwrap()
     }
 
     /// Cost-propagating variant of [`get_mmr_root`](Self::get_mmr_root).
@@ -387,7 +408,10 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// `None`, so a REOPENED non-empty tree resolves its root through here —
     /// exactly the case proof binding and the integrity walk hit. Discarding
     /// the read cost there undercharges their storage I/O.
-    pub(crate) fn get_mmr_root_with_cost(&self) -> CostResult<[u8; 32], BulkAppendError> {
+    pub(crate) fn get_mmr_root_with_cost(
+        &self,
+        grove_version: &GroveVersion,
+    ) -> CostResult<[u8; 32], BulkAppendError> {
         let mut cost = OperationCost::default();
         let mmr_size = self.mmr_size();
         if mmr_size == 0 {
@@ -395,7 +419,10 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         }
         let mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32);
         let mmr = MMR::new_with_overlay(mmr_size, &mmr_store, self.mmr_overlay.clone());
-        match mmr.get_root().unwrap_add_cost(&mut cost) {
+        match mmr
+            .get_root_with_version(grove_version)
+            .unwrap_add_cost(&mut cost)
+        {
             Ok(root_node) => Ok(root_node.hash()).wrap_with_cost(cost),
             Err(e) => Err(BulkAppendError::MmrError(format!(
                 "MMR get_root failed: {}",

@@ -11,6 +11,7 @@
 use grovedb_bulk_append_tree::BulkAppendTree;
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_storage::StorageContext;
+use grovedb_version::version::GroveVersion;
 
 use crate::{
     compute_private_document_store_state_root, private_document_store_config_hash,
@@ -141,6 +142,7 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
     pub fn append(
         &mut self,
         entry: &[u8],
+        grove_version: &GroveVersion,
     ) -> CostResult<PrivateDocumentStoreAppendResult, PrivateDocumentStoreError> {
         let mut cost = OperationCost::default();
 
@@ -161,7 +163,7 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
         // deferred path walks once and bills what it walks, and sharing one
         // implementation keeps the single and batch paths from drifting.
         let many = match self
-            .append_many(core::iter::once(entry))
+            .append_many(core::iter::once(entry), grove_version)
             .unwrap_add_cost(&mut cost)
         {
             Ok(r) => r,
@@ -317,6 +319,7 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
     pub fn append_many<'e, I>(
         &mut self,
         entries: I,
+        grove_version: &GroveVersion,
     ) -> CostResult<PrivateDocumentStoreAppendManyResult, PrivateDocumentStoreError>
     where
         I: IntoIterator<Item = &'e [u8]>,
@@ -351,7 +354,7 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
             // the MMR's bagging hashes free.
             let r = match self
                 .bulk_tree
-                .append_deferred_roots(entry)
+                .append_deferred_roots(entry, grove_version)
                 .unwrap_add_cost(&mut cost)
             {
                 Ok(r) => r,
@@ -371,7 +374,9 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
         // Pay the deferred roots exactly once, through the cost-aware path
         // so the dense-buffer walk's real storage reads and hashes are
         // billed rather than re-derived from a hand-rolled model.
-        let root_ctx = self.bulk_tree.compute_current_state_root_with_cost();
+        let root_ctx = self
+            .bulk_tree
+            .compute_current_state_root_with_cost(grove_version);
         let root_cost = root_ctx.cost;
         let bulk_state_root = match root_ctx.value {
             Ok(r) => r,
@@ -496,11 +501,12 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
     /// composite `pds_state` blake3.
     pub fn compute_current_state_root_with_cost(
         &self,
+        grove_version: &GroveVersion,
     ) -> CostResult<[u8; 32], PrivateDocumentStoreError> {
         let mut cost = OperationCost::default();
         let bulk_root = match self
             .bulk_tree
-            .compute_current_state_root_with_cost()
+            .compute_current_state_root_with_cost(grove_version)
             .unwrap_add_cost(&mut cost)
         {
             Ok(r) => r,
@@ -577,7 +583,12 @@ mod append_many_tests {
             .expect("a");
         let mut last = None;
         for e in &entries {
-            last = Some(one_by_one.append(e).unwrap().expect("append"));
+            last = Some(
+                one_by_one
+                    .append(e, GroveVersion::latest())
+                    .unwrap()
+                    .expect("append"),
+            );
         }
         let per_entry = last.expect("appended");
 
@@ -585,7 +596,7 @@ mod append_many_tests {
             .unwrap()
             .expect("b");
         let many = batched
-            .append_many(entries.iter().map(|e| e.as_slice()))
+            .append_many(entries.iter().map(|e| e.as_slice()), GroveVersion::latest())
             .unwrap()
             .expect("append_many");
 
@@ -625,7 +636,7 @@ mod append_many_tests {
         // than a sentinel indistinguishable from a real append), and still
         // charges the two root hashes it actually performs.
         let empty: Vec<Vec<u8>> = Vec::new();
-        let ctx = store.append_many(empty.iter().map(|e| e.as_slice()));
+        let ctx = store.append_many(empty.iter().map(|e| e.as_slice()), GroveVersion::latest());
         let empty_cost = ctx.cost.clone();
         let r = ctx.value.expect("empty append_many");
         assert_eq!(store.total_count(), 0);
@@ -643,7 +654,9 @@ mod append_many_tests {
         // A wrong-size entry is rejected.
         let bad = [vec![0u8; 8], vec![0u8; 7]];
         assert!(matches!(
-            store.append_many(bad.iter().map(|e| e.as_slice())).unwrap(),
+            store
+                .append_many(bad.iter().map(|e| e.as_slice()), GroveVersion::latest())
+                .unwrap(),
             Err(PrivateDocumentStoreError::InvalidEntrySize {
                 expected: 8,
                 actual: 7
@@ -669,7 +682,10 @@ mod atomicity_tests {
             .expect("new");
         // Past a compaction so the MMR actually holds a chunk.
         for i in 0..6u8 {
-            store.append(&[i; 8]).unwrap().expect("append");
+            store
+                .append(&[i; 8], GroveVersion::latest())
+                .unwrap()
+                .expect("append");
         }
         store.commit_mmr().expect("commit mmr");
         let storage = PrivateDocumentStore::into_storage_for_test(store);
@@ -679,7 +695,7 @@ mod atomicity_tests {
         let reopened = PrivateDocumentStore::from_state(6, 8, 2, storage)
             .unwrap()
             .expect("reopen");
-        let ctx = reopened.compute_current_state_root_with_cost();
+        let ctx = reopened.compute_current_state_root_with_cost(GroveVersion::latest());
         let cost = ctx.cost.clone();
         ctx.value.expect("state root");
         // NOTE: `MemStorageContext::get` reports `OperationCost::default()`,
@@ -721,7 +737,7 @@ mod atomicity_tests {
 
         // First append: the dense walk visits 1 filled position (2 hashes),
         // then the bulk state root (1) and the composite pds_state root (1).
-        let ctx = store.append(&[1u8; 8]);
+        let ctx = store.append(&[1u8; 8], GroveVersion::latest());
         ctx.value.expect("append");
         assert_eq!(
             ctx.cost.hash_node_calls, 4,
@@ -730,7 +746,7 @@ mod atomicity_tests {
         );
 
         // Second append: 2 filled positions now, so the walk costs 4.
-        let ctx = store.append(&[2u8; 8]);
+        let ctx = store.append(&[2u8; 8], GroveVersion::latest());
         ctx.value.expect("append");
         assert_eq!(
             ctx.cost.hash_node_calls, 6,
@@ -739,7 +755,7 @@ mod atomicity_tests {
         );
 
         // Third: 6 dense + 2 roots.
-        let ctx = store.append(&[3u8; 8]);
+        let ctx = store.append(&[3u8; 8], GroveVersion::latest());
         ctx.value.expect("append");
         assert_eq!(
             ctx.cost.hash_node_calls, 8,
@@ -759,11 +775,14 @@ mod atomicity_tests {
             .unwrap()
             .expect("new");
         for i in 0..3u8 {
-            store.append(&[i; 8]).unwrap().expect("append");
+            store
+                .append(&[i; 8], GroveVersion::latest())
+                .unwrap()
+                .expect("append");
         }
 
         // The 4th append does not fit the buffer, so it compacts.
-        let compacting = store.append(&[3u8; 8]);
+        let compacting = store.append(&[3u8; 8], GroveVersion::latest());
         compacting.value.expect("compacting append");
         let compacting_cost = compacting.cost;
 
@@ -788,7 +807,7 @@ mod atomicity_tests {
         );
 
         // A plain buffered append afterwards reads nothing back.
-        let plain = store.append(&[4u8; 8]);
+        let plain = store.append(&[4u8; 8], GroveVersion::latest());
         plain.value.expect("buffered append");
         assert!(
             plain.cost.storage_loaded_bytes < compacting_cost.storage_loaded_bytes,
@@ -813,7 +832,7 @@ mod atomicity_tests {
             .unwrap()
             .expect("new");
         let entries: Vec<Vec<u8>> = (0..12u8).map(|i| vec![i; 8]).collect();
-        let ctx = store.append_many(entries.iter().map(|e| e.as_slice()));
+        let ctx = store.append_many(entries.iter().map(|e| e.as_slice()), GroveVersion::latest());
         let cost = ctx.cost.clone();
         let r = ctx.value.expect("append_many");
 
@@ -826,7 +845,7 @@ mod atomicity_tests {
         assert!(r.compacted, "12 entries at epoch 4 must compact");
 
         // Same invariant on the single-append path, which forwards the counter.
-        let ctx = store.append(&[99u8; 8]);
+        let ctx = store.append(&[99u8; 8], GroveVersion::latest());
         let cost = ctx.cost.clone();
         let r = ctx.value.expect("append");
         assert_eq!(
@@ -857,7 +876,10 @@ mod atomicity_tests {
         let mut store = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
             .unwrap()
             .expect("new");
-        store.append(&[1u8; 8]).unwrap().expect("seed");
+        store
+            .append(&[1u8; 8], GroveVersion::latest())
+            .unwrap()
+            .expect("seed");
 
         let count_before = store.total_count();
         let root_before = store.compute_current_state_root().expect("root");
@@ -867,7 +889,7 @@ mod atomicity_tests {
         let batch = [vec![2u8; 8], vec![3u8; 7]];
         assert!(matches!(
             store
-                .append_many(batch.iter().map(|e| e.as_slice()))
+                .append_many(batch.iter().map(|e| e.as_slice()), GroveVersion::latest())
                 .unwrap(),
             Err(PrivateDocumentStoreError::InvalidEntrySize {
                 expected: 8,
@@ -938,7 +960,10 @@ mod error_path_tests {
             .unwrap()
             .expect("new");
         for i in 0..6u8 {
-            store.append(&[i; 8]).unwrap().expect("append");
+            store
+                .append(&[i; 8], GroveVersion::latest())
+                .unwrap()
+                .expect("append");
         }
         store.commit_mmr().expect("commit mmr");
         let storage = PrivateDocumentStore::into_storage_for_test(store);
@@ -969,7 +994,10 @@ mod error_path_tests {
             .unwrap()
             .expect("new");
         for i in 0..10u8 {
-            store.append(&[i; 8]).unwrap().expect("append");
+            store
+                .append(&[i; 8], GroveVersion::latest())
+                .unwrap()
+                .expect("append");
         }
         store.commit_mmr().expect("commit mmr");
         let storage = PrivateDocumentStore::into_storage_for_test(store);
@@ -1026,7 +1054,10 @@ mod error_path_tests {
             .expect("new");
         // 6 entries at chunk_power 2 (epoch 4): one chunk, two buffered.
         for i in 0..6u8 {
-            store.append(&[i; 8]).unwrap().expect("append");
+            store
+                .append(&[i; 8], GroveVersion::latest())
+                .unwrap()
+                .expect("append");
         }
         store.commit_mmr().expect("commit mmr");
         let storage = PrivateDocumentStore::into_storage_for_test(store);
@@ -1048,7 +1079,10 @@ mod error_path_tests {
             .unwrap()
             .expect("new");
         for i in 0..2u8 {
-            store.append(&[i; 8]).unwrap().expect("append");
+            store
+                .append(&[i; 8], GroveVersion::latest())
+                .unwrap()
+                .expect("append");
         }
         let storage = PrivateDocumentStore::into_storage_for_test(store);
         let overclaimed = PrivateDocumentStore::from_state(3, 8, 3, storage)
@@ -1077,7 +1111,10 @@ mod error_path_tests {
             .unwrap()
             .expect("new");
         for i in 0..6u8 {
-            store.append(&[i; 8]).unwrap().expect("append");
+            store
+                .append(&[i; 8], GroveVersion::latest())
+                .unwrap()
+                .expect("append");
         }
         store.commit_mmr().expect("commit mmr");
         let storage = PrivateDocumentStore::into_storage_for_test(store);
@@ -1086,7 +1123,7 @@ mod error_path_tests {
         let broken = PrivateDocumentStore::from_state(6, 8, 2, storage)
             .unwrap()
             .expect("reopen");
-        let ctx = broken.compute_current_state_root_with_cost();
+        let ctx = broken.compute_current_state_root_with_cost(GroveVersion::latest());
         assert!(
             ctx.value.is_err(),
             "a state root over wiped storage must be an error, got {:?}",
@@ -1094,7 +1131,10 @@ mod error_path_tests {
         );
         // And appending onto that broken state fails rather than writing.
         let mut broken = broken;
-        assert!(broken.append(&[9u8; 8]).unwrap().is_err());
+        assert!(broken
+            .append(&[9u8; 8], GroveVersion::latest())
+            .unwrap()
+            .is_err());
     }
 
     /// Every read path must surface a storage fault instead of reporting the
@@ -1108,7 +1148,10 @@ mod error_path_tests {
             .expect("new");
         // Past a compaction so both a completed chunk and the buffer exist.
         for i in 0..6u8 {
-            store.append(&[i; 8]).unwrap().expect("append");
+            store
+                .append(&[i; 8], GroveVersion::latest())
+                .unwrap()
+                .expect("append");
         }
         store.commit_mmr().expect("commit mmr");
 
@@ -1137,7 +1180,10 @@ mod error_path_tests {
 
         // The integrity walk and the state-root derivation likewise.
         assert!(store.verify_entry_sizes().is_err());
-        assert!(store.compute_current_state_root_with_cost().value.is_err());
+        assert!(store
+            .compute_current_state_root_with_cost(GroveVersion::latest())
+            .value
+            .is_err());
 
         // An out-of-range position is answered before any storage is touched,
         // so it still reports absence rather than the fault.
@@ -1154,10 +1200,13 @@ mod error_path_tests {
         let mut store = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
             .unwrap()
             .expect("new");
-        store.append(&[0u8; 8]).unwrap().expect("append");
+        store
+            .append(&[0u8; 8], GroveVersion::latest())
+            .unwrap()
+            .expect("append");
 
         store.bulk_tree.dense_tree.storage.fail_writes();
-        let r = store.append(&[1u8; 8]).unwrap();
+        let r = store.append(&[1u8; 8], GroveVersion::latest()).unwrap();
         assert!(
             r.is_err(),
             "a failed write must fail the append, got {:?}",
@@ -1169,12 +1218,14 @@ mod error_path_tests {
         // fault.
         let bad = [vec![0u8; 7]];
         assert!(matches!(
-            store.append_many(bad.iter().map(|e| e.as_slice())).unwrap(),
+            store
+                .append_many(bad.iter().map(|e| e.as_slice()), GroveVersion::latest())
+                .unwrap(),
             Err(PrivateDocumentStoreError::InvalidEntrySize { .. })
         ));
         let good = [vec![2u8; 8], vec![3u8; 8]];
         assert!(store
-            .append_many(good.iter().map(|e| e.as_slice()))
+            .append_many(good.iter().map(|e| e.as_slice()), GroveVersion::latest())
             .unwrap()
             .is_err());
     }
@@ -1236,14 +1287,14 @@ mod tests {
             .unwrap()
             .expect("new store");
         assert!(matches!(
-            store.append(&[0u8; 7]).unwrap(),
+            store.append(&[0u8; 7], GroveVersion::latest()).unwrap(),
             Err(PrivateDocumentStoreError::InvalidEntrySize {
                 expected: 8,
                 actual: 7
             })
         ));
         assert!(matches!(
-            store.append(&[0u8; 9]).unwrap(),
+            store.append(&[0u8; 9], GroveVersion::latest()).unwrap(),
             Err(PrivateDocumentStoreError::InvalidEntrySize {
                 expected: 8,
                 actual: 9
@@ -1251,7 +1302,10 @@ mod tests {
         ));
         // A rejected append must not mutate the store.
         assert_eq!(store.total_count(), 0);
-        let ok = store.append(&[1u8; 8]).unwrap().expect("valid append");
+        let ok = store
+            .append(&[1u8; 8], GroveVersion::latest())
+            .unwrap()
+            .expect("valid append");
         assert_eq!(ok.global_position, 0);
         assert_eq!(store.total_count(), 1);
     }
@@ -1266,7 +1320,10 @@ mod tests {
         let mut roots = Vec::new();
         for i in 0..10u8 {
             let entry = [i; 8];
-            let r = store.append(&entry).unwrap().expect("append");
+            let r = store
+                .append(&entry, GroveVersion::latest())
+                .unwrap()
+                .expect("append");
             assert_eq!(r.global_position, i as u64);
             roots.push(r.state_root);
         }
@@ -1304,8 +1361,14 @@ mod tests {
         let mut b = PrivateDocumentStore::new(8, 3, MemStorageContext::new())
             .unwrap()
             .expect("b");
-        let ra = a.append(&[7u8; 8]).unwrap().expect("append a");
-        let rb = b.append(&[7u8; 8]).unwrap().expect("append b");
+        let ra = a
+            .append(&[7u8; 8], GroveVersion::latest())
+            .unwrap()
+            .expect("append a");
+        let rb = b
+            .append(&[7u8; 8], GroveVersion::latest())
+            .unwrap()
+            .expect("append b");
         assert_ne!(ra.state_root, ra.bulk_state_root);
         assert_ne!(ra.state_root, rb.state_root);
     }
@@ -1317,7 +1380,10 @@ mod tests {
             .unwrap()
             .expect("new store");
         for i in 0..6u8 {
-            store.append(&[i; 8]).unwrap().expect("append");
+            store
+                .append(&[i; 8], GroveVersion::latest())
+                .unwrap()
+                .expect("append");
         }
         store.commit_mmr().expect("commit mmr");
         let root_before = store.compute_current_state_root().expect("root");
@@ -1348,7 +1414,10 @@ mod tests {
             .unwrap()
             .expect("new store");
         for i in 0..6u8 {
-            store.append(&[i; 8]).unwrap().expect("append");
+            store
+                .append(&[i; 8], GroveVersion::latest())
+                .unwrap()
+                .expect("append");
         }
         store.commit_mmr().expect("commit mmr");
         let storage = PrivateDocumentStore::into_storage_for_test(store);

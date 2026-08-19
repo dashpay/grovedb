@@ -27,6 +27,7 @@ grovedb-merkle-mountain-range = { version = "5.0.1", path = "../grovedb-merkle-m
 grovedb-dense-fixed-sized-merkle-tree = { version = "5.0.1", path = "../grovedb-dense-fixed-sized-merkle-tree", default-features = false }
 grovedb-query = { version = "5.0.1", path = "../grovedb-query" }
 grovedb-costs = { version = "5.0.1", path = "../costs" }
+grovedb-version = { version = "5.0.1", path = "../grovedb-version" }
 grovedb-storage = { version = "5.0.1", path = "../storage", optional = true }
 blake3 = { workspace = true }
 bincode = { workspace = true, features = ["derive"] }

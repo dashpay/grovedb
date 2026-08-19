@@ -3,8 +3,10 @@
 use std::{borrow::Cow, collections::VecDeque};
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use grovedb_version::version::GroveVersion;
 
 use crate::{
+    cost::{gen_proof_bagging_hashes, get_root_bagging_hashes, push_merge_hashes},
     helper::{get_peak_map, get_peaks, parent_offset, pos_height_in_tree, sibling_offset},
     mmr_store::{MMRBatch, MMRStoreReadOps, MMRStoreWriteOps},
     proof::{take_while_vec, MerkleProof},
@@ -87,8 +89,26 @@ impl<S: MMRStoreReadOps> MMR<S> {
     ///
     /// This may also create internal (merged) nodes. The new nodes are
     /// buffered until [`MMR::commit`] is called.
+    ///
+    /// Charges hashes under the shipped (v0) accounting. Callers that hold a
+    /// [`GroveVersion`] should use [`push_with_version`](Self::push_with_version)
+    /// instead; this entry point exists so paths that predate the gate keep
+    /// their released cost by construction.
     pub fn push(&mut self, elem: MmrNode) -> CostResult<u64, Error> {
+        self.push_with_version(elem, GroveVersion::first())
+    }
+
+    /// Version-dispatched [`push`](Self::push).
+    ///
+    /// The MMR it builds is identical under every version; only the hash
+    /// charge differs — see [`crate::cost`].
+    pub fn push_with_version(
+        &mut self,
+        elem: MmrNode,
+        grove_version: &GroveVersion,
+    ) -> CostResult<u64, Error> {
         let mut cost = OperationCost::default();
+        let mut merges: u32 = 0;
         let mut elems = vec![elem];
         let elem_pos = self.mmr_size;
         let peak_map = get_peak_map(self.mmr_size);
@@ -107,23 +127,39 @@ impl<S: MMRStoreReadOps> MMR<S> {
             };
             let right_elem = elems.last().expect("checked");
             let parent_elem = MmrNode::merge(&left_elem, right_elem);
-            // `merge` is a blake3. The sibling read above was billed but the
-            // hash it feeds was not, so a push that collapsed several peaks
-            // reported only its I/O.
-            cost.hash_node_calls = cost.hash_node_calls.saturating_add(1);
+            merges = merges.saturating_add(1);
             elems.push(parent_elem);
         }
         // store hashes
         self.batch.append(elem_pos, elems);
         // update mmr_size
         self.mmr_size = pos + 1;
+        // Each `MmrNode::merge` above is a blake3. Whether it is billed is
+        // version-gated: the shipped accounting charged the sibling reads the
+        // merges consume but not the merges themselves.
+        match push_merge_hashes(merges, grove_version) {
+            Ok(h) => cost.hash_node_calls = cost.hash_node_calls.saturating_add(h),
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        }
         Ok(elem_pos).wrap_with_cost(cost)
     }
 
     /// Compute the root hash by bagging all peaks right-to-left.
     ///
     /// Returns [`Error::GetRootOnEmpty`] for an empty MMR.
+    ///
+    /// Charges hashes under the shipped (v0) accounting; see
+    /// [`push`](Self::push) for why this entry point is kept.
     pub fn get_root(&self) -> CostResult<MmrNode, Error> {
+        self.get_root_with_version(GroveVersion::first())
+    }
+
+    /// Version-dispatched [`get_root`](Self::get_root). The root is identical
+    /// under every version; only the hash charge differs.
+    pub fn get_root_with_version(
+        &self,
+        grove_version: &GroveVersion,
+    ) -> CostResult<MmrNode, Error> {
         let mut cost = OperationCost::default();
         if self.mmr_size == 0 {
             return Err(Error::GetRootOnEmpty).wrap_with_cost(cost);
@@ -150,12 +186,13 @@ impl<S: MMRStoreReadOps> MMR<S> {
             Err(e) => return Err(e).wrap_with_cost(cost),
         };
         // `bag_peaks` folds the peaks right-to-left with one `MmrNode::merge`
-        // — a blake3 — per fold, so it performs `peaks - 1` hashes. Reading
-        // the peaks was billed above but the merges were not, which made a
-        // multi-peak root look free beyond its I/O.
-        cost.hash_node_calls = cost
-            .hash_node_calls
-            .saturating_add(peaks.len().saturating_sub(1) as u32);
+        // — a blake3 — per fold, so it performs `peaks - 1` hashes. Whether
+        // those are billed is version-gated; the shipped accounting billed
+        // the peak reads only.
+        match get_root_bagging_hashes(peaks.len(), grove_version) {
+            Ok(h) => cost.hash_node_calls = cost.hash_node_calls.saturating_add(h),
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        }
         match bag_peaks(peaks) {
             Ok(Some(root)) => Ok(root).wrap_with_cost(cost),
             Ok(None) => Err(Error::InconsistentStore).wrap_with_cost(cost),
@@ -235,7 +272,20 @@ impl<S: MMRStoreReadOps> MMR<S> {
     /// Positions are sorted and deduplicated internally. Returns
     /// [`Error::GenProofForInvalidLeaves`] if any position is out of range
     /// or the list is empty.
-    pub fn gen_proof(&self, mut pos_list: Vec<u64>) -> CostResult<MerkleProof, Error> {
+    ///
+    /// Charges hashes under the shipped (v0) accounting; see
+    /// [`push`](Self::push) for why this entry point is kept.
+    pub fn gen_proof(&self, pos_list: Vec<u64>) -> CostResult<MerkleProof, Error> {
+        self.gen_proof_with_version(pos_list, GroveVersion::first())
+    }
+
+    /// Version-dispatched [`gen_proof`](Self::gen_proof). The proof is
+    /// identical under every version; only the hash charge differs.
+    pub fn gen_proof_with_version(
+        &self,
+        mut pos_list: Vec<u64>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<MerkleProof, Error> {
         let mut cost = OperationCost::default();
         if pos_list.is_empty() {
             return Err(Error::GenProofForInvalidLeaves).wrap_with_cost(cost);
@@ -271,15 +321,22 @@ impl<S: MMRStoreReadOps> MMR<S> {
             return Err(Error::GenProofForInvalidLeaves).wrap_with_cost(cost);
         }
 
+        // Same shared `bag_peaks` the root computation uses, and the same
+        // `bagging_track - 1` blake3 merges. Version-gated identically, so
+        // proof generation neither gets the folds for free nor starts
+        // charging them on a released version.
+        //
+        // Dispatched unconditionally, not inside the `bagging_track > 1`
+        // branch below: with nothing to bag the charge is zero under every
+        // version, but an unknown version must still be rejected rather than
+        // slipping through whenever a proof happens not to fold peaks.
+        match gen_proof_bagging_hashes(bagging_track, grove_version) {
+            Ok(h) => cost.hash_node_calls = cost.hash_node_calls.saturating_add(h),
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        }
+
         if bagging_track > 1 {
             let rhs_peaks = proof.split_off(proof.len() - bagging_track);
-            // Same shared `bag_peaks` the root computation uses, and the same
-            // `bagging_track - 1` blake3 merges — charged here too, so proof
-            // generation does not get the folds for free just because it
-            // reaches them by a different route.
-            cost.hash_node_calls = cost
-                .hash_node_calls
-                .saturating_add(bagging_track.saturating_sub(1) as u32);
             match bag_peaks(rhs_peaks) {
                 Ok(Some(bagged)) => proof.push(bagged),
                 Ok(None) => {

@@ -549,3 +549,45 @@ fn feature_version_bounds_default() {
     assert!(bounds.check_version(0));
     assert!(!bounds.check_version(1));
 }
+
+// ── MMR cost version table ───────────────────────────────────────────
+
+/// The MMR hash charges are consensus-visible through fees, so which version
+/// each protocol version selects is pinned here rather than left to whoever
+/// edits a version constant next. V1..V3 are released and must stay on the
+/// shipped accounting; the corrected charges arrive with V4.
+#[test]
+fn mmr_cost_versions_are_pinned_per_protocol_version() {
+    for (name, version) in [
+        ("GROVE_V1", &GROVE_V1),
+        ("GROVE_V2", &GROVE_V2),
+        ("GROVE_V3", &GROVE_V3),
+    ] {
+        let cost = &version.mmr_versions.cost;
+        assert_eq!(cost.push, 0, "{name} must keep the shipped push charge");
+        assert_eq!(
+            cost.get_root, 0,
+            "{name} must keep the shipped get_root charge"
+        );
+        assert_eq!(
+            cost.gen_proof, 0,
+            "{name} must keep the shipped gen_proof charge"
+        );
+    }
+
+    let cost = &GROVE_V4.mmr_versions.cost;
+    assert_eq!(cost.push, 1, "GROVE_V4 charges push merges");
+    assert_eq!(cost.get_root, 1, "GROVE_V4 charges get_root bagging");
+    assert_eq!(cost.gen_proof, 1, "GROVE_V4 charges gen_proof bagging");
+}
+
+/// `GroveVersion::first()` is what the unversioned MMR entry points delegate
+/// to, so it has to be the shipped accounting — otherwise every caller that
+/// predates the gate would silently pick up the new charges.
+#[test]
+fn grove_version_first_selects_shipped_mmr_costs() {
+    let cost = &GroveVersion::first().mmr_versions.cost;
+    assert_eq!(cost.push, 0);
+    assert_eq!(cost.get_root, 0);
+    assert_eq!(cost.gen_proof, 0);
+}

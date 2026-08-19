@@ -13,6 +13,7 @@ use crate::version::{
     merk_versions::{
         MerkAverageCaseCostsVersions, MerkBatchVersions, MerkProofVersions, MerkVersions,
     },
+    mmr_versions::{MmrCostVersions, MmrVersions},
     GroveVersion,
 };
 
@@ -252,6 +253,17 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
         // trip if someone calls it directly from a v1 context.
         proof: MerkProofVersions {
             prove_count_offset_on_range: 0,
+        },
+    },
+    // MMR hash charges: the shipped accounting, which billed the
+    // storage reads each operation performed but not the blake3 merges
+    // those reads fed. Locked here — these versions are released and a
+    // replayed block must be charged what it was admitted under.
+    mmr_versions: MmrVersions {
+        cost: MmrCostVersions {
+            push: 0,
+            get_root: 0,
+            gen_proof: 0,
         },
     },
 };

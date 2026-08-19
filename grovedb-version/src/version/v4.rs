@@ -114,6 +114,7 @@ use crate::version::{
     merk_versions::{
         MerkAverageCaseCostsVersions, MerkBatchVersions, MerkProofVersions, MerkVersions,
     },
+    mmr_versions::{MmrCostVersions, MmrVersions},
     GroveVersion,
 };
 
@@ -366,6 +367,18 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             // Initial implementation; introduced alongside the V1
             // proof envelope.
             prove_count_offset_on_range: 0,
+        },
+    },
+    // MMR hash charges: one hash per blake3 merge actually computed —
+    // `push` per collapsed peak, `get_root` and `gen_proof` per peak
+    // folded during bagging. V1..V3 bill the reads but not these
+    // merges. Roots and proofs are bit-identical across both versions;
+    // only `hash_node_calls` differs.
+    mmr_versions: MmrVersions {
+        cost: MmrCostVersions {
+            push: 1,
+            get_root: 1,
+            gen_proof: 1,
         },
     },
 };

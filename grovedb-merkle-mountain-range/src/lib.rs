@@ -20,6 +20,7 @@
 
 #![deny(missing_docs)]
 
+mod cost;
 mod error;
 /// MMR helper functions for position arithmetic, storage keys, and cost
 /// calculations.

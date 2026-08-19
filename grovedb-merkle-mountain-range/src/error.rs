@@ -26,6 +26,10 @@ pub enum Error {
     InvalidInput(String),
     /// Invalid proof during verification.
     InvalidProof(String),
+    /// The grove version selected an unknown version for a versioned MMR
+    /// method. Reaching this means a version set names a variant this build
+    /// does not implement.
+    VersionError(String),
 }
 
 impl core::fmt::Display for Error {
@@ -41,6 +45,7 @@ impl core::fmt::Display for Error {
             InvalidData(msg) => write!(f, "Invalid MMR data: {}", msg),
             InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
             InvalidProof(msg) => write!(f, "Invalid proof: {}", msg),
+            VersionError(e) => write!(f, "Version error: {}", e),
         }
     }
 }

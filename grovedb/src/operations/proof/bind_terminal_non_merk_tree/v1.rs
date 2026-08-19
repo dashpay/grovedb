@@ -27,6 +27,7 @@ use grovedb_merk::{
     CryptoHash, TreeFeatureType,
 };
 use grovedb_storage::{Storage, StorageContext};
+use grovedb_version::version::GroveVersion;
 
 use crate::{Element, Error, GroveDb, Transaction};
 
@@ -38,6 +39,7 @@ impl GroveDb {
         element: &Element,
         parent_path: &[&[u8]],
         tx: &Transaction,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -64,7 +66,7 @@ impl GroveDb {
 
         let child_hash = cost_return_on_error!(
             &mut cost,
-            self.non_merk_tree_child_hash(element, &child_path, tx)
+            self.non_merk_tree_child_hash(element, &child_path, tx, grove_version)
         );
 
         // Reuse the value_hash the node already carries — it is the one the
@@ -136,6 +138,7 @@ impl GroveDb {
         element: &Element,
         subtree_path: &[&[u8]],
         tx: &Transaction,
+        grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error> {
         let mut cost = OperationCost::default();
 
@@ -296,14 +299,16 @@ impl GroveDb {
                 );
                 let state_root = cost_return_on_error!(
                     &mut cost,
-                    store.compute_current_state_root_with_cost().map(|r| {
-                        r.map_err(|e| {
-                            Error::CorruptedData(format!(
-                                "private document store state root failed: {}",
-                                e
-                            ))
+                    store
+                        .compute_current_state_root_with_cost(grove_version)
+                        .map(|r| {
+                            r.map_err(|e| {
+                                Error::CorruptedData(format!(
+                                    "private document store state root failed: {}",
+                                    e
+                                ))
+                            })
                         })
-                    })
                 );
                 Ok(state_root).wrap_with_cost(cost)
             }

@@ -17,6 +17,7 @@ storage = ["grovedb-storage", "grovedb-bulk-append-tree/storage"]
 [dependencies]
 grovedb-bulk-append-tree = { version = "5.0.1", path = "../grovedb-bulk-append-tree", default-features = false }
 grovedb-costs = { version = "5.0.1", path = "../costs" }
+grovedb-version = { version = "5.0.1", path = "../grovedb-version" }
 grovedb-storage = { version = "5.0.1", path = "../storage", optional = true }
 blake3 = { workspace = true }
 thiserror = { workspace = true }

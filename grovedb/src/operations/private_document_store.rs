@@ -189,7 +189,9 @@ impl GroveDb {
 
         let append_result = cost_return_on_error!(
             &mut cost,
-            store.append(&entry).map(|r| r.map_err(map_pds_err))
+            store
+                .append(&entry, grove_version)
+                .map(|r| r.map_err(map_pds_err))
         );
 
         let new_state_root = append_result.state_root;
@@ -548,7 +550,7 @@ impl GroveDb {
             let append_result = cost_return_on_error!(
                 &mut cost,
                 store
-                    .append_many(entries.iter().map(|e| e.as_slice()))
+                    .append_many(entries.iter().map(|e| e.as_slice()), grove_version)
                     .map(|r| r.map_err(map_pds_err))
             );
             let new_state_root = append_result.state_root;
