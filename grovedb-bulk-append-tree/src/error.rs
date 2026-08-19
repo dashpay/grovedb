@@ -15,4 +15,8 @@ pub enum BulkAppendError {
     InvalidProof(String),
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    /// The grove version selected an unknown version for a versioned
+    /// bulk-append method.
+    #[error("version error: {0}")]
+    VersionError(String),
 }

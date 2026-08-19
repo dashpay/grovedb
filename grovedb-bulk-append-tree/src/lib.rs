@@ -9,6 +9,7 @@
 //! CDN-cacheable.
 
 pub mod chunk;
+mod cost;
 mod error;
 pub mod proof;
 mod tree;

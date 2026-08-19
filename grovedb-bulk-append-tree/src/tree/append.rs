@@ -1,9 +1,7 @@
 //! Append and compaction logic for BulkAppendTree.
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
-use grovedb_merkle_mountain_range::{
-    hash_count_for_push, mmr_size_to_leaf_count, MmrKeySize, MmrNode, MmrStore, MMR,
-};
+use grovedb_merkle_mountain_range::{mmr_size_to_leaf_count, MmrKeySize, MmrNode, MmrStore, MMR};
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
@@ -11,7 +9,7 @@ use super::{
     capacity_for_height, hash::compute_state_root, AppendNoStateRootResult, AppendResult,
     BulkAppendTree,
 };
-use crate::{chunk::serialize_chunk_blob, BulkAppendError};
+use crate::{chunk::serialize_chunk_blob, cost::compaction_hash_count, BulkAppendError};
 
 impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// Create a new empty tree.
@@ -63,8 +61,19 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// state root computation. For batched inserts prefer
     /// [`append_many`](Self::append_many) or [`append_no_state_root`](Self::append_no_state_root)
     /// — they skip the per-leaf state-root blake3 call.
+    /// Reports the shipped (v0) hash count; see
+    /// [`append_no_state_root`](Self::append_no_state_root).
     pub fn append(&mut self, value: &[u8]) -> Result<AppendResult, BulkAppendError> {
-        let r = self.append_no_state_root(value)?;
+        self.append_with_version(value, GroveVersion::first())
+    }
+
+    /// Version-dispatched [`append`](Self::append).
+    pub fn append_with_version(
+        &mut self,
+        value: &[u8],
+        grove_version: &GroveVersion,
+    ) -> Result<AppendResult, BulkAppendError> {
+        let r = self.append_no_state_root_with_version(value, grove_version)?;
         let state_root = self.compute_current_state_root()?;
         Ok(AppendResult {
             state_root,
@@ -85,9 +94,26 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// Storage mutation is identical to [`append`](Self::append).
     ///
     /// [`CommitmentTree::append_many_raw`]: ../../grovedb_commitment_tree/struct.CommitmentTree.html#method.append_many_raw
+    /// Reports the shipped (v0) hash count. Callers holding a
+    /// [`GroveVersion`] should prefer
+    /// [`append_no_state_root_with_version`](Self::append_no_state_root_with_version):
+    /// this entry point exists so paths that predate the gate keep their
+    /// released figure by construction.
     pub fn append_no_state_root(
         &mut self,
         value: &[u8],
+    ) -> Result<AppendNoStateRootResult, BulkAppendError> {
+        self.append_no_state_root_with_version(value, GroveVersion::first())
+    }
+
+    /// Version-dispatched [`append_no_state_root`](Self::append_no_state_root).
+    ///
+    /// Stored bytes, chunks and roots are identical under every version; only
+    /// the reported `hash_count` differs, and only for an append that compacts.
+    pub fn append_no_state_root_with_version(
+        &mut self,
+        value: &[u8],
+        grove_version: &GroveVersion,
     ) -> Result<AppendNoStateRootResult, BulkAppendError> {
         let mut hash_count: u32 = 0;
         let global_position = self.total_count;
@@ -113,7 +139,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                 // Dense tree is full — compact existing entries + new value.
                 // Must run before incrementing total_count so that
                 // self.mmr_size() reflects the pre-compaction state.
-                let (compact_hashes, mmr_root) = self.compact_with_value(value)?;
+                let (compact_hashes, mmr_root) = self.compact_with_value(value, grove_version)?;
                 hash_count += compact_hashes;
                 // MMR mutated by the compaction — refresh the cached root.
                 self.last_mmr_root = Some(mmr_root);
@@ -283,13 +309,15 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// [`compact_with_value_with_cost`](Self::compact_with_value_with_cost).
     /// Kept so the released `append_no_state_root` path bills exactly what it
     /// always has — its costs are dropped here, not at the call site.
-    fn compact_with_value(&mut self, new_value: &[u8]) -> Result<(u32, [u8; 32]), BulkAppendError> {
-        // Pinned to the first grove version, i.e. the shipped MMR hash
-        // accounting. This wrapper discards the cost anyway, so the choice is
-        // unobservable here — but pinning states the intent: the released
-        // `append_no_state_root` path (and therefore CommitmentTree) must not
-        // pick up a newer charge just because one exists.
-        self.compact_with_value_with_cost(new_value, GroveVersion::first())
+    fn compact_with_value(
+        &mut self,
+        new_value: &[u8],
+        grove_version: &GroveVersion,
+    ) -> Result<(u32, [u8; 32]), BulkAppendError> {
+        // The accumulated `OperationCost` is discarded here — this path
+        // reports its work through the returned `hash_count` instead, which
+        // IS version-dependent and which CommitmentTree bills.
+        self.compact_with_value_with_cost(new_value, grove_version)
             .unwrap()
     }
 
@@ -347,7 +375,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         // Append chunk root to MMR
         let mmr_size = self.mmr_size();
         let leaf_count = mmr_size_to_leaf_count(mmr_size);
-        hash_count += hash_count_for_push(leaf_count);
+        let mut mmr_size_after_push = mmr_size;
 
         // Create MmrStore on the fly from the dense tree's storage.
         // Use the overlay from previous compactions so cross-compaction
@@ -384,6 +412,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             };
 
             // Take overlay back instead of committing
+            mmr_size_after_push = mmr.mmr_size;
             self.mmr_overlay = mmr.batch.take_overlay();
 
             root
@@ -391,6 +420,15 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
 
         // Reset dense tree (old values stay in store, overwritten on next cycle)
         self.dense_tree.reset();
+
+        // The reported count is version-gated: v0 is the shipped figure (leaf
+        // hash + push collapses), v1 adds the peak bagging the `get_root`
+        // above performed. `mmr.mmr_size` is read after the push, which is
+        // the shape that root had to fold.
+        hash_count = match compaction_hash_count(leaf_count, mmr_size_after_push, grove_version) {
+            Ok(h) => hash_count.saturating_add(h),
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
 
         Ok((hash_count, mmr_root)).wrap_with_cost(cost)
     }
@@ -461,5 +499,102 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             )));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod compaction_hash_count_gate_tests {
+    use grovedb_version::version::{v1::GROVE_V1, v3::GROVE_V3, v4::GROVE_V4};
+
+    use super::*;
+    use crate::test_utils::MemStorageContext;
+
+    /// The reported hash count for a compacting append is version-gated: v0
+    /// (V1..V3) omits the peak bagging the compaction's own `get_root`
+    /// performs, v1 (V4) includes it. Everything else about the append —
+    /// stored bytes, chunk contents, roots — must be identical.
+    #[test]
+    fn compaction_hash_count_gains_the_bagging_term_at_v4() {
+        // chunk_power 2 -> epoch 4. Enough appends to compact repeatedly so
+        // the MMR passes through single- and multi-peak shapes.
+        let build = |version: &_| {
+            let mut t = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
+            let mut counts = Vec::new();
+            let mut roots = Vec::new();
+            for i in 0..20u8 {
+                let r = t
+                    .append_no_state_root_with_version(&[i; 8], version)
+                    .expect("append");
+                if r.compacted {
+                    counts.push(r.hash_count);
+                }
+            }
+            roots.push(t.compute_current_state_root().expect("root"));
+            (counts, roots)
+        };
+
+        let (v0_counts, v0_roots) = build(&GROVE_V3);
+        let (v1_counts, v1_roots) = build(&GROVE_V4);
+
+        assert_eq!(
+            v0_roots, v1_roots,
+            "the tree itself must not depend on the cost version"
+        );
+        assert_eq!(
+            v0_counts.len(),
+            v1_counts.len(),
+            "same number of compactions"
+        );
+
+        // v1 is never cheaper, and is strictly dearer on at least one
+        // compaction — the ones that landed on a multi-peak MMR.
+        let mut saw_increase = false;
+        for (i, (a, b)) in v0_counts.iter().zip(v1_counts.iter()).enumerate() {
+            assert!(
+                b >= a,
+                "v1 must never report fewer hashes (compaction {}): v0={} v1={}",
+                i,
+                a,
+                b
+            );
+            if b > a {
+                saw_increase = true;
+            }
+        }
+        assert!(
+            saw_increase,
+            "expected at least one multi-peak compaction to gain the bagging \
+             term: v0={:?} v1={:?}",
+            v0_counts, v1_counts
+        );
+
+        // V1 and V3 are both v0, so they must agree exactly.
+        let (v1_ver_counts, _) = build(&GROVE_V1);
+        assert_eq!(
+            v0_counts, v1_ver_counts,
+            "GROVE_V1 and GROVE_V3 both select the shipped figure"
+        );
+    }
+
+    /// An unknown charge version must be rejected, not silently treated as one
+    /// of the implemented ones.
+    #[test]
+    fn compaction_hash_count_rejects_unknown_version() {
+        let mut bad = GROVE_V4.clone();
+        bad.bulk_append_tree_versions.cost.compaction_hash_count = 99;
+
+        let mut t = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
+        // Fill the buffer so the next append compacts and reaches the gate.
+        for i in 0..3u8 {
+            t.append_no_state_root_with_version(&[i; 8], &bad)
+                .expect("buffered appends do not reach the gate");
+        }
+        assert!(
+            matches!(
+                t.append_no_state_root_with_version(&[9u8; 8], &bad),
+                Err(BulkAppendError::VersionError(_))
+            ),
+            "a compacting append must reject an unknown charge version"
+        );
     }
 }

@@ -156,7 +156,7 @@ impl GroveDb {
 
         let append_result = cost_return_on_error!(
             &mut cost,
-            ct.append_raw(cmx, rho, cv_net, &payload)
+            ct.append_raw_with_version(cmx, rho, cv_net, &payload, grove_version)
                 .map(|r| r.map_err(map_ct_err))
         );
 
@@ -534,7 +534,7 @@ impl GroveDb {
             for (cmx, rho, cv_net, payload) in inserts {
                 cost_return_on_error!(
                     &mut cost,
-                    ct.append_raw(*cmx, *rho, *cv_net, payload)
+                    ct.append_raw_with_version(*cmx, *rho, *cv_net, payload, grove_version)
                         .map(|r| r.map_err(map_ct_err))
                 );
             }

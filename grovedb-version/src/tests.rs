@@ -591,3 +591,38 @@ fn grove_version_first_selects_shipped_mmr_costs() {
     assert_eq!(cost.get_root, 0);
     assert_eq!(cost.gen_proof, 0);
 }
+
+// ── Bulk-append cost version table ───────────────────────────────────
+
+/// The compaction hash count reaches a live fee through CommitmentTree, so
+/// which version each protocol version selects is pinned here.
+#[test]
+fn bulk_append_cost_versions_are_pinned_per_protocol_version() {
+    for (name, version) in [
+        ("GROVE_V1", &GROVE_V1),
+        ("GROVE_V2", &GROVE_V2),
+        ("GROVE_V3", &GROVE_V3),
+    ] {
+        assert_eq!(
+            version.bulk_append_tree_versions.cost.compaction_hash_count, 0,
+            "{name} must keep the shipped compaction hash count"
+        );
+    }
+    assert_eq!(
+        GROVE_V4
+            .bulk_append_tree_versions
+            .cost
+            .compaction_hash_count,
+        1,
+        "GROVE_V4 adds the peak-bagging term"
+    );
+    assert_eq!(
+        GroveVersion::first()
+            .bulk_append_tree_versions
+            .cost
+            .compaction_hash_count,
+        0,
+        "the unversioned entry points delegate here and must stay on the \
+         shipped figure"
+    );
+}

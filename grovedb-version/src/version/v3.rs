@@ -1,5 +1,6 @@
 use crate::version::grovedb_versions::GroveDBAggregateSumPathQueryMethodVersions;
 use crate::version::{
+    bulk_append_tree_versions::{BulkAppendTreeCostVersions, BulkAppendTreeVersions},
     grovedb_versions::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
@@ -278,6 +279,14 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
             push: 0,
             get_root: 0,
             gen_proof: 0,
+        },
+    },
+    // Compaction hash count: the shipped figure, which omits the peak
+    // bagging a compaction's own `get_root` performs. Locked — the
+    // shielded pool has been charged this since mainnet activation.
+    bulk_append_tree_versions: BulkAppendTreeVersions {
+        cost: BulkAppendTreeCostVersions {
+            compaction_hash_count: 0,
         },
     },
 };

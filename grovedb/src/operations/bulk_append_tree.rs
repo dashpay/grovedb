@@ -84,7 +84,11 @@ impl GroveDb {
             BulkAppendTree::from_state(total_count, chunk_power, storage_ctx).map_err(map_bulk_err)
         );
 
-        let result = cost_return_on_error_no_add!(cost, tree.append(&value).map_err(map_bulk_err));
+        let result = cost_return_on_error_no_add!(
+            cost,
+            tree.append_with_version(&value, grove_version)
+                .map_err(map_bulk_err)
+        );
 
         cost.hash_node_calls += result.hash_count;
 
@@ -524,8 +528,11 @@ impl GroveDb {
 
             // Process each value
             for value in values {
-                let result =
-                    cost_return_on_error_no_add!(cost, tree.append(value).map_err(map_bulk_err));
+                let result = cost_return_on_error_no_add!(
+                    cost,
+                    tree.append_with_version(value, grove_version)
+                        .map_err(map_bulk_err)
+                );
                 cost.hash_node_calls += result.hash_count;
             }
 
