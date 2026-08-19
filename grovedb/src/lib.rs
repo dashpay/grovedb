@@ -738,143 +738,6 @@ impl GroveDb {
         )
     }
 
-    /// Mirror ONE entry of an indexed primary into every axis it
-    /// configures, returning each axis's post-mirror `(tag, root_hash,
-    /// root_key)` so the caller can hand it to propagation as the initial
-    /// deferred state.
-    ///
-    /// This exists for the direct non-Merk append APIs (MMR, commitment,
-    /// bulk-append, dense). Those write the updated element straight into
-    /// the primary Merk and only then start propagating, so the
-    /// propagation walk — which mirrors entries it discovers as it climbs
-    /// — never sees the entry that actually moved. That was harmless while
-    /// rows were aggregate-only (a non-Merk child's count is a constant
-    /// `1`, so its row never moved) and is not harmless now: a canonical
-    /// row binds the primary node's commitment, and an append rewrites
-    /// exactly that.
-    ///
-    /// `old_state` must be captured BEFORE the entry was rewritten.
-    pub(crate) fn mirror_indexed_primary_entry<'b, B: AsRef<[u8]>>(
-        &self,
-        primary_path: SubtreePath<'b, B>,
-        primary_merk: &Merk<PrefixedRocksDbTransactionContext>,
-        indexed_element: &Element,
-        item_key: &[u8],
-        old_state: Option<crate::operations::indexed_tree::IndexedEntryState>,
-        transaction: &Transaction,
-        batch: &StorageBatch,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(u8, Hash, Option<Vec<u8>>)>, Error> {
-        use crate::operations::indexed_tree::{
-            mirror_indexed_axis_to_secondary, IndexedEntryState,
-        };
-
-        let mut cost = OperationCost::default();
-
-        let axes: Vec<(u8, Option<Vec<u8>>)> = match indexed_element.underlying() {
-            Element::ProvableCountIndexedTree(_, secondary, ..) => {
-                vec![(
-                    grovedb_element::indexed::IndexAxis::Count.tag(),
-                    secondary.clone(),
-                )]
-            }
-            Element::ProvableSumIndexedTree(_, secondary, ..) => {
-                vec![(
-                    grovedb_element::indexed::IndexAxis::Sum.tag(),
-                    secondary.clone(),
-                )]
-            }
-            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => axes.clone(),
-            _ => {
-                return Err(Error::CorruptedCodeExecution(
-                    "mirror_indexed_primary_entry called with a non-indexed element",
-                ))
-                .wrap_with_cost(cost);
-            }
-        };
-
-        // Post-write state of the entry, read from the primary Merk the
-        // caller already updated.
-        let new_state = {
-            let maybe_element = cost_return_on_error!(
-                &mut cost,
-                Element::get_optional(primary_merk, item_key, true, grove_version)
-                    .map_err(Error::MerkError)
-            );
-            match maybe_element {
-                None => None,
-                Some(element) => {
-                    let value_hash = cost_return_on_error!(
-                        &mut cost,
-                        primary_merk
-                            .get_value_hash(
-                                item_key,
-                                true,
-                                Some(&Element::value_defined_cost_for_serialized_value),
-                                grove_version,
-                            )
-                            .map_err(Error::MerkError)
-                    );
-                    let (count, sum) = element.count_sum_value_or_default();
-                    value_hash.map(|value_hash| IndexedEntryState {
-                        count,
-                        sum,
-                        value_hash,
-                    })
-                }
-            }
-        };
-
-        let mut staged: Vec<(u8, Hash, Option<Vec<u8>>)> = Vec::with_capacity(axes.len());
-        for (tag, secondary_root_key) in axes {
-            let axis = cost_return_on_error_no_add!(
-                cost,
-                grovedb_element::indexed::IndexAxis::try_from_tag(tag).map_err(|e| {
-                    Error::CorruptedData(format!(
-                        "invalid axis tag on an indexed element during entry mirror: {e}"
-                    ))
-                })
-            );
-            let mut secondary_merk = cost_return_on_error!(
-                &mut cost,
-                self.open_indexed_secondary_at_path(
-                    primary_path.clone(),
-                    axis,
-                    secondary_root_key,
-                    transaction,
-                    Some(batch),
-                    grove_version,
-                )
-            );
-            cost_return_on_error!(
-                &mut cost,
-                mirror_indexed_axis_to_secondary(
-                    &mut secondary_merk,
-                    axis,
-                    item_key,
-                    old_state,
-                    new_state,
-                    grove_version,
-                )
-            );
-            let (sec_hash, sec_key, _) = cost_return_on_error!(
-                &mut cost,
-                secondary_merk
-                    .root_hash_key_and_aggregate_data()
-                    .map_err(Error::MerkError)
-            );
-            staged.push((tag, sec_hash, sec_key));
-        }
-
-        Ok(staged).wrap_with_cost(cost)
-    }
-
-    /// Snapshot an entry's indexed state before a non-Merk append
-    /// rewrites it, returning `None` when the parent is not an indexed
-    /// primary (in which case there is nothing to mirror).
-    ///
-    /// Pairs with [`Self::mirror_indexed_entry_and_seed`]; see its docs
-    /// for why the direct non-Merk append APIs need this at all.
     pub(crate) fn capture_indexed_entry_state<'db>(
         primary_merk: &Merk<PrefixedRocksDbTransactionContext<'db>>,
         key: &[u8],
@@ -907,95 +770,52 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
-    /// Mirror one rewritten entry of an indexed primary into its axis
-    /// secondaries and produce the seeds propagation needs.
+    /// Propagate after an in-place rewrite of ONE entry under an indexed
+    /// primary, refreshing that entry's canonical secondary row on the way
+    /// up.
     ///
-    /// The direct non-Merk append APIs (MMR, commitment, bulk-append,
-    /// dense) write the updated element straight into the primary Merk
-    /// and only then start propagating, so the propagation walk — which
-    /// mirrors entries it discovers as it climbs — never sees the entry
-    /// that actually moved. That was harmless while rows were
-    /// aggregate-only (a non-Merk child's count is a constant `1`, so its
-    /// row never moved) and is not harmless now: a canonical row binds the
-    /// primary node's commitment, and an append rewrites exactly that.
+    /// The typed direct write paths — the four non-Merk appends and
+    /// `replace_subtree_root` — write their updated element straight into
+    /// the primary Merk and only then propagate. The propagation walk
+    /// mirrors entries it *discovers* as it climbs, so it never sees the
+    /// entry that actually moved. That was harmless while rows were
+    /// aggregate-only (these mutations leave `(count, sum)` alone) and is
+    /// not harmless now: a canonical row binds the primary node's
+    /// commitment, and every one of these rewrites moves exactly that.
     ///
-    /// Returns `(initial_deferred_secondary, initial_deferred_axes)`. The
-    /// two are not interchangeable — propagation rebuilds a single-axis
-    /// element from the former and a PCPSIT from the latter, and seeding
-    /// the wrong one leaves the other set for a later iteration that has
-    /// no indexed element to apply it to.
-    #[allow(clippy::type_complexity)]
-    pub(crate) fn mirror_indexed_entry_and_seed<'b, 'db, B: AsRef<[u8]>>(
+    /// Doing the refresh INSIDE the walk rather than at each call site is
+    /// deliberate. The fiddly part is the deferred per-axis root state —
+    /// single-axis variants seed one slot, PCPSIT seeds another, and
+    /// getting it wrong leaves state set for an iteration with no indexed
+    /// element to apply it to. That belongs in the one place that already
+    /// manages it, so a new caller is a one-line change and cannot forget.
+    ///
+    /// `old_state` must be captured with
+    /// [`Self::capture_indexed_entry_state`] BEFORE the rewrite. It is what
+    /// lets this handle a rewrite that MOVES the row: `replace_subtree_root`
+    /// takes a caller-supplied element, so its aggregates — and therefore
+    /// the row's sort key — can differ from what was there. Refreshing in
+    /// place without it would leave the old row stranded at the old key.
+    pub(crate) fn propagate_changes_with_transaction_refreshing_indexed_row<'b, B: AsRef<[u8]>>(
         &self,
-        primary_path: SubtreePath<'b, B>,
-        primary_merk: &Merk<PrefixedRocksDbTransactionContext<'db>>,
-        key: &[u8],
+        merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
+        path: SubtreePath<'b, B>,
+        changed_key: &[u8],
         old_state: Option<crate::operations::indexed_tree::IndexedEntryState>,
         transaction: &Transaction,
         batch: &StorageBatch,
         grove_version: &GroveVersion,
-    ) -> CostResult<
-        (
-            Option<(Hash, Option<Vec<u8>>)>,
-            Option<Vec<(u8, Hash, Option<Vec<u8>>)>>,
-        ),
-        Error,
-    > {
-        let mut cost = OperationCost::default();
-        if !primary_merk.tree_type.is_indexed_primary() {
-            return Ok((None, None)).wrap_with_cost(cost);
-        }
-
-        let (grandparent_path, indexed_key) = cost_return_on_error_no_add!(
-            cost,
-            primary_path
-                .derive_parent()
-                .ok_or(Error::CorruptedCodeExecution(
-                    "an indexed primary requires a grandparent holding its indexed element",
-                ))
-        );
-        let indexed_element = {
-            let grandparent_merk = cost_return_on_error!(
-                &mut cost,
-                self.open_transactional_merk_at_path(
-                    grandparent_path,
-                    transaction,
-                    Some(batch),
-                    grove_version,
-                )
-            );
-            cost_return_on_error!(
-                &mut cost,
-                Element::get(&grandparent_merk, indexed_key, true, grove_version)
-                    .map_err(Error::MerkError)
-            )
-        };
-        let is_multi_axis = matches!(
-            indexed_element.underlying(),
-            Element::ProvableCountProvableSumIndexedTree(..)
-        );
-        let staged = cost_return_on_error!(
-            &mut cost,
-            self.mirror_indexed_primary_entry(
-                primary_path,
-                primary_merk,
-                &indexed_element,
-                key,
-                old_state,
-                transaction,
-                batch,
-                grove_version,
-            )
-        );
-        let seeds = if is_multi_axis {
-            (None, Some(staged))
-        } else {
-            (
-                staged.first().map(|(_, hash, key)| (*hash, key.clone())),
-                None,
-            )
-        };
-        Ok(seeds).wrap_with_cost(cost)
+    ) -> CostResult<(), Error> {
+        self.propagate_changes_inner(
+            merk_cache,
+            path,
+            None,
+            None,
+            Some((changed_key, old_state)),
+            transaction,
+            batch,
+            grove_version,
+        )
     }
 
     pub(crate) fn propagate_changes_with_transaction_with_initial_deferred<'b, B: AsRef<[u8]>>(
@@ -1007,10 +827,11 @@ impl GroveDb {
         batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        self.propagate_changes_with_transaction_with_initial_deferred_axes(
+        self.propagate_changes_inner(
             merk_cache,
             path,
             initial_deferred_secondary,
+            None,
             None,
             transaction,
             batch,
@@ -1018,22 +839,21 @@ impl GroveDb {
         )
     }
 
-    /// As [`Self::propagate_changes_with_transaction_with_initial_deferred`],
-    /// but also seeds the MULTI-AXIS deferred state a PCPSIT primary needs.
-    /// A single-axis seed cannot express a PCPSIT's per-axis roots, so the
-    /// direct non-Merk append APIs — which mirror their entry themselves
-    /// via [`Self::mirror_indexed_primary_entry`] before propagating — go
-    /// through here.
+    /// The one propagation walk. `changed_indexed_entry` refreshes a single
+    /// rewritten entry's canonical row when the walk reaches the indexed
+    /// primary holding it — see
+    /// [`Self::propagate_changes_with_transaction_refreshing_indexed_row`].
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn propagate_changes_with_transaction_with_initial_deferred_axes<
-        'b,
-        B: AsRef<[u8]>,
-    >(
+    fn propagate_changes_inner<'b, B: AsRef<[u8]>>(
         &self,
         mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
         path: SubtreePath<'b, B>,
         initial_deferred_secondary: Option<(Hash, Option<Vec<u8>>)>,
         initial_deferred_axes: Option<Vec<(u8, Hash, Option<Vec<u8>>)>>,
+        changed_indexed_entry: Option<(
+            &[u8],
+            Option<crate::operations::indexed_tree::IndexedEntryState>,
+        )>,
         transaction: &Transaction,
         batch: &StorageBatch,
         grove_version: &GroveVersion,
@@ -1089,6 +909,153 @@ impl GroveDb {
         // secondary by its stale pre-mirror root key and rebuild a digest
         // over the old state.
         let mut deferred_axes: Option<Vec<(u8, Hash, Option<Vec<u8>>)>> = initial_deferred_axes;
+
+        // A typed in-place rewrite lands on an entry the walk below will
+        // never look at: the mutation happened at the START path, not at a
+        // level the walk climbs through. Refresh that one row here, before
+        // the climb, and seed the same deferred state the walk uses so the
+        // indexed element one level up is rebuilt over the NEW secondary
+        // roots rather than re-read from stale root keys.
+        if let Some((changed_key, old_state)) = changed_indexed_entry
+            && child_tree.tree_type.is_indexed_primary()
+        {
+            let (container_path, indexed_key) = cost_return_on_error_no_add!(
+                cost,
+                current_path
+                    .derive_parent()
+                    .ok_or(Error::CorruptedCodeExecution(
+                        "an indexed primary requires a parent holding its indexed element",
+                    ))
+            );
+            let indexed_element = {
+                let container = cost_return_on_error!(
+                    &mut cost,
+                    self.open_transactional_merk_at_path(
+                        container_path,
+                        transaction,
+                        Some(batch),
+                        grove_version,
+                    )
+                );
+                cost_return_on_error!(
+                    &mut cost,
+                    Element::get(&container, indexed_key, true, grove_version)
+                        .map_err(Error::MerkError)
+                )
+            };
+
+            // Post-rewrite state, read from the primary the caller already
+            // updated. `None` means the rewrite removed the entry.
+            let new_state = {
+                let maybe = cost_return_on_error!(
+                    &mut cost,
+                    Element::get_optional(&child_tree, changed_key, true, grove_version)
+                        .map_err(Error::MerkError)
+                );
+                match maybe {
+                    None => None,
+                    Some(element) => {
+                        let value_hash = cost_return_on_error!(
+                            &mut cost,
+                            child_tree
+                                .get_value_hash(
+                                    changed_key,
+                                    true,
+                                    Some(&Element::value_defined_cost_for_serialized_value),
+                                    grove_version,
+                                )
+                                .map_err(Error::MerkError)
+                        );
+                        let (count, sum) = element.count_sum_value_or_default();
+                        value_hash.map(|value_hash| {
+                            crate::operations::indexed_tree::IndexedEntryState {
+                                count,
+                                sum,
+                                value_hash,
+                            }
+                        })
+                    }
+                }
+            };
+
+            let axes: Vec<(u8, Option<Vec<u8>>)> = match indexed_element.underlying() {
+                Element::ProvableCountIndexedTree(_, secondary, ..) => vec![(
+                    grovedb_element::indexed::IndexAxis::Count.tag(),
+                    secondary.clone(),
+                )],
+                Element::ProvableSumIndexedTree(_, secondary, ..) => vec![(
+                    grovedb_element::indexed::IndexAxis::Sum.tag(),
+                    secondary.clone(),
+                )],
+                Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => axes.clone(),
+                _ => {
+                    return Err(Error::CorruptedData(
+                        "an indexed primary is not held by an indexed-tree element".to_string(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
+            };
+            let is_multi_axis = matches!(
+                indexed_element.underlying(),
+                Element::ProvableCountProvableSumIndexedTree(..)
+            );
+
+            let mut refreshed: Vec<(u8, Hash, Option<Vec<u8>>)> = Vec::with_capacity(axes.len());
+            for (tag, secondary_root_key) in axes {
+                let axis = cost_return_on_error_no_add!(
+                    cost,
+                    grovedb_element::indexed::IndexAxis::try_from_tag(tag).map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "invalid axis tag on an indexed element during row refresh: {e}"
+                        ))
+                    })
+                );
+                let mut secondary = cost_return_on_error!(
+                    &mut cost,
+                    self.open_indexed_secondary_at_path(
+                        current_path.clone(),
+                        axis,
+                        secondary_root_key,
+                        transaction,
+                        Some(batch),
+                        grove_version,
+                    )
+                );
+                // Full old → new transition, NOT an in-place refresh: a
+                // caller-supplied element can carry different aggregates
+                // (`replace_subtree_root` does), which moves the sort key.
+                // Refreshing in place would strand the old row at the old
+                // key.
+                cost_return_on_error!(
+                    &mut cost,
+                    mirror_indexed_axis_to_secondary(
+                        &mut secondary,
+                        axis,
+                        changed_key,
+                        old_state,
+                        new_state,
+                        grove_version,
+                    )
+                );
+                let (sec_hash, sec_key, _) = cost_return_on_error!(
+                    &mut cost,
+                    secondary
+                        .root_hash_key_and_aggregate_data()
+                        .map_err(Error::MerkError)
+                );
+                refreshed.push((tag, sec_hash, sec_key));
+            }
+
+            // Seed the slot this variant's element rebuild actually reads.
+            // The two are not interchangeable, and seeding the wrong one
+            // leaves state set for a later iteration with no indexed
+            // element to apply it to.
+            if is_multi_axis {
+                deferred_axes = Some(refreshed);
+            } else {
+                deferred_secondary = refreshed.first().map(|(_, hash, key)| (*hash, key.clone()));
+            }
+        }
 
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(

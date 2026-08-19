@@ -25,6 +25,7 @@ mod tests {
 
     use crate::{
         operations::indexed_tree::make_axis_secondary_key,
+        query_result_type::IndexedAxisEntrySliceExt,
         tests::{make_test_grovedb, TEST_LEAF},
         Element, GroveDb,
     };
@@ -965,6 +966,141 @@ mod tests {
         assert_eq!(
             alias.value, expected,
             "the proved read resolves the sibling"
+        );
+    }
+
+    /// `replace_subtree_root` is the fifth direct write path that rewrites
+    /// an entry in place, and the only one whose new element is
+    /// CALLER-SUPPLIED — so unlike the non-Merk appends, its aggregates can
+    /// differ from what was there, moving the row's sort key.
+    ///
+    /// A refresh that only rewrote the row at its existing key would strand
+    /// the old row at the old key. That is why the refresh takes the
+    /// pre-rewrite state and applies a full old → new transition.
+    ///
+    /// Feature-gated because the API is: it is the unsafe dump/load seam,
+    /// where the caller owns hash-vs-state correctness.
+    #[cfg(feature = "unsafe-dump-load")]
+    #[test]
+    fn replace_subtree_root_moves_the_row_when_aggregates_change() {
+        use crate::operations::indexed_tree::make_axis_secondary_key;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("PCIT");
+        // A count-bearing child, so its aggregate is what the row sorts on.
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"sub",
+            Element::empty_provable_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("count-tree child");
+        for i in 0..3u8 {
+            db.insert(
+                [TEST_LEAF, b"cidx", b"sub"].as_ref(),
+                &[b'k', i],
+                Element::new_item(vec![i]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate");
+        }
+        let issues = db.verify_grovedb(None, true, true, grove_version).unwrap();
+        assert!(issues.is_empty(), "setup reported: {issues:?}");
+
+        // The row currently sits at count 3.
+        let before = db
+            .indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, grove_version)
+            .unwrap()
+            .expect("top_k");
+        assert_eq!(before.key_pairs(), vec![(3u64, b"sub".to_vec())]);
+
+        // Read the child's real root so the replacement is internally
+        // consistent, then re-state the element with a DIFFERENT count.
+        // That is the caller's prerogative on this API, and it is what
+        // moves the row.
+        let (child_root, child_root_key) = {
+            let tx = db.start_transaction();
+            let batch = StorageBatch::new();
+            let path_segments: [&[u8]; 3] = [TEST_LEAF, b"cidx".as_ref(), b"sub".as_ref()];
+            let merk = db
+                .open_transactional_merk_at_path(
+                    (&path_segments).into(),
+                    &tx,
+                    Some(&batch),
+                    grove_version,
+                )
+                .unwrap()
+                .expect("open child");
+            let (hash, root_key, _) = merk
+                .root_hash_key_and_aggregate_data()
+                .unwrap()
+                .expect("child root");
+            (hash, root_key)
+        };
+
+        db.replace_subtree_root(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"sub",
+            Element::ProvableCountTree(child_root_key, 9, None),
+            child_root,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("replace_subtree_root under an indexed primary");
+
+        // The row must have MOVED to count 9 with nothing left behind at
+        // count 3. A stranded row would surface here as a SECOND entry:
+        // the axis read enumerates the secondary, so an orphan at the old
+        // key comes back alongside the new one.
+        let after = db
+            .indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, grove_version)
+            .unwrap()
+            .expect("top_k");
+        assert_eq!(
+            after.key_pairs(),
+            vec![(9u64, b"sub".to_vec())],
+            "the row must move to the new count, leaving nothing at the old one"
+        );
+
+        // `verify_grovedb` reports the child's own aggregate as
+        // inconsistent — deliberately, since this test states a count the
+        // subtree's contents do not support, which is exactly the
+        // hash-vs-state correctness `replace_subtree_root` hands to the
+        // caller. What must NOT appear is any indexed-row sentinel: the
+        // relationship between the primary entry and its secondary row is
+        // this code's responsibility, not the caller's.
+        let issues = db.verify_grovedb(None, true, true, grove_version).unwrap();
+        let indexed_issues: Vec<_> = issues
+            .keys()
+            .filter(|p| {
+                p.iter()
+                    .any(|seg| seg.starts_with(b"__cidx_") || seg.starts_with(b"__psit_"))
+            })
+            .collect();
+        assert!(
+            indexed_issues.is_empty(),
+            "replace_subtree_root left the indexed row inconsistent: {indexed_issues:?}"
+        );
+        assert_ne!(
+            make_axis_secondary_key(IndexAxis::Count, 3, 0, b"sub"),
+            make_axis_secondary_key(IndexAxis::Count, 9, 0, b"sub"),
+            "test premise: the replacement really does move the sort key"
         );
     }
 

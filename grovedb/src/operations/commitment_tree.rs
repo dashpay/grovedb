@@ -231,33 +231,17 @@ impl GroveDb {
         );
 
         // 6. Propagate changes from parent upward
-        // Mirror the moved entry into the primary's axis secondaries,
-        // then propagate seeded with the mirror's per-axis roots so the
-        // indexed element one level up is rebuilt over the NEW secondary
-        // state rather than re-read from stale root keys.
-        let (initial_deferred_secondary, initial_deferred_axes) = cost_return_on_error!(
-            &mut cost,
-            self.mirror_indexed_entry_and_seed(
-                path.clone(),
-                &parent_merk,
-                key,
-                old_indexed_state,
-                tx.as_ref(),
-                &batch,
-                grove_version,
-            )
-        );
 
         let mut merk_cache = HashMap::new();
         merk_cache.insert(path.clone(), parent_merk);
 
         cost_return_on_error!(
             &mut cost,
-            self.propagate_changes_with_transaction_with_initial_deferred_axes(
+            self.propagate_changes_with_transaction_refreshing_indexed_row(
                 merk_cache,
                 path,
-                initial_deferred_secondary,
-                initial_deferred_axes,
+                key,
+                old_indexed_state,
                 tx.as_ref(),
                 &batch,
                 grove_version,
