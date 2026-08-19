@@ -488,7 +488,7 @@ fn derived_counts_order_the_secondary_index() {
         )
         .unwrap()
         .expect("top_k");
-    let order: Vec<Vec<u8>> = top.iter().map(|(_, k)| k.clone()).collect();
+    let order: Vec<Vec<u8>> = top.iter().map(|e| e.primary_key.clone()).collect();
     assert_eq!(
         order,
         vec![b"b".to_vec(), b"c".to_vec(), b"a".to_vec()],

@@ -743,7 +743,7 @@ mod tests {
             in_tx
                 .entries
                 .iter()
-                .map(|(_, key)| key.clone())
+                .map(|e| e.primary_key.clone())
                 .collect::<Vec<_>>(),
             vec![
                 b"k0000025".to_vec(),

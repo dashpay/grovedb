@@ -103,7 +103,6 @@ mod tests {
                 Node::KVCountSum(k, ..) => k.clone(),
                 Node::KVDigestCountSum(k, ..) => k.clone(),
                 Node::KVRefValueHashCountSum(k, ..) => k.clone(),
-                Node::KVRefValueHashCountSumWithTargetChildHash(k, ..) => k.clone(),
                 Node::KVHashCount(..) => vec![],
                 Node::Hash(_) | Node::KVHash(_) => vec![],
                 // HashWithCount is keyless (collapsed subtree representation

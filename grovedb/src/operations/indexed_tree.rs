@@ -51,7 +51,10 @@ use grovedb_storage::{
 };
 use grovedb_version::version::GroveVersion;
 
-use crate::{util::TxRef, Element, Error, GroveDb, Transaction, TransactionArg};
+use crate::{
+    query_result_type::IndexedAxisEntry, util::TxRef, Element, Error, GroveDb, Transaction,
+    TransactionArg,
+};
 
 /// Per-axis Merk tree type to open the secondary with.
 ///
@@ -240,31 +243,6 @@ pub(crate) fn decode_axis_row_reference<'a>(
             other.type_str()
         ))),
     }
-}
-
-/// The primary item key a canonical row points at, cross-checked against
-/// the item key its own secondary-key suffix encodes.
-///
-/// The suffix and the reference path are two independent encodings of the
-/// same fact, and a proof or verification pass that trusts one without
-/// the other accepts a row whose committed reference points somewhere the
-/// sort position does not. Both the verifier and the proof generator go
-/// through here so neither can drift into checking only one.
-pub(crate) fn indexed_row_target_key<'a>(
-    row: &'a Element,
-    key_suffix_item_key: &[u8],
-    describe: &str,
-) -> Result<(&'a [u8], i64), Error> {
-    let (target, sum) = decode_axis_row_reference(row, describe)?;
-    if target != key_suffix_item_key {
-        return Err(Error::CorruptedData(format!(
-            "{describe}: indexed secondary row references {} but its secondary-key suffix \
-             encodes {}",
-            hex::encode(target),
-            hex::encode(key_suffix_item_key)
-        )));
-    }
-    Ok((target, sum))
 }
 
 /// Build the secondary key bytes for an entry at `item_key` under the
@@ -1508,7 +1486,7 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
         decode: impl Fn(&[u8]) -> Option<(T, Vec<u8>)>,
-    ) -> CostResult<Vec<(T, Vec<u8>)>, Error>
+    ) -> CostResult<Vec<IndexedAxisEntry<T>>, Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -1522,10 +1500,15 @@ impl GroveDb {
 
         let secondary_merk = cost_return_on_error!(
             &mut cost,
-            self.open_validated_axis_secondary(path, axis, tx_ref, grove_version)
+            self.open_validated_axis_secondary(path.clone(), axis, tx_ref, grove_version)
         );
 
-        collect_top_k_via_iterator(&secondary_merk, axis, k, descending, &decode).add_cost(cost)
+        let rows = cost_return_on_error!(
+            &mut cost,
+            collect_top_k_via_iterator(&secondary_merk, axis, k, descending, &decode)
+        );
+        drop(secondary_merk);
+        resolve_axis_entries(self, path, rows, transaction, grove_version).add_cost(cost)
     }
 
     /// One implementation of the `indexed_<axis>_top_k_paginated` shape.
@@ -1564,7 +1547,12 @@ impl GroveDb {
         // skips zero entries, so `skipped = min(0, population) = 0` needs
         // no tree read.
         if offset == 0 {
-            return collect_top_k_via_iterator(&secondary_merk, axis, k, descending, &decode)
+            let rows = cost_return_on_error!(
+                &mut cost,
+                collect_top_k_via_iterator(&secondary_merk, axis, k, descending, &decode)
+            );
+            drop(secondary_merk);
+            return resolve_axis_entries(self, path, rows, transaction, grove_version)
                 .map_ok(|entries| IndexedTopKPage {
                     entries,
                     skipped: 0,
@@ -1598,6 +1586,9 @@ impl GroveDb {
         };
         let parent_prefix =
             RocksDbStorage::build_prefix(parent_path.clone()).unwrap_add_cost(&mut cost);
+        // Kept for resolving the page's primary values once the counted
+        // descent has produced its keys.
+        let path_for_resolution = path.clone();
         let primary_prefix = RocksDbStorage::build_prefix(path).unwrap_add_cost(&mut cost);
         let secondary_prefix = RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
             .unwrap_add_cost(&mut cost);
@@ -1647,17 +1638,19 @@ impl GroveDb {
                 grove_version
             )
         );
-        let mut entries = Vec::with_capacity(secondary_keys.len());
+        let mut rows = Vec::with_capacity(secondary_keys.len());
         for secondary_key in secondary_keys {
             match decode(&secondary_key) {
-                Some(decoded) => entries.push(decoded),
+                Some(decoded) => rows.push(decoded),
                 None => {
                     return Err(corrupted_secondary_key_error(axis, &secondary_key))
                         .wrap_with_cost(cost);
                 }
             }
         }
-        Ok(IndexedTopKPage { entries, skipped }).wrap_with_cost(cost)
+        resolve_axis_entries(self, path_for_resolution, rows, transaction, grove_version)
+            .map_ok(|entries| IndexedTopKPage { entries, skipped })
+            .add_cost(cost)
     }
 
     /// One implementation of the `indexed_<axis>_range` shape. The
@@ -1678,7 +1671,7 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
         decode: impl Fn(&[u8]) -> Option<(T, Vec<u8>)>,
-    ) -> CostResult<Vec<(T, Vec<u8>)>, Error>
+    ) -> CostResult<Vec<IndexedAxisEntry<T>>, Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -1692,7 +1685,7 @@ impl GroveDb {
 
         let secondary_merk = cost_return_on_error!(
             &mut cost,
-            self.open_validated_axis_secondary(path, axis, tx_ref, grove_version)
+            self.open_validated_axis_secondary(path.clone(), axis, tx_ref, grove_version)
         );
 
         let mut q = Query::new();
@@ -1718,8 +1711,10 @@ impl GroveDb {
                 None => break,
             }
         }
+        drop(iter);
+        drop(secondary_merk);
 
-        Ok(results).wrap_with_cost(cost)
+        resolve_axis_entries(self, path, results, transaction, grove_version).add_cost(cost)
     }
 
     // ---- count axis ----
@@ -1748,7 +1743,7 @@ impl GroveDb {
         descending: bool,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(u64, Vec<u8>)>, Error>
+    ) -> CostResult<Vec<IndexedAxisEntry<u64>>, Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
@@ -1822,7 +1817,7 @@ impl GroveDb {
         limit: u16,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(u64, Vec<u8>)>, Error>
+    ) -> CostResult<Vec<IndexedAxisEntry<u64>>, Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
@@ -1966,7 +1961,7 @@ impl GroveDb {
         descending: bool,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(i64, Vec<u8>)>, Error>
+    ) -> CostResult<Vec<IndexedAxisEntry<i64>>, Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
@@ -2030,7 +2025,7 @@ impl GroveDb {
         limit: u16,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(i64, Vec<u8>)>, Error>
+    ) -> CostResult<Vec<IndexedAxisEntry<i64>>, Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
@@ -2292,7 +2287,7 @@ impl GroveDb {
         descending: bool,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(i128, Vec<u8>)>, Error>
+    ) -> CostResult<Vec<IndexedAxisEntry<i128>>, Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
@@ -2365,7 +2360,7 @@ impl GroveDb {
         limit: u16,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(i128, Vec<u8>)>, Error>
+    ) -> CostResult<Vec<IndexedAxisEntry<i128>>, Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
@@ -2831,7 +2826,7 @@ fn axis_sort_prefix_len(axis: IndexAxis) -> usize {
 /// surface storage corruption (rather than silently dropping the entry)
 /// when the secondary's keyspace contains a malformed entry.
 #[inline]
-fn corrupted_secondary_key_error(axis: IndexAxis, secondary_key: &[u8]) -> Error {
+pub(crate) fn corrupted_secondary_key_error(axis: IndexAxis, secondary_key: &[u8]) -> Error {
     Error::CorruptedData(format!(
         "secondary key in indexed-tree (axis {:?}) is shorter than {} bytes: {:?}",
         axis,
@@ -2877,6 +2872,85 @@ fn collect_top_k_via_iterator<'db, S: StorageContext<'db>, T>(
     Ok(results).wrap_with_cost(cost)
 }
 
+/// Turn decoded `(ordering_value, primary_key)` pairs into full entries by
+/// reading each primary value.
+///
+/// Resolution applies ORDINARY GroveDB reference semantics: a
+/// reference-shaped primary entry resolves to its terminal, exactly as
+/// `db.get` on that key would. That is deliberately not the rule a row is
+/// *bound* by — a row commits its immediate primary node, which is what
+/// keeps the mirror's invariant local — and the two stay consistent
+/// because the immediate node's commitment transitively covers whatever it
+/// pointed at when written.
+///
+/// The primary Merk is opened once for the whole page rather than per row.
+fn resolve_axis_entries<'b, B, T>(
+    db: &GroveDb,
+    indexed_path: SubtreePath<'b, B>,
+    rows: Vec<(T, Vec<u8>)>,
+    transaction: TransactionArg,
+    grove_version: &GroveVersion,
+) -> CostResult<Vec<IndexedAxisEntry<T>>, Error>
+where
+    B: AsRef<[u8]> + 'b,
+{
+    let mut cost = OperationCost::default();
+    if rows.is_empty() {
+        return Ok(Vec::new()).wrap_with_cost(cost);
+    }
+
+    let tx = TxRef::new(&db.db, transaction);
+    let primary_merk = cost_return_on_error!(
+        &mut cost,
+        db.open_transactional_merk_at_path(indexed_path.clone(), tx.as_ref(), None, grove_version)
+    );
+
+    let mut entries = Vec::with_capacity(rows.len());
+    for (ordering_value, primary_key) in rows {
+        let element = cost_return_on_error!(
+            &mut cost,
+            Element::get(&primary_merk, &primary_key, true, grove_version).map_err(|e| {
+                Error::CorruptedData(format!(
+                    "indexed axis read: primary entry {} named by a secondary row is missing: {e}",
+                    hex::encode(&primary_key)
+                ))
+            })
+        );
+        let value = match element.underlying() {
+            Element::Reference(reference_path, ..)
+            | Element::ReferenceWithSumItem(reference_path, ..) => {
+                let mut qualified = indexed_path.to_vec();
+                qualified.push(primary_key.clone());
+                let absolute = match crate::reference_path::path_from_reference_path_type(
+                    reference_path.clone(),
+                    &qualified,
+                    Some(primary_key.as_slice()),
+                ) {
+                    Ok(p) => p,
+                    Err(e) => return Err(Error::from(e)).wrap_with_cost(cost),
+                };
+                cost_return_on_error!(
+                    &mut cost,
+                    db.follow_reference(
+                        absolute.as_slice().into(),
+                        true,
+                        transaction,
+                        grove_version
+                    )
+                )
+            }
+            _ => element,
+        };
+        entries.push(IndexedAxisEntry {
+            ordering_value,
+            primary_key,
+            value,
+        });
+    }
+
+    Ok(entries).wrap_with_cost(cost)
+}
+
 /// Strict provable-count read of an aggregate. The counted skip only ever
 /// runs against axis secondaries, whose tree types (`ProvableCountTree` /
 /// `ProvableCountProvableSumTree`) bind a provable count into every node;
@@ -2901,8 +2975,9 @@ fn provable_count_from_aggregate(aggregate: AggregateData) -> Result<u64, Error>
 /// One page of an `indexed_<axis>_top_k_paginated` read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexedTopKPage<T> {
-    /// Page entries, `(axis_value, original_key)`, in directional order.
-    pub entries: Vec<(T, Vec<u8>)>,
+    /// Page entries in directional order, each carrying its resolved
+    /// primary value.
+    pub entries: Vec<IndexedAxisEntry<T>>,
     /// How many entries the offset actually skipped:
     /// `min(offset, population)`. When the offset runs past the end this
     /// reports the secondary's true population instead of echoing the
@@ -3285,6 +3360,10 @@ impl GroveDb {
     /// change from the replaced code). Kept as the measurement baseline
     /// for `indexed_axis_paginated_cost_tests::measure_paginated_costs`;
     /// compiled only for tests, never reachable in production builds.
+    ///
+    /// Returns bare `(count, key)` pairs, NOT resolved entries: it exists
+    /// to measure what the SECONDARY traversal costs, and resolving
+    /// primary values would fold an unrelated cost into the baseline.
     pub(crate) fn legacy_linear_indexed_count_top_k_paginated<'b, B, P>(
         &self,
         path: P,
@@ -3369,8 +3448,7 @@ mod axis_row_reference_tests {
     use grovedb_version::version::GroveVersion;
 
     use super::{
-        axis_payload_sum, axis_row_reference, decode_axis_row_reference, indexed_row_target_key,
-        INDEXED_SECONDARY_MAX_HOP,
+        axis_payload_sum, axis_row_reference, decode_axis_row_reference, INDEXED_SECONDARY_MAX_HOP,
     };
     use crate::Element;
 
@@ -3446,17 +3524,9 @@ mod axis_row_reference_tests {
             decode_axis_row_reference(&row, "test").unwrap(),
             (b"target".as_slice(), 42)
         );
-        assert_eq!(
-            indexed_row_target_key(&row, b"target", "test").unwrap(),
-            (b"target".as_slice(), 42)
-        );
-
-        // Suffix disagreement: the row's reference and its sort-key suffix
-        // are two independent encodings of the same fact, and trusting one
-        // without the other accepts a row whose commitment points somewhere
-        // its sort position does not.
-        indexed_row_target_key(&row, b"other", "test")
-            .expect_err("reference target must agree with the secondary-key suffix");
+        // Suffix agreement is now enforced by the verifier rebuilding the
+        // canonical row from the authenticated primary value, so it has no
+        // separate helper to unit-test here.
 
         // Legacy placeholder rows must be rejected outright.
         for legacy in [

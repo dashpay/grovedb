@@ -648,6 +648,162 @@ mod tests {
         );
     }
 
+    /// A NESTED INDEXED TREE as a primary entry.
+    ///
+    /// Its committed value hash is a three-way
+    /// `combine_hash_three(H(value), primary_root, secondary_root)`, which
+    /// no single child-hash witness can express. The target-chain
+    /// commitment enum carries the pieces instead, so this shape proves
+    /// and verifies like any other rather than being refused.
+    #[test]
+    fn a_nested_indexed_tree_primary_proves_and_resolves() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("outer PCIT");
+        // A PCIT nested inside a PCIT: the inner element is the primary
+        // entry whose commitment the outer row must bind.
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"inner",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("inner PCIT");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx", b"inner"].as_ref(),
+            b"leaf",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("inner entry");
+        let issues = db.verify_grovedb(None, true, true, grove_version).unwrap();
+        assert!(
+            issues.is_empty(),
+            "nested indexed tree reported: {issues:?}"
+        );
+
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let proof = db
+            .prove_indexed_count_top_k(path, 5, true, None, grove_version)
+            .unwrap()
+            .expect("a nested indexed-tree primary must be provable");
+        let result = GroveDb::verify_indexed_count_top_k(&proof, path, 5, true, grove_version)
+            .expect("verify");
+        assert_eq!(
+            result.root_hash,
+            db.root_hash(None, grove_version).unwrap().unwrap()
+        );
+        let entries = match &result.entries {
+            crate::operations::proof::indexed_axis::AxisEntries::Count(v) => v,
+            other => panic!("expected count entries, got {other:?}"),
+        };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].primary_key, b"inner".to_vec());
+        assert!(
+            matches!(
+                entries[0].value.underlying(),
+                Element::ProvableCountIndexedTree(..)
+            ),
+            "the row must resolve to the nested indexed element itself, got {}",
+            entries[0].value.type_str()
+        );
+    }
+
+    /// A REFERENCE-SHAPED primary entry resolves through to its terminal
+    /// on both the direct and the proved path, and the two agree.
+    ///
+    /// The row still BINDS the immediate primary node — that is what keeps
+    /// the mirror's invariant local — while the value handed back is what
+    /// `db.get` on that key would return. Both halves matter, so both are
+    /// asserted.
+    #[test]
+    fn a_reference_shaped_primary_resolves_to_its_terminal() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"target",
+            Element::new_item(b"terminal-value".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("terminal");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("PCIT");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"ref",
+            Element::new_reference(ReferencePathType::UpstreamRootHeightReference(
+                1,
+                vec![b"target".to_vec()],
+            )),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("reference-shaped primary");
+        let issues = db.verify_grovedb(None, true, true, grove_version).unwrap();
+        assert!(
+            issues.is_empty(),
+            "reference-shaped primary reported: {issues:?}"
+        );
+
+        let expected = Element::new_item(b"terminal-value".to_vec());
+
+        // Direct read.
+        let direct = db
+            .indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, grove_version)
+            .unwrap()
+            .expect("direct top_k");
+        assert_eq!(direct.len(), 1);
+        assert_eq!(
+            direct[0].value, expected,
+            "a direct read must resolve a reference-shaped primary to its terminal"
+        );
+
+        // Proved read must agree.
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let proof = db
+            .prove_indexed_count_top_k(path, 5, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result = GroveDb::verify_indexed_count_top_k(&proof, path, 5, true, grove_version)
+            .expect("verify");
+        let entries = match &result.entries {
+            crate::operations::proof::indexed_axis::AxisEntries::Count(v) => v,
+            other => panic!("expected count entries, got {other:?}"),
+        };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].value, expected,
+            "a proved read must resolve to the same terminal the direct read returned"
+        );
+        assert_eq!(entries[0].primary_key, b"ref".to_vec());
+    }
+
     /// Ordinary user references keep their own semantics. The one-hop
     /// immediate-node rule is dedicated indexed-tree behaviour, so it must
     /// not leak into how a normal reference elsewhere in the grove is

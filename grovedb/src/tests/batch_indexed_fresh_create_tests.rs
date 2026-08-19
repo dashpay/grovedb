@@ -21,6 +21,8 @@
 mod tests {
     use grovedb_version::version::GroveVersion;
 
+    use crate::IndexedAxisEntry;
+
     use crate::{
         batch::QualifiedGroveDbOp,
         tests::{make_test_grovedb, TempGroveDb, TEST_LEAF},
@@ -458,7 +460,11 @@ mod tests {
         );
     }
 
-    fn one_key_count(db: &TempGroveDb, path: &[&[u8]], gv: &GroveVersion) -> Vec<(u64, Vec<u8>)> {
+    fn one_key_count(
+        db: &TempGroveDb,
+        path: &[&[u8]],
+        gv: &GroveVersion,
+    ) -> Vec<IndexedAxisEntry<u64>> {
         db.indexed_count_top_k(path, 5, true, None, gv)
             .unwrap()
             .expect("count top_k")

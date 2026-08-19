@@ -198,8 +198,7 @@ pub fn verify_count_offset_on_range_proof(
             // encoding, so the value bytes are the dereferenced target's
             // and the node's own hash field is the reference element's.
             | Node::KVRefValueHashCount(_, _, _, _)
-            | Node::KVRefValueHashCountSum(_, _, _, _, _)
-            | Node::KVRefValueHashCountSumWithTargetChildHash(_, _, _, _, _, _) => Ok(()),
+            | Node::KVRefValueHashCountSum(_, _, _, _, _) => Ok(()),
             other => Err(Error::InvalidProofError(format!(
                 "unexpected node type in count-offset proof: {}",
                 other
@@ -275,7 +274,6 @@ fn aggregate_of_proof_tree_node(tree: &ProofTree) -> Result<u64, Error> {
         // conceptual position as the value-bearing variants.
         Node::KVRefValueHashCount(_, _, _, c) => Ok(*c),
         Node::KVRefValueHashCountSum(_, _, _, c, _) => Ok(*c),
-        Node::KVRefValueHashCountSumWithTargetChildHash(_, _, _, c, _, _) => Ok(*c),
         Node::KVValueHashFeatureType(_, _, _, ft) => match ft {
             TreeFeatureType::ProvableCountedMerkNode(c) => Ok(*c),
             TreeFeatureType::ProvableCountedSummedMerkNode(c, _) => Ok(*c),
@@ -433,7 +431,6 @@ fn verify_count_offset_shape(
         // Resolved-reference per-element variants.
         Node::KVRefValueHashCount(key, _, _, _) => key.as_slice(),
         Node::KVRefValueHashCountSum(key, _, _, _, _) => key.as_slice(),
-        Node::KVRefValueHashCountSumWithTargetChildHash(key, _, _, _, _, _) => key.as_slice(),
         // Reaching here would require:
         //   - the `execute_with_options` allowlist accepted a node
         //     that doesn't carry a key (only `HashWithCount` /
@@ -782,44 +779,6 @@ fn classify_self<'a>(
                     &compute_value_hash(value.as_slice()).unwrap(),
                 )
                 .unwrap(),
-                reference_element_hash: Some(*reference_element_hash),
-            })
-        }
-        Node::KVRefValueHashCountSumWithTargetChildHash(
-            key,
-            value,
-            reference_element_hash,
-            _,
-            _,
-            target_child_hash,
-        ) => {
-            if !in_range {
-                return Err(Error::InvalidProofError(
-                    "count-offset proof: KVRefValueHashCountSumWithTargetChildHash at an \
-                     out-of-range position"
-                        .to_string(),
-                ));
-            }
-            if own_count != 1 {
-                return Err(Error::InvalidProofError(format!(
-                    "count-offset proof: KVRefValueHashCountSumWithTargetChildHash at \
-                     own_count={} (expected 1)",
-                    own_count
-                )));
-            }
-            // Two combines, mirroring `Tree::hash` for this variant: the
-            // target is layered, so its committed hash folds its child
-            // commitment in before the reference folds over it.
-            let target_committed = crate::tree::combine_hash(
-                &compute_value_hash(value.as_slice()).unwrap(),
-                target_child_hash,
-            )
-            .unwrap();
-            Ok(BoundaryKind::ValueReturned {
-                key: key.as_slice(),
-                value: value.as_slice(),
-                value_hash: crate::tree::combine_hash(reference_element_hash, &target_committed)
-                    .unwrap(),
                 reference_element_hash: Some(*reference_element_hash),
             })
         }

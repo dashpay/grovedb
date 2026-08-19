@@ -27,6 +27,8 @@ mod tests {
     use grovedb_element::indexed::IndexAxis;
     use grovedb_version::version::GroveVersion;
 
+    use crate::IndexedAxisEntry;
+
     use crate::{
         operations::proof::indexed_axis::AxisEntries,
         tests::{make_test_grovedb, TEST_LEAF},
@@ -88,7 +90,7 @@ mod tests {
         }
     }
 
-    fn entries_as_sum(entries: &AxisEntries) -> &[(i64, Vec<u8>)] {
+    fn entries_as_sum(entries: &AxisEntries) -> &[IndexedAxisEntry<i64>] {
         match entries {
             AxisEntries::Sum(v) => v.as_slice(),
             other => panic!("expected sum entries, got {:?}", other),

@@ -402,6 +402,10 @@ pub struct AxisDescentProof {
     /// Merk range proof for `Bounded`, an aggregate-on-range proof for
     /// `AggregateOverValueRange`.
     pub secondary_proof: Vec<u8>,
+    /// One resolved-target chain per returned secondary row, in the
+    /// secondary proof's result order. Empty for aggregate traversals,
+    /// which enumerate no rows.
+    pub target_chains: Vec<crate::operations::proof::indexed_axis::IndexedTargetChain>,
 }
 
 impl AxisDescentProof {
@@ -988,23 +992,6 @@ fn node_to_string(node: &Node) -> Result<String, fmt::Error> {
             hex_to_ascii(key),
             hex::encode(value_hash),
             count
-        ),
-        Node::KVRefValueHashCountSumWithTargetChildHash(
-            key,
-            value,
-            value_hash,
-            count,
-            sum,
-            target_child_hash,
-        ) => format!(
-            "KVRefValueHashCountSumWithTargetChildHash({}, {}, HASH[{}], {}, {}, \
-             target_child=HASH[{}])",
-            hex_to_ascii(key),
-            element_hex_to_ascii(value)?,
-            hex::encode(value_hash),
-            count,
-            sum,
-            hex::encode(target_child_hash)
         ),
         Node::KVRefValueHash(key, value, value_hash) => format!(
             "KVRefValueHash({}, {}, HASH[{}])",

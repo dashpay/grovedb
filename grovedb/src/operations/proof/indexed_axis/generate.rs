@@ -11,6 +11,7 @@ use grovedb_costs::{
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::{
     element::get::ElementFetchFromStorageExtensions,
+    proofs::query::{verify_count_offset_on_range_proof, QueryProofVerify},
     proofs::{encode_into, query::QueryItem as MerkQueryItemForRange, Query as MerkQuery},
 };
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
@@ -26,6 +27,143 @@ use super::{
     IndexedAxisRangeProof,
 };
 use crate::operations::proof::AxisDescentProof;
+
+/// Replay a just-built secondary range proof to learn the exact rows the
+/// verifier will see, then build one resolved-target chain per row.
+///
+/// Replaying rather than reusing the prover's own bookkeeping is
+/// deliberate: chains are matched to rows positionally at verify time, so
+/// the two lists must be derived from the same source of truth. Anything
+/// that changes which rows a proof yields — a limit boundary, a direction
+/// flip — then changes both together or neither.
+#[allow(clippy::too_many_arguments)]
+fn build_row_target_chains<'db>(
+    grovedb: &'db GroveDb,
+    axis: IndexAxis,
+    secondary_proof: &[u8],
+    secondary_query: MerkQuery,
+    limit: Option<u16>,
+    indexed_path: &[Vec<u8>],
+    transaction: &'db Transaction,
+    batch: &'db StorageBatch,
+    grove_version: &GroveVersion,
+) -> CostResult<Vec<super::IndexedTargetChain>, Error> {
+    let mut cost = OperationCost::default();
+    if secondary_proof.is_empty() {
+        return Ok(Vec::new()).wrap_with_cost(cost);
+    }
+    let left_to_right = secondary_query.left_to_right;
+    let (_, sec_result) = cost_return_on_error!(
+        &mut cost,
+        secondary_query
+            .execute_proof(secondary_proof, limit, left_to_right, 0)
+            .map_err(|e| Error::CorruptedData(format!(
+                "indexed-axis proof: replaying the secondary proof for row order: {e}"
+            )))
+    );
+    let keys: Vec<Vec<u8>> = sec_result
+        .result_set
+        .into_iter()
+        .map(|proved| proved.key)
+        .collect();
+    build_chains_for_keys(
+        grovedb,
+        axis,
+        &keys,
+        indexed_path,
+        transaction,
+        batch,
+        grove_version,
+    )
+    .add_cost(cost)
+}
+
+/// Count-offset twin of [`build_row_target_chains`].
+#[allow(clippy::too_many_arguments)]
+fn build_paginated_target_chains<'db>(
+    grovedb: &'db GroveDb,
+    axis: IndexAxis,
+    secondary_proof: &[u8],
+    offset: u64,
+    k: u16,
+    descending: bool,
+    indexed_path: &[Vec<u8>],
+    transaction: &'db Transaction,
+    batch: &'db StorageBatch,
+    grove_version: &GroveVersion,
+) -> CostResult<Vec<super::IndexedTargetChain>, Error> {
+    let mut cost = OperationCost::default();
+    if secondary_proof.is_empty() {
+        return Ok(Vec::new()).wrap_with_cost(cost);
+    }
+    let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
+    let result = cost_return_on_error!(
+        &mut cost,
+        verify_count_offset_on_range_proof(
+            secondary_proof,
+            &inner_range,
+            offset,
+            Some(k as u64),
+            !descending,
+        )
+        .map_err(|e| Error::CorruptedData(format!(
+            "indexed-axis proof: replaying the paginated secondary proof for row order: {e}"
+        )))
+    );
+    let keys: Vec<Vec<u8>> = result
+        .returned_items
+        .into_iter()
+        .map(|item| item.key)
+        .collect();
+    build_chains_for_keys(
+        grovedb,
+        axis,
+        &keys,
+        indexed_path,
+        transaction,
+        batch,
+        grove_version,
+    )
+    .add_cost(cost)
+}
+
+/// Turn secondary keys into per-row chains, decoding each key's primary
+/// suffix on the way.
+fn build_chains_for_keys<'db>(
+    grovedb: &'db GroveDb,
+    axis: IndexAxis,
+    secondary_keys: &[Vec<u8>],
+    indexed_path: &[Vec<u8>],
+    transaction: &'db Transaction,
+    batch: &'db StorageBatch,
+    grove_version: &GroveVersion,
+) -> CostResult<Vec<super::IndexedTargetChain>, Error> {
+    let mut cost = OperationCost::default();
+    let sort_len = crate::operations::indexed_tree::axis_sort_key_len(axis);
+    let mut chains = Vec::with_capacity(secondary_keys.len());
+    for secondary_key in secondary_keys {
+        if secondary_key.len() < sort_len {
+            return Err(
+                crate::operations::indexed_tree::corrupted_secondary_key_error(axis, secondary_key),
+            )
+            .wrap_with_cost(cost);
+        }
+        let primary_key = &secondary_key[sort_len..];
+        let chain = cost_return_on_error!(
+            &mut cost,
+            super::target_chain::build_target_chain(
+                grovedb,
+                indexed_path,
+                primary_key,
+                transaction,
+                batch,
+                grove_version,
+            )
+        );
+        chains.push(chain);
+    }
+    Ok(chains).wrap_with_cost(cost)
+}
 
 /// Build the per-ancestor attestation list for a path of length N: the
 /// list has length N-1 (one entry per intermediate layer). For each
@@ -856,7 +994,11 @@ impl GroveDb {
         );
         let descending = !secondary_query.left_to_right;
         let requested_limit = limit;
-        let mut sec_result = cost_return_on_error!(
+        // Kept for the row-order replay below: the prover re-executes its
+        // own proof to learn exactly which rows, in which order, the
+        // verifier will see — so chains cannot drift out of alignment.
+        let secondary_query_for_rows = secondary_query.clone();
+        let sec_result = cost_return_on_error!(
             &mut cost,
             secondary_merk
                 .prove_without_encoding(secondary_query, limit, grove_version)
@@ -864,24 +1006,25 @@ impl GroveDb {
                     "indexed-axis range proof: secondary range proof: {e}"
                 )))
         );
-        // Resolve canonical rows into the primary values they point at,
-        // before encoding, so the verified result carries the referenced
-        // Element rather than the reference.
-        cost_return_on_error!(
+        let mut serialized_secondary = Vec::with_capacity(128);
+        encode_into(sec_result.proof.iter(), &mut serialized_secondary);
+        // One resolved-target chain per returned row, in result order.
+        // The rows themselves stay raw references in the merk proof; the
+        // chain is what carries (and binds) the value they point at.
+        let target_chains = cost_return_on_error!(
             &mut cost,
-            super::reference_resolution::resolve_axis_reference_nodes(
-                sec_result.proof.iter_mut(),
-                axis,
-                &primary_merk,
+            build_row_target_chains(
                 self,
+                axis,
+                &serialized_secondary,
+                secondary_query_for_rows,
+                requested_limit,
                 &path_keys,
                 transaction,
                 batch,
                 grove_version,
             )
         );
-        let mut serialized_secondary = Vec::with_capacity(128);
-        encode_into(sec_result.proof.iter(), &mut serialized_secondary);
 
         Ok(IndexedAxisRangeProof {
             axis_tag: axis.tag(),
@@ -891,6 +1034,7 @@ impl GroveDb {
             other_axes_root_hashes,
             target_is_pcpsit,
             secondary_proof: serialized_secondary,
+            target_chains,
             requested_limit,
             descending,
         })
@@ -1011,7 +1155,7 @@ impl GroveDb {
             .wrap_with_cost(cost);
         }
         let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
-        let mut prove_result = cost_return_on_error!(
+        let prove_result = cost_return_on_error!(
             &mut cost,
             secondary_merk
                 .prove_count_offset_on_range(
@@ -1025,25 +1169,23 @@ impl GroveDb {
                     "indexed-axis paginated proof: secondary count-offset proof: {e}"
                 )))
         );
-        // Resolve canonical rows into the primary values they point at,
-        // BEFORE encoding — the count-offset path used to return here
-        // without a reference post-pass, which is why it rejected
-        // reference rows outright.
-        cost_return_on_error!(
+        let mut serialized = Vec::with_capacity(128);
+        encode_into(prove_result.ops.iter(), &mut serialized);
+        let target_chains = cost_return_on_error!(
             &mut cost,
-            super::reference_resolution::resolve_axis_reference_nodes(
-                prove_result.ops.iter_mut(),
-                axis,
-                &primary_merk,
+            build_paginated_target_chains(
                 self,
+                axis,
+                &serialized,
+                offset,
+                k,
+                descending,
                 &path_keys,
                 transaction,
                 batch,
                 grove_version,
             )
         );
-        let mut serialized = Vec::with_capacity(128);
-        encode_into(prove_result.ops.iter(), &mut serialized);
 
         Ok(IndexedAxisPaginatedProof {
             axis_tag: axis.tag(),
@@ -1053,6 +1195,7 @@ impl GroveDb {
             other_axes_root_hashes,
             target_is_pcpsit,
             secondary_proof: serialized,
+            target_chains,
             requested_k: k,
             requested_offset: offset,
             descending,
@@ -1292,13 +1435,13 @@ impl GroveDb {
                 grove_version,
             )
         );
+        let mut target_chains: Vec<super::IndexedTargetChain> = Vec::new();
         let secondary_proof = match &axis_query.traversal {
             AxisTraversal::RankedPage { k, offset } => {
-                cost_return_on_error_no_add!(
+                let (bytes, chains) = cost_return_on_error_no_add!(
                     cost,
                     build_paginated_secondary_proof(
                         &secondary_merk,
-                        &primary_merk,
                         self,
                         &path_keys,
                         transaction,
@@ -1310,17 +1453,18 @@ impl GroveDb {
                         grove_version,
                         &mut cost,
                     )
-                )
+                );
+                target_chains = chains;
+                bytes
             }
             AxisTraversal::RankOfKey { .. } => {
                 // rank computed above; the rank proof IS the paginated
                 // proof at (offset = rank, k = 1).
                 let rank_offset = rank.expect("set above for RankOfKey");
-                cost_return_on_error_no_add!(
+                let (bytes, chains) = cost_return_on_error_no_add!(
                     cost,
                     build_paginated_secondary_proof(
                         &secondary_merk,
-                        &primary_merk,
                         self,
                         &path_keys,
                         transaction,
@@ -1332,7 +1476,9 @@ impl GroveDb {
                         grove_version,
                         &mut cost,
                     )
-                )
+                );
+                target_chains = chains;
+                bytes
             }
             AxisTraversal::Bounded { limit, .. } => {
                 // An empty secondary cannot carry a Merk range proof
@@ -1349,7 +1495,8 @@ impl GroveDb {
                         cost,
                         crate::query::axis_lowering::axis_bounded_merk_query(axis_query)
                     );
-                    let mut sec_result = cost_return_on_error!(
+                    let secondary_query_for_rows = secondary_query.clone();
+                    let sec_result = cost_return_on_error!(
                         &mut cost,
                         secondary_merk
                             .prove_without_encoding(secondary_query, Some(*limit), grove_version)
@@ -1357,21 +1504,22 @@ impl GroveDb {
                                 "axis descent: secondary range proof: {e}"
                             )))
                     );
-                    cost_return_on_error!(
+                    let mut serialized = Vec::with_capacity(128);
+                    encode_into(sec_result.proof.iter(), &mut serialized);
+                    target_chains = cost_return_on_error!(
                         &mut cost,
-                        super::reference_resolution::resolve_axis_reference_nodes(
-                            sec_result.proof.iter_mut(),
-                            axis,
-                            &primary_merk,
+                        build_row_target_chains(
                             self,
+                            axis,
+                            &serialized,
+                            secondary_query_for_rows,
+                            Some(*limit),
                             &path_keys,
                             transaction,
                             batch,
                             grove_version,
                         )
                     );
-                    let mut serialized = Vec::with_capacity(128);
-                    encode_into(sec_result.proof.iter(), &mut serialized);
                     serialized
                 }
             }
@@ -1401,6 +1549,7 @@ impl GroveDb {
             primary_root_hash,
             rank,
             secondary_proof,
+            target_chains,
         })
         .wrap_with_cost(cost)
     }
@@ -1412,7 +1561,6 @@ impl GroveDb {
 #[allow(clippy::too_many_arguments)]
 fn build_paginated_secondary_proof<'db, S>(
     secondary_merk: &grovedb_merk::Merk<S>,
-    primary_merk: &grovedb_merk::Merk<S>,
     grovedb: &'db GroveDb,
     primary_path: &[Vec<u8>],
     transaction: &'db Transaction,
@@ -1423,7 +1571,7 @@ fn build_paginated_secondary_proof<'db, S>(
     axis: IndexAxis,
     grove_version: &GroveVersion,
     cost: &mut OperationCost,
-) -> Result<Vec<u8>, Error>
+) -> Result<(Vec<u8>, Vec<super::IndexedTargetChain>), Error>
 where
     S: grovedb_storage::StorageContext<'db>,
 {
@@ -1435,7 +1583,7 @@ where
         )));
     }
     let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
-    let mut prove_result = secondary_merk
+    let prove_result = secondary_merk
         .prove_count_offset_on_range(
             &inner_range,
             offset,
@@ -1447,22 +1595,22 @@ where
         .map_err(|e| {
             Error::CorruptedData(format!("axis descent: secondary count-offset proof: {e}"))
         })?;
-    // Resolve canonical rows into the primary values they point at,
-    // before encoding.
-    super::reference_resolution::resolve_axis_reference_nodes(
-        prove_result.ops.iter_mut(),
-        axis,
-        primary_merk,
+    let mut serialized = Vec::with_capacity(128);
+    encode_into(prove_result.ops.iter(), &mut serialized);
+    let chains = build_paginated_target_chains(
         grovedb,
+        axis,
+        &serialized,
+        offset,
+        k,
+        descending,
         primary_path,
         transaction,
         batch,
         grove_version,
     )
     .unwrap_add_cost(cost)?;
-    let mut serialized = Vec::with_capacity(128);
-    encode_into(prove_result.ops.iter(), &mut serialized);
-    Ok(serialized)
+    Ok((serialized, chains))
 }
 
 /// The secondary-side aggregate proof for

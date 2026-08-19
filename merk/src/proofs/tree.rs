@@ -364,39 +364,6 @@ impl Tree {
                     )
                 })
             }
-            Node::KVRefValueHashCountSumWithTargetChildHash(
-                key,
-                referenced_value,
-                node_value_hash,
-                count,
-                sum,
-                target_child_hash,
-            ) => {
-                // Two combines rather than one: the target is layered, so
-                // its own committed value hash is
-                // `combine_hash(H(target), target_child_hash)` — not
-                // `H(target)`. Reconstructing that first, then folding the
-                // reference over it, is what binds BOTH the target's bytes
-                // and its child commitment into the row's hash. Substituting
-                // either one breaks the root.
-                let mut cost = OperationCost::default();
-                let referenced_value_hash =
-                    value_hash(referenced_value.as_slice()).unwrap_add_cost(&mut cost);
-                let target_committed_hash = combine_hash(&referenced_value_hash, target_child_hash)
-                    .unwrap_add_cost(&mut cost);
-                let combined_value_hash = combine_hash(node_value_hash, &target_committed_hash)
-                    .unwrap_add_cost(&mut cost);
-
-                kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash).flat_map(|kv_hash| {
-                    node_hash_with_count_and_sum(
-                        &kv_hash,
-                        &self.child_hash(true),
-                        &self.child_hash(false),
-                        *count,
-                        *sum,
-                    )
-                })
-            }
         }
     }
 
@@ -574,8 +541,7 @@ impl Tree {
             | Node::KVRefValueHashSum(key, ..)
             | Node::KVCountSum(key, ..)
             | Node::KVDigestCountSum(key, ..)
-            | Node::KVRefValueHashCountSum(key, ..)
-            | Node::KVRefValueHashCountSumWithTargetChildHash(key, ..) => Some(key.as_slice()),
+            | Node::KVRefValueHashCountSum(key, ..) => Some(key.as_slice()),
             // These nodes don't have keys, only hashes
             Node::Hash(_)
             | Node::KVHash(_)

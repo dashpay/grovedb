@@ -259,6 +259,8 @@ pub use query::{
     GroveTrunkQueryResult, LeafInfo, PathBranchChunkQuery, PathQuery, PathQueryShape,
     PathTrunkChunkQuery, SizedQuery,
 };
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use query_result_type::IndexedAxisEntry;
 #[cfg(feature = "minimal")]
 use reference_path::path_from_reference_path_type;
 #[cfg(feature = "grovedbg")]

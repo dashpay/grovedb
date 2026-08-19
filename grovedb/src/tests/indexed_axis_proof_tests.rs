@@ -18,6 +18,8 @@ mod tests {
     use grovedb_merk::proofs::{query::QueryItem as MerkQueryItem, Query as MerkQuery};
     use grovedb_version::version::GroveVersion;
 
+    use crate::IndexedAxisEntry;
+
     use crate::{
         operations::proof::indexed_axis::AxisEntries,
         tests::{make_test_grovedb, TEST_LEAF},
@@ -111,21 +113,21 @@ mod tests {
         db.root_hash(None, grove_version).unwrap().expect("root")
     }
 
-    fn entries_as_count(entries: &AxisEntries) -> &[(u64, Vec<u8>)] {
+    fn entries_as_count(entries: &AxisEntries) -> &[IndexedAxisEntry<u64>] {
         match entries {
             AxisEntries::Count(v) => v.as_slice(),
             other => panic!("expected count entries, got {:?}", other),
         }
     }
 
-    fn entries_as_sum(entries: &AxisEntries) -> &[(i64, Vec<u8>)] {
+    fn entries_as_sum(entries: &AxisEntries) -> &[IndexedAxisEntry<i64>] {
         match entries {
             AxisEntries::Sum(v) => v.as_slice(),
             other => panic!("expected sum entries, got {:?}", other),
         }
     }
 
-    fn entries_as_avg(entries: &AxisEntries) -> &[(i128, Vec<u8>)] {
+    fn entries_as_avg(entries: &AxisEntries) -> &[IndexedAxisEntry<i128>] {
         match entries {
             AxisEntries::Avg(v) => v.as_slice(),
             other => panic!("expected avg entries, got {:?}", other),
@@ -452,8 +454,8 @@ mod tests {
         // of original_key for ties (b/c/a → c, b, a).
         let entries = entries_as_count(&result.entries);
         assert_eq!(entries.len(), 3);
-        for (c, _) in entries {
-            assert_eq!(*c, 1);
+        for entry in entries {
+            assert_eq!(entry.ordering_value, 1);
         }
         assert_eq!(result.root_hash, root_hash(&db, grove_version));
     }
@@ -602,8 +604,8 @@ mod tests {
         // Skip-1 then take-2 → c, b.
         let entries = entries_as_count(&result.entries);
         assert_eq!(entries.len(), 2);
-        for (c, _) in entries {
-            assert_eq!(*c, 1);
+        for entry in entries {
+            assert_eq!(entry.ordering_value, 1);
         }
         assert_eq!(result.skipped, 1);
     }
@@ -1991,15 +1993,29 @@ mod tests {
 
     #[test]
     fn axis_entries_helpers() {
-        let c = AxisEntries::Count(vec![(1u64, b"a".to_vec())]);
+        let entry = |v: u64| IndexedAxisEntry {
+            ordering_value: v,
+            primary_key: b"a".to_vec(),
+            value: Element::new_item(b"v".to_vec()),
+        };
+        let c = AxisEntries::Count(vec![entry(1)]);
         assert_eq!(c.len(), 1);
         assert!(!c.is_empty());
         let empty_c = AxisEntries::Count(vec![]);
         assert_eq!(empty_c.len(), 0);
         assert!(empty_c.is_empty());
-        let s = AxisEntries::Sum(vec![(1i64, b"a".to_vec()), (2i64, b"b".to_vec())]);
+        let sum_entry = |v: i64, k: &[u8]| IndexedAxisEntry {
+            ordering_value: v,
+            primary_key: k.to_vec(),
+            value: Element::new_sum_item(v),
+        };
+        let s = AxisEntries::Sum(vec![sum_entry(1, b"a"), sum_entry(2, b"b")]);
         assert_eq!(s.len(), 2);
-        let a = AxisEntries::Avg(vec![(1i128, b"a".to_vec())]);
+        let a = AxisEntries::Avg(vec![IndexedAxisEntry {
+            ordering_value: 1i128,
+            primary_key: b"a".to_vec(),
+            value: Element::new_item(b"v".to_vec()),
+        }]);
         assert_eq!(a.len(), 1);
     }
 
@@ -2760,9 +2776,9 @@ mod tests {
                 .expect("verify");
         let got = entries_as_count(&result.entries);
         assert_eq!(got.len(), 3);
-        assert_eq!(got[0].0, 3);
-        assert_eq!(got[1].0, 2);
-        assert_eq!(got[2].0, 1);
+        assert_eq!(got[0].ordering_value, 3);
+        assert_eq!(got[1].ordering_value, 2);
+        assert_eq!(got[2].ordering_value, 1);
         assert_eq!(result.skipped, 6);
     }
 
@@ -3155,7 +3171,7 @@ mod tests {
             .expect("verify");
         let got = entries_as_count(&result.entries);
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].0, 2);
+        assert_eq!(got[0].ordering_value, 2);
     }
 
     // ---------- post-mutation / cross-check / scale ----------
@@ -3178,8 +3194,8 @@ mod tests {
         let got = entries_as_count(&result.entries);
         assert_eq!(got.len(), 2);
         // c(3) and a(1) remain.
-        assert_eq!(got[0].1, b"c".to_vec());
-        assert_eq!(got[1].1, b"a".to_vec());
+        assert_eq!(got[0].primary_key, b"c".to_vec());
+        assert_eq!(got[1].primary_key, b"a".to_vec());
     }
 
     #[test]
@@ -3236,8 +3252,8 @@ mod tests {
             .expect("verify");
         let got = entries_as_count(&result.entries);
         assert_eq!(got.len(), 10);
-        assert_eq!(got[0].0, 29);
-        assert_eq!(got[9].0, 20);
+        assert_eq!(got[0].ordering_value, 29);
+        assert_eq!(got[9].ordering_value, 20);
     }
 
     // ---------- triple-nested cidx ----------
@@ -3290,7 +3306,7 @@ mod tests {
             .expect("verify");
         let got = entries_as_count(&result.entries);
         assert_eq!(got.len(), 4);
-        assert_eq!(got[0].0, 7);
+        assert_eq!(got[0].ordering_value, 7);
         assert_eq!(result.root_hash, root_hash(&db, grove_version));
     }
 

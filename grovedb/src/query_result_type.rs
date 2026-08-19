@@ -7,6 +7,66 @@ use std::{
 };
 
 pub use grovedb_merk::proofs::query::{Key, Path, PathKey};
+
+/// One row of a non-aggregate indexed-axis read.
+///
+/// Carries the primary VALUE, not just a pointer to it. A secondary row
+/// is a canonical reference to its primary entry, so the value comes back
+/// with the row — a caller no longer needs `k` follow-up `db.get` calls
+/// after a top-k result, nor (for verified reads) `k` extra inclusion
+/// proofs.
+///
+/// `value` is the entry after ordinary GroveDB reference resolution: if
+/// the primary entry is itself a reference, this is its TERMINAL, exactly
+/// as reading that key through `db.get` would give you. That is a
+/// deliberate asymmetry with how a row is *bound* — a row commits to the
+/// immediate primary node, which is what keeps the mirror's invariant
+/// local — and the two are consistent because the immediate node's
+/// commitment transitively covers the terminal it pointed at when written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedAxisEntry<T> {
+    /// The value this axis sorts on, decoded from the secondary-key
+    /// prefix — a count, a sum, or a fixed-point average.
+    pub ordering_value: T,
+    /// The primary key, decoded from the secondary-key suffix.
+    pub primary_key: Vec<u8>,
+    /// The resolved primary value.
+    pub value: Element,
+}
+
+impl<T> IndexedAxisEntry<T> {
+    /// The `(ordering_value, primary_key)` pair, dropping the value.
+    ///
+    /// For callers that genuinely only rank — leaderboards, ranking views
+    /// — and for comparing against the pre-resolution shape.
+    pub fn key_pair(self) -> (T, Vec<u8>) {
+        (self.ordering_value, self.primary_key)
+    }
+}
+
+/// Compare an entry against a bare `(ordering_value, primary_key)` pair.
+///
+/// A migration and ranking-assertion convenience: it deliberately ignores
+/// `value`, so it answers "is this row in the right place?" and NOT "does
+/// it carry the right value". Tests that care about resolved values must
+/// assert on `value` directly — comparing against a tuple will not do it
+/// for them.
+///
+/// This cannot be confused with ordinary equality: `IndexedAxisEntry`'s
+/// own derived `PartialEq` compares every field, and this impl is only
+/// reachable when one side is explicitly a tuple.
+impl<T: PartialEq> PartialEq<(T, Vec<u8>)> for IndexedAxisEntry<T> {
+    fn eq(&self, other: &(T, Vec<u8>)) -> bool {
+        self.ordering_value == other.0 && self.primary_key == other.1
+    }
+}
+
+impl<T: PartialEq> PartialEq<IndexedAxisEntry<T>> for (T, Vec<u8>) {
+    fn eq(&self, other: &IndexedAxisEntry<T>) -> bool {
+        self.0 == other.ordering_value && self.1 == other.primary_key
+    }
+}
+
 use grovedb_version::{version::GroveVersion, TryFromVersioned};
 
 use crate::element::SumValue;

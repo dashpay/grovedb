@@ -31,12 +31,6 @@ use crate::{
     Element, ElementFlags, Error, GroveDb,
 };
 
-/// Upper bound on an indexed secondary row's value. The payload is fixed
-/// per axis — a `SumItem` (count and sum axes) or an empty
-/// `ItemWithSumItem` (avg) — and the largest of those serializes well under
-/// this bound, which also leaves room for the feature type and flags byte.
-pub const INDEXED_SECONDARY_MAX_VALUE_SIZE: u32 = 16;
-
 impl GroveDb {
     /// Add average case for getting a merk tree
     pub fn add_average_case_get_merk_at_path<'db, S: Storage<'db>>(

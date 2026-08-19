@@ -221,8 +221,6 @@ impl QueryProofVerify for Query {
                                 Some(Node::KVCountSum(..)) => {}
                                 Some(Node::KVDigestCountSum(..)) => {}
                                 Some(Node::KVRefValueHashCountSum(..)) => {}
-                                Some(Node::KVRefValueHashCountSumWithTargetChildHash(..)) => {}
-                                Some(Node::KVRefValueHashCountSumWithTargetChildHash(..)) => {}
 
                                 // cannot verify lower bound - we have an abridged
                                 // tree, so we cannot tell what the preceding key was
@@ -265,8 +263,6 @@ impl QueryProofVerify for Query {
                                 Some(Node::KVCountSum(..)) => {}
                                 Some(Node::KVDigestCountSum(..)) => {}
                                 Some(Node::KVRefValueHashCountSum(..)) => {}
-                                Some(Node::KVRefValueHashCountSumWithTargetChildHash(..)) => {}
-                                Some(Node::KVRefValueHashCountSumWithTargetChildHash(..)) => {}
 
                                 // cannot verify upper bound - we have an abridged
                                 // tree so we cannot tell what the previous key was
@@ -595,26 +591,6 @@ impl QueryProofVerify for Query {
                     }
                     execute_node(key, Some(value), *value_hash, false)?;
                 }
-                Node::KVRefValueHashCountSumWithTargetChildHash(
-                    key,
-                    value,
-                    value_hash,
-                    _count,
-                    _sum,
-                    _target_child_hash,
-                ) => {
-                    #[cfg(feature = "proof_debug")]
-                    {
-                        println!("Processing KVRefValueHashCountSumWithTargetChildHash node");
-                    }
-                    // `child_hash_verified = true`: unlike the plain ref
-                    // variant, the hash reconstruction for this node folds
-                    // the target's child commitment in explicitly (see
-                    // `Tree::hash`), so by the time the root matches, the
-                    // target's layered binding has been independently
-                    // checked — which is exactly what the flag means.
-                    execute_node(key, Some(value), *value_hash, true)?;
-                }
             }
 
             last_push = Some(node.clone());
@@ -658,7 +634,6 @@ impl QueryProofVerify for Query {
                     Some(Node::KVCountSum(..)) => {}
                     Some(Node::KVDigestCountSum(..)) => {}
                     Some(Node::KVRefValueHashCountSum(..)) => {}
-                    Some(Node::KVRefValueHashCountSumWithTargetChildHash(..)) => {}
 
                     // proof contains abridged data so we cannot verify absence of
                     // remaining query items

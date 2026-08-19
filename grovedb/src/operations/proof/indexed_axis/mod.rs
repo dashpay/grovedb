@@ -65,13 +65,13 @@ mod axis_api;
 mod envelope;
 #[cfg(feature = "minimal")]
 mod generate;
-pub(crate) mod reference_resolution;
+pub(crate) mod target_chain;
 pub(crate) mod verify;
 
 pub use envelope::{
     AncestorAttestation, AxisEntries, IndexedAxisAggregateProof, IndexedAxisAggregateResult,
     IndexedAxisPaginatedProof, IndexedAxisPaginatedResult, IndexedAxisQueryResult,
-    IndexedAxisRangeProof,
+    IndexedAxisRangeProof, IndexedTargetChain, IndexedTargetCommitment, IndexedTargetNode,
 };
 use grovedb_element::indexed::IndexAxis;
 

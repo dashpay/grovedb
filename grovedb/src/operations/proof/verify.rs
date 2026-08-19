@@ -914,6 +914,7 @@ impl GroveDb {
                 let entries = decode_axis_entries_from_count_offset_items(
                     axis,
                     &res.returned_items,
+                    &payload.target_chains,
                     grove_version,
                 )?;
                 (
@@ -963,6 +964,7 @@ impl GroveDb {
                 let entries = decode_axis_entries_from_count_offset_items(
                     axis,
                     &res.returned_items,
+                    &payload.target_chains,
                     grove_version,
                 )?;
                 let yielded_key = entries.first_original_key().map(|k| k.to_vec());
@@ -1016,8 +1018,12 @@ impl GroveDb {
                                 format!("axis descent: secondary range proof failed: {e}"),
                             )
                         })?;
-                    let entries =
-                        decode_axis_entries_from_result_set(axis, &res.result_set, grove_version)?;
+                    let entries = decode_axis_entries_from_result_set(
+                        axis,
+                        &res.result_set,
+                        &payload.target_chains,
+                        grove_version,
+                    )?;
                     (
                         root,
                         AxisWalkResult::Entries {
@@ -4247,10 +4253,7 @@ impl GroveDb {
             | Node::KVSum(key, value, ..)
             | Node::KVRefValueHashSum(key, value, ..)
             | Node::KVCountSum(key, value, ..)
-            | Node::KVRefValueHashCountSum(key, value, ..)
-            | Node::KVRefValueHashCountSumWithTargetChildHash(key, value, ..) => {
-                Some((key.clone(), value.clone()))
-            }
+            | Node::KVRefValueHashCountSum(key, value, ..) => Some((key.clone(), value.clone())),
             // These nodes don't have values, only key+hash or just hash
             Node::KVDigest(..)
             | Node::KVDigestCount(..)

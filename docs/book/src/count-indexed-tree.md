@@ -180,9 +180,16 @@ combine_hash(H(reference bytes), primary_node_committed_value_hash)
 
 Three consequences worth stating plainly:
 
-- **Reads and proofs return the primary value.** The reference is
-  resolved and authenticated as part of the axis proof, so a top-k result
-  carries the values, not just pointers to them.
+- **Reads and proofs return the primary value.** Every non-aggregate
+  indexed read returns `IndexedAxisEntry { ordering_value, primary_key,
+  value }`, so a top-k result carries the values rather than pointers to
+  them — no follow-up `db.get` per row, and no extra inclusion proof per
+  row for a verified read. If the primary entry is itself a reference,
+  `value` is its TERMINAL, exactly as `db.get` on that key would give
+  you.
+
+  Callers that genuinely only rank (leaderboards, ranking views) can drop
+  the value with `IndexedAxisEntry::key_pair`.
 - **The binding is to the IMMEDIATE primary node**, not to a terminal
   reached by following a chain. That keeps the invariant local: the only
   thing that can staleness a row is a write to the primary entry itself,
@@ -472,7 +479,7 @@ Merk is not touched. The verifier receives the primary's root hash plus a
 
 ```rust
 // Shipped API on `GroveDb`:
-let entries: Vec<(u64, Vec<u8>)> = db
+let entries: Vec<IndexedAxisEntry<u64>> = db
     .indexed_count_top_k(path, k, /* descending: */ true, transaction, grove_version)?
     .expect("top-k");
 
@@ -481,10 +488,11 @@ let proof_bytes = db
     .prove_indexed_count_top_k(path, k, /* descending: */ true, transaction, grove_version)?
     .expect("prove");
 let result = GroveDb::verify_indexed_count_top_k(&proof_bytes, &path, k)?;
-// result.entries: Vec<(u64, Vec<u8>)>, result.root_hash: [u8; 32]
+// result.entries: Vec<IndexedAxisEntry<u64>>, result.root_hash: [u8; 32]
 ```
 
-The query returns `(count, key)` pairs.
+The query returns `IndexedAxisEntry` rows — the count, the primary key,
+and the resolved primary value.
 
 Internally:
 
@@ -494,22 +502,32 @@ Internally:
 3. Run a **descending range query** with `limit = k` over the full
    secondary keyspace. This yields the k highest-count entries, with a
    standard Merk range proof.
-4. Resolve each returned row through its reference and emit a
-   reference-aware proof node carrying the primary value. This costs no
-   extra Merk inclusion proof: a row IS a reference to its primary
-   entry, and the resolved value is folded into the row's own committed
-   hash (see [Secondary rows](#secondary-rows)).
+4. Attach one **target chain** per returned row: the immediate primary
+   entry, then any ordinary reference hops through to the terminal. Each
+   chain entry carries its serialized bytes plus the rule that turns them
+   into a commitment (`Simple`, `Layered`, `IndexedSingle`,
+   `IndexedMulti`, `Reference`).
 
-The verifier authenticates the resolved value, and with it the row's
-reference path, hop budget and carried sum, by rebuilding the canonical
-row the primary value implies and comparing it against what the proof
-committed. A row filed under one key whose reference points at another
-cannot verify.
+A chain carries **no per-row path proofs**. It authenticates itself from
+the row's own committed hash: each entry's commitment is rebuilt from its
+bytes plus the next entry's, and the head's is what the row binds — and
+the row is bound into the secondary root, the indexed element, and the
+grove root. That is the same trust model shipped GroveDB reference proofs
+already use, so a chain is neither weaker nor stronger than reading the
+same reference through an ordinary proof. The practical effect is that a
+top-k result costs roughly one value plus one hash per row, instead of
+`k` inclusion proofs.
+
+The verifier also rebuilds the canonical row that the resolved primary
+value implies, and compares it against what the proof carried. That one
+comparison covers the ordering prefix, the primary-key suffix, the
+reference path, the hop budget and the carried sum — so a row filed under
+one key whose reference points at another cannot verify.
 
 ### Range by count
 
 ```rust
-let entries: Vec<(u64, Vec<u8>)> = db
+let entries: Vec<IndexedAxisEntry<u64>> = db
     .indexed_count_range(
         path,
         min,                       // u64, inclusive
