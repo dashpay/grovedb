@@ -144,14 +144,11 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
     ) -> CostResult<PrivateDocumentStoreAppendResult, PrivateDocumentStoreError> {
         let mut cost = OperationCost::default();
 
-        if entry.len() != self.entry_size as usize {
-            return Err(PrivateDocumentStoreError::InvalidEntrySize {
-                expected: self.entry_size,
-                actual: entry.len(),
-            })
-            .wrap_with_cost(cost);
-        }
-
+        // Size validation is NOT repeated here: `append_many` validates every
+        // entry before writing any, and returns the same
+        // `InvalidEntrySize { expected, actual }` with the same (empty) cost.
+        // A second copy here would be one more place to drift.
+        //
         // Run the single entry through the batch path rather than
         // `BulkAppendTree::append`.
         //
@@ -171,17 +168,14 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
             Err(e) => return Err(e).wrap_with_cost(cost),
         };
 
-        let global_position = match many.last_global_position {
-            Some(p) => p,
-            None => {
-                // Unreachable: exactly one entry was supplied and its size was
-                // validated above, so `append_many` recorded a position.
-                return Err(PrivateDocumentStoreError::InvalidData(
-                    "single append recorded no position".to_string(),
-                ))
-                .wrap_with_cost(cost);
-            }
-        };
+        // Exactly one entry was supplied and `append_many` returned `Ok`, so
+        // it appended it and recorded the position. `expect` rather than an
+        // error arm: a `None` here would mean `append_many` reported success
+        // without appending, which is a broken postcondition in this file, not
+        // a runtime condition a caller can produce or handle.
+        let global_position = many
+            .last_global_position
+            .expect("append_many returned Ok for one entry without a position");
 
         Ok(PrivateDocumentStoreAppendResult {
             state_root: many.state_root,
@@ -865,6 +859,227 @@ mod error_path_tests {
         assert!(
             broken.compute_current_state_root().is_err() || broken.get_value(5).unwrap().is_err()
         );
+    }
+
+    /// Build a store, then reopen the same bytes under a DIFFERENT declared
+    /// config. This is the attack the config-binding state root exists to stop,
+    /// and the read paths must refuse rather than reinterpret the bytes.
+    #[test]
+    fn test_reopen_under_wrong_config_is_reported_as_corruption() {
+        // 10 entries at chunk_power 3 (epoch 8): one completed chunk of 8,
+        // two live in the buffer.
+        let mut store = PrivateDocumentStore::new(8, 3, MemStorageContext::new())
+            .unwrap()
+            .expect("new");
+        for i in 0..10u8 {
+            store.append(&[i; 8]).unwrap().expect("append");
+        }
+        store.commit_mmr().expect("commit mmr");
+        let storage = PrivateDocumentStore::into_storage_for_test(store);
+
+        // Wrong chunk_power: epoch is now 4, so the stored 8-entry chunk no
+        // longer matches the declared epoch. A truncated/oversized chunk must
+        // read as corruption, NOT as a missing document.
+        let wrong_power = PrivateDocumentStore::from_state(10, 8, 2, storage)
+            .unwrap()
+            .expect("reopen");
+        assert!(
+            matches!(
+                wrong_power.get_value(0).unwrap(),
+                Err(PrivateDocumentStoreError::CorruptedData(ref m))
+                    if m.contains("expected 4")
+            ),
+            "got {:?}",
+            wrong_power.get_value(0).unwrap()
+        );
+        assert!(matches!(
+            wrong_power.verify_entry_sizes(),
+            Err(PrivateDocumentStoreError::CorruptedData(_))
+        ));
+
+        // Wrong entry_size: the chunk deserializes and has the right count,
+        // but every entry is the wrong width.
+        let storage = PrivateDocumentStore::into_storage_for_test(wrong_power);
+        let wrong_size = PrivateDocumentStore::from_state(10, 16, 3, storage)
+            .unwrap()
+            .expect("reopen");
+        assert!(
+            matches!(
+                wrong_size.verify_entry_sizes(),
+                Err(PrivateDocumentStoreError::CorruptedData(ref m))
+                    if m.contains("committed entry size is 16")
+            ),
+            "got {:?}",
+            wrong_size.verify_entry_sizes()
+        );
+        // The same violation is caught on the direct read path.
+        assert!(matches!(
+            wrong_size.get_value(0).unwrap(),
+            Err(PrivateDocumentStoreError::CorruptedData(_))
+        ));
+    }
+
+    /// A store that claims more entries than its storage holds must report
+    /// the absence as corruption on every path — a claimed-but-absent chunk
+    /// and a claimed-but-absent buffer slot are different branches.
+    #[test]
+    fn test_claimed_entries_beyond_storage_are_corruption() {
+        let mut store = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
+            .unwrap()
+            .expect("new");
+        // 6 entries at chunk_power 2 (epoch 4): one chunk, two buffered.
+        for i in 0..6u8 {
+            store.append(&[i; 8]).unwrap().expect("append");
+        }
+        store.commit_mmr().expect("commit mmr");
+        let storage = PrivateDocumentStore::into_storage_for_test(store);
+
+        // Claim 20 entries: chunks 1..=3 and their buffer slots do not exist.
+        let overclaimed = PrivateDocumentStore::from_state(20, 8, 2, storage)
+            .unwrap()
+            .expect("reopen");
+        // Position 8 sits in chunk 2, which was never written.
+        assert!(
+            overclaimed.get_value(8).unwrap().is_err(),
+            "a claimed-but-absent chunk must not read as success"
+        );
+        assert!(overclaimed.verify_entry_sizes().is_err());
+
+        // A store claiming buffer entries it never stored: 2 written, 3
+        // claimed, and no completed chunk involved.
+        let mut store = PrivateDocumentStore::new(8, 3, MemStorageContext::new())
+            .unwrap()
+            .expect("new");
+        for i in 0..2u8 {
+            store.append(&[i; 8]).unwrap().expect("append");
+        }
+        let storage = PrivateDocumentStore::into_storage_for_test(store);
+        let overclaimed = PrivateDocumentStore::from_state(3, 8, 3, storage)
+            .unwrap()
+            .expect("reopen");
+        // Surfaces as `InvalidData`, not `CorruptedData`: the dense tree
+        // detects the shortfall against its own count and errors before
+        // returning `None`, so the store's own "missing buffer entry" arm is
+        // defensive rather than reachable from here. What matters is that the
+        // walk refuses rather than reporting a short store as intact.
+        let err = overclaimed
+            .verify_entry_sizes()
+            .expect_err("claimed buffer entry does not exist");
+        assert!(
+            format!("{}", err).contains("position 2"),
+            "error should name the missing position, got {:?}",
+            err
+        );
+    }
+
+    /// Deriving the state root over storage that cannot satisfy the claimed
+    /// state must surface the error, not a plausible-looking root.
+    #[test]
+    fn test_state_root_over_missing_storage_errors() {
+        let mut store = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
+            .unwrap()
+            .expect("new");
+        for i in 0..6u8 {
+            store.append(&[i; 8]).unwrap().expect("append");
+        }
+        store.commit_mmr().expect("commit mmr");
+        let storage = PrivateDocumentStore::into_storage_for_test(store);
+        storage.data.borrow_mut().clear();
+
+        let broken = PrivateDocumentStore::from_state(6, 8, 2, storage)
+            .unwrap()
+            .expect("reopen");
+        let ctx = broken.compute_current_state_root_with_cost();
+        assert!(
+            ctx.value.is_err(),
+            "a state root over wiped storage must be an error, got {:?}",
+            ctx.value
+        );
+        // And appending onto that broken state fails rather than writing.
+        let mut broken = broken;
+        assert!(broken.append(&[9u8; 8]).unwrap().is_err());
+    }
+
+    /// Every read path must surface a storage fault instead of reporting the
+    /// document as absent. "Not found" and "could not be read" are different
+    /// answers, and conflating them on an append-only store would let an I/O
+    /// fault look like a legitimately empty position.
+    #[test]
+    fn test_read_faults_surface_rather_than_reading_as_absent() {
+        let mut store = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
+            .unwrap()
+            .expect("new");
+        // Past a compaction so both a completed chunk and the buffer exist.
+        for i in 0..6u8 {
+            store.append(&[i; 8]).unwrap().expect("append");
+        }
+        store.commit_mmr().expect("commit mmr");
+
+        // Reopen before injecting the fault. The dense tree keeps a
+        // write-through cache, so on the original handle a live buffer read is
+        // served from memory and never reaches storage — a fault there would
+        // prove nothing. A reopened store has a cold cache, which is also the
+        // state every real read after a restart is in.
+        let storage = PrivateDocumentStore::into_storage_for_test(store);
+        storage.fail_reads();
+        let mut store = PrivateDocumentStore::from_state(6, 8, 2, storage)
+            .unwrap()
+            .expect("reopen");
+
+        // Position 5 is in the live buffer, position 0 in a completed chunk:
+        // these take different branches and both must error.
+        for pos in [5u64, 0] {
+            let r = store.get_value(pos).unwrap();
+            assert!(
+                r.is_err(),
+                "position {} must report the read fault, got {:?}",
+                pos,
+                r
+            );
+        }
+
+        // The integrity walk and the state-root derivation likewise.
+        assert!(store.verify_entry_sizes().is_err());
+        assert!(store.compute_current_state_root_with_cost().value.is_err());
+
+        // An out-of-range position is answered before any storage is touched,
+        // so it still reports absence rather than the fault.
+        assert_eq!(store.get_value(99).unwrap().expect("in-range check"), None);
+
+        store.bulk_tree.dense_tree.storage.heal();
+        assert!(store.get_value(0).unwrap().expect("healed read").is_some());
+    }
+
+    /// A write fault during an append must fail the append, not report a
+    /// success whose state root does not match what was stored.
+    #[test]
+    fn test_write_faults_fail_the_append() {
+        let mut store = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
+            .unwrap()
+            .expect("new");
+        store.append(&[0u8; 8]).unwrap().expect("append");
+
+        store.bulk_tree.dense_tree.storage.fail_writes();
+        let r = store.append(&[1u8; 8]).unwrap();
+        assert!(
+            r.is_err(),
+            "a failed write must fail the append, got {:?}",
+            r
+        );
+
+        // The batch path too, and its size prevalidation still runs first: a
+        // wrong-sized entry is rejected on its own terms, not as a storage
+        // fault.
+        let bad = [vec![0u8; 7]];
+        assert!(matches!(
+            store.append_many(bad.iter().map(|e| e.as_slice())).unwrap(),
+            Err(PrivateDocumentStoreError::InvalidEntrySize { .. })
+        ));
+        let good = [vec![2u8; 8], vec![3u8; 8]];
+        assert!(store
+            .append_many(good.iter().map(|e| e.as_slice()))
+            .unwrap()
+            .is_err());
     }
 }
 
