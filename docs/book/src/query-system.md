@@ -184,4 +184,16 @@ algorithm finds common path prefixes and combines query items:
     Merged:  path=["users"], query=items=[Key("alice"), Key("bob")]
 ```
 
+
+## Beyond key selection
+
+Key selection is one of several *shapes* a `PathQuery` can take. A
+`Query` node may also carry a **read mode** — an axis-ordered read of an
+indexed tree's per-axis secondary, or a sum-budget read that stops on a
+running total — and the aggregate-on-range and count-offset-paginated
+shapes ride inside ordinary queries as special item forms. One
+classification (`PathQuery::classify`), one read entry point
+(`run_path_query`), and one verify entry point (`verify_path_query`)
+serve them all. See [The Unified PathQuery](unified-path-query.md).
+
 ---
