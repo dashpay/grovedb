@@ -375,7 +375,9 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         // Append chunk root to MMR
         let mmr_size = self.mmr_size();
         let leaf_count = mmr_size_to_leaf_count(mmr_size);
-        let mut mmr_size_after_push = mmr_size;
+        // Assigned once inside the MMR block below, after the push, so the
+        // bagging term is computed from the shape `get_root` actually folded.
+        let mmr_size_after_push;
 
         // Create MmrStore on the fly from the dense tree's storage.
         // Use the overlay from previous compactions so cross-compaction
