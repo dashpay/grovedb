@@ -633,6 +633,44 @@ mod atomicity_tests {
 
     use super::*;
 
+    /// A reopened store resolves its MMR root through the lazy (uncached)
+    /// path, which is what proof binding and the integrity walk hit. That
+    /// read must be billed, not silently free.
+    #[test]
+    fn reopened_store_charges_the_uncached_mmr_root_read() {
+        let storage = MemStorageContext::new();
+        let mut store = PrivateDocumentStore::new(8, 2, storage)
+            .unwrap()
+            .expect("new");
+        // Past a compaction so the MMR actually holds a chunk.
+        for i in 0..6u8 {
+            store.append(&[i; 8]).unwrap().expect("append");
+        }
+        store.commit_mmr().expect("commit mmr");
+        let storage = PrivateDocumentStore::into_storage_for_test(store);
+
+        // `from_state` leaves the MMR root cache empty, so this computation
+        // takes the lazy path.
+        let reopened = PrivateDocumentStore::from_state(6, 8, 2, storage)
+            .unwrap()
+            .expect("reopen");
+        let ctx = reopened.compute_current_state_root_with_cost();
+        let cost = ctx.cost.clone();
+        ctx.value.expect("state root");
+        // NOTE: `MemStorageContext::get` reports `OperationCost::default()`,
+        // so storage seeks and loaded bytes are invisible to this harness —
+        // only the hash accounting is observable here. That the underlying
+        // storage reads are genuinely billed is covered against real
+        // RocksDB storage by
+        // `test_private_document_store_reopened_reads_are_billed` in the
+        // grovedb crate.
+        assert!(
+            cost.hash_node_calls > 0,
+            "the dense walk and root hashes must be billed, got {:?}",
+            cost
+        );
+    }
+
     /// A wrong-sized entry anywhere in the batch must leave the store
     /// completely untouched — not partially appended behind an error. A
     /// direct caller has no surrounding transaction to discard.

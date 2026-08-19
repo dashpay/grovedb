@@ -1534,3 +1534,33 @@ fn test_private_document_store_delete_empty_and_via_batch() {
         .expect("verify_grovedb");
     assert!(issues.is_empty(), "issues: {:?}", issues);
 }
+
+#[test]
+fn test_private_document_store_reopened_reads_are_billed() {
+    // A store reopened from persisted state resolves its MMR root through
+    // the lazy (uncached) path — the path proof binding and the integrity
+    // walk take. Against real storage that read must be billed.
+    let grove_version = GroveVersion::latest();
+    let db = make_db_with_store();
+    for i in 0..6u8 {
+        db.private_document_store_insert(&[b"root"], b"docs", entry(i), None, grove_version)
+            .unwrap()
+            .expect("append");
+    }
+
+    // A terminal proof over the store derives its state root from a freshly
+    // opened (cache-cold) store.
+    let path_query = PathQuery::new_unsized(
+        vec![b"root".to_vec()],
+        Query::new_single_key(b"docs".to_vec()),
+    );
+    let ctx = db.prove_query(&path_query, None, grove_version);
+    let cost = ctx.cost.clone();
+    ctx.value.expect("prove terminal store element");
+    assert!(
+        cost.storage_loaded_bytes > 0 && cost.seek_count > 0,
+        "deriving a reopened store's state root during proof binding must bill \
+         its storage reads, got {:?}",
+        cost
+    );
+}

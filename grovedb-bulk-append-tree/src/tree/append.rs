@@ -213,7 +213,9 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         let mut cost = OperationCost::default();
         let mmr_root = match self.last_mmr_root {
             Some(r) => r,
-            None => match self.get_mmr_root() {
+            // Lazy path: a reopened tree has no cached root, so this read is
+            // real I/O and must be billed.
+            None => match self.get_mmr_root_with_cost().unwrap_add_cost(&mut cost) {
                 Ok(r) => r,
                 Err(e) => return Err(e).wrap_with_cost(cost),
             },
@@ -317,17 +319,31 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
 
     /// Get the MMR root hash, or `[0; 32]` if no chunks exist.
     pub(crate) fn get_mmr_root(&self) -> Result<[u8; 32], BulkAppendError> {
+        self.get_mmr_root_with_cost().unwrap()
+    }
+
+    /// Cost-propagating variant of [`get_mmr_root`](Self::get_mmr_root).
+    ///
+    /// Matters on the lazy path: `from_state` leaves `last_mmr_root` as
+    /// `None`, so a REOPENED non-empty tree resolves its root through here —
+    /// exactly the case proof binding and the integrity walk hit. Discarding
+    /// the read cost there undercharges their storage I/O.
+    pub(crate) fn get_mmr_root_with_cost(&self) -> CostResult<[u8; 32], BulkAppendError> {
+        let mut cost = OperationCost::default();
         let mmr_size = self.mmr_size();
         if mmr_size == 0 {
-            return Ok([0u8; 32]);
+            return Ok([0u8; 32]).wrap_with_cost(cost);
         }
         let mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32);
         let mmr = MMR::new_with_overlay(mmr_size, &mmr_store, self.mmr_overlay.clone());
-        let root_node = mmr
-            .get_root()
-            .unwrap()
-            .map_err(|e| BulkAppendError::MmrError(format!("MMR get_root failed: {}", e)))?;
-        Ok(root_node.hash())
+        match mmr.get_root().unwrap_add_cost(&mut cost) {
+            Ok(root_node) => Ok(root_node.hash()).wrap_with_cost(cost),
+            Err(e) => Err(BulkAppendError::MmrError(format!(
+                "MMR get_root failed: {}",
+                e
+            )))
+            .wrap_with_cost(cost),
+        }
     }
 
     /// Flush the MMR overlay to storage.
