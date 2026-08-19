@@ -278,18 +278,18 @@ impl GroveDb {
                     .db
                     .get_transactional_storage_context(storage_path, None, tx)
                     .unwrap_add_cost(&mut cost);
-                let store = cost_return_on_error_no_add!(
-                    cost,
+                let store = cost_return_on_error!(
+                    &mut cost,
                     grovedb_private_document_store::PrivateDocumentStore::from_state(
                         *total_count,
                         *entry_size,
                         *chunk_power,
                         storage_ctx,
                     )
-                    .map_err(|e| Error::CorruptedData(format!(
+                    .map(|r| r.map_err(|e| Error::CorruptedData(format!(
                         "failed to open PrivateDocumentStore: {}",
                         e
-                    )))
+                    ))))
                 );
                 let state_root = cost_return_on_error_no_add!(
                     cost,

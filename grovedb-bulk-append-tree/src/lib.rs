@@ -13,8 +13,8 @@ mod error;
 pub mod proof;
 mod tree;
 
-#[cfg(all(test, feature = "storage"))]
-pub(crate) mod test_utils;
+#[cfg(all(feature = "storage", any(test, feature = "test-utils")))]
+pub mod test_utils;
 
 // Re-export main types
 pub use chunk::{deserialize_chunk_blob, serialize_chunk_blob};

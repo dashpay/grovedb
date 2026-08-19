@@ -1231,3 +1231,301 @@ fn test_private_document_store_v0_prover_rejects_subqueries() {
     );
     assert_eq!(result_set.len(), 1);
 }
+
+// ===========================================================================
+// Regression: wrapper preservation, write-once enforcement, guard exactness
+// ===========================================================================
+
+/// Read a `CountTree`'s recorded aggregate count.
+fn count_tree_value(db: &crate::tests::TempGroveDb, key: &[u8]) -> u64 {
+    let grove_version = GroveVersion::latest();
+    match db
+        .get(EMPTY_PATH, key, None, grove_version)
+        .unwrap()
+        .expect("get count tree")
+    {
+        Element::CountTree(_, count, _) => count,
+        other => panic!("expected CountTree, got {}", other.type_str()),
+    }
+}
+
+/// Build a `CountTree` at `counted` holding a `NonCounted`-wrapped store at
+/// `counted/docs`, and return the parent's count before any append.
+fn make_non_counted_store_under_count_tree() -> (crate::tests::TempGroveDb, u64) {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+    db.insert(
+        EMPTY_PATH,
+        b"counted",
+        Element::empty_count_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert count tree");
+
+    let wrapped = Element::new_non_counted(
+        Element::empty_private_document_store(TEST_ENTRY_SIZE, TEST_CHUNK_POWER)
+            .expect("valid config"),
+    )
+    .expect("wrap in NonCounted");
+    db.insert(&[b"counted"], b"docs", wrapped, None, None, grove_version)
+        .unwrap()
+        .expect("insert NonCounted store");
+
+    let count = count_tree_value(&db, b"counted");
+    assert_eq!(count, 0, "a NonCounted child must not be counted");
+    (db, count)
+}
+
+#[test]
+fn test_direct_append_preserves_non_counted_wrapper() {
+    let grove_version = GroveVersion::latest();
+    let (db, count_before) = make_non_counted_store_under_count_tree();
+
+    db.private_document_store_insert(&[b"counted"], b"docs", entry(1), None, grove_version)
+        .unwrap()
+        .expect("append");
+
+    // `get` resolves through wrappers by design, so read the RAW stored
+    // element to see whether the wrapper survived.
+    let stored = db
+        .get_raw(
+            [b"counted".as_slice()].as_ref().into(),
+            b"docs",
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("get raw store");
+    assert!(
+        stored.is_non_counted(),
+        "a direct append must not strip the NonCounted wrapper"
+    );
+    assert!(stored.is_private_document_store());
+    assert_eq!(
+        count_tree_value(&db, b"counted"),
+        count_before,
+        "appending to a NonCounted store must not change the parent's count"
+    );
+
+    let issues = db
+        .verify_grovedb(None, true, false, grove_version)
+        .expect("verify_grovedb");
+    assert!(issues.is_empty(), "issues: {:?}", issues);
+}
+
+#[test]
+fn test_batch_append_preserves_non_counted_wrapper() {
+    let grove_version = GroveVersion::latest();
+    let (db, count_before) = make_non_counted_store_under_count_tree();
+
+    // Several entries so the batch path goes through append_many and the
+    // ReplaceNonMerkTreeRoot rebuild.
+    let ops = (0..6u8)
+        .map(|i| {
+            QualifiedGroveDbOp::private_document_store_insert_op(
+                vec![b"counted".to_vec(), b"docs".to_vec()],
+                entry(i),
+            )
+        })
+        .collect();
+    db.apply_batch(ops, None, None, grove_version)
+        .unwrap()
+        .expect("batch append");
+
+    let stored = db
+        .get_raw(
+            [b"counted".as_slice()].as_ref().into(),
+            b"docs",
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("get raw store");
+    assert!(
+        stored.is_non_counted(),
+        "a batch append must not strip the NonCounted wrapper"
+    );
+    assert_eq!(stored.non_merk_entry_count(), Some(6));
+    assert_eq!(
+        count_tree_value(&db, b"counted"),
+        count_before,
+        "batch appending to a NonCounted store must not change the parent's count"
+    );
+
+    let issues = db
+        .verify_grovedb(None, true, false, grove_version)
+        .expect("verify_grovedb");
+    assert!(issues.is_empty(), "issues: {:?}", issues);
+}
+
+#[test]
+fn test_private_document_store_is_write_once() {
+    let grove_version = GroveVersion::latest();
+    let db = make_db_with_store();
+    for i in 0..5u8 {
+        db.private_document_store_insert(&[b"root"], b"docs", entry(i), None, grove_version)
+            .unwrap()
+            .expect("append");
+    }
+    let root_before = db.root_hash(None, grove_version).unwrap().unwrap();
+
+    // Direct overwrite with a fresh empty store must be rejected, not
+    // silently accepted (which would orphan the existing chunk data).
+    let result = db
+        .insert(
+            &[b"root"],
+            b"docs",
+            Element::empty_private_document_store(TEST_ENTRY_SIZE, TEST_CHUNK_POWER)
+                .expect("valid config"),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap();
+    assert!(
+        matches!(
+            result,
+            Err(Error::InvalidInput(_)) | Err(Error::OverrideNotAllowed(_))
+        ),
+        "direct overwrite must be rejected, got {:?}",
+        result
+    );
+
+    // Batch overwrite likewise.
+    let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+        vec![b"root".to_vec()],
+        b"docs".to_vec(),
+        Element::empty_private_document_store(TEST_ENTRY_SIZE, TEST_CHUNK_POWER)
+            .expect("valid config"),
+    )];
+    let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+    assert!(
+        matches!(result, Err(Error::InvalidBatchOperation(_))),
+        "batch overwrite must be rejected, got {:?}",
+        result
+    );
+
+    // The store is untouched by the rejected overwrites.
+    assert_eq!(
+        db.private_document_store_count(&[b"root"], b"docs", None, grove_version)
+            .unwrap()
+            .expect("count"),
+        5
+    );
+    assert_eq!(
+        root_before,
+        db.root_hash(None, grove_version).unwrap().unwrap(),
+        "rejected overwrites must not change the root hash"
+    );
+}
+
+#[test]
+fn test_version_guard_rejects_unknown_future_slot() {
+    // The guard is an exact match: a future slot value must NOT silently run
+    // v1 semantics, or an un-upgraded node diverges from an upgraded one.
+    let mut future = GROVE_V4.clone();
+    future
+        .grovedb_versions
+        .operations
+        .private_document_store
+        .insert = 2;
+    let db = make_db_with_store();
+
+    let result = db
+        .private_document_store_insert(&[b"root"], b"docs", entry(0), None, &future)
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::VersionError(_))),
+        "an unknown future slot must fail closed, got {:?}",
+        result
+    );
+
+    let ops = vec![QualifiedGroveDbOp::private_document_store_insert_op(
+        vec![b"root".to_vec(), b"docs".to_vec()],
+        entry(0),
+    )];
+    let result = db.apply_batch(ops, None, None, &future).unwrap();
+    assert!(
+        matches!(result, Err(Error::VersionError(_))),
+        "an unknown future slot must fail closed in batch too, got {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_private_document_store_reads_are_billed() {
+    // An in-range read must charge for actually fetching the document, not
+    // just for reading the parent element.
+    let grove_version = GroveVersion::latest();
+    let db = make_db_with_store();
+    // Enough entries to span a completed chunk and the live buffer.
+    for i in 0..6u8 {
+        db.private_document_store_insert(&[b"root"], b"docs", entry(i), None, grove_version)
+            .unwrap()
+            .expect("append");
+    }
+
+    let out_of_range = db
+        .private_document_store_get_value(&[b"root"], b"docs", 99, None, grove_version)
+        .cost;
+    // Position 0 lives in a completed chunk (MMR read), position 5 in the
+    // buffer (dense-tree read); both must cost more than the element lookup.
+    for pos in [0u64, 5] {
+        let cost = db
+            .private_document_store_get_value(&[b"root"], b"docs", pos, None, grove_version)
+            .cost;
+        assert!(
+            cost.storage_loaded_bytes > out_of_range.storage_loaded_bytes,
+            "reading position {} must load the document bytes (got {:?} vs out-of-range {:?})",
+            pos,
+            cost.storage_loaded_bytes,
+            out_of_range.storage_loaded_bytes
+        );
+    }
+}
+
+#[test]
+fn test_private_document_store_delete_empty_and_via_batch() {
+    let grove_version = GroveVersion::latest();
+
+    // Deleting an EMPTY store takes the is_empty branch, which the populated
+    // delete test never reaches.
+    let db = make_db_with_store();
+    db.delete(&[b"root"], b"docs", None, None, grove_version)
+        .unwrap()
+        .expect("delete empty store");
+    assert!(matches!(
+        db.get(&[b"root"], b"docs", None, grove_version).unwrap(),
+        Err(Error::PathKeyNotFound(_))
+    ));
+
+    // Batch DeleteTree is a wholly different path (scan_delete_tree_ops /
+    // non_merk_delete_paths) from the direct delete.
+    let db = make_db_with_store();
+    for i in 0..6u8 {
+        db.private_document_store_insert(&[b"root"], b"docs", entry(i), None, grove_version)
+            .unwrap()
+            .expect("append");
+    }
+    let ops = vec![QualifiedGroveDbOp::delete_tree_op(
+        vec![b"root".to_vec()],
+        b"docs".to_vec(),
+        grovedb_merk::tree_type::TreeType::PrivateDocumentStore(TEST_CHUNK_POWER),
+        crate::batch::SubelementsDeletionBehavior::DeleteChildren,
+    )];
+    db.apply_batch(ops, None, None, grove_version)
+        .unwrap()
+        .expect("batch delete populated store");
+    assert!(matches!(
+        db.get(&[b"root"], b"docs", None, grove_version).unwrap(),
+        Err(Error::PathKeyNotFound(_))
+    ));
+
+    let issues = db
+        .verify_grovedb(None, true, false, grove_version)
+        .expect("verify_grovedb");
+    assert!(issues.is_empty(), "issues: {:?}", issues);
+}

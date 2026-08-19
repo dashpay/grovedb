@@ -319,16 +319,27 @@ impl GroveOp {
                     grove_version,
                 );
                 // Additional cost: buffer write + hashing. Most appends only
-                // write to the buffer (O(1)); compaction happens once per
-                // epoch_size appends and is amortized. Unlike BulkAppend, a
-                // PDS append unconditionally derives the composite
-                // `pds_state` root on top of the bulk state root, so the
-                // average models both blake3 calls.
+                // write to the buffer; compaction happens once per epoch and
+                // is amortized away here.
+                //
+                // Unlike the flat constant this arm previously used, the
+                // dominant term is the dense-buffer root walk `append`
+                // performs on every insert (two hashes per filled position).
+                // That scales with the committed `chunk_power`, which the op
+                // does not carry, so this models a typical small store
+                // (`chunk_power = 8`, i.e. a 255-entry buffer averaging
+                // half-full). This is an average-case estimate, NOT a bound —
+                // `worst_case_cost` carries the real upper bound over the
+                // whole permitted configuration range.
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 let entry_size = entry.len() as u32;
-                // 1 blake3 for the bulk state root + 1 for the composite
-                // config-binding pds_state root
-                const AVG_HASH_CALLS: u32 = 2;
+                /// Assumed typical buffer occupancy (half of a
+                /// `chunk_power = 8` buffer), two hashes per filled position.
+                const AVG_DENSE_HASHES: u32 = 128 * 2;
+                /// Bulk state root + composite config-binding pds_state root
+                /// + the committed-config hash paid when opening the store.
+                const AVG_ROOT_AND_CONFIG_HASHES: u32 = 3;
+                const AVG_HASH_CALLS: u32 = AVG_DENSE_HASHES + AVG_ROOT_AND_CONFIG_HASHES;
                 item_cost.add_cost(OperationCost {
                     seek_count: 1, // 1 buffer entry write
                     storage_cost: StorageCost {

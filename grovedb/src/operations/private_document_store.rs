@@ -11,7 +11,7 @@
 //! type. Every entry point here fails closed on protocol versions that
 //! predate the element type (all slots are 0 before `GROVE_V4`).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
@@ -37,15 +37,21 @@ fn map_pds_err(e: grovedb_private_document_store::PrivateDocumentStoreError) -> 
 /// Fail-closed capability gate for the PrivateDocumentStore family.
 ///
 /// Slot `0` (every version before `GROVE_V4`) means the operation is
-/// unavailable and returns a version-mismatch error; slot `1` is the active
-/// v1 implementation. Unlike the `check_grovedb_v0!` family this rejects
-/// *older* versions rather than newer ones — the element type must not be
-/// creatable or operable under released protocol versions.
+/// unavailable; slot `1` is the active v1 implementation. Unlike the
+/// `check_grovedb_v0!` family this also rejects *older* versions — the
+/// element type must not be creatable or operable under released protocol
+/// versions.
+///
+/// The comparison is an EXACT match, like every other version guard in the
+/// codebase. Accepting `slot > 1` would be fail-open on a protocol
+/// discriminator: a future GROVE_V5 that sets the slot to `2` to mean new
+/// semantics would silently run v1 code on a node that only knows v1, which
+/// is exactly the divergence this gate exists to prevent.
 pub(crate) fn check_pds_enabled(
     method: &str,
     slot: grovedb_version::version::FeatureVersion,
 ) -> Result<(), Error> {
-    if slot < 1 {
+    if slot != 1 {
         return Err(GroveVersionError::UnknownVersionMismatch {
             method: method.to_string(),
             known_versions: vec![1],
@@ -109,7 +115,11 @@ impl GroveDb {
             self.get_raw_caching_optional(path.clone(), key, true, transaction, grove_version)
         );
 
-        // Look through NonCounted: a wrapped PrivateDocumentStore is still one.
+        // Look through NonCounted: a wrapped PrivateDocumentStore is still
+        // one. The wrapper must be RESTORED on the way out (below) — it is
+        // part of the stored element and controls the parent count tree's
+        // aggregate.
+        let was_non_counted = element.is_non_counted();
         let (total_count, entry_size, chunk_power, existing_flags) = match element.underlying() {
             Element::PrivateDocumentStore(tc, es, cp, flags) => (*tc, *es, *cp, flags.clone()),
             _ => {
@@ -122,7 +132,7 @@ impl GroveDb {
 
         // 2. Open transactional storage (write-through cache + MMR overlay
         //    provide read-after-write visibility).
-        let store_path_vec = self.build_pds_path(&path, key);
+        let store_path_vec = crate::util::subtree_path_with_key(&path, key);
         let store_path_refs: Vec<&[u8]> = store_path_vec.iter().map(|v| v.as_slice()).collect();
         let store_path = SubtreePath::from(store_path_refs.as_slice());
 
@@ -133,10 +143,10 @@ impl GroveDb {
             .unwrap_add_cost(&mut cost);
 
         // 3. Open the store and append (validates the entry size).
-        let mut store = cost_return_on_error_no_add!(
-            cost,
+        let mut store = cost_return_on_error!(
+            &mut cost,
             PrivateDocumentStore::from_state(total_count, entry_size, chunk_power, storage_ctx)
-                .map_err(map_pds_err)
+                .map(|r| r.map_err(map_pds_err))
         );
 
         let append_result = cost_return_on_error!(
@@ -187,6 +197,22 @@ impl GroveDb {
             chunk_power,
             existing_flags,
         );
+        // Re-wrap when the stored element was NonCounted. Dropping the
+        // wrapper here would flip the store's contribution to a CountTree /
+        // CountSumTree parent from 0 to 1 on its first append, changing the
+        // parent aggregate and the consensus root hash.
+        let updated_element = if was_non_counted {
+            cost_return_on_error_no_add!(
+                cost,
+                Element::new_non_counted(updated_element).map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "failed to re-wrap private document store in NonCounted: {e}"
+                    ))
+                })
+            )
+        } else {
+            updated_element
+        };
 
         cost_return_on_error_into!(
             &mut cost,
@@ -281,7 +307,7 @@ impl GroveDb {
             return Ok(None).wrap_with_cost(cost);
         }
 
-        let store_path_vec = self.build_pds_path(&path, key);
+        let store_path_vec = crate::util::subtree_path_with_key(&path, key);
         let store_path_refs: Vec<&[u8]> = store_path_vec.iter().map(|v| v.as_slice()).collect();
         let store_path = SubtreePath::from(store_path_refs.as_slice());
 
@@ -290,15 +316,19 @@ impl GroveDb {
             .get_transactional_storage_context(store_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        let store = cost_return_on_error_no_add!(
-            cost,
+        let store = cost_return_on_error!(
+            &mut cost,
             PrivateDocumentStore::from_state(total_count, entry_size, chunk_power, storage_ctx)
-                .map_err(map_pds_err)
+                .map(|r| r.map_err(map_pds_err))
         );
 
-        let value = cost_return_on_error_no_add!(
-            cost,
-            store.get_value(global_position).map_err(map_pds_err)
+        // `get_value` is cost-bearing: the dense-tree / MMR reads that fetch
+        // the document must be billed, not served for free.
+        let value = cost_return_on_error!(
+            &mut cost,
+            store
+                .get_value(global_position)
+                .map(|r| r.map_err(map_pds_err))
         );
 
         Ok(value).wrap_with_cost(cost)
@@ -346,13 +376,6 @@ impl GroveDb {
         }
     }
 
-    /// Build the subtree path for a private document store at path/key.
-    fn build_pds_path<B: AsRef<[u8]>>(&self, path: &SubtreePath<B>, key: &[u8]) -> Vec<Vec<u8>> {
-        let mut v = path.to_vec();
-        v.push(key.to_vec());
-        v
-    }
-
     /// Preprocess `PrivateDocumentStoreInsert` ops in a batch.
     ///
     /// For each group of insert ops targeting the same store:
@@ -396,7 +419,15 @@ impl GroveDb {
         type TreePath = Vec<Vec<u8>>;
 
         // Group insert ops by path (which includes tree key).
-        let mut pds_groups: HashMap<TreePath, Vec<Vec<u8>>> = HashMap::new();
+        //
+        // A BTreeMap, not a HashMap: the loop below performs cost-bearing
+        // storage reads and entry-size validation per group, so with a
+        // randomized iteration order two processes replaying the same batch
+        // could fail on different groups, having accumulated different
+        // operation costs, and surface different errors. Costs feed fees and
+        // errors are consensus-visible, so the order must be canonical.
+        // Insertion order WITHIN a group is preserved by the Vec.
+        let mut pds_groups: BTreeMap<TreePath, Vec<Vec<u8>>> = BTreeMap::new();
         for op in ops.iter() {
             if let GroveOp::PrivateDocumentStoreInsert { entry } = &op.op {
                 let tree_path = op.path.to_path();
@@ -404,7 +435,7 @@ impl GroveDb {
             }
         }
 
-        let mut replacements: HashMap<TreePath, QualifiedGroveDbOp> = HashMap::new();
+        let mut replacements: BTreeMap<TreePath, QualifiedGroveDbOp> = BTreeMap::new();
 
         for (tree_path, entries) in pds_groups.iter() {
             // Extract parent path and tree key from the full path.
@@ -438,7 +469,9 @@ impl GroveDb {
             );
 
             // Look through NonCounted: a wrapped PrivateDocumentStore is
-            // still one.
+            // still one. The wrapper is restored when the replacement op is
+            // applied (see the `ReplaceNonMerkTreeRoot` arm in
+            // `batch/mod.rs`, which re-reads the stored element anyway).
             let (total_count, entry_size, chunk_power) = match element.underlying() {
                 Element::PrivateDocumentStore(tc, es, cp, _) => (*tc, *es, *cp),
                 _ => {
@@ -461,30 +494,26 @@ impl GroveDb {
                 .get_transactional_storage_context(st_path, Some(storage_batch), transaction)
                 .unwrap_add_cost(&mut cost);
 
-            let mut store = cost_return_on_error_no_add!(
-                cost,
+            let mut store = cost_return_on_error!(
+                &mut cost,
                 PrivateDocumentStore::from_state(total_count, entry_size, chunk_power, storage_ctx)
-                    .map_err(map_pds_err)
+                    .map(|r| r.map_err(map_pds_err))
             );
 
-            // Execute all inserts in order; each validates the entry size.
-            let mut last_state_root = None;
-            for entry in entries {
-                let r = cost_return_on_error!(
-                    &mut cost,
-                    store.append(entry).map(|r| r.map_err(map_pds_err))
-                );
-                last_state_root = Some(r.state_root);
-            }
-
-            let new_state_root = match last_state_root {
-                Some(root) => root,
-                // Unreachable: groups only exist for at least one op.
-                None => cost_return_on_error_no_add!(
-                    cost,
-                    store.compute_current_state_root().map_err(map_pds_err)
-                ),
-            };
+            // Execute all inserts in ONE pass. `append_many` is byte-for-byte
+            // equivalent to calling `append` per entry (same stored values,
+            // same final state root) but O(N) in hash calls instead of
+            // O(N^2): `append` recomputes the dense-buffer Merkle root on
+            // every insert, so a full epoch at chunk_power 16 would cost
+            // ~4.3 billion blake3 calls for 65,535 entries. Each entry is
+            // still size-validated before it is written.
+            let append_result = cost_return_on_error!(
+                &mut cost,
+                store
+                    .append_many(entries.iter().map(|e| e.as_slice()))
+                    .map(|r| r.map_err(map_pds_err))
+            );
+            let new_state_root = append_result.state_root;
             let current_total_count = store.total_count();
 
             // Flush MMR overlay to storage (through the batch).
@@ -513,7 +542,7 @@ impl GroveDb {
 
         // Build the new ops list: keep non-PDS ops, replace the first PDS
         // insert op per group with the replacement, skip the rest.
-        let mut first_seen: HashMap<TreePath, bool> = HashMap::new();
+        let mut first_seen: BTreeMap<TreePath, bool> = BTreeMap::new();
         let mut result = Vec::with_capacity(ops.len());
 
         for op in ops.into_iter() {

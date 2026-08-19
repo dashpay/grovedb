@@ -30,8 +30,6 @@
 mod error;
 #[cfg(feature = "storage")]
 mod store;
-#[cfg(all(test, feature = "storage"))]
-pub(crate) mod test_utils;
 
 pub use error::PrivateDocumentStoreError;
 pub use grovedb_bulk_append_tree::{

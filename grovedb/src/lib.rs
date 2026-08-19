@@ -1992,6 +1992,30 @@ impl GroveDb {
                         );
                     }
 
+                    // PrivateDocumentStore integrity: the state root
+                    // authenticates whatever bytes were written, so a buggy
+                    // or gate-bypassing writer could persist entries that
+                    // violate the committed `entry_size` under a perfectly
+                    // consistent hash chain. Report that as its own issue,
+                    // carrying the specific failure, rather than folding it
+                    // into the hash comparison above.
+                    if let Some(label) = self.private_document_store_entry_size_issue(
+                        &element,
+                        new_path_ref.clone(),
+                        transaction,
+                    ) {
+                        let expected_placeholder: CryptoHash = blake3::hash(
+                            b"private document store entries match committed entry_size",
+                        )
+                        .into();
+                        let actual_placeholder: CryptoHash = blake3::hash(label.as_bytes()).into();
+                        issues.entry(new_path.to_vec()).or_insert((
+                            root_hash,
+                            expected_placeholder,
+                            actual_placeholder,
+                        ));
+                    }
+
                     // Software-consistency check: the aggregate fields
                     // stored in the parent's tree element (e.g.
                     // `sum_value` in `ProvableSumTree(_, sum_value, _)`)
@@ -2390,6 +2414,44 @@ impl GroveDb {
         Ok(issues)
     }
 
+    /// Run the PrivateDocumentStore entry-size integrity walk, returning a
+    /// human-readable description of the first violation, or `None` when the
+    /// element is not a store, is empty, or every entry is well-formed.
+    ///
+    /// Kept separate from `compute_non_merk_child_hash` so a violation is
+    /// reported with its actual message instead of being signalled by
+    /// returning a deliberately-wrong hash.
+    fn private_document_store_entry_size_issue<'b, B: AsRef<[u8]>>(
+        &self,
+        element: &Element,
+        subtree_path: SubtreePath<'b, B>,
+        transaction: &Transaction,
+    ) -> Option<String> {
+        let Element::PrivateDocumentStore(total_count, entry_size, chunk_power, _) =
+            element.underlying()
+        else {
+            return None;
+        };
+        if *total_count == 0 {
+            return None;
+        }
+        let storage_ctx = self
+            .db
+            .get_transactional_storage_context(subtree_path, None, transaction)
+            .unwrap();
+        match grovedb_private_document_store::PrivateDocumentStore::from_state(
+            *total_count,
+            *entry_size,
+            *chunk_power,
+            storage_ctx,
+        )
+        .unwrap()
+        {
+            Ok(store) => store.verify_entry_sizes().err().map(|e| e.to_string()),
+            Err(e) => Some(format!("cannot open private document store: {e}")),
+        }
+    }
+
     /// Compute the child hash for a non-Merk tree element by reconstructing
     /// its tree from storage and computing the state root.
     /// Falls back to `merk_root_hash` on any error or for standard Merk trees.
@@ -2488,20 +2550,18 @@ impl GroveDb {
                     *entry_size,
                     *chunk_power,
                     storage_ctx,
-                ) {
-                    Ok(store) => {
-                        // Integrity walk: every stored entry must respect the
-                        // committed entry size (the state root authenticates
-                        // whatever bytes were written, so a buggy or bypassing
-                        // writer could persist wrong-size entries under a
-                        // consistent root). On violation, fall back to
-                        // `merk_root_hash` — the caller's chain check then
-                        // reports the path as an issue.
-                        if store.verify_entry_sizes().is_err() {
-                            return merk_root_hash;
-                        }
-                        store.compute_current_state_root().unwrap_or(merk_root_hash)
-                    }
+                )
+                .unwrap()
+                {
+                    // Report only the state root here. The entry-size
+                    // integrity walk is a SEPARATE check reported by
+                    // `private_document_store_entry_size_issue`, so a
+                    // violation surfaces its real message ("entry at
+                    // position N has size X, committed entry size is Y")
+                    // instead of being laundered into an opaque hash
+                    // mismatch — and a transient storage error during that
+                    // walk no longer masquerades as corruption.
+                    Ok(store) => store.compute_current_state_root().unwrap_or(merk_root_hash),
                     Err(_) => merk_root_hash,
                 }
             }

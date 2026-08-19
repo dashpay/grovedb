@@ -14,7 +14,7 @@ use grovedb_storage::{Batch, RawIterator, StorageContext};
 /// (data storage) have real implementations; all other `StorageContext`
 /// methods panic if called.
 #[derive(Default)]
-pub(crate) struct MemStorageContext {
+pub struct MemStorageContext {
     pub data: RefCell<HashMap<Vec<u8>, Vec<u8>>>,
 }
 
@@ -141,7 +141,7 @@ impl<'db> StorageContext<'db> for MemStorageContext {
 // ── Batch and RawIterator stubs ───────────────────────────────────────
 
 /// No-op batch (never used — MemStorageContext does immediate writes).
-pub(crate) struct MemBatch;
+pub struct MemBatch;
 
 impl Batch for MemBatch {
     fn put<K: AsRef<[u8]>>(
@@ -186,7 +186,7 @@ impl Batch for MemBatch {
 }
 
 /// Stub iterator (never used by the bulk append tree).
-pub(crate) struct MemRawIterator;
+pub struct MemRawIterator;
 
 impl RawIterator for MemRawIterator {
     fn seek_to_first(&mut self) -> CostContext<()> {

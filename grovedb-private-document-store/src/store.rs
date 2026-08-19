@@ -66,7 +66,7 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
         entry_size: u32,
         chunk_power: u8,
         storage: S,
-    ) -> Result<Self, PrivateDocumentStoreError> {
+    ) -> CostResult<Self, PrivateDocumentStoreError> {
         Self::from_state(0, entry_size, chunk_power, storage)
     }
 
@@ -80,19 +80,34 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
         entry_size: u32,
         chunk_power: u8,
         storage: S,
-    ) -> Result<Self, PrivateDocumentStoreError> {
+    ) -> CostResult<Self, PrivateDocumentStoreError> {
+        let mut cost = OperationCost::default();
         if entry_size == 0 {
             return Err(PrivateDocumentStoreError::InvalidConfig(
                 "entry_size must be non-zero".to_string(),
-            ));
+            ))
+            .wrap_with_cost(cost);
         }
-        let bulk_tree = BulkAppendTree::from_state(total_count, chunk_power, storage)
-            .map_err(|e| PrivateDocumentStoreError::InvalidData(format!("bulk tree: {}", e)))?;
+        let bulk_tree = match BulkAppendTree::from_state(total_count, chunk_power, storage) {
+            Ok(t) => t,
+            Err(e) => {
+                return Err(PrivateDocumentStoreError::InvalidData(format!(
+                    "bulk tree: {}",
+                    e
+                )))
+                .wrap_with_cost(cost);
+            }
+        };
+        // Opening the store derives the committed-config hash, which is one
+        // blake3 call — charged here so every path that opens a store pays
+        // for it rather than getting it for free.
+        cost.hash_node_calls += 1;
         Ok(Self {
             entry_size,
             config_hash: private_document_store_config_hash(entry_size, chunk_power),
             bulk_tree,
         })
+        .wrap_with_cost(cost)
     }
 
     /// Append an entry to the store.
@@ -126,8 +141,13 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
         };
         cost.hash_node_calls += bulk_result.hash_count;
 
+        // `bulk_result.hash_count` covers the BulkAppendTree work INCLUDING
+        // its own state-root blake3. The composite `pds_state` root below is
+        // an ADDITIONAL blake3 on top of it — charge it, or every append
+        // under-reports one hash call.
         let state_root =
             compute_private_document_store_state_root(&self.config_hash, &bulk_result.state_root);
+        cost.hash_node_calls += 1;
 
         Ok(PrivateDocumentStoreAppendResult {
             state_root,
@@ -147,9 +167,11 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
     pub fn get_value(
         &self,
         global_position: u64,
-    ) -> Result<Option<Vec<u8>>, PrivateDocumentStoreError> {
+    ) -> CostResult<Option<Vec<u8>>, PrivateDocumentStoreError> {
+        let mut cost = OperationCost::default();
+
         if global_position >= self.bulk_tree.total_count {
-            return Ok(None);
+            return Ok(None).wrap_with_cost(cost);
         }
 
         let epoch_size = self.bulk_tree.epoch_size();
@@ -159,26 +181,61 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
         let value = if global_position >= buffer_start {
             // Entry is in the current buffer.
             let buffer_pos = (global_position - buffer_start) as u16;
-            self.bulk_tree
-                .get_buffer_value(buffer_pos)
-                .map_err(|e| PrivateDocumentStoreError::InvalidData(format!("{}", e)))?
+            match self
+                .bulk_tree
+                .get_buffer_value_with_cost(buffer_pos)
+                .unwrap_add_cost(&mut cost)
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    return Err(PrivateDocumentStoreError::InvalidData(format!("{}", e)))
+                        .wrap_with_cost(cost);
+                }
+            }
         } else {
             // Entry is in a completed chunk.
             let chunk_idx = global_position / epoch_size;
             let pos_in_chunk = (global_position % epoch_size) as usize;
-            let blob = self
+            let blob = match self
                 .bulk_tree
-                .get_chunk_value(chunk_idx)
-                .map_err(|e| PrivateDocumentStoreError::InvalidData(format!("{}", e)))?
-                .ok_or_else(|| {
-                    PrivateDocumentStoreError::CorruptedData(format!(
+                .get_chunk_value_with_cost(chunk_idx)
+                .unwrap_add_cost(&mut cost)
+            {
+                Ok(Some(b)) => b,
+                Ok(None) => {
+                    return Err(PrivateDocumentStoreError::CorruptedData(format!(
                         "missing chunk blob for index {}",
                         chunk_idx
-                    ))
-                })?;
-            let entries = grovedb_bulk_append_tree::deserialize_chunk_blob(&blob)
-                .map_err(|e| PrivateDocumentStoreError::CorruptedData(format!("{}", e)))?;
-            entries.get(pos_in_chunk).cloned()
+                    )))
+                    .wrap_with_cost(cost);
+                }
+                Err(e) => {
+                    return Err(PrivateDocumentStoreError::InvalidData(format!("{}", e)))
+                        .wrap_with_cost(cost);
+                }
+            };
+            let entries = match grovedb_bulk_append_tree::deserialize_chunk_blob(&blob) {
+                Ok(e) => e,
+                Err(e) => {
+                    return Err(PrivateDocumentStoreError::CorruptedData(format!("{}", e)))
+                        .wrap_with_cost(cost);
+                }
+            };
+            // The bounds check above already proved this position exists, so
+            // a completed chunk that holds fewer than `epoch_size` entries is
+            // corruption — NOT absence. Enforce the same invariant
+            // `verify_entry_sizes` checks, otherwise a truncated blob would
+            // be reported to the caller as "no such document".
+            if entries.len() as u64 != epoch_size {
+                return Err(PrivateDocumentStoreError::CorruptedData(format!(
+                    "chunk {} has {} entries, expected {}",
+                    chunk_idx,
+                    entries.len(),
+                    epoch_size
+                )))
+                .wrap_with_cost(cost);
+            }
+            Some(entries[pos_in_chunk].clone())
         };
 
         // Defensive: a stored entry that violates the committed entry size
@@ -191,10 +248,103 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
                 global_position,
                 v.len(),
                 self.entry_size
-            )));
+            )))
+            .wrap_with_cost(cost);
         }
 
-        Ok(value)
+        Ok(value).wrap_with_cost(cost)
+    }
+
+    /// Append many entries in one pass, computing roots once at the end.
+    ///
+    /// Byte-for-byte equivalent to calling [`append`](Self::append) once per
+    /// entry — same stored values, same chunk blobs, same final state root —
+    /// but O(N) in hash calls instead of O(N^2).
+    ///
+    /// [`append`](Self::append) recomputes the dense-buffer Merkle root on
+    /// every insert, so a run of N buffered appends re-walks every filled
+    /// position N times: at `chunk_power = 16` filling one epoch costs about
+    /// 4.3 billion blake3 calls for 65,535 entries. This method defers the
+    /// dense root, the bulk state root, and the composite `pds_state` root
+    /// until the whole run is written.
+    ///
+    /// Every entry is size-validated before it is written. On a size
+    /// violation the entries already appended remain — discard the
+    /// surrounding transaction for all-or-nothing semantics, matching
+    /// per-entry [`append`](Self::append) in a loop.
+    ///
+    /// Returns the same shape the FINAL per-entry [`append`](Self::append)
+    /// would have: post-run roots, the last entry's position, the summed
+    /// hash count, and whether any compaction occurred. For an empty input
+    /// nothing is written and the current state root is returned.
+    pub fn append_many<'e, I>(
+        &mut self,
+        entries: I,
+    ) -> CostResult<PrivateDocumentStoreAppendResult, PrivateDocumentStoreError>
+    where
+        I: IntoIterator<Item = &'e [u8]>,
+    {
+        let mut cost = OperationCost::default();
+        let mut hash_count: u32 = 0;
+        let mut any_compacted = false;
+        let starting_total = self.bulk_tree.total_count;
+        let mut last_global_position = starting_total.saturating_sub(1);
+
+        for entry in entries {
+            if entry.len() != self.entry_size as usize {
+                return Err(PrivateDocumentStoreError::InvalidEntrySize {
+                    expected: self.entry_size,
+                    actual: entry.len(),
+                })
+                .wrap_with_cost(cost);
+            }
+            let r = match self.bulk_tree.append_deferred_roots(entry) {
+                Ok(r) => r,
+                Err(e) => {
+                    return Err(PrivateDocumentStoreError::InvalidData(format!(
+                        "bulk append: {}",
+                        e
+                    )))
+                    .wrap_with_cost(cost);
+                }
+            };
+            hash_count = hash_count.saturating_add(r.hash_count);
+            any_compacted |= r.compacted;
+            last_global_position = r.global_position;
+        }
+
+        // Pay the deferred roots exactly once: the dense-buffer walk plus the
+        // bulk state-root blake3 (inside compute_current_state_root), then the
+        // composite pds_state blake3.
+        let bulk_state_root = match self.bulk_tree.compute_current_state_root() {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(PrivateDocumentStoreError::InvalidData(format!(
+                    "state root: {}",
+                    e
+                )))
+                .wrap_with_cost(cost);
+            }
+        };
+        let state_root =
+            compute_private_document_store_state_root(&self.config_hash, &bulk_state_root);
+        if self.bulk_tree.total_count > starting_total {
+            // One dense-root walk over the live buffer + bulk state root + the
+            // composite root.
+            hash_count = hash_count
+                .saturating_add(self.bulk_tree.buffer_count() as u32 * 2)
+                .saturating_add(2);
+        }
+        cost.hash_node_calls += hash_count;
+
+        Ok(PrivateDocumentStoreAppendResult {
+            state_root,
+            bulk_state_root,
+            global_position: last_global_position,
+            hash_count,
+            compacted: any_compacted,
+        })
+        .wrap_with_cost(cost)
     }
 
     /// Verify that all stored entries respect the committed `entry_size`.
@@ -321,13 +471,101 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
 }
 
 #[cfg(test)]
+mod append_many_tests {
+    use super::*;
+    use grovedb_bulk_append_tree::test_utils::MemStorageContext;
+
+    /// `append_many` must be byte-for-byte equivalent to `append` in a loop:
+    /// same state root, same positions, same stored bytes. It only differs in
+    /// how many hashes it takes to get there.
+    #[test]
+    fn append_many_matches_per_entry_append() {
+        // 10 entries at chunk_power 2 (epoch size 4) spans two compactions
+        // plus a partial buffer, so both storage tiers are exercised.
+        let entries: Vec<Vec<u8>> = (0..10u8).map(|i| vec![i; 8]).collect();
+
+        let mut one_by_one = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
+            .unwrap()
+            .expect("a");
+        let mut last = None;
+        for e in &entries {
+            last = Some(one_by_one.append(e).unwrap().expect("append"));
+        }
+        let per_entry = last.expect("appended");
+
+        let mut batched = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
+            .unwrap()
+            .expect("b");
+        let many = batched
+            .append_many(entries.iter().map(|e| e.as_slice()))
+            .unwrap()
+            .expect("append_many");
+
+        assert_eq!(many.state_root, per_entry.state_root);
+        assert_eq!(many.bulk_state_root, per_entry.bulk_state_root);
+        assert_eq!(many.global_position, per_entry.global_position);
+        assert_eq!(batched.total_count(), one_by_one.total_count());
+        assert_eq!(
+            batched.compute_current_state_root().expect("root"),
+            one_by_one.compute_current_state_root().expect("root")
+        );
+        for i in 0..10u64 {
+            assert_eq!(
+                batched.get_value(i).unwrap().expect("get"),
+                one_by_one.get_value(i).unwrap().expect("get"),
+                "position {}",
+                i
+            );
+        }
+        batched.verify_entry_sizes().expect("sizes ok");
+
+        // The whole point: the batched path does asymptotically less hashing.
+        assert!(
+            many.hash_count < per_entry.hash_count * 10,
+            "append_many should not pay the per-entry dense walk"
+        );
+    }
+
+    #[test]
+    fn append_many_validates_entry_size_and_handles_empty() {
+        let mut store = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
+            .unwrap()
+            .expect("new");
+
+        // Empty input writes nothing and reports the current state root.
+        let empty: Vec<Vec<u8>> = Vec::new();
+        let r = store
+            .append_many(empty.iter().map(|e| e.as_slice()))
+            .unwrap()
+            .expect("empty append_many");
+        assert_eq!(store.total_count(), 0);
+        assert_eq!(
+            r.state_root,
+            store.compute_current_state_root().expect("root")
+        );
+
+        // A wrong-size entry is rejected.
+        let bad = [vec![0u8; 8], vec![0u8; 7]];
+        assert!(matches!(
+            store.append_many(bad.iter().map(|e| e.as_slice())).unwrap(),
+            Err(PrivateDocumentStoreError::InvalidEntrySize {
+                expected: 8,
+                actual: 7
+            })
+        ));
+    }
+}
+
+#[cfg(test)]
 mod error_path_tests {
     use super::*;
-    use crate::test_utils::MemStorageContext;
+    use grovedb_bulk_append_tree::test_utils::MemStorageContext;
 
     #[test]
     fn test_debug_and_error_display() {
-        let store = PrivateDocumentStore::new(64, 4, MemStorageContext::new()).expect("new");
+        let store = PrivateDocumentStore::new(64, 4, MemStorageContext::new())
+            .unwrap()
+            .expect("new");
         let dbg = format!("{:?}", store);
         assert!(dbg.contains("PrivateDocumentStore") && dbg.contains("entry_size: 64"));
         assert_eq!(store.entry_size(), 64);
@@ -358,7 +596,9 @@ mod error_path_tests {
         // then wipe the backing storage and reopen with the same claimed
         // state: chunk reads and the integrity walk must surface errors
         // rather than fabricate data.
-        let mut store = PrivateDocumentStore::new(8, 2, MemStorageContext::new()).expect("new");
+        let mut store = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
+            .unwrap()
+            .expect("new");
         for i in 0..6u8 {
             store.append(&[i; 8]).unwrap().expect("append");
         }
@@ -366,14 +606,18 @@ mod error_path_tests {
         let storage = PrivateDocumentStore::into_storage_for_test(store);
         storage.data.borrow_mut().clear();
 
-        let broken = PrivateDocumentStore::from_state(6, 8, 2, storage).expect("reopen");
+        let broken = PrivateDocumentStore::from_state(6, 8, 2, storage)
+            .unwrap()
+            .expect("reopen");
         // Position 0 lives in the (now missing) completed chunk.
-        assert!(broken.get_value(0).is_err());
+        assert!(broken.get_value(0).unwrap().is_err());
         // The integrity walk fails on the missing chunk too.
         assert!(broken.verify_entry_sizes().is_err());
         // Buffer positions read as missing entries in the walk; direct
         // get_value returns the underlying error or None consistently.
-        assert!(broken.compute_current_state_root().is_err() || broken.get_value(5).is_err());
+        assert!(
+            broken.compute_current_state_root().is_err() || broken.get_value(5).unwrap().is_err()
+        );
     }
 }
 
@@ -389,14 +633,15 @@ impl<S> PrivateDocumentStore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        empty_private_document_store_state_root, test_utils::MemStorageContext,
-        EMPTY_BULK_APPEND_TREE_STATE_ROOT,
-    };
+    use grovedb_bulk_append_tree::test_utils::MemStorageContext;
+
+    use crate::{empty_private_document_store_state_root, EMPTY_BULK_APPEND_TREE_STATE_ROOT};
 
     #[test]
     fn test_empty_store_state_root_matches_helper() {
-        let store = PrivateDocumentStore::new(64, 4, MemStorageContext::new()).expect("new store");
+        let store = PrivateDocumentStore::new(64, 4, MemStorageContext::new())
+            .unwrap()
+            .expect("new store");
         assert_eq!(
             store.compute_current_state_root().expect("state root"),
             empty_private_document_store_state_root(64, 4),
@@ -411,21 +656,26 @@ mod tests {
     #[test]
     fn test_zero_entry_size_rejected() {
         assert!(matches!(
-            PrivateDocumentStore::new(0, 4, MemStorageContext::new()),
+            PrivateDocumentStore::new(0, 4, MemStorageContext::new()).unwrap(),
             Err(PrivateDocumentStoreError::InvalidConfig(_))
         ));
     }
 
     #[test]
     fn test_invalid_chunk_power_rejected() {
-        assert!(PrivateDocumentStore::new(64, 0, MemStorageContext::new()).is_err());
-        assert!(PrivateDocumentStore::new(64, 17, MemStorageContext::new()).is_err());
+        assert!(PrivateDocumentStore::new(64, 0, MemStorageContext::new())
+            .unwrap()
+            .is_err());
+        assert!(PrivateDocumentStore::new(64, 17, MemStorageContext::new())
+            .unwrap()
+            .is_err());
     }
 
     #[test]
     fn test_append_validates_entry_size() {
-        let mut store =
-            PrivateDocumentStore::new(8, 2, MemStorageContext::new()).expect("new store");
+        let mut store = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
+            .unwrap()
+            .expect("new store");
         assert!(matches!(
             store.append(&[0u8; 7]).unwrap(),
             Err(PrivateDocumentStoreError::InvalidEntrySize {
@@ -451,8 +701,9 @@ mod tests {
     fn test_append_get_roundtrip_across_compaction() {
         // chunk_power 2 → capacity 3, epoch size 4: 10 appends span two
         // completed chunks plus a partial buffer.
-        let mut store =
-            PrivateDocumentStore::new(8, 2, MemStorageContext::new()).expect("new store");
+        let mut store = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
+            .unwrap()
+            .expect("new store");
         let mut roots = Vec::new();
         for i in 0..10u8 {
             let entry = [i; 8];
@@ -468,10 +719,10 @@ mod tests {
         assert_eq!(store.chunk_count(), 2);
 
         for i in 0..10u8 {
-            let v = store.get_value(i as u64).expect("get");
+            let v = store.get_value(i as u64).unwrap().expect("get");
             assert_eq!(v, Some(vec![i; 8]), "position {}", i);
         }
-        assert_eq!(store.get_value(10).expect("get"), None);
+        assert_eq!(store.get_value(10).unwrap().expect("get"), None);
 
         // The append-path state root matches a fresh computation.
         assert_eq!(
@@ -488,8 +739,12 @@ mod tests {
         // The composite root must bind the config: it can never equal the
         // raw bulk root, and two stores with identical data but different
         // configs must have different roots.
-        let mut a = PrivateDocumentStore::new(8, 2, MemStorageContext::new()).expect("a");
-        let mut b = PrivateDocumentStore::new(8, 3, MemStorageContext::new()).expect("b");
+        let mut a = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
+            .unwrap()
+            .expect("a");
+        let mut b = PrivateDocumentStore::new(8, 3, MemStorageContext::new())
+            .unwrap()
+            .expect("b");
         let ra = a.append(&[7u8; 8]).unwrap().expect("append a");
         let rb = b.append(&[7u8; 8]).unwrap().expect("append b");
         assert_ne!(ra.state_root, ra.bulk_state_root);
@@ -499,7 +754,9 @@ mod tests {
     #[test]
     fn test_reopen_from_state() {
         let storage = MemStorageContext::new();
-        let mut store = PrivateDocumentStore::new(8, 2, storage).expect("new store");
+        let mut store = PrivateDocumentStore::new(8, 2, storage)
+            .unwrap()
+            .expect("new store");
         for i in 0..6u8 {
             store.append(&[i; 8]).unwrap().expect("append");
         }
@@ -507,13 +764,18 @@ mod tests {
         let root_before = store.compute_current_state_root().expect("root");
         let storage = PrivateDocumentStore::into_storage_for_test(store);
 
-        let reopened = PrivateDocumentStore::from_state(6, 8, 2, storage).expect("reopen");
+        let reopened = PrivateDocumentStore::from_state(6, 8, 2, storage)
+            .unwrap()
+            .expect("reopen");
         assert_eq!(
             reopened.compute_current_state_root().expect("root"),
             root_before
         );
         for i in 0..6u8 {
-            assert_eq!(reopened.get_value(i as u64).expect("get"), Some(vec![i; 8]));
+            assert_eq!(
+                reopened.get_value(i as u64).unwrap().expect("get"),
+                Some(vec![i; 8])
+            );
         }
         reopened.verify_entry_sizes().expect("sizes ok");
     }
@@ -523,19 +785,23 @@ mod tests {
         // Write entries of size 8, then reopen claiming entry_size 16 — the
         // integrity walk must flag the first entry.
         let storage = MemStorageContext::new();
-        let mut store = PrivateDocumentStore::new(8, 2, storage).expect("new store");
+        let mut store = PrivateDocumentStore::new(8, 2, storage)
+            .unwrap()
+            .expect("new store");
         for i in 0..6u8 {
             store.append(&[i; 8]).unwrap().expect("append");
         }
         store.commit_mmr().expect("commit mmr");
         let storage = PrivateDocumentStore::into_storage_for_test(store);
 
-        let reopened = PrivateDocumentStore::from_state(6, 16, 2, storage).expect("reopen");
+        let reopened = PrivateDocumentStore::from_state(6, 16, 2, storage)
+            .unwrap()
+            .expect("reopen");
         assert!(matches!(
             reopened.verify_entry_sizes(),
             Err(PrivateDocumentStoreError::CorruptedData(_))
         ));
         // get_value performs the same defensive check.
-        assert!(reopened.get_value(0).is_err());
+        assert!(reopened.get_value(0).unwrap().is_err());
     }
 }

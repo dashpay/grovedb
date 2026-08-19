@@ -3024,30 +3024,44 @@ where
                                 ))
                                 .wrap_with_cost(cost);
                             }
-                            if is_insert_if_not_exists
-                                || batch_apply_options.validate_insertion_does_not_override
-                            {
-                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
-                                let existing = cost_return_on_error_into!(
-                                    &mut cost,
-                                    element.element_at_key_already_exists(
-                                        merk,
-                                        key_info.get_key_clone().as_slice(),
-                                        grove_version,
-                                    )
-                                );
-                                if existing {
-                                    if error_if_exists
-                                        || batch_apply_options.validate_insertion_does_not_override
-                                    {
-                                        return Err(Error::InvalidBatchOperation(
-                                            "attempting to insert PrivateDocumentStore element \
-                                             that already exists",
-                                        ))
-                                        .wrap_with_cost(cost);
-                                    }
+                            // A private document store is write-once, so
+                            // creating one over an existing element is
+                            // ALWAYS rejected — not just under
+                            // `InsertIfNotExists` or
+                            // `validate_insertion_does_not_override`.
+                            //
+                            // Without this, a plain `InsertOrReplace` of a
+                            // fresh (total_count = 0) store over a populated
+                            // one is accepted with default options: the
+                            // element resets to empty and re-binds the empty
+                            // state root while the old chunk blobs, MMR nodes
+                            // and buffer entries stay behind in the subtree's
+                            // data namespace. That both leaks storage and
+                            // breaks the type's central promise, since a
+                            // wholesale overwrite is a delete of every entry.
+                            // Replacing a store means deleting it first,
+                            // which clears the data namespace.
+                            let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                            let existing = cost_return_on_error_into!(
+                                &mut cost,
+                                element.element_at_key_already_exists(
+                                    merk,
+                                    key_info.get_key_clone().as_slice(),
+                                    grove_version,
+                                )
+                            );
+                            if existing {
+                                if is_insert_if_not_exists && !error_if_exists {
+                                    // `InsertIfNotExists` semantics: not an
+                                    // error, just nothing to do.
                                     continue;
                                 }
+                                return Err(Error::InvalidBatchOperation(
+                                    "a PrivateDocumentStore already exists at this key; it is \
+                                     append-only and cannot be overwritten \u{2014} delete it \
+                                     first, which clears its data namespace",
+                                ))
+                                .wrap_with_cost(cost);
                             }
                             let merk_feature_type = cost_return_on_error_into!(
                                 &mut cost,
@@ -3424,15 +3438,46 @@ where
                     );
                 }
                 GroveOp::ReplaceNonMerkTreeRoot { hash, meta } => {
-                    // Read existing element to preserve flags
+                    // Read existing element to preserve flags (and, for a
+                    // PrivateDocumentStore, its NonCounted wrapper).
                     let merk = self.merks.get(path).expect("the Merk is cached");
-                    let existing_flags = cost_return_on_error!(
+                    let existing = cost_return_on_error!(
                         &mut cost,
                         GroveDb::get_element_from_subtree(merk, key_info.as_slice(), grove_version)
-                    )
-                    .get_flags_owned();
+                    );
+                    let existing_non_counted = existing.is_non_counted();
+                    let existing_flags = existing.get_flags_owned();
 
                     let element = meta.to_element(existing_flags);
+                    // `meta.to_element` always builds a BARE element, so a
+                    // stored `NonCounted(tree)` would come back counted and
+                    // change its parent count tree's aggregate — and with it
+                    // the root hash. Restore the wrapper.
+                    //
+                    // Scoped to PrivateDocumentStore deliberately: the same
+                    // latent defect exists for CommitmentTree / MmrTree /
+                    // BulkAppendTree / DenseTree, but those are live on
+                    // GROVE_V1..V3, so repairing them changes a released
+                    // consensus outcome and belongs in its own version-gated
+                    // change. PDS cannot exist before V4, so fixing it here
+                    // alters nothing that has ever been committed. The
+                    // element was already read above, so this costs nothing
+                    // extra.
+                    let element = if existing_non_counted
+                        && matches!(meta, NonMerkTreeMeta::PrivateDocumentStore { .. })
+                    {
+                        cost_return_on_error_no_add!(
+                            cost,
+                            element.into_non_counted().map_err(|_| {
+                                Error::CorruptedCodeExecution(
+                                    "into_non_counted called on a wrapped element during \
+                                     ReplaceNonMerkTreeRoot",
+                                )
+                            })
+                        )
+                    } else {
+                        element
+                    };
                     let merk_feature_type = cost_return_on_error_into_no_add!(
                         cost,
                         element.get_feature_type(in_tree_type)

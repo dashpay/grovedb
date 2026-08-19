@@ -27,8 +27,9 @@ use grovedb_costs::{
 use grovedb_element::reference_path::path_from_reference_path_type;
 use grovedb_merk::{
     element::{
-        costs::ElementCostExtensions, get::ElementFetchFromStorageExtensions,
-        insert::ElementInsertToStorageExtensions, ElementExt,
+        costs::ElementCostExtensions, exists::ElementExistsInStorageExtensions,
+        get::ElementFetchFromStorageExtensions, insert::ElementInsertToStorageExtensions,
+        ElementExt,
     },
     tree::NULL_HASH,
     tree_type::TreeType,
@@ -218,6 +219,26 @@ impl GroveDb {
                 if *entry_size == 0 || !(1..=16).contains(chunk_power) {
                     return Err(Error::InvalidInput(
                         "a PrivateDocumentStore requires entry_size >= 1 and chunk_power in 1..=16",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                // Write-once: creating a store over an existing element is
+                // rejected on the direct path too, matching the batch arm.
+                // A silent overwrite would reset the element to empty while
+                // leaving the old chunk blobs and MMR nodes in the data
+                // namespace.
+                let already_exists = cost_return_on_error_into!(
+                    &mut cost,
+                    element.element_at_key_already_exists(
+                        &mut subtree_to_insert_into,
+                        key,
+                        grove_version,
+                    )
+                );
+                if already_exists {
+                    return Err(Error::InvalidInput(
+                        "a private document store already exists at this key; it is append-only \
+                         and cannot be overwritten",
                     ))
                     .wrap_with_cost(cost);
                 }

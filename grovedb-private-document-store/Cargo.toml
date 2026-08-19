@@ -20,3 +20,8 @@ grovedb-costs = { version = "5.0.1", path = "../costs" }
 grovedb-storage = { version = "5.0.1", path = "../storage", optional = true }
 blake3 = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+# Reuses the in-memory StorageContext harness rather than copying it; see the
+# `test-utils` feature on grovedb-bulk-append-tree.
+grovedb-bulk-append-tree = { version = "5.0.1", path = "../grovedb-bulk-append-tree", features = ["test-utils"] }

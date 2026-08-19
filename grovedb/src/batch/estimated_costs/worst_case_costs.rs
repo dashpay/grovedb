@@ -313,30 +313,55 @@ impl GroveOp {
                     propagate,
                     grove_version,
                 );
-                // Worst case mirrors the underlying BulkAppend: compaction
-                // trigger (buffer fills -> serialize chunk blob -> dense
-                // Merkle root -> MMR push), plus one blake3 for the
-                // config-binding composite pds_state root. The per-append
-                // write is entry-size-parametrized (entry.len() is the
-                // store's committed entry_size).
+                // A genuine UPPER BOUND over every configuration the type
+                // permits, not a typical-case figure. `chunk_power` is
+                // validated to 1..=16, so the dense buffer holds at most
+                // `2^16 - 1 = 65535` entries and an epoch is at most
+                // `2^16 = 65536` entries.
+                //
+                // The costly op is the compacting append: the dense-root walk
+                // hashes every filled position twice, the epoch is serialized
+                // into one chunk blob, and the blob is pushed to the MMR.
+                //
+                // This deliberately OVER-estimates smaller configurations —
+                // a `chunk_power = 4` store pays the `chunk_power = 16`
+                // bound — because `GroveOp::PrivateDocumentStoreInsert`
+                // carries only the entry, not the store's committed config,
+                // and the config is not knowable here. Over-estimating is the
+                // safe direction for a fee admission bound (an under-estimate
+                // makes a legitimate block fail replay). Threading the
+                // committed `{entry_size, chunk_power}` into the estimate is
+                // the way to tighten this; it needs the op or the layer
+                // estimate to carry the config.
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 let entry_size = entry.len() as u32;
-                // Max compaction overhead: 64KB safe bound for chunk blob
-                const MAX_COMPACTION_BLOB: u32 = 65536;
-                // Dense Merkle root: epoch_size hashes. Buffer hash: 1.
-                // MMR push: up to 64 merges. Composite pds_state root: 1.
-                const MAX_HASH_CALLS: u32 = 1024 + 1 + 65 + 1;
+                /// Largest epoch the type permits: `2^16` entries.
+                const MAX_EPOCH_ENTRIES: u32 = 1 << 16;
+                /// Largest dense buffer: `2^16 - 1` filled positions, each
+                /// costing a value hash and a node hash on the root walk.
+                const MAX_DENSE_HASHES: u32 = 2 * (MAX_EPOCH_ENTRIES - 1);
+                /// MMR push merges (bounded by the 64-bit position space).
+                const MAX_MMR_MERGES: u32 = 65;
+                /// Bulk state root + composite pds_state root + the
+                /// committed-config hash paid when the store is opened.
+                const ROOT_AND_CONFIG_HASHES: u32 = 3;
+                const MAX_HASH_CALLS: u32 =
+                    MAX_DENSE_HASHES + MAX_MMR_MERGES + ROOT_AND_CONFIG_HASHES;
                 // Writes: buffer entry + chunk blob + MMR nodes
-                const MAX_WRITES: u32 = 1 + 1 + 65;
+                const MAX_WRITES: u32 = 1 + 1 + MAX_MMR_MERGES;
                 const MAX_READS: u32 = 64; // MMR sibling reads
+                                           // The compaction blob holds a whole epoch of entries, so its
+                                           // size scales with the committed entry size — a flat byte
+                                           // constant is not a bound.
+                let max_compaction_blob = MAX_EPOCH_ENTRIES.saturating_mul(entry_size);
                 item_cost.add_cost(OperationCost {
                     seek_count: MAX_WRITES + MAX_READS,
                     storage_cost: StorageCost {
-                        added_bytes: entry_size + MAX_COMPACTION_BLOB,
+                        added_bytes: entry_size.saturating_add(max_compaction_blob),
                         replaced_bytes: 0,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
-                    storage_loaded_bytes: (33 * MAX_READS) as u64,
+                    storage_loaded_bytes: (33 * MAX_READS) as u64 + max_compaction_blob as u64,
                     hash_node_calls: MAX_HASH_CALLS,
                     sinsemilla_hash_calls: 0,
                 })

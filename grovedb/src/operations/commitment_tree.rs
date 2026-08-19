@@ -136,7 +136,7 @@ impl GroveDb {
 
         // 2. Build subtree path and open transactional storage (write-through
         //    cache + MMR overlay provide read-after-write visibility)
-        let ct_path_vec = self.build_ct_path(&path, key);
+        let ct_path_vec = crate::util::subtree_path_with_key(&path, key);
         let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
         let ct_path = SubtreePath::from(ct_path_refs.as_slice());
 
@@ -284,7 +284,7 @@ impl GroveDb {
             }
         };
 
-        let ct_path_vec = self.build_ct_path(&path, key);
+        let ct_path_vec = crate::util::subtree_path_with_key(&path, key);
         let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
         let ct_path = SubtreePath::from(ct_path_refs.as_slice());
 
@@ -340,7 +340,7 @@ impl GroveDb {
             return Ok(None).wrap_with_cost(cost);
         }
 
-        let ct_path_vec = self.build_ct_path(&path, key);
+        let ct_path_vec = crate::util::subtree_path_with_key(&path, key);
         let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
         let ct_path = SubtreePath::from(ct_path_refs.as_slice());
 
@@ -413,13 +413,6 @@ impl GroveDb {
             Element::CommitmentTree(total_count, ..) => Ok(total_count).wrap_with_cost(cost),
             _ => Err(Error::InvalidInput("element is not a commitment tree")).wrap_with_cost(cost),
         }
-    }
-
-    /// Build the subtree path for a commitment tree at path/key.
-    fn build_ct_path<B: AsRef<[u8]>>(&self, path: &SubtreePath<B>, key: &[u8]) -> Vec<Vec<u8>> {
-        let mut v = path.to_vec();
-        v.push(key.to_vec());
-        v
     }
 
     /// Preprocess `CommitmentTreeInsert` ops in a batch.

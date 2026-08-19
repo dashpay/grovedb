@@ -128,6 +128,61 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         })
     }
 
+    /// Append a value deferring **both** the dense-tree root and the
+    /// state root.
+    ///
+    /// Storage effect is identical to [`append`](Self::append), but the
+    /// per-insert `compute_root_hash` walk over the dense buffer is skipped.
+    /// [`append_no_state_root`](Self::append_no_state_root) still pays that
+    /// walk on every call (via `try_insert`), which makes a run of N appends
+    /// O(N^2) in hash calls — 65,535 entries at `height = 16` costs ~4.3
+    /// billion. This variant is O(N) plus one final root computation.
+    ///
+    /// The caller MUST recover the state root once at the end via
+    /// [`compute_current_state_root`](Self::compute_current_state_root);
+    /// until then the dense root is stale in-memory only (it is always
+    /// recomputed from stored values, never cached).
+    ///
+    /// Compaction still happens inline when the buffer fills, because the
+    /// chunk blob is built from the stored values, not from the root.
+    pub fn append_deferred_roots(
+        &mut self,
+        value: &[u8],
+    ) -> Result<AppendNoStateRootResult, BulkAppendError> {
+        let mut hash_count: u32 = 0;
+        let global_position = self.total_count;
+
+        let try_result = self
+            .dense_tree
+            .try_insert_no_root(value)
+            .unwrap()
+            .map_err(|e| {
+                BulkAppendError::StorageError(format!("dense tree insert failed: {}", e))
+            })?;
+
+        let compacted = match try_result {
+            // Inserted into the buffer; no root walk, so no hashes yet.
+            Some(_position) => false,
+            None => {
+                // Buffer full — compact existing entries plus this value.
+                // Must run before incrementing total_count so self.mmr_size()
+                // reflects the pre-compaction state.
+                let (compact_hashes, mmr_root) = self.compact_with_value(value)?;
+                hash_count += compact_hashes;
+                self.last_mmr_root = Some(mmr_root);
+                true
+            }
+        };
+
+        self.total_count += 1;
+
+        Ok(AppendNoStateRootResult {
+            global_position,
+            hash_count,
+            compacted,
+        })
+    }
+
     /// Compute the current state root without modifying the tree.
     ///
     /// Uses the cached MMR root when available, so this is O(1) on the
