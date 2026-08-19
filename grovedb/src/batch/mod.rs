@@ -577,6 +577,48 @@ impl GroveOp {
             | GroveOp::DenseTreeInsert { .. } => false,
         }
     }
+
+    /// Whether an op can move an indexed primary entry's canonical
+    /// secondary ROW — a strictly wider question than
+    /// [`Self::can_mutate_child_count`].
+    ///
+    /// A canonical row binds the primary node's committed value hash as
+    /// well as its `(count, sum)`, so any op that rewrites the entry at
+    /// all can staleness the row. The non-Merk append ops are exactly the
+    /// difference: an `MmrTreeAppend` leaves `(count, sum)` untouched but
+    /// writes a new non-Merk root into the entry, which moves its
+    /// commitment. Capturing on `can_mutate_child_count` left those rows
+    /// bound to a hash that no longer existed, which `verify_grovedb`
+    /// then reported as a stale target.
+    ///
+    /// EXHAUSTIVE on purpose — no `_` arm — so a new op variant is a
+    /// compile error here rather than a silently unmirrored mutation.
+    /// That is the same technique `can_mutate_child_count` uses, for the
+    /// same bug class.
+    pub(crate) fn can_mutate_indexed_secondary_row(&self) -> bool {
+        match self {
+            GroveOp::InsertWithKnownToNotAlreadyExist { .. }
+            | GroveOp::InsertIfNotExists { .. }
+            | GroveOp::InsertOrReplace { .. }
+            | GroveOp::Replace { .. }
+            | GroveOp::Patch { .. }
+            | GroveOp::Delete
+            | GroveOp::DeleteTree(..)
+            | GroveOp::RefreshReference { .. }
+            | GroveOp::ReplaceTreeRootKey { .. }
+            | GroveOp::InsertTreeWithRootHash { .. }
+            | GroveOp::ReplaceNonMerkTreeRoot { .. }
+            | GroveOp::InsertNonMerkTree { .. }
+            | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. }
+            | GroveOp::InsertAggregateIndexedTreeRootKeys { .. }
+            // The four that `can_mutate_child_count` excludes: they
+            // rewrite the entry's non-Merk root, hence its commitment.
+            | GroveOp::CommitmentTreeInsert { .. }
+            | GroveOp::MmrTreeAppend { .. }
+            | GroveOp::BulkAppend { .. }
+            | GroveOp::DenseTreeInsert { .. } => true,
+        }
+    }
 }
 
 impl PartialOrd for GroveOp {
@@ -2386,9 +2428,9 @@ where
         // primary level represent a child subtree's bubble-up — the
         // child's element bytes have a new aggregate count, so its
         // secondary entry needs to move; we capture it here too.
-        let indexed_pre_state: Option<BTreeMap<Vec<u8>, Option<(u64, i64)>>> = if in_tree_type
-            .is_indexed_primary()
-        {
+        let indexed_pre_state: Option<
+            BTreeMap<Vec<u8>, Option<crate::operations::indexed_tree::IndexedEntryState>>,
+        > = if in_tree_type.is_indexed_primary() {
             let merk = self.merks.get(path).expect("the Merk is cached");
             Some(cost_return_on_error!(
                 &mut cost,

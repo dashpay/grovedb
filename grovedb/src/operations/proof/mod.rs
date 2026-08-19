@@ -989,6 +989,23 @@ fn node_to_string(node: &Node) -> Result<String, fmt::Error> {
             hex::encode(value_hash),
             count
         ),
+        Node::KVRefValueHashCountSumWithTargetChildHash(
+            key,
+            value,
+            value_hash,
+            count,
+            sum,
+            target_child_hash,
+        ) => format!(
+            "KVRefValueHashCountSumWithTargetChildHash({}, {}, HASH[{}], {}, {}, \
+             target_child=HASH[{}])",
+            hex_to_ascii(key),
+            element_hex_to_ascii(value)?,
+            hex::encode(value_hash),
+            count,
+            sum,
+            hex::encode(target_child_hash)
+        ),
         Node::KVRefValueHash(key, value, value_hash) => format!(
             "KVRefValueHash({}, {}, HASH[{}])",
             hex_to_ascii(key),

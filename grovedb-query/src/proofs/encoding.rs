@@ -540,6 +540,35 @@ impl Encode for Op {
                     sum.encode_into(dest)?;
                 }
             }
+            Op::Push(Node::KVRefValueHashCountSumWithTargetChildHash(
+                key,
+                value,
+                value_hash,
+                count,
+                sum,
+                target_child_hash,
+            )) => {
+                let key_len = key_len_u8(key)?;
+                if value.len() < 65536 {
+                    dest.write_all(&[0x4e, key_len])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    count.encode_into(dest)?;
+                    sum.encode_into(dest)?;
+                    dest.write_all(target_child_hash)?;
+                } else {
+                    dest.write_all(&[0x4f, key_len])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    count.encode_into(dest)?;
+                    sum.encode_into(dest)?;
+                    dest.write_all(target_child_hash)?;
+                }
+            }
             Op::Push(Node::KVDigestCountSum(key, value_hash, count, sum)) => {
                 let key_len = key_len_u8(key)?;
 
@@ -607,6 +636,35 @@ impl Encode for Op {
                     dest.write_all(value_hash)?;
                     count.encode_into(dest)?;
                     sum.encode_into(dest)?;
+                }
+            }
+            Op::PushInverted(Node::KVRefValueHashCountSumWithTargetChildHash(
+                key,
+                value,
+                value_hash,
+                count,
+                sum,
+                target_child_hash,
+            )) => {
+                let key_len = key_len_u8(key)?;
+                if value.len() < 65536 {
+                    dest.write_all(&[0x50, key_len])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    count.encode_into(dest)?;
+                    sum.encode_into(dest)?;
+                    dest.write_all(target_child_hash)?;
+                } else {
+                    dest.write_all(&[0x51, key_len])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    count.encode_into(dest)?;
+                    sum.encode_into(dest)?;
+                    dest.write_all(target_child_hash)?;
                 }
             }
             Op::PushInverted(Node::KVDigestCountSum(key, value_hash, count, sum)) => {
@@ -790,6 +848,23 @@ impl Encode for Op {
                     + count.encoding_length()?
                     + sum.encoding_length()?
             }
+            Op::Push(Node::KVRefValueHashCountSumWithTargetChildHash(
+                key,
+                value,
+                _,
+                count,
+                sum,
+                _,
+            )) => {
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header
+                    + key.len()
+                    + value.len()
+                    + HASH_LENGTH
+                    + count.encoding_length()?
+                    + sum.encoding_length()?
+                    + HASH_LENGTH
+            }
             Op::Push(Node::KVDigestCountSum(key, _, count, sum)) => {
                 2 + key.len() + HASH_LENGTH + count.encoding_length()? + sum.encoding_length()?
             }
@@ -816,6 +891,23 @@ impl Encode for Op {
                     + HASH_LENGTH
                     + count.encoding_length()?
                     + sum.encoding_length()?
+            }
+            Op::PushInverted(Node::KVRefValueHashCountSumWithTargetChildHash(
+                key,
+                value,
+                _,
+                count,
+                sum,
+                _,
+            )) => {
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header
+                    + key.len()
+                    + value.len()
+                    + HASH_LENGTH
+                    + count.encoding_length()?
+                    + sum.encoding_length()?
+                    + HASH_LENGTH
             }
             Op::PushInverted(Node::KVDigestCountSum(key, _, count, sum)) => {
                 2 + key.len() + HASH_LENGTH + count.encoding_length()? + sum.encoding_length()?
@@ -1854,6 +1946,52 @@ impl Decode for Op {
                     count,
                     sum,
                 ))
+            }
+            // Resolved reference with a layered target. Same layout as
+            // `KVRefValueHashCountSum` (0x43/0x44, 0x4a/0x4b) plus a
+            // trailing 32-byte target child hash.
+            0x4e | 0x4f | 0x50 | 0x51 => {
+                let inverted = matches!(variant, 0x50 | 0x51);
+                let long_value = matches!(variant, 0x4f | 0x51);
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = if long_value {
+                    let len: u32 = Decode::decode(&mut input)?;
+                    if len > MAX_VALUE_LEN {
+                        return Err(ed::Error::UnexpectedByte(variant));
+                    }
+                    len
+                } else {
+                    let len: u16 = Decode::decode(&mut input)?;
+                    len as u32
+                };
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let count: u64 = Decode::decode(&mut input)?;
+                let sum: i64 = Decode::decode(&mut input)?;
+
+                let mut target_child_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut target_child_hash)?;
+
+                let node = Node::KVRefValueHashCountSumWithTargetChildHash(
+                    key,
+                    value,
+                    value_hash,
+                    count,
+                    sum,
+                    target_child_hash,
+                );
+                if inverted {
+                    Self::PushInverted(node)
+                } else {
+                    Self::Push(node)
+                }
             }
 
             0x10 => Self::Parent,

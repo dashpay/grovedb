@@ -245,6 +245,33 @@ pub enum Node {
     ///
     /// Contains: `(kv_hash, left_child_hash, right_child_hash, count, sum)`
     HashWithCountAndSum(CryptoHash, CryptoHash, CryptoHash, u64, i64),
+
+    /// A resolved reference whose TARGET is itself layered — a subtree, an
+    /// indexed element, or another reference — so the target's committed
+    /// value hash is a combined hash rather than `H(target_value)`.
+    ///
+    /// `KVRefValueHashCountSum` cannot express these: it reconstructs the
+    /// row's commitment as
+    /// `combine_hash(reference_element_hash, H(referenced_value))`, and no
+    /// choice of `referenced_value` makes `H(referenced_value)` equal a
+    /// combined hash. This variant carries the missing half — the target's
+    /// own child/next-hop commitment — so the verifier can rebuild the
+    /// full chain:
+    ///
+    /// ```text
+    /// target_committed = combine_hash(H(referenced_value), target_child_hash)
+    /// row_committed    = combine_hash(reference_element_hash, target_committed)
+    /// ```
+    ///
+    /// Introduced for indexed-tree axis proofs, where the rows are
+    /// canonical references and the primary entries they point at are
+    /// routinely subtrees (a count-indexed tree indexes its children's
+    /// counts, so tree-shaped children are the normal case, not an edge
+    /// case).
+    ///
+    /// Contains: `(key, referenced_value, reference_element_hash, count,
+    /// sum, target_child_hash)`
+    KVRefValueHashCountSumWithTargetChildHash(Vec<u8>, Vec<u8>, CryptoHash, u64, i64, CryptoHash),
 }
 
 use std::fmt;
@@ -373,6 +400,23 @@ impl fmt::Display for Node {
                 hex::encode(value_hash),
                 count,
                 sum
+            ),
+            Node::KVRefValueHashCountSumWithTargetChildHash(
+                key,
+                value,
+                value_hash,
+                count,
+                sum,
+                target_child_hash,
+            ) => format!(
+                "KVRefValueHashCountSumWithTargetChildHash({}, {}, HASH[{}], count={}, sum={}, \
+                 target_child=HASH[{}])",
+                hex_to_ascii(key),
+                hex_to_ascii(value),
+                hex::encode(value_hash),
+                count,
+                sum,
+                hex::encode(target_child_hash)
             ),
             Node::KVDigestCountSum(key, value_hash, count, sum) => format!(
                 "KVDigestCountSum({}, HASH[{}], count={}, sum={})",

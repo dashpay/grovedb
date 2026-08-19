@@ -65,6 +65,7 @@ mod axis_api;
 mod envelope;
 #[cfg(feature = "minimal")]
 mod generate;
+pub(crate) mod reference_resolution;
 pub(crate) mod verify;
 
 pub use envelope::{

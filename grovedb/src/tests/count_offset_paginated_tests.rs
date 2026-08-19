@@ -841,13 +841,16 @@ mod tests {
     // `merk/src/proofs/query/count_offset/tests.rs`) covers the
     // verifier symmetric.
 
-    /// Prover-side rejection for `Reference` in-range entries. Earlier
-    /// drafts returned the raw `Element::Reference` bytes verbatim
-    /// because the count-offset short-circuit doesn't run the regular
-    /// flow's reference post-pass. The prover now refuses to emit
-    /// these.
+    /// `Reference` in-range entries are RESOLVED, not rejected.
+    ///
+    /// The count-offset short-circuit used to return before the regular
+    /// flow's reference post-pass, so the prover refused to emit reference
+    /// rows at all rather than surface raw `Element::Reference` bytes. The
+    /// short-circuit now runs the post-pass itself, so a verified result
+    /// carries the dereferenced TARGET — which is what the regular flow
+    /// has always returned for the same query.
     #[test]
-    fn rejects_count_offset_with_reference_entry() {
+    fn count_offset_resolves_reference_entries_to_their_target() {
         let v = GroveVersion::latest();
         let db = make_test_grovedb(v);
         db.insert(
@@ -903,14 +906,36 @@ mod tests {
             vec![b"counts".to_vec()],
             SizedQuery::new(q, Some(2), Some(1)),
         );
-        let result = db.prove_query(&path_query, None, v).unwrap();
-        let err = result.expect_err("prover must reject Reference in-range entry");
-        let msg = format!("{}", err);
-        assert!(
-            msg.contains("Reference"),
-            "prover rejection should mention Reference; got {}",
-            msg
+        let proof = db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("a Reference in-range entry must now be provable");
+        let (root_hash, verified) =
+            GroveDb::verify_query(&proof, &path_query, v).expect("proof must verify");
+        assert_eq!(
+            root_hash,
+            db.root_hash(None, v).unwrap().unwrap(),
+            "the resolved proof must still reconstruct the grove root"
         );
+
+        // offset 1 skips "a"; the page is ["b" (the reference), "c"].
+        let values: Vec<(Vec<u8>, Element)> = verified
+            .into_iter()
+            .map(|(_, key, element)| (key, element.expect("value present")))
+            .collect();
+        assert_eq!(
+            values.len(),
+            2,
+            "limit 2 after offset 1 must return two rows, got {values:?}"
+        );
+        assert_eq!(values[0].0, b"b".to_vec());
+        assert_eq!(
+            values[0].1,
+            Element::new_item(b"target_value".to_vec()),
+            "the reference row must surface its dereferenced TARGET, not the reference"
+        );
+        assert_eq!(values[1].0, b"c".to_vec());
+        assert_eq!(values[1].1, Element::new_item(b"v_c".to_vec()));
     }
 
     // ──────── check_count_offset_target_tree_type error normalization ────────
@@ -1246,11 +1271,16 @@ mod tests {
         );
     }
 
-    /// Defense-in-depth: a forged proof that surfaces a Reference
-    /// element in `returned_items` must be rejected as `NotSupported`
-    /// mentioning "Reference" — the count-offset short-circuit doesn't
-    /// run the regular flow's reference post-pass, so accepting one
-    /// would surface a raw `Element::Reference` to the caller.
+    /// Defense-in-depth: a forged proof that surfaces an UNRESOLVED
+    /// Reference in `returned_items` must be rejected as `InvalidProof`.
+    ///
+    /// The prover now runs a reference post-pass on the count-offset
+    /// short-circuit, so an honest proof surfaces the dereferenced TARGET
+    /// and never the reference itself (see
+    /// `count_offset_resolves_reference_entries_to_their_target`). A raw
+    /// reference reaching the caller therefore means the value was
+    /// substituted after the fact, not that the shape is unsupported —
+    /// hence `InvalidProof` rather than `NotSupported`.
     #[test]
     fn verifier_rejects_forged_reference_returned_item() {
         use crate::reference_path::ReferencePathType;
@@ -1265,8 +1295,8 @@ mod tests {
         let result = GroveDb::verify_query_raw(&tampered, &path_query, v);
         let err = result.expect_err("forged Reference return must be rejected");
         assert!(
-            matches!(err, crate::Error::NotSupported(ref msg) if msg.contains("Reference")),
-            "forged Reference return should reject as NotSupported mentioning Reference; got {:?}",
+            matches!(err, crate::Error::InvalidProof(_, ref msg) if msg.contains("Reference")),
+            "forged Reference return should reject as InvalidProof mentioning Reference; got {:?}",
             err,
         );
     }

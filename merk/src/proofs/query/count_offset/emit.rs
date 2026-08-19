@@ -258,12 +258,6 @@ where
     //     Silently dropping it would be a correctness divergence — we
     //     reject upfront instead.
     //
-    //   • **Reference / ReferenceWithSumItem** in-range entry: regular
-    //     GroveDB's reference post-pass dereferences these into the
-    //     target's value bytes. The count-offset short-circuit returns
-    //     before that post-pass, so a verified result would contain
-    //     the raw `Element::Reference` rather than the target. Reject.
-    //
     //   • **Non-empty tree** in-range entry: V1 strict-mode requires a
     //     `KVValueHashFeatureTypeWithChildHash` proof node for these,
     //     which the count-offset prover doesn't emit. The verifier
@@ -271,8 +265,21 @@ where
     //     time saves the work of producing an honest-but-unverifiable
     //     proof.
     //
-    // Lifting any of these is straightforward future work: emit the
-    // appropriate node variant and update the verifier symmetrically.
+    // **References are supported.** They emit as
+    // `KVValueHashFeatureType` (see `emit_returned_node`), which the
+    // callers' reference post-pass rewrites into the
+    // `KVRefValueHash{Count,CountSum}` family carrying the resolved
+    // target — the same rewrite the regular count-tree flow performs.
+    // The verifier accepts and authenticates those variants, so a
+    // verified result carries the dereferenced target rather than a raw
+    // `Element::Reference`. A caller that does NOT run the post-pass
+    // still gets a sound proof; it just surfaces the reference bytes,
+    // which is why GroveDB's indexed-axis path applies the post-pass
+    // unconditionally.
+    //
+    // Lifting the remaining rejection is straightforward future work:
+    // emit the appropriate node variant and update the verifier
+    // symmetrically.
     if is_in_range {
         if own_struct == 0 {
             return Err(Error::InvalidProofError(
@@ -288,17 +295,6 @@ where
         match Element::deserialize(value_bytes, grove_version) {
             Ok(elem) => {
                 let inner = elem.into_underlying();
-                if inner.is_reference() {
-                    return Err(Error::InvalidProofError(
-                        "count-offset paginated proofs do not yet support \
-                         Reference / ReferenceWithSumItem in-range entries — the regular \
-                         flow's reference post-pass isn't applied on the count-offset \
-                         short-circuit, so a verified result would expose the raw \
-                         Element::Reference rather than the dereferenced target"
-                            .to_string(),
-                    ))
-                    .wrap_with_cost(cost);
-                }
                 if inner.is_non_empty_tree() {
                     return Err(Error::InvalidProofError(
                         "count-offset paginated proofs do not yet support non-empty tree \

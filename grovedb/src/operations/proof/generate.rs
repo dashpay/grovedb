@@ -1840,7 +1840,7 @@ impl GroveDb {
             // multi-layer accounting (if any) reflects the consumed
             // slots.
             let limit_u64 = path_query.query.limit.map(|l| l as u64);
-            let prove_result = cost_return_on_error!(
+            let mut prove_result = cost_return_on_error!(
                 &mut cost,
                 subtree
                     .prove_count_offset_on_range(
@@ -1862,6 +1862,88 @@ impl GroveDb {
                         e
                     )))
             );
+            // Dereference reference rows before encoding.
+            //
+            // This short-circuit returns without reaching the main
+            // ref-rewriting loop below, which is why the count-offset flow
+            // used to reject reference entries outright. Running the same
+            // rewrite here closes that gap rather than bypassing it.
+            //
+            // These are ORDINARY user references, so they follow ordinary
+            // terminal-reference semantics — unlike an indexed secondary
+            // row, which binds its immediate primary node and is resolved
+            // by `indexed_axis::reference_resolution`. The two rules are
+            // deliberately separate code paths.
+            for op in prove_result.ops.iter_mut() {
+                let node = match op {
+                    Op::Push(node) | Op::PushInverted(node) => node,
+                    _ => continue,
+                };
+                let Node::KVValueHashFeatureType(key, value, _, feature_type) = node else {
+                    continue;
+                };
+                let elem = match Element::deserialize(value, grove_version) {
+                    Ok(e) => e.into_underlying(),
+                    Err(_) => continue,
+                };
+                let (Element::Reference(reference_path, ..)
+                | Element::ReferenceWithSumItem(reference_path, ..)) = elem
+                else {
+                    continue;
+                };
+                let absolute_path = match path_from_reference_path_type(
+                    reference_path,
+                    &path.to_vec(),
+                    Some(key.as_slice()),
+                ) {
+                    Ok(p) => p,
+                    Err(e) => return Err(Error::from(e)).wrap_with_cost(cost),
+                };
+                let referenced_elem = cost_return_on_error!(
+                    &mut cost,
+                    self.follow_reference(
+                        absolute_path.as_slice().into(),
+                        true,
+                        None,
+                        grove_version
+                    )
+                );
+                let serialized_referenced_elem = match referenced_elem.serialize(grove_version) {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        return Err(Error::CorruptedData(String::from(
+                            "unable to serialize element",
+                        )))
+                        .wrap_with_cost(cost);
+                    }
+                };
+                let reference_element_hash = value_hash(value).unwrap_add_cost(&mut cost);
+                *node = match feature_type {
+                    TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => {
+                        Node::KVRefValueHashCountSum(
+                            key.to_owned(),
+                            serialized_referenced_elem,
+                            reference_element_hash,
+                            *count,
+                            *sum,
+                        )
+                    }
+                    TreeFeatureType::ProvableCountedMerkNode(count) => Node::KVRefValueHashCount(
+                        key.to_owned(),
+                        serialized_referenced_elem,
+                        reference_element_hash,
+                        *count,
+                    ),
+                    other => {
+                        return Err(Error::CorruptedData(format!(
+                            "count-offset proof: reference row {} carries non-count feature type \
+                             {other:?}",
+                            hex::encode(key)
+                        )))
+                        .wrap_with_cost(cost);
+                    }
+                };
+            }
             let mut serialized = Vec::with_capacity(128);
             encode_into(prove_result.ops.iter(), &mut serialized);
             // Apply consumed limit slots to the outer accounting.
