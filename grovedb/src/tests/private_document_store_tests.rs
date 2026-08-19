@@ -1149,7 +1149,7 @@ fn test_private_document_store_apply_without_batching() {
 }
 
 #[test]
-fn test_private_document_store_element_display_and_visualize() {
+fn test_private_document_store_element_display_and_type_str() {
     let element = Element::new_private_document_store(3, TEST_ENTRY_SIZE, TEST_CHUNK_POWER, None);
     let display = format!("{}", element);
     assert!(
@@ -1506,6 +1506,10 @@ fn test_private_document_store_delete_empty_and_via_batch() {
         db.get(&[b"root"], b"docs", None, grove_version).unwrap(),
         Err(Error::PathKeyNotFound(_))
     ));
+    let issues = db
+        .verify_grovedb(None, true, false, grove_version)
+        .expect("verify_grovedb after empty-store delete");
+    assert!(issues.is_empty(), "issues: {:?}", issues);
 
     // Batch DeleteTree is a wholly different path (scan_delete_tree_ops /
     // non_merk_delete_paths) from the direct delete.

@@ -481,3 +481,29 @@ fn private_document_store_invalid_config_is_unrepresentable() {
     let wrapped = Element::NonCounted(Box::new(Element::new_private_document_store(0, 0, 4, None)));
     assert!(wrapped.serialize(grove_version).is_err());
 }
+
+#[test]
+fn private_document_store_bincode_rejects_invalid_chunk_power() {
+    let grove_version = GroveVersion::latest();
+    // Craft bytes from a valid element, then corrupt chunk_power. serialize
+    // refuses to produce these, so deserialize is the ingress under test.
+    let good = Element::new_private_document_store(0, 64, 4, None);
+    let bytes = good.serialize(grove_version).expect("serialize valid");
+    // Layout: [24 (discriminant), total_count, entry_size, chunk_power, flags]
+    assert_eq!(bytes[0], 24);
+    assert_eq!(bytes[3], 4, "chunk_power is the fourth byte for this shape");
+
+    for bad_power in [0u8, 17, 255] {
+        let mut corrupted = bytes.clone();
+        corrupted[3] = bad_power;
+        assert!(
+            Element::deserialize(&corrupted, grove_version).is_err(),
+            "deserialize must reject chunk_power {}",
+            bad_power
+        );
+    }
+
+    // And the constructors reject the same values up front.
+    assert!(Element::empty_private_document_store(64, 0).is_err());
+    assert!(Element::empty_private_document_store(64, 17).is_err());
+}

@@ -828,10 +828,30 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                                     )
                                     .all(|(a, b)| a == b)
                         })
-                        .and_then(|(_, layer)| match layer.tree_type {
-                            TreeType::CommitmentTree(chunk_power)
-                            | TreeType::PrivateDocumentStore(chunk_power) => Some(chunk_power),
-                            _ => None,
+                        .and_then(|(_, layer)| {
+                            // The declared layer must be the RIGHT KIND of
+                            // append tree for this op. Accepting either kind
+                            // would let a store's epoch be estimated from a
+                            // commitment tree's declaration (or vice versa),
+                            // silently producing a confident but wrong
+                            // figure; a mismatch should fall through to the
+                            // loud "declare your layer" error instead.
+                            let chunk_power = match (&op, layer.tree_type) {
+                                (
+                                    GroveOp::CommitmentTreeInsert { .. },
+                                    TreeType::CommitmentTree(cp),
+                                )
+                                | (
+                                    GroveOp::PrivateDocumentStoreInsert { .. },
+                                    TreeType::PrivateDocumentStore(cp),
+                                ) => cp,
+                                _ => return None,
+                            };
+                            // A declared chunk power outside the range the
+                            // constructors accept cannot describe a real
+                            // tree, so treat it as undeclared rather than
+                            // estimating from it.
+                            (1..=16).contains(&chunk_power).then_some(chunk_power)
                         })
                 })
             } else {

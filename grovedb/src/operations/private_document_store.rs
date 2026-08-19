@@ -62,6 +62,44 @@ pub(crate) fn check_pds_enabled(
     Ok(())
 }
 
+/// The rules a `PrivateDocumentStore` element must satisfy to be created,
+/// shared by the direct insert paths (`add_element_on_transaction` v0 and
+/// v1) and mirrored by the batch arm.
+///
+/// Kept in one place because every one of these rules has to hold on all
+/// three paths: the version gate, the empty-at-creation requirement, and the
+/// committed-config bounds. They were previously written out per path, and
+/// the `entry_size` cap had to be applied to each copy separately — exactly
+/// the drift this prevents.
+pub(crate) fn validate_private_document_store_creation(
+    total_count: u64,
+    entry_size: u32,
+    chunk_power: u8,
+    grove_version: &GroveVersion,
+) -> Result<(), Error> {
+    check_pds_enabled(
+        "create Element::PrivateDocumentStore",
+        grove_version
+            .grovedb_versions
+            .operations
+            .private_document_store
+            .element_creation,
+    )?;
+    if total_count != 0 {
+        return Err(Error::InvalidCodeExecution(
+            "a private document store should be empty at the moment of insertion",
+        ));
+    }
+    // `entry_size` is capped at u16::MAX so the worst-case compaction blob
+    // (2^16 * entry_size) stays representable in the u32 storage-cost field.
+    if entry_size == 0 || entry_size > u16::MAX as u32 || !(1..=16).contains(&chunk_power) {
+        return Err(Error::InvalidInput(
+            "a PrivateDocumentStore requires entry_size in 1..=65535 and chunk_power in 1..=16",
+        ));
+    }
+    Ok(())
+}
+
 impl GroveDb {
     /// Append an entry to a PrivateDocumentStore subtree.
     ///
@@ -540,21 +578,18 @@ impl GroveDb {
             replacements.insert(tree_path.clone(), replacement);
         }
 
-        // Build the new ops list: keep non-PDS ops, replace the first PDS
-        // insert op per group with the replacement, skip the rest.
-        let mut first_seen: BTreeMap<TreePath, bool> = BTreeMap::new();
+        // Build the new ops list: keep non-PDS ops, and emit each store's
+        // single replacement in place of that store's FIRST insert op.
+        // `replacements.remove` yields a given store exactly once, so it is
+        // its own "first seen" marker — subsequent inserts for the same
+        // store find nothing and are dropped.
         let mut result = Vec::with_capacity(ops.len());
 
         for op in ops.into_iter() {
             if matches!(op.op, GroveOp::PrivateDocumentStoreInsert { .. }) {
-                let tree_path = op.path.to_path();
-                if !first_seen.contains_key(&tree_path) {
-                    first_seen.insert(tree_path.clone(), true);
-                    if let Some(replacement) = replacements.remove(&tree_path) {
-                        result.push(replacement);
-                    }
+                if let Some(replacement) = replacements.remove(&op.path.to_path()) {
+                    result.push(replacement);
                 }
-                // Skip subsequent PDS ops for the same store.
             } else {
                 result.push(op);
             }

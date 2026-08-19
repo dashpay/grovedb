@@ -502,8 +502,8 @@ impl Element {
 
     /// Set element to an empty private document store.
     ///
-    /// Returns `InvalidInput` unless `entry_size >= 1` and `chunk_power` is
-    /// in `1..=16` (the underlying `BulkAppendTree` dense-buffer height
+    /// Returns `InvalidInput` unless `entry_size` is in `1..=65535` and
+    /// `chunk_power` is in `1..=16` (the underlying `BulkAppendTree` dense-buffer height
     /// range). Unlike `empty_commitment_tree` / `empty_bulk_append_tree`,
     /// the constraints are enforced eagerly here: the configuration is
     /// committed into the state root, so an unusable config must never be

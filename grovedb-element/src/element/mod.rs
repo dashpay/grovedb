@@ -331,8 +331,8 @@ pub enum Element {
     ///
     /// Fields: `(total_count, entry_size, chunk_power, flags)`
     /// - `total_count`: Number of entries appended so far.
-    /// - `entry_size`: Committed byte length of every entry; appends of any
-    ///   other length are rejected.
+    /// - `entry_size`: Committed byte length of every entry, in `1..=65535`;
+    ///   appends of any other length are rejected.
     /// - `chunk_power`: Log2 of the chunk size (actual size = `1 <<
     ///   chunk_power`).
     /// - `flags`: Optional per-element metadata.
@@ -780,9 +780,13 @@ impl Element {
     }
 
     /// Validate the committed configuration of a `PrivateDocumentStore`
-    /// element, looking through `NonCounted`: `entry_size` must be non-zero
-    /// and `chunk_power` must be in `1..=16` (the underlying `BulkAppendTree`
-    /// dense-buffer height range). Returns `Ok(())` for every other variant.
+    /// element, looking through `NonCounted`: `entry_size` must be in
+    /// `1..=65535`
+    /// (the upper bound keeps `2^16 * entry_size` — the worst-case
+    /// compaction blob — representable in the u32 storage-cost field, so the
+    /// worst-case estimate stays a real bound), and `chunk_power` must be in
+    /// `1..=16` (the underlying `BulkAppendTree` dense-buffer height range).
+    /// Returns `Ok(())` for every other variant.
     ///
     /// The configuration is committed into the store's state root, so an
     /// unusable configuration must not be representable: the checked
@@ -1134,6 +1138,42 @@ mod serde_impl {
             )
             .expect("deserialize");
             assert_eq!(back, pcpsit);
+        }
+
+        /// A `PrivateDocumentStore` carrying an unusable committed config
+        /// must be rejected by the serde codec as well as bincode: the
+        /// config is bound into the store's state root, so an invalid one
+        /// must not be representable through any ingress.
+        #[test]
+        fn serde_rejects_invalid_private_document_store_config() {
+            for payload in [
+                // entry_size = 0
+                r#"{"PrivateDocumentStore":[0,0,4,null]}"#,
+                // entry_size above the 65535 cap
+                r#"{"PrivateDocumentStore":[0,65536,4,null]}"#,
+                // chunk_power = 0 and 17 (outside 1..=16)
+                r#"{"PrivateDocumentStore":[0,64,0,null]}"#,
+                r#"{"PrivateDocumentStore":[0,64,17,null]}"#,
+                // the same violations behind a NonCounted wrapper
+                r#"{"NonCounted":{"PrivateDocumentStore":[0,64,0,null]}}"#,
+                r#"{"NonCounted":{"PrivateDocumentStore":[0,0,4,null]}}"#,
+            ] {
+                let result: Result<Element, _> = serde_json::from_str(payload);
+                assert!(
+                    result.is_err(),
+                    "serde must reject {}; got {:?}",
+                    payload,
+                    result
+                );
+            }
+
+            // A valid config still round-trips.
+            let valid = Element::PrivateDocumentStore(3, 64, 4, None);
+            let json = serde_json::to_string(&valid).expect("serialize");
+            assert_eq!(
+                serde_json::from_str::<Element>(&json).expect("deserialize"),
+                valid
+            );
         }
 
         /// `NotCountedOrSummed(NotCountedOrSummed(_))` and cross-nestings

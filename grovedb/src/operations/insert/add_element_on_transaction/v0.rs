@@ -201,31 +201,13 @@ impl GroveDb {
             Element::PrivateDocumentStore(total_count, entry_size, chunk_power, _) => {
                 cost_return_on_error_no_add!(
                     cost,
-                    crate::operations::private_document_store::check_pds_enabled(
-                        "insert Element::PrivateDocumentStore",
-                        grove_version
-                            .grovedb_versions
-                            .operations
-                            .private_document_store
-                            .element_creation,
+                    crate::operations::private_document_store::validate_private_document_store_creation(
+                        *total_count,
+                        *entry_size,
+                        *chunk_power,
+                        grove_version,
                     )
                 );
-                if *total_count != 0 {
-                    return Err(Error::InvalidCodeExecution(
-                        "a private document store should be empty at the moment of insertion",
-                    ))
-                    .wrap_with_cost(cost);
-                }
-                if *entry_size == 0
-                    || *entry_size > u16::MAX as u32
-                    || !(1..=16).contains(chunk_power)
-                {
-                    return Err(Error::InvalidInput(
-                        "a PrivateDocumentStore requires entry_size in 1..=65535 and chunk_power \
-                         in 1..=16",
-                    ))
-                    .wrap_with_cost(cost);
-                }
                 // Write-once: creating a store over an existing element is
                 // rejected on the direct path too, matching the batch arm.
                 // A silent overwrite would reset the element to empty while

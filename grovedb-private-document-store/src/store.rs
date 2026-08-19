@@ -291,13 +291,22 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
     /// dense root, the bulk state root, and the composite `pds_state` root
     /// until the whole run is written.
     ///
-    /// Every entry is size-validated before it is written. On a size
-    /// violation the entries already appended remain — discard the
-    /// surrounding transaction for all-or-nothing semantics, matching
-    /// per-entry [`append`](Self::append) in a loop.
+    /// # Failure semantics
     ///
-    /// Returns the same shape the FINAL per-entry [`append`](Self::append)
-    /// would have: post-run roots, the last entry's position, the summed
+    /// EVERY entry is size-validated before ANY is written, so a wrong-sized
+    /// entry anywhere in the input leaves the store completely untouched —
+    /// no partial write, nothing to roll back.
+    ///
+    /// A failure that can only be detected mid-run — a storage fault during
+    /// a dense-tree write or an MMR compaction — is NOT rolled back: entries
+    /// already written stay written. This method has no rollback path of its
+    /// own, so a caller that needs all-or-nothing under storage faults must
+    /// discard the surrounding transaction, which is what the GroveDB batch
+    /// path does. Callers holding no transaction should treat a mid-run
+    /// storage error as leaving the store in an indeterminate state.
+    ///
+    /// Returns post-run roots, the last position appended BY THIS CALL (or
+    /// `None` for empty input), how many entries landed, the summed
     /// hash count, and whether any compaction occurred. For an empty input
     /// nothing is written and the current state root is returned.
     pub fn append_many<'e, I>(
@@ -345,10 +354,15 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
             last_global_position = Some(r.global_position);
         }
 
-        // Pay the deferred roots exactly once.
-        let bulk_state_root = match self.bulk_tree.compute_current_state_root() {
+        // Pay the deferred roots exactly once, through the cost-aware path
+        // so the dense-buffer walk's real storage reads and hashes are
+        // billed rather than re-derived from a hand-rolled model.
+        let root_ctx = self.bulk_tree.compute_current_state_root_with_cost();
+        let root_cost = root_ctx.cost;
+        let bulk_state_root = match root_ctx.value {
             Ok(r) => r,
             Err(e) => {
+                cost += root_cost;
                 return Err(PrivateDocumentStoreError::InvalidData(format!(
                     "state root: {}",
                     e
@@ -356,18 +370,15 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
                 .wrap_with_cost(cost);
             }
         };
+        hash_count = hash_count.saturating_add(root_cost.hash_node_calls);
+        cost += root_cost;
+
         let state_root =
             compute_private_document_store_state_root(&self.config_hash, &bulk_state_root);
-
-        // The two root hashes are computed on EVERY call, including an empty
-        // one, so they are charged unconditionally. Only the dense-buffer
-        // walk is conditional, since it re-hashes the live buffer that the
-        // appends just changed.
-        if self.bulk_tree.total_count > starting_total {
-            hash_count = hash_count.saturating_add(self.bulk_tree.buffer_count() as u32 * 2);
-        }
-        hash_count = hash_count.saturating_add(2);
-        cost.hash_node_calls += hash_count;
+        // The composite root is computed on EVERY call, including an empty
+        // one, so it is charged unconditionally.
+        hash_count = hash_count.saturating_add(1);
+        cost.hash_node_calls = cost.hash_node_calls.saturating_add(1);
 
         Ok(PrivateDocumentStoreAppendManyResult {
             state_root,
