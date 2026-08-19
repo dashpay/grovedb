@@ -1242,6 +1242,107 @@ mod tests {
         assert_clean(&db, gv);
     }
 
+    /// The direct write path and the batch path must commit the SAME
+    /// secondary shape for the same logical mutation — root hashes are
+    /// consensus.
+    ///
+    /// The one transition where the two used to diverge: an avg-axis
+    /// payload change at a fixed sort key ((1, 5) -> (2, 10) keeps
+    /// avg = 5). The batch mirror emits a single replacement write; the
+    /// direct path used to DELETE and REINSERT, which rebalances twice
+    /// and can settle a different AVL shape in the avg secondary —
+    /// identical data, different secondary root, different grove root.
+    #[test]
+    fn direct_and_batch_agree_on_root_for_a_fixed_key_avg_payload_change() {
+        let gv = GroveVersion::latest();
+
+        // Identical seeding on both databases: enough avg-secondary
+        // neighbors that a delete+reinsert has room to change shape.
+        let build = || {
+            let db = make_test_grovedb(gv);
+            make_pcpsit(
+                &db,
+                b"idx",
+                &[IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg],
+                gv,
+            );
+            // 24 children with distinct sums straddling k0's avg on
+            // both sides, inserted in an order that leaves the avg
+            // secondary deep enough for a delete+reinsert to have room
+            // to settle a different shape.
+            let mut seeds: Vec<(Vec<u8>, i64)> = (0..24i64)
+                .map(|i| (format!("k{:02}", i).into_bytes(), 2 * i + 5))
+                .collect();
+            seeds.swap(3, 20);
+            seeds.swap(7, 15);
+            for (child, sum) in [(b"k0".to_vec(), 29i64)]
+                .into_iter()
+                .chain(seeds.into_iter())
+            {
+                let child = child.as_slice();
+                db.insert_into_provable_count_provable_sum_indexed_tree(
+                    [TEST_LEAF, b"idx"].as_ref(),
+                    child,
+                    Element::empty_count_sum_tree(),
+                    None,
+                    gv,
+                )
+                .unwrap()
+                .expect("empty child");
+                db.insert(
+                    [TEST_LEAF, b"idx", child].as_ref(),
+                    b"a",
+                    Element::new_sum_item(sum),
+                    None,
+                    None,
+                    gv,
+                )
+                .unwrap()
+                .expect("seed child");
+            }
+            db
+        };
+
+        // (1, 29) -> (2, 58) on k0: avg stays 29 — mid-range among the
+        // neighbors' 5..=53, so k0's node sits in the interior of the
+        // avg secondary where a delete visibly rebalances.
+        let direct = build();
+        direct
+            .insert(
+                [TEST_LEAF, b"idx", b"k0"].as_ref(),
+                b"b",
+                Element::new_sum_item(29),
+                None,
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("direct proportional change");
+
+        let batched = build();
+        batched
+            .apply_batch(
+                vec![QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec(), b"idx".to_vec(), b"k0".to_vec()],
+                    b"b".to_vec(),
+                    Element::new_sum_item(29),
+                )],
+                None,
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("batched proportional change");
+
+        assert_clean(&direct, gv);
+        assert_clean(&batched, gv);
+        assert_eq!(
+            direct.root_hash(None, gv).unwrap().expect("direct root"),
+            batched.root_hash(None, gv).unwrap().expect("batched root"),
+            "the two write paths must commit identical roots for identical data"
+        );
+    }
+
     /// Every non-Merk tree type survives a full insert/delete cycle as a
     /// child of an indexed primary.
     ///
