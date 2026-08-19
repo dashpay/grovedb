@@ -107,6 +107,10 @@ impl<S: MMRStoreReadOps> MMR<S> {
             };
             let right_elem = elems.last().expect("checked");
             let parent_elem = MmrNode::merge(&left_elem, right_elem);
+            // `merge` is a blake3. The sibling read above was billed but the
+            // hash it feeds was not, so a push that collapsed several peaks
+            // reported only its I/O.
+            cost.hash_node_calls = cost.hash_node_calls.saturating_add(1);
             elems.push(parent_elem);
         }
         // store hashes
@@ -269,6 +273,13 @@ impl<S: MMRStoreReadOps> MMR<S> {
 
         if bagging_track > 1 {
             let rhs_peaks = proof.split_off(proof.len() - bagging_track);
+            // Same shared `bag_peaks` the root computation uses, and the same
+            // `bagging_track - 1` blake3 merges — charged here too, so proof
+            // generation does not get the folds for free just because it
+            // reaches them by a different route.
+            cost.hash_node_calls = cost
+                .hash_node_calls
+                .saturating_add(bagging_track.saturating_sub(1) as u32);
             match bag_peaks(rhs_peaks) {
                 Ok(Some(bagged)) => proof.push(bagged),
                 Ok(None) => {

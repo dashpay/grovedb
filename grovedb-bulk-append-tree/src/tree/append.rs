@@ -149,17 +149,25 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     pub fn append_deferred_roots(
         &mut self,
         value: &[u8],
-    ) -> Result<AppendNoStateRootResult, BulkAppendError> {
+    ) -> CostResult<AppendNoStateRootResult, BulkAppendError> {
+        let mut cost = OperationCost::default();
         let mut hash_count: u32 = 0;
         let global_position = self.total_count;
 
-        let try_result = self
+        let try_result = match self
             .dense_tree
             .try_insert_no_root(value)
-            .unwrap()
-            .map_err(|e| {
-                BulkAppendError::StorageError(format!("dense tree insert failed: {}", e))
-            })?;
+            .unwrap_add_cost(&mut cost)
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(BulkAppendError::StorageError(format!(
+                    "dense tree insert failed: {}",
+                    e
+                )))
+                .wrap_with_cost(cost);
+            }
+        };
 
         let compacted = match try_result {
             // Inserted into the buffer; no root walk, so no hashes yet.
@@ -168,7 +176,13 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                 // Buffer full — compact existing entries plus this value.
                 // Must run before incrementing total_count so self.mmr_size()
                 // reflects the pre-compaction state.
-                let (compact_hashes, mmr_root) = self.compact_with_value(value)?;
+                let (compact_hashes, mmr_root) = match self
+                    .compact_with_value_with_cost(value)
+                    .unwrap_add_cost(&mut cost)
+                {
+                    Ok(r) => r,
+                    Err(e) => return Err(e).wrap_with_cost(cost),
+                };
                 hash_count += compact_hashes;
                 self.last_mmr_root = Some(mmr_root);
                 true
@@ -182,6 +196,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             hash_count,
             compacted,
         })
+        .wrap_with_cost(cost)
     }
 
     /// Compute the current state root without modifying the tree.
@@ -241,26 +256,50 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// Compact all dense tree entries plus a new value into a chunk blob
     /// and append to the chunk MMR. Resets the dense tree.
     /// Returns `(hash_count, mmr_root)`.
+    ///
+    /// Cost-discarding wrapper over
+    /// [`compact_with_value_with_cost`](Self::compact_with_value_with_cost).
+    /// Kept so the released `append_no_state_root` path bills exactly what it
+    /// always has — its costs are dropped here, not at the call site.
     fn compact_with_value(&mut self, new_value: &[u8]) -> Result<(u32, [u8; 32]), BulkAppendError> {
+        self.compact_with_value_with_cost(new_value).unwrap()
+    }
+
+    /// Compact the buffer plus `new_value` into a chunk, propagating cost.
+    ///
+    /// Compaction is the expensive branch of an append: it reads every
+    /// buffered entry back out of storage, hashes the serialized blob, and
+    /// pushes it through the MMR. All of that was previously discarded, so a
+    /// compacting append looked no more expensive than a buffered one.
+    fn compact_with_value_with_cost(
+        &mut self,
+        new_value: &[u8],
+    ) -> CostResult<(u32, [u8; 32]), BulkAppendError> {
+        let mut cost = OperationCost::default();
         let mut hash_count: u32 = 0;
         let count = self.dense_tree.count();
 
         // Read all existing entries from dense tree
         let mut entries: Vec<Vec<u8>> = Vec::with_capacity(count as usize + 1);
         for i in 0..count {
-            let value = self
-                .dense_tree
-                .get(i)
-                .unwrap()
-                .map_err(|e| {
-                    BulkAppendError::StorageError(format!("dense tree get at {} failed: {}", i, e))
-                })?
-                .ok_or_else(|| {
-                    BulkAppendError::CorruptedData(format!(
+            let read = self.dense_tree.get(i).unwrap_add_cost(&mut cost);
+            let value = match read {
+                Ok(Some(v)) => v,
+                Ok(None) => {
+                    return Err(BulkAppendError::CorruptedData(format!(
                         "dense tree missing value at position {} (count={})",
                         i, count
-                    ))
-                })?;
+                    )))
+                    .wrap_with_cost(cost);
+                }
+                Err(e) => {
+                    return Err(BulkAppendError::StorageError(format!(
+                        "dense tree get at {} failed: {}",
+                        i, e
+                    )))
+                    .wrap_with_cost(cost);
+                }
+            };
             entries.push(value);
         }
 
@@ -268,7 +307,12 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         entries.push(new_value.to_vec());
 
         // Serialize chunk blob as a standard MMR leaf — hash = blake3(0x00 || blob)
-        let blob = serialize_chunk_blob(&entries)?;
+        let blob = match serialize_chunk_blob(&entries) {
+            Ok(b) => b,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
+        // `MmrNode::leaf` hashes the blob eagerly.
+        cost.hash_node_calls = cost.hash_node_calls.saturating_add(1);
         let leaf = MmrNode::leaf(blob);
 
         // Append chunk root to MMR
@@ -285,14 +329,15 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             let mut mmr =
                 MMR::new_with_overlay(mmr_size, &mmr_store, std::mem::take(&mut self.mmr_overlay));
 
-            let push_result = mmr.push(leaf).unwrap();
+            let push_result = mmr.push(leaf).unwrap_add_cost(&mut cost);
             if let Err(e) = push_result {
                 // Restore overlay before returning error
                 self.mmr_overlay = mmr.batch.take_overlay();
-                return Err(BulkAppendError::MmrError(format!("MMR push failed: {}", e)));
+                return Err(BulkAppendError::MmrError(format!("MMR push failed: {}", e)))
+                    .wrap_with_cost(cost);
             }
 
-            let root_result = mmr.get_root().unwrap();
+            let root_result = mmr.get_root().unwrap_add_cost(&mut cost);
             let root = match root_result {
                 Ok(node) => node.hash(),
                 Err(e) => {
@@ -300,7 +345,8 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                     return Err(BulkAppendError::MmrError(format!(
                         "MMR get_root failed: {}",
                         e
-                    )));
+                    )))
+                    .wrap_with_cost(cost);
                 }
             };
 
@@ -313,7 +359,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         // Reset dense tree (old values stay in store, overwritten on next cycle)
         self.dense_tree.reset();
 
-        Ok((hash_count, mmr_root))
+        Ok((hash_count, mmr_root)).wrap_with_cost(cost)
     }
 
     /// Get the MMR root hash, or `[0; 32]` if no chunks exist.

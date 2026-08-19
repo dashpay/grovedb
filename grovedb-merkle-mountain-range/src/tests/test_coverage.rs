@@ -352,3 +352,73 @@ fn get_root_charges_one_hash_per_peak_merge() {
         "three peaks fold with two blake3 merges"
     );
 }
+
+/// `gen_proof` folds right-hand peaks through the same `bag_peaks` helper the
+/// root computation uses, so it performs the same blake3 merges and must bill
+/// them. Charging only in `get_root` left proof generation free.
+#[test]
+fn gen_proof_charges_the_peak_bagging_merges() {
+    // 7 leaves gives three peaks (4 + 2 + 1). A proof for the first leaf
+    // leaves the two right-hand peaks to be bagged: one merge.
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+    let mut positions = Vec::new();
+    for i in 0..7 {
+        positions.push(mmr.push(leaf(i)).unwrap().expect("push"));
+    }
+
+    let ctx = mmr.gen_proof(vec![positions[0]]);
+    ctx.value.expect("proof");
+    assert_eq!(
+        ctx.cost.hash_node_calls, 1,
+        "bagging two right-hand peaks is one blake3 merge, got {:?}",
+        ctx.cost
+    );
+
+    // A single perfect peak has nothing to bag.
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+    let mut positions = Vec::new();
+    for i in 0..4 {
+        positions.push(mmr.push(leaf(i)).unwrap().expect("push"));
+    }
+    let ctx = mmr.gen_proof(vec![positions[0]]);
+    ctx.value.expect("proof");
+    assert_eq!(
+        ctx.cost.hash_node_calls, 0,
+        "one peak means no bagging, got {:?}",
+        ctx.cost
+    );
+}
+
+/// `push` merges once per peak it collapses, and those merges are blake3
+/// calls. The sibling reads were billed but the hashes they fed were not.
+#[test]
+fn push_charges_one_hash_per_peak_collapse() {
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+
+    // Leaf 0: no collapse.
+    let ctx = mmr.push(leaf(0));
+    ctx.value.expect("push");
+    assert_eq!(ctx.cost.hash_node_calls, 0, "first leaf merges nothing");
+
+    // Leaf 1 collapses one pair.
+    let ctx = mmr.push(leaf(1));
+    ctx.value.expect("push");
+    assert_eq!(ctx.cost.hash_node_calls, 1, "one merge, got {:?}", ctx.cost);
+
+    // Leaf 2: no collapse (new peak).
+    let ctx = mmr.push(leaf(2));
+    ctx.value.expect("push");
+    assert_eq!(ctx.cost.hash_node_calls, 0, "got {:?}", ctx.cost);
+
+    // Leaf 3 collapses twice: the pair, then the two 2-leaf peaks.
+    let ctx = mmr.push(leaf(3));
+    ctx.value.expect("push");
+    assert_eq!(
+        ctx.cost.hash_node_calls, 2,
+        "two merges, got {:?}",
+        ctx.cost
+    );
+}

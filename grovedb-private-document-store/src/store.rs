@@ -344,7 +344,16 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
         let mut last_global_position = None;
 
         for entry in &entries {
-            let r = match self.bulk_tree.append_deferred_roots(entry) {
+            // The append's own cost — the buffer write, and on a compacting
+            // append the read-back of every buffered entry plus the MMR push
+            // and root — is merged into `cost` here. Copying only
+            // `r.hash_count` into the result field would leave that I/O and
+            // the MMR's bagging hashes free.
+            let r = match self
+                .bulk_tree
+                .append_deferred_roots(entry)
+                .unwrap_add_cost(&mut cost)
+            {
                 Ok(r) => r,
                 Err(e) => {
                     return Err(PrivateDocumentStoreError::InvalidData(format!(
@@ -736,6 +745,57 @@ mod atomicity_tests {
             ctx.cost.hash_node_calls, 8,
             "6 dense + 1 bulk root + 1 composite, got {:?}",
             ctx.cost
+        );
+    }
+
+    /// Compaction is the expensive branch of an append — it reads every
+    /// buffered entry back out of storage, hashes the chunk blob, and pushes
+    /// it through the MMR — and all of that used to be discarded, so a
+    /// compacting append billed no more I/O than a buffered one.
+    #[test]
+    fn compacting_append_bills_its_reads_and_hashes() {
+        // chunk_power 2: the buffer holds 3, so the 4th append compacts.
+        let mut store = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
+            .unwrap()
+            .expect("new");
+        for i in 0..3u8 {
+            store.append(&[i; 8]).unwrap().expect("append");
+        }
+
+        // The 4th append does not fit the buffer, so it compacts.
+        let compacting = store.append(&[3u8; 8]);
+        compacting.value.expect("compacting append");
+        let compacting_cost = compacting.cost;
+
+        assert!(
+            compacting_cost.seek_count > 0 && compacting_cost.storage_loaded_bytes > 0,
+            "compaction reads every buffered entry; those reads must be billed, got {:?}",
+            compacting_cost
+        );
+        // 3 buffered entries read back, at the committed 8 bytes each.
+        assert!(
+            compacting_cost.storage_loaded_bytes >= 24,
+            "expected at least the 3 x 8 bytes compaction reads back, got {:?}",
+            compacting_cost
+        );
+        // 1 chunk-blob leaf hash + 1 bulk state root + 1 composite root. The
+        // MMR push collapses no peaks at size 0 and the root takes the
+        // single-element path, so neither adds a hash here.
+        assert_eq!(
+            compacting_cost.hash_node_calls, 3,
+            "1 leaf + 1 bulk root + 1 composite, got {:?}",
+            compacting_cost
+        );
+
+        // A plain buffered append afterwards reads nothing back.
+        let plain = store.append(&[4u8; 8]);
+        plain.value.expect("buffered append");
+        assert!(
+            plain.cost.storage_loaded_bytes < compacting_cost.storage_loaded_bytes,
+            "a buffered append must be cheaper in loaded bytes than a \
+             compacting one (buffered {:?} vs compacting {:?})",
+            plain.cost,
+            compacting_cost
         );
     }
 
