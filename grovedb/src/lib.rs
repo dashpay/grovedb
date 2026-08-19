@@ -867,6 +867,135 @@ impl GroveDb {
         Ok(staged).wrap_with_cost(cost)
     }
 
+    /// Snapshot an entry's indexed state before a non-Merk append
+    /// rewrites it, returning `None` when the parent is not an indexed
+    /// primary (in which case there is nothing to mirror).
+    ///
+    /// Pairs with [`Self::mirror_indexed_entry_and_seed`]; see its docs
+    /// for why the direct non-Merk append APIs need this at all.
+    pub(crate) fn capture_indexed_entry_state<'db>(
+        primary_merk: &Merk<PrefixedRocksDbTransactionContext<'db>>,
+        key: &[u8],
+        element: &Element,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<crate::operations::indexed_tree::IndexedEntryState>, Error> {
+        let mut cost = OperationCost::default();
+        if !primary_merk.tree_type.is_indexed_primary() {
+            return Ok(None).wrap_with_cost(cost);
+        }
+        let value_hash = cost_return_on_error!(
+            &mut cost,
+            primary_merk
+                .get_value_hash(
+                    key,
+                    true,
+                    Some(&Element::value_defined_cost_for_serialized_value),
+                    grove_version,
+                )
+                .map_err(Error::MerkError)
+        );
+        let (count, sum) = element.count_sum_value_or_default();
+        Ok(value_hash.map(
+            |value_hash| crate::operations::indexed_tree::IndexedEntryState {
+                count,
+                sum,
+                value_hash,
+            },
+        ))
+        .wrap_with_cost(cost)
+    }
+
+    /// Mirror one rewritten entry of an indexed primary into its axis
+    /// secondaries and produce the seeds propagation needs.
+    ///
+    /// The direct non-Merk append APIs (MMR, commitment, bulk-append,
+    /// dense) write the updated element straight into the primary Merk
+    /// and only then start propagating, so the propagation walk — which
+    /// mirrors entries it discovers as it climbs — never sees the entry
+    /// that actually moved. That was harmless while rows were
+    /// aggregate-only (a non-Merk child's count is a constant `1`, so its
+    /// row never moved) and is not harmless now: a canonical row binds the
+    /// primary node's commitment, and an append rewrites exactly that.
+    ///
+    /// Returns `(initial_deferred_secondary, initial_deferred_axes)`. The
+    /// two are not interchangeable — propagation rebuilds a single-axis
+    /// element from the former and a PCPSIT from the latter, and seeding
+    /// the wrong one leaves the other set for a later iteration that has
+    /// no indexed element to apply it to.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn mirror_indexed_entry_and_seed<'b, 'db, B: AsRef<[u8]>>(
+        &self,
+        primary_path: SubtreePath<'b, B>,
+        primary_merk: &Merk<PrefixedRocksDbTransactionContext<'db>>,
+        key: &[u8],
+        old_state: Option<crate::operations::indexed_tree::IndexedEntryState>,
+        transaction: &Transaction,
+        batch: &StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<
+        (
+            Option<(Hash, Option<Vec<u8>>)>,
+            Option<Vec<(u8, Hash, Option<Vec<u8>>)>>,
+        ),
+        Error,
+    > {
+        let mut cost = OperationCost::default();
+        if !primary_merk.tree_type.is_indexed_primary() {
+            return Ok((None, None)).wrap_with_cost(cost);
+        }
+
+        let (grandparent_path, indexed_key) = cost_return_on_error_no_add!(
+            cost,
+            primary_path
+                .derive_parent()
+                .ok_or(Error::CorruptedCodeExecution(
+                    "an indexed primary requires a grandparent holding its indexed element",
+                ))
+        );
+        let indexed_element = {
+            let grandparent_merk = cost_return_on_error!(
+                &mut cost,
+                self.open_transactional_merk_at_path(
+                    grandparent_path,
+                    transaction,
+                    Some(batch),
+                    grove_version,
+                )
+            );
+            cost_return_on_error!(
+                &mut cost,
+                Element::get(&grandparent_merk, indexed_key, true, grove_version)
+                    .map_err(Error::MerkError)
+            )
+        };
+        let is_multi_axis = matches!(
+            indexed_element.underlying(),
+            Element::ProvableCountProvableSumIndexedTree(..)
+        );
+        let staged = cost_return_on_error!(
+            &mut cost,
+            self.mirror_indexed_primary_entry(
+                primary_path,
+                primary_merk,
+                &indexed_element,
+                key,
+                old_state,
+                transaction,
+                batch,
+                grove_version,
+            )
+        );
+        let seeds = if is_multi_axis {
+            (None, Some(staged))
+        } else {
+            (
+                staged.first().map(|(_, hash, key)| (*hash, key.clone())),
+                None,
+            )
+        };
+        Ok(seeds).wrap_with_cost(cost)
+    }
+
     pub(crate) fn propagate_changes_with_transaction_with_initial_deferred<'b, B: AsRef<[u8]>>(
         &self,
         mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,

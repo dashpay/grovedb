@@ -146,37 +146,13 @@ impl GroveDb {
 
         let updated_element = Element::new_mmr_tree(new_mmr_size, existing_flags);
 
-        // If the parent is an indexed primary, snapshot this entry's state
-        // BEFORE the rewrite. An append leaves `(count, sum)` alone but
-        // moves the entry's committed value hash, which is exactly what a
-        // canonical secondary row binds — so without this the row is left
-        // pointing at a commitment that no longer exists. The propagation
-        // walk cannot cover it: the mutation lands here, at the START path,
-        // rather than at a level the walk climbs through.
-        let parent_is_indexed_primary = parent_merk.tree_type.is_indexed_primary();
-        let old_indexed_state = if parent_is_indexed_primary {
-            let old_value_hash = cost_return_on_error!(
-                &mut cost,
-                parent_merk
-                    .get_value_hash(
-                        key,
-                        true,
-                        Some(&Element::value_defined_cost_for_serialized_value),
-                        grove_version,
-                    )
-                    .map_err(Error::MerkError)
-            );
-            let (count, sum) = element.count_sum_value_or_default();
-            old_value_hash.map(
-                |value_hash| crate::operations::indexed_tree::IndexedEntryState {
-                    count,
-                    sum,
-                    value_hash,
-                },
-            )
-        } else {
-            None
-        };
+        // A canonical indexed secondary row binds this entry's committed
+        // value hash, and an append moves it while leaving `(count, sum)`
+        // alone. Snapshot before the rewrite; mirror after.
+        let old_indexed_state = cost_return_on_error!(
+            &mut cost,
+            GroveDb::capture_indexed_entry_state(&parent_merk, key, &element, grove_version)
+        );
 
         // MMR root hash flows as the Merk child hash
         cost_return_on_error!(
@@ -186,67 +162,22 @@ impl GroveDb {
                 .map_err(|e| e.into())
         );
 
-        // 5. Mirror the moved entry into the primary's axis secondaries (if
-        //    the parent is an indexed primary), then propagate upward,
-        //    seeding the mirror's per-axis roots so the indexed element one
-        //    level up is rebuilt over the NEW secondary state rather than
-        //    re-read from stale root keys.
-        let initial_deferred = if parent_is_indexed_primary {
-            let (grandparent_path, indexed_key) = cost_return_on_error_no_add!(
-                cost,
-                path.derive_parent().ok_or(Error::CorruptedCodeExecution(
-                    "an indexed primary requires a grandparent holding its indexed element",
-                ))
-            );
-            let grandparent_merk = cost_return_on_error!(
-                &mut cost,
-                self.open_transactional_merk_at_path(
-                    grandparent_path,
-                    tx.as_ref(),
-                    Some(&batch),
-                    grove_version,
-                )
-            );
-            let indexed_element = cost_return_on_error!(
-                &mut cost,
-                Element::get(&grandparent_merk, indexed_key, true, grove_version)
-                    .map_err(Error::MerkError)
-            );
-            drop(grandparent_merk);
-            let is_multi_axis = matches!(
-                indexed_element.underlying(),
-                Element::ProvableCountProvableSumIndexedTree(..)
-            );
-            let staged = cost_return_on_error!(
-                &mut cost,
-                self.mirror_indexed_primary_entry(
-                    path.clone(),
-                    &parent_merk,
-                    &indexed_element,
-                    key,
-                    old_indexed_state,
-                    tx.as_ref(),
-                    &batch,
-                    grove_version,
-                )
-            );
-            // The two seeds are not interchangeable: propagation rebuilds a
-            // single-axis element from `deferred_secondary` and a PCPSIT
-            // from `deferred_axes`, and seeding the wrong one leaves the
-            // other set for a later iteration that has no indexed element
-            // to apply it to.
-            if is_multi_axis {
-                (None, Some(staged))
-            } else {
-                (
-                    staged.first().map(|(_, hash, key)| (*hash, key.clone())),
-                    None,
-                )
-            }
-        } else {
-            (None, None)
-        };
-        let (initial_deferred_secondary, initial_deferred_axes) = initial_deferred;
+        // 5. Mirror the moved entry into the primary's axis secondaries,
+        //    then propagate upward seeded with the mirror's per-axis roots
+        //    so the indexed element one level up is rebuilt over the NEW
+        //    secondary state rather than re-read from stale root keys.
+        let (initial_deferred_secondary, initial_deferred_axes) = cost_return_on_error!(
+            &mut cost,
+            self.mirror_indexed_entry_and_seed(
+                path.clone(),
+                &parent_merk,
+                key,
+                old_indexed_state,
+                tx.as_ref(),
+                &batch,
+                grove_version,
+            )
+        );
 
         let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
             HashMap::new();

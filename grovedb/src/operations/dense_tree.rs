@@ -121,6 +121,14 @@ impl GroveDb {
             )
         );
 
+        // A canonical indexed secondary row binds this entry's committed
+        // value hash, and an append moves it while leaving `(count, sum)`
+        // alone. Snapshot before the rewrite; mirror after.
+        let old_indexed_state = cost_return_on_error!(
+            &mut cost,
+            GroveDb::capture_indexed_entry_state(&parent_merk, key, &element, grove_version)
+        );
+
         let updated_element = Element::new_dense_tree(new_count, height, existing_flags);
 
         cost_return_on_error_into!(
@@ -135,15 +143,34 @@ impl GroveDb {
         );
 
         // 5. Propagate changes
+        // Mirror the moved entry into the primary's axis secondaries,
+        // then propagate seeded with the mirror's per-axis roots so the
+        // indexed element one level up is rebuilt over the NEW secondary
+        // state rather than re-read from stale root keys.
+        let (initial_deferred_secondary, initial_deferred_axes) = cost_return_on_error!(
+            &mut cost,
+            self.mirror_indexed_entry_and_seed(
+                path.clone(),
+                &parent_merk,
+                key,
+                old_indexed_state,
+                tx.as_ref(),
+                &batch,
+                grove_version,
+            )
+        );
+
         let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
             HashMap::new();
         merk_cache.insert(path.clone(), parent_merk);
 
         cost_return_on_error!(
             &mut cost,
-            self.propagate_changes_with_transaction(
+            self.propagate_changes_with_transaction_with_initial_deferred_axes(
                 merk_cache,
                 path,
+                initial_deferred_secondary,
+                initial_deferred_axes,
                 tx.as_ref(),
                 &batch,
                 grove_version,

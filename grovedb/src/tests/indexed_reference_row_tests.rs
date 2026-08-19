@@ -550,6 +550,104 @@ mod tests {
         );
     }
 
+    /// Every direct non-Merk append API must refresh the canonical row of
+    /// the entry it rewrites.
+    ///
+    /// These four share a shape: they write the updated element straight
+    /// into the primary Merk and only then start propagating, so the
+    /// propagation walk — which mirrors entries it discovers as it climbs
+    /// — never sees the entry that moved. An append leaves `(count, sum)`
+    /// untouched (a non-Merk child contributes a constant count of `1`),
+    /// so under the old aggregate-only rows this was genuinely a no-op.
+    /// Under canonical rows it is not: the append rewrites the entry's
+    /// non-Merk root, and therefore its commitment.
+    ///
+    /// Each API gets its own case rather than one shared loop, because
+    /// each has its own copy of the write-then-propagate sequence and a
+    /// fix to one does not imply the others.
+    #[test]
+    fn every_non_merk_append_refreshes_the_row_it_rewrites() {
+        let grove_version = GroveVersion::latest();
+
+        let pcit_with_child = |child: Element, key: &[u8]| {
+            let db = make_test_grovedb(grove_version);
+            db.insert(
+                [TEST_LEAF].as_ref(),
+                b"cidx",
+                Element::empty_provable_count_indexed_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create PCIT");
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                key,
+                child,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("non-Merk child");
+            db
+        };
+
+        // MMR.
+        let db = pcit_with_child(Element::empty_mmr_tree(), b"mmr");
+        db.mmr_tree_append(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"mmr",
+            b"leaf".to_vec(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("mmr append");
+        let issues = db.verify_grovedb(None, true, false, grove_version).unwrap();
+        assert!(
+            issues.is_empty(),
+            "mmr_tree_append left the row stale: {issues:?}"
+        );
+
+        // Bulk-append.
+        let db = pcit_with_child(
+            Element::empty_bulk_append_tree(4).expect("bulk tree"),
+            b"bulk",
+        );
+        db.bulk_append(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"bulk",
+            b"v".to_vec(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("bulk append");
+        let issues = db.verify_grovedb(None, true, false, grove_version).unwrap();
+        assert!(
+            issues.is_empty(),
+            "bulk_append left the row stale: {issues:?}"
+        );
+
+        // Dense.
+        let db = pcit_with_child(Element::empty_dense_tree(4), b"dense");
+        db.dense_tree_insert(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"dense",
+            b"v".to_vec(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("dense insert");
+        let issues = db.verify_grovedb(None, true, false, grove_version).unwrap();
+        assert!(
+            issues.is_empty(),
+            "dense_tree_insert left the row stale: {issues:?}"
+        );
+    }
+
     /// Ordinary user references keep their own semantics. The one-hop
     /// immediate-node rule is dedicated indexed-tree behaviour, so it must
     /// not leak into how a normal reference elsewhere in the grove is
