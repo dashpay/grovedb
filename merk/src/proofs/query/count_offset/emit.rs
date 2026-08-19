@@ -78,6 +78,9 @@ pub(super) struct EmitState {
     /// Walk direction. `true` = ascending (left-to-right), `false` =
     /// descending (right-to-left).
     pub(super) left_to_right: bool,
+    /// Whether an upper-layer envelope will authenticate and resolve raw
+    /// reference rows. Ordinary count-offset callers leave this false.
+    pub(super) allow_raw_references: bool,
 }
 
 /// Recursive proof emitter. Always called on a non-empty subtree.
@@ -258,12 +261,6 @@ where
     //     Silently dropping it would be a correctness divergence — we
     //     reject upfront instead.
     //
-    //   • **Reference / ReferenceWithSumItem** in-range entry: regular
-    //     GroveDB's reference post-pass dereferences these into the
-    //     target's value bytes. The count-offset short-circuit returns
-    //     before that post-pass, so a verified result would contain
-    //     the raw `Element::Reference` rather than the target. Reject.
-    //
     //   • **Non-empty tree** in-range entry: V1 strict-mode requires a
     //     `KVValueHashFeatureTypeWithChildHash` proof node for these,
     //     which the count-offset prover doesn't emit. The verifier
@@ -288,13 +285,10 @@ where
         match Element::deserialize(value_bytes, grove_version) {
             Ok(elem) => {
                 let inner = elem.into_underlying();
-                if inner.is_reference() {
+                if inner.is_reference() && !state.allow_raw_references {
                     return Err(Error::InvalidProofError(
-                        "count-offset paginated proofs do not yet support \
-                         Reference / ReferenceWithSumItem in-range entries — the regular \
-                         flow's reference post-pass isn't applied on the count-offset \
-                         short-circuit, so a verified result would expose the raw \
-                         Element::Reference rather than the dereferenced target"
+                        "count-offset paginated proofs require an upper-layer target witness to \
+                         return Reference / ReferenceWithSumItem entries"
                             .to_string(),
                     ))
                     .wrap_with_cost(cost);

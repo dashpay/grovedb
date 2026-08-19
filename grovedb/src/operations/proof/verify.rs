@@ -21,7 +21,10 @@ use crate::operations::proof::util::{
 };
 use crate::{
     operations::proof::{
-        indexed_axis::AxisEntries,
+        indexed_axis::{
+            verify::{resolve_indexed_axis_rows, ProvenAxisRows},
+            AxisEntries, IndexedTargetWitness,
+        },
         util::{ProvedPathKeyOptionalValue, ProvedPathKeyValues},
         AxisDescentProof, GroveDBProof, GroveDBProofV0, GroveDBProofV1, LayerProof,
         MerkOnlyLayerProof, ProofBytes, ProveOptions,
@@ -56,6 +59,22 @@ pub(crate) enum AxisWalkResult {
     },
     /// `RankOfKey`: the attested 0-based rank of the queried key.
     Rank { rank: u64 },
+    /// Internal-only state held until the surrounding V1 walk has
+    /// reconstructed the GroveDB root needed to authenticate target witnesses.
+    PendingEntries {
+        rows: ProvenAxisRows,
+        witnesses: Vec<IndexedTargetWitness>,
+        primary_root_hash: CryptoHash,
+        skipped: Option<u64>,
+    },
+    /// Internal-only rank counterpart of [`Self::PendingEntries`].
+    PendingRank {
+        rows: ProvenAxisRows,
+        witnesses: Vec<IndexedTargetWitness>,
+        primary_root_hash: CryptoHash,
+        rank: u64,
+        expected_key: Vec<u8>,
+    },
     /// `AggregateOverValueRange`: the attested aggregate over the value range.
     Aggregate { value: i128 },
     /// Sum-budget window: the matched `(key, value)` pairs, their net
@@ -509,6 +528,59 @@ impl GroveDb {
             0,
             grove_version,
         )?;
+        for outcome in &mut axis_outcomes {
+            let placeholder = AxisWalkResult::Aggregate { value: 0 };
+            outcome.result = match std::mem::replace(&mut outcome.result, placeholder) {
+                AxisWalkResult::PendingEntries {
+                    rows,
+                    witnesses,
+                    primary_root_hash,
+                    skipped,
+                } => {
+                    let path_slices: Vec<&[u8]> = outcome.path.iter().map(Vec::as_slice).collect();
+                    let entries = resolve_indexed_axis_rows(
+                        rows,
+                        &witnesses,
+                        &path_slices,
+                        &primary_root_hash,
+                        &root_hash,
+                        grove_version,
+                    )?;
+                    AxisWalkResult::Entries { entries, skipped }
+                }
+                AxisWalkResult::PendingRank {
+                    rows,
+                    witnesses,
+                    primary_root_hash,
+                    rank,
+                    expected_key,
+                } => {
+                    let path_slices: Vec<&[u8]> = outcome.path.iter().map(Vec::as_slice).collect();
+                    let entries = resolve_indexed_axis_rows(
+                        rows,
+                        &witnesses,
+                        &path_slices,
+                        &primary_root_hash,
+                        &root_hash,
+                        grove_version,
+                    )?;
+                    let yielded_key = entries.first_original_key().map(<[u8]>::to_vec);
+                    if yielded_key.as_deref() != Some(expected_key.as_slice()) {
+                        return Err(Error::InvalidProof(
+                            query.clone(),
+                            format!(
+                                "axis descent: the entry at rank {rank} is {:?}, not the queried \
+                                 key {}",
+                                yielded_key.map(hex::encode),
+                                hex::encode(expected_key),
+                            ),
+                        ));
+                    }
+                    AxisWalkResult::Rank { rank }
+                }
+                resolved => resolved,
+            };
+        }
         Ok((root_hash, result, axis_outcomes))
     }
 
@@ -833,7 +905,7 @@ impl GroveDb {
         use crate::operations::proof::indexed_axis::verify::{
             count_aggregate_inner_range, decode_axis_entries_from_count_offset_items,
             decode_axis_entries_from_result_set, recompute_axis_binding_digest,
-            sum_aggregate_inner_range,
+            sum_aggregate_inner_range, ProvenAxisRows,
         };
 
         // Envelope gate: the axis descent is a V4 acceptance rule.
@@ -885,6 +957,16 @@ impl GroveDb {
                     .to_string(),
             ));
         }
+        if matches!(
+            axis_query.traversal,
+            AxisTraversal::AggregateOverValueRange { .. }
+        ) && !payload.target_witnesses.is_empty()
+        {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "an aggregate axis descent must not carry target witnesses".to_string(),
+            ));
+        }
 
         // 1. Verify the secondary proof for the query's traversal,
         //    recomputing the secondary root hash.
@@ -905,12 +987,13 @@ impl GroveDb {
                         format!("axis descent: secondary count-offset proof failed: {e}"),
                     )
                 })?;
-                let entries =
-                    decode_axis_entries_from_count_offset_items(axis, &res.returned_items)?;
+                let rows = decode_axis_entries_from_count_offset_items(axis, &res.returned_items)?;
                 (
                     res.root_hash,
-                    AxisWalkResult::Entries {
-                        entries,
+                    AxisWalkResult::PendingEntries {
+                        rows,
+                        witnesses: payload.target_witnesses.clone(),
+                        primary_root_hash: payload.primary_root_hash,
                         skipped: Some(res.skipped),
                     },
                 )
@@ -951,21 +1034,17 @@ impl GroveDb {
                         ),
                     ));
                 }
-                let entries =
-                    decode_axis_entries_from_count_offset_items(axis, &res.returned_items)?;
-                let yielded_key = entries.first_original_key().map(|k| k.to_vec());
-                if yielded_key.as_deref() != Some(key.as_slice()) {
-                    return Err(Error::InvalidProof(
-                        query.clone(),
-                        format!(
-                            "axis descent: the entry at rank {rank} is {:?}, not the queried \
-                             key {}",
-                            yielded_key.map(hex::encode),
-                            hex::encode(key),
-                        ),
-                    ));
-                }
-                (res.root_hash, AxisWalkResult::Rank { rank })
+                let rows = decode_axis_entries_from_count_offset_items(axis, &res.returned_items)?;
+                (
+                    res.root_hash,
+                    AxisWalkResult::PendingRank {
+                        rows,
+                        witnesses: payload.target_witnesses.clone(),
+                        primary_root_hash: payload.primary_root_hash,
+                        rank,
+                        expected_key: key.clone(),
+                    },
+                )
             }
             AxisTraversal::Bounded { limit, .. } => {
                 if payload.secondary_proof.is_empty() {
@@ -979,8 +1058,10 @@ impl GroveDb {
                     // preimage.
                     (
                         NULL_HASH,
-                        AxisWalkResult::Entries {
-                            entries: AxisEntries::empty_for_axis(axis),
+                        AxisWalkResult::PendingEntries {
+                            rows: ProvenAxisRows::empty_for_axis(axis),
+                            witnesses: payload.target_witnesses.clone(),
+                            primary_root_hash: payload.primary_root_hash,
                             skipped: None,
                         },
                     )
@@ -1004,11 +1085,13 @@ impl GroveDb {
                                 format!("axis descent: secondary range proof failed: {e}"),
                             )
                         })?;
-                    let entries = decode_axis_entries_from_result_set(axis, &res.result_set)?;
+                    let rows = decode_axis_entries_from_result_set(axis, &res.result_set)?;
                     (
                         root,
-                        AxisWalkResult::Entries {
-                            entries,
+                        AxisWalkResult::PendingEntries {
+                            rows,
+                            witnesses: payload.target_witnesses.clone(),
+                            primary_root_hash: payload.primary_root_hash,
                             skipped: None,
                         },
                     )

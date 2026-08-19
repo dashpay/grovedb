@@ -9,6 +9,8 @@ use bincode::{Decode, Encode};
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::tree::CryptoHash;
 
+use crate::IndexedAxisEntry;
+
 /// Per-ancestor attestation for chaining the cidx/psit/pcpsit layer
 /// composition during verification.
 ///
@@ -29,7 +31,7 @@ use grovedb_merk::tree::CryptoHash;
 ///   The carried list is the *canonical* axes list of the ancestor
 ///   (sorted by tag ascending, 1..=3 entries) with each tag mapped to
 ///   the secondary's root hash at proof time.
-#[derive(Encode, Decode, Debug, Clone)]
+#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
 pub enum AncestorAttestation {
     /// Regular tree ancestor.
     NotIndexed,
@@ -39,6 +41,63 @@ pub enum AncestorAttestation {
     /// same `(axis_tag, secondary_root_hash)` order the ancestor uses
     /// to compute its on-disk `axes_digest`.
     MultiAxis(Vec<(u8, [u8; 32])>),
+}
+
+/// How a resolved target node's serialized element bytes are bound to
+/// the value hash committed by its parent Merk.
+///
+/// References bind to the next node in the witness chain. Tree variants
+/// carry the child commitment needed to authenticate their serialized
+/// element bytes. Simple item-like values commit as `H(value)`.
+#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
+pub enum IndexedTargetCommitment {
+    /// Item-like value whose committed value hash is `H(value)`.
+    Simple,
+    /// Ordinary Merk-backed or non-Merk tree, committed as
+    /// `combine_hash(H(value), child_root_hash)`.
+    Layered([u8; 32]),
+    /// PCIT / PSIT, committed as
+    /// `combine_hash_three(H(value), primary_root_hash,
+    /// secondary_root_hash)`.
+    IndexedSingle {
+        /// Root hash of the indexed tree's primary Merk.
+        primary_root_hash: [u8; 32],
+        /// Root hash of its only secondary Merk.
+        secondary_root_hash: [u8; 32],
+    },
+    /// PCPSIT, committed as
+    /// `combine_hash_three(H(value), primary_root_hash,
+    /// axes_digest(axes))`.
+    IndexedMulti {
+        /// Root hash of the indexed tree's primary Merk.
+        primary_root_hash: [u8; 32],
+        /// Canonical `(axis_tag, secondary_root_hash)` list.
+        axes: Vec<(u8, [u8; 32])>,
+    },
+    /// Reference node. Its committed value hash is reconstructed from
+    /// `H(value)` and the following node's committed value hash.
+    Reference,
+}
+
+/// One root-authenticated node in a resolved indexed-axis target chain.
+#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
+pub struct IndexedTargetNodeWitness {
+    /// Absolute qualified path, including this node's key.
+    pub qualified_path: Vec<Vec<u8>>,
+    /// Single-key Merk proof for every path segment, top-down.
+    pub layer_proofs: Vec<Vec<u8>>,
+    /// Indexed/non-indexed ancestor composition attestations.
+    pub ancestor_attestations: Vec<AncestorAttestation>,
+    /// Commitment shape for this node.
+    pub commitment: IndexedTargetCommitment,
+}
+
+/// Shape-complete proof that starts at the immediate primary row and
+/// follows any ordinary GroveDB references to the terminal value.
+#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
+pub struct IndexedTargetWitness {
+    /// Immediate primary node followed by zero or more reference targets.
+    pub nodes: Vec<IndexedTargetNodeWitness>,
 }
 
 /// Wire-format envelope for a range / top-k / arbitrary-query proof
@@ -79,6 +138,9 @@ pub struct IndexedAxisRangeProof {
     pub target_is_pcpsit: bool,
     /// Encoded Merk range proof for the per-axis secondary.
     pub secondary_proof: Vec<u8>,
+    /// One immediate-primary/terminal-resolution witness per returned
+    /// secondary row, in the secondary proof's result order.
+    pub target_witnesses: Vec<IndexedTargetWitness>,
     /// Echoed query limit (preserves `None`-vs-`Some(0)` semantics).
     pub requested_limit: Option<u16>,
     /// Echoed iteration direction. `false` = ascending, `true` =
@@ -114,6 +176,8 @@ pub struct IndexedAxisPaginatedProof {
     /// `prove_count_offset_on_range`-produced `Vec<Op>` stream (every
     /// axis's secondary carries a provable count).
     pub secondary_proof: Vec<u8>,
+    /// Same as [`IndexedAxisRangeProof::target_witnesses`].
+    pub target_witnesses: Vec<IndexedTargetWitness>,
     /// Echoed pagination parameters.
     pub requested_k: u16,
     /// Echoed offset.
@@ -165,12 +229,12 @@ pub struct IndexedAxisAggregateProof {
 /// [`IndexedAxisQueryResult::entries`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AxisEntries {
-    /// Count-axis entries: `(count_value, original_key)`.
-    Count(Vec<(u64, Vec<u8>)>),
-    /// Sum-axis entries: `(sum_value, original_key)`.
-    Sum(Vec<(i64, Vec<u8>)>),
-    /// Avg-axis entries: `(avg_fixed_point_i128, original_key)`.
-    Avg(Vec<(i128, Vec<u8>)>),
+    /// Count-axis entries.
+    Count(Vec<IndexedAxisEntry<u64>>),
+    /// Sum-axis entries.
+    Sum(Vec<IndexedAxisEntry<i64>>),
+    /// Avg-axis entries.
+    Avg(Vec<IndexedAxisEntry<i128>>),
 }
 
 impl AxisEntries {
@@ -197,9 +261,11 @@ impl AxisEntries {
     /// item of a `k = 1` page, used by rank verification.
     pub fn first_original_key(&self) -> Option<&[u8]> {
         match self {
-            AxisEntries::Count(entries) => entries.first().map(|(_, key)| key.as_slice()),
-            AxisEntries::Sum(entries) => entries.first().map(|(_, key)| key.as_slice()),
-            AxisEntries::Avg(entries) => entries.first().map(|(_, key)| key.as_slice()),
+            AxisEntries::Count(entries) => {
+                entries.first().map(|entry| entry.primary_key.as_slice())
+            }
+            AxisEntries::Sum(entries) => entries.first().map(|entry| entry.primary_key.as_slice()),
+            AxisEntries::Avg(entries) => entries.first().map(|entry| entry.primary_key.as_slice()),
         }
     }
 

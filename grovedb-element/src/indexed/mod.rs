@@ -17,7 +17,7 @@ pub use sort_keys::{
     encode_avg_sort_key, encode_count_sort_key, encode_sum_sort_key, AVG_FIXED_POINT_SCALE,
 };
 
-use crate::error::ElementError;
+use crate::{error::ElementError, reference_path::ReferencePathType, Element};
 
 /// Axis tag for a `ProvableCountProvableSumIndexedTree` secondary entry.
 ///
@@ -49,6 +49,32 @@ pub type IndexedTreeAxisEntry = (u8, Option<Vec<u8>>);
 /// the variant doc comment on [`crate::Element`] for the on-disk
 /// encoding.
 pub type IndexedTreeAxes = Vec<IndexedTreeAxisEntry>;
+
+/// Build the canonical secondary row for an indexed-tree axis.
+///
+/// The row is always a one-hop sibling reference to the primary key. Its
+/// explicit sum preserves the secondary's dual count/sum aggregates.
+pub fn canonical_axis_reference(
+    axis: IndexAxis,
+    primary_key: &[u8],
+    count: u64,
+    sum: i64,
+) -> Result<Element, ElementError> {
+    let axis_sum = match axis {
+        IndexAxis::Count => i64::try_from(count).map_err(|_| {
+            ElementError::CorruptedData(format!(
+                "count value {count} exceeds i64::MAX and cannot be mirrored into an indexed \
+                 count-axis secondary"
+            ))
+        })?,
+        IndexAxis::Sum | IndexAxis::Avg => sum,
+    };
+    Ok(Element::new_reference_with_sum_item_with_hops(
+        ReferencePathType::SiblingReference(primary_key.to_vec()),
+        Some(1),
+        axis_sum,
+    ))
+}
 
 #[cfg(test)]
 mod tests {

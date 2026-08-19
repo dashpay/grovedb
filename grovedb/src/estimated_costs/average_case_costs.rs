@@ -31,12 +31,6 @@ use crate::{
     Element, ElementFlags, Error, GroveDb,
 };
 
-/// Upper bound on an indexed secondary row's value. The payload is fixed
-/// per axis — a `SumItem` (count and sum axes) or an empty
-/// `ItemWithSumItem` (avg) — and the largest of those serializes well under
-/// this bound, which also leaves room for the feature type and flags byte.
-pub const INDEXED_SECONDARY_MAX_VALUE_SIZE: u32 = 16;
-
 impl GroveDb {
     /// Add average case for getting a merk tree
     pub fn add_average_case_get_merk_at_path<'db, S: Storage<'db>>(
@@ -481,10 +475,8 @@ impl GroveDb {
     ///   sparse or conditional indexing).
     /// - **Key size** is the primary's key size plus the axis sort-key width
     ///   (8 bytes for count/sum, 16 for avg).
-    /// - **Value size** is bounded by the fixed per-axis payload shape:
-    ///   a `SumItem` (count and sum axes), or an empty
-    ///   `ItemWithSumItem` (avg) — all under
-    ///   [`INDEXED_SECONDARY_MAX_VALUE_SIZE`].
+    /// - **Value size** is the canonical one-hop sibling
+    ///   `ReferenceWithSumItem`, including the primary key bytes.
     /// - **Tree type** is fixed per axis.
     ///
     /// Each axis is charged one Merk open, one delete of the old row and one
@@ -508,13 +500,30 @@ impl GroveDb {
         for axis in axes {
             let secondary_key_size =
                 (primary_key_size + axis_sort_key_len(*axis) as u32).min(u8::MAX as u32) as u8;
+            let estimated_primary_key = vec![0u8; primary_key_size as usize];
+            let worst_case_row = cost_return_on_error_no_add!(
+                cost,
+                crate::operations::indexed_tree::axis_row_reference(
+                    *axis,
+                    &estimated_primary_key,
+                    i64::MAX as u64,
+                    i64::MAX,
+                )
+            );
+            let secondary_value_size = cost_return_on_error_no_add!(
+                cost,
+                worst_case_row
+                    .serialized_size(grove_version)
+                    .map(|size| size as u32)
+                    .map_err(Error::ElementError)
+            );
             let secondary_layer = EstimatedLayerInformation {
                 tree_type: axis_secondary_tree_type(*axis),
                 // 1:1 with the primary.
                 estimated_layer_count: primary_layer_information.estimated_layer_count,
-                estimated_layer_sizes: EstimatedLayerSizes::AllItems(
+                estimated_layer_sizes: EstimatedLayerSizes::AllReferencesWithSumItem(
                     secondary_key_size,
-                    INDEXED_SECONDARY_MAX_VALUE_SIZE,
+                    secondary_value_size,
                     None,
                 ),
             };
@@ -540,21 +549,8 @@ impl GroveDb {
             // The mirror is delete-old-row then insert-new-row, each of which
             // rebalances and re-roots the secondary.
             //
-            // The inserted row must be sized with the AXIS's real payload
-            // shape: `average_case_merk_insert_element` charges non-tree
-            // elements by their own serialized size, and under-sizing put
-            // the PCPSIT estimate ~25 bytes per key UNDER actual
-            // `added_bytes` — the one dimension a storage-fee reservation
-            // cannot come in under. The shape comes from THE payload
-            // function the mirror writes with (`axis_row_payload`), fed
-            // worst-case aggregates: sum values are charged at their fixed
-            // worst-case varint width, so `i64::MAX` is the upper bound,
-            // not an average (and is in `count_value_as_sum`'s domain, so
-            // the conversion cannot fail here).
-            let worst_case_row = cost_return_on_error_no_add!(
-                cost,
-                crate::operations::indexed_tree::axis_row_payload(*axis, i64::MAX as u64, i64::MAX,)
-            );
+            // The inserted row is the same canonical reference shape the
+            // mirror writes, including the estimated primary-key bytes.
             cost_return_on_error!(
                 &mut cost,
                 Self::average_case_merk_delete_element(

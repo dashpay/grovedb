@@ -10,7 +10,7 @@ pub mod reference_path;
 pub(crate) mod visualize_helpers;
 
 pub use indexed::{
-    compute_avg_fixed_point, decode_avg_sort_key, decode_count_sort_key, decode_sum_sort_key,
-    encode_avg_sort_key, encode_count_sort_key, encode_sum_sort_key, IndexAxis, IndexedTreeAxes,
-    IndexedTreeAxisEntry, AVG_FIXED_POINT_SCALE,
+    canonical_axis_reference, compute_avg_fixed_point, decode_avg_sort_key, decode_count_sort_key,
+    decode_sum_sort_key, encode_avg_sort_key, encode_count_sort_key, encode_sum_sort_key,
+    IndexAxis, IndexedTreeAxes, IndexedTreeAxisEntry, AVG_FIXED_POINT_SCALE,
 };

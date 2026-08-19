@@ -88,7 +88,7 @@ mod tests {
         }
     }
 
-    fn entries_as_sum(entries: &AxisEntries) -> &[(i64, Vec<u8>)] {
+    fn entries_as_sum(entries: &AxisEntries) -> &[crate::IndexedAxisEntry<i64>] {
         match entries {
             AxisEntries::Sum(v) => v.as_slice(),
             other => panic!("expected sum entries, got {:?}", other),

@@ -17,6 +17,29 @@ use crate::{
     Element, Error,
 };
 
+/// One resolved entry returned by every non-aggregate indexed-axis read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedAxisEntry<T> {
+    /// Axis ordering value decoded from the secondary-key prefix.
+    pub ordering_value: T,
+    /// Primary key decoded from the secondary-key suffix.
+    pub primary_key: Vec<u8>,
+    /// Primary value after applying ordinary GroveDB reference resolution.
+    pub value: Element,
+}
+
+impl<T: PartialEq> PartialEq<(T, Vec<u8>)> for IndexedAxisEntry<T> {
+    fn eq(&self, other: &(T, Vec<u8>)) -> bool {
+        self.ordering_value == other.0 && self.primary_key == other.1
+    }
+}
+
+impl<T: PartialEq> PartialEq<IndexedAxisEntry<T>> for (T, Vec<u8>) {
+    fn eq(&self, other: &IndexedAxisEntry<T>) -> bool {
+        self.0 == other.ordering_value && self.1 == other.primary_key
+    }
+}
+
 #[derive(Copy, Clone)]
 /// Query result type
 pub enum QueryResultType {

@@ -402,6 +402,9 @@ pub struct AxisDescentProof {
     /// Merk range proof for `Bounded`, an aggregate-on-range proof for
     /// `AggregateOverValueRange`.
     pub secondary_proof: Vec<u8>,
+    /// One immediate-primary/terminal-resolution witness per returned
+    /// secondary row, in proof order. Aggregate traversals carry none.
+    pub target_witnesses: Vec<indexed_axis::IndexedTargetWitness>,
 }
 
 impl AxisDescentProof {

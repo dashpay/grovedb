@@ -24,13 +24,38 @@ use grovedb_merk::{
 use grovedb_query::{AggregateFold, QueryItem as MerkQueryItem};
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
-use crate::{Error, GroveDb};
+use crate::{operations::MAX_REFERENCE_HOPS, Element, Error, GroveDb, IndexedAxisEntry};
 
 use super::{
     aggregate_range_out_of_domain, AncestorAttestation, AxisEntries, IndexedAxisAggregateProof,
     IndexedAxisAggregateResult, IndexedAxisPaginatedProof, IndexedAxisPaginatedResult,
-    IndexedAxisQueryResult, IndexedAxisRangeProof,
+    IndexedAxisQueryResult, IndexedAxisRangeProof, IndexedTargetCommitment, IndexedTargetWitness,
 };
+
+#[derive(Debug)]
+pub(crate) struct ProvenAxisRow<T> {
+    ordering_value: T,
+    primary_key: Vec<u8>,
+    row_bytes: Vec<u8>,
+    row_value_hash: CryptoHash,
+}
+
+#[derive(Debug)]
+pub(crate) enum ProvenAxisRows {
+    Count(Vec<ProvenAxisRow<u64>>),
+    Sum(Vec<ProvenAxisRow<i64>>),
+    Avg(Vec<ProvenAxisRow<i128>>),
+}
+
+impl ProvenAxisRows {
+    pub(crate) fn empty_for_axis(axis: IndexAxis) -> Self {
+        match axis {
+            IndexAxis::Count => Self::Count(Vec::new()),
+            IndexAxis::Sum => Self::Sum(Vec::new()),
+            IndexAxis::Avg => Self::Avg(Vec::new()),
+        }
+    }
+}
 
 /// Walk the verifier-side ancestor chain (depths `last_idx - 1` down to
 /// `0`) and return the final reconstructed root hash. Returns the
@@ -296,6 +321,341 @@ fn execute_single_key_proof(
     Ok((value, root_hash, proved.proof))
 }
 
+struct VerifiedTargetNode {
+    value_bytes: Vec<u8>,
+    element: Element,
+    recorded_value_hash: CryptoHash,
+}
+
+fn verify_indexed_target_witness(
+    witness: &IndexedTargetWitness,
+    indexed_path: &[&[u8]],
+    primary_key: &[u8],
+    primary_root_hash: &CryptoHash,
+    grove_root_hash: &CryptoHash,
+    grove_version: &GroveVersion,
+) -> Result<(Element, CryptoHash, Element), Error> {
+    if witness.nodes.is_empty() {
+        return Err(Error::CorruptedData(
+            "indexed target witness contains no nodes".to_string(),
+        ));
+    }
+    if witness.nodes.len() > MAX_REFERENCE_HOPS + 1 {
+        return Err(Error::ReferenceLimit);
+    }
+
+    let mut expected_first_path: Vec<Vec<u8>> = indexed_path
+        .iter()
+        .map(|segment| segment.to_vec())
+        .collect();
+    expected_first_path.push(primary_key.to_vec());
+    if witness.nodes[0].qualified_path != expected_first_path {
+        return Err(Error::CorruptedData(format!(
+            "indexed target witness starts at {}, expected {}",
+            hex::encode(
+                witness.nodes[0]
+                    .qualified_path
+                    .last()
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+            ),
+            hex::encode(primary_key)
+        )));
+    }
+
+    let mut seen_paths = std::collections::HashSet::new();
+    let mut verified_nodes = Vec::with_capacity(witness.nodes.len());
+    for (index, node) in witness.nodes.iter().enumerate() {
+        if node.qualified_path.is_empty() {
+            return Err(Error::CorruptedData(
+                "indexed target witness node has an empty qualified path".to_string(),
+            ));
+        }
+        if !seen_paths.insert(node.qualified_path.clone()) {
+            return Err(Error::CyclicReference);
+        }
+        if node.layer_proofs.len() != node.qualified_path.len() {
+            return Err(Error::CorruptedData(format!(
+                "indexed target witness node {index} has {} layer proofs for a {}-segment path",
+                node.layer_proofs.len(),
+                node.qualified_path.len()
+            )));
+        }
+        let key = node.qualified_path.last().expect("checked non-empty");
+        let deepest = node.layer_proofs.len() - 1;
+        let (value_bytes, node_parent_root, recorded_value_hash) =
+            execute_single_key_proof(&node.layer_proofs[deepest], key, "indexed target witness")?;
+        if index == 0 && node_parent_root != *primary_root_hash {
+            return Err(Error::CorruptedData(format!(
+                "indexed target witness immediate-primary root {} does not match envelope \
+                 primary root {}",
+                hex::encode(node_parent_root),
+                hex::encode(primary_root_hash)
+            )));
+        }
+        let path_slices: Vec<&[u8]> = node.qualified_path.iter().map(Vec::as_slice).collect();
+        let reconstructed_root = walk_ancestor_chain(
+            &node.layer_proofs,
+            &node.ancestor_attestations,
+            &path_slices,
+            node_parent_root,
+            "indexed target witness",
+        )?;
+        if reconstructed_root != *grove_root_hash {
+            return Err(Error::CorruptedData(format!(
+                "indexed target witness node {index} reconstructs GroveDB root {}, expected {}",
+                hex::encode(reconstructed_root),
+                hex::encode(grove_root_hash)
+            )));
+        }
+        let element = Element::deserialize(&value_bytes, grove_version).map_err(|e| {
+            Error::CorruptedData(format!(
+                "indexed target witness node {index} contains an invalid element: {e}"
+            ))
+        })?;
+        verified_nodes.push(VerifiedTargetNode {
+            value_bytes,
+            element,
+            recorded_value_hash,
+        });
+    }
+
+    for (index, (wire_node, verified)) in
+        witness.nodes.iter().zip(verified_nodes.iter()).enumerate()
+    {
+        let serialized_hash = value_hash(&verified.value_bytes).value().to_owned();
+        let underlying = verified.element.underlying();
+        let expected_hash = match &wire_node.commitment {
+            IndexedTargetCommitment::Simple => {
+                if underlying.is_reference() || underlying.is_any_tree() {
+                    return Err(Error::CorruptedData(format!(
+                        "indexed target witness node {index} claims a simple commitment for {}",
+                        underlying.type_str()
+                    )));
+                }
+                serialized_hash
+            }
+            IndexedTargetCommitment::Layered(child_root_hash) => {
+                if !underlying.is_any_tree() || underlying.is_indexed_tree() {
+                    return Err(Error::CorruptedData(format!(
+                        "indexed target witness node {index} claims a layered commitment for {}",
+                        underlying.type_str()
+                    )));
+                }
+                combine_hash(&serialized_hash, child_root_hash)
+                    .value()
+                    .to_owned()
+            }
+            IndexedTargetCommitment::IndexedSingle {
+                primary_root_hash,
+                secondary_root_hash,
+            } => {
+                if !matches!(
+                    underlying,
+                    Element::ProvableCountIndexedTree(..) | Element::ProvableSumIndexedTree(..)
+                ) {
+                    return Err(Error::CorruptedData(format!(
+                        "indexed target witness node {index} claims a single-axis indexed \
+                         commitment for {}",
+                        underlying.type_str()
+                    )));
+                }
+                combine_hash_three(&serialized_hash, primary_root_hash, secondary_root_hash)
+                    .value()
+                    .to_owned()
+            }
+            IndexedTargetCommitment::IndexedMulti {
+                primary_root_hash,
+                axes,
+            } => {
+                let Element::ProvableCountProvableSumIndexedTree(_, _, _, configured_axes, _) =
+                    underlying
+                else {
+                    return Err(Error::CorruptedData(format!(
+                        "indexed target witness node {index} claims a multi-axis indexed \
+                         commitment for {}",
+                        underlying.type_str()
+                    )));
+                };
+                if axes.len() != configured_axes.len()
+                    || axes
+                        .iter()
+                        .zip(configured_axes)
+                        .any(|((got_tag, _), (want_tag, _))| got_tag != want_tag)
+                {
+                    return Err(Error::CorruptedData(format!(
+                        "indexed target witness node {index} axes do not match its PCPSIT element"
+                    )));
+                }
+                let digest = axes_digest(axes).value().to_owned();
+                combine_hash_three(&serialized_hash, primary_root_hash, &digest)
+                    .value()
+                    .to_owned()
+            }
+            IndexedTargetCommitment::Reference => {
+                let reference_path = match underlying {
+                    Element::Reference(path, ..) | Element::ReferenceWithSumItem(path, ..) => path,
+                    _ => {
+                        return Err(Error::CorruptedData(format!(
+                            "indexed target witness node {index} claims a reference commitment \
+                             for {}",
+                            underlying.type_str()
+                        )));
+                    }
+                };
+                let Some(next) = verified_nodes.get(index + 1) else {
+                    return Err(Error::CorruptedData(
+                        "indexed target witness terminates at a reference".to_string(),
+                    ));
+                };
+                let Some((key, parent_segments)) = wire_node.qualified_path.split_last() else {
+                    return Err(Error::CorruptedData(
+                        "indexed target witness reference has an empty path".to_string(),
+                    ));
+                };
+                let parent_builder: grovedb_path::SubtreePathBuilder<Vec<u8>> =
+                    grovedb_path::SubtreePathBuilder::owned_from_iter(
+                        parent_segments.iter().cloned(),
+                    );
+                let expected_next = reference_path
+                    .clone()
+                    .absolute_qualified_path(parent_builder, key)
+                    .map_err(Error::ElementError)?
+                    .to_vec();
+                if witness.nodes[index + 1].qualified_path != expected_next {
+                    return Err(Error::CorruptedData(format!(
+                        "indexed target witness reference node {index} points to a different path \
+                         than the next witness node"
+                    )));
+                }
+                combine_hash(&serialized_hash, &next.recorded_value_hash)
+                    .value()
+                    .to_owned()
+            }
+        };
+        if expected_hash != verified.recorded_value_hash {
+            return Err(Error::CorruptedData(format!(
+                "indexed target witness node {index} commitment mismatch: computed {}, parent \
+                 records {}",
+                hex::encode(expected_hash),
+                hex::encode(verified.recorded_value_hash)
+            )));
+        }
+    }
+
+    let immediate = verified_nodes.first().expect("checked non-empty");
+    let terminal = verified_nodes.last().expect("checked non-empty");
+    if terminal.element.underlying().is_reference() {
+        return Err(Error::CorruptedData(
+            "indexed target witness did not resolve to a terminal value".to_string(),
+        ));
+    }
+    Ok((
+        immediate.element.clone(),
+        immediate.recorded_value_hash,
+        terminal.element.clone().into_underlying(),
+    ))
+}
+
+fn resolve_axis_rows<T>(
+    axis: IndexAxis,
+    rows: Vec<ProvenAxisRow<T>>,
+    witnesses: &[IndexedTargetWitness],
+    indexed_path: &[&[u8]],
+    primary_root_hash: &CryptoHash,
+    grove_root_hash: &CryptoHash,
+    grove_version: &GroveVersion,
+) -> Result<Vec<IndexedAxisEntry<T>>, Error> {
+    if rows.len() != witnesses.len() {
+        return Err(Error::CorruptedData(format!(
+            "indexed-axis proof returned {} secondary rows but carries {} target witnesses",
+            rows.len(),
+            witnesses.len()
+        )));
+    }
+    let mut entries = Vec::with_capacity(rows.len());
+    for (row, witness) in rows.into_iter().zip(witnesses) {
+        let (immediate, immediate_value_hash, terminal) = verify_indexed_target_witness(
+            witness,
+            indexed_path,
+            &row.primary_key,
+            primary_root_hash,
+            grove_root_hash,
+            grove_version,
+        )?;
+        let (count, sum) = immediate.count_sum_value_or_default();
+        let expected_row =
+            grovedb_element::canonical_axis_reference(axis, &row.primary_key, count, sum)
+                .map_err(Error::ElementError)?;
+        let expected_row_bytes = expected_row
+            .serialize(grove_version)
+            .map_err(Error::ElementError)?;
+        if row.row_bytes != expected_row_bytes {
+            return Err(Error::CorruptedData(format!(
+                "indexed-axis secondary row for primary key {} is not the canonical one-hop \
+                 reference",
+                hex::encode(&row.primary_key)
+            )));
+        }
+        let row_hash = value_hash(&row.row_bytes).value().to_owned();
+        let expected_secondary_value_hash = combine_hash(&row_hash, &immediate_value_hash)
+            .value()
+            .to_owned();
+        if row.row_value_hash != expected_secondary_value_hash {
+            return Err(Error::CorruptedData(format!(
+                "indexed-axis secondary reference for primary key {} is stale or bound to the \
+                 wrong immediate primary value hash",
+                hex::encode(&row.primary_key)
+            )));
+        }
+        entries.push(IndexedAxisEntry {
+            ordering_value: row.ordering_value,
+            primary_key: row.primary_key,
+            value: terminal,
+        });
+    }
+    Ok(entries)
+}
+
+pub(crate) fn resolve_indexed_axis_rows(
+    rows: ProvenAxisRows,
+    witnesses: &[IndexedTargetWitness],
+    indexed_path: &[&[u8]],
+    primary_root_hash: &CryptoHash,
+    grove_root_hash: &CryptoHash,
+    grove_version: &GroveVersion,
+) -> Result<AxisEntries, Error> {
+    match rows {
+        ProvenAxisRows::Count(rows) => Ok(AxisEntries::Count(resolve_axis_rows(
+            IndexAxis::Count,
+            rows,
+            witnesses,
+            indexed_path,
+            primary_root_hash,
+            grove_root_hash,
+            grove_version,
+        )?)),
+        ProvenAxisRows::Sum(rows) => Ok(AxisEntries::Sum(resolve_axis_rows(
+            IndexAxis::Sum,
+            rows,
+            witnesses,
+            indexed_path,
+            primary_root_hash,
+            grove_root_hash,
+            grove_version,
+        )?)),
+        ProvenAxisRows::Avg(rows) => Ok(AxisEntries::Avg(resolve_axis_rows(
+            IndexAxis::Avg,
+            rows,
+            witnesses,
+            indexed_path,
+            primary_root_hash,
+            grove_root_hash,
+            grove_version,
+        )?)),
+    }
+}
+
 impl GroveDb {
     /// Verify an `IndexedAxisRangeProof`-shaped top-k proof (full range,
     /// limit = `expected_k`, direction = `expected_descending`).
@@ -342,7 +702,7 @@ impl GroveDb {
         let mut full_range = MerkQuery::new();
         full_range.insert_all();
         full_range.left_to_right = !envelope.descending;
-        verify_indexed_axis_range_inner(envelope, full_range, expected_axis, path)
+        verify_indexed_axis_range_inner(envelope, full_range, expected_axis, path, grove_version)
     }
 
     /// Verify an `IndexedAxisRangeProof`-shaped arbitrary-query proof.
@@ -389,7 +749,13 @@ impl GroveDb {
                 expected_descending, envelope.descending
             )));
         }
-        verify_indexed_axis_range_inner(envelope, secondary_query, expected_axis, path)
+        verify_indexed_axis_range_inner(
+            envelope,
+            secondary_query,
+            expected_axis,
+            path,
+            grove_version,
+        )
     }
 
     /// Verify an `IndexedAxisPaginatedProof`-shaped paginated proof.
@@ -444,7 +810,7 @@ impl GroveDb {
                 expected_offset, envelope.requested_offset
             )));
         }
-        verify_indexed_axis_paginated_inner(envelope, expected_axis, path)
+        verify_indexed_axis_paginated_inner(envelope, expected_axis, path, grove_version)
     }
 
     /// Verify a rank-of-key proof produced by
@@ -491,9 +857,9 @@ impl GroveDb {
             )));
         }
         let yielded_key: &[u8] = match &result.entries {
-            AxisEntries::Count(v) if v.len() == 1 => &v[0].1,
-            AxisEntries::Sum(v) if v.len() == 1 => &v[0].1,
-            AxisEntries::Avg(v) if v.len() == 1 => &v[0].1,
+            AxisEntries::Count(v) if v.len() == 1 => &v[0].primary_key,
+            AxisEntries::Sum(v) if v.len() == 1 => &v[0].primary_key,
+            AxisEntries::Avg(v) if v.len() == 1 => &v[0].primary_key,
             other => {
                 return Err(Error::CorruptedData(format!(
                     "indexed-axis rank proof: expected exactly one yielded entry at the rank \
@@ -609,6 +975,7 @@ fn verify_indexed_axis_range_inner(
     secondary_query: MerkQuery,
     axis: IndexAxis,
     path: &[&[u8]],
+    grove_version: &GroveVersion,
 ) -> Result<IndexedAxisQueryResult, Error> {
     if envelope.layer_proofs.len() != path.len() {
         return Err(Error::CorruptedData(format!(
@@ -639,7 +1006,7 @@ fn verify_indexed_axis_range_inner(
             ))
         })?;
 
-    let entries = decode_axis_entries_from_result_set(axis, &sec_result.result_set)?;
+    let rows = decode_axis_entries_from_result_set(axis, &sec_result.result_set)?;
 
     let initial_root = verify_deepest_layer(
         &envelope.layer_proofs,
@@ -659,6 +1026,14 @@ fn verify_indexed_axis_range_inner(
         initial_root,
         "indexed-axis range proof",
     )?;
+    let entries = resolve_indexed_axis_rows(
+        rows,
+        &envelope.target_witnesses,
+        path,
+        &envelope.primary_root_hash,
+        &root_hash,
+        grove_version,
+    )?;
 
     Ok(IndexedAxisQueryResult { root_hash, entries })
 }
@@ -667,6 +1042,7 @@ fn verify_indexed_axis_paginated_inner(
     envelope: IndexedAxisPaginatedProof,
     axis: IndexAxis,
     path: &[&[u8]],
+    grove_version: &GroveVersion,
 ) -> Result<IndexedAxisPaginatedResult, Error> {
     if envelope.layer_proofs.len() != path.len() {
         return Err(Error::CorruptedData(format!(
@@ -701,7 +1077,7 @@ fn verify_indexed_axis_paginated_inner(
             "indexed-axis paginated proof: secondary count-offset proof failed to verify: {e}"
         ))
     })?;
-    let entries =
+    let rows =
         decode_axis_entries_from_count_offset_items(axis, &count_offset_result.returned_items)?;
     let (secondary_root_hash, skipped) =
         (count_offset_result.root_hash, count_offset_result.skipped);
@@ -723,6 +1099,14 @@ fn verify_indexed_axis_paginated_inner(
         path,
         initial_root,
         "indexed-axis paginated proof",
+    )?;
+    let entries = resolve_indexed_axis_rows(
+        rows,
+        &envelope.target_witnesses,
+        path,
+        &envelope.primary_root_hash,
+        &root_hash,
+        grove_version,
     )?;
 
     Ok(IndexedAxisPaginatedResult {
@@ -820,10 +1204,10 @@ fn verify_indexed_axis_aggregate_inner(
 pub(crate) fn decode_axis_entries_from_result_set(
     axis: IndexAxis,
     result_set: &[grovedb_merk::proofs::query::ProvedKeyOptionalValue],
-) -> Result<AxisEntries, Error> {
+) -> Result<ProvenAxisRows, Error> {
     match axis {
         IndexAxis::Count => {
-            let mut entries: Vec<(u64, Vec<u8>)> = Vec::with_capacity(result_set.len());
+            let mut entries = Vec::with_capacity(result_set.len());
             for proved in result_set {
                 if proved.key.len() < 8 {
                     return Err(Error::CorruptedData(format!(
@@ -833,15 +1217,21 @@ pub(crate) fn decode_axis_entries_from_result_set(
                 }
                 let mut count_bytes = [0u8; 8];
                 count_bytes.copy_from_slice(&proved.key[..8]);
-                entries.push((
-                    decode_count_sort_key(&count_bytes),
-                    proved.key[8..].to_vec(),
-                ));
+                entries.push(ProvenAxisRow {
+                    ordering_value: decode_count_sort_key(&count_bytes),
+                    primary_key: proved.key[8..].to_vec(),
+                    row_bytes: proved.value.clone().ok_or_else(|| {
+                        Error::CorruptedData(
+                            "indexed-axis secondary proof omitted a returned row value".to_string(),
+                        )
+                    })?,
+                    row_value_hash: proved.proof,
+                });
             }
-            Ok(AxisEntries::Count(entries))
+            Ok(ProvenAxisRows::Count(entries))
         }
         IndexAxis::Sum => {
-            let mut entries: Vec<(i64, Vec<u8>)> = Vec::with_capacity(result_set.len());
+            let mut entries = Vec::with_capacity(result_set.len());
             for proved in result_set {
                 if proved.key.len() < 8 {
                     return Err(Error::CorruptedData(format!(
@@ -851,12 +1241,21 @@ pub(crate) fn decode_axis_entries_from_result_set(
                 }
                 let mut sum_bytes = [0u8; 8];
                 sum_bytes.copy_from_slice(&proved.key[..8]);
-                entries.push((decode_sum_sort_key(&sum_bytes), proved.key[8..].to_vec()));
+                entries.push(ProvenAxisRow {
+                    ordering_value: decode_sum_sort_key(&sum_bytes),
+                    primary_key: proved.key[8..].to_vec(),
+                    row_bytes: proved.value.clone().ok_or_else(|| {
+                        Error::CorruptedData(
+                            "indexed-axis secondary proof omitted a returned row value".to_string(),
+                        )
+                    })?,
+                    row_value_hash: proved.proof,
+                });
             }
-            Ok(AxisEntries::Sum(entries))
+            Ok(ProvenAxisRows::Sum(entries))
         }
         IndexAxis::Avg => {
-            let mut entries: Vec<(i128, Vec<u8>)> = Vec::with_capacity(result_set.len());
+            let mut entries = Vec::with_capacity(result_set.len());
             for proved in result_set {
                 if proved.key.len() < 16 {
                     return Err(Error::CorruptedData(format!(
@@ -866,12 +1265,18 @@ pub(crate) fn decode_axis_entries_from_result_set(
                 }
                 let mut avg_bytes = [0u8; 16];
                 avg_bytes.copy_from_slice(&proved.key[..16]);
-                entries.push((
-                    grovedb_element::indexed::decode_avg_sort_key(&avg_bytes),
-                    proved.key[16..].to_vec(),
-                ));
+                entries.push(ProvenAxisRow {
+                    ordering_value: grovedb_element::indexed::decode_avg_sort_key(&avg_bytes),
+                    primary_key: proved.key[16..].to_vec(),
+                    row_bytes: proved.value.clone().ok_or_else(|| {
+                        Error::CorruptedData(
+                            "indexed-axis secondary proof omitted a returned row value".to_string(),
+                        )
+                    })?,
+                    row_value_hash: proved.proof,
+                });
             }
-            Ok(AxisEntries::Avg(entries))
+            Ok(ProvenAxisRows::Avg(entries))
         }
     }
 }
@@ -879,10 +1284,10 @@ pub(crate) fn decode_axis_entries_from_result_set(
 pub(crate) fn decode_axis_entries_from_count_offset_items(
     axis: IndexAxis,
     items: &[grovedb_merk::proofs::query::CountOffsetReturnedItem],
-) -> Result<AxisEntries, Error> {
+) -> Result<ProvenAxisRows, Error> {
     match axis {
         IndexAxis::Count => {
-            let mut entries: Vec<(u64, Vec<u8>)> = Vec::with_capacity(items.len());
+            let mut entries = Vec::with_capacity(items.len());
             for it in items {
                 if it.key.len() < 8 {
                     return Err(Error::CorruptedData(format!(
@@ -892,12 +1297,17 @@ pub(crate) fn decode_axis_entries_from_count_offset_items(
                 }
                 let mut count_bytes = [0u8; 8];
                 count_bytes.copy_from_slice(&it.key[..8]);
-                entries.push((decode_count_sort_key(&count_bytes), it.key[8..].to_vec()));
+                entries.push(ProvenAxisRow {
+                    ordering_value: decode_count_sort_key(&count_bytes),
+                    primary_key: it.key[8..].to_vec(),
+                    row_bytes: it.value.clone(),
+                    row_value_hash: it.value_hash,
+                });
             }
-            Ok(AxisEntries::Count(entries))
+            Ok(ProvenAxisRows::Count(entries))
         }
         IndexAxis::Avg => {
-            let mut entries: Vec<(i128, Vec<u8>)> = Vec::with_capacity(items.len());
+            let mut entries = Vec::with_capacity(items.len());
             for it in items {
                 if it.key.len() < 16 {
                     return Err(Error::CorruptedData(format!(
@@ -907,15 +1317,17 @@ pub(crate) fn decode_axis_entries_from_count_offset_items(
                 }
                 let mut avg_bytes = [0u8; 16];
                 avg_bytes.copy_from_slice(&it.key[..16]);
-                entries.push((
-                    grovedb_element::indexed::decode_avg_sort_key(&avg_bytes),
-                    it.key[16..].to_vec(),
-                ));
+                entries.push(ProvenAxisRow {
+                    ordering_value: grovedb_element::indexed::decode_avg_sort_key(&avg_bytes),
+                    primary_key: it.key[16..].to_vec(),
+                    row_bytes: it.value.clone(),
+                    row_value_hash: it.value_hash,
+                });
             }
-            Ok(AxisEntries::Avg(entries))
+            Ok(ProvenAxisRows::Avg(entries))
         }
         IndexAxis::Sum => {
-            let mut entries: Vec<(i64, Vec<u8>)> = Vec::with_capacity(items.len());
+            let mut entries = Vec::with_capacity(items.len());
             for it in items {
                 if it.key.len() < 8 {
                     return Err(Error::CorruptedData(format!(
@@ -925,9 +1337,14 @@ pub(crate) fn decode_axis_entries_from_count_offset_items(
                 }
                 let mut sum_bytes = [0u8; 8];
                 sum_bytes.copy_from_slice(&it.key[..8]);
-                entries.push((decode_sum_sort_key(&sum_bytes), it.key[8..].to_vec()));
+                entries.push(ProvenAxisRow {
+                    ordering_value: decode_sum_sort_key(&sum_bytes),
+                    primary_key: it.key[8..].to_vec(),
+                    row_bytes: it.value.clone(),
+                    row_value_hash: it.value_hash,
+                });
             }
-            Ok(AxisEntries::Sum(entries))
+            Ok(ProvenAxisRows::Sum(entries))
         }
     }
 }

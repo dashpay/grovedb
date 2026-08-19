@@ -29,8 +29,8 @@ use crate::{
     Element, Error, GroveDb, Transaction, TransactionArg,
 };
 
-/// Limit of possible indirections
-pub const MAX_REFERENCE_HOPS: usize = 10;
+/// Limit of possible indirections.
+pub use super::MAX_REFERENCE_HOPS;
 
 impl GroveDb {
     /// Get an element from the backing store

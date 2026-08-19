@@ -289,6 +289,12 @@ mod tests {
             Element::ProvableCountIndexedTree(_, _, c, _) => assert_eq!(c, 1),
             other => panic!("expected count=1 PCIT, got {:?}", other),
         }
+        let indexed = db
+            .indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 1, false, None, grove_version)
+            .unwrap()
+            .expect("indexed read after same-count overwrite");
+        assert_eq!(indexed[0].primary_key, b"row".to_vec());
+        assert_eq!(indexed[0].value, Element::new_item(b"second".to_vec()));
         assert_verify_passes(&db, grove_version);
     }
 

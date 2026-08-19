@@ -1,5 +1,8 @@
 //! Operations for the manipulation of GroveDB state
 
+/// Maximum number of ordinary reference indirections GroveDB follows.
+pub const MAX_REFERENCE_HOPS: usize = 10;
+
 #[cfg(feature = "minimal")]
 pub(crate) mod auxiliary;
 #[cfg(feature = "minimal")]
@@ -36,4 +39,4 @@ pub mod replace_subtree_root;
 pub mod indexed_tree;
 
 #[cfg(feature = "minimal")]
-pub use get::{QueryItemOrSumReturnType, MAX_REFERENCE_HOPS};
+pub use get::QueryItemOrSumReturnType;

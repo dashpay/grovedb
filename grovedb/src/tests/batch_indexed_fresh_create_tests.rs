@@ -462,5 +462,8 @@ mod tests {
         db.indexed_count_top_k(path, 5, true, None, gv)
             .unwrap()
             .expect("count top_k")
+            .into_iter()
+            .map(|entry| (entry.ordering_value, entry.primary_key))
+            .collect()
     }
 }

@@ -99,9 +99,10 @@ impl GroveDb {
 
         cost_return_on_error!(
             &mut cost,
-            self.propagate_changes_with_transaction(
+            self.propagate_changes_with_transaction_refreshing_indexed_row(
                 merk_cache,
                 path,
+                key,
                 tx.as_ref(),
                 &batch,
                 grove_version,

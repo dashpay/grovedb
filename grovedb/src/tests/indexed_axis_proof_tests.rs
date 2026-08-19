@@ -14,6 +14,7 @@
 #[cfg(test)]
 mod tests {
     use grovedb_element::indexed::IndexAxis;
+    use grovedb_element::reference_path::ReferencePathType;
     use grovedb_merk::proofs::query::AggregateFold;
     use grovedb_merk::proofs::{query::QueryItem as MerkQueryItem, Query as MerkQuery};
     use grovedb_version::version::GroveVersion;
@@ -111,21 +112,21 @@ mod tests {
         db.root_hash(None, grove_version).unwrap().expect("root")
     }
 
-    fn entries_as_count(entries: &AxisEntries) -> &[(u64, Vec<u8>)] {
+    fn entries_as_count(entries: &AxisEntries) -> &[crate::IndexedAxisEntry<u64>] {
         match entries {
             AxisEntries::Count(v) => v.as_slice(),
             other => panic!("expected count entries, got {:?}", other),
         }
     }
 
-    fn entries_as_sum(entries: &AxisEntries) -> &[(i64, Vec<u8>)] {
+    fn entries_as_sum(entries: &AxisEntries) -> &[crate::IndexedAxisEntry<i64>] {
         match entries {
             AxisEntries::Sum(v) => v.as_slice(),
             other => panic!("expected sum entries, got {:?}", other),
         }
     }
 
-    fn entries_as_avg(entries: &AxisEntries) -> &[(i128, Vec<u8>)] {
+    fn entries_as_avg(entries: &AxisEntries) -> &[crate::IndexedAxisEntry<i128>] {
         match entries {
             AxisEntries::Avg(v) => v.as_slice(),
             other => panic!("expected avg entries, got {:?}", other),
@@ -135,6 +136,103 @@ mod tests {
     // =================================================================
     // PCIT × count axis (compat with PCIT proof family)
     // =================================================================
+
+    #[test]
+    fn indexed_rows_resolve_primary_references_in_reads_and_proofs() {
+        use crate::operations::proof::indexed_axis::{
+            IndexedAxisRangeProof, IndexedTargetCommitment,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcit",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create PCIT");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"pcit"].as_ref(),
+            b"target",
+            Element::new_item(b"canonical-value".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert canonical target");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"pcit"].as_ref(),
+            b"alias",
+            Element::new_reference(ReferencePathType::SiblingReference(b"target".to_vec())),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert primary reference");
+
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let direct = db
+            .indexed_count_top_k(path, 2, false, None, grove_version)
+            .unwrap()
+            .expect("direct indexed read");
+        assert_eq!(direct[0].primary_key, b"alias".to_vec());
+        assert_eq!(
+            direct[0].value,
+            Element::new_item(b"canonical-value".to_vec())
+        );
+
+        let proof = db
+            .prove_indexed_count_top_k(path, 2, false, None, grove_version)
+            .unwrap()
+            .expect("prove indexed reference result");
+        let verified = GroveDb::verify_indexed_count_top_k(&proof, path, 2, false, grove_version)
+            .expect("verify indexed reference result");
+        let entries = entries_as_count(&verified.entries);
+        assert_eq!(entries[0].primary_key, b"alias".to_vec());
+        assert_eq!(
+            entries[0].value,
+            Element::new_item(b"canonical-value".to_vec())
+        );
+        assert_eq!(verified.root_hash, root_hash(&db, grove_version));
+
+        let paginated_proof = db
+            .prove_indexed_count_top_k_paginated(path, 2, 0, false, None, grove_version)
+            .unwrap()
+            .expect("prove paginated indexed reference result");
+        let paginated = GroveDb::verify_indexed_count_top_k_paginated(
+            &paginated_proof,
+            path,
+            2,
+            0,
+            false,
+            grove_version,
+        )
+        .expect("verify paginated indexed reference result");
+        let paginated_entries = entries_as_count(&paginated.entries);
+        assert_eq!(paginated_entries[0].primary_key, b"alias".to_vec());
+        assert_eq!(
+            paginated_entries[0].value,
+            Element::new_item(b"canonical-value".to_vec())
+        );
+
+        let config = bincode::config::standard();
+        let (mut tampered, _): (IndexedAxisRangeProof, _) =
+            bincode::decode_from_slice(&proof, config).expect("decode range envelope");
+        assert!(matches!(
+            tampered.target_witnesses[0].nodes[0].commitment,
+            IndexedTargetCommitment::Reference
+        ));
+        tampered.target_witnesses[0].nodes[0].commitment = IndexedTargetCommitment::Simple;
+        let tampered = bincode::encode_to_vec(&tampered, config).expect("encode tampered proof");
+        assert!(
+            GroveDb::verify_indexed_count_top_k(&tampered, path, 2, false, grove_version).is_err(),
+            "changing a reference witness to a simple commitment must invalidate the proof"
+        );
+    }
 
     #[test]
     fn pcit_indexed_axis_top_k_descending_round_trip() {
@@ -452,8 +550,8 @@ mod tests {
         // of original_key for ties (b/c/a → c, b, a).
         let entries = entries_as_count(&result.entries);
         assert_eq!(entries.len(), 3);
-        for (c, _) in entries {
-            assert_eq!(*c, 1);
+        for entry in entries {
+            assert_eq!(entry.ordering_value, 1);
         }
         assert_eq!(result.root_hash, root_hash(&db, grove_version));
     }
@@ -602,8 +700,8 @@ mod tests {
         // Skip-1 then take-2 → c, b.
         let entries = entries_as_count(&result.entries);
         assert_eq!(entries.len(), 2);
-        for (c, _) in entries {
-            assert_eq!(*c, 1);
+        for entry in entries {
+            assert_eq!(entry.ordering_value, 1);
         }
         assert_eq!(result.skipped, 1);
     }
@@ -1991,15 +2089,34 @@ mod tests {
 
     #[test]
     fn axis_entries_helpers() {
-        let c = AxisEntries::Count(vec![(1u64, b"a".to_vec())]);
+        let c = AxisEntries::Count(vec![crate::IndexedAxisEntry {
+            ordering_value: 1u64,
+            primary_key: b"a".to_vec(),
+            value: Element::new_item(b"a".to_vec()),
+        }]);
         assert_eq!(c.len(), 1);
         assert!(!c.is_empty());
         let empty_c = AxisEntries::Count(vec![]);
         assert_eq!(empty_c.len(), 0);
         assert!(empty_c.is_empty());
-        let s = AxisEntries::Sum(vec![(1i64, b"a".to_vec()), (2i64, b"b".to_vec())]);
+        let s = AxisEntries::Sum(vec![
+            crate::IndexedAxisEntry {
+                ordering_value: 1i64,
+                primary_key: b"a".to_vec(),
+                value: Element::new_item(b"a".to_vec()),
+            },
+            crate::IndexedAxisEntry {
+                ordering_value: 2i64,
+                primary_key: b"b".to_vec(),
+                value: Element::new_item(b"b".to_vec()),
+            },
+        ]);
         assert_eq!(s.len(), 2);
-        let a = AxisEntries::Avg(vec![(1i128, b"a".to_vec())]);
+        let a = AxisEntries::Avg(vec![crate::IndexedAxisEntry {
+            ordering_value: 1i128,
+            primary_key: b"a".to_vec(),
+            value: Element::new_item(b"a".to_vec()),
+        }]);
         assert_eq!(a.len(), 1);
     }
 
@@ -2760,9 +2877,9 @@ mod tests {
                 .expect("verify");
         let got = entries_as_count(&result.entries);
         assert_eq!(got.len(), 3);
-        assert_eq!(got[0].0, 3);
-        assert_eq!(got[1].0, 2);
-        assert_eq!(got[2].0, 1);
+        assert_eq!(got[0].ordering_value, 3);
+        assert_eq!(got[1].ordering_value, 2);
+        assert_eq!(got[2].ordering_value, 1);
         assert_eq!(result.skipped, 6);
     }
 
@@ -3155,7 +3272,7 @@ mod tests {
             .expect("verify");
         let got = entries_as_count(&result.entries);
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].0, 2);
+        assert_eq!(got[0].ordering_value, 2);
     }
 
     // ---------- post-mutation / cross-check / scale ----------
@@ -3178,8 +3295,8 @@ mod tests {
         let got = entries_as_count(&result.entries);
         assert_eq!(got.len(), 2);
         // c(3) and a(1) remain.
-        assert_eq!(got[0].1, b"c".to_vec());
-        assert_eq!(got[1].1, b"a".to_vec());
+        assert_eq!(got[0].primary_key, b"c".to_vec());
+        assert_eq!(got[1].primary_key, b"a".to_vec());
     }
 
     #[test]
@@ -3236,8 +3353,8 @@ mod tests {
             .expect("verify");
         let got = entries_as_count(&result.entries);
         assert_eq!(got.len(), 10);
-        assert_eq!(got[0].0, 29);
-        assert_eq!(got[9].0, 20);
+        assert_eq!(got[0].ordering_value, 29);
+        assert_eq!(got[9].ordering_value, 20);
     }
 
     // ---------- triple-nested cidx ----------
@@ -3290,7 +3407,7 @@ mod tests {
             .expect("verify");
         let got = entries_as_count(&result.entries);
         assert_eq!(got.len(), 4);
-        assert_eq!(got[0].0, 7);
+        assert_eq!(got[0].ordering_value, 7);
         assert_eq!(result.root_hash, root_hash(&db, grove_version));
     }
 

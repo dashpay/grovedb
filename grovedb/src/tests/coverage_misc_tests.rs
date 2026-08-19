@@ -412,20 +412,20 @@ mod tests {
         )
         .storage_cost
         .added_bytes;
-        // +8 bytes of primary key => +8 bytes in each of the two rows the
-        // mirror writes.
-        assert_eq!(k16_count - k8_count, 16);
+        // +8 bytes of primary key appears in each old/new secondary key
+        // and in the canonical sibling-reference payload.
+        assert_eq!(k16_count - k8_count, 3 * 8);
         // A 8-byte primary + the avg axis and a 16-byte primary + the
         // count axis both produce a 24-byte secondary key, and since
         // issue #806 EVERY axis is a dual-aggregate
         // ProvableCountProvableSumTree (the count axis mirrors its
         // count_value into the sum half), the merk-node aggregate width
-        // is identical across axes. What is left is only the payload
-        // shape: avg stores an `ItemWithSumItem` (12 bytes at worst sum
-        // width) where count stores a `SumItem` (11) — the mirror
-        // estimator sizes each axis's row with its REAL payload shape.
-        assert_eq!(k8_avg - k16_count, 1);
-        assert_eq!(k8_avg - k8_count, 16 + 1);
+        // is identical across axes. Both rows now use the same canonical
+        // `ReferenceWithSumItem` shape. The avg row's shorter primary key
+        // saves eight payload bytes, while its wider sort prefix adds eight
+        // bytes to each of the old/new secondary keys.
+        assert_eq!(k16_count - k8_avg, 8);
+        assert_eq!(k8_avg - k8_count, 2 * 8);
         let count_axis = narrow;
 
         let sizes = EstimatedLayerSizes::AllItems(8, 100, None);
@@ -443,15 +443,18 @@ mod tests {
         assert_eq!(mirror_cost(sizes, &[]), OperationCost::default());
     }
 
-    /// The secondary key width saturates at `u8::MAX`, so primary keys
-    /// that would overflow price identically.
+    /// The secondary key width saturates at `u8::MAX`, but the canonical
+    /// reference payload still carries the complete primary key.
     #[test]
-    fn indexed_secondary_mirror_key_width_saturates_at_u8_max() {
+    fn indexed_secondary_mirror_reference_payload_grows_after_key_width_saturates() {
         let axes = [IndexAxis::Avg];
-        assert_eq!(
-            mirror_cost(EstimatedLayerSizes::AllItems(250, 100, None), &axes),
-            mirror_cost(EstimatedLayerSizes::AllItems(255, 100, None), &axes),
-            "both 250+16 and 255+16 clamp to a 255-byte secondary key"
+        let key_250 = mirror_cost(EstimatedLayerSizes::AllItems(250, 100, None), &axes);
+        let key_255 = mirror_cost(EstimatedLayerSizes::AllItems(255, 100, None), &axes);
+        assert_eq!(key_250.seek_count, key_255.seek_count);
+        assert_eq!(key_250.hash_node_calls, key_255.hash_node_calls);
+        assert!(
+            key_255.storage_cost.added_bytes > key_250.storage_cost.added_bytes,
+            "the secondary key is clamped in both estimates, but the reference payload grows"
         );
     }
 }

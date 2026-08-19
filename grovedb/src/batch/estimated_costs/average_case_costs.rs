@@ -2343,7 +2343,7 @@ mod tests {
     }
 
     /// The ≥-actual contract must hold for the MULTI-axis variant, not just
-    /// PCIT. The sum and avg axes' secondary rows (`SumItem`,
+    /// PCIT. The sum and avg axes' secondary rows (`ReferenceWithSumItem`,
     /// `ItemWithSumItem`) are larger than the count axis's empty `Item`;
     /// sizing all three as an empty item put the PCPSIT estimate ~25 bytes
     /// per key UNDER actual `added_bytes` — and the PCIT-only test above

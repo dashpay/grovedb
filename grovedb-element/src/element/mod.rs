@@ -293,11 +293,13 @@ pub enum Element {
     /// `ProvableCountedAndProvableSummedMerkNode` (both count AND sum
     /// baked into node hash) and carries a TLV list of 1..=3 secondary
     /// Merks — one per selected axis (count, sum, avg). Each secondary
-    /// lives at its own derived storage prefix; the count axis is a
-    /// `ProvableCountTree` while the sum and avg axes are
-    /// `ProvableCountProvableSumTree`s, so every axis carries a
-    /// hash-bound count (enabling count-bound offset pagination) and
-    /// the sum/avg axes can additionally produce sum-on-range proofs.
+    /// lives at its own derived storage prefix and is a
+    /// `ProvableCountProvableSumTree`, so every axis carries a
+    /// hash-bound count (enabling count-bound offset pagination). Its
+    /// canonical rows are `ReferenceWithSumItem` values that point to
+    /// the corresponding primary key and bind the immediate primary
+    /// node's committed value hash; sum/avg axes can additionally
+    /// produce sum-on-range proofs.
     ///
     /// Fields: `(primary_root_key, count_value, sum_value, axes, flags)`
     /// - `primary_root_key`: root key of the primary

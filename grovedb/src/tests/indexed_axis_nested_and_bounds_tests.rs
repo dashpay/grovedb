@@ -39,7 +39,7 @@ mod tests {
         assert!(issues.is_empty(), "verify_grovedb issues: {issues:?}");
     }
 
-    fn count_entries(entries: &AxisEntries) -> &Vec<(u64, Vec<u8>)> {
+    fn count_entries(entries: &AxisEntries) -> &Vec<crate::IndexedAxisEntry<u64>> {
         match entries {
             AxisEntries::Count(v) => v,
             other => panic!("expected count entries, got {other:?}"),
@@ -239,9 +239,12 @@ mod tests {
             db.root_hash(None, gv).unwrap().expect("root hash"),
             "the reconstructed root must equal the live GroveDB root"
         );
+        let AxisEntries::Sum(entries) = &result.entries else {
+            panic!("expected sum entries");
+        };
         assert_eq!(
-            result.entries,
-            AxisEntries::Sum(vec![(9i64, b"y".to_vec()), (-4i64, b"x".to_vec())]),
+            entries.as_slice(),
+            [(9i64, b"y".to_vec()), (-4i64, b"x".to_vec())],
             "descending sum order, negatives sorting below positives"
         );
     }

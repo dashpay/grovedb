@@ -22,9 +22,9 @@ use grovedb_merk::{
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
-use super::{read_entry_aggregates, AggregatePair, AggregateTransition};
+use super::{read_post_apply_state, AggregatePair, AggregateTransition};
 use crate::{
-    operations::indexed_tree::{axis_row_payload, make_axis_secondary_key},
+    operations::indexed_tree::{axis_row_reference, make_axis_secondary_key},
     Element, Error,
 };
 
@@ -69,11 +69,11 @@ pub(crate) fn read_post_apply_transitions<'db, S: StorageContext<'db>>(
     let mut cost = OperationCost::default();
     let mut transitions: Vec<AggregateTransition> = Vec::with_capacity(pre.len());
     for (key, old_aggregates) in pre {
-        let new_aggregates = cost_return_on_error!(
+        let new_state = cost_return_on_error!(
             &mut cost,
-            read_entry_aggregates(primary_merk, key, "post", grove_version)
+            read_post_apply_state(primary_merk, key, grove_version)
         );
-        transitions.push((key.clone(), *old_aggregates, new_aggregates));
+        transitions.push((key.clone(), *old_aggregates, new_state));
     }
     Ok(transitions).wrap_with_cost(cost)
 }
@@ -92,22 +92,19 @@ fn build_axis_mirror_batch(
     let mut cost = OperationCost::default();
     let secondary_tree_type = crate::operations::indexed_tree::axis_secondary_tree_type(axis);
     let mut secondary_batch: Vec<BatchEntry<Vec<u8>>> = Vec::with_capacity(transitions.len() * 2);
-    for (key, old_aggregates, new_aggregates) in transitions {
-        let entry_for = |aggregates: &AggregatePair| -> Result<_, Error> {
-            aggregates
-                .map(|(c, s)| {
-                    Ok((
-                        make_axis_secondary_key(axis, c, s, key),
-                        axis_row_payload(axis, c, s)?,
-                    ))
-                })
-                .transpose()
-        };
-        let old_entry = cost_return_on_error_no_add!(cost, entry_for(old_aggregates));
-        let new_entry = cost_return_on_error_no_add!(cost, entry_for(new_aggregates));
-        if old_entry == new_entry {
-            continue;
-        }
+    for (key, old_aggregates, new_state) in transitions {
+        let old_key =
+            old_aggregates.map(|(count, sum)| make_axis_secondary_key(axis, count, sum, key));
+        let new_entry = new_state
+            .map(|(count, sum, target_hash)| {
+                Ok((
+                    make_axis_secondary_key(axis, count, sum, key),
+                    axis_row_reference(axis, key, count, sum)?,
+                    target_hash,
+                ))
+            })
+            .transpose();
+        let new_entry = cost_return_on_error_no_add!(cost, new_entry);
         // Delete the old row ONLY if the new one lands on a different key.
         // On the avg axis a change can alter the payload while leaving the
         // sort key fixed — (count, sum) going (1, 5) -> (2, 10) keeps
@@ -115,8 +112,8 @@ fn build_axis_mirror_batch(
         // Merk batch is rejected outright ("Keys in batch must be unique"),
         // failing the whole GroveDB batch. Where the key is unchanged the put
         // alone overwrites the payload, which is what the row needs.
-        let new_secondary_key_ref = new_entry.as_ref().map(|(key, _)| key);
-        if let Some((old_secondary_key, _)) = &old_entry
+        let new_secondary_key_ref = new_entry.as_ref().map(|(key, ..)| key);
+        if let Some(old_secondary_key) = &old_key
             && Some(old_secondary_key) != new_secondary_key_ref
         {
             cost_return_on_error!(
@@ -131,7 +128,7 @@ fn build_axis_mirror_batch(
                 .map_err(Error::MerkError)
             );
         }
-        if let Some((new_secondary_key, entry)) = new_entry {
+        if let Some((new_secondary_key, entry, target_hash)) = new_entry {
             let feature_type = cost_return_on_error_no_add!(
                 cost,
                 entry
@@ -141,8 +138,9 @@ fn build_axis_mirror_batch(
             cost_return_on_error!(
                 &mut cost,
                 entry
-                    .insert_into_batch_operations(
+                    .insert_reference_into_batch_operations(
                         new_secondary_key,
+                        target_hash,
                         &mut secondary_batch,
                         feature_type,
                         grove_version,

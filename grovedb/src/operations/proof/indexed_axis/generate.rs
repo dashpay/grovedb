@@ -8,10 +8,19 @@
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+use std::collections::HashSet;
+
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::{
     element::get::ElementFetchFromStorageExtensions,
-    proofs::{encode_into, query::QueryItem as MerkQueryItemForRange, Query as MerkQuery},
+    proofs::{
+        encode_into,
+        query::{
+            verify_count_offset_on_range_proof, QueryItem as MerkQueryItemForRange,
+            QueryProofVerify,
+        },
+        Query as MerkQuery,
+    },
 };
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
 use grovedb_query::{AggregateFold, QueryItem as MerkQueryItem};
@@ -23,9 +32,9 @@ use crate::{util::TxRef, Element, Error, GroveDb, Transaction, TransactionArg};
 use super::{
     verify::{count_aggregate_inner_range, sum_aggregate_inner_range},
     AncestorAttestation, IndexedAxisAggregateProof, IndexedAxisPaginatedProof,
-    IndexedAxisRangeProof,
+    IndexedAxisRangeProof, IndexedTargetCommitment, IndexedTargetNodeWitness, IndexedTargetWitness,
 };
-use crate::operations::proof::AxisDescentProof;
+use crate::operations::{proof::AxisDescentProof, MAX_REFERENCE_HOPS};
 
 /// Build the per-ancestor attestation list for a path of length N: the
 /// list has length N-1 (one entry per intermediate layer). For each
@@ -196,6 +205,339 @@ fn build_layer_proofs<'db>(
         layer_proofs.push(result.proof);
     }
     Ok(layer_proofs).wrap_with_cost(cost)
+}
+
+/// Build the commitment-shape attestation for one target node.
+fn build_target_commitment<'db>(
+    grovedb: &'db GroveDb,
+    element: &Element,
+    qualified_path: &[Vec<u8>],
+    transaction: &'db Transaction,
+    batch: &'db StorageBatch,
+    grove_version: &GroveVersion,
+) -> CostResult<IndexedTargetCommitment, Error> {
+    let mut cost = OperationCost::default();
+    let underlying = element.underlying();
+
+    if underlying.is_reference() {
+        return Ok(IndexedTargetCommitment::Reference).wrap_with_cost(cost);
+    }
+
+    let target_path_owned: SubtreePathBuilder<Vec<u8>> =
+        SubtreePathBuilder::owned_from_iter(qualified_path.iter().cloned());
+    let target_path = SubtreePath::from(&target_path_owned);
+
+    match underlying {
+        Element::ProvableCountIndexedTree(_, secondary_root_key, ..) => {
+            let primary = cost_return_on_error!(
+                &mut cost,
+                grovedb.open_transactional_merk_at_path(
+                    target_path.clone(),
+                    transaction,
+                    Some(batch),
+                    grove_version,
+                )
+            );
+            let (primary_root_hash, _, _) = cost_return_on_error!(
+                &mut cost,
+                primary
+                    .root_hash_key_and_aggregate_data()
+                    .map_err(Error::MerkError)
+            );
+            let secondary = cost_return_on_error!(
+                &mut cost,
+                grovedb.open_indexed_secondary_at_path(
+                    target_path,
+                    IndexAxis::Count,
+                    secondary_root_key.clone(),
+                    transaction,
+                    Some(batch),
+                    grove_version,
+                )
+            );
+            let (secondary_root_hash, _, _) = cost_return_on_error!(
+                &mut cost,
+                secondary
+                    .root_hash_key_and_aggregate_data()
+                    .map_err(Error::MerkError)
+            );
+            Ok(IndexedTargetCommitment::IndexedSingle {
+                primary_root_hash,
+                secondary_root_hash,
+            })
+            .wrap_with_cost(cost)
+        }
+        Element::ProvableSumIndexedTree(_, secondary_root_key, ..) => {
+            let primary = cost_return_on_error!(
+                &mut cost,
+                grovedb.open_transactional_merk_at_path(
+                    target_path.clone(),
+                    transaction,
+                    Some(batch),
+                    grove_version,
+                )
+            );
+            let (primary_root_hash, _, _) = cost_return_on_error!(
+                &mut cost,
+                primary
+                    .root_hash_key_and_aggregate_data()
+                    .map_err(Error::MerkError)
+            );
+            let secondary = cost_return_on_error!(
+                &mut cost,
+                grovedb.open_indexed_secondary_at_path(
+                    target_path,
+                    IndexAxis::Sum,
+                    secondary_root_key.clone(),
+                    transaction,
+                    Some(batch),
+                    grove_version,
+                )
+            );
+            let (secondary_root_hash, _, _) = cost_return_on_error!(
+                &mut cost,
+                secondary
+                    .root_hash_key_and_aggregate_data()
+                    .map_err(Error::MerkError)
+            );
+            Ok(IndexedTargetCommitment::IndexedSingle {
+                primary_root_hash,
+                secondary_root_hash,
+            })
+            .wrap_with_cost(cost)
+        }
+        Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => {
+            let primary = cost_return_on_error!(
+                &mut cost,
+                grovedb.open_transactional_merk_at_path(
+                    target_path.clone(),
+                    transaction,
+                    Some(batch),
+                    grove_version,
+                )
+            );
+            let (primary_root_hash, _, _) = cost_return_on_error!(
+                &mut cost,
+                primary
+                    .root_hash_key_and_aggregate_data()
+                    .map_err(Error::MerkError)
+            );
+            let mut axis_hashes = Vec::with_capacity(axes.len());
+            for (tag, secondary_root_key) in axes {
+                let axis = cost_return_on_error_no_add!(
+                    cost,
+                    IndexAxis::try_from_tag(*tag).map_err(|e| Error::CorruptedData(format!(
+                        "indexed target witness: invalid PCPSIT axis tag: {e}"
+                    )))
+                );
+                let secondary = cost_return_on_error!(
+                    &mut cost,
+                    grovedb.open_indexed_secondary_at_path(
+                        target_path.clone(),
+                        axis,
+                        secondary_root_key.clone(),
+                        transaction,
+                        Some(batch),
+                        grove_version,
+                    )
+                );
+                let (secondary_root_hash, _, _) = cost_return_on_error!(
+                    &mut cost,
+                    secondary
+                        .root_hash_key_and_aggregate_data()
+                        .map_err(Error::MerkError)
+                );
+                axis_hashes.push((*tag, secondary_root_hash));
+            }
+            Ok(IndexedTargetCommitment::IndexedMulti {
+                primary_root_hash,
+                axes: axis_hashes,
+            })
+            .wrap_with_cost(cost)
+        }
+        _ if underlying.is_any_tree() => {
+            let child_merk = cost_return_on_error!(
+                &mut cost,
+                grovedb.open_transactional_merk_at_path(
+                    target_path.clone(),
+                    transaction,
+                    Some(batch),
+                    grove_version,
+                )
+            );
+            let (merk_root_hash, _, _) = cost_return_on_error!(
+                &mut cost,
+                child_merk
+                    .root_hash_key_and_aggregate_data()
+                    .map_err(Error::MerkError)
+            );
+            let child_root_hash = if underlying.uses_non_merk_data_storage() {
+                grovedb.compute_non_merk_child_hash(
+                    underlying,
+                    target_path,
+                    transaction,
+                    merk_root_hash,
+                )
+            } else {
+                merk_root_hash
+            };
+            Ok(IndexedTargetCommitment::Layered(child_root_hash)).wrap_with_cost(cost)
+        }
+        _ => Ok(IndexedTargetCommitment::Simple).wrap_with_cost(cost),
+    }
+}
+
+/// Prove the immediate primary node and every ordinary reference hop until
+/// the terminal value. Every hop independently reconstructs the GroveDB root,
+/// preventing a proof from swapping in a target from another state.
+fn build_indexed_target_witness<'db>(
+    grovedb: &'db GroveDb,
+    indexed_path: &[Vec<u8>],
+    primary_key: &[u8],
+    transaction: &'db Transaction,
+    batch: &'db StorageBatch,
+    grove_version: &GroveVersion,
+) -> CostResult<IndexedTargetWitness, Error> {
+    let mut cost = OperationCost::default();
+    let mut qualified_path = indexed_path.to_vec();
+    qualified_path.push(primary_key.to_vec());
+    let mut visited = HashSet::new();
+    let mut nodes = Vec::new();
+
+    for _ in 0..=MAX_REFERENCE_HOPS {
+        if !visited.insert(qualified_path.clone()) {
+            return Err(Error::CyclicReference).wrap_with_cost(cost);
+        }
+        let Some((key, parent_segments)) = qualified_path.split_last() else {
+            return Err(Error::CorruptedPath(
+                "indexed target witness resolved an empty path".to_string(),
+            ))
+            .wrap_with_cost(cost);
+        };
+        let parent_slices: Vec<&[u8]> = parent_segments.iter().map(Vec::as_slice).collect();
+        let parent_path: SubtreePath<&[u8]> = parent_slices.as_slice().into();
+        let parent_merk = cost_return_on_error!(
+            &mut cost,
+            grovedb.open_transactional_merk_at_path(
+                parent_path,
+                transaction,
+                Some(batch),
+                grove_version,
+            )
+        );
+        let (element, _) = cost_return_on_error!(
+            &mut cost,
+            Element::get_with_value_hash(&parent_merk, key, true, grove_version)
+                .map_err(Error::MerkError)
+        );
+        let layer_proofs = cost_return_on_error!(
+            &mut cost,
+            build_layer_proofs(
+                grovedb,
+                &qualified_path,
+                transaction,
+                batch,
+                grove_version,
+                "indexed target witness",
+            )
+        );
+        let ancestor_attestations = cost_return_on_error!(
+            &mut cost,
+            build_ancestor_attestations(
+                grovedb,
+                &qualified_path,
+                transaction,
+                batch,
+                grove_version,
+                "indexed target witness",
+            )
+        );
+        let commitment = cost_return_on_error!(
+            &mut cost,
+            build_target_commitment(
+                grovedb,
+                &element,
+                &qualified_path,
+                transaction,
+                batch,
+                grove_version,
+            )
+        );
+
+        let next_path = match element.underlying() {
+            Element::Reference(reference_path, ..)
+            | Element::ReferenceWithSumItem(reference_path, ..) => {
+                let parent_builder: SubtreePathBuilder<Vec<u8>> =
+                    SubtreePathBuilder::owned_from_iter(parent_segments.iter().cloned());
+                Some(cost_return_on_error_no_add!(
+                    cost,
+                    reference_path
+                        .clone()
+                        .absolute_qualified_path(parent_builder, key)
+                        .map(|p| p.to_vec())
+                        .map_err(Error::ElementError)
+                ))
+            }
+            _ => None,
+        };
+
+        nodes.push(IndexedTargetNodeWitness {
+            qualified_path: qualified_path.clone(),
+            layer_proofs,
+            ancestor_attestations,
+            commitment,
+        });
+        match next_path {
+            Some(next) => qualified_path = next,
+            None => return Ok(IndexedTargetWitness { nodes }).wrap_with_cost(cost),
+        }
+    }
+
+    Err(Error::ReferenceLimit).wrap_with_cost(cost)
+}
+
+fn primary_key_from_secondary_key(axis: IndexAxis, key: &[u8]) -> Result<Vec<u8>, Error> {
+    let prefix_len = match axis {
+        IndexAxis::Count | IndexAxis::Sum => 8,
+        IndexAxis::Avg => 16,
+    };
+    if key.len() < prefix_len {
+        return Err(Error::CorruptedData(format!(
+            "indexed-axis secondary key shorter than its {prefix_len}-byte sort prefix"
+        )));
+    }
+    Ok(key[prefix_len..].to_vec())
+}
+
+fn build_target_witnesses<'db>(
+    grovedb: &'db GroveDb,
+    indexed_path: &[Vec<u8>],
+    axis: IndexAxis,
+    secondary_keys: impl IntoIterator<Item = Vec<u8>>,
+    transaction: &'db Transaction,
+    batch: &'db StorageBatch,
+    grove_version: &GroveVersion,
+) -> CostResult<Vec<IndexedTargetWitness>, Error> {
+    let mut cost = OperationCost::default();
+    let mut witnesses = Vec::new();
+    for secondary_key in secondary_keys {
+        let primary_key = cost_return_on_error_no_add!(
+            cost,
+            primary_key_from_secondary_key(axis, &secondary_key)
+        );
+        witnesses.push(cost_return_on_error!(
+            &mut cost,
+            build_indexed_target_witness(
+                grovedb,
+                indexed_path,
+                &primary_key,
+                transaction,
+                batch,
+                grove_version,
+            )
+        ));
+    }
+    Ok(witnesses).wrap_with_cost(cost)
 }
 
 /// Path-keys-driven variant of `read_queried_axis_info`. For PCPSIT, also
@@ -856,6 +1198,7 @@ impl GroveDb {
         );
         let descending = !secondary_query.left_to_right;
         let requested_limit = limit;
+        let verification_query = secondary_query.clone();
         let sec_result = cost_return_on_error!(
             &mut cost,
             secondary_merk
@@ -863,6 +1206,26 @@ impl GroveDb {
                 .map_err(|e| Error::CorruptedData(format!(
                     "indexed-axis range proof: secondary range proof: {e}"
                 )))
+        );
+        let (_, verified) = cost_return_on_error!(
+            &mut cost,
+            verification_query
+                .execute_proof(&sec_result.proof, limit, !descending, 0)
+                .map_err(|e| Error::CorruptedData(format!(
+                    "indexed-axis range proof: replay generated secondary proof: {e}"
+                )))
+        );
+        let target_witnesses = cost_return_on_error!(
+            &mut cost,
+            build_target_witnesses(
+                self,
+                &path_keys,
+                axis,
+                verified.result_set.into_iter().map(|entry| entry.key),
+                transaction,
+                batch,
+                grove_version,
+            )
         );
 
         Ok(IndexedAxisRangeProof {
@@ -873,6 +1236,7 @@ impl GroveDb {
             other_axes_root_hashes,
             target_is_pcpsit,
             secondary_proof: sec_result.proof,
+            target_witnesses,
             requested_limit,
             descending,
         })
@@ -996,7 +1360,7 @@ impl GroveDb {
         let prove_result = cost_return_on_error!(
             &mut cost,
             secondary_merk
-                .prove_count_offset_on_range(
+                .prove_count_offset_on_range_allowing_raw_references(
                     &inner_range,
                     offset,
                     Some(k as u64),
@@ -1009,6 +1373,31 @@ impl GroveDb {
         );
         let mut serialized = Vec::with_capacity(128);
         encode_into(prove_result.ops.iter(), &mut serialized);
+        let verified = cost_return_on_error!(
+            &mut cost,
+            verify_count_offset_on_range_proof(
+                &serialized,
+                &inner_range,
+                offset,
+                Some(k as u64),
+                !descending,
+            )
+            .map_err(|e| Error::CorruptedData(format!(
+                "indexed-axis paginated proof: replay generated secondary proof: {e}"
+            )))
+        );
+        let target_witnesses = cost_return_on_error!(
+            &mut cost,
+            build_target_witnesses(
+                self,
+                &path_keys,
+                axis,
+                verified.returned_items.into_iter().map(|entry| entry.key),
+                transaction,
+                batch,
+                grove_version,
+            )
+        );
 
         Ok(IndexedAxisPaginatedProof {
             axis_tag: axis.tag(),
@@ -1018,6 +1407,7 @@ impl GroveDb {
             other_axes_root_hashes,
             target_is_pcpsit,
             secondary_proof: serialized,
+            target_witnesses,
             requested_k: k,
             requested_offset: offset,
             descending,
@@ -1333,6 +1723,84 @@ impl GroveDb {
                 )
             }
         };
+        let secondary_keys = match &axis_query.traversal {
+            AxisTraversal::RankedPage { k, offset } => {
+                let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
+                cost_return_on_error!(
+                    &mut cost,
+                    verify_count_offset_on_range_proof(
+                        &secondary_proof,
+                        &inner_range,
+                        *offset,
+                        Some(*k as u64),
+                        !axis_query.descending,
+                    )
+                    .map_err(|e| Error::CorruptedData(format!(
+                        "axis descent: replay generated paginated proof: {e}"
+                    )))
+                )
+                .returned_items
+                .into_iter()
+                .map(|entry| entry.key)
+                .collect()
+            }
+            AxisTraversal::RankOfKey { .. } => {
+                let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
+                let rank_offset = rank.expect("set above for RankOfKey");
+                cost_return_on_error!(
+                    &mut cost,
+                    verify_count_offset_on_range_proof(
+                        &secondary_proof,
+                        &inner_range,
+                        rank_offset,
+                        Some(1),
+                        !axis_query.descending,
+                    )
+                    .map_err(|e| Error::CorruptedData(format!(
+                        "axis descent: replay generated rank proof: {e}"
+                    )))
+                )
+                .returned_items
+                .into_iter()
+                .map(|entry| entry.key)
+                .collect()
+            }
+            AxisTraversal::Bounded { limit, .. } if !secondary_proof.is_empty() => {
+                let secondary_query = cost_return_on_error_no_add!(
+                    cost,
+                    crate::query::axis_lowering::axis_bounded_merk_query(axis_query)
+                );
+                let left_to_right = secondary_query.left_to_right;
+                cost_return_on_error!(
+                    &mut cost,
+                    secondary_query
+                        .execute_proof(&secondary_proof, Some(*limit), left_to_right, 0)
+                        .map_err(|e| Error::CorruptedData(format!(
+                            "axis descent: replay generated bounded proof: {e}"
+                        )))
+                )
+                .1
+                .result_set
+                .into_iter()
+                .map(|entry| entry.key)
+                .collect()
+            }
+            AxisTraversal::Bounded { .. } | AxisTraversal::AggregateOverValueRange { .. } => {
+                Vec::new()
+            }
+        };
+        let target_witnesses = cost_return_on_error!(
+            &mut cost,
+            build_target_witnesses(
+                self,
+                &path_keys,
+                axis,
+                secondary_keys,
+                transaction,
+                batch,
+                grove_version,
+            )
+        );
 
         Ok(AxisDescentProof {
             axis_tag: axis.tag(),
@@ -1341,6 +1809,7 @@ impl GroveDb {
             primary_root_hash,
             rank,
             secondary_proof,
+            target_witnesses,
         })
         .wrap_with_cost(cost)
     }
@@ -1370,7 +1839,7 @@ where
     }
     let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
     let prove_result = secondary_merk
-        .prove_count_offset_on_range(
+        .prove_count_offset_on_range_allowing_raw_references(
             &inner_range,
             offset,
             Some(k as u64),

@@ -277,7 +277,10 @@ mod tests {
             .indexed_avg_top_k(path.as_ref(), 10, true, None, gv)
             .unwrap()
             .expect("avg top_k");
-        let avg_keys: Vec<Vec<u8>> = by_avg.iter().map(|(_, k)| k.clone()).collect();
+        let avg_keys: Vec<Vec<u8>> = by_avg
+            .iter()
+            .map(|entry| entry.primary_key.clone())
+            .collect();
         assert_eq!(
             avg_keys,
             vec![b"a".to_vec(), b"c".to_vec(), b"b".to_vec()],
@@ -388,7 +391,7 @@ mod tests {
             .unwrap()
             .expect("avg top_k");
         assert_eq!(by_avg.len(), 1, "the avg axis must not have a stale row");
-        assert_eq!(by_avg[0].1, b"a".to_vec());
+        assert_eq!(by_avg[0].primary_key, b"a".to_vec());
 
         assert_clean(&db, gv);
     }
@@ -440,7 +443,7 @@ mod tests {
                     .unwrap()
                     .expect("sum top_k")
                     .into_iter()
-                    .map(|(_, k)| k)
+                    .map(|entry| entry.primary_key)
                     .collect::<Vec<_>>(),
             ),
             (
@@ -449,7 +452,7 @@ mod tests {
                     .unwrap()
                     .expect("count top_k")
                     .into_iter()
-                    .map(|(_, k)| k)
+                    .map(|entry| entry.primary_key)
                     .collect::<Vec<_>>(),
             ),
             (
@@ -458,7 +461,7 @@ mod tests {
                     .unwrap()
                     .expect("avg top_k")
                     .into_iter()
-                    .map(|(_, k)| k)
+                    .map(|entry| entry.primary_key)
                     .collect::<Vec<_>>(),
             ),
         ] {
@@ -854,7 +857,7 @@ mod tests {
             .unwrap()
             .expect("sum top_k");
         assert_eq!(by_sum.len(), n as usize, "every entry must be indexed");
-        let sums: Vec<i64> = by_sum.iter().map(|(s, _)| *s).collect();
+        let sums: Vec<i64> = by_sum.iter().map(|entry| entry.ordering_value).collect();
         let mut sorted = sums.clone();
         sorted.sort_unstable();
         assert_eq!(sums, sorted, "the sum axis must come back ascending");
@@ -1229,9 +1232,18 @@ mod tests {
             .unwrap()
             .expect("avg top_k");
         assert_eq!(
-            avg_before, avg_after,
+            avg_before[0].ordering_value, avg_after[0].ordering_value,
             "the avg sort key is unchanged by (1,5) -> (2,10)"
         );
+        assert_eq!(avg_before[0].primary_key, avg_after[0].primary_key);
+        assert_ne!(
+            avg_before[0].value, avg_after[0].value,
+            "the canonical reference row must resolve the refreshed primary value"
+        );
+        assert!(matches!(
+            avg_after[0].value,
+            Element::CountSumTree(_, 2, 10, _)
+        ));
         assert_eq!(
             db.indexed_sum_top_k([TEST_LEAF, b"idx"].as_ref(), 5, true, None, gv)
                 .unwrap()

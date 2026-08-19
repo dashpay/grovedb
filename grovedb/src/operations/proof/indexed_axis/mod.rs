@@ -70,7 +70,7 @@ pub(crate) mod verify;
 pub use envelope::{
     AncestorAttestation, AxisEntries, IndexedAxisAggregateProof, IndexedAxisAggregateResult,
     IndexedAxisPaginatedProof, IndexedAxisPaginatedResult, IndexedAxisQueryResult,
-    IndexedAxisRangeProof,
+    IndexedAxisRangeProof, IndexedTargetCommitment, IndexedTargetNodeWitness, IndexedTargetWitness,
 };
 use grovedb_element::indexed::IndexAxis;
 

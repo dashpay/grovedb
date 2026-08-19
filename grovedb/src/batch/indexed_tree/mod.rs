@@ -55,7 +55,7 @@ pub(crate) use delete_tree::validate_delete_tree_type;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::{element::costs::ElementCostExtensions, Merk};
+use grovedb_merk::{element::costs::ElementCostExtensions, CryptoHash, Merk};
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 pub(crate) use mirror::{apply_indexed_secondary_mirror_post_apply, read_post_apply_transitions};
@@ -69,8 +69,15 @@ use crate::{Element, Error};
 /// does not exist on that side of the transition.
 type AggregatePair = Option<(u64, i64)>;
 
-/// One captured key's aggregate transition: `(item_key, old, new)`.
-type AggregateTransition = (Vec<u8>, AggregatePair, AggregatePair);
+/// A surviving primary entry's post-apply aggregates and immediate
+/// Merk-stored committed value hash.
+type PostApplyState = Option<(u64, i64, CryptoHash)>;
+
+/// One captured key's transition: `(item_key, old aggregates, post state)`.
+/// The old target hash is unnecessary: a surviving touched entry always gets
+/// a same-key combined-reference put, while deletion only needs the old sort
+/// key.
+type AggregateTransition = (Vec<u8>, AggregatePair, PostApplyState);
 
 /// Read one primary entry's current `(count, sum)` pair, `None` if the key
 /// does not exist. `phase` labels error messages ("pre" for the capture
@@ -108,4 +115,43 @@ fn read_entry_aggregates<'db, S: StorageContext<'db>>(
         None
     };
     Ok(aggregates).wrap_with_cost(cost)
+}
+
+/// Read a primary entry's post-apply aggregate pair and its exact committed
+/// node value hash. Tree and reference targets deliberately retain their
+/// combined hashes here; hashing only the serialized Element bytes would lose
+/// their child/target commitment.
+fn read_post_apply_state<'db, S: StorageContext<'db>>(
+    primary_merk: &Merk<S>,
+    key: &[u8],
+    grove_version: &GroveVersion,
+) -> CostResult<PostApplyState, Error> {
+    let mut cost = OperationCost::default();
+    let maybe = cost_return_on_error!(
+        &mut cost,
+        primary_merk
+            .get_value_and_value_hash(
+                key,
+                true,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .map_err(|e| Error::CorruptedData(format!(
+                "indexed post-state read for key {}: {e}",
+                hex::encode(key)
+            )))
+    );
+    let state = if let Some((bytes, value_hash)) = maybe {
+        let element = cost_return_on_error_no_add!(
+            cost,
+            Element::deserialize(bytes.as_slice(), grove_version).map_err(|e| {
+                Error::CorruptedData(format!("indexed post-state deserialize: {e}"))
+            })
+        );
+        let (count, sum) = element.count_sum_value_or_default();
+        Some((count, sum, value_hash))
+    } else {
+        None
+    };
+    Ok(state).wrap_with_cost(cost)
 }

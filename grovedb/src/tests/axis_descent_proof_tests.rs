@@ -137,7 +137,7 @@ mod tests {
             .expect("prove axis path query")
     }
 
-    fn entries_as_sum(entries: &AxisEntries) -> &[(i64, Vec<u8>)] {
+    fn entries_as_sum(entries: &AxisEntries) -> &[crate::IndexedAxisEntry<i64>] {
         match entries {
             AxisEntries::Sum(entries) => entries,
             other => panic!("expected sum entries, got {other:?}"),
@@ -1841,7 +1841,7 @@ mod tests {
 
     #[test]
     fn verify_grovedb_holds_across_count_secondary_mutations() {
-        // The PCPS count secondary — payload = SumItem(count_value) —
+        // The PCPS count secondary — canonical reference row with sum = count_value —
         // must satisfy verify_grovedb's primary<->secondary walk through
         // inserts, count changes, and deletes; the expected-payload
         // check in verify_indexed_axis_content is what would flag a
