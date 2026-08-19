@@ -799,6 +799,43 @@ mod atomicity_tests {
         );
     }
 
+    /// The reported `hash_count` and the billed `hash_node_calls` describe the
+    /// same work, so they must agree. They diverged once the MMR started
+    /// bagging peaks: the counter was derived from `hash_count_for_push`,
+    /// which covers the leaf hash and `push`'s merges but not `get_root`'s
+    /// peak folds, while the cost picked the folds up.
+    #[test]
+    fn append_many_hash_count_matches_the_billed_hashes() {
+        // chunk_power 2 gives an epoch of 4, so 12 entries compact three
+        // times. The third compaction leaves the MMR with two peaks, which is
+        // the case that used to be under-counted.
+        let mut store = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
+            .unwrap()
+            .expect("new");
+        let entries: Vec<Vec<u8>> = (0..12u8).map(|i| vec![i; 8]).collect();
+        let ctx = store.append_many(entries.iter().map(|e| e.as_slice()));
+        let cost = ctx.cost.clone();
+        let r = ctx.value.expect("append_many");
+
+        assert_eq!(
+            r.hash_count, cost.hash_node_calls,
+            "the reported hash count and the billed hashes describe the same \
+             work: reported {}, billed {:?}",
+            r.hash_count, cost
+        );
+        assert!(r.compacted, "12 entries at epoch 4 must compact");
+
+        // Same invariant on the single-append path, which forwards the counter.
+        let ctx = store.append(&[99u8; 8]);
+        let cost = ctx.cost.clone();
+        let r = ctx.value.expect("append");
+        assert_eq!(
+            r.hash_count, cost.hash_node_calls,
+            "reported {}, billed {:?}",
+            r.hash_count, cost
+        );
+    }
+
     /// Opening a store derives the committed-config hash, which is real work
     /// and must not be free.
     #[test]

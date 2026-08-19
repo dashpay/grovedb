@@ -151,7 +151,6 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         value: &[u8],
     ) -> CostResult<AppendNoStateRootResult, BulkAppendError> {
         let mut cost = OperationCost::default();
-        let mut hash_count: u32 = 0;
         let global_position = self.total_count;
 
         let try_result = match self
@@ -176,20 +175,35 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                 // Buffer full — compact existing entries plus this value.
                 // Must run before incrementing total_count so self.mmr_size()
                 // reflects the pre-compaction state.
-                let (compact_hashes, mmr_root) = match self
+                // The model counter this returns is deliberately unused — see
+                // the `hash_count` derivation below.
+                let (_model_hash_count, mmr_root) = match self
                     .compact_with_value_with_cost(value)
                     .unwrap_add_cost(&mut cost)
                 {
                     Ok(r) => r,
                     Err(e) => return Err(e).wrap_with_cost(cost),
                 };
-                hash_count += compact_hashes;
                 self.last_mmr_root = Some(mmr_root);
                 true
             }
         };
 
         self.total_count += 1;
+
+        // Derive the reported counter from what was actually billed rather
+        // than from `hash_count_for_push`. That helper covers the eager leaf
+        // hash and the merges `push` performs, but NOT the peak-bagging
+        // merges `get_root` performs during a compaction, so the model
+        // counter falls below the true figure as soon as the MMR has more
+        // than one peak. Everything accumulated in `cost` here is this
+        // append's own hashing, so the two cannot disagree.
+        //
+        // Scoped to this deferred path on purpose: `compact_with_value` and
+        // `append_no_state_root` keep returning the model counter, because
+        // the live CommitmentTree adds that value straight into its own
+        // `hash_node_calls` and changing it would move a released cost.
+        let hash_count = cost.hash_node_calls;
 
         Ok(AppendNoStateRootResult {
             global_position,
