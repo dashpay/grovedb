@@ -61,6 +61,19 @@ use crate::{util::TxRef, Element, Error, GroveDb, Transaction, TransactionArg};
 /// proof primitive skips whole subtrees via counted node commitments),
 /// and the sum half is what makes a TOTAL over a value band answerable
 /// as one committed scalar ([`AggregateFold::Total`], issue #806).
+///
+/// **Dual-aggregate is a SECURITY requirement here, not a
+/// convenience.** The single-aggregate node hashes share a preimage
+/// layout (`node_hash_with_count` and `node_hash_with_sum` are both
+/// `Blake3(kv ‖ l ‖ r ‖ 8 bytes)` with no domain tag), so on a
+/// single-aggregate secondary a count proof could be node-type
+/// relabeled into a byte-different "sum" proof reconstructing the
+/// IDENTICAL root — making a band Total forgeable from a Population
+/// proof at zero cost. Dual-aggregate nodes hash a 112-byte preimage
+/// (`count_be8 ‖ sum_be8`), which closes the rewrite. Do not
+/// "optimize" any axis back to a single-aggregate tree type without
+/// first adding domain separation to the node-hash functions
+/// (per the #809 security audit, finding C).
 #[inline]
 pub(crate) fn axis_secondary_tree_type(axis: IndexAxis) -> TreeType {
     match axis {
@@ -88,6 +101,35 @@ pub(crate) fn count_value_as_sum(count: u64) -> Result<i64, Error> {
             "count value {count} exceeds i64::MAX and cannot be mirrored into the \
              count-axis secondary's sum aggregate"
         ))
+    })
+}
+
+/// THE per-axis secondary row payload — the single definition every
+/// writer and every checker uses. The sort KEY encodes the ordering
+/// value; this payload carries what the secondary's own dual
+/// aggregates must fold to:
+///
+/// - Count → `SumItem(count_value)` — contributes `(1, count)`, so a
+///   band TOTAL is one committed scalar (issue #806)
+/// - Sum   → `SumItem(sum)` — contributes `(1, sum)`
+/// - Avg   → `ItemWithSumItem(empty, sum)` — contributes `(1, sum)`
+///
+/// Callers: the batch mirror row builder, the direct-path mirror, the
+/// reconcile repair loop, `verify_grovedb`'s expected-payload check,
+/// and the average-case cost estimator's worst-case row. They MUST all
+/// go through this function: the mirror writes these bytes into
+/// hash-committed state and the checkers recompute them independently,
+/// so a divergent copy at any site either false-flags healthy state or
+/// makes two entry points commit different root hashes for identical
+/// writes. (This function exists because exactly that drift risk was
+/// flagged by the #809 security audit.)
+///
+/// Fallible only through [`count_value_as_sum`]'s fail-closed guard.
+pub(crate) fn axis_row_payload(axis: IndexAxis, count: u64, sum: i64) -> Result<Element, Error> {
+    Ok(match axis {
+        IndexAxis::Count => Element::new_sum_item(count_value_as_sum(count)?),
+        IndexAxis::Sum => Element::new_sum_item(sum),
+        IndexAxis::Avg => Element::new_item_with_sum_item(Vec::new(), sum),
     })
 }
 
@@ -1042,14 +1084,8 @@ impl GroveDb {
                 std::collections::BTreeMap::new();
             for (key, (count, sum)) in &entries {
                 let secondary_key = make_axis_secondary_key(axis, *count, *sum, key);
-                let payload = match axis {
-                    IndexAxis::Count => Element::new_sum_item(cost_return_on_error_no_add!(
-                        cost,
-                        count_value_as_sum(*count)
-                    )),
-                    IndexAxis::Sum => Element::new_sum_item(*sum),
-                    IndexAxis::Avg => Element::new_item_with_sum_item(Vec::new(), *sum),
-                };
+                let payload =
+                    cost_return_on_error_no_add!(cost, axis_row_payload(axis, *count, *sum));
                 let payload_bytes = cost_return_on_error_no_add!(
                     cost,
                     payload.serialize(grove_version).map_err(|e| {
@@ -2423,15 +2459,8 @@ impl GroveDb {
 /// from the prior primary state and `new_count`/`new_sum` from the
 /// post-mutation state.
 ///
-/// The secondary entry is a no-payload `Item` whose own sum / count
-/// contribution comes from its position in a sum/count-bearing tree.
-/// For the sum axis the secondary entry is a `SumItem(sum)`, which in
-/// the secondary's `ProvableCountProvableSumTree` contributes
-/// (count = 1, sum); for the avg axis the secondary entry is an
-/// `ItemWithSumItem(empty, sum)` so both count (= 1) and sum (= the
-/// entry's sum_value) propagate to the secondary's
-/// `ProvableCountProvableSumTree`. For the count axis the secondary
-/// entry is a plain `Item` (count = 1, no sum).
+/// The row payload is [`axis_row_payload`] — see its doc for the
+/// per-axis shapes and why every writer must share it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn mirror_indexed_axis_to_secondary<'db, S: StorageContext<'db>>(
     secondary: &mut Merk<S>,
@@ -2446,22 +2475,11 @@ pub(crate) fn mirror_indexed_axis_to_secondary<'db, S: StorageContext<'db>>(
     let mut cost = OperationCost::default();
     let secondary_tree_type = axis_secondary_tree_type(axis);
 
-    // The per-axis secondary payload for an entry with the given
-    // aggregate values. Kept in lockstep with the insert branch below:
-    // - Count → constant empty Item (contributes count = 1)
-    // - Sum   → SumItem(sum)
-    // - Avg   → ItemWithSumItem(empty, sum) (contributes (1, sum))
-    // The payload is a function of BOTH aggregates now: the count axis
-    // mirrors count_value into its sum half, so a closure over `sum`
-    // alone could not see a count-only change and the fast path below
-    // would silently skip a real payload update.
-    let axis_payload = |count: u64, sum: i64| -> Result<Element, Error> {
-        Ok(match axis {
-            IndexAxis::Count => Element::new_sum_item(count_value_as_sum(count)?),
-            IndexAxis::Sum => Element::new_sum_item(sum),
-            IndexAxis::Avg => Element::new_item_with_sum_item(Vec::new(), sum),
-        })
-    };
+    // The payload is a function of BOTH aggregates (the count axis
+    // mirrors count_value into its sum half), so the fast-path equality
+    // check below must see the full pair — a sum-only view would
+    // silently skip real payload updates.
+    let axis_payload = |count: u64, sum: i64| axis_row_payload(axis, count, sum);
 
     // Compute old and new sort keys. Either may be None (no entry).
     let old_key = match (old_count, old_sum) {
@@ -2501,7 +2519,18 @@ pub(crate) fn mirror_indexed_axis_to_secondary<'db, S: StorageContext<'db>>(
         }
     }
 
-    if let Some(ok) = &old_key {
+    // A payload change at a FIXED key (avg axis only: a proportional
+    // (count, sum) change keeps the average) must replace in place.
+    // Deleting and reinserting the same key rebalances the AVL twice
+    // and can settle a DIFFERENT shape than the batch mirror's single
+    // replacement write — two write paths committing different
+    // secondary (hence grove) root hashes for identical data, which
+    // `direct_and_batch_agree_on_root_for_a_fixed_key_avg_payload_change`
+    // reproduced on an interior node before this skip existed. The
+    // insert below overwrites the value in place, exactly like the
+    // batch path's put.
+    let key_moved = old_key != new_key;
+    if let (true, Some(ok)) = (key_moved, &old_key) {
         cost_return_on_error!(
             &mut cost,
             Element::delete(
@@ -3158,6 +3187,85 @@ impl GroveDb {
         }
 
         Ok(results).wrap_with_cost(cost)
+    }
+}
+
+#[cfg(test)]
+mod axis_row_payload_tests {
+    //! The payload function is THE definition every writer and checker
+    //! shares; this grid pins its output per (axis, count, sum) so any
+    //! change to the shape is a deliberate, reviewed event — the bytes
+    //! land in hash-committed state, so an accidental change here means
+    //! mirrors and checkers disagree about healthy databases.
+
+    use grovedb_element::indexed::IndexAxis;
+    use grovedb_version::version::GroveVersion;
+
+    use super::axis_row_payload;
+    use crate::Element;
+
+    #[test]
+    fn payload_grid_is_pinned_per_axis() {
+        let counts = [0u64, 1, 2, i64::MAX as u64];
+        let sums = [i64::MIN, -1, 0, 1, i64::MAX];
+        for &count in &counts {
+            for &sum in &sums {
+                assert_eq!(
+                    axis_row_payload(IndexAxis::Count, count, sum).unwrap(),
+                    Element::new_sum_item(count as i64),
+                    "count axis stores the COUNT as its sum item; the sum input is ignored"
+                );
+                assert_eq!(
+                    axis_row_payload(IndexAxis::Sum, count, sum).unwrap(),
+                    Element::new_sum_item(sum),
+                    "sum axis stores the sum; the count input is ignored"
+                );
+                assert_eq!(
+                    axis_row_payload(IndexAxis::Avg, count, sum).unwrap(),
+                    Element::new_item_with_sum_item(Vec::new(), sum),
+                    "avg axis stores an empty item carrying the sum"
+                );
+            }
+        }
+        // Above the sum-item domain the count axis fails closed.
+        axis_row_payload(IndexAxis::Count, i64::MAX as u64 + 1, 0)
+            .expect_err("count above i64::MAX must fail closed");
+    }
+
+    #[test]
+    fn serialized_bytes_are_stable() {
+        // The exact bytes the mirror hash-commits, pinned as FIXED
+        // vectors — not re-serialized at assertion time, so a
+        // serialization-format change cannot move both sides of the
+        // comparison and slip through. If this test fails, payload
+        // bytes in authenticated state have changed: that is a
+        // consensus event, not a refactor.
+        let grove_version = GroveVersion::latest();
+        assert_eq!(
+            axis_row_payload(IndexAxis::Count, 7, 0)
+                .unwrap()
+                .serialize(grove_version)
+                .unwrap(),
+            vec![3, 14, 0],
+            "count axis: SumItem(7) as [variant, zigzag-varint 7, no flags]"
+        );
+        assert_eq!(
+            axis_row_payload(IndexAxis::Sum, 1, -3)
+                .unwrap()
+                .serialize(grove_version)
+                .unwrap(),
+            vec![3, 5, 0],
+            "sum axis: SumItem(-3) as [variant, zigzag-varint -3, no flags]"
+        );
+        assert_eq!(
+            axis_row_payload(IndexAxis::Avg, 1, 5)
+                .unwrap()
+                .serialize(grove_version)
+                .unwrap(),
+            vec![9, 0, 10, 0],
+            "avg axis: ItemWithSumItem(empty, 5) as [variant, empty item, \
+             zigzag-varint 5, no flags]"
+        );
     }
 }
 

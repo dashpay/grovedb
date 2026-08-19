@@ -24,25 +24,9 @@ use grovedb_version::version::GroveVersion;
 
 use super::{read_entry_aggregates, AggregatePair, AggregateTransition};
 use crate::{
-    operations::indexed_tree::{count_value_as_sum, make_axis_secondary_key},
+    operations::indexed_tree::{axis_row_payload, make_axis_secondary_key},
     Element, Error,
 };
-
-/// The per-axis payload stored alongside the sort key. The key encodes the
-/// ordering value; the payload carries what the secondary's own aggregate
-/// must sum to, which is why NO axis can store a bare item: every
-/// secondary is a dual-aggregate `ProvableCountProvableSumTree`, and the
-/// count axis mirrors its `count_value` into the sum half so a band
-/// TOTAL is one committed scalar (issue #806).
-///
-/// Fallible only through [`count_value_as_sum`]'s fail-closed guard.
-fn axis_row_payload(axis: IndexAxis, count: u64, sum: i64) -> Result<Element, Error> {
-    Ok(match axis {
-        IndexAxis::Count => Element::new_sum_item(count_value_as_sum(count)?),
-        IndexAxis::Sum => Element::new_sum_item(sum),
-        IndexAxis::Avg => Element::new_item_with_sum_item(Vec::new(), sum),
-    })
-}
 
 /// Enforce the precise per-axis item-key bound: avg prepends a 16-byte sort
 /// key, count and sum 8, so the same item key can be legal on one axis and

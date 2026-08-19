@@ -1318,8 +1318,7 @@ impl GroveDb {
             AxisTraversal::AggregateOverValueRange { lo, hi, fold } => {
                 // classify() rejects wholly-out-of-domain ranges and the
                 // Avg axis before a descent is ever built; the builder
-                // still fails closed on both, plus on (Count, Total)
-                // until issue #806 lands.
+                // still fails closed on both.
                 cost_return_on_error_no_add!(
                     cost,
                     build_aggregate_secondary_proof(

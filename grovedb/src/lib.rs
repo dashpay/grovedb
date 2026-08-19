@@ -1698,15 +1698,7 @@ impl GroveDb {
             // The payload the mirror writes for this axis, so a row filed
             // under the right key but carrying the wrong value is caught too
             // — the key alone does not pin the stored aggregate.
-            let payload = match axis {
-                grovedb_element::indexed::IndexAxis::Count => Element::new_sum_item(
-                    crate::operations::indexed_tree::count_value_as_sum(count)?,
-                ),
-                grovedb_element::indexed::IndexAxis::Sum => Element::new_sum_item(sum),
-                grovedb_element::indexed::IndexAxis::Avg => {
-                    Element::new_item_with_sum_item(Vec::new(), sum)
-                }
-            };
+            let payload = crate::operations::indexed_tree::axis_row_payload(axis, count, sum)?;
             expected.insert(
                 p_key.clone(),
                 (make_axis_secondary_key(axis, count, sum, &p_key), payload),

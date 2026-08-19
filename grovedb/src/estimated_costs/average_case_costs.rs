@@ -32,7 +32,7 @@ use crate::{
 };
 
 /// Upper bound on an indexed secondary row's value. The payload is fixed
-/// per axis — an empty `Item` (count), a `SumItem` (sum) or an empty
+/// per axis — a `SumItem` (count and sum axes) or an empty
 /// `ItemWithSumItem` (avg) — and the largest of those serializes well under
 /// this bound, which also leaves room for the feature type and flags byte.
 pub const INDEXED_SECONDARY_MAX_VALUE_SIZE: u32 = 16;
@@ -482,7 +482,7 @@ impl GroveDb {
     /// - **Key size** is the primary's key size plus the axis sort-key width
     ///   (8 bytes for count/sum, 16 for avg).
     /// - **Value size** is bounded by the fixed per-axis payload shape:
-    ///   an empty `Item` (count), a `SumItem` (sum), or an empty
+    ///   a `SumItem` (count and sum axes), or an empty
     ///   `ItemWithSumItem` (avg) — all under
     ///   [`INDEXED_SECONDARY_MAX_VALUE_SIZE`].
     /// - **Tree type** is fixed per axis.
@@ -542,20 +542,19 @@ impl GroveDb {
             //
             // The inserted row must be sized with the AXIS's real payload
             // shape: `average_case_merk_insert_element` charges non-tree
-            // elements by their own serialized size, and the sum and avg rows
-            // are larger than the count axis's empty `Item`. Sizing all three
-            // as an empty `Item` put the PCPSIT estimate ~25 bytes per key
-            // UNDER actual `added_bytes` — the one dimension a storage-fee
-            // reservation cannot come in under. Sum values are charged at
-            // their fixed worst-case varint width, so `i64::MAX` here is the
-            // upper bound, not an average.
-            let worst_case_row = match axis {
-                grovedb_element::indexed::IndexAxis::Count => Element::new_sum_item(i64::MAX),
-                grovedb_element::indexed::IndexAxis::Sum => Element::new_sum_item(i64::MAX),
-                grovedb_element::indexed::IndexAxis::Avg => {
-                    Element::new_item_with_sum_item(vec![], i64::MAX)
-                }
-            };
+            // elements by their own serialized size, and under-sizing put
+            // the PCPSIT estimate ~25 bytes per key UNDER actual
+            // `added_bytes` — the one dimension a storage-fee reservation
+            // cannot come in under. The shape comes from THE payload
+            // function the mirror writes with (`axis_row_payload`), fed
+            // worst-case aggregates: sum values are charged at their fixed
+            // worst-case varint width, so `i64::MAX` is the upper bound,
+            // not an average (and is in `count_value_as_sum`'s domain, so
+            // the conversion cannot fail here).
+            let worst_case_row = cost_return_on_error_no_add!(
+                cost,
+                crate::operations::indexed_tree::axis_row_payload(*axis, i64::MAX as u64, i64::MAX,)
+            );
             cost_return_on_error!(
                 &mut cost,
                 Self::average_case_merk_delete_element(
