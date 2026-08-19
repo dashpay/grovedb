@@ -333,14 +333,32 @@ impl GroveOp {
                 const ROOT_AND_CONFIG_HASHES: u32 = 3;
                 // MMR push work, amortized across the epoch it serves.
                 const AMORTIZED_MMR_HASHES: u32 = 1;
+                // The dense-root walk does not just hash: it READS every
+                // filled position. Averaged across an epoch that is about
+                // half a buffer per append, and compaction adds one more
+                // pass, so the I/O terms have to scale with the epoch too —
+                // charging one seek and zero loaded bytes understated this by
+                // O(epoch size).
+                let avg_dense_reads = epoch_entries / 2;
+                // A NonCounted-wrapped store serializes one byte wider, and
+                // the apply path now preserves that wrapper. Neither the op
+                // nor the declared layer records whether this store is
+                // wrapped, so charge the byte unconditionally: over-charging
+                // one byte is harmless, whereas omitting it understates every
+                // append to a non-counted store.
+                const NON_COUNTED_WRAPPER_BYTE: u32 = 1;
                 item_cost.add_cost(OperationCost {
-                    seek_count: 1, // 1 buffer entry write
+                    // 1 buffer entry write + the root walk's reads.
+                    seek_count: 1u32.saturating_add(avg_dense_reads),
                     storage_cost: StorageCost {
-                        added_bytes: entry_size.saturating_add(amortized_compaction_bytes),
+                        added_bytes: entry_size
+                            .saturating_add(amortized_compaction_bytes)
+                            .saturating_add(NON_COUNTED_WRAPPER_BYTE),
                         replaced_bytes: 0,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
-                    storage_loaded_bytes: 0,
+                    storage_loaded_bytes: (avg_dense_reads as u64)
+                        .saturating_mul(entry_size as u64),
                     hash_node_calls: avg_dense_hashes
                         .saturating_add(ROOT_AND_CONFIG_HASHES)
                         .saturating_add(AMORTIZED_MMR_HASHES),
@@ -781,13 +799,40 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                 GroveOp::CommitmentTreeInsert { .. } | GroveOp::PrivateDocumentStoreInsert { .. }
             ) {
                 crate::batch::batch_structure::keyless_op_tree_key(&key).and_then(|tree_key| {
-                    let mut tree_path = path.clone();
-                    tree_path.push(KeyInfo::KnownKey(tree_key.to_vec()));
-                    match self.paths.get(&tree_path).map(|layer| layer.tree_type) {
-                        Some(TreeType::CommitmentTree(chunk_power))
-                        | Some(TreeType::PrivateDocumentStore(chunk_power)) => Some(chunk_power),
-                        _ => None,
-                    }
+                    // Match the declared layer by KEY BYTES, not by
+                    // `KeyInfo` equality. A caller may legitimately declare a
+                    // layer with `KeyInfo::MaxKeySize { unique_id, .. }`, and
+                    // `KeyInfo`'s `PartialEq` deliberately reports
+                    // `KnownKey` and `MaxKeySize` as unequal — so an exact
+                    // `paths.get` with a synthesized `KnownKey` misses such a
+                    // declaration and the estimate then fails with
+                    // `PathNotFoundInCacheForEstimatedCosts` even though the
+                    // layer WAS declared. `KeyInfo::as_slice` yields the key
+                    // for `KnownKey` and the `unique_id` for `MaxKeySize`,
+                    // which is the identity callers declare with in both
+                    // cases.
+                    let parent_segments: Vec<&[u8]> = path.0.iter().map(|k| k.as_slice()).collect();
+                    self.paths
+                        .iter()
+                        .find(|(declared, _)| {
+                            declared.0.len() == parent_segments.len() + 1
+                                && declared
+                                    .0
+                                    .iter()
+                                    .map(|k| k.as_slice())
+                                    .zip(
+                                        parent_segments
+                                            .iter()
+                                            .copied()
+                                            .chain(std::iter::once(tree_key)),
+                                    )
+                                    .all(|(a, b)| a == b)
+                        })
+                        .and_then(|(_, layer)| match layer.tree_type {
+                            TreeType::CommitmentTree(chunk_power)
+                            | TreeType::PrivateDocumentStore(chunk_power) => Some(chunk_power),
+                            _ => None,
+                        })
                 })
             } else {
                 None

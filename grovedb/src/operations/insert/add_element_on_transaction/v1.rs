@@ -212,9 +212,13 @@ impl GroveDb {
                     ))
                     .wrap_with_cost(cost);
                 }
-                if *entry_size == 0 || !(1..=16).contains(chunk_power) {
+                if *entry_size == 0
+                    || *entry_size > u16::MAX as u32
+                    || !(1..=16).contains(chunk_power)
+                {
                     return Err(Error::InvalidInput(
-                        "a PrivateDocumentStore requires entry_size >= 1 and chunk_power in 1..=16",
+                        "a PrivateDocumentStore requires entry_size in 1..=65535 and chunk_power \
+                         in 1..=16",
                     ))
                     .wrap_with_cost(cost);
                 }

@@ -325,14 +325,37 @@ impl GroveOp {
                 // Writes: buffer entry + chunk blob + MMR nodes
                 const MAX_WRITES: u32 = 1 + 1 + MAX_MMR_MERGES;
                 const MAX_READS: u32 = 64; // MMR sibling reads
-                                           // The compaction blob holds a whole epoch of entries, so its
-                                           // size scales with the committed entry size — a flat byte
-                                           // constant is not a bound.
-                let max_compaction_blob = MAX_EPOCH_ENTRIES.saturating_mul(entry_size);
+                                           // A compacted epoch is not stored as a bare payload: the
+                                           // chunk blob carries a 9-byte header, sits inside a 37-byte
+                                           // MMR leaf envelope, and every internal MMR node the push
+                                           // creates costs a further 33 bytes. Counting only the raw
+                                           // payload made the "upper bound" fall short — for
+                                           // `entry_size = 1` the very first compaction already exceeded
+                                           // it.
+                const CHUNK_HEADER_BYTES: u32 = 9;
+                const MMR_LEAF_ENVELOPE_BYTES: u32 = 37;
+                const MMR_INTERNAL_NODE_BYTES: u32 = 33;
+                const MMR_SERIALIZATION_OVERHEAD: u32 = CHUNK_HEADER_BYTES
+                    + MMR_LEAF_ENVELOPE_BYTES
+                    + MMR_INTERNAL_NODE_BYTES * MAX_MMR_MERGES;
+                // The compaction blob holds a whole epoch of entries, so its
+                // size scales with the committed entry size — a flat byte
+                // constant is not a bound. `entry_size` is capped at
+                // `u16::MAX` at every creation site precisely so this product
+                // stays representable in the u32 `added_bytes` field.
+                let max_compaction_blob = MAX_EPOCH_ENTRIES
+                    .saturating_mul(entry_size)
+                    .saturating_add(MMR_SERIALIZATION_OVERHEAD);
                 item_cost.add_cost(OperationCost {
                     seek_count: MAX_WRITES + MAX_READS,
                     storage_cost: StorageCost {
-                        added_bytes: entry_size.saturating_add(max_compaction_blob),
+                        // +1 for the NonCounted wrapper byte a preserved
+                        // wrapper adds to the replaced parent element; the op
+                        // does not record whether this store is wrapped, so
+                        // the bound charges it unconditionally.
+                        added_bytes: entry_size
+                            .saturating_add(max_compaction_blob)
+                            .saturating_add(1),
                         replaced_bytes: 0,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },

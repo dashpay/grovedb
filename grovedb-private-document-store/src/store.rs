@@ -34,6 +34,29 @@ pub struct PrivateDocumentStoreAppendResult {
     pub compacted: bool,
 }
 
+/// Result of [`PrivateDocumentStore::append_many`].
+///
+/// Distinct from [`PrivateDocumentStoreAppendResult`] because a batch may be
+/// empty, and there is then no appended position to report. Reporting a
+/// sentinel (position 0 on a fresh store, or the previous last entry on a
+/// populated one) would be indistinguishable from a real append.
+#[derive(Debug, Clone)]
+pub struct PrivateDocumentStoreAppendManyResult {
+    /// The new composite state root.
+    pub state_root: [u8; 32],
+    /// The underlying BulkAppendTree state root.
+    pub bulk_state_root: [u8; 32],
+    /// Position of the last entry appended BY THIS CALL, or `None` when the
+    /// input was empty and nothing was written.
+    pub last_global_position: Option<u64>,
+    /// How many entries this call appended.
+    pub appended: u64,
+    /// Number of blake3 hash calls performed.
+    pub hash_count: u32,
+    /// Whether compaction occurred during this call.
+    pub compacted: bool,
+}
+
 /// An append-only store of fixed-size opaque entries.
 ///
 /// Thin wrapper over [`BulkAppendTree`]: appends are validated against the
@@ -82,9 +105,9 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
         storage: S,
     ) -> CostResult<Self, PrivateDocumentStoreError> {
         let mut cost = OperationCost::default();
-        if entry_size == 0 {
+        if entry_size == 0 || entry_size > u16::MAX as u32 {
             return Err(PrivateDocumentStoreError::InvalidConfig(
-                "entry_size must be non-zero".to_string(),
+                "entry_size must be in 1..=65535".to_string(),
             ))
             .wrap_with_cost(cost);
         }
@@ -280,17 +303,18 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
     pub fn append_many<'e, I>(
         &mut self,
         entries: I,
-    ) -> CostResult<PrivateDocumentStoreAppendResult, PrivateDocumentStoreError>
+    ) -> CostResult<PrivateDocumentStoreAppendManyResult, PrivateDocumentStoreError>
     where
         I: IntoIterator<Item = &'e [u8]>,
     {
         let mut cost = OperationCost::default();
-        let mut hash_count: u32 = 0;
-        let mut any_compacted = false;
-        let starting_total = self.bulk_tree.total_count;
-        let mut last_global_position = starting_total.saturating_sub(1);
 
-        for entry in entries {
+        // Validate EVERY entry before writing any of them. Validating inline
+        // would let a valid entry land and a later wrong-sized one fail,
+        // leaving the store mutated behind an error — which breaks atomicity
+        // for a direct caller that has no surrounding transaction to discard.
+        let entries: Vec<&[u8]> = entries.into_iter().collect();
+        for entry in &entries {
             if entry.len() != self.entry_size as usize {
                 return Err(PrivateDocumentStoreError::InvalidEntrySize {
                     expected: self.entry_size,
@@ -298,6 +322,14 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
                 })
                 .wrap_with_cost(cost);
             }
+        }
+
+        let mut hash_count: u32 = 0;
+        let mut any_compacted = false;
+        let starting_total = self.bulk_tree.total_count;
+        let mut last_global_position = None;
+
+        for entry in &entries {
             let r = match self.bulk_tree.append_deferred_roots(entry) {
                 Ok(r) => r,
                 Err(e) => {
@@ -310,12 +342,10 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
             };
             hash_count = hash_count.saturating_add(r.hash_count);
             any_compacted |= r.compacted;
-            last_global_position = r.global_position;
+            last_global_position = Some(r.global_position);
         }
 
-        // Pay the deferred roots exactly once: the dense-buffer walk plus the
-        // bulk state-root blake3 (inside compute_current_state_root), then the
-        // composite pds_state blake3.
+        // Pay the deferred roots exactly once.
         let bulk_state_root = match self.bulk_tree.compute_current_state_root() {
             Ok(r) => r,
             Err(e) => {
@@ -328,19 +358,22 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
         };
         let state_root =
             compute_private_document_store_state_root(&self.config_hash, &bulk_state_root);
+
+        // The two root hashes are computed on EVERY call, including an empty
+        // one, so they are charged unconditionally. Only the dense-buffer
+        // walk is conditional, since it re-hashes the live buffer that the
+        // appends just changed.
         if self.bulk_tree.total_count > starting_total {
-            // One dense-root walk over the live buffer + bulk state root + the
-            // composite root.
-            hash_count = hash_count
-                .saturating_add(self.bulk_tree.buffer_count() as u32 * 2)
-                .saturating_add(2);
+            hash_count = hash_count.saturating_add(self.bulk_tree.buffer_count() as u32 * 2);
         }
+        hash_count = hash_count.saturating_add(2);
         cost.hash_node_calls += hash_count;
 
-        Ok(PrivateDocumentStoreAppendResult {
+        Ok(PrivateDocumentStoreAppendManyResult {
             state_root,
             bulk_state_root,
-            global_position: last_global_position,
+            last_global_position,
+            appended: self.bulk_tree.total_count - starting_total,
             hash_count,
             compacted: any_compacted,
         })
@@ -432,6 +465,36 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
         ))
     }
 
+    /// Cost-propagating variant of
+    /// [`compute_current_state_root`](Self::compute_current_state_root):
+    /// charges the underlying dense-root walk (reads and hashes) plus the
+    /// composite `pds_state` blake3.
+    pub fn compute_current_state_root_with_cost(
+        &self,
+    ) -> CostResult<[u8; 32], PrivateDocumentStoreError> {
+        let mut cost = OperationCost::default();
+        let bulk_root = match self
+            .bulk_tree
+            .compute_current_state_root_with_cost()
+            .unwrap_add_cost(&mut cost)
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(PrivateDocumentStoreError::InvalidData(format!(
+                    "state root: {}",
+                    e
+                )))
+                .wrap_with_cost(cost);
+            }
+        };
+        cost.hash_node_calls = cost.hash_node_calls.saturating_add(1);
+        Ok(compute_private_document_store_state_root(
+            &self.config_hash,
+            &bulk_root,
+        ))
+        .wrap_with_cost(cost)
+    }
+
     /// Flush the MMR overlay to storage.
     ///
     /// Delegates to [`BulkAppendTree::commit_mmr`]. Call this at the end of
@@ -503,7 +566,8 @@ mod append_many_tests {
 
         assert_eq!(many.state_root, per_entry.state_root);
         assert_eq!(many.bulk_state_root, per_entry.bulk_state_root);
-        assert_eq!(many.global_position, per_entry.global_position);
+        assert_eq!(many.last_global_position, Some(per_entry.global_position));
+        assert_eq!(many.appended, 10);
         assert_eq!(batched.total_count(), one_by_one.total_count());
         assert_eq!(
             batched.compute_current_state_root().expect("root"),
@@ -532,16 +596,23 @@ mod append_many_tests {
             .unwrap()
             .expect("new");
 
-        // Empty input writes nothing and reports the current state root.
+        // Empty input writes nothing, reports NO appended position (rather
+        // than a sentinel indistinguishable from a real append), and still
+        // charges the two root hashes it actually performs.
         let empty: Vec<Vec<u8>> = Vec::new();
-        let r = store
-            .append_many(empty.iter().map(|e| e.as_slice()))
-            .unwrap()
-            .expect("empty append_many");
+        let ctx = store.append_many(empty.iter().map(|e| e.as_slice()));
+        let empty_cost = ctx.cost.clone();
+        let r = ctx.value.expect("empty append_many");
         assert_eq!(store.total_count(), 0);
+        assert_eq!(r.last_global_position, None);
+        assert_eq!(r.appended, 0);
         assert_eq!(
             r.state_root,
             store.compute_current_state_root().expect("root")
+        );
+        assert_eq!(
+            empty_cost.hash_node_calls, 2,
+            "an empty batch still computes the bulk and composite roots"
         );
 
         // A wrong-size entry is rejected.
@@ -553,6 +624,57 @@ mod append_many_tests {
                 actual: 7
             })
         ));
+    }
+}
+
+#[cfg(test)]
+mod atomicity_tests {
+    use grovedb_bulk_append_tree::test_utils::MemStorageContext;
+
+    use super::*;
+
+    /// A wrong-sized entry anywhere in the batch must leave the store
+    /// completely untouched — not partially appended behind an error. A
+    /// direct caller has no surrounding transaction to discard.
+    #[test]
+    fn append_many_is_atomic_on_a_bad_entry() {
+        let mut store = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
+            .unwrap()
+            .expect("new");
+        store.append(&[1u8; 8]).unwrap().expect("seed");
+
+        let count_before = store.total_count();
+        let root_before = store.compute_current_state_root().expect("root");
+        let value_before = store.get_value(0).unwrap().expect("get");
+
+        // First entry is valid, second is the wrong size.
+        let batch = [vec![2u8; 8], vec![3u8; 7]];
+        assert!(matches!(
+            store
+                .append_many(batch.iter().map(|e| e.as_slice()))
+                .unwrap(),
+            Err(PrivateDocumentStoreError::InvalidEntrySize {
+                expected: 8,
+                actual: 7
+            })
+        ));
+
+        assert_eq!(store.total_count(), count_before, "count must be unchanged");
+        assert_eq!(
+            store.compute_current_state_root().expect("root"),
+            root_before,
+            "state root must be unchanged"
+        );
+        assert_eq!(
+            store.get_value(0).unwrap().expect("get"),
+            value_before,
+            "stored values must be unchanged"
+        );
+        assert_eq!(
+            store.get_value(1).unwrap().expect("get"),
+            None,
+            "the valid entry preceding the bad one must not have landed"
+        );
     }
 }
 

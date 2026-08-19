@@ -2001,11 +2001,19 @@ impl GroveDb {
                         )
                         .into();
                         let actual_placeholder: CryptoHash = blake3::hash(label.as_bytes()).into();
-                        issues.entry(new_path.to_vec()).or_insert((
-                            root_hash,
-                            expected_placeholder,
-                            actual_placeholder,
-                        ));
+                        // Record under a dedicated sentinel child path, the
+                        // way the indexed-tree integrity checks do. Keying it
+                        // on `new_path` with `or_insert` would silently drop
+                        // this violation whenever a child-hash mismatch was
+                        // already recorded at the same path — i.e. exactly
+                        // when both checks fail — which defeats the point of
+                        // reporting it as its own diagnostic.
+                        let mut issue_path = new_path.to_vec();
+                        issue_path.push(b"__pds_entry_size__".to_vec());
+                        issues.insert(
+                            issue_path,
+                            (root_hash, expected_placeholder, actual_placeholder),
+                        );
                     }
 
                     // Software-consistency check: the aggregate fields

@@ -266,6 +266,9 @@ impl GroveDb {
                 // store is empty, so the empty case is the precomputed
                 // config-parametrized root rather than NULL_HASH.
                 if *total_count == 0 {
+                    // Two blake3 calls: the committed-config hash and the
+                    // composite pds_state root.
+                    cost.hash_node_calls = cost.hash_node_calls.saturating_add(2);
                     return Ok(
                         grovedb_private_document_store::empty_private_document_store_state_root(
                             *entry_size,
@@ -291,13 +294,15 @@ impl GroveDb {
                         e
                     ))))
                 );
-                let state_root = cost_return_on_error_no_add!(
-                    cost,
-                    store.compute_current_state_root().map_err(|e| {
-                        Error::CorruptedData(format!(
-                            "private document store state root failed: {}",
-                            e
-                        ))
+                let state_root = cost_return_on_error!(
+                    &mut cost,
+                    store.compute_current_state_root_with_cost().map(|r| {
+                        r.map_err(|e| {
+                            Error::CorruptedData(format!(
+                                "private document store state root failed: {}",
+                                e
+                            ))
+                        })
                     })
                 );
                 Ok(state_root).wrap_with_cost(cost)

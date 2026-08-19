@@ -1,5 +1,6 @@
 //! Append and compaction logic for BulkAppendTree.
 
+use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_merkle_mountain_range::{
     hash_count_for_push, mmr_size_to_leaf_count, MmrKeySize, MmrNode, MmrStore, MMR,
 };
@@ -198,6 +199,42 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             BulkAppendError::StorageError(format!("dense tree root_hash failed: {}", e))
         })?;
         Ok(compute_state_root(&mmr_root, &dense_root))
+    }
+
+    /// Cost-propagating variant of
+    /// [`compute_current_state_root`](Self::compute_current_state_root).
+    ///
+    /// Identical result; the difference is that the dense-tree root walk's
+    /// storage reads reach the caller instead of being discarded, and the
+    /// hash calls it performs (two per filled buffer position, plus the
+    /// state-root blake3) are charged. Callers that bill work — anything
+    /// returning a `CostResult` — should prefer this.
+    pub fn compute_current_state_root_with_cost(&self) -> CostResult<[u8; 32], BulkAppendError> {
+        let mut cost = OperationCost::default();
+        let mmr_root = match self.last_mmr_root {
+            Some(r) => r,
+            None => match self.get_mmr_root() {
+                Ok(r) => r,
+                Err(e) => return Err(e).wrap_with_cost(cost),
+            },
+        };
+        let dense_root = match self.dense_tree.root_hash().unwrap_add_cost(&mut cost) {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(BulkAppendError::StorageError(format!(
+                    "dense tree root_hash failed: {}",
+                    e
+                )))
+                .wrap_with_cost(cost);
+            }
+        };
+        // The root walk hashes every filled position twice, then one blake3
+        // combines the MMR and dense roots into the state root.
+        cost.hash_node_calls = cost
+            .hash_node_calls
+            .saturating_add(self.dense_tree.count() as u32 * 2)
+            .saturating_add(1);
+        Ok(compute_state_root(&mmr_root, &dense_root)).wrap_with_cost(cost)
     }
 
     /// Compact all dense tree entries plus a new value into a chunk blob

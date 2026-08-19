@@ -71,9 +71,14 @@ fn test_private_document_store_constructor_validation() {
     // chunk_power outside 1..=16 is rejected.
     assert!(Element::empty_private_document_store(TEST_ENTRY_SIZE, 0).is_err());
     assert!(Element::empty_private_document_store(TEST_ENTRY_SIZE, 17).is_err());
+    // entry_size is capped at u16::MAX so the worst-case compaction blob
+    // (2^16 * entry_size) stays representable in the u32 added_bytes field,
+    // keeping the worst-case storage estimate a real upper bound.
+    assert!(Element::empty_private_document_store(u16::MAX as u32 + 1, 4).is_err());
+    assert!(Element::empty_private_document_store(u32::MAX, 4).is_err());
     // Boundary values are accepted.
     assert!(Element::empty_private_document_store(1, 1).is_ok());
-    assert!(Element::empty_private_document_store(u32::MAX, 16).is_ok());
+    assert!(Element::empty_private_document_store(u16::MAX as u32, 16).is_ok());
 }
 
 #[test]

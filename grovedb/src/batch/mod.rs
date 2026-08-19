@@ -3017,9 +3017,12 @@ where
                             // enforce — a caller-built element must not bypass
                             // it, since the config is committed into the state
                             // root.
-                            if *entry_size == 0 || !(1..=16).contains(chunk_power) {
+                            if *entry_size == 0
+                                || *entry_size > u16::MAX as u32
+                                || !(1..=16).contains(chunk_power)
+                            {
                                 return Err(Error::InvalidBatchOperation(
-                                    "a PrivateDocumentStore requires entry_size >= 1 and \
+                                    "a PrivateDocumentStore requires entry_size in 1..=65535 and \
                                      chunk_power in 1..=16",
                                 ))
                                 .wrap_with_cost(cost);

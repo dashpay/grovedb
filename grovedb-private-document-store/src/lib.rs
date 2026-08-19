@@ -36,7 +36,9 @@ pub use grovedb_bulk_append_tree::{
     deserialize_chunk_blob, serialize_chunk_blob, BulkAppendError, BulkAppendTree,
 };
 #[cfg(feature = "storage")]
-pub use store::{PrivateDocumentStore, PrivateDocumentStoreAppendResult};
+pub use store::{
+    PrivateDocumentStore, PrivateDocumentStoreAppendManyResult, PrivateDocumentStoreAppendResult,
+};
 
 /// Pre-computed state root of an empty [`BulkAppendTree`]:
 /// `blake3("bulk_state" || [0; 32] || [0; 32])`.

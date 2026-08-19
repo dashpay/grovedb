@@ -793,9 +793,9 @@ impl Element {
     /// `new_commitment_tree` / `new_bulk_append_tree`.
     pub fn validate_private_document_store_config(&self) -> Result<(), crate::error::ElementError> {
         if let Element::PrivateDocumentStore(_, entry_size, chunk_power, _) = self.underlying() {
-            if *entry_size == 0 {
+            if *entry_size == 0 || *entry_size > u16::MAX as u32 {
                 return Err(crate::error::ElementError::InvalidInput(
-                    "private document store entry_size must be non-zero",
+                    "private document store entry_size must be in 1..=65535",
                 ));
             }
             if !(1..=16).contains(chunk_power) {

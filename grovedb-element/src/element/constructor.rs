@@ -523,9 +523,14 @@ impl Element {
         chunk_power: u8,
         flags: Option<ElementFlags>,
     ) -> Result<Self, ElementError> {
-        if entry_size == 0 {
+        if entry_size == 0 || entry_size > u16::MAX as u32 {
+            // Upper bound keeps `2^16 * entry_size` (the worst-case
+            // compaction blob) inside the u32 `added_bytes` field, so the
+            // worst-case storage estimate stays a real bound. An entry
+            // larger than 64 KiB is outside this type's design envelope
+            // anyway.
             return Err(ElementError::InvalidInput(
-                "private document store entry_size must be non-zero",
+                "private document store entry_size must be in 1..=65535",
             ));
         }
         if !(1..=16).contains(&chunk_power) {
