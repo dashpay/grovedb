@@ -1351,6 +1351,7 @@ impl GroveDb {
             &mut cost,
             collect_top_k_via_iterator(&secondary_merk, axis, k, descending, &decode)
         );
+        drop(secondary_merk);
         self.resolve_indexed_axis_entries(path, decoded, tx_ref, grove_version)
             .add_cost(cost)
     }
@@ -1395,6 +1396,7 @@ impl GroveDb {
                 &mut cost,
                 collect_top_k_via_iterator(&secondary_merk, axis, k, descending, &decode)
             );
+            drop(secondary_merk);
             let entries = cost_return_on_error!(
                 &mut cost,
                 self.resolve_indexed_axis_entries(path, decoded, tx_ref, grove_version,)
@@ -1556,6 +1558,8 @@ impl GroveDb {
                 None => break,
             }
         }
+        drop(iter);
+        drop(secondary_merk);
 
         self.resolve_indexed_axis_entries(path, decoded_results, tx_ref, grove_version)
             .add_cost(cost)
@@ -1577,12 +1581,57 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
     {
         let mut cost = OperationCost::default();
+        if decoded.is_empty() {
+            return Ok(Vec::new()).wrap_with_cost(cost);
+        }
+
+        // Open the primary once for the whole result page. Calling `get`
+        // for every row would reopen this same Merk and repeat the same
+        // path validation `k` times.
+        let primary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(path.clone(), transaction, None, grove_version)
+        );
         let mut entries = Vec::with_capacity(decoded.len());
         for (ordering_value, primary_key) in decoded {
-            let value = cost_return_on_error!(
+            let element = cost_return_on_error!(
                 &mut cost,
-                self.get(path.clone(), &primary_key, Some(transaction), grove_version,)
+                Element::get(&primary_merk, &primary_key, true, grove_version).map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "indexed axis read: primary entry {} named by a secondary row is missing: {e}",
+                        hex::encode(&primary_key)
+                    ))
+                })
             );
+            let value = match element.underlying() {
+                Element::Reference(reference_path, ..)
+                | Element::ReferenceWithSumItem(reference_path, ..) => {
+                    // Match `GroveDb::get`: relative reference paths are
+                    // resolved from the indexed tree's path, not from a
+                    // qualified path that already includes `primary_key`.
+                    // The latter would append sibling keys one level too
+                    // deep (`.../primary_key/sibling`).
+                    let absolute = cost_return_on_error_no_add!(
+                        cost,
+                        crate::reference_path::path_from_reference_path_type(
+                            reference_path.clone(),
+                            &path.to_vec(),
+                            Some(primary_key.as_slice()),
+                        )
+                        .map_err(Error::from)
+                    );
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.follow_reference(
+                            absolute.as_slice().into(),
+                            true,
+                            Some(transaction),
+                            grove_version,
+                        )
+                    )
+                }
+                _ => element,
+            };
             entries.push(IndexedAxisEntry {
                 ordering_value,
                 primary_key,

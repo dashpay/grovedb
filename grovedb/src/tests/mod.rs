@@ -94,6 +94,7 @@ mod indexed_axis_nested_and_bounds_tests;
 mod indexed_axis_offset_proof_tests;
 mod indexed_axis_paginated_cost_tests;
 mod indexed_axis_proof_tests;
+mod indexed_reference_row_tests;
 mod indexed_tree_secondary_drift_tests;
 mod indexed_tree_security_regression_tests;
 mod is_empty_tree_tests;
