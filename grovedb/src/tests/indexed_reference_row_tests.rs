@@ -804,6 +804,170 @@ mod tests {
         assert_eq!(entries[0].primary_key, b"ref".to_vec());
     }
 
+    /// A MULTI-HOP reference chain out of an indexed primary.
+    ///
+    /// GroveDB references commit the TERMINAL's value hash, not the next
+    /// hop's — `follow_reference_get_value_hash` recurses past every
+    /// intermediate reference before the hash is baked into
+    /// `PutCombinedReference`. A chain fold that composes hop-by-hop
+    /// happens to agree at one hop and diverges at two, so one-hop
+    /// coverage cannot catch it.
+    #[test]
+    fn a_multi_hop_reference_primary_resolves_and_verifies() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"terminal",
+            Element::new_item(b"terminal-value".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("terminal");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"middle",
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec(),
+                b"terminal".to_vec(),
+            ])),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("middle hop");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("PCIT");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"alias",
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec(),
+                b"middle".to_vec(),
+            ])),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("two-hop primary");
+        let issues = db.verify_grovedb(None, true, true, grove_version).unwrap();
+        assert!(issues.is_empty(), "multi-hop chain reported: {issues:?}");
+
+        let expected = Element::new_item(b"terminal-value".to_vec());
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+
+        let direct = db
+            .indexed_count_top_k(path, 5, true, None, grove_version)
+            .unwrap()
+            .expect("direct top_k");
+        assert_eq!(direct.len(), 1);
+        assert_eq!(direct[0].value, expected, "direct read follows both hops");
+
+        let proof = db
+            .prove_indexed_count_top_k(path, 5, true, None, grove_version)
+            .unwrap()
+            .expect("prove a two-hop primary");
+        let result = GroveDb::verify_indexed_count_top_k(&proof, path, 5, true, grove_version)
+            .expect("a two-hop reference chain must verify");
+        let entries = match &result.entries {
+            crate::operations::proof::indexed_axis::AxisEntries::Count(v) => v,
+            other => panic!("expected count entries, got {other:?}"),
+        };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].value, expected,
+            "the proved read must reach the same terminal as the direct read"
+        );
+    }
+
+    /// A RELATIVE (sibling) reference out of an indexed primary.
+    ///
+    /// `SiblingReference` resolves by appending its key to the CURRENT
+    /// PATH, so the path handed to resolution must be the node's parent,
+    /// not the node's own qualified path. Passing one segment too deep
+    /// sends resolution looking for a child underneath the entry itself.
+    /// An `UpstreamRootHeightReference` masks the error — it truncates to
+    /// the first N segments and lands in the same place either way — so
+    /// this needs its own case.
+    #[test]
+    fn a_sibling_reference_primary_resolves_and_verifies() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("PCIT");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"target",
+            Element::new_item(b"sibling-value".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("sibling target");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"alias",
+            Element::new_reference(ReferencePathType::SiblingReference(b"target".to_vec())),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("sibling-reference primary");
+        let issues = db.verify_grovedb(None, true, true, grove_version).unwrap();
+        assert!(issues.is_empty(), "sibling chain reported: {issues:?}");
+
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let expected = Element::new_item(b"sibling-value".to_vec());
+
+        let direct = db
+            .indexed_count_top_k(path, 5, true, None, grove_version)
+            .unwrap()
+            .expect("direct top_k");
+        let alias = direct
+            .iter()
+            .find(|e| e.primary_key == b"alias".to_vec())
+            .expect("alias row");
+        assert_eq!(alias.value, expected, "direct read resolves the sibling");
+
+        let proof = db
+            .prove_indexed_count_top_k(path, 5, true, None, grove_version)
+            .unwrap()
+            .expect("prove a sibling-reference primary");
+        let result = GroveDb::verify_indexed_count_top_k(&proof, path, 5, true, grove_version)
+            .expect("a sibling reference chain must verify");
+        let entries = match &result.entries {
+            crate::operations::proof::indexed_axis::AxisEntries::Count(v) => v,
+            other => panic!("expected count entries, got {other:?}"),
+        };
+        let alias = entries
+            .iter()
+            .find(|e| e.primary_key == b"alias".to_vec())
+            .expect("alias row in proof");
+        assert_eq!(
+            alias.value, expected,
+            "the proved read resolves the sibling"
+        );
+    }
+
     /// Ordinary user references keep their own semantics. The one-hop
     /// immediate-node rule is dedicated indexed-tree behaviour, so it must
     /// not leak into how a normal reference elsewhere in the grove is

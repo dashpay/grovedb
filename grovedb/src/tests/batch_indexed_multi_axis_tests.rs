@@ -23,6 +23,8 @@ mod tests {
     use grovedb_element::indexed::IndexAxis;
     use grovedb_version::version::GroveVersion;
 
+    use crate::IndexedAxisEntrySliceExt;
+
     use crate::{
         batch::QualifiedGroveDbOp,
         tests::{make_test_grovedb, TempGroveDb, TEST_LEAF},
@@ -251,7 +253,7 @@ mod tests {
             .unwrap()
             .expect("sum top_k");
         assert_eq!(
-            by_sum,
+            by_sum.key_pairs(),
             vec![
                 (30, b"a".to_vec()),
                 (20, b"c".to_vec()),
@@ -267,7 +269,7 @@ mod tests {
             .unwrap()
             .expect("count top_k");
         assert_eq!(
-            by_count,
+            by_count.key_pairs(),
             vec![(1, b"a".to_vec()), (1, b"b".to_vec()), (1, b"c".to_vec())],
             "the count axis must be populated too, not just the sum axis"
         );
@@ -311,7 +313,8 @@ mod tests {
         assert_eq!(
             db.indexed_sum_top_k(path.as_ref(), 10, true, None, gv)
                 .unwrap()
-                .expect("sum top_k"),
+                .expect("sum top_k")
+                .key_pairs(),
             vec![(42, b"a".to_vec())],
             "the configured sum axis must be populated"
         );
@@ -372,14 +375,16 @@ mod tests {
         assert_eq!(
             db.indexed_sum_top_k(path.as_ref(), 10, true, None, gv)
                 .unwrap()
-                .expect("sum top_k"),
+                .expect("sum top_k")
+                .key_pairs(),
             vec![(99, b"a".to_vec())],
             "the sum axis must reflect the new sum, with no stale row left behind"
         );
         assert_eq!(
             db.indexed_count_top_k(path.as_ref(), 10, true, None, gv)
                 .unwrap()
-                .expect("count top_k"),
+                .expect("count top_k")
+                .key_pairs(),
             vec![(1, b"a".to_vec())],
             "the count axis must still hold exactly one row for the entry"
         );
@@ -513,7 +518,8 @@ mod tests {
         assert_eq!(
             db.indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 10, true, None, gv)
                 .unwrap()
-                .expect("sum top_k"),
+                .expect("sum top_k")
+                .key_pairs(),
             vec![(3, b"a".to_vec())],
         );
         assert_clean(&db, gv);
@@ -566,13 +572,15 @@ mod tests {
         assert_eq!(
             db.indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 10, true, None, gv)
                 .unwrap()
-                .expect("psit"),
+                .expect("psit")
+                .key_pairs(),
             vec![(12, b"y".to_vec())]
         );
         assert_eq!(
             db.indexed_sum_top_k([TEST_LEAF, b"idx"].as_ref(), 10, true, None, gv)
                 .unwrap()
-                .expect("pcpsit sum"),
+                .expect("pcpsit sum")
+                .key_pairs(),
             vec![(6, b"z".to_vec())]
         );
         assert_clean(&db, gv);
@@ -605,7 +613,8 @@ mod tests {
         assert_eq!(
             db.indexed_sum_top_k([TEST_LEAF, b"idx"].as_ref(), 10, false, None, gv)
                 .unwrap()
-                .expect("ascending sum top_k"),
+                .expect("ascending sum top_k")
+                .key_pairs(),
             vec![
                 (-50, b"neg".to_vec()),
                 (0, b"zero".to_vec()),
@@ -671,14 +680,16 @@ mod tests {
         assert_eq!(
             db.indexed_sum_top_k([TEST_LEAF, b"mid", b"idx"].as_ref(), 10, true, None, gv)
                 .unwrap()
-                .expect("nested sum top_k"),
+                .expect("nested sum top_k")
+                .key_pairs(),
             vec![(15, b"a".to_vec())],
             "the nested PCPSIT's sum axis must be mirrored through the intermediate level"
         );
         assert_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"mid", b"idx"].as_ref(), 10, true, None, gv)
                 .unwrap()
-                .expect("nested count top_k"),
+                .expect("nested count top_k")
+                .key_pairs(),
             vec![(1, b"a".to_vec())],
         );
         assert_clean(&db, gv);
@@ -810,7 +821,8 @@ mod tests {
         assert_eq!(
             db.indexed_sum_top_k([TEST_LEAF, b"idx"].as_ref(), 10, true, None, gv)
                 .unwrap()
-                .expect("sum top_k"),
+                .expect("sum top_k")
+                .key_pairs(),
             vec![(21, b"a".to_vec())],
             "an InsertIfNotExists op must mirror like an insert — it carries an element too"
         );
@@ -1258,7 +1270,8 @@ mod tests {
         assert_eq!(
             db.indexed_sum_top_k([TEST_LEAF, b"idx"].as_ref(), 5, true, None, gv)
                 .unwrap()
-                .expect("sum top_k"),
+                .expect("sum top_k")
+                .key_pairs(),
             vec![(10, b"k".to_vec())],
             "the sum axis must reflect the new total"
         );
@@ -1453,7 +1466,8 @@ mod tests {
         assert_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, gv)
                 .unwrap()
-                .expect("top_k"),
+                .expect("top_k")
+                .key_pairs(),
             vec![(0u64, b"child".to_vec())],
             "baseline: an empty child is indexed at count 0"
         );
@@ -1471,7 +1485,8 @@ mod tests {
         assert_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, gv)
                 .unwrap()
-                .expect("top_k"),
+                .expect("top_k")
+                .key_pairs(),
             vec![(1u64, b"child".to_vec())],
             "the generic path must have carried the new aggregate into the index"
         );
@@ -1492,7 +1507,8 @@ mod tests {
         assert_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, gv)
                 .unwrap()
-                .expect("top_k"),
+                .expect("top_k")
+                .key_pairs(),
             vec![(2u64, b"child".to_vec())],
             "the batch path must maintain the index identically"
         );

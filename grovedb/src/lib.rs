@@ -260,7 +260,7 @@ pub use query::{
     PathTrunkChunkQuery, SizedQuery,
 };
 #[cfg(any(feature = "minimal", feature = "verify"))]
-pub use query_result_type::IndexedAxisEntry;
+pub use query_result_type::{IndexedAxisEntry, IndexedAxisEntrySliceExt};
 #[cfg(feature = "minimal")]
 use reference_path::path_from_reference_path_type;
 #[cfg(feature = "grovedbg")]
@@ -1000,7 +1000,7 @@ impl GroveDb {
 
     pub(crate) fn propagate_changes_with_transaction_with_initial_deferred<'b, B: AsRef<[u8]>>(
         &self,
-        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
+        merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
         path: SubtreePath<'b, B>,
         initial_deferred_secondary: Option<(Hash, Option<Vec<u8>>)>,
         transaction: &Transaction,
@@ -2057,11 +2057,11 @@ impl GroveDb {
             // `value_hash(bytes)` cannot reproduce.
             //
             // `None` means the raw iterator found bytes the AVL cannot reach
-            // from the committed root — an unlinked row. That is corruption in
-            // its own right, and it is reported by the shape checks below; we
-            // just cannot state a commitment for it, so the commitment
-            // comparison is skipped rather than turned into a hard error that
-            // would mask every other finding in the walk.
+            // from the committed root — an unlinked node. That is corruption
+            // in its own right and gets its own sentinel: an operator seeing
+            // a stale-commitment report should not have to guess whether the
+            // node was reachable at all. The walk continues so the rest of
+            // the relational report still lands.
             let target_value_hash = primary_merk
                 .get_value_hash(
                     &p_key,
@@ -2070,6 +2070,12 @@ impl GroveDb {
                     grove_version,
                 )
                 .unwrap()?;
+            if target_value_hash.is_none() {
+                let mut p = new_path.to_vec();
+                p.push(sentinel("primary_unreachable_node"));
+                p.push(p_key.clone());
+                issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
+            }
             expected.insert(
                 p_key.clone(),
                 (
@@ -2103,10 +2109,8 @@ impl GroveDb {
             // it is what proves the row still binds the primary entry's
             // current state. Recomputing it from `sec_value` alone would only
             // re-derive the reference bytes' own hash and see nothing stale.
-            // `None` here means the row is present in storage but unreachable
-            // from the committed root — an unlinked row, which the shape and
-            // orphan checks below already surface. Skip its commitment
-            // comparison rather than hard-erroring the whole walk.
+            // Same as the primary side: an unlinked row is corruption with its
+            // own name, not a silent skip.
             let stored_value_hash = secondary_merk
                 .get_value_hash(
                     &sec_key,
@@ -2115,6 +2119,12 @@ impl GroveDb {
                     grove_version,
                 )
                 .unwrap()?;
+            if stored_value_hash.is_none() {
+                let mut p = new_path.to_vec();
+                p.push(sentinel("secondary_unreachable_node"));
+                p.push(sec_key.clone());
+                issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
+            }
             let item_key = sec_key[sort_len..].to_vec();
             actual.entry(item_key).or_default().push((
                 sec_key.clone(),

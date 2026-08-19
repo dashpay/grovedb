@@ -9,13 +9,8 @@
 
 use std::collections::HashMap;
 
-use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
-};
-use grovedb_merk::element::{
-    costs::ElementCostExtensions, get::ElementFetchFromStorageExtensions,
-    insert::ElementInsertToStorageExtensions,
-};
+use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
 use grovedb_merkle_mountain_range::{
     hash_count_for_push, mmr_size_to_leaf_count, MmrNode, MmrStore, MMR,
 };

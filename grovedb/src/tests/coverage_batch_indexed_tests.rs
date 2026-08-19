@@ -25,6 +25,8 @@ mod tests {
     use grovedb_merk::{tree::AggregateData, tree_type::TreeType};
     use grovedb_version::version::GroveVersion;
 
+    use crate::IndexedAxisEntrySliceExt;
+
     use crate::{
         batch::{BatchApplyOptions, GroveOp, QualifiedGroveDbOp, SubelementsDeletionBehavior},
         tests::{common::EMPTY_PATH, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
@@ -621,7 +623,8 @@ mod tests {
         assert_eq!(
             db.indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 5, true, None, grove_version)
                 .unwrap()
-                .expect("sum top_k"),
+                .expect("sum top_k")
+                .key_pairs(),
             vec![(5i64, b"a".to_vec())],
             "the sum index must reflect the row inserted alongside the creation"
         );
@@ -657,7 +660,8 @@ mod tests {
                 grove_version
             )
             .unwrap()
-            .expect("sum top_k"),
+            .expect("sum top_k")
+            .key_pairs(),
             vec![(5i64, b"a".to_vec())],
             "the sum index must reflect the row inserted alongside the creation"
         );

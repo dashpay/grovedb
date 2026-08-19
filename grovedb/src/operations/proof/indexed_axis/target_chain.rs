@@ -161,8 +161,17 @@ fn build_commitment<'db>(
     Ok(commitment).wrap_with_cost(cost)
 }
 
-/// Build the chain for one secondary row: the immediate primary entry,
-/// then any ordinary reference hops through to the terminal.
+/// Build the chain for one secondary row.
+///
+/// The chain is at most TWO entries: the immediate primary entry, and —
+/// only when that entry is itself a reference — the TERMINAL it resolves
+/// to. Intermediate hops are deliberately not carried, because nothing
+/// binds them: a GroveDB reference commits its terminal's value hash
+/// directly (`follow_reference_get_value_hash` recurses past every
+/// intermediate reference before the hash is baked into
+/// `PutCombinedReference`), so the head's commitment reaches the terminal
+/// in one step no matter how many hops the path takes. Carrying the
+/// middle of the chain would hand a verifier bytes it cannot check.
 pub(crate) fn build_target_chain<'db>(
     grovedb: &'db GroveDb,
     indexed_path: &[Vec<u8>],
@@ -172,93 +181,171 @@ pub(crate) fn build_target_chain<'db>(
     grove_version: &GroveVersion,
 ) -> CostResult<IndexedTargetChain, Error> {
     let mut cost = OperationCost::default();
-    let mut qualified_path = indexed_path.to_vec();
-    qualified_path.push(primary_key.to_vec());
+
+    // The head: the primary entry itself.
+    let head_parent: Vec<&[u8]> = indexed_path.iter().map(Vec::as_slice).collect();
+    let head_merk = cost_return_on_error!(
+        &mut cost,
+        grovedb.open_transactional_merk_at_path(
+            head_parent.as_slice().into(),
+            transaction,
+            Some(batch),
+            grove_version,
+        )
+    );
+    let head_element = cost_return_on_error!(
+        &mut cost,
+        Element::get(&head_merk, primary_key, true, grove_version).map_err(|e| {
+            Error::CorruptedData(format!(
+                "indexed target chain: primary entry {} is missing: {e}",
+                hex::encode(primary_key)
+            ))
+        })
+    );
+    drop(head_merk);
+
+    let mut head_qualified = indexed_path.to_vec();
+    head_qualified.push(primary_key.to_vec());
+    let head = cost_return_on_error!(
+        &mut cost,
+        build_chain_node(
+            grovedb,
+            &head_element,
+            &head_qualified,
+            transaction,
+            batch,
+            grove_version,
+        )
+    );
+    let mut nodes = vec![head];
+
+    // If the primary entry is a reference, walk to the terminal. Only the
+    // terminal is recorded — see this function's doc for why.
+    let mut current_element = head_element;
+    let mut current_parent = indexed_path.to_vec();
+    let mut current_key = primary_key.to_vec();
     let mut visited = std::collections::HashSet::new();
-    let mut nodes = Vec::new();
+    visited.insert(head_qualified);
 
     for _ in 0..=MAX_REFERENCE_HOPS {
-        if !visited.insert(qualified_path.clone()) {
+        let reference_path = match current_element.underlying() {
+            Element::Reference(reference_path, ..)
+            | Element::ReferenceWithSumItem(reference_path, ..) => reference_path.clone(),
+            // Not a reference: the head was the terminal, or we just
+            // reached it.
+            _ => {
+                if nodes.len() > 1 || !nodes[0].is_reference() {
+                    return Ok(IndexedTargetChain { nodes }).wrap_with_cost(cost);
+                }
+                // Unreachable: a reference head always takes the branch
+                // below at least once before we get here.
+                return Err(Error::CorruptedCodeExecution(
+                    "indexed target chain: reference head produced no terminal",
+                ))
+                .wrap_with_cost(cost);
+            }
+        };
+
+        // `current_parent` — NOT the node's own qualified path. A relative
+        // reference resolves against its PARENT (`SiblingReference`
+        // appends its key to what it is given), so passing the node's own
+        // path would look for a child underneath the entry itself.
+        let next_qualified = match path_from_reference_path_type(
+            reference_path,
+            &current_parent,
+            Some(current_key.as_slice()),
+        ) {
+            Ok(p) => p,
+            Err(e) => return Err(Error::from(e)).wrap_with_cost(cost),
+        };
+        if !visited.insert(next_qualified.clone()) {
             return Err(Error::CyclicReference).wrap_with_cost(cost);
         }
-        let Some((key, parent_segments)) = qualified_path.split_last() else {
+        let Some((next_key, next_parent)) = next_qualified.split_last() else {
             return Err(Error::CorruptedPath(
                 "indexed target chain resolved an empty path".to_string(),
             ))
             .wrap_with_cost(cost);
         };
-        let parent_slices: Vec<&[u8]> = parent_segments.iter().map(Vec::as_slice).collect();
-        let parent_merk = cost_return_on_error!(
+        let next_parent_slices: Vec<&[u8]> = next_parent.iter().map(Vec::as_slice).collect();
+        let next_merk = cost_return_on_error!(
             &mut cost,
             grovedb.open_transactional_merk_at_path(
-                parent_slices.as_slice().into(),
+                next_parent_slices.as_slice().into(),
                 transaction,
                 Some(batch),
                 grove_version,
             )
         );
-        let element = cost_return_on_error!(
+        let next_element = cost_return_on_error!(
             &mut cost,
-            Element::get(&parent_merk, key, true, grove_version).map_err(|e| {
-                Error::CorruptedData(format!(
-                    "indexed target chain: entry {} is missing: {e}",
-                    hex::encode(key)
+            Element::get(&next_merk, next_key, true, grove_version).map_err(|e| {
+                Error::CorruptedReferencePathKeyNotFound(format!(
+                    "indexed target chain: reference target {} is missing: {e}",
+                    hex::encode(next_key)
                 ))
             })
         );
-        drop(parent_merk);
+        drop(next_merk);
 
-        let value = cost_return_on_error_no_add!(
-            cost,
-            element.serialize(grove_version).map_err(|e| {
-                Error::CorruptedData(format!("indexed target chain: serializing entry: {e}"))
-            })
-        );
-        let commitment = cost_return_on_error!(
-            &mut cost,
-            build_commitment(
-                grovedb,
-                &element,
-                &qualified_path,
-                transaction,
-                batch,
-                grove_version,
-            )
-        );
-
-        let next_path = match element.underlying() {
-            Element::Reference(reference_path, ..)
-            | Element::ReferenceWithSumItem(reference_path, ..) => {
-                let mut current = parent_segments.to_vec();
-                current.push(key.clone());
-                match path_from_reference_path_type(
-                    reference_path.clone(),
-                    &current,
-                    Some(key.as_slice()),
-                ) {
-                    Ok(p) => Some(p),
-                    Err(e) => return Err(Error::from(e)).wrap_with_cost(cost),
-                }
-            }
-            _ => None,
-        };
-
-        nodes.push(IndexedTargetNode { value, commitment });
-        match next_path {
-            Some(next) => qualified_path = next,
-            None => return Ok(IndexedTargetChain { nodes }).wrap_with_cost(cost),
+        if !next_element.underlying().is_reference() {
+            let terminal = cost_return_on_error!(
+                &mut cost,
+                build_chain_node(
+                    grovedb,
+                    &next_element,
+                    &next_qualified,
+                    transaction,
+                    batch,
+                    grove_version,
+                )
+            );
+            nodes.push(terminal);
+            return Ok(IndexedTargetChain { nodes }).wrap_with_cost(cost);
         }
+
+        current_parent = next_parent.to_vec();
+        current_key = next_key.clone();
+        current_element = next_element;
     }
 
     Err(Error::ReferenceLimit).wrap_with_cost(cost)
 }
 
-/// Recompute the committed value hash of one chain entry, given the
-/// commitment of the entry that follows it.
-fn node_commitment(
-    node: &IndexedTargetNode,
-    next: Option<&CryptoHash>,
-) -> Result<CryptoHash, Error> {
+/// Serialize one element and derive its commitment shape.
+fn build_chain_node<'db>(
+    grovedb: &'db GroveDb,
+    element: &Element,
+    qualified_path: &[Vec<u8>],
+    transaction: &'db Transaction,
+    batch: &'db StorageBatch,
+    grove_version: &GroveVersion,
+) -> CostResult<IndexedTargetNode, Error> {
+    let mut cost = OperationCost::default();
+    let value = cost_return_on_error_no_add!(
+        cost,
+        element.serialize(grove_version).map_err(|e| {
+            Error::CorruptedData(format!("indexed target chain: serializing entry: {e}"))
+        })
+    );
+    let commitment = cost_return_on_error!(
+        &mut cost,
+        build_commitment(
+            grovedb,
+            element,
+            qualified_path,
+            transaction,
+            batch,
+            grove_version,
+        )
+    );
+    Ok(IndexedTargetNode { value, commitment }).wrap_with_cost(cost)
+}
+
+/// The commitment a node's own shape implies, for every shape except
+/// `Reference` (whose commitment needs the terminal and is folded by the
+/// caller).
+fn shape_commitment(node: &IndexedTargetNode) -> Result<CryptoHash, Error> {
     let serialized_hash = value_hash(&node.value).value().to_owned();
     Ok(match &node.commitment {
         IndexedTargetCommitment::Simple => serialized_hash,
@@ -281,14 +368,9 @@ fn node_commitment(
                 .to_owned()
         }
         IndexedTargetCommitment::Reference => {
-            let next = next.ok_or_else(|| {
-                Error::CorruptedData(
-                    "indexed target chain: a Reference node is the last entry — a reference \
-                     commits its target's hash, so the chain must continue"
-                        .to_string(),
-                )
-            })?;
-            combine_hash(&serialized_hash, next).value().to_owned()
+            return Err(Error::CorruptedCodeExecution(
+                "indexed target chain: a Reference node has no standalone shape commitment",
+            ));
         }
     })
 }
@@ -310,45 +392,59 @@ pub(crate) fn authenticate_target_chain(
                 .to_string(),
         ));
     }
-    if chain.nodes.len() > MAX_REFERENCE_HOPS + 1 {
-        return Err(Error::CorruptedData(format!(
-            "indexed target chain has {} entries, above the {MAX_REFERENCE_HOPS}-hop limit",
-            chain.nodes.len()
-        )));
-    }
-    // Only the last entry may be a non-reference, and only a reference may
-    // be followed — otherwise a prover could append unbound entries after
-    // a terminal and pass off the last one as the resolved value.
-    for (i, node) in chain.nodes.iter().enumerate() {
-        let is_last = i + 1 == chain.nodes.len();
-        let is_reference = matches!(node.commitment, IndexedTargetCommitment::Reference);
-        if is_reference == is_last {
-            return Err(Error::CorruptedData(format!(
-                "indexed target chain entry {i} is {} but {} the last — a chain is a run of \
-                 references ending in exactly one non-reference terminal",
-                if is_reference {
-                    "a reference"
-                } else {
-                    "not a reference"
-                },
-                if is_last { "is" } else { "is not" }
-            )));
-        }
-    }
-
-    // Fold back-to-front: each entry's commitment needs the next one's.
-    let mut next: Option<CryptoHash> = None;
-    for node in chain.nodes.iter().rev() {
-        next = Some(node_commitment(node, next.as_ref())?);
-    }
-    let immediate_commitment = next.expect("chain is non-empty");
-
     let decode = |bytes: &[u8]| -> Result<Element, Error> {
         Element::deserialize(bytes, grove_version).map_err(|e| {
             Error::CorruptedData(format!("indexed target chain: undecodable element: {e}"))
         })
     };
-    let immediate = decode(&chain.nodes[0].value)?;
-    let terminal = decode(&chain.nodes[chain.nodes.len() - 1].value)?;
+    let head = &chain.nodes[0];
+
+    let (immediate_commitment, terminal) = match chain.nodes.len() {
+        1 => {
+            if head.is_reference() {
+                return Err(Error::CorruptedData(
+                    "indexed target chain: a reference head carries no terminal — a reference \
+                     commits its terminal's hash, so the terminal is required to rebuild it"
+                        .to_string(),
+                ));
+            }
+            (shape_commitment(head)?, decode(&head.value)?)
+        }
+        2 => {
+            let terminal_node = &chain.nodes[1];
+            if !head.is_reference() {
+                return Err(Error::CorruptedData(
+                    "indexed target chain: a directly-valued head carries a terminal — only a \
+                     reference resolves onward"
+                        .to_string(),
+                ));
+            }
+            if terminal_node.is_reference() {
+                return Err(Error::CorruptedData(
+                    "indexed target chain: the terminal entry is itself a reference — the \
+                     chain must end at a directly-valued element"
+                        .to_string(),
+                ));
+            }
+            // The head commits the TERMINAL's commitment directly, however
+            // many hops the reference path actually takes.
+            let terminal_commitment = shape_commitment(terminal_node)?;
+            let head_hash = value_hash(&head.value).value().to_owned();
+            (
+                combine_hash(&head_hash, &terminal_commitment)
+                    .value()
+                    .to_owned(),
+                decode(&terminal_node.value)?,
+            )
+        }
+        n => {
+            return Err(Error::CorruptedData(format!(
+                "indexed target chain has {n} entries; a chain is either a directly-valued \
+                 primary or a reference plus its terminal"
+            )));
+        }
+    };
+
+    let immediate = decode(&head.value)?;
     Ok((immediate, immediate_commitment, terminal))
 }

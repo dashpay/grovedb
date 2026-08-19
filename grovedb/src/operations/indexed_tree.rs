@@ -2919,11 +2919,15 @@ where
         let value = match element.underlying() {
             Element::Reference(reference_path, ..)
             | Element::ReferenceWithSumItem(reference_path, ..) => {
-                let mut qualified = indexed_path.to_vec();
-                qualified.push(primary_key.clone());
+                // The entry's PARENT path, not its own qualified path: a
+                // relative reference resolves against the parent
+                // (`SiblingReference` appends its key to what it is
+                // given), so passing the entry's own path would look for a
+                // child underneath the entry itself.
+                let parent_path = indexed_path.to_vec();
                 let absolute = match crate::reference_path::path_from_reference_path_type(
                     reference_path.clone(),
-                    &qualified,
+                    &parent_path,
                     Some(primary_key.as_slice()),
                 ) {
                     Ok(p) => p,

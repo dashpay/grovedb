@@ -28,6 +28,8 @@ mod tests {
     use grovedb_storage::{Storage, StorageBatch};
     use grovedb_version::version::GroveVersion;
 
+    use crate::IndexedAxisEntrySliceExt;
+
     use crate::{
         tests::{common::EMPTY_PATH, make_test_grovedb, TempGroveDb, TEST_LEAF},
         Element, Error,
@@ -289,7 +291,7 @@ mod tests {
             .unwrap()
             .expect("top_k");
         assert_eq!(
-            pristine_listing,
+            pristine_listing.key_pairs(),
             vec![(1u64, b"a".to_vec()), (1u64, b"b".to_vec())],
             "baseline listing"
         );
@@ -374,7 +376,8 @@ mod tests {
         assert_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 10, false, None, gv)
                 .unwrap()
-                .expect("top_k"),
+                .expect("top_k")
+                .key_pairs(),
             vec![(1u64, b"b".to_vec())],
             "the drifted index must be missing 'a'"
         );
@@ -388,7 +391,8 @@ mod tests {
         assert_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 10, false, None, gv)
                 .unwrap()
-                .expect("top_k"),
+                .expect("top_k")
+                .key_pairs(),
             vec![(1u64, b"a".to_vec()), (1u64, b"b".to_vec())],
             "'a' must be back in the count index at count 1"
         );
@@ -430,7 +434,8 @@ mod tests {
         assert_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 10, true, None, gv)
                 .unwrap()
-                .expect("top_k"),
+                .expect("top_k")
+                .key_pairs(),
             vec![(7u64, b"a".to_vec()), (1u64, b"b".to_vec())],
             "the drifted index must rank 'a' at 7"
         );
@@ -444,7 +449,8 @@ mod tests {
         assert_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 10, false, None, gv)
                 .unwrap()
-                .expect("top_k"),
+                .expect("top_k")
+                .key_pairs(),
             vec![(1u64, b"a".to_vec()), (1u64, b"b".to_vec())],
             "'a' must be back at count 1"
         );
@@ -574,7 +580,8 @@ mod tests {
         assert_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 10, true, None, gv)
                 .unwrap()
-                .expect("top_k"),
+                .expect("top_k")
+                .key_pairs(),
             vec![(3u64, b"big".to_vec()), (1u64, b"small".to_vec())],
             "baseline: the children rank by their own descendant counts"
         );
@@ -590,7 +597,8 @@ mod tests {
         assert_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 10, true, None, gv)
                 .unwrap()
-                .expect("top_k"),
+                .expect("top_k")
+                .key_pairs(),
             vec![(1u64, b"small".to_vec())],
             "the drifted index must be missing 'big'"
         );
@@ -602,7 +610,8 @@ mod tests {
         assert_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 10, true, None, gv)
                 .unwrap()
-                .expect("top_k"),
+                .expect("top_k")
+                .key_pairs(),
             vec![(3u64, b"big".to_vec()), (1u64, b"small".to_vec())],
             "reconcile must index each child at its own aggregate count, not at 1"
         );
@@ -773,7 +782,8 @@ mod tests {
         assert_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 10, false, None, gv)
                 .unwrap()
-                .expect("top_k"),
+                .expect("top_k")
+                .key_pairs(),
             vec![(1u64, b"z".to_vec())],
             "only 'z' must be indexed"
         );
@@ -850,7 +860,8 @@ mod tests {
             db.indexed_count_top_k_paginated([TEST_LEAF, b"pcit"].as_ref(), 1, 1, true, None, gv)
                 .unwrap()
                 .expect("counted skip passes the malformed row without decoding it")
-                .entries,
+                .entries
+                .key_pairs(),
             vec![(1u64, b"b".to_vec())],
             "descending order is [0xff…, b, a]; the malformed row is counted at offset 0",
         );
@@ -886,7 +897,8 @@ mod tests {
         assert_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 2, false, None, gv)
                 .unwrap()
-                .expect("the first two rows are well formed"),
+                .expect("the first two rows are well formed")
+                .key_pairs(),
             vec![(1u64, b"a".to_vec()), (1u64, b"b".to_vec())],
         );
     }
@@ -1328,7 +1340,8 @@ mod tests {
             db.indexed_count_top_k_paginated([TEST_LEAF, b"pcit"].as_ref(), 2, 0, false, None, gv)
                 .unwrap()
                 .expect("offset-0 path reads physical rows")
-                .entries,
+                .entries
+                .key_pairs(),
             vec![(1u64, b"a".to_vec()), (1u64, b"b".to_vec())],
         );
     }

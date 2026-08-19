@@ -37,33 +37,30 @@ pub struct IndexedAxisEntry<T> {
 impl<T> IndexedAxisEntry<T> {
     /// The `(ordering_value, primary_key)` pair, dropping the value.
     ///
-    /// For callers that genuinely only rank — leaderboards, ranking views
-    /// — and for comparing against the pre-resolution shape.
+    /// For callers that genuinely only rank — leaderboards, ranking views.
     pub fn key_pair(self) -> (T, Vec<u8>) {
         (self.ordering_value, self.primary_key)
     }
 }
 
-/// Compare an entry against a bare `(ordering_value, primary_key)` pair.
+/// Project a page of entries down to `(ordering_value, primary_key)`.
 ///
-/// A migration and ranking-assertion convenience: it deliberately ignores
-/// `value`, so it answers "is this row in the right place?" and NOT "does
-/// it carry the right value". Tests that care about resolved values must
-/// assert on `value` directly — comparing against a tuple will not do it
-/// for them.
-///
-/// This cannot be confused with ordinary equality: `IndexedAxisEntry`'s
-/// own derived `PartialEq` compares every field, and this impl is only
-/// reachable when one side is explicitly a tuple.
-impl<T: PartialEq> PartialEq<(T, Vec<u8>)> for IndexedAxisEntry<T> {
-    fn eq(&self, other: &(T, Vec<u8>)) -> bool {
-        self.ordering_value == other.0 && self.primary_key == other.1
-    }
+/// The ranking half of an indexed read, for callers that do not need the
+/// values. It is deliberately an explicit projection rather than a
+/// cross-type `PartialEq`: an equality impl that quietly ignored `value`
+/// would let an assertion keep passing while resolution returned the
+/// wrong element, and a caller could not see from the call site which
+/// half was being compared.
+pub trait IndexedAxisEntrySliceExt<T> {
+    /// The `(ordering_value, primary_key)` pairs, in order.
+    fn key_pairs(&self) -> Vec<(T, Vec<u8>)>;
 }
 
-impl<T: PartialEq> PartialEq<IndexedAxisEntry<T>> for (T, Vec<u8>) {
-    fn eq(&self, other: &IndexedAxisEntry<T>) -> bool {
-        self.0 == other.ordering_value && self.1 == other.primary_key
+impl<T: Clone> IndexedAxisEntrySliceExt<T> for [IndexedAxisEntry<T>] {
+    fn key_pairs(&self) -> Vec<(T, Vec<u8>)> {
+        self.iter()
+            .map(|e| (e.ordering_value.clone(), e.primary_key.clone()))
+            .collect()
     }
 }
 

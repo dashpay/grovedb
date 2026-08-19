@@ -185,8 +185,6 @@ fn returned_items_carry_full_committed_payload() {
         value: vec![5u8],
         value_hash: crate::tree::value_hash(&[5u8]).unwrap(),
         child_hash_verified: false,
-        // A directly-valued row, not a resolved reference.
-        reference_element_hash: None,
     };
     assert_eq!(
         verified.returned_items[0], expected_f,

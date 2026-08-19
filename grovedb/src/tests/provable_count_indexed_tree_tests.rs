@@ -21,6 +21,8 @@
 mod tests {
     use grovedb_version::version::GroveVersion;
 
+    use crate::IndexedAxisEntrySliceExt;
+
     use crate::{
         batch::QualifiedGroveDbOp,
         tests::{make_test_grovedb, TEST_LEAF},
@@ -824,7 +826,8 @@ mod tests {
         assert_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, grove_version)
                 .unwrap()
-                .expect("count top_k"),
+                .expect("count top_k")
+                .key_pairs(),
             vec![(1u64, b"row".to_vec())],
             "the count index must reflect the row inserted alongside the creation \
              (a plain Item contributes count 1; only an empty tree indexes at 0)"
@@ -975,7 +978,7 @@ mod tests {
             .unwrap()
             .expect("top-k descending");
         assert_eq!(
-            top3,
+            top3.key_pairs(),
             vec![
                 (20u64, b"eve".to_vec()),
                 (12u64, b"bob".to_vec()),
@@ -989,7 +992,7 @@ mod tests {
             .unwrap()
             .expect("top-k ascending");
         assert_eq!(
-            bottom2,
+            bottom2.key_pairs(),
             vec![(1u64, b"carol".to_vec()), (5u64, b"alice".to_vec())]
         );
     }
@@ -1040,7 +1043,7 @@ mod tests {
             .unwrap()
             .expect("page 1");
         assert_eq!(
-            page1.entries,
+            page1.entries.key_pairs(),
             vec![(20u64, b"eve".to_vec()), (12u64, b"bob".to_vec())]
         );
 
@@ -1057,7 +1060,7 @@ mod tests {
             .unwrap()
             .expect("page 2");
         assert_eq!(
-            page2.entries,
+            page2.entries.key_pairs(),
             vec![(7u64, b"dave".to_vec()), (5u64, b"alice".to_vec())]
         );
 
@@ -1073,7 +1076,7 @@ mod tests {
             )
             .unwrap()
             .expect("page 3");
-        assert_eq!(page3.entries, vec![(1u64, b"carol".to_vec())]);
+        assert_eq!(page3.entries.key_pairs(), vec![(1u64, b"carol".to_vec())]);
 
         // Offset beyond total → empty.
         let beyond = db
@@ -1129,7 +1132,7 @@ mod tests {
             .unwrap()
             .expect("range");
         assert_eq!(
-            in_range,
+            in_range.key_pairs(),
             vec![
                 (5u64, b"alice".to_vec()),
                 (7u64, b"dave".to_vec()),
@@ -1151,7 +1154,7 @@ mod tests {
             .unwrap()
             .expect("range desc");
         assert_eq!(
-            in_range_desc,
+            in_range_desc.key_pairs(),
             vec![
                 (12u64, b"bob".to_vec()),
                 (7u64, b"dave".to_vec()),
@@ -1172,7 +1175,7 @@ mod tests {
             )
             .unwrap()
             .expect("exact");
-        assert_eq!(exact, vec![(12u64, b"bob".to_vec())]);
+        assert_eq!(exact.key_pairs(), vec![(12u64, b"bob".to_vec())]);
 
         // lo > hi: empty.
         let empty = db

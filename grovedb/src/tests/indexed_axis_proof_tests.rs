@@ -18,6 +18,8 @@ mod tests {
     use grovedb_merk::proofs::{query::QueryItem as MerkQueryItem, Query as MerkQuery};
     use grovedb_version::version::GroveVersion;
 
+    use crate::IndexedAxisEntrySliceExt;
+
     use crate::IndexedAxisEntry;
 
     use crate::{
@@ -156,7 +158,7 @@ mod tests {
             .expect("verify");
         let entries = entries_as_count(&result.entries);
         assert_eq!(
-            entries,
+            entries.key_pairs(),
             &[
                 (12u64, b"bob".to_vec()),
                 (7u64, b"dave".to_vec()),
@@ -184,7 +186,7 @@ mod tests {
             .expect("verify");
         let entries = entries_as_count(&result.entries);
         assert_eq!(
-            entries,
+            entries.key_pairs(),
             &[
                 (1u64, b"carol".to_vec()),
                 (5u64, b"alice".to_vec()),
@@ -220,7 +222,10 @@ mod tests {
         // Descending paged after skipping 2: c(3 was top-3? no — desc top-2 = f(6), e(5);
         // after skip-2 of f,e → d(4), c(3).
         let entries = entries_as_count(&result.entries);
-        assert_eq!(entries, &[(4u64, b"d".to_vec()), (3u64, b"c".to_vec())]);
+        assert_eq!(
+            entries.key_pairs(),
+            &[(4u64, b"d".to_vec()), (3u64, b"c".to_vec())]
+        );
         assert_eq!(result.skipped, 2);
         assert_eq!(result.root_hash, root_hash(&db, grove_version));
     }
@@ -271,7 +276,7 @@ mod tests {
         let entries = entries_as_count(&result.entries);
         // Ascending all: 1,5,10.
         assert_eq!(
-            entries,
+            entries.key_pairs(),
             &[
                 (1u64, b"a".to_vec()),
                 (5u64, b"b".to_vec()),
@@ -302,7 +307,7 @@ mod tests {
             .expect("verify");
         let entries = entries_as_sum(&result.entries);
         assert_eq!(
-            entries,
+            entries.key_pairs(),
             &[
                 (10i64, b"c".to_vec()),
                 (7, b"d".to_vec()),
@@ -330,7 +335,7 @@ mod tests {
             .expect("verify");
         let entries = entries_as_sum(&result.entries);
         assert_eq!(
-            entries,
+            entries.key_pairs(),
             &[
                 (50i64, b"d".to_vec()),
                 (0, b"c".to_vec()),
@@ -369,7 +374,10 @@ mod tests {
                 .expect("verify");
         // Descending after skip-2: 6,5 skipped → d(4), c(3) returned.
         let entries = entries_as_sum(&result.entries);
-        assert_eq!(entries, &[(4i64, b"d".to_vec()), (3, b"c".to_vec())]);
+        assert_eq!(
+            entries.key_pairs(),
+            &[(4i64, b"d".to_vec()), (3, b"c".to_vec())]
+        );
         assert_eq!(result.skipped, 2);
     }
 
@@ -483,7 +491,7 @@ mod tests {
             .expect("verify");
         let entries = entries_as_sum(&result.entries);
         assert_eq!(
-            entries,
+            entries.key_pairs(),
             &[
                 (20i64, b"c".to_vec()),
                 (10, b"b".to_vec()),
@@ -518,7 +526,7 @@ mod tests {
             .expect("verify");
         let entries = entries_as_avg(&result.entries);
         assert_eq!(
-            entries,
+            entries.key_pairs(),
             &[
                 (20i128 * SCALE, b"c".to_vec()),
                 (10 * SCALE, b"b".to_vec()),
@@ -634,7 +642,7 @@ mod tests {
         const SCALE: i128 = grovedb_element::indexed::AVG_FIXED_POINT_SCALE;
         // Descending top-3 by avg: d(30), c(20), b(10). After skip-1 → c, b.
         assert_eq!(
-            entries,
+            entries.key_pairs(),
             &[(20i128 * SCALE, b"c".to_vec()), (10 * SCALE, b"b".to_vec())]
         );
     }
@@ -886,7 +894,10 @@ mod tests {
         let result = GroveDb::verify_indexed_count_top_k(&proof, path, 2, true, grove_version)
             .expect("verify");
         let entries = entries_as_count(&result.entries);
-        assert_eq!(entries, &[(9u64, b"b".to_vec()), (4, b"a".to_vec())]);
+        assert_eq!(
+            entries.key_pairs(),
+            &[(9u64, b"b".to_vec()), (4, b"a".to_vec())]
+        );
         assert_eq!(result.root_hash, root_hash(&db, grove_version));
     }
 
@@ -1821,7 +1832,7 @@ mod tests {
             .expect("verify");
         let entries = entries_as_count(&result.entries);
         assert_eq!(
-            entries,
+            entries.key_pairs(),
             &[
                 (10u64, b"c".to_vec()),
                 (5u64, b"b".to_vec()),
@@ -1847,7 +1858,7 @@ mod tests {
             .expect("verify");
         let entries = entries_as_sum(&result.entries);
         assert_eq!(
-            entries,
+            entries.key_pairs(),
             &[
                 (-3i64, b"a".to_vec()),
                 (0, b"b".to_vec()),
@@ -1958,7 +1969,7 @@ mod tests {
             .expect("verify");
         let entries = entries_as_sum(&result.entries);
         assert_eq!(
-            entries,
+            entries.key_pairs(),
             &[
                 (15i64, b"c".to_vec()),
                 (10, b"b".to_vec()),
@@ -2503,7 +2514,10 @@ mod tests {
             .expect("prove");
         let result = GroveDb::verify_indexed_count_top_k(&proof, path, 1, true, grove_version)
             .expect("verify");
-        assert_eq!(entries_as_count(&result.entries), &[(99u64, b"b".to_vec())]);
+        assert_eq!(
+            entries_as_count(&result.entries).key_pairs(),
+            &[(99u64, b"b".to_vec())]
+        );
     }
 
     // ---------- top_k proof-bytes / path rejections ----------
@@ -2688,7 +2702,7 @@ mod tests {
             GroveDb::verify_indexed_count_top_k_paginated(&proof, path, 2, 1, false, grove_version)
                 .expect("verify");
         assert_eq!(
-            entries_as_count(&result.entries),
+            entries_as_count(&result.entries).key_pairs(),
             &[(2u64, b"b".to_vec()), (3u64, b"c".to_vec())]
         );
         assert_eq!(result.skipped, 1);
@@ -2821,7 +2835,7 @@ mod tests {
                 .expect("verify");
         // Descending: d(4), c(3), b(2), a(1). Skip 1 (d), take 2: c, b.
         assert_eq!(
-            entries_as_count(&result.entries),
+            entries_as_count(&result.entries).key_pairs(),
             &[(3u64, b"c".to_vec()), (2u64, b"b".to_vec())]
         );
         assert_eq!(result.skipped, 1);
@@ -3126,7 +3140,8 @@ mod tests {
             .expect("verify");
         let got = entries_as_count(&result.entries);
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0], (5u64, b"alice".to_vec()));
+        assert_eq!(got[0].ordering_value, 5u64);
+        assert_eq!(got[0].primary_key, b"alice".to_vec());
     }
 
     #[test]

@@ -73,9 +73,13 @@ pub enum IndexedTargetCommitment {
         axes: Vec<(u8, [u8; 32])>,
     },
     /// Reference node, committed as
-    /// `combine_hash(H(value), next_node_commitment)` — the next hop's
-    /// commitment is reconstructed from the following chain entry rather
-    /// than carried, which is what keeps a chain self-authenticating.
+    /// `combine_hash(H(value), terminal_commitment)`.
+    ///
+    /// Note the TERMINAL, not the next hop: `follow_reference_get_value_hash`
+    /// recurses past every intermediate reference before the hash is baked
+    /// into `PutCombinedReference`, so a reference three hops from its
+    /// terminal still commits that terminal's hash directly. Folding
+    /// hop-by-hop instead happens to agree at one hop and diverges at two.
     Reference,
 }
 
@@ -89,8 +93,16 @@ pub struct IndexedTargetNode {
     pub commitment: IndexedTargetCommitment,
 }
 
+impl IndexedTargetNode {
+    /// Whether this node is a reference (and so commits its terminal's
+    /// hash rather than its own bytes' hash).
+    pub fn is_reference(&self) -> bool {
+        matches!(self.commitment, IndexedTargetCommitment::Reference)
+    }
+}
+
 /// The resolved target of one secondary row: the immediate primary node,
-/// followed by any ordinary reference hops through to the terminal.
+/// and — only when that node is a reference — the TERMINAL it resolves to.
 ///
 /// **No per-node path proofs.** A chain authenticates itself from the
 /// row's own committed value hash: each entry's commitment is
@@ -109,7 +121,10 @@ pub struct IndexedTargetNode {
 /// instead of `k` inclusion proofs.
 #[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
 pub struct IndexedTargetChain {
-    /// Immediate primary node first, terminal last. Never empty.
+    /// One entry when the primary entry is directly valued; two — head
+    /// then terminal — when it is a reference. Intermediate hops are not
+    /// carried: nothing binds them, since the head commits the terminal
+    /// directly.
     pub nodes: Vec<IndexedTargetNode>,
 }
 

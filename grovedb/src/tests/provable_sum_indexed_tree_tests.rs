@@ -18,6 +18,8 @@
 mod tests {
     use grovedb_version::version::GroveVersion;
 
+    use crate::IndexedAxisEntrySliceExt;
+
     use crate::{
         batch::QualifiedGroveDbOp,
         tests::{make_test_grovedb, TEST_LEAF},
@@ -825,7 +827,7 @@ mod tests {
             .unwrap()
             .expect("top-k desc");
         assert_eq!(
-            top3,
+            top3.key_pairs(),
             vec![
                 (100i64, b"frank".to_vec()),
                 (12, b"bob".to_vec()),
@@ -839,7 +841,7 @@ mod tests {
             .unwrap()
             .expect("bottom-2");
         assert_eq!(
-            bottom2,
+            bottom2.key_pairs(),
             vec![(-7i64, b"carol".to_vec()), (-1, b"eve".to_vec())]
         );
     }
@@ -888,7 +890,7 @@ mod tests {
             .unwrap()
             .expect("asc");
         assert_eq!(
-            asc,
+            asc.key_pairs(),
             vec![
                 (-42i64, b"neg".to_vec()),
                 (0, b"zero".to_vec()),
@@ -918,7 +920,7 @@ mod tests {
             .unwrap()
             .expect("page 1");
         assert_eq!(
-            page1.entries,
+            page1.entries.key_pairs(),
             vec![(100i64, b"frank".to_vec()), (12, b"bob".to_vec())]
         );
 
@@ -934,7 +936,7 @@ mod tests {
             .unwrap()
             .expect("page 2");
         assert_eq!(
-            page2.entries,
+            page2.entries.key_pairs(),
             vec![(5i64, b"alice".to_vec()), (0, b"dave".to_vec())]
         );
 
@@ -992,7 +994,7 @@ mod tests {
             .unwrap()
             .expect("range");
         assert_eq!(
-            in_range,
+            in_range.key_pairs(),
             vec![
                 (-1i64, b"eve".to_vec()),
                 (0, b"dave".to_vec()),
@@ -1015,7 +1017,7 @@ mod tests {
             .unwrap()
             .expect("desc");
         assert_eq!(
-            desc,
+            desc.key_pairs(),
             vec![
                 (12i64, b"bob".to_vec()),
                 (5, b"alice".to_vec()),
@@ -1037,7 +1039,7 @@ mod tests {
             )
             .unwrap()
             .expect("exact");
-        assert_eq!(exact, vec![(12i64, b"bob".to_vec())]);
+        assert_eq!(exact.key_pairs(), vec![(12i64, b"bob".to_vec())]);
 
         // lo > hi: empty.
         let empty = db
@@ -1105,7 +1107,10 @@ mod tests {
             )
             .unwrap()
             .expect("neg range");
-        assert_eq!(neg, vec![(-7i64, b"carol".to_vec()), (-1, b"eve".to_vec())]);
+        assert_eq!(
+            neg.key_pairs(),
+            vec![(-7i64, b"carol".to_vec()), (-1, b"eve".to_vec())]
+        );
     }
 
     #[test]

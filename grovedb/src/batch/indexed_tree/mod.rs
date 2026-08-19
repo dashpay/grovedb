@@ -55,7 +55,7 @@ pub(crate) use delete_tree::validate_delete_tree_type;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::{element::costs::ElementCostExtensions, CryptoHash, Merk};
+use grovedb_merk::{element::costs::ElementCostExtensions, Merk};
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 pub(crate) use mirror::{apply_indexed_secondary_mirror_post_apply, read_post_apply_transitions};

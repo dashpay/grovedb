@@ -106,19 +106,6 @@ pub struct CountOffsetReturnedItem {
     /// `child_hash_verified = true` for non-empty trees); callers must
     /// not silently treat a `false` here as `true`.
     pub child_hash_verified: bool,
-    /// For a resolved-reference row (`KVRefValueHash*`), the value hash
-    /// of the REFERENCE element itself — the first half of the row's
-    /// committed `combine_hash(reference_element_hash, H(value))`.
-    /// `None` for a directly-valued row.
-    ///
-    /// This is what lets a caller authenticate the reference's own
-    /// content without the proof carrying its bytes: a caller that knows
-    /// the canonical shape a row must have can reconstruct those bytes
-    /// and check `value_hash(reconstructed) == reference_element_hash`.
-    /// GroveDB's indexed-axis verifier does exactly that, which is how a
-    /// row's `SiblingReference(primary_key)` / hop budget / carried sum
-    /// get authenticated rather than assumed.
-    pub reference_element_hash: Option<CryptoHash>,
 }
 
 /// The verifier's reconstructed view of an offset-paginated count-tree
@@ -611,7 +598,6 @@ fn classify_self<'a>(
                 key: key.as_slice(),
                 value: value.as_slice(),
                 value_hash: vh,
-                reference_element_hash: None,
             })
         }
         Node::KVCountSum(key, value, _, _) => {
@@ -637,7 +623,6 @@ fn classify_self<'a>(
                 key: key.as_slice(),
                 value: value.as_slice(),
                 value_hash: vh,
-                reference_element_hash: None,
             })
         }
         Node::KVValueHashFeatureType(key, value, vh, _) => {
@@ -711,7 +696,6 @@ fn classify_self<'a>(
                 key: key.as_slice(),
                 value: value.as_slice(),
                 value_hash: *vh,
-                reference_element_hash: None,
             })
         }
         // ─── Resolved-reference returns ──────────────────────────────
@@ -755,7 +739,6 @@ fn classify_self<'a>(
                     &compute_value_hash(value.as_slice()).unwrap(),
                 )
                 .unwrap(),
-                reference_element_hash: Some(*reference_element_hash),
             })
         }
         Node::KVRefValueHashCountSum(key, value, reference_element_hash, _, _) => {
@@ -779,7 +762,6 @@ fn classify_self<'a>(
                     &compute_value_hash(value.as_slice()).unwrap(),
                 )
                 .unwrap(),
-                reference_element_hash: Some(*reference_element_hash),
             })
         }
         Node::KVValueHash(key, value, _) => {
@@ -841,10 +823,6 @@ enum BoundaryKind<'a> {
         /// proof-carried value_hash (tree-flavored entries store
         /// `combine_hash(H(value), child_root)`).
         value_hash: CryptoHash,
-        /// For a resolved-reference return, the reference element's own
-        /// value hash; `None` for a directly-valued entry. See
-        /// [`CountOffsetReturnedItem::reference_element_hash`].
-        reference_element_hash: Option<CryptoHash>,
     },
 }
 
@@ -886,7 +864,6 @@ fn apply_self_state(disposition: &BoundaryKind<'_>, state: &mut VerifyState) -> 
             key,
             value,
             value_hash,
-            reference_element_hash,
         } => {
             if state.offset_remaining > 0 {
                 return Err(Error::InvalidProofError(
@@ -919,7 +896,6 @@ fn apply_self_state(disposition: &BoundaryKind<'_>, state: &mut VerifyState) -> 
                 // right behavior given that we don't carry a child
                 // hash to validate.
                 child_hash_verified: false,
-                reference_element_hash: *reference_element_hash,
             });
             Ok(())
         }
