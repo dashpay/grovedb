@@ -1840,7 +1840,7 @@ impl GroveDb {
             // multi-layer accounting (if any) reflects the consumed
             // slots.
             let limit_u64 = path_query.query.limit.map(|l| l as u64);
-            let prove_result = cost_return_on_error!(
+            let mut prove_result = cost_return_on_error!(
                 &mut cost,
                 subtree
                     .prove_count_offset_on_range(
@@ -1862,6 +1862,79 @@ impl GroveDb {
                         e
                     )))
             );
+            // This short-circuit returns before the regular reference rewrite
+            // below, so resolve ordinary user references here and emit the
+            // same combined-reference node family. Indexed secondary rows do
+            // not use this path: their logical origin is the indexed primary
+            // and their dedicated envelope resolves them separately.
+            for op in prove_result.ops.iter_mut() {
+                let node = match op {
+                    Op::Push(node) | Op::PushInverted(node) => node,
+                    _ => continue,
+                };
+                let Node::KVValueHashFeatureType(key, value, _, feature_type) = node else {
+                    continue;
+                };
+                let elem = match Element::deserialize(value, grove_version) {
+                    Ok(element) => element.into_underlying(),
+                    Err(_) => continue,
+                };
+                let (Element::Reference(reference_path, ..)
+                | Element::ReferenceWithSumItem(reference_path, ..)) = elem
+                else {
+                    continue;
+                };
+                let absolute_path = cost_return_on_error_no_add!(
+                    cost,
+                    path_from_reference_path_type(
+                        reference_path,
+                        &path.to_vec(),
+                        Some(key.as_slice()),
+                    )
+                    .map_err(Error::from)
+                );
+                let referenced_elem = cost_return_on_error!(
+                    &mut cost,
+                    self.follow_reference(
+                        absolute_path.as_slice().into(),
+                        true,
+                        None,
+                        grove_version,
+                    )
+                );
+                let serialized_referenced_elem = cost_return_on_error_no_add!(
+                    cost,
+                    referenced_elem
+                        .serialize(grove_version)
+                        .map_err(|_| Error::CorruptedData("unable to serialize element".into()))
+                );
+                let reference_element_hash = value_hash(value).unwrap_add_cost(&mut cost);
+                *node = match feature_type {
+                    TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => {
+                        Node::KVRefValueHashCountSum(
+                            key.to_owned(),
+                            serialized_referenced_elem,
+                            reference_element_hash,
+                            *count,
+                            *sum,
+                        )
+                    }
+                    TreeFeatureType::ProvableCountedMerkNode(count) => Node::KVRefValueHashCount(
+                        key.to_owned(),
+                        serialized_referenced_elem,
+                        reference_element_hash,
+                        *count,
+                    ),
+                    other => {
+                        return Err(Error::CorruptedData(format!(
+                            "count-offset proof: reference row {} carries non-count feature type \
+                             {other:?}",
+                            hex::encode(key)
+                        )))
+                        .wrap_with_cost(cost);
+                    }
+                };
+            }
             let mut serialized = Vec::with_capacity(128);
             encode_into(prove_result.ops.iter(), &mut serialized);
             // Apply consumed limit slots to the outer accounting.

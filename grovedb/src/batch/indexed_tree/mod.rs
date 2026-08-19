@@ -31,7 +31,8 @@
 //! - [`pre_state`] runs against an indexed primary's level just before the
 //!   merk apply: [`capture_indexed_pre_state`] validates the level's ops
 //!   against the indexed-primary rules and reads each mutated key's *old*
-//!   `(count, sum)` pair so the mirror can compute old → new transitions.
+//!   `(count, sum, value_hash)` state so the mirror can compute exact old → new
+//!   transitions.
 //! - [`mirror`] runs once per configured axis after the primary merk's
 //!   `apply_with_specialized_costs` returns:
 //!   [`apply_indexed_secondary_mirror_post_apply`] re-reads each captured
@@ -41,9 +42,9 @@
 //!   parent's H1-A composition — directly for the single-axis variants,
 //!   through `axes_digest` for PCPSIT.
 //!
-//! What lives in this file is what more than one phase needs: the aggregate
-//! type aliases and [`read_entry_aggregates`], the primary-entry read that
-//! the capture ("pre") and the mirror ("post") both perform.
+//! What lives in this file is what more than one phase needs: the entry-state
+//! type aliases and [`read_entry_state`], the primary-entry read that the
+//! capture ("pre") and the mirror ("post") both perform.
 
 mod delete_tree;
 mod mirror;
@@ -65,67 +66,29 @@ pub(crate) use preflight::reject_indexed_overwrite_with_descendants;
 
 use crate::{Element, Error};
 
-/// A primary entry's `(count, sum)` aggregate pair, `None` when the entry
-/// does not exist on that side of the transition.
-type AggregatePair = Option<(u64, i64)>;
+/// Complete state that decides one indexed secondary row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct IndexedEntryState {
+    count: u64,
+    sum: i64,
+    value_hash: CryptoHash,
+}
 
-/// A surviving primary entry's post-apply aggregates and immediate
-/// Merk-stored committed value hash.
-type PostApplyState = Option<(u64, i64, CryptoHash)>;
+/// A primary entry's state, `None` when the entry does not exist on that side
+/// of the transition.
+pub(super) type MaybeEntryState = Option<IndexedEntryState>;
 
-/// One captured key's transition: `(item_key, old aggregates, post state)`.
-/// The old target hash is unnecessary: a surviving touched entry always gets
-/// a same-key combined-reference put, while deletion only needs the old sort
-/// key.
-type AggregateTransition = (Vec<u8>, AggregatePair, PostApplyState);
+/// One captured key's transition: `(item_key, old state, new state)`.
+type AggregateTransition = (Vec<u8>, MaybeEntryState, MaybeEntryState);
 
-/// Read one primary entry's current `(count, sum)` pair, `None` if the key
-/// does not exist. `phase` labels error messages ("pre" for the capture
-/// before the primary apply, "post" for the delta read after it).
-fn read_entry_aggregates<'db, S: StorageContext<'db>>(
+/// Read one primary entry's current aggregate and commitment state. `phase`
+/// labels error messages ("pre" before the primary apply, "post" after it).
+fn read_entry_state<'db, S: StorageContext<'db>>(
     primary_merk: &Merk<S>,
     key: &[u8],
     phase: &str,
     grove_version: &GroveVersion,
-) -> CostResult<AggregatePair, Error> {
-    let mut cost = OperationCost::default();
-    let maybe_bytes = cost_return_on_error!(
-        &mut cost,
-        primary_merk
-            .get(
-                key,
-                true,
-                Some(&Element::value_defined_cost_for_serialized_value),
-                grove_version,
-            )
-            .map_err(|e| Error::CorruptedData(format!(
-                "indexed {phase}-state read for key {}: {e}",
-                hex::encode(key)
-            )))
-    );
-    let aggregates = if let Some(bytes) = maybe_bytes {
-        let elem = cost_return_on_error_no_add!(
-            cost,
-            Element::deserialize(bytes.as_slice(), grove_version).map_err(|e| {
-                Error::CorruptedData(format!("indexed {phase}-state deserialize: {e}"))
-            })
-        );
-        Some(elem.count_sum_value_or_default())
-    } else {
-        None
-    };
-    Ok(aggregates).wrap_with_cost(cost)
-}
-
-/// Read a primary entry's post-apply aggregate pair and its exact committed
-/// node value hash. Tree and reference targets deliberately retain their
-/// combined hashes here; hashing only the serialized Element bytes would lose
-/// their child/target commitment.
-fn read_post_apply_state<'db, S: StorageContext<'db>>(
-    primary_merk: &Merk<S>,
-    key: &[u8],
-    grove_version: &GroveVersion,
-) -> CostResult<PostApplyState, Error> {
+) -> CostResult<MaybeEntryState, Error> {
     let mut cost = OperationCost::default();
     let maybe = cost_return_on_error!(
         &mut cost,
@@ -137,19 +100,23 @@ fn read_post_apply_state<'db, S: StorageContext<'db>>(
                 grove_version,
             )
             .map_err(|e| Error::CorruptedData(format!(
-                "indexed post-state read for key {}: {e}",
+                "indexed {phase}-state read for key {}: {e}",
                 hex::encode(key)
             )))
     );
     let state = if let Some((bytes, value_hash)) = maybe {
-        let element = cost_return_on_error_no_add!(
+        let elem = cost_return_on_error_no_add!(
             cost,
             Element::deserialize(bytes.as_slice(), grove_version).map_err(|e| {
-                Error::CorruptedData(format!("indexed post-state deserialize: {e}"))
+                Error::CorruptedData(format!("indexed {phase}-state deserialize: {e}"))
             })
         );
-        let (count, sum) = element.count_sum_value_or_default();
-        Some((count, sum, value_hash))
+        let (count, sum) = elem.count_sum_value_or_default();
+        Some(IndexedEntryState {
+            count,
+            sum,
+            value_hash,
+        })
     } else {
         None
     };

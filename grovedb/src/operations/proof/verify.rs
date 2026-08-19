@@ -59,19 +59,16 @@ pub(crate) enum AxisWalkResult {
     },
     /// `RankOfKey`: the attested 0-based rank of the queried key.
     Rank { rank: u64 },
-    /// Internal-only state held until the surrounding V1 walk has
-    /// reconstructed the GroveDB root needed to authenticate target witnesses.
+    /// Internal-only state held until the surrounding V1 walk finishes.
     PendingEntries {
         rows: ProvenAxisRows,
         witnesses: Vec<IndexedTargetWitness>,
-        primary_root_hash: CryptoHash,
         skipped: Option<u64>,
     },
     /// Internal-only rank counterpart of [`Self::PendingEntries`].
     PendingRank {
         rows: ProvenAxisRows,
         witnesses: Vec<IndexedTargetWitness>,
-        primary_root_hash: CryptoHash,
         rank: u64,
         expected_key: Vec<u8>,
     },
@@ -534,7 +531,6 @@ impl GroveDb {
                 AxisWalkResult::PendingEntries {
                     rows,
                     witnesses,
-                    primary_root_hash,
                     skipped,
                 } => {
                     let path_slices: Vec<&[u8]> = outcome.path.iter().map(Vec::as_slice).collect();
@@ -542,7 +538,6 @@ impl GroveDb {
                         rows,
                         &witnesses,
                         &path_slices,
-                        &primary_root_hash,
                         &root_hash,
                         grove_version,
                     )?;
@@ -551,7 +546,6 @@ impl GroveDb {
                 AxisWalkResult::PendingRank {
                     rows,
                     witnesses,
-                    primary_root_hash,
                     rank,
                     expected_key,
                 } => {
@@ -560,7 +554,6 @@ impl GroveDb {
                         rows,
                         &witnesses,
                         &path_slices,
-                        &primary_root_hash,
                         &root_hash,
                         grove_version,
                     )?;
@@ -701,11 +694,10 @@ impl GroveDb {
         //     normal traversal (own_count = 0) and not surfaced via
         //     the merk's `returned_items`. If one appears here, the
         //     proof was forged.
-        //   • **Reference / ReferenceWithSumItem** — would need the
-        //     regular flow's reference post-pass to dereference the
-        //     target; we don't run that on the count-offset
-        //     short-circuit, so a raw reference here would be returned
-        //     verbatim. Reject.
+        //   • **Raw Reference / ReferenceWithSumItem** — the prover runs
+        //     the ordinary reference rewrite on this short-circuit, so an
+        //     honest proof surfaces the dereferenced target here. A raw
+        //     reference is therefore malformed.
         //   • **Non-empty tree** — V1 strict-mode would require a
         //     `KVValueHashFeatureTypeWithChildHash` proof node here;
         //     accepting one without that would silently bypass the
@@ -756,15 +748,14 @@ impl GroveDb {
                 )));
             }
             if inner.is_reference() {
-                return Err(Error::NotSupported(format!(
-                    "count-offset paginated proofs do not yet support \
-                     Reference / ReferenceWithSumItem return values (key {}); the \
-                     regular flow's reference post-pass isn't applied on the \
-                     count-offset short-circuit, so an accepted reference here \
-                     would surface the raw Element::Reference rather than the \
-                     dereferenced target",
-                    hex::encode(&item.key)
-                )));
+                return Err(Error::InvalidProof(
+                    query.clone(),
+                    format!(
+                        "count-offset paginated proof surfaced a raw Reference / \
+                         ReferenceWithSumItem at key {} after the prover's reference rewrite",
+                        hex::encode(&item.key)
+                    ),
+                ));
             }
             // Empty-tree value-hash equality check (defense-in-depth on
             // top of the merk-level KV→KVValueHash forgery guard).
@@ -993,7 +984,6 @@ impl GroveDb {
                     AxisWalkResult::PendingEntries {
                         rows,
                         witnesses: payload.target_witnesses.clone(),
-                        primary_root_hash: payload.primary_root_hash,
                         skipped: Some(res.skipped),
                     },
                 )
@@ -1040,7 +1030,6 @@ impl GroveDb {
                     AxisWalkResult::PendingRank {
                         rows,
                         witnesses: payload.target_witnesses.clone(),
-                        primary_root_hash: payload.primary_root_hash,
                         rank,
                         expected_key: key.clone(),
                     },
@@ -1061,7 +1050,6 @@ impl GroveDb {
                         AxisWalkResult::PendingEntries {
                             rows: ProvenAxisRows::empty_for_axis(axis),
                             witnesses: payload.target_witnesses.clone(),
-                            primary_root_hash: payload.primary_root_hash,
                             skipped: None,
                         },
                     )
@@ -1091,7 +1079,6 @@ impl GroveDb {
                         AxisWalkResult::PendingEntries {
                             rows,
                             witnesses: payload.target_witnesses.clone(),
-                            primary_root_hash: payload.primary_root_hash,
                             skipped: None,
                         },
                     )

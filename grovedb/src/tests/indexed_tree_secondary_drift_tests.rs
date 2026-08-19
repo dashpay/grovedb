@@ -288,7 +288,7 @@ mod tests {
             .indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 10, false, None, gv)
             .unwrap()
             .expect("top_k");
-        assert_eq!(
+        assert_axis_entries_eq!(
             pristine_listing,
             vec![(1u64, b"a".to_vec()), (1u64, b"b".to_vec())],
             "baseline listing"
@@ -371,7 +371,7 @@ mod tests {
             issue_keys(&db, gv).contains(&primary_orphan_issue),
             "deleting the row for 'a' must be reported as a primary orphan first"
         );
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 10, false, None, gv)
                 .unwrap()
                 .expect("top_k"),
@@ -385,7 +385,7 @@ mod tests {
             .expect("reconcile reinserts the missing row");
 
         assert_clean(&db, gv);
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 10, false, None, gv)
                 .unwrap()
                 .expect("top_k"),
@@ -427,7 +427,7 @@ mod tests {
             issue_keys(&db, gv).contains(&mismatch_issue),
             "moving 'a' to count 7 must be reported as a count mismatch first"
         );
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 10, true, None, gv)
                 .unwrap()
                 .expect("top_k"),
@@ -441,7 +441,7 @@ mod tests {
             .expect("reconcile moves the row back");
 
         assert_clean(&db, gv);
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 10, false, None, gv)
                 .unwrap()
                 .expect("top_k"),
@@ -571,7 +571,7 @@ mod tests {
         .unwrap()
         .expect("populate small");
 
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 10, true, None, gv)
                 .unwrap()
                 .expect("top_k"),
@@ -587,7 +587,7 @@ mod tests {
             &[secondary_key(3, b"big")],
             gv,
         );
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 10, true, None, gv)
                 .unwrap()
                 .expect("top_k"),
@@ -599,7 +599,7 @@ mod tests {
             .unwrap()
             .expect("reconcile rebuilds from the primary");
 
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 10, true, None, gv)
                 .unwrap()
                 .expect("top_k"),
@@ -770,7 +770,7 @@ mod tests {
         )
         .unwrap()
         .expect("reinsert");
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 10, false, None, gv)
                 .unwrap()
                 .expect("top_k"),
@@ -846,7 +846,7 @@ mod tests {
         // Detecting malformed rows in the skipped region is
         // `verify_grovedb`'s job (asserted above) and the collect loops'
         // (asserted below for every shape that reads the row itself).
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_count_top_k_paginated([TEST_LEAF, b"pcit"].as_ref(), 1, 1, true, None, gv)
                 .unwrap()
                 .expect("counted skip passes the malformed row without decoding it")
@@ -883,7 +883,7 @@ mod tests {
         // Ascending top-k stops before reaching the malformed row, so the
         // well-formed prefix of the index still reads cleanly — the error above
         // is the decoder refusing a specific row, not the query failing wholesale.
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 2, false, None, gv)
                 .unwrap()
                 .expect("the first two rows are well formed"),
@@ -1324,7 +1324,7 @@ mod tests {
 
         // The iterator path reads the physical keyspace and is untouched
         // by the dangling root key.
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_count_top_k_paginated([TEST_LEAF, b"pcit"].as_ref(), 2, 0, false, None, gv)
                 .unwrap()
                 .expect("offset-0 path reads physical rows")

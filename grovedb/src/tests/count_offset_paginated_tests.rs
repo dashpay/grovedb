@@ -841,13 +841,11 @@ mod tests {
     // `merk/src/proofs/query/count_offset/tests.rs`) covers the
     // verifier symmetric.
 
-    /// Prover-side rejection for `Reference` in-range entries. Earlier
-    /// drafts returned the raw `Element::Reference` bytes verbatim
-    /// because the count-offset short-circuit doesn't run the regular
-    /// flow's reference post-pass. The prover now refuses to emit
-    /// these.
+    /// The generic count-offset short-circuit runs the same ordinary reference
+    /// rewrite as regular GroveDB proofs, so verified results contain the
+    /// resolved target rather than raw reference bytes.
     #[test]
-    fn rejects_count_offset_with_reference_entry() {
+    fn count_offset_resolves_reference_result() {
         let v = GroveVersion::latest();
         let db = make_test_grovedb(v);
         db.insert(
@@ -903,13 +901,23 @@ mod tests {
             vec![b"counts".to_vec()],
             SizedQuery::new(q, Some(2), Some(1)),
         );
-        let result = db.prove_query(&path_query, None, v).unwrap();
-        let err = result.expect_err("prover must reject Reference in-range entry");
-        let msg = format!("{}", err);
-        assert!(
-            msg.contains("Reference"),
-            "prover rejection should mention Reference; got {}",
-            msg
+        let proof = db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove count-offset page with reference");
+        let (_, rows) = GroveDb::verify_query_raw(&proof, &path_query, v)
+            .expect("generic GroveDB verification should resolve the reference");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].key, b"b".to_vec());
+        assert_eq!(
+            Element::deserialize(&rows[0].value, v).expect("resolved element"),
+            Element::new_item(b"target_value".to_vec()),
+            "count-offset proof must surface the referenced target value"
+        );
+        assert_eq!(rows[1].key, b"c".to_vec());
+        assert_eq!(
+            Element::deserialize(&rows[1].value, v).expect("direct element"),
+            Element::new_item(b"v_c".to_vec())
         );
     }
 
@@ -1004,9 +1012,9 @@ mod tests {
 
     // ──────── Forged-proof tests for verifier defense-in-depth ────────
     //
-    // The merk-level prover now refuses to emit NonCounted-wrapped /
-    // Reference / non-empty-tree in-range entries (see the three
-    // `rejects_count_offset_with_*` tests above). That makes the
+    // The merk-level prover refuses to emit NonCounted-wrapped and non-empty
+    // tree in-range entries. References are rewritten to resolved-value proof
+    // nodes before encoding. That makes the remaining
     // GroveDB-layer defense-in-depth checks in
     // `run_count_offset_layer_dispatch` (verify.rs ~537-566) unreachable
     // by **honest** proofs. To keep those branches exercised — they're
@@ -1246,11 +1254,9 @@ mod tests {
         );
     }
 
-    /// Defense-in-depth: a forged proof that surfaces a Reference
-    /// element in `returned_items` must be rejected as `NotSupported`
-    /// mentioning "Reference" — the count-offset short-circuit doesn't
-    /// run the regular flow's reference post-pass, so accepting one
-    /// would surface a raw `Element::Reference` to the caller.
+    /// Defense-in-depth: a forged proof that surfaces a raw Reference in
+    /// `returned_items` must be rejected as malformed. Honest count-offset
+    /// proofs rewrite references to resolved-value nodes before encoding.
     #[test]
     fn verifier_rejects_forged_reference_returned_item() {
         use crate::reference_path::ReferencePathType;
@@ -1265,8 +1271,8 @@ mod tests {
         let result = GroveDb::verify_query_raw(&tampered, &path_query, v);
         let err = result.expect_err("forged Reference return must be rejected");
         assert!(
-            matches!(err, crate::Error::NotSupported(ref msg) if msg.contains("Reference")),
-            "forged Reference return should reject as NotSupported mentioning Reference; got {:?}",
+            matches!(err, crate::Error::InvalidProof(_, ref msg) if msg.contains("Reference")),
+            "forged Reference return should reject as InvalidProof mentioning Reference; got {:?}",
             err,
         );
     }

@@ -105,7 +105,7 @@ fn psit_rejects_big_sum_tree_at_i64_boundary() {
     )
     .unwrap()
     .expect("populate the control child so its sum derives to 42");
-    assert_eq!(
+    assert_axis_entries_eq!(
         db.indexed_sum_top_k([b"psit".as_slice()].as_ref(), 10, true, None, grove_version,)
             .unwrap()
             .unwrap(),
@@ -151,7 +151,7 @@ fn delete_tree_rejects_declared_type_mismatch() {
         )
         .unwrap();
     assert!(matches!(result, Err(Error::InvalidBatchOperation(_))));
-    assert_eq!(
+    assert_axis_entries_eq!(
         db.indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version,)
             .unwrap()
             .unwrap(),
@@ -409,7 +409,7 @@ fn batch_count_changes_remove_all_old_secondary_rows_first() {
     )
     .unwrap()
     .expect("update both children");
-    assert_eq!(
+    assert_axis_entries_eq!(
         db.indexed_count_top_k(
             [TEST_LEAF, b"cidx"].as_ref(),
             10,
@@ -574,7 +574,7 @@ fn batch_rejects_rootless_aggregate_child_under_indexed_primary() {
         )
         .unwrap()
         .expect("top_k");
-    assert_eq!(
+    assert_axis_entries_eq!(
         top,
         vec![(9, b"b".to_vec())],
         "the derived count must reach the secondary index"

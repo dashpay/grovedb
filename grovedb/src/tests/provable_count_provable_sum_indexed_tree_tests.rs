@@ -1069,7 +1069,7 @@ mod tests {
             )
             .unwrap()
             .expect("top-k count");
-        assert_eq!(
+        assert_axis_entries_eq!(
             top3,
             vec![
                 (5u64, b"carol".to_vec()),
@@ -1099,7 +1099,7 @@ mod tests {
             )
             .unwrap()
             .expect("range");
-        assert_eq!(
+        assert_axis_entries_eq!(
             in_range,
             vec![
                 (2u64, b"alice".to_vec()),
@@ -1156,7 +1156,7 @@ mod tests {
             )
             .unwrap()
             .expect("top-k sum");
-        assert_eq!(
+        assert_axis_entries_eq!(
             top3,
             vec![
                 (100i64, b"bob".to_vec()),
@@ -1176,7 +1176,7 @@ mod tests {
             )
             .unwrap()
             .expect("asc");
-        assert_eq!(
+        assert_axis_entries_eq!(
             asc3,
             vec![
                 (-25i64, b"carol".to_vec()),
@@ -1206,7 +1206,7 @@ mod tests {
             )
             .unwrap()
             .expect("sum range");
-        assert_eq!(
+        assert_axis_entries_eq!(
             in_range,
             vec![
                 (0i64, b"dave".to_vec()),
@@ -1268,7 +1268,7 @@ mod tests {
             )
             .unwrap()
             .expect("top-k avg");
-        assert_eq!(
+        assert_axis_entries_eq!(
             top3,
             vec![
                 (25 * AVG_SCALE, b"bob".to_vec()),
@@ -1288,7 +1288,7 @@ mod tests {
             )
             .unwrap()
             .expect("asc avg");
-        assert_eq!(
+        assert_axis_entries_eq!(
             asc3,
             vec![
                 (-5 * AVG_SCALE, b"carol".to_vec()),
@@ -1318,7 +1318,7 @@ mod tests {
             )
             .unwrap()
             .expect("avg range");
-        assert_eq!(
+        assert_axis_entries_eq!(
             in_range,
             vec![
                 (0i128, b"dave".to_vec()),
@@ -1340,7 +1340,7 @@ mod tests {
             )
             .unwrap()
             .expect("exact");
-        assert_eq!(exact, vec![(3 * AVG_SCALE, b"eve".to_vec())]);
+        assert_axis_entries_eq!(exact, vec![(3 * AVG_SCALE, b"eve".to_vec())]);
 
         // lo > hi: empty.
         let empty = db
@@ -1394,7 +1394,7 @@ mod tests {
             )
             .unwrap()
             .expect("page 1");
-        assert_eq!(
+        assert_axis_entries_eq!(
             page1.entries,
             vec![
                 (25 * AVG_SCALE, b"bob".to_vec()),
@@ -1414,7 +1414,7 @@ mod tests {
             )
             .unwrap()
             .expect("page 2");
-        assert_eq!(
+        assert_axis_entries_eq!(
             page2.entries,
             vec![(3 * AVG_SCALE, b"eve".to_vec()), (0, b"dave".to_vec())]
         );
@@ -1461,7 +1461,7 @@ mod tests {
             )
             .unwrap()
             .expect("zero only");
-        assert_eq!(zero_only, vec![(0i128, b"dave".to_vec())]);
+        assert_axis_entries_eq!(zero_only, vec![(0i128, b"dave".to_vec())]);
     }
 
     #[test]
@@ -1489,7 +1489,7 @@ mod tests {
             .unwrap()
             .expect("asc");
         // Both share avg = 7*SCALE; tie-break by original_key ascending.
-        assert_eq!(
+        assert_axis_entries_eq!(
             asc,
             vec![
                 (7 * AVG_SCALE, b"aaa".to_vec()),
@@ -1609,7 +1609,7 @@ mod tests {
             )
             .unwrap()
             .expect("count");
-        assert_eq!(by_count, vec![(1u64, b"row".to_vec())]);
+        assert_axis_entries_eq!(by_count, vec![(1u64, b"row".to_vec())]);
         let by_sum = db
             .indexed_sum_top_k(
                 [TEST_LEAF, b"pcpsit"].as_ref(),
@@ -1620,7 +1620,7 @@ mod tests {
             )
             .unwrap()
             .expect("sum");
-        assert_eq!(by_sum, vec![(17i64, b"row".to_vec())]);
+        assert_axis_entries_eq!(by_sum, vec![(17i64, b"row".to_vec())]);
         let by_avg = db
             .indexed_avg_top_k(
                 [TEST_LEAF, b"pcpsit"].as_ref(),
@@ -1632,7 +1632,7 @@ mod tests {
             .unwrap()
             .expect("avg");
         // avg = floor(17 * SCALE / 1) = 17 * SCALE.
-        assert_eq!(by_avg, vec![(17 * AVG_SCALE, b"row".to_vec())]);
+        assert_axis_entries_eq!(by_avg, vec![(17 * AVG_SCALE, b"row".to_vec())]);
     }
 
     // -----------------------------------------------------------------

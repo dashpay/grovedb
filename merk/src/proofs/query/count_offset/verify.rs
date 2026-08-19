@@ -73,16 +73,17 @@ pub struct CountOffsetReturnedItem {
     /// The matched key.
     pub key: Vec<u8>,
     /// The element's serialized value bytes, as emitted by the prover.
-    /// GroveDB's reference-resolution post-pass (mirroring the regular
-    /// count-tree proof flow) operates on this byte stream — reference
-    /// dereferencing happens at the GroveDB layer, not here.
+    /// For a `KVRefValueHash*` node these are the resolved target's bytes:
+    /// GroveDB rewrites the raw reference node before proof encoding.
     pub value: Vec<u8>,
     /// The value-hash the proof's merk node committed for this entry.
     /// For `KVCount` nodes this is `H(value)` (the Item-flavored value
     /// hash). For `KVValueHashFeatureType` / `KVValueHash` it is the
     /// value-hash carried explicitly in the proof — which for
     /// tree-flavored entries is `combine_hash(H(value), child_root)`
-    /// (or `combine_hash(H(value), NULL_HASH)` for empty trees).
+    /// (or `combine_hash(H(value), NULL_HASH)` for empty trees). For
+    /// `KVRefValueHash*` it is recomputed as
+    /// `combine_hash(H(reference), H(resolved_target))`.
     ///
     /// Callers building `ProvedPathKeyOptionalValue` must surface this
     /// value (not recompute via `value_hash(value)`) so downstream
@@ -173,7 +174,9 @@ pub fn verify_count_offset_on_range_proof(
             | Node::KVValueHashFeatureType(_, _, _, _)
             | Node::HashWithCountAndSum(_, _, _, _, _)
             | Node::KVDigestCountSum(_, _, _, _)
-            | Node::KVCountSum(_, _, _, _) => Ok(()),
+            | Node::KVCountSum(_, _, _, _)
+            | Node::KVRefValueHashCount(_, _, _, _)
+            | Node::KVRefValueHashCountSum(_, _, _, _, _) => Ok(()),
             other => Err(Error::InvalidProofError(format!(
                 "unexpected node type in count-offset proof: {}",
                 other
@@ -245,6 +248,8 @@ fn aggregate_of_proof_tree_node(tree: &ProofTree) -> Result<u64, Error> {
         Node::HashWithCountAndSum(_, _, _, c, _) => Ok(*c),
         Node::KVDigestCountSum(_, _, c, _) => Ok(*c),
         Node::KVCountSum(_, _, c, _) => Ok(*c),
+        Node::KVRefValueHashCount(_, _, _, c) => Ok(*c),
+        Node::KVRefValueHashCountSum(_, _, _, c, _) => Ok(*c),
         Node::KVValueHashFeatureType(_, _, _, ft) => match ft {
             TreeFeatureType::ProvableCountedMerkNode(c) => Ok(*c),
             TreeFeatureType::ProvableCountedSummedMerkNode(c, _) => Ok(*c),
@@ -264,7 +269,7 @@ fn aggregate_of_proof_tree_node(tree: &ProofTree) -> Result<u64, Error> {
         Node::KVValueHash(..) => Ok(0),
         // Truly unreachable: the `execute_with_options` allowlist
         // earlier in `verify_count_offset_on_range_proof` rejects any
-        // node kind that isn't one of the eight matched above before
+        // node kind that isn't one of the ten matched above before
         // this function is ever called. Keeping the arm as
         // `unreachable!()` is both correct (it would only ever fire
         // if the allowlist were widened without updating this
@@ -399,6 +404,8 @@ fn verify_count_offset_shape(
         // Dual-axis (PCPS) per-element variants.
         Node::KVDigestCountSum(key, _, _, _) => key.as_slice(),
         Node::KVCountSum(key, _, _, _) => key.as_slice(),
+        Node::KVRefValueHashCount(key, _, _, _) => key.as_slice(),
+        Node::KVRefValueHashCountSum(key, _, _, _, _) => key.as_slice(),
         // Reaching here would require:
         //   - the `execute_with_options` allowlist accepted a node
         //     that doesn't carry a key (only `HashWithCount` /
@@ -679,6 +686,48 @@ fn classify_self<'a>(
                 value_hash: *vh,
             })
         }
+        Node::KVRefValueHashCount(key, value, reference_element_hash, _) => {
+            if !in_range {
+                return Err(Error::InvalidProofError(
+                    "count-offset proof: KVRefValueHashCount at an out-of-range position"
+                        .to_string(),
+                ));
+            }
+            if own_count != 1 {
+                return Err(Error::InvalidProofError(format!(
+                    "count-offset proof: KVRefValueHashCount at own_count={} (expected 1)",
+                    own_count
+                )));
+            }
+            let target_hash = compute_value_hash(value.as_slice()).unwrap();
+            let combined = crate::tree::combine_hash(reference_element_hash, &target_hash).unwrap();
+            Ok(BoundaryKind::ValueReturned {
+                key: key.as_slice(),
+                value: value.as_slice(),
+                value_hash: combined,
+            })
+        }
+        Node::KVRefValueHashCountSum(key, value, reference_element_hash, _, _) => {
+            if !in_range {
+                return Err(Error::InvalidProofError(
+                    "count-offset proof: KVRefValueHashCountSum at an out-of-range position"
+                        .to_string(),
+                ));
+            }
+            if own_count != 1 {
+                return Err(Error::InvalidProofError(format!(
+                    "count-offset proof: KVRefValueHashCountSum at own_count={} (expected 1)",
+                    own_count
+                )));
+            }
+            let target_hash = compute_value_hash(value.as_slice()).unwrap();
+            let combined = crate::tree::combine_hash(reference_element_hash, &target_hash).unwrap();
+            Ok(BoundaryKind::ValueReturned {
+                key: key.as_slice(),
+                value: value.as_slice(),
+                value_hash: combined,
+            })
+        }
         Node::KVValueHash(key, value, _) => {
             // Non-count fallback. Only legitimate if the prover hit a
             // raw / unknown element type and fell back to the regular
@@ -704,9 +753,9 @@ fn classify_self<'a>(
             ))
         }
         // Same fail-loud reasoning as the per-element switch in
-        // `verify_count_offset_shape`: only the five allowlisted node
-        // kinds reach `classify_self`, and the four key-bearing ones
-        // are handled above. The only way here is a refactor that
+        // `verify_count_offset_shape`: only allowlisted key-bearing node
+        // kinds reach `classify_self`, and all of them are handled above.
+        // The only way here is a refactor that
         // widens the allowlist without updating this match.
         _ => unreachable!("classify_self: dispatch unreachable for non-allowlisted node"),
     }

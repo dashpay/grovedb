@@ -72,47 +72,6 @@ where
         left_to_right: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<ProverCountOffsetResult, Error> {
-        self.prove_count_offset_on_range_internal(
-            inner_range,
-            offset,
-            limit,
-            left_to_right,
-            false,
-            grove_version,
-        )
-    }
-
-    /// Count-offset proof variant for an upper-layer envelope that carries a
-    /// root-authenticated target witness for every returned reference row.
-    /// The returned Merk values remain raw references; callers MUST resolve
-    /// and bind them before exposing results.
-    pub fn prove_count_offset_on_range_allowing_raw_references(
-        &self,
-        inner_range: &QueryItem,
-        offset: u64,
-        limit: Option<u64>,
-        left_to_right: bool,
-        grove_version: &GroveVersion,
-    ) -> CostResult<ProverCountOffsetResult, Error> {
-        self.prove_count_offset_on_range_internal(
-            inner_range,
-            offset,
-            limit,
-            left_to_right,
-            true,
-            grove_version,
-        )
-    }
-
-    fn prove_count_offset_on_range_internal(
-        &self,
-        inner_range: &QueryItem,
-        offset: u64,
-        limit: Option<u64>,
-        left_to_right: bool,
-        allow_raw_references: bool,
-        grove_version: &GroveVersion,
-    ) -> CostResult<ProverCountOffsetResult, Error> {
         check_merk_v0_with_cost!(
             "prove_count_offset_on_range",
             grove_version
@@ -149,7 +108,6 @@ where
                     offset,
                     limit,
                     left_to_right,
-                    allow_raw_references,
                     tree_type,
                     grove_version,
                 )

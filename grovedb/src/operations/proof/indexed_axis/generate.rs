@@ -387,9 +387,16 @@ fn build_target_commitment<'db>(
     }
 }
 
-/// Prove the immediate primary node and every ordinary reference hop until
-/// the terminal value. Every hop independently reconstructs the GroveDB root,
-/// preventing a proof from swapping in a target from another state.
+/// Carry the immediate primary node and every ordinary reference hop until
+/// the terminal value.
+///
+/// The secondary row already commits the immediate node's exact stored value
+/// hash. Carrying a full GroveDB inclusion proof for every direct primary value
+/// therefore re-proves data the row already authenticates and makes top-k
+/// proofs grow by hundreds of bytes per result. The compact witness omits that
+/// redundant proof. If the primary is itself a reference, nodes reached outside
+/// the immediate row retain root authentication; their paths are derived from
+/// authenticated reference elements rather than repeated in the wire format.
 fn build_indexed_target_witness<'db>(
     grovedb: &'db GroveDb,
     indexed_path: &[Vec<u8>],
@@ -430,27 +437,11 @@ fn build_indexed_target_witness<'db>(
             Element::get_with_value_hash(&parent_merk, key, true, grove_version)
                 .map_err(Error::MerkError)
         );
-        let layer_proofs = cost_return_on_error!(
-            &mut cost,
-            build_layer_proofs(
-                grovedb,
-                &qualified_path,
-                transaction,
-                batch,
-                grove_version,
-                "indexed target witness",
-            )
-        );
-        let ancestor_attestations = cost_return_on_error!(
-            &mut cost,
-            build_ancestor_attestations(
-                grovedb,
-                &qualified_path,
-                transaction,
-                batch,
-                grove_version,
-                "indexed target witness",
-            )
+        let value = cost_return_on_error_no_add!(
+            cost,
+            element
+                .serialize(grove_version)
+                .map_err(Error::ElementError)
         );
         let commitment = cost_return_on_error!(
             &mut cost,
@@ -463,6 +454,36 @@ fn build_indexed_target_witness<'db>(
                 grove_version,
             )
         );
+        let authentication = if nodes.is_empty() {
+            None
+        } else {
+            let layer_proofs = cost_return_on_error!(
+                &mut cost,
+                build_layer_proofs(
+                    grovedb,
+                    &qualified_path,
+                    transaction,
+                    batch,
+                    grove_version,
+                    "indexed reference-chain target",
+                )
+            );
+            let ancestor_attestations = cost_return_on_error!(
+                &mut cost,
+                build_ancestor_attestations(
+                    grovedb,
+                    &qualified_path,
+                    transaction,
+                    batch,
+                    grove_version,
+                    "indexed reference-chain target",
+                )
+            );
+            Some(super::IndexedTargetAuthentication {
+                layer_proofs,
+                ancestor_attestations,
+            })
+        };
 
         let next_path = match element.underlying() {
             Element::Reference(reference_path, ..)
@@ -482,10 +503,9 @@ fn build_indexed_target_witness<'db>(
         };
 
         nodes.push(IndexedTargetNodeWitness {
-            qualified_path: qualified_path.clone(),
-            layer_proofs,
-            ancestor_attestations,
+            value,
             commitment,
+            authentication,
         });
         match next_path {
             Some(next) => qualified_path = next,
@@ -1360,7 +1380,7 @@ impl GroveDb {
         let prove_result = cost_return_on_error!(
             &mut cost,
             secondary_merk
-                .prove_count_offset_on_range_allowing_raw_references(
+                .prove_count_offset_on_range(
                     &inner_range,
                     offset,
                     Some(k as u64),
@@ -1839,7 +1859,7 @@ where
     }
     let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
     let prove_result = secondary_merk
-        .prove_count_offset_on_range_allowing_raw_references(
+        .prove_count_offset_on_range(
             &inner_range,
             offset,
             Some(k as u64),

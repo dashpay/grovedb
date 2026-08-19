@@ -1,5 +1,39 @@
 //! Tests
 
+/// Compare the ordering/key projection in tests whose purpose is index order,
+/// while still asserting that every returned value has been resolved past any
+/// ordinary reference. Tests of value identity use `IndexedAxisEntry` directly.
+macro_rules! assert_axis_entries_eq {
+    ($actual:expr, $expected:expr $(,)?) => {{
+        let actual_entries = &$actual;
+        assert!(
+            actual_entries
+                .iter()
+                .all(|entry| !entry.value.underlying().is_reference()),
+            "indexed-axis results must contain terminal values, not references"
+        );
+        let actual_pairs: Vec<_> = actual_entries
+            .iter()
+            .map(|entry| (entry.ordering_value, entry.primary_key.clone()))
+            .collect();
+        assert_eq!(actual_pairs.as_slice(), $expected);
+    }};
+    ($actual:expr, $expected:expr, $($message:tt)+) => {{
+        let actual_entries = &$actual;
+        assert!(
+            actual_entries
+                .iter()
+                .all(|entry| !entry.value.underlying().is_reference()),
+            "indexed-axis results must contain terminal values, not references"
+        );
+        let actual_pairs: Vec<_> = actual_entries
+            .iter()
+            .map(|entry| (entry.ordering_value, entry.primary_key.clone()))
+            .collect();
+        assert_eq!(actual_pairs.as_slice(), $expected, $($message)+);
+    }};
+}
+
 pub mod common;
 
 mod query_tests;

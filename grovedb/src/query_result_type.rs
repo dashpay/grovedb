@@ -28,18 +28,6 @@ pub struct IndexedAxisEntry<T> {
     pub value: Element,
 }
 
-impl<T: PartialEq> PartialEq<(T, Vec<u8>)> for IndexedAxisEntry<T> {
-    fn eq(&self, other: &(T, Vec<u8>)) -> bool {
-        self.ordering_value == other.0 && self.primary_key == other.1
-    }
-}
-
-impl<T: PartialEq> PartialEq<IndexedAxisEntry<T>> for (T, Vec<u8>) {
-    fn eq(&self, other: &IndexedAxisEntry<T>) -> bool {
-        self.0 == other.ordering_value && self.1 == other.primary_key
-    }
-}
-
 #[derive(Copy, Clone)]
 /// Query result type
 pub enum QueryResultType {

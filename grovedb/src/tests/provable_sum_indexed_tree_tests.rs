@@ -824,7 +824,7 @@ mod tests {
             .indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 3, true, None, grove_version)
             .unwrap()
             .expect("top-k desc");
-        assert_eq!(
+        assert_axis_entries_eq!(
             top3,
             vec![
                 (100i64, b"frank".to_vec()),
@@ -838,7 +838,7 @@ mod tests {
             .indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 2, false, None, grove_version)
             .unwrap()
             .expect("bottom-2");
-        assert_eq!(
+        assert_axis_entries_eq!(
             bottom2,
             vec![(-7i64, b"carol".to_vec()), (-1, b"eve".to_vec())]
         );
@@ -887,7 +887,7 @@ mod tests {
             )
             .unwrap()
             .expect("asc");
-        assert_eq!(
+        assert_axis_entries_eq!(
             asc,
             vec![
                 (-42i64, b"neg".to_vec()),
@@ -917,7 +917,7 @@ mod tests {
             )
             .unwrap()
             .expect("page 1");
-        assert_eq!(
+        assert_axis_entries_eq!(
             page1.entries,
             vec![(100i64, b"frank".to_vec()), (12, b"bob".to_vec())]
         );
@@ -933,7 +933,7 @@ mod tests {
             )
             .unwrap()
             .expect("page 2");
-        assert_eq!(
+        assert_axis_entries_eq!(
             page2.entries,
             vec![(5i64, b"alice".to_vec()), (0, b"dave".to_vec())]
         );
@@ -991,7 +991,7 @@ mod tests {
             )
             .unwrap()
             .expect("range");
-        assert_eq!(
+        assert_axis_entries_eq!(
             in_range,
             vec![
                 (-1i64, b"eve".to_vec()),
@@ -1014,7 +1014,7 @@ mod tests {
             )
             .unwrap()
             .expect("desc");
-        assert_eq!(
+        assert_axis_entries_eq!(
             desc,
             vec![
                 (12i64, b"bob".to_vec()),
@@ -1037,7 +1037,7 @@ mod tests {
             )
             .unwrap()
             .expect("exact");
-        assert_eq!(exact, vec![(12i64, b"bob".to_vec())]);
+        assert_axis_entries_eq!(exact, vec![(12i64, b"bob".to_vec())]);
 
         // lo > hi: empty.
         let empty = db
@@ -1105,7 +1105,7 @@ mod tests {
             )
             .unwrap()
             .expect("neg range");
-        assert_eq!(neg, vec![(-7i64, b"carol".to_vec()), (-1, b"eve".to_vec())]);
+        assert_axis_entries_eq!(neg, vec![(-7i64, b"carol".to_vec()), (-1, b"eve".to_vec())]);
     }
 
     #[test]

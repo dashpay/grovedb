@@ -75,25 +75,50 @@ pub enum IndexedTargetCommitment {
         axes: Vec<(u8, [u8; 32])>,
     },
     /// Reference node. Its committed value hash is reconstructed from
-    /// `H(value)` and the following node's committed value hash.
+    /// `H(value)` and the terminal target's committed value hash.
     Reference,
 }
 
-/// One root-authenticated node in a resolved indexed-axis target chain.
+/// Root authentication carried only after an indexed row leaves its immediate
+/// primary node by following an ordinary GroveDB reference.
+///
+/// Direct primary values are already authenticated by the secondary row's
+/// combined target hash. Reference-chain nodes live elsewhere in the grove, so
+/// they retain the ordinary layer proof needed to authenticate their location
+/// and stored commitment against the reconstructed GroveDB root.
 #[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
-pub struct IndexedTargetNodeWitness {
-    /// Absolute qualified path, including this node's key.
-    pub qualified_path: Vec<Vec<u8>>,
-    /// Single-key Merk proof for every path segment, top-down.
+pub struct IndexedTargetAuthentication {
+    /// Single-key Merk proof per segment of the derived qualified path.
     pub layer_proofs: Vec<Vec<u8>>,
-    /// Indexed/non-indexed ancestor composition attestations.
+    /// Composition metadata for the ancestors above the node's parent Merk.
     pub ancestor_attestations: Vec<AncestorAttestation>,
-    /// Commitment shape for this node.
-    pub commitment: IndexedTargetCommitment,
 }
 
-/// Shape-complete proof that starts at the immediate primary row and
-/// follows any ordinary GroveDB references to the terminal value.
+/// One commitment-authenticated node in a resolved indexed-axis target chain.
+///
+/// The first node's committed value hash is bound directly by the canonical
+/// secondary reference row. Nodes reached after following a reference retain
+/// root authentication because they live outside that immediate row binding;
+/// their paths are derived from the primary key and serialized reference values
+/// rather than repeated in the wire format.
+#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
+pub struct IndexedTargetNodeWitness {
+    /// Serialized element bytes committed by this node.
+    pub value: Vec<u8>,
+    /// Commitment shape for this node.
+    pub commitment: IndexedTargetCommitment,
+    /// `None` for the row-authenticated immediate primary node; `Some` for
+    /// nodes reached by following an ordinary reference out of that row.
+    pub authentication: Option<IndexedTargetAuthentication>,
+}
+
+/// Shape-complete compact witness that starts at the immediate primary row
+/// and follows any ordinary GroveDB references to the terminal value.
+///
+/// Authentication starts at the secondary row's combined-reference hash.
+/// Ordinary direct values therefore carry no repeated primary inclusion proof;
+/// only rows whose immediate primary value is itself a reference pay for the
+/// external chain's root authentication.
 #[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
 pub struct IndexedTargetWitness {
     /// Immediate primary node followed by zero or more reference targets.

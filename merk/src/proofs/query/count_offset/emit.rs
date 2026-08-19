@@ -78,9 +78,6 @@ pub(super) struct EmitState {
     /// Walk direction. `true` = ascending (left-to-right), `false` =
     /// descending (right-to-left).
     pub(super) left_to_right: bool,
-    /// Whether an upper-layer envelope will authenticate and resolve raw
-    /// reference rows. Ordinary count-offset callers leave this false.
-    pub(super) allow_raw_references: bool,
 }
 
 /// Recursive proof emitter. Always called on a non-empty subtree.
@@ -251,8 +248,7 @@ where
     // Reject value shapes the count-offset proof flow does not yet
     // support, so the prover surfaces an explicit `NotSupported`
     // instead of producing a proof that silently diverges from regular
-    // GroveDB query semantics. Three cases, each pinned to a finding
-    // in the PR review:
+    // GroveDB query semantics. Two cases remain:
     //
     //   • **NonCounted-wrapped in-range entry** (`own_struct == 0`):
     //     regular GroveDB returns the NonCounted item's value; the
@@ -268,8 +264,10 @@ where
     //     time saves the work of producing an honest-but-unverifiable
     //     proof.
     //
-    // Lifting any of these is straightforward future work: emit the
-    // appropriate node variant and update the verifier symmetrically.
+    // References are intentionally allowed: GroveDB rewrites their returned
+    // nodes with the resolved target before encoding. Lifting either remaining
+    // restriction requires emitting the appropriate node variant and updating
+    // the verifier symmetrically.
     if is_in_range {
         if own_struct == 0 {
             return Err(Error::InvalidProofError(
@@ -285,14 +283,6 @@ where
         match Element::deserialize(value_bytes, grove_version) {
             Ok(elem) => {
                 let inner = elem.into_underlying();
-                if inner.is_reference() && !state.allow_raw_references {
-                    return Err(Error::InvalidProofError(
-                        "count-offset paginated proofs require an upper-layer target witness to \
-                         return Reference / ReferenceWithSumItem entries"
-                            .to_string(),
-                    ))
-                    .wrap_with_cost(cost);
-                }
                 if inner.is_non_empty_tree() {
                     return Err(Error::InvalidProofError(
                         "count-offset paginated proofs do not yet support non-empty tree \

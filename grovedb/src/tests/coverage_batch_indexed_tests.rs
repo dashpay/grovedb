@@ -618,7 +618,7 @@ mod tests {
         db.apply_batch(ops, None, None, grove_version)
             .unwrap()
             .expect("fresh PSIT create + populate in one batch is supported");
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 5, true, None, grove_version)
                 .unwrap()
                 .expect("sum top_k"),
@@ -648,7 +648,7 @@ mod tests {
         db.apply_batch(ops, None, None, grove_version)
             .unwrap()
             .expect("fresh PCPSIT create + populate in one batch is supported");
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_sum_top_k(
                 [TEST_LEAF, b"pcpsit"].as_ref(),
                 5,

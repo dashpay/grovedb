@@ -22,7 +22,7 @@ use grovedb_merk::{
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
-use super::{read_post_apply_state, AggregatePair, AggregateTransition};
+use super::{read_entry_state, AggregateTransition, MaybeEntryState};
 use crate::{
     operations::indexed_tree::{axis_row_reference, make_axis_secondary_key},
     Element, Error,
@@ -63,17 +63,17 @@ fn enforce_axis_item_key_bound<'a>(
 /// what makes each axis's assembled batch deterministic.
 pub(crate) fn read_post_apply_transitions<'db, S: StorageContext<'db>>(
     primary_merk: &Merk<S>,
-    pre: &BTreeMap<Vec<u8>, AggregatePair>,
+    pre: &BTreeMap<Vec<u8>, MaybeEntryState>,
     grove_version: &GroveVersion,
 ) -> CostResult<Vec<AggregateTransition>, Error> {
     let mut cost = OperationCost::default();
     let mut transitions: Vec<AggregateTransition> = Vec::with_capacity(pre.len());
-    for (key, old_aggregates) in pre {
+    for (key, old_state) in pre {
         let new_state = cost_return_on_error!(
             &mut cost,
-            read_post_apply_state(primary_merk, key, grove_version)
+            read_entry_state(primary_merk, key, "post", grove_version)
         );
-        transitions.push((key.clone(), *old_aggregates, new_state));
+        transitions.push((key.clone(), *old_state, new_state));
     }
     Ok(transitions).wrap_with_cost(cost)
 }
@@ -92,15 +92,18 @@ fn build_axis_mirror_batch(
     let mut cost = OperationCost::default();
     let secondary_tree_type = crate::operations::indexed_tree::axis_secondary_tree_type(axis);
     let mut secondary_batch: Vec<BatchEntry<Vec<u8>>> = Vec::with_capacity(transitions.len() * 2);
-    for (key, old_aggregates, new_state) in transitions {
+    for (key, old_state, new_state) in transitions {
+        if old_state == new_state {
+            continue;
+        }
         let old_key =
-            old_aggregates.map(|(count, sum)| make_axis_secondary_key(axis, count, sum, key));
+            old_state.map(|state| make_axis_secondary_key(axis, state.count, state.sum, key));
         let new_entry = new_state
-            .map(|(count, sum, target_hash)| {
+            .map(|state| {
                 Ok((
-                    make_axis_secondary_key(axis, count, sum, key),
-                    axis_row_reference(axis, key, count, sum)?,
-                    target_hash,
+                    make_axis_secondary_key(axis, state.count, state.sum, key),
+                    axis_row_reference(axis, key, state.count, state.sum)?,
+                    state.value_hash,
                 ))
             })
             .transpose();

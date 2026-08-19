@@ -324,14 +324,13 @@ fn execute_single_key_proof(
 struct VerifiedTargetNode {
     value_bytes: Vec<u8>,
     element: Element,
-    recorded_value_hash: CryptoHash,
+    recorded_value_hash: Option<CryptoHash>,
 }
 
 fn verify_indexed_target_witness(
     witness: &IndexedTargetWitness,
     indexed_path: &[&[u8]],
     primary_key: &[u8],
-    primary_root_hash: &CryptoHash,
     grove_root_hash: &CryptoHash,
     grove_version: &GroveVersion,
 ) -> Result<(Element, CryptoHash, Element), Error> {
@@ -344,85 +343,120 @@ fn verify_indexed_target_witness(
         return Err(Error::ReferenceLimit);
     }
 
-    let mut expected_first_path: Vec<Vec<u8>> = indexed_path
+    let mut current_path: Vec<Vec<u8>> = indexed_path
         .iter()
         .map(|segment| segment.to_vec())
         .collect();
-    expected_first_path.push(primary_key.to_vec());
-    if witness.nodes[0].qualified_path != expected_first_path {
-        return Err(Error::CorruptedData(format!(
-            "indexed target witness starts at {}, expected {}",
-            hex::encode(
-                witness.nodes[0]
-                    .qualified_path
-                    .last()
-                    .map(Vec::as_slice)
-                    .unwrap_or_default()
-            ),
-            hex::encode(primary_key)
-        )));
-    }
+    current_path.push(primary_key.to_vec());
 
     let mut seen_paths = std::collections::HashSet::new();
     let mut verified_nodes = Vec::with_capacity(witness.nodes.len());
     for (index, node) in witness.nodes.iter().enumerate() {
-        if node.qualified_path.is_empty() {
-            return Err(Error::CorruptedData(
-                "indexed target witness node has an empty qualified path".to_string(),
-            ));
-        }
-        if !seen_paths.insert(node.qualified_path.clone()) {
+        if !seen_paths.insert(current_path.clone()) {
             return Err(Error::CyclicReference);
         }
-        if node.layer_proofs.len() != node.qualified_path.len() {
-            return Err(Error::CorruptedData(format!(
-                "indexed target witness node {index} has {} layer proofs for a {}-segment path",
-                node.layer_proofs.len(),
-                node.qualified_path.len()
-            )));
-        }
-        let key = node.qualified_path.last().expect("checked non-empty");
-        let deepest = node.layer_proofs.len() - 1;
-        let (value_bytes, node_parent_root, recorded_value_hash) =
-            execute_single_key_proof(&node.layer_proofs[deepest], key, "indexed target witness")?;
-        if index == 0 && node_parent_root != *primary_root_hash {
-            return Err(Error::CorruptedData(format!(
-                "indexed target witness immediate-primary root {} does not match envelope \
-                 primary root {}",
-                hex::encode(node_parent_root),
-                hex::encode(primary_root_hash)
-            )));
-        }
-        let path_slices: Vec<&[u8]> = node.qualified_path.iter().map(Vec::as_slice).collect();
-        let reconstructed_root = walk_ancestor_chain(
-            &node.layer_proofs,
-            &node.ancestor_attestations,
-            &path_slices,
-            node_parent_root,
-            "indexed target witness",
-        )?;
-        if reconstructed_root != *grove_root_hash {
-            return Err(Error::CorruptedData(format!(
-                "indexed target witness node {index} reconstructs GroveDB root {}, expected {}",
-                hex::encode(reconstructed_root),
-                hex::encode(grove_root_hash)
-            )));
-        }
-        let element = Element::deserialize(&value_bytes, grove_version).map_err(|e| {
+        let recorded_value_hash = match (index, &node.authentication) {
+            (0, None) => None,
+            (0, Some(_)) => {
+                return Err(Error::CorruptedData(
+                    "indexed target witness redundantly authenticates its immediate primary node"
+                        .to_string(),
+                ));
+            }
+            (_, None) => {
+                return Err(Error::CorruptedData(format!(
+                    "indexed reference-chain target node {index} has no root authentication"
+                )));
+            }
+            (_, Some(authentication)) => {
+                if authentication.layer_proofs.len() != current_path.len() {
+                    return Err(Error::CorruptedData(format!(
+                        "indexed reference-chain target node {index} has {} layer proofs for a \
+                         {}-segment path",
+                        authentication.layer_proofs.len(),
+                        current_path.len()
+                    )));
+                }
+                let key = current_path.last().expect("initial path is non-empty");
+                let deepest = authentication.layer_proofs.len() - 1;
+                let (proved_value, node_parent_root, recorded_value_hash) =
+                    execute_single_key_proof(
+                        &authentication.layer_proofs[deepest],
+                        key,
+                        "indexed reference-chain target",
+                    )?;
+                if proved_value != node.value {
+                    return Err(Error::CorruptedData(format!(
+                        "indexed reference-chain target node {index} value differs from its root \
+                         proof"
+                    )));
+                }
+                let path_slices: Vec<&[u8]> = current_path.iter().map(Vec::as_slice).collect();
+                let reconstructed_root = walk_ancestor_chain(
+                    &authentication.layer_proofs,
+                    &authentication.ancestor_attestations,
+                    &path_slices,
+                    node_parent_root,
+                    "indexed reference-chain target",
+                )?;
+                if reconstructed_root != *grove_root_hash {
+                    return Err(Error::CorruptedData(format!(
+                        "indexed reference-chain target node {index} reconstructs GroveDB root \
+                         {}, expected {}",
+                        hex::encode(reconstructed_root),
+                        hex::encode(grove_root_hash)
+                    )));
+                }
+                Some(recorded_value_hash)
+            }
+        };
+        let element = Element::deserialize(&node.value, grove_version).map_err(|e| {
             Error::CorruptedData(format!(
                 "indexed target witness node {index} contains an invalid element: {e}"
             ))
         })?;
+
+        match element.underlying() {
+            Element::Reference(reference_path, ..)
+            | Element::ReferenceWithSumItem(reference_path, ..) => {
+                if index + 1 == witness.nodes.len() {
+                    return Err(Error::CorruptedData(
+                        "indexed target witness terminates at a reference".to_string(),
+                    ));
+                }
+                let Some((key, parent_segments)) = current_path.split_last() else {
+                    return Err(Error::CorruptedData(
+                        "indexed target witness reference has an empty path".to_string(),
+                    ));
+                };
+                let parent_builder: grovedb_path::SubtreePathBuilder<Vec<u8>> =
+                    grovedb_path::SubtreePathBuilder::owned_from_iter(
+                        parent_segments.iter().cloned(),
+                    );
+                current_path = reference_path
+                    .clone()
+                    .absolute_qualified_path(parent_builder, key)
+                    .map_err(Error::ElementError)?
+                    .to_vec();
+            }
+            _ if index + 1 != witness.nodes.len() => {
+                return Err(Error::CorruptedData(format!(
+                    "indexed target witness continues after terminal node {index}"
+                )));
+            }
+            _ => {}
+        }
         verified_nodes.push(VerifiedTargetNode {
-            value_bytes,
+            value_bytes: node.value.clone(),
             element,
             recorded_value_hash,
         });
     }
 
-    for (index, (wire_node, verified)) in
-        witness.nodes.iter().zip(verified_nodes.iter()).enumerate()
-    {
+    let mut committed_hashes = vec![[0u8; 32]; verified_nodes.len()];
+    for index in (0..verified_nodes.len()).rev() {
+        let wire_node = &witness.nodes[index];
+        let verified = &verified_nodes[index];
         let serialized_hash = value_hash(&verified.value_bytes).value().to_owned();
         let underlying = verified.element.underlying();
         let expected_hash = match &wire_node.commitment {
@@ -433,6 +467,11 @@ fn verify_indexed_target_witness(
                         underlying.type_str()
                     )));
                 }
+                if index + 1 != verified_nodes.len() {
+                    return Err(Error::CorruptedData(format!(
+                        "indexed target witness continues after terminal node {index}"
+                    )));
+                }
                 serialized_hash
             }
             IndexedTargetCommitment::Layered(child_root_hash) => {
@@ -440,6 +479,11 @@ fn verify_indexed_target_witness(
                     return Err(Error::CorruptedData(format!(
                         "indexed target witness node {index} claims a layered commitment for {}",
                         underlying.type_str()
+                    )));
+                }
+                if index + 1 != verified_nodes.len() {
+                    return Err(Error::CorruptedData(format!(
+                        "indexed target witness continues after terminal node {index}"
                     )));
                 }
                 combine_hash(&serialized_hash, child_root_hash)
@@ -458,6 +502,11 @@ fn verify_indexed_target_witness(
                         "indexed target witness node {index} claims a single-axis indexed \
                          commitment for {}",
                         underlying.type_str()
+                    )));
+                }
+                if index + 1 != verified_nodes.len() {
+                    return Err(Error::CorruptedData(format!(
+                        "indexed target witness continues after terminal node {index}"
                     )));
                 }
                 combine_hash_three(&serialized_hash, primary_root_hash, secondary_root_hash)
@@ -487,14 +536,19 @@ fn verify_indexed_target_witness(
                         "indexed target witness node {index} axes do not match its PCPSIT element"
                     )));
                 }
+                if index + 1 != verified_nodes.len() {
+                    return Err(Error::CorruptedData(format!(
+                        "indexed target witness continues after terminal node {index}"
+                    )));
+                }
                 let digest = axes_digest(axes).value().to_owned();
                 combine_hash_three(&serialized_hash, primary_root_hash, &digest)
                     .value()
                     .to_owned()
             }
             IndexedTargetCommitment::Reference => {
-                let reference_path = match underlying {
-                    Element::Reference(path, ..) | Element::ReferenceWithSumItem(path, ..) => path,
+                match underlying {
+                    Element::Reference(..) | Element::ReferenceWithSumItem(..) => {}
                     _ => {
                         return Err(Error::CorruptedData(format!(
                             "indexed target witness node {index} claims a reference commitment \
@@ -502,45 +556,28 @@ fn verify_indexed_target_witness(
                             underlying.type_str()
                         )));
                     }
-                };
-                let Some(next) = verified_nodes.get(index + 1) else {
+                }
+                let Some(terminal_hash) = committed_hashes.last() else {
                     return Err(Error::CorruptedData(
                         "indexed target witness terminates at a reference".to_string(),
                     ));
                 };
-                let Some((key, parent_segments)) = wire_node.qualified_path.split_last() else {
-                    return Err(Error::CorruptedData(
-                        "indexed target witness reference has an empty path".to_string(),
-                    ));
-                };
-                let parent_builder: grovedb_path::SubtreePathBuilder<Vec<u8>> =
-                    grovedb_path::SubtreePathBuilder::owned_from_iter(
-                        parent_segments.iter().cloned(),
-                    );
-                let expected_next = reference_path
-                    .clone()
-                    .absolute_qualified_path(parent_builder, key)
-                    .map_err(Error::ElementError)?
-                    .to_vec();
-                if witness.nodes[index + 1].qualified_path != expected_next {
-                    return Err(Error::CorruptedData(format!(
-                        "indexed target witness reference node {index} points to a different path \
-                         than the next witness node"
-                    )));
-                }
-                combine_hash(&serialized_hash, &next.recorded_value_hash)
+                combine_hash(&serialized_hash, terminal_hash)
                     .value()
                     .to_owned()
             }
         };
-        if expected_hash != verified.recorded_value_hash {
+        if let Some(recorded_value_hash) = verified.recorded_value_hash
+            && expected_hash != recorded_value_hash
+        {
             return Err(Error::CorruptedData(format!(
-                "indexed target witness node {index} commitment mismatch: computed {}, parent \
-                 records {}",
+                "indexed reference-chain target node {index} commitment mismatch: computed {}, \
+                 root proof records {}",
                 hex::encode(expected_hash),
-                hex::encode(verified.recorded_value_hash)
+                hex::encode(recorded_value_hash)
             )));
         }
+        committed_hashes[index] = expected_hash;
     }
 
     let immediate = verified_nodes.first().expect("checked non-empty");
@@ -552,7 +589,7 @@ fn verify_indexed_target_witness(
     }
     Ok((
         immediate.element.clone(),
-        immediate.recorded_value_hash,
+        committed_hashes[0],
         terminal.element.clone().into_underlying(),
     ))
 }
@@ -562,7 +599,6 @@ fn resolve_axis_rows<T>(
     rows: Vec<ProvenAxisRow<T>>,
     witnesses: &[IndexedTargetWitness],
     indexed_path: &[&[u8]],
-    primary_root_hash: &CryptoHash,
     grove_root_hash: &CryptoHash,
     grove_version: &GroveVersion,
 ) -> Result<Vec<IndexedAxisEntry<T>>, Error> {
@@ -579,7 +615,6 @@ fn resolve_axis_rows<T>(
             witness,
             indexed_path,
             &row.primary_key,
-            primary_root_hash,
             grove_root_hash,
             grove_version,
         )?;
@@ -621,7 +656,6 @@ pub(crate) fn resolve_indexed_axis_rows(
     rows: ProvenAxisRows,
     witnesses: &[IndexedTargetWitness],
     indexed_path: &[&[u8]],
-    primary_root_hash: &CryptoHash,
     grove_root_hash: &CryptoHash,
     grove_version: &GroveVersion,
 ) -> Result<AxisEntries, Error> {
@@ -631,7 +665,6 @@ pub(crate) fn resolve_indexed_axis_rows(
             rows,
             witnesses,
             indexed_path,
-            primary_root_hash,
             grove_root_hash,
             grove_version,
         )?)),
@@ -640,7 +673,6 @@ pub(crate) fn resolve_indexed_axis_rows(
             rows,
             witnesses,
             indexed_path,
-            primary_root_hash,
             grove_root_hash,
             grove_version,
         )?)),
@@ -649,7 +681,6 @@ pub(crate) fn resolve_indexed_axis_rows(
             rows,
             witnesses,
             indexed_path,
-            primary_root_hash,
             grove_root_hash,
             grove_version,
         )?)),
@@ -1030,7 +1061,6 @@ fn verify_indexed_axis_range_inner(
         rows,
         &envelope.target_witnesses,
         path,
-        &envelope.primary_root_hash,
         &root_hash,
         grove_version,
     )?;
@@ -1104,7 +1134,6 @@ fn verify_indexed_axis_paginated_inner(
         rows,
         &envelope.target_witnesses,
         path,
-        &envelope.primary_root_hash,
         &root_hash,
         grove_version,
     )?;

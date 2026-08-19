@@ -827,7 +827,7 @@ mod tests {
             )
             .unwrap();
         result.expect("fresh PCIT create + populate in one batch is supported");
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, grove_version)
                 .unwrap()
                 .expect("count top_k"),
@@ -980,7 +980,7 @@ mod tests {
             .indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 3, true, None, grove_version)
             .unwrap()
             .expect("top-k descending");
-        assert_eq!(
+        assert_axis_entries_eq!(
             top3,
             vec![
                 (20u64, b"eve".to_vec()),
@@ -994,7 +994,7 @@ mod tests {
             .indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 2, false, None, grove_version)
             .unwrap()
             .expect("top-k ascending");
-        assert_eq!(
+        assert_axis_entries_eq!(
             bottom2,
             vec![(1u64, b"carol".to_vec()), (5u64, b"alice".to_vec())]
         );
@@ -1045,7 +1045,7 @@ mod tests {
             )
             .unwrap()
             .expect("page 1");
-        assert_eq!(
+        assert_axis_entries_eq!(
             page1.entries,
             vec![(20u64, b"eve".to_vec()), (12u64, b"bob".to_vec())]
         );
@@ -1062,7 +1062,7 @@ mod tests {
             )
             .unwrap()
             .expect("page 2");
-        assert_eq!(
+        assert_axis_entries_eq!(
             page2.entries,
             vec![(7u64, b"dave".to_vec()), (5u64, b"alice".to_vec())]
         );
@@ -1079,7 +1079,7 @@ mod tests {
             )
             .unwrap()
             .expect("page 3");
-        assert_eq!(page3.entries, vec![(1u64, b"carol".to_vec())]);
+        assert_axis_entries_eq!(page3.entries, vec![(1u64, b"carol".to_vec())]);
 
         // Offset beyond total → empty.
         let beyond = db
@@ -1134,7 +1134,7 @@ mod tests {
             )
             .unwrap()
             .expect("range");
-        assert_eq!(
+        assert_axis_entries_eq!(
             in_range,
             vec![
                 (5u64, b"alice".to_vec()),
@@ -1156,7 +1156,7 @@ mod tests {
             )
             .unwrap()
             .expect("range desc");
-        assert_eq!(
+        assert_axis_entries_eq!(
             in_range_desc,
             vec![
                 (12u64, b"bob".to_vec()),
@@ -1178,7 +1178,7 @@ mod tests {
             )
             .unwrap()
             .expect("exact");
-        assert_eq!(exact, vec![(12u64, b"bob".to_vec())]);
+        assert_axis_entries_eq!(exact, vec![(12u64, b"bob".to_vec())]);
 
         // lo > hi: empty.
         let empty = db

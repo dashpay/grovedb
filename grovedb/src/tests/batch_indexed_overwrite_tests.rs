@@ -146,7 +146,7 @@ mod tests {
             root_before,
             "the refused batch must not have moved any state"
         );
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 5, true, None, gv)
                 .unwrap()
                 .expect("top_k"),
@@ -220,7 +220,7 @@ mod tests {
 
         let db = make_test_grovedb(gv);
         make_psit_with_entry(&db, b"psit", gv);
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 5, true, None, gv)
                 .unwrap()
                 .expect("top_k"),

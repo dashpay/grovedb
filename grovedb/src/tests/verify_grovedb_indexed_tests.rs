@@ -1781,7 +1781,7 @@ mod tests {
             .indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 15, true, None, grove_version)
             .unwrap()
             .expect("top-k over distinct derived counts");
-        assert_eq!(
+        assert_axis_entries_eq!(
             top,
             (0..15u64)
                 .rev()
@@ -1849,7 +1849,7 @@ mod tests {
             )
             .unwrap()
             .expect("ascending top-k over tied derived counts");
-        assert_eq!(
+        assert_axis_entries_eq!(
             asc,
             (0..10)
                 .map(|i| (SHARED_COUNT, format!("k{:02}", i).into_bytes()))

@@ -577,6 +577,39 @@ impl GroveOp {
             | GroveOp::DenseTreeInsert { .. } => false,
         }
     }
+
+    /// Whether this operation can change an indexed primary entry's
+    /// canonical secondary row.
+    ///
+    /// This is wider than [`Self::can_mutate_child_count`]: the row binds the
+    /// primary node's committed value hash as well as its aggregates, so any
+    /// operation that rewrites the entry must participate in pre/post state
+    /// comparison. The four direct non-Merk append variants are converted to
+    /// `ReplaceNonMerkTreeRoot` before indexed pre-state capture; listing them
+    /// here keeps the classification exhaustive and makes future pipeline
+    /// changes safe rather than silently excluding them.
+    pub(crate) fn can_mutate_indexed_secondary_row(&self) -> bool {
+        match self {
+            GroveOp::InsertWithKnownToNotAlreadyExist { .. }
+            | GroveOp::InsertIfNotExists { .. }
+            | GroveOp::InsertOrReplace { .. }
+            | GroveOp::Replace { .. }
+            | GroveOp::Patch { .. }
+            | GroveOp::Delete
+            | GroveOp::DeleteTree(..)
+            | GroveOp::RefreshReference { .. }
+            | GroveOp::ReplaceTreeRootKey { .. }
+            | GroveOp::InsertTreeWithRootHash { .. }
+            | GroveOp::ReplaceNonMerkTreeRoot { .. }
+            | GroveOp::InsertNonMerkTree { .. }
+            | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. }
+            | GroveOp::InsertAggregateIndexedTreeRootKeys { .. }
+            | GroveOp::CommitmentTreeInsert { .. }
+            | GroveOp::MmrTreeAppend { .. }
+            | GroveOp::BulkAppend { .. }
+            | GroveOp::DenseTreeInsert { .. } => true,
+        }
+    }
 }
 
 impl PartialOrd for GroveOp {
@@ -2386,17 +2419,20 @@ where
         // primary level represent a child subtree's bubble-up — the
         // child's element bytes have a new aggregate count, so its
         // secondary entry needs to move; we capture it here too.
-        let indexed_pre_state: Option<BTreeMap<Vec<u8>, Option<(u64, i64)>>> = if in_tree_type
-            .is_indexed_primary()
-        {
-            let merk = self.merks.get(path).expect("the Merk is cached");
-            Some(cost_return_on_error!(
-                &mut cost,
-                indexed_tree::capture_indexed_pre_state(merk, &ops_at_path_by_key, grove_version,)
-            ))
-        } else {
-            None
-        };
+        let indexed_pre_state: Option<BTreeMap<Vec<u8>, indexed_tree::MaybeEntryState>> =
+            if in_tree_type.is_indexed_primary() {
+                let merk = self.merks.get(path).expect("the Merk is cached");
+                Some(cost_return_on_error!(
+                    &mut cost,
+                    indexed_tree::capture_indexed_pre_state(
+                        merk,
+                        &ops_at_path_by_key,
+                        grove_version,
+                    )
+                ))
+            } else {
+                None
+            };
 
         // V4 gates: keys whose ops need the OLD element they displace. The
         // merk apply surfaces those bytes for free through the old-value

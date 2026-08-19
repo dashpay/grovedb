@@ -685,8 +685,9 @@ mod tests {
                         )
                         .unwrap()
                         .expect("legacy linear read");
-                    assert_eq!(
-                        counted.entries, legacy,
+                    assert_axis_entries_eq!(
+                        counted.entries,
+                        legacy,
                         "counted and legacy diverge at offset={offset} k={k} \
                          descending={descending}"
                     );
@@ -838,8 +839,9 @@ mod tests {
                     } = linear.expect("three runs happened");
                     let linear_rows = linear_rows.expect("legacy linear read");
 
-                    assert_eq!(
-                        counted_page.entries, linear_rows,
+                    assert_axis_entries_eq!(
+                        counted_page.entries,
+                        linear_rows,
                         "counted and linear paths diverged at n={n} k={k} offset={offset}"
                     );
                     assert_eq!(

@@ -193,7 +193,7 @@ mod tests {
         )
         .expect("verify");
         assert_eq!(result.skipped, 3);
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries_as_sum(&result.entries),
             &[
                 (70i64, b"g".to_vec()),
@@ -218,7 +218,7 @@ mod tests {
         )
         .expect("verify");
         assert_eq!(result.skipped, 4);
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries_as_sum(&result.entries),
             &[(50i64, b"e".to_vec()), (60, b"f".to_vec())]
         );
@@ -252,7 +252,7 @@ mod tests {
         )
         .expect("verify");
         assert_eq!(result.skipped, 8);
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries_as_sum(&result.entries),
             &[(20i64, b"b".to_vec()), (10, b"a".to_vec())],
             "the page is the walk's tail, shorter than k"
@@ -373,7 +373,7 @@ mod tests {
         )
         .expect("verify 4th biggest");
         assert_eq!(result.skipped, 3);
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries_as_sum(&result.entries),
             &[(70i64, b"g".to_vec())],
             "rank 4 descending of sums 10..100 is g(70)"
@@ -407,7 +407,7 @@ mod tests {
             )
             .expect("verify rank window");
             assert_eq!(result.skipped, rank_zero_based as u64);
-            assert_eq!(entries_as_sum(&result.entries), &[(*sum, key.to_vec())]);
+            assert_axis_entries_eq!(entries_as_sum(&result.entries), &[(*sum, key.to_vec())]);
         }
     }
 
@@ -458,7 +458,7 @@ mod tests {
         )
         .expect("verify mid-tie ascending");
         assert_eq!(result.skipped, 4);
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries_as_sum(&result.entries),
             &[
                 (50i64, b"t_c".to_vec()),
@@ -484,7 +484,7 @@ mod tests {
         )
         .expect("verify mid-tie descending");
         assert_eq!(result.skipped, 3);
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries_as_sum(&result.entries),
             &[
                 (50i64, b"t_d".to_vec()),
@@ -538,7 +538,7 @@ mod tests {
         )
         .expect("verify");
         assert_eq!(result.skipped, 1);
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries_as_sum(&result.entries),
             &[
                 (5i64, b"b".to_vec()),

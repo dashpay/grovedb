@@ -97,7 +97,7 @@ mod tests {
             .expect("populate");
 
         assert_same_root(&one, &split, gv);
-        assert_eq!(
+        assert_axis_entries_eq!(
             one.indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 5, true, None, gv)
                 .unwrap()
                 .expect("top_k"),
@@ -219,7 +219,7 @@ mod tests {
                 .expect("sequential");
         }
         assert_same_root(&one, &split, gv);
-        assert_eq!(
+        assert_axis_entries_eq!(
             one.indexed_count_top_k([TEST_LEAF, b"t", b"cidx"].as_ref(), 5, true, None, gv)
                 .unwrap()
                 .expect("top_k"),

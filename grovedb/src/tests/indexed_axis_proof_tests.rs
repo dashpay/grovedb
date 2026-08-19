@@ -166,8 +166,17 @@ mod tests {
         .expect("insert canonical target");
         db.insert_into_count_indexed_tree(
             [TEST_LEAF, b"pcit"].as_ref(),
-            b"alias",
+            b"middle",
             Element::new_reference(ReferencePathType::SiblingReference(b"target".to_vec())),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert middle primary reference");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"pcit"].as_ref(),
+            b"alias",
+            Element::new_reference(ReferencePathType::SiblingReference(b"middle".to_vec())),
             None,
             grove_version,
         )
@@ -176,7 +185,7 @@ mod tests {
 
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
         let direct = db
-            .indexed_count_top_k(path, 2, false, None, grove_version)
+            .indexed_count_top_k(path, 3, false, None, grove_version)
             .unwrap()
             .expect("direct indexed read");
         assert_eq!(direct[0].primary_key, b"alias".to_vec());
@@ -186,10 +195,10 @@ mod tests {
         );
 
         let proof = db
-            .prove_indexed_count_top_k(path, 2, false, None, grove_version)
+            .prove_indexed_count_top_k(path, 3, false, None, grove_version)
             .unwrap()
             .expect("prove indexed reference result");
-        let verified = GroveDb::verify_indexed_count_top_k(&proof, path, 2, false, grove_version)
+        let verified = GroveDb::verify_indexed_count_top_k(&proof, path, 3, false, grove_version)
             .expect("verify indexed reference result");
         let entries = entries_as_count(&verified.entries);
         assert_eq!(entries[0].primary_key, b"alias".to_vec());
@@ -200,13 +209,13 @@ mod tests {
         assert_eq!(verified.root_hash, root_hash(&db, grove_version));
 
         let paginated_proof = db
-            .prove_indexed_count_top_k_paginated(path, 2, 0, false, None, grove_version)
+            .prove_indexed_count_top_k_paginated(path, 3, 0, false, None, grove_version)
             .unwrap()
             .expect("prove paginated indexed reference result");
         let paginated = GroveDb::verify_indexed_count_top_k_paginated(
             &paginated_proof,
             path,
-            2,
+            3,
             0,
             false,
             grove_version,
@@ -226,11 +235,98 @@ mod tests {
             tampered.target_witnesses[0].nodes[0].commitment,
             IndexedTargetCommitment::Reference
         ));
+        assert_eq!(tampered.target_witnesses[0].nodes.len(), 3);
+        assert!(tampered.target_witnesses[0].nodes[0]
+            .authentication
+            .is_none());
+        assert!(tampered.target_witnesses[0].nodes[1..]
+            .iter()
+            .all(|node| node.authentication.is_some()));
         tampered.target_witnesses[0].nodes[0].commitment = IndexedTargetCommitment::Simple;
         let tampered = bincode::encode_to_vec(&tampered, config).expect("encode tampered proof");
         assert!(
-            GroveDb::verify_indexed_count_top_k(&tampered, path, 2, false, grove_version).is_err(),
+            GroveDb::verify_indexed_count_top_k(&tampered, path, 3, false, grove_version).is_err(),
             "changing a reference witness to a simple commitment must invalidate the proof"
+        );
+
+        let (mut tampered, _): (IndexedAxisRangeProof, _) =
+            bincode::decode_from_slice(&proof, config).expect("decode range envelope");
+        let direct_witness = tampered
+            .target_witnesses
+            .iter_mut()
+            .find(|witness| witness.nodes.len() == 1)
+            .expect("direct target witness");
+        let terminal = direct_witness
+            .nodes
+            .last_mut()
+            .expect("terminal target node");
+        terminal.value = Element::new_item(b"forged-value".to_vec())
+            .serialize(grove_version)
+            .expect("serialize forged value");
+        let tampered = bincode::encode_to_vec(&tampered, config).expect("encode tampered proof");
+        assert!(
+            GroveDb::verify_indexed_count_top_k(&tampered, path, 3, false, grove_version).is_err(),
+            "changing compact witness value bytes must break the secondary row's hash binding"
+        );
+
+        let (mut tampered, _): (IndexedAxisRangeProof, _) =
+            bincode::decode_from_slice(&proof, config).expect("decode range envelope");
+        let extra_terminal = tampered.target_witnesses[0]
+            .nodes
+            .last()
+            .expect("terminal target node")
+            .clone();
+        tampered.target_witnesses[0].nodes.push(extra_terminal);
+        let tampered = bincode::encode_to_vec(&tampered, config).expect("encode tampered proof");
+        assert!(
+            GroveDb::verify_indexed_count_top_k(&tampered, path, 3, false, grove_version).is_err(),
+            "compact witnesses must reject nodes appended after the terminal value"
+        );
+    }
+
+    /// Pin the compact-witness property that motivated reference-backed rows:
+    /// adding a result must not add another root-to-primary inclusion proof.
+    #[test]
+    fn indexed_target_witness_size_stays_compact_as_k_grows() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let keys: Vec<Vec<u8>> = (0..32)
+            .map(|i| format!("entry-{i:02}").into_bytes())
+            .collect();
+        let entries: Vec<(&[u8], u64)> = keys
+            .iter()
+            .enumerate()
+            .map(|(i, key)| (key.as_slice(), (i + 1) as u64))
+            .collect();
+        build_pcit(&db, grove_version, &entries);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+
+        let proof_4 = db
+            .prove_indexed_count_top_k(path, 4, true, None, grove_version)
+            .unwrap()
+            .expect("prove k=4");
+        let proof_16 = db
+            .prove_indexed_count_top_k(path, 16, true, None, grove_version)
+            .unwrap()
+            .expect("prove k=16");
+        GroveDb::verify_indexed_count_top_k(&proof_16, path, 16, true, grove_version)
+            .expect("compact proof verifies");
+
+        let marginal_per_row = (proof_16.len() - proof_4.len()) / 12;
+        eprintln!(
+            "compact indexed proof sizes: k=4 {} bytes, k=16 {} bytes, ~{} bytes/extra row",
+            proof_4.len(),
+            proof_16.len(),
+            marginal_per_row
+        );
+        assert!(
+            proof_16.len() < 4096,
+            "k=16 proof regressed to {} bytes; compact target witnesses must stay below 4 KiB",
+            proof_16.len()
+        );
+        assert!(
+            marginal_per_row < 256,
+            "compact target witnesses grew by ~{marginal_per_row} bytes per row"
         );
     }
 
@@ -251,7 +347,7 @@ mod tests {
         let result = GroveDb::verify_indexed_count_top_k(&proof, path, 3, true, grove_version)
             .expect("verify");
         let entries = entries_as_count(&result.entries);
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries,
             &[
                 (12u64, b"bob".to_vec()),
@@ -279,7 +375,7 @@ mod tests {
         let result = GroveDb::verify_indexed_count_top_k(&proof, path, 3, false, grove_version)
             .expect("verify");
         let entries = entries_as_count(&result.entries);
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries,
             &[
                 (1u64, b"carol".to_vec()),
@@ -316,7 +412,7 @@ mod tests {
         // Descending paged after skipping 2: c(3 was top-3? no — desc top-2 = f(6), e(5);
         // after skip-2 of f,e → d(4), c(3).
         let entries = entries_as_count(&result.entries);
-        assert_eq!(entries, &[(4u64, b"d".to_vec()), (3u64, b"c".to_vec())]);
+        assert_axis_entries_eq!(entries, &[(4u64, b"d".to_vec()), (3u64, b"c".to_vec())]);
         assert_eq!(result.skipped, 2);
         assert_eq!(result.root_hash, root_hash(&db, grove_version));
     }
@@ -366,7 +462,7 @@ mod tests {
             .expect("verify");
         let entries = entries_as_count(&result.entries);
         // Ascending all: 1,5,10.
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries,
             &[
                 (1u64, b"a".to_vec()),
@@ -397,7 +493,7 @@ mod tests {
         let result = GroveDb::verify_indexed_sum_top_k(&proof, path, 3, true, grove_version)
             .expect("verify");
         let entries = entries_as_sum(&result.entries);
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries,
             &[
                 (10i64, b"c".to_vec()),
@@ -425,7 +521,7 @@ mod tests {
         let result = GroveDb::verify_indexed_sum_top_k(&proof, path, 4, true, grove_version)
             .expect("verify");
         let entries = entries_as_sum(&result.entries);
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries,
             &[
                 (50i64, b"d".to_vec()),
@@ -465,7 +561,7 @@ mod tests {
                 .expect("verify");
         // Descending after skip-2: 6,5 skipped → d(4), c(3) returned.
         let entries = entries_as_sum(&result.entries);
-        assert_eq!(entries, &[(4i64, b"d".to_vec()), (3, b"c".to_vec())]);
+        assert_axis_entries_eq!(entries, &[(4i64, b"d".to_vec()), (3, b"c".to_vec())]);
         assert_eq!(result.skipped, 2);
     }
 
@@ -578,7 +674,7 @@ mod tests {
         let result = GroveDb::verify_indexed_sum_top_k(&proof, path, 3, true, grove_version)
             .expect("verify");
         let entries = entries_as_sum(&result.entries);
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries,
             &[
                 (20i64, b"c".to_vec()),
@@ -613,7 +709,7 @@ mod tests {
         let result = GroveDb::verify_indexed_avg_top_k(&proof, path, 3, true, grove_version)
             .expect("verify");
         let entries = entries_as_avg(&result.entries);
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries,
             &[
                 (20i128 * SCALE, b"c".to_vec()),
@@ -729,7 +825,7 @@ mod tests {
         assert_eq!(entries.len(), 2);
         const SCALE: i128 = grovedb_element::indexed::AVG_FIXED_POINT_SCALE;
         // Descending top-3 by avg: d(30), c(20), b(10). After skip-1 → c, b.
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries,
             &[(20i128 * SCALE, b"c".to_vec()), (10 * SCALE, b"b".to_vec())]
         );
@@ -982,7 +1078,7 @@ mod tests {
         let result = GroveDb::verify_indexed_count_top_k(&proof, path, 2, true, grove_version)
             .expect("verify");
         let entries = entries_as_count(&result.entries);
-        assert_eq!(entries, &[(9u64, b"b".to_vec()), (4, b"a".to_vec())]);
+        assert_axis_entries_eq!(entries, &[(9u64, b"b".to_vec()), (4, b"a".to_vec())]);
         assert_eq!(result.root_hash, root_hash(&db, grove_version));
     }
 
@@ -1916,7 +2012,7 @@ mod tests {
         let result = GroveDb::verify_indexed_count_query(&proof, path, q, Some(3), grove_version)
             .expect("verify");
         let entries = entries_as_count(&result.entries);
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries,
             &[
                 (10u64, b"c".to_vec()),
@@ -1942,7 +2038,7 @@ mod tests {
         let result = GroveDb::verify_indexed_sum_query(&proof, path, q, Some(3), grove_version)
             .expect("verify");
         let entries = entries_as_sum(&result.entries);
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries,
             &[
                 (-3i64, b"a".to_vec()),
@@ -2053,7 +2149,7 @@ mod tests {
         let result = GroveDb::verify_indexed_sum_top_k(&proof, path, 3, true, grove_version)
             .expect("verify");
         let entries = entries_as_sum(&result.entries);
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries,
             &[
                 (15i64, b"c".to_vec()),
@@ -2604,7 +2700,7 @@ mod tests {
             .expect("prove");
         let result = GroveDb::verify_indexed_count_top_k(&proof, path, 1, true, grove_version)
             .expect("verify");
-        assert_eq!(entries_as_count(&result.entries), &[(99u64, b"b".to_vec())]);
+        assert_axis_entries_eq!(entries_as_count(&result.entries), &[(99u64, b"b".to_vec())]);
     }
 
     // ---------- top_k proof-bytes / path rejections ----------
@@ -2788,7 +2884,7 @@ mod tests {
         let result =
             GroveDb::verify_indexed_count_top_k_paginated(&proof, path, 2, 1, false, grove_version)
                 .expect("verify");
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries_as_count(&result.entries),
             &[(2u64, b"b".to_vec()), (3u64, b"c".to_vec())]
         );
@@ -2921,7 +3017,7 @@ mod tests {
             GroveDb::verify_indexed_count_top_k_paginated(&proof, path, 2, 1, true, grove_version)
                 .expect("verify");
         // Descending: d(4), c(3), b(2), a(1). Skip 1 (d), take 2: c, b.
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries_as_count(&result.entries),
             &[(3u64, b"c".to_vec()), (2u64, b"b".to_vec())]
         );
@@ -3227,7 +3323,14 @@ mod tests {
             .expect("verify");
         let got = entries_as_count(&result.entries);
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0], (5u64, b"alice".to_vec()));
+        assert_eq!(got[0].ordering_value, 5u64);
+        assert_eq!(got[0].primary_key, b"alice".to_vec());
+        assert_eq!(
+            got[0].value,
+            db.get_raw(path.into(), b"alice", None, grove_version)
+                .unwrap()
+                .expect("primary value")
+        );
     }
 
     #[test]

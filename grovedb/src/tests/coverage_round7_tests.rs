@@ -1698,7 +1698,7 @@ mod tests {
         assert_eq!(top.len(), 2);
         // The partial batch must have mirrored the DERIVED count of the
         // new child into the secondary, ahead of the existing "a" (3).
-        assert_eq!(top, vec![(9, b"b".to_vec()), (3, b"a".to_vec())]);
+        assert_axis_entries_eq!(top, vec![(9, b"b".to_vec()), (3, b"a".to_vec())]);
         assert_verify_passes(&db, grove_version);
     }
 

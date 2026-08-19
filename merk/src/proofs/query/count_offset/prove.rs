@@ -65,7 +65,6 @@ where
         offset: u64,
         limit: Option<u64>,
         left_to_right: bool,
-        allow_raw_references: bool,
         tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> CostResult<ProverCountOffsetResult, Error> {
@@ -85,7 +84,6 @@ where
             limit_remaining: limit,
             returned: 0,
             left_to_right,
-            allow_raw_references,
         };
         cost_return_on_error!(
             &mut cost,

@@ -250,7 +250,7 @@ mod tests {
             .indexed_sum_top_k(path.as_ref(), 10, true, None, gv)
             .unwrap()
             .expect("sum top_k");
-        assert_eq!(
+        assert_axis_entries_eq!(
             by_sum,
             vec![
                 (30, b"a".to_vec()),
@@ -266,7 +266,7 @@ mod tests {
             .indexed_count_top_k(path.as_ref(), 10, false, None, gv)
             .unwrap()
             .expect("count top_k");
-        assert_eq!(
+        assert_axis_entries_eq!(
             by_count,
             vec![(1, b"a".to_vec()), (1, b"b".to_vec()), (1, b"c".to_vec())],
             "the count axis must be populated too, not just the sum axis"
@@ -311,7 +311,7 @@ mod tests {
         .expect("batch write into single-axis PCPSIT");
 
         let path = [TEST_LEAF, b"idx"];
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_sum_top_k(path.as_ref(), 10, true, None, gv)
                 .unwrap()
                 .expect("sum top_k"),
@@ -372,14 +372,14 @@ mod tests {
         .unwrap()
         .expect("update sum only");
 
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_sum_top_k(path.as_ref(), 10, true, None, gv)
                 .unwrap()
                 .expect("sum top_k"),
             vec![(99, b"a".to_vec())],
             "the sum axis must reflect the new sum, with no stale row left behind"
         );
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_count_top_k(path.as_ref(), 10, true, None, gv)
                 .unwrap()
                 .expect("count top_k"),
@@ -513,7 +513,7 @@ mod tests {
         .unwrap()
         .expect("batch delete from PSIT");
 
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 10, true, None, gv)
                 .unwrap()
                 .expect("sum top_k"),
@@ -566,13 +566,13 @@ mod tests {
                 .len(),
             1
         );
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 10, true, None, gv)
                 .unwrap()
                 .expect("psit"),
             vec![(12, b"y".to_vec())]
         );
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_sum_top_k([TEST_LEAF, b"idx"].as_ref(), 10, true, None, gv)
                 .unwrap()
                 .expect("pcpsit sum"),
@@ -605,7 +605,7 @@ mod tests {
             .unwrap()
             .expect("batch with negative sums");
 
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_sum_top_k([TEST_LEAF, b"idx"].as_ref(), 10, false, None, gv)
                 .unwrap()
                 .expect("ascending sum top_k"),
@@ -671,14 +671,14 @@ mod tests {
         .unwrap()
         .expect("batch write into the nested PCPSIT");
 
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_sum_top_k([TEST_LEAF, b"mid", b"idx"].as_ref(), 10, true, None, gv)
                 .unwrap()
                 .expect("nested sum top_k"),
             vec![(15, b"a".to_vec())],
             "the nested PCPSIT's sum axis must be mirrored through the intermediate level"
         );
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"mid", b"idx"].as_ref(), 10, true, None, gv)
                 .unwrap()
                 .expect("nested count top_k"),
@@ -810,7 +810,7 @@ mod tests {
         .unwrap()
         .expect("insert_if_not_exists into an indexed primary");
 
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_sum_top_k([TEST_LEAF, b"idx"].as_ref(), 10, true, None, gv)
                 .unwrap()
                 .expect("sum top_k"),
@@ -1244,7 +1244,7 @@ mod tests {
             avg_after[0].value,
             Element::CountSumTree(_, 2, 10, _)
         ));
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_sum_top_k([TEST_LEAF, b"idx"].as_ref(), 5, true, None, gv)
                 .unwrap()
                 .expect("sum top_k"),
@@ -1414,6 +1414,80 @@ mod tests {
         }
     }
 
+    /// Every direct non-Merk append rewrites its parent element's commitment
+    /// without changing the PCIT ordering value. The canonical reference row
+    /// must therefore be refreshed in place for all four APIs.
+    #[test]
+    fn every_direct_non_merk_append_refreshes_its_indexed_row() {
+        let gv = GroveVersion::latest();
+
+        let pcit_with_child = |key: &[u8], child: Element| {
+            let db = make_test_grovedb(gv);
+            make_pcit(&db, b"cidx", gv);
+            db.insert_into_count_indexed_tree([TEST_LEAF, b"cidx"].as_ref(), key, child, None, gv)
+                .unwrap()
+                .expect("insert non-Merk indexed child");
+            db
+        };
+
+        let db = pcit_with_child(b"mmr", Element::empty_mmr_tree());
+        db.mmr_tree_append(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"mmr",
+            b"leaf".to_vec(),
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("MMR append");
+        assert_clean(&db, gv);
+
+        let db = pcit_with_child(
+            b"bulk",
+            Element::empty_bulk_append_tree(4).expect("bulk tree"),
+        );
+        db.bulk_append(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"bulk",
+            b"value".to_vec(),
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("bulk append");
+        assert_clean(&db, gv);
+
+        let db = pcit_with_child(b"dense", Element::empty_dense_tree(4));
+        db.dense_tree_insert(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"dense",
+            b"value".to_vec(),
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("dense insert");
+        assert_clean(&db, gv);
+
+        let db = pcit_with_child(
+            b"commitment",
+            Element::empty_commitment_tree(4).expect("commitment tree"),
+        );
+        db.commitment_tree_insert_raw(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"commitment",
+            [1u8; 32],
+            [2u8; 32],
+            [3u8; 32],
+            vec![0u8; 216],
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("commitment insert");
+        assert_clean(&db, gv);
+    }
+
     /// A deep write *under* a child of an indexed primary keeps the secondary
     /// in sync on its own, through both the generic and the batch path.
     ///
@@ -1439,7 +1513,7 @@ mod tests {
         )
         .unwrap()
         .expect("child count tree");
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, gv)
                 .unwrap()
                 .expect("top_k"),
@@ -1457,7 +1531,7 @@ mod tests {
         )
         .unwrap()
         .expect("a deep generic write under the child is allowed");
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, gv)
                 .unwrap()
                 .expect("top_k"),
@@ -1478,7 +1552,7 @@ mod tests {
         )
         .unwrap()
         .expect("the same write through the batch path");
-        assert_eq!(
+        assert_axis_entries_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, gv)
                 .unwrap()
                 .expect("top_k"),

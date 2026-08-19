@@ -144,7 +144,7 @@ mod tests {
             db.root_hash(None, gv).unwrap().expect("root hash"),
             "the reconstructed root must equal the live GroveDB root"
         );
-        assert_eq!(
+        assert_axis_entries_eq!(
             count_entries(&result.entries),
             &vec![(1u64, b"y".to_vec()), (1u64, b"x".to_vec())],
             "descending count order, ties broken by descending key"
@@ -242,7 +242,7 @@ mod tests {
         let AxisEntries::Sum(entries) = &result.entries else {
             panic!("expected sum entries");
         };
-        assert_eq!(
+        assert_axis_entries_eq!(
             entries.as_slice(),
             [(9i64, b"y".to_vec()), (-4i64, b"x".to_vec())],
             "descending sum order, negatives sorting below positives"
@@ -342,7 +342,7 @@ mod tests {
             db.root_hash(None, gv).unwrap().expect("root hash"),
             "the reconstructed root must equal the live GroveDB root"
         );
-        assert_eq!(
+        assert_axis_entries_eq!(
             count_entries(&result.entries),
             &vec![(1u64, b"y".to_vec()), (1u64, b"x".to_vec())],
         );

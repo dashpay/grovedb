@@ -152,19 +152,51 @@ The secondary Merk holds one entry per element in the primary, keyed by:
 
 ```text
 secondary_key = count_be_bytes(8) ‖ original_key
-secondary_val = ()        // empty; the original_key is encoded in the key
+secondary_val = ReferenceWithSumItem(
+                    SiblingReference(original_key),
+                    max_reference_hop = Some(1),
+                    sum = count_value,
+                )
 ```
 
 - **`count_be_bytes`** is the element's `count_value` encoded big-endian, 8
   bytes. Big-endian gives natural numeric order under lexicographic
   comparison, so right-to-left iteration yields highest-count-first.
 - **`original_key`** is appended to break ties among elements with equal
-  counts and to make each secondary key unique and reversible.
+  counts and to make each secondary key unique and reversible. It stays in the
+  key because ordering, uniqueness, and boundary decoding must not depend on
+  resolving the row value.
 
-The secondary Merk uses node feature type `ProvableCountedMerkNode(1)` —
-every entry contributes a count of `1`, so the aggregated count at the
-secondary's root equals the total number of indexed entries (which also
-equals the number of entries in the primary).
+#### Canonical reference rows
+
+Every secondary row is a canonical one-hop combined reference back to its
+primary entry. Its committed value hash is:
+
+```text
+combine_hash(H(reference bytes), primary_node_committed_value_hash)
+```
+
+The binding is deliberately to the immediate primary node, not directly to a
+terminal value reached through another reference. This keeps refresh local:
+every operation that rewrites the primary entry also refreshes its rows. Reads
+then apply ordinary GroveDB reference semantics and return the terminal value.
+This immediate binding is dedicated indexed-tree behavior; ordinary user
+references retain their existing terminal-reference rules.
+
+Because the row binds the primary commitment, value-only updates and deep
+subtree-root changes rewrite the row even when its ordering aggregates stay
+unchanged. This write amplification is intentional and included in cost
+tracking.
+
+`SiblingReference` keeps row size independent of grove depth. The secondary's
+physical prefix (`blake3(primary_prefix ‖ axis_tag)`) is not a GroveDB path, so
+the row is interpreted with the indexed primary as its purpose-built logical
+origin rather than by manufacturing a fake `SubtreePath`.
+
+The secondary Merk uses node feature type
+`ProvableCountedAndProvableSummedMerkNode(1, count_value)`. Every row therefore
+contributes count `1`, while its carried sum preserves the count band's total
+as an authenticated scalar.
 
 The reason the secondary is a *provable* count tree (rather than the
 simpler `BasicMerkNode`) is that this lets the existing
@@ -426,8 +458,8 @@ Merk is not touched. The verifier receives the primary's root hash plus a
 ### Top-k by count
 
 ```rust
-// Shipped API on `GroveDb`:
-let entries: Vec<(u64, Vec<u8>)> = db
+// Public API on `GroveDb`:
+let entries: Vec<IndexedAxisEntry<u64>> = db
     .indexed_count_top_k(path, k, /* descending: */ true, transaction, grove_version)?
     .expect("top-k");
 
@@ -436,14 +468,11 @@ let proof_bytes = db
     .prove_indexed_count_top_k(path, k, /* descending: */ true, transaction, grove_version)?
     .expect("prove");
 let result = GroveDb::verify_indexed_count_top_k(&proof_bytes, &path, k)?;
-// result.entries: Vec<(u64, Vec<u8>)>, result.root_hash: [u8; 32]
+// result.entries: Vec<IndexedAxisEntry<u64>>, result.root_hash: [u8; 32]
 ```
 
-The query returns `(count, key)` pairs. To resolve a primary value the
-caller follows up with `db.get(path, key, ...)`; the dedicated proof
-shape carries only the secondary range proof + a 32-byte attestation
-of the primary's root hash. Workloads that don't need values
-(leaderboards, ranking views) pay nothing for data they wouldn't read.
+Each entry contains `ordering_value`, `primary_key`, and the resolved terminal
+`Element`; callers do not perform a second primary lookup per result.
 
 Internally:
 
@@ -453,19 +482,24 @@ Internally:
 3. Run a **descending range query** with `limit = k` over the full
    secondary keyspace. This yields the k highest-count entries, with a
    standard Merk range proof.
-4. *(only if `resolve_values: true`)* For each `(c_be ‖ k)` in the
-   result, open the **primary** Merk and query for `k`. Each resolution
-   is one extra Merk read with one extra Merk inclusion proof.
+4. Resolve each row and attach a compact target-shape witness. The verifier
+   reconstructs the immediate primary commitment directly from the target
+   bytes and shape data, then checks it against the hash already committed by
+   the secondary row. Reference-shaped primaries carry a bounded chain to the
+   terminal value; nodes outside the indexed primary retain ordinary root
+   authentication.
 
-The default keeps the proof minimal: secondary range proof + a 32-byte
-attestation of the primary's root hash. Workloads that don't need the
-values (leaderboards, ranking views, "top N usernames") pay nothing for
-data they wouldn't read.
+For ordinary direct primary values, the target witness does not repeat a
+GroveDB inclusion proof per row. The canonical row's combined-reference hash is
+the authentication anchor, so proof growth is the resolved value plus its shape
+commitment rather than another root-to-primary path. A primary that is itself a
+reference pays for authentication only after its chain leaves that immediate
+row binding.
 
 ### Range by count
 
 ```rust
-let entries: Vec<(u64, Vec<u8>)> = db
+let entries: Vec<IndexedAxisEntry<u64>> = db
     .indexed_count_range(
         path,
         min,                       // u64, inclusive
@@ -601,14 +635,18 @@ existing GroveDB layer proofs, with these additions:
 graph TD
     L0["Layer proof: root → … → CountIndexedTree element<br/><i>standard, unchanged</i>"]
     EL["Element bytes: (primary_root_key, secondary_root_key, count_value, flags)<br/>actual_value_hash = Blake3(varint(len) || element_bytes)"]
-    L1A["Primary Merk proof<br/><i>only if primary values were touched</i>"]
+    PR["Primary root hash attestation"]
     L1B["Secondary Merk range proof<br/><i>over (count_be ‖ key) keys</i>"]
+    TW["Per-row compact target witness<br/><i>value bytes + commitment shape; root proofs only after reference hops</i>"]
+    ROW["Canonical secondary row<br/>binds H(reference bytes) + immediate primary commitment"]
     COMB["combined_value_hash = Blake3(actual_value_hash || primary_root_hash || secondary_root_hash)<br/><i>order is primary, then secondary</i>"]
 
     L0 --> EL
-    EL --> L1A
+    EL --> PR
     EL --> L1B
-    L1A --> COMB
+    L1B --> ROW
+    TW --> ROW
+    PR --> COMB
     L1B --> COMB
 ```
 
@@ -616,16 +654,19 @@ Verifier obligations:
 
 - Parent layer verifies the element bytes (carrying both root keys) up to
   the GroveDB root.
-- Each Merk proof produces its own root hash (`primary_root_hash` and/or
-  `secondary_root_hash`).
+- The secondary Merk proof produces `secondary_root_hash`; the envelope carries
+  the untouched `primary_root_hash` attestation already committed by the outer
+  indexed-tree element.
+- Every returned row is checked for its canonical reference bytes and binds the
+  immediate primary commitment reconstructed from its target witness.
 - The verifier reconstructs `combined_value_hash` from
   `actual_value_hash`, `primary_root_hash`, `secondary_root_hash` (in
   that order) and checks it matches the value hash committed in the
   parent layer.
 
-Both root hashes must be made available to the verifier — when a query
-touches only one of the two trees, the proof carries the *other* tree's
-root hash as a 32-byte attestation (it is hashed but not traversed).
+Both root hashes must be available to the verifier. The primary root is hashed
+but not traversed for direct rows; the secondary row itself authenticates their
+immediate primary commitments.
 
 ## When to use which element type
 
