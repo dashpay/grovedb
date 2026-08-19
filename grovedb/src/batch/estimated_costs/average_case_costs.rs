@@ -47,11 +47,13 @@ impl GroveOp {
         &self,
         key: &KeyInfo,
         layer_element_estimates: &EstimatedLayerInformation,
-        // The declared chunk power of the commitment tree a
-        // `CommitmentTreeInsert` op targets (from the tree's own layer in
-        // the estimation paths), or `None` to charge the constructor-
-        // enforced cap. Ignored by every other op type.
-        ct_chunk_power: Option<u8>,
+        // The declared chunk power of the append-only tree this op targets
+        // — a `CommitmentTreeInsert`'s commitment tree or a
+        // `PrivateDocumentStoreInsert`'s store — read from that tree's own
+        // layer in the estimation paths. Both types size their dense-recompute
+        // and compaction terms by `2^chunk_power`, which the op itself does
+        // not carry. Ignored by every other op type.
+        append_tree_chunk_power: Option<u8>,
         propagate: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -219,7 +221,7 @@ impl GroveOp {
                     payload,
                     key,
                     layer_element_estimates,
-                    ct_chunk_power,
+                    append_tree_chunk_power,
                     propagate,
                     grove_version,
                 )
@@ -288,50 +290,64 @@ impl GroveOp {
                 })
             }
             GroveOp::PrivateDocumentStoreInsert { entry } => {
-                // Cost of updating parent element in the Merk. The entry
-                // length is the store's committed entry_size, so the added
-                // storage bytes are entry-size-parametrized.
+                // The dense-recompute and compaction terms scale with
+                // `2^chunk_power`, which the op does not carry, so the
+                // store's own layer MUST be declared with
+                // `TreeType::PrivateDocumentStore(chunk_power)` — the same
+                // declare-your-layers contract `CommitmentTreeInsert`
+                // follows. A silent fallback would either under-bound or
+                // grotesquely over-reserve; both are worse than a loud error
+                // at integration time.
+                let Some(chunk_power) = append_tree_chunk_power else {
+                    return Err(Error::PathNotFoundInCacheForEstimatedCosts(
+                        "PrivateDocumentStoreInsert estimation requires the store's own layer \
+                         declared with TreeType::PrivateDocumentStore(chunk_power) in the \
+                         estimated layer information"
+                            .to_string(),
+                    ))
+                    .wrap_with_cost(OperationCost::default());
+                };
                 let item_cost = GroveDb::average_case_merk_replace_tree(
                     key,
                     layer_element_estimates,
-                    TreeType::PrivateDocumentStore(0),
+                    TreeType::PrivateDocumentStore(chunk_power),
                     propagate,
                     grove_version,
                 );
-                // Additional cost: buffer write + hashing. Most appends only
-                // write to the buffer; compaction happens once per epoch and
-                // is amortized away here.
-                //
-                // Unlike the flat constant this arm previously used, the
-                // dominant term is the dense-buffer root walk `append`
-                // performs on every insert (two hashes per filled position).
-                // That scales with the committed `chunk_power`, which the op
-                // does not carry, so this models a typical small store
-                // (`chunk_power = 8`, i.e. a 255-entry buffer averaging
-                // half-full). This is an average-case estimate, NOT a bound —
-                // `worst_case_cost` carries the real upper bound over the
-                // whole permitted configuration range.
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                // `entry.len()` IS the store's committed entry size — the
+                // append path rejects any other length — so the byte terms
+                // need no separate declaration.
                 let entry_size = entry.len() as u32;
-                /// Assumed typical buffer occupancy (half of a
-                /// `chunk_power = 8` buffer), two hashes per filled position.
-                const AVG_DENSE_HASHES: u32 = 128 * 2;
-                /// Bulk state root + composite config-binding pds_state root
-                /// + the committed-config hash paid when opening the store.
-                const AVG_ROOT_AND_CONFIG_HASHES: u32 = 3;
-                const AVG_HASH_CALLS: u32 = AVG_DENSE_HASHES + AVG_ROOT_AND_CONFIG_HASHES;
+                let epoch_entries: u32 = 1u32 << chunk_power.min(16) as u32;
+                // Amortized over one epoch: every entry is written once to
+                // the buffer, and once more into the chunk blob when the
+                // epoch compacts.
+                let amortized_compaction_bytes = entry_size;
+                // The dense-buffer root walk costs two hashes per filled
+                // position and runs on every append, so across an epoch it
+                // averages half the buffer.
+                let avg_dense_hashes = epoch_entries.saturating_sub(1);
+                // Bulk state root + composite pds_state root + the
+                // committed-config hash paid when the store is opened.
+                const ROOT_AND_CONFIG_HASHES: u32 = 3;
+                // MMR push work, amortized across the epoch it serves.
+                const AMORTIZED_MMR_HASHES: u32 = 1;
                 item_cost.add_cost(OperationCost {
                     seek_count: 1, // 1 buffer entry write
                     storage_cost: StorageCost {
-                        added_bytes: entry_size,
+                        added_bytes: entry_size.saturating_add(amortized_compaction_bytes),
                         replaced_bytes: 0,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
                     storage_loaded_bytes: 0,
-                    hash_node_calls: AVG_HASH_CALLS,
+                    hash_node_calls: avg_dense_hashes
+                        .saturating_add(ROOT_AND_CONFIG_HASHES)
+                        .saturating_add(AMORTIZED_MMR_HASHES),
                     sinsemilla_hash_calls: 0,
                 })
             }
+
             GroveOp::DenseTreeInsert { value } => {
                 // Cost of updating parent element in the Merk
                 let item_cost = GroveDb::average_case_merk_replace_tree(
@@ -443,7 +459,7 @@ impl GroveOp {
         payload: &[u8],
         key: &KeyInfo,
         layer_element_estimates: &EstimatedLayerInformation,
-        ct_chunk_power: Option<u8>,
+        append_tree_chunk_power: Option<u8>,
         propagate: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -464,7 +480,7 @@ impl GroveOp {
                 payload,
                 key,
                 layer_element_estimates,
-                ct_chunk_power,
+                append_tree_chunk_power,
                 propagate,
                 grove_version,
             ),
@@ -531,7 +547,7 @@ impl GroveOp {
         payload: &[u8],
         key: &KeyInfo,
         layer_element_estimates: &EstimatedLayerInformation,
-        ct_chunk_power: Option<u8>,
+        append_tree_chunk_power: Option<u8>,
         propagate: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -542,7 +558,7 @@ impl GroveOp {
         // other estimated op follows. A silent fallback here would either
         // under-bound (too small) or grotesquely over-reserve (the physical
         // ceiling), both worse than a loud error at integration time.
-        let Some(chunk_power) = ct_chunk_power else {
+        let Some(chunk_power) = append_tree_chunk_power else {
             return Err(Error::PathNotFoundInCacheForEstimatedCosts(
                 "CommitmentTreeInsert estimation requires the commitment tree's own layer \
                  declared with TreeType::CommitmentTree(chunk_power) in the estimated layer \
@@ -760,12 +776,16 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             // `TreeType::CommitmentTree(chunk_power)` — as Dash Platform
             // does — the estimate uses the tree's ACTUAL epoch scale
             // instead of the constructor-enforced cap.
-            let ct_chunk_power = if matches!(op, GroveOp::CommitmentTreeInsert { .. }) {
+            let append_tree_chunk_power = if matches!(
+                op,
+                GroveOp::CommitmentTreeInsert { .. } | GroveOp::PrivateDocumentStoreInsert { .. }
+            ) {
                 crate::batch::batch_structure::keyless_op_tree_key(&key).and_then(|tree_key| {
                     let mut tree_path = path.clone();
                     tree_path.push(KeyInfo::KnownKey(tree_key.to_vec()));
                     match self.paths.get(&tree_path).map(|layer| layer.tree_type) {
-                        Some(TreeType::CommitmentTree(chunk_power)) => Some(chunk_power),
+                        Some(TreeType::CommitmentTree(chunk_power))
+                        | Some(TreeType::PrivateDocumentStore(chunk_power)) => Some(chunk_power),
                         _ => None,
                     }
                 })
@@ -777,7 +797,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                 op.average_case_cost(
                     &key,
                     layer_element_estimates,
-                    ct_chunk_power,
+                    append_tree_chunk_power,
                     false,
                     grove_version
                 )
@@ -1968,7 +1988,7 @@ mod tests {
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
         let cost = op
-            .average_case_cost(&key, &layer_info, false, grove_version)
+            .average_case_cost(&key, &layer_info, Some(4), false, grove_version)
             .cost_as_result()
             .expect("expected cost for private document store insert");
         // PrivateDocumentStoreInsert mirrors BulkAppend: parent replace cost
@@ -1996,12 +2016,42 @@ mod tests {
             entry: vec![42u8; 128],
         };
         let cost_large = op_large
-            .average_case_cost(&key, &layer_info, false, grove_version)
+            .average_case_cost(&key, &layer_info, Some(4), false, grove_version)
             .cost_as_result()
             .expect("expected cost for larger entry");
+
+        // Undeclared layer must fail loudly rather than silently guessing a
+        // chunk power, matching the CommitmentTreeInsert contract.
+        assert!(
+            op.average_case_cost(&key, &layer_info, None, false, grove_version)
+                .cost_as_result()
+                .is_err(),
+            "estimation without a declared PrivateDocumentStore layer must error"
+        );
+
+        // The estimate tracks the declared chunk power: a larger epoch means
+        // a deeper dense-buffer walk.
+        let small = op
+            .average_case_cost(&key, &layer_info, Some(2), false, grove_version)
+            .cost_as_result()
+            .expect("cost at chunk_power 2");
+        let big = op
+            .average_case_cost(&key, &layer_info, Some(10), false, grove_version)
+            .cost_as_result()
+            .expect("cost at chunk_power 10");
+        assert!(
+            big.hash_node_calls > small.hash_node_calls,
+            "a larger declared epoch must cost more hashing ({} vs {})",
+            big.hash_node_calls,
+            small.hash_node_calls
+        );
+        // Each entry is written TWICE across its lifetime: once into the
+        // dense buffer and once more into the chunk blob when the epoch
+        // compacts. The amortized per-append charge is therefore 2x the
+        // entry size, so doubling the entry grows added_bytes by 2 x 64.
         assert_eq!(
             cost_large.storage_cost.added_bytes - cost.storage_cost.added_bytes,
-            64
+            128
         );
     }
 
