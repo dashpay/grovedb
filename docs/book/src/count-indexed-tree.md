@@ -152,19 +152,64 @@ The secondary Merk holds one entry per element in the primary, keyed by:
 
 ```text
 secondary_key = count_be_bytes(8) ‖ original_key
-secondary_val = ()        // empty; the original_key is encoded in the key
+secondary_val = ReferenceWithSumItem(
+                    SiblingReference(original_key),
+                    max_reference_hop = Some(1),
+                    sum = count_value,
+                )
 ```
 
 - **`count_be_bytes`** is the element's `count_value` encoded big-endian, 8
   bytes. Big-endian gives natural numeric order under lexicographic
   comparison, so right-to-left iteration yields highest-count-first.
 - **`original_key`** is appended to break ties among elements with equal
-  counts and to make each secondary key unique and reversible.
+  counts and to make each secondary key unique and reversible. It stays
+  in the key even though the row also names it: the key is what orders
+  and de-duplicates, and it has to be decodable on its own.
 
-The secondary Merk uses node feature type `ProvableCountedMerkNode(1)` —
-every entry contributes a count of `1`, so the aggregated count at the
-secondary's root equals the total number of indexed entries (which also
-equals the number of entries in the primary).
+<a id="secondary-rows"></a>
+
+### Secondary rows
+
+A row is a **canonical one-hop reference back to its primary entry**,
+written as a *combined* reference so the row's committed value hash is
+
+```text
+combine_hash(H(reference bytes), primary_node_committed_value_hash)
+```
+
+Three consequences worth stating plainly:
+
+- **Reads and proofs return the primary value.** The reference is
+  resolved and authenticated as part of the axis proof, so a top-k result
+  carries the values, not just pointers to them.
+- **The binding is to the IMMEDIATE primary node**, not to a terminal
+  reached by following a chain. That keeps the invariant local: the only
+  thing that can staleness a row is a write to the primary entry itself,
+  which is exactly the event the mirror is driven by. This is dedicated
+  indexed-tree behaviour — ordinary GroveDB references keep their normal
+  terminal semantics, and an ordinary `max_hop = 1` reference pointing at
+  another reference remains ill-formed.
+- **Value-only updates now write.** Because the row binds a commitment,
+  an update that changes a primary entry's bytes without moving its
+  `count_value` still rewrites the row on every configured axis. So does
+  a deep mutation that only moves a child subtree's root. This write
+  amplification is intentional and is charged in the cost estimates.
+
+`SiblingReference` rather than an absolute path keeps a row's size
+independent of how deep the grove is. The reference is interpreted
+against the row's **logical origin** — the indexed primary's path — not
+against the derived storage prefix the secondary physically lives under.
+That prefix is `blake3(primary_prefix ‖ axis_tag)` and is not a GroveDB
+path at all, so resolution of a row's reference is purpose-built
+machinery rather than the ordinary path-keyed reference following.
+
+The secondary Merk uses node feature type
+`ProvableCountedAndProvableSummedMerkNode(1, count_value)` — every entry
+contributes a count of `1`, so the aggregated count at the secondary's
+root equals the total number of indexed entries (which also equals the
+number of entries in the primary), while the sum half makes a band TOTAL
+answerable as one committed scalar.
 
 The reason the secondary is a *provable* count tree (rather than the
 simpler `BasicMerkNode`) is that this lets the existing
@@ -439,11 +484,7 @@ let result = GroveDb::verify_indexed_count_top_k(&proof_bytes, &path, k)?;
 // result.entries: Vec<(u64, Vec<u8>)>, result.root_hash: [u8; 32]
 ```
 
-The query returns `(count, key)` pairs. To resolve a primary value the
-caller follows up with `db.get(path, key, ...)`; the dedicated proof
-shape carries only the secondary range proof + a 32-byte attestation
-of the primary's root hash. Workloads that don't need values
-(leaderboards, ranking views) pay nothing for data they wouldn't read.
+The query returns `(count, key)` pairs.
 
 Internally:
 
@@ -453,14 +494,17 @@ Internally:
 3. Run a **descending range query** with `limit = k` over the full
    secondary keyspace. This yields the k highest-count entries, with a
    standard Merk range proof.
-4. *(only if `resolve_values: true`)* For each `(c_be ‖ k)` in the
-   result, open the **primary** Merk and query for `k`. Each resolution
-   is one extra Merk read with one extra Merk inclusion proof.
+4. Resolve each returned row through its reference and emit a
+   reference-aware proof node carrying the primary value. This costs no
+   extra Merk inclusion proof: a row IS a reference to its primary
+   entry, and the resolved value is folded into the row's own committed
+   hash (see [Secondary rows](#secondary-rows)).
 
-The default keeps the proof minimal: secondary range proof + a 32-byte
-attestation of the primary's root hash. Workloads that don't need the
-values (leaderboards, ranking views, "top N usernames") pay nothing for
-data they wouldn't read.
+The verifier authenticates the resolved value, and with it the row's
+reference path, hop budget and carried sum, by rebuilding the canonical
+row the primary value implies and comparing it against what the proof
+committed. A row filed under one key whose reference points at another
+cannot verify.
 
 ### Range by count
 

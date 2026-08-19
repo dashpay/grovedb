@@ -911,8 +911,11 @@ impl GroveDb {
                         format!("axis descent: secondary count-offset proof failed: {e}"),
                     )
                 })?;
-                let entries =
-                    decode_axis_entries_from_count_offset_items(axis, &res.returned_items)?;
+                let entries = decode_axis_entries_from_count_offset_items(
+                    axis,
+                    &res.returned_items,
+                    grove_version,
+                )?;
                 (
                     res.root_hash,
                     AxisWalkResult::Entries {
@@ -957,8 +960,11 @@ impl GroveDb {
                         ),
                     ));
                 }
-                let entries =
-                    decode_axis_entries_from_count_offset_items(axis, &res.returned_items)?;
+                let entries = decode_axis_entries_from_count_offset_items(
+                    axis,
+                    &res.returned_items,
+                    grove_version,
+                )?;
                 let yielded_key = entries.first_original_key().map(|k| k.to_vec());
                 if yielded_key.as_deref() != Some(key.as_slice()) {
                     return Err(Error::InvalidProof(
@@ -1010,7 +1016,8 @@ impl GroveDb {
                                 format!("axis descent: secondary range proof failed: {e}"),
                             )
                         })?;
-                    let entries = decode_axis_entries_from_result_set(axis, &res.result_set)?;
+                    let entries =
+                        decode_axis_entries_from_result_set(axis, &res.result_set, grove_version)?;
                     (
                         root,
                         AxisWalkResult::Entries {

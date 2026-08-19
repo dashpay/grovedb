@@ -75,10 +75,13 @@ pub struct CountOffsetReturnedItem {
     /// The element's serialized value bytes, as emitted by the prover.
     ///
     /// For a `KVRefValueHash*` node these are the RESOLVED target's
-    /// bytes, not the reference's — GroveDB's reference post-pass runs
+    /// bytes, not the reference's: the caller's reference post-pass runs
     /// before the proof is encoded, so by verify time the dereferencing
     /// has already happened and `reference_element_hash` is what records
-    /// that this row was a reference.
+    /// that this row was a reference. (This is a change from the earlier
+    /// contract, which said dereferencing happened at the GroveDB layer
+    /// after verification — it never did, and reference rows were
+    /// rejected outright instead.)
     pub value: Vec<u8>,
     /// The value-hash the proof's merk node committed for this entry.
     /// For `KVCount` nodes this is `H(value)` (the Item-flavored value

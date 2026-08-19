@@ -1749,6 +1749,18 @@ where
         // hash mismatch that `verify_grovedb` later reports. The
         // contract is the user's to uphold; we don't pay the price of
         // an extra dispatch on every well-formed hop=1 ref.
+        //
+        // That contract governs ORDINARY user references only. Indexed
+        // secondary rows are also one-hop, and for them binding the
+        // immediate target's merk-stored hash — whatever its shape — is
+        // the CANONICAL rule, not an ill-formed state: a row is meant to
+        // commit its primary entry's node, so a tree- or
+        // reference-shaped primary is expected, and
+        // `verify_indexed_axis_content` checks rows against that rule
+        // instead of the terminal-reference one. Indexed rows are
+        // written by the mirror through its own path, so they do not
+        // travel through here; the two rules stay separate, and neither
+        // is ever inferred from `max_reference_hop == 1` alone.
         if recursions_allowed == 1 {
             let merk = match self.merks.entry(reference_path.to_vec()) {
                 HashMapEntry::Occupied(o) => o.into_mut(),

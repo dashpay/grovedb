@@ -43,9 +43,7 @@
 //! [`INDEXED_SECONDARY_MAX_HOP`]:
 //!     crate::operations::indexed_tree::INDEXED_SECONDARY_MAX_HOP
 
-use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
-};
+use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::{
     element::{costs::ElementCostExtensions, get::ElementFetchFromStorageExtensions},
