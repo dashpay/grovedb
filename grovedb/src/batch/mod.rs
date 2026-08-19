@@ -4461,7 +4461,8 @@ impl GroveDb {
                     indexed_secondary_after_apply: Default::default(),
                     cidx_overwrite_cleanup_paths: Default::default(),
                     deleted_tree_actual_types: Default::default(),
-                }
+                },
+                grove_version
             )
         );
         Self::apply_batch_structure(batch_structure, batch_apply_options, grove_version)
@@ -4521,7 +4522,8 @@ impl GroveDb {
                     indexed_secondary_after_apply: Default::default(),
                     cidx_overwrite_cleanup_paths: Default::default(),
                     deleted_tree_actual_types: Default::default(),
-                }
+                },
+                grove_version
             )
         );
         Self::apply_batch_structure(batch_structure, batch_apply_options, grove_version)
@@ -6266,7 +6268,8 @@ impl GroveDb {
                         split_removal_bytes_function,
                         AverageCaseTreeCacheKnownPaths::new_with_estimated_layer_information(
                             estimated_layer_information
-                        )
+                        ),
+                        grove_version
                     )
                 );
                 cost_return_on_error!(
@@ -6288,7 +6291,8 @@ impl GroveDb {
                         split_removal_bytes_function,
                         WorstCaseTreeCacheKnownPaths::new_with_worst_case_layer_information(
                             worst_case_layer_information
-                        )
+                        ),
+                        grove_version
                     )
                 );
                 cost_return_on_error!(

@@ -32,6 +32,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             estimated_case_operations_for_batch: 0,
             delete_tree_cleanup_type_source: 0,
             overwrite_indexed_cleanup_inspection: 0,
+            keyless_op_cost_dispatch: 0,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,
@@ -190,6 +191,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 add_average_case_get_raw_cost: 0,
                 add_average_case_get_raw_tree_cost: 0,
                 add_average_case_get_cost: 0,
+                average_case_commitment_tree_insert: 0,
             },
             worst_case: GroveDBOperationsWorstCaseVersions {
                 add_worst_case_get_merk_at_path: 0,
@@ -204,6 +206,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 add_worst_case_get_raw_tree_cost: 0,
                 add_worst_case_get_raw_cost: 0,
                 add_worst_case_get_cost: 0,
+                worst_case_commitment_tree_insert: 0,
             },
         },
         aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions { merge: 0 },

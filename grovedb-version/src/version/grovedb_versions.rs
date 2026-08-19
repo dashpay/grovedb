@@ -128,6 +128,23 @@ pub struct GroveDBApplyBatchVersions {
     /// not cost: a non-empty indexed replacement that would be accepted
     /// blind on V1..V3 is refused on V4+.
     pub overwrite_indexed_cleanup_inspection: FeatureVersion,
+    /// Whether keyless append-only ops (`CommitmentTreeInsert`,
+    /// `MmrTreeAppend`, `BulkAppend`, `DenseTreeInsert`) reach the cost
+    /// dispatch in the estimated-cost batch structure.
+    ///
+    /// - `0` (V1..V3): keyless ops are silently skipped when building the
+    ///   batch structure, so in the estimated-cost paths the append
+    ///   contributes ZERO — the under-estimate behind issue #812's
+    ///   admission-control bypass. Preserved for replay: historical blocks
+    ///   were admitted under this estimate and must evaluate identically.
+    /// - `1` (V4+): the tree key is split off the op's path and the op is
+    ///   filed under a unique synthetic key, so every append reaches the
+    ///   cost arms and is charged individually.
+    ///
+    /// The apply path is unaffected on every version: preprocessing
+    /// rewrites keyless ops into keyed ops before the batch structure is
+    /// built.
+    pub keyless_op_cost_dispatch: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -291,6 +308,16 @@ pub struct GroveDBOperationsAverageCaseVersions {
     pub add_average_case_get_raw_cost: FeatureVersion,
     pub add_average_case_get_raw_tree_cost: FeatureVersion,
     pub add_average_case_get_cost: FeatureVersion,
+    /// Cost model for the `CommitmentTreeInsert` estimation arm.
+    ///
+    /// - `0` (V1..V3): the legacy average-case constants (33 Sinsemilla
+    ///   hashes, 554-byte frontier, 1 blake3, frontier charged as replaced
+    ///   bytes). Preserved for replay of historical admission decisions.
+    /// - `1` (V4+): the depth-derived upper-bound model shared with the
+    ///   worst-case arm (`commitment_tree_insert_op_cost`), covering the
+    ///   full ommer cascade, dense-buffer recompute, and epoch compaction
+    ///   (issue #812).
+    pub average_case_commitment_tree_insert: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -307,6 +334,17 @@ pub struct GroveDBOperationsWorstCaseVersions {
     pub add_worst_case_get_raw_tree_cost: FeatureVersion,
     pub add_worst_case_get_raw_cost: FeatureVersion,
     pub add_worst_case_get_cost: FeatureVersion,
+    /// Cost model for the `CommitmentTreeInsert` estimation arm.
+    ///
+    /// - `0` (V1..V3): the legacy flat model (64 Sinsemilla hashes and a
+    ///   1066-byte frontier, but only 3 seeks, 1 blake3, no dense-buffer
+    ///   recompute or epoch compaction, frontier charged as replaced
+    ///   bytes). Preserved for replay of historical admission decisions.
+    /// - `1` (V4+): the depth-derived upper-bound model shared with the
+    ///   average-case arm (`commitment_tree_insert_op_cost`), covering the
+    ///   full ommer cascade, dense-buffer recompute, and epoch compaction
+    ///   (issue #812).
+    pub worst_case_commitment_tree_insert: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

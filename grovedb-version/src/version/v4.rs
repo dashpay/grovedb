@@ -62,6 +62,27 @@
 //!   the version-2 `Query` wire encoding outright, so the slot's `0` value
 //!   is the in-process mirror of that fail-closed decode.
 //!
+//! - `apply_batch.keyless_op_cost_dispatch: 1` — keyless append-only ops
+//!   (`CommitmentTreeInsert`, `MmrTreeAppend`, `BulkAppend`,
+//!   `DenseTreeInsert`) reach the cost dispatch in the estimated-cost batch
+//!   structure, filed under unique synthetic keys so every append is
+//!   charged. V1..V3 silently skip them — the append estimates as free,
+//!   the under-estimate behind issue #812's admission-control bypass —
+//!   preserved so historical admission decisions replay identically. The
+//!   apply path is unaffected on every version (preprocessing rewrites
+//!   keyless ops before the batch structure is built).
+//!
+//! - `operations.average_case.average_case_commitment_tree_insert: 1` and
+//!   `operations.worst_case.worst_case_commitment_tree_insert: 1` — the
+//!   `CommitmentTreeInsert` estimation arms charge the depth-derived
+//!   upper-bound model (full ommer cascade, dense-buffer recompute, epoch
+//!   compaction, flags-bounded element load). V1..V3 keep the legacy
+//!   constants (average-case 33 Sinsemilla / 554-byte frontier; worst-case
+//!   64 / 1066 but no compaction), which are NOT upper bounds — preserved
+//!   for replay only. Gated because downstream the estimate is the
+//!   admission bound: raising it ungated would make already-committed
+//!   shield transitions re-validate as under-funded and brick sync.
+//!
 //! Note that `GroveVersion::latest()` resolves to this version, so anything
 //! defaulting to "latest" — tests, benchmarks, tools — exercises every gate
 //! listed above rather than V3 behaviour.
@@ -112,6 +133,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             estimated_case_operations_for_batch: 0,
             delete_tree_cleanup_type_source: 1,
             overwrite_indexed_cleanup_inspection: 1,
+            keyless_op_cost_dispatch: 1,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,
@@ -274,6 +296,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 add_average_case_get_raw_cost: 0,
                 add_average_case_get_raw_tree_cost: 0,
                 add_average_case_get_cost: 0,
+                average_case_commitment_tree_insert: 1,
             },
             worst_case: GroveDBOperationsWorstCaseVersions {
                 add_worst_case_get_merk_at_path: 0,
@@ -288,6 +311,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 add_worst_case_get_raw_tree_cost: 0,
                 add_worst_case_get_raw_cost: 0,
                 add_worst_case_get_cost: 0,
+                worst_case_commitment_tree_insert: 1,
             },
         },
         aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions { merge: 0 },
