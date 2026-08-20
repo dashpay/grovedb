@@ -745,8 +745,7 @@ fn verify_indexed_axis_paginated_inner(
         &envelope.target_chains,
         grove_version,
     )?;
-    let (secondary_root_hash, skipped) =
-        (count_offset_result.root_hash, count_offset_result.skipped);
+    let skipped = count_offset_result.skipped;
 
     Ok(IndexedAxisPaginatedResult {
         root_hash,
