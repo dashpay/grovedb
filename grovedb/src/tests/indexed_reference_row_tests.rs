@@ -25,7 +25,6 @@ mod tests {
 
     use crate::{
         operations::indexed_tree::make_axis_secondary_key,
-        query_result_type::IndexedAxisEntrySliceExt,
         tests::{make_test_grovedb, TEST_LEAF},
         Element, GroveDb,
     };
@@ -1076,6 +1075,7 @@ mod tests {
             .indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, grove_version)
             .unwrap()
             .expect("top_k");
+        use crate::query_result_type::IndexedAxisEntrySliceExt;
         assert_eq!(before.key_pairs(), vec![(3u64, b"sub".to_vec())]);
 
         // Read the child's real root so the replacement is internally
