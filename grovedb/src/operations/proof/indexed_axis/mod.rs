@@ -62,6 +62,7 @@
 //! shape only when the range really is out of the axis's domain.
 
 mod axis_api;
+pub(crate) mod canonical_row;
 mod envelope;
 #[cfg(feature = "minimal")]
 mod generate;
