@@ -8,6 +8,7 @@ use grovedb_storage::StorageContext;
 
 use super::BulkAppendTree;
 use crate::{chunk::deserialize_chunk_blob, BulkAppendError};
+use grovedb_version::version::GroveVersion;
 
 /// Result of querying the dense tree buffer.
 #[derive(Debug, Clone)]
@@ -178,14 +179,17 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             let mmr = MMR::new_with_overlay(mmr_size, &mmr_store, self.mmr_overlay.clone());
 
             let positions: Vec<u64> = chunk_indices.iter().map(|&idx| leaf_to_pos(idx)).collect();
-            let proof = mmr.gen_proof(positions).unwrap().map_err(|e| {
-                BulkAppendError::MmrError(format!("chunk MMR gen_proof failed: {}", e))
-            })?;
+            let proof = mmr
+                .gen_proof(positions, GroveVersion::latest())
+                .unwrap()
+                .map_err(|e| {
+                    BulkAppendError::MmrError(format!("chunk MMR gen_proof failed: {}", e))
+                })?;
 
             let proof_items: Vec<[u8; 32]> =
                 proof.proof_items().iter().map(|node| node.hash()).collect();
 
-            let root = mmr.get_root().unwrap().map_err(|e| {
+            let root = mmr.get_root(GroveVersion::latest()).unwrap().map_err(|e| {
                 BulkAppendError::MmrError(format!("chunk MMR get_root failed: {}", e))
             })?;
 

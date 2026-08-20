@@ -56,12 +56,12 @@ fn expected_mmr_root(values: &[Vec<u8>]) -> [u8; 32] {
     let store = MemStore::new();
     let mut mmr = MMR::new(0, &store);
     for v in values {
-        mmr.push(MmrNode::leaf(v.clone()))
+        mmr.push(MmrNode::leaf(v.clone()), GroveVersion::latest())
             .unwrap()
             .expect("push should succeed");
     }
     mmr.commit().unwrap().expect("commit should succeed");
-    mmr.get_root()
+    mmr.get_root(GroveVersion::latest())
         .unwrap()
         .expect("root hash should succeed")
         .hash()

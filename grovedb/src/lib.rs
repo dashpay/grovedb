@@ -1972,6 +1972,7 @@ impl GroveDb {
                         new_path_ref.clone(),
                         transaction,
                         merk_root_hash,
+                        grove_version,
                     );
 
                     let actual_value_hash = value_hash(&kv_value).unwrap();
@@ -2461,6 +2462,7 @@ impl GroveDb {
         subtree_path: SubtreePath<'b, B>,
         transaction: &Transaction,
         merk_root_hash: [u8; 32],
+        grove_version: &GroveVersion,
     ) -> [u8; 32] {
         match element {
             Element::CommitmentTree(total_count, chunk_power, _) => {
@@ -2509,7 +2511,7 @@ impl GroveDb {
                     .unwrap();
                 let store = grovedb_merkle_mountain_range::MmrStore::new(&storage_ctx);
                 let mmr = grovedb_merkle_mountain_range::MMR::new(*mmr_size, &store);
-                match mmr.get_root().value {
+                match mmr.get_root(grove_version).value {
                     Ok(root) => root.hash(),
                     Err(_) => merk_root_hash,
                 }

@@ -9,10 +9,12 @@
 
 use std::collections::HashMap;
 
-use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
 use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
 use grovedb_merkle_mountain_range::{
-    hash_count_for_push, mmr_size_to_leaf_count, MmrNode, MmrStore, MMR,
+    mmr_size_to_leaf_count, push_call_site_hashes, MmrNode, MmrStore, MMR,
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch};
@@ -84,25 +86,30 @@ impl GroveDb {
         let store = MmrStore::new(&storage_ctx);
         let leaf_count = mmr_size_to_leaf_count(mmr_size);
 
-        // `hash_count_for_push` is the eager leaf hash PLUS one per peak the
-        // push collapses. It pairs with the UNVERSIONED `push` below, which
-        // charges no merges of its own — so the merges are counted exactly
-        // once, here. Switching that call to `push_with_version` without
-        // dropping this helper would charge every merge twice.
-        cost.hash_node_calls += hash_count_for_push(leaf_count);
+        // The leaf is hashed here, before `push`. How much of the push's work
+        // this call site still owes depends on the version — `push` bills its
+        // own merges from v1 on — so the split comes from
+        // `push_call_site_hashes` rather than being hard-coded. Charging
+        // `hash_count_for_push` unconditionally would double-count every
+        // merge once `push` started billing them.
+        cost.hash_node_calls += cost_return_on_error_no_add!(
+            cost,
+            push_call_site_hashes(leaf_count, grove_version)
+                .map_err(|e| Error::CorruptedData(format!("MMR push cost: {}", e)))
+        );
 
         let leaf = MmrNode::leaf(value);
         let mut mmr = MMR::new(mmr_size, &store);
         cost_return_on_error!(
             &mut cost,
-            mmr.push(leaf)
+            mmr.push(leaf, grove_version)
                 .map_err(|e| Error::CorruptedData(format!("MMR push failed: {}", e)))
         );
 
         // Get root BEFORE commit — data is still in the MMRBatch overlay
         let new_root = cost_return_on_error!(
             &mut cost,
-            mmr.get_root_with_version(grove_version)
+            mmr.get_root(grove_version)
                 .map_err(|e| Error::CorruptedData(format!("MMR get_root failed: {}", e)))
         );
         let new_mmr_root = new_root.hash();
@@ -233,7 +240,7 @@ impl GroveDb {
 
         let root = cost_return_on_error!(
             &mut cost,
-            mmr.get_root()
+            mmr.get_root(grove_version)
                 .map_err(|e| Error::CorruptedData(format!("MMR get_root failed: {}", e)))
         );
 
@@ -450,15 +457,19 @@ impl GroveDb {
             // Push all values into a single MMR instance
             let mut mmr = MMR::new(mmr_size, &store);
             for value in values {
-                // Leaf hash + peak collapses, paired with the unversioned
-                // `push` below. See the note on the direct path above.
+                // Version-dependent split between this call site and `push`;
+                // see the note on the direct path above.
                 let leaf_count = mmr_size_to_leaf_count(mmr.mmr_size);
-                cost.hash_node_calls += hash_count_for_push(leaf_count);
+                cost.hash_node_calls += cost_return_on_error_no_add!(
+                    cost,
+                    push_call_site_hashes(leaf_count, grove_version)
+                        .map_err(|e| Error::CorruptedData(format!("MMR push cost: {}", e)))
+                );
 
                 let leaf = MmrNode::leaf(value.clone());
                 cost_return_on_error!(
                     &mut cost,
-                    mmr.push(leaf)
+                    mmr.push(leaf, grove_version)
                         .map_err(|e| Error::CorruptedData(format!("MMR push failed: {}", e)))
                 );
             }
@@ -466,7 +477,7 @@ impl GroveDb {
             // Get root BEFORE commit — data is still in the MMRBatch overlay
             let new_root = cost_return_on_error!(
                 &mut cost,
-                mmr.get_root_with_version(grove_version)
+                mmr.get_root(grove_version)
                     .map_err(|e| Error::CorruptedData(format!("MMR get_root failed: {}", e)))
             );
             let new_mmr_root = new_root.hash();

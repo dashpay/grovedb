@@ -90,23 +90,9 @@ impl<S: MMRStoreReadOps> MMR<S> {
     /// This may also create internal (merged) nodes. The new nodes are
     /// buffered until [`MMR::commit`] is called.
     ///
-    /// Charges hashes under the shipped (v0) accounting. Callers that hold a
-    /// [`GroveVersion`] should use [`push_with_version`](Self::push_with_version)
-    /// instead; this entry point exists so paths that predate the gate keep
-    /// their released cost by construction.
-    pub fn push(&mut self, elem: MmrNode) -> CostResult<u64, Error> {
-        self.push_with_version(elem, GroveVersion::first())
-    }
-
-    /// Version-dispatched [`push`](Self::push).
-    ///
-    /// The MMR it builds is identical under every version; only the hash
-    /// charge differs — see [`crate::cost`].
-    pub fn push_with_version(
-        &mut self,
-        elem: MmrNode,
-        grove_version: &GroveVersion,
-    ) -> CostResult<u64, Error> {
+    /// The MMR it builds is identical under every grove version; only the
+    /// hash charge differs — see [`crate::cost`].
+    pub fn push(&mut self, elem: MmrNode, grove_version: &GroveVersion) -> CostResult<u64, Error> {
         let mut cost = OperationCost::default();
         let mut merges: u32 = 0;
         let mut elems = vec![elem];
@@ -148,18 +134,9 @@ impl<S: MMRStoreReadOps> MMR<S> {
     ///
     /// Returns [`Error::GetRootOnEmpty`] for an empty MMR.
     ///
-    /// Charges hashes under the shipped (v0) accounting; see
-    /// [`push`](Self::push) for why this entry point is kept.
-    pub fn get_root(&self) -> CostResult<MmrNode, Error> {
-        self.get_root_with_version(GroveVersion::first())
-    }
-
-    /// Version-dispatched [`get_root`](Self::get_root). The root is identical
-    /// under every version; only the hash charge differs.
-    pub fn get_root_with_version(
-        &self,
-        grove_version: &GroveVersion,
-    ) -> CostResult<MmrNode, Error> {
+    /// The root is identical under every grove version; only the hash charge
+    /// differs.
+    pub fn get_root(&self, grove_version: &GroveVersion) -> CostResult<MmrNode, Error> {
         let mut cost = OperationCost::default();
         if self.mmr_size == 0 {
             return Err(Error::GetRootOnEmpty).wrap_with_cost(cost);
@@ -273,15 +250,9 @@ impl<S: MMRStoreReadOps> MMR<S> {
     /// [`Error::GenProofForInvalidLeaves`] if any position is out of range
     /// or the list is empty.
     ///
-    /// Charges hashes under the shipped (v0) accounting; see
-    /// [`push`](Self::push) for why this entry point is kept.
-    pub fn gen_proof(&self, pos_list: Vec<u64>) -> CostResult<MerkleProof, Error> {
-        self.gen_proof_with_version(pos_list, GroveVersion::first())
-    }
-
-    /// Version-dispatched [`gen_proof`](Self::gen_proof). The proof is
-    /// identical under every version; only the hash charge differs.
-    pub fn gen_proof_with_version(
+    /// The proof is identical under every grove version; only the hash charge
+    /// differs.
+    pub fn gen_proof(
         &self,
         mut pos_list: Vec<u64>,
         grove_version: &GroveVersion,

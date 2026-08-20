@@ -72,3 +72,31 @@ pub(crate) fn gen_proof_bagging_hashes(
         )),
     }
 }
+
+/// Hashes a CALLER must charge for a push, on top of what
+/// [`MMR::push`](crate::MMR::push) charges itself.
+///
+/// A caller that hashes the leaf before calling `push` — the ops layer does —
+/// has to make up whatever `push` does not bill for the version in play:
+///
+/// - v0: `push` charges no merges, so the caller owes the leaf hash AND the
+///   collapses, i.e. `hash_count_for_push`
+/// - v1: `push` charges the merges, so the caller owes only the leaf hash
+///
+/// The invariant across both is `call_site + push == 1 + merges`, which is
+/// why an MmrTree push costs the same under either version. Getting this
+/// wrong in either direction double-charges or under-charges every merge.
+pub fn push_call_site_hashes(leaf_count: u64, grove_version: &GroveVersion) -> Result<u32, Error> {
+    match grove_version.mmr_versions.cost.push {
+        0 => Ok(v0::call_site_hashes(leaf_count)),
+        1 => Ok(v1::call_site_hashes(leaf_count)),
+        version => Err(Error::VersionError(
+            GroveVersionError::UnknownVersionMismatch {
+                method: "MMR push call-site hash charge".to_string(),
+                known_versions: vec![0, 1],
+                received: version,
+            }
+            .to_string(),
+        )),
+    }
+}

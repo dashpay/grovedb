@@ -159,7 +159,7 @@ impl GroveDb {
                 let mmr = grovedb_merkle_mountain_range::MMR::new(*mmr_size, &store);
                 let root = cost_return_on_error!(
                     &mut cost,
-                    mmr.get_root()
+                    mmr.get_root(grove_version)
                         .map_err(|e| Error::CorruptedData(format!("MMR get_root failed: {}", e)))
                 );
                 Ok(root.hash()).wrap_with_cost(cost)

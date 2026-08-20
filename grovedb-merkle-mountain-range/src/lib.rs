@@ -21,6 +21,7 @@
 #![deny(missing_docs)]
 
 mod cost;
+pub use cost::push_call_site_hashes;
 mod error;
 /// MMR helper functions for position arithmetic, storage keys, and cost
 /// calculations.

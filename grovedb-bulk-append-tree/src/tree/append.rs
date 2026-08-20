@@ -369,9 +369,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             let mut mmr =
                 MMR::new_with_overlay(mmr_size, &mmr_store, std::mem::take(&mut self.mmr_overlay));
 
-            let push_result = mmr
-                .push_with_version(leaf, grove_version)
-                .unwrap_add_cost(&mut cost);
+            let push_result = mmr.push(leaf, grove_version).unwrap_add_cost(&mut cost);
             if let Err(e) = push_result {
                 // Restore overlay before returning error
                 self.mmr_overlay = mmr.batch.take_overlay();
@@ -379,9 +377,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                     .wrap_with_cost(cost);
             }
 
-            let root_result = mmr
-                .get_root_with_version(grove_version)
-                .unwrap_add_cost(&mut cost);
+            let root_result = mmr.get_root(grove_version).unwrap_add_cost(&mut cost);
             let root = match root_result {
                 Ok(node) => node.hash(),
                 Err(e) => {
@@ -440,10 +436,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         }
         let mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32);
         let mmr = MMR::new_with_overlay(mmr_size, &mmr_store, self.mmr_overlay.clone());
-        match mmr
-            .get_root_with_version(grove_version)
-            .unwrap_add_cost(&mut cost)
-        {
+        match mmr.get_root(grove_version).unwrap_add_cost(&mut cost) {
             Ok(root_node) => Ok(root_node.hash()).wrap_with_cost(cost),
             Err(e) => Err(BulkAppendError::MmrError(format!(
                 "MMR get_root failed: {}",
