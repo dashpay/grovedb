@@ -26,6 +26,7 @@ fn main() {
     };
     use grovedb_path::SubtreePath;
     use grovedb_storage::{rocksdb_storage::RocksDbStorage, Storage, StorageBatch};
+    use grovedb_version::version::GroveVersion;
     use rand::{rngs::StdRng, Rng, SeedableRng};
 
     let n: u64 = std::env::var("SEED_N")
@@ -87,7 +88,7 @@ fn main() {
     //    at the end, not per leaf.
     let t_seed = Instant::now();
     let result = ct
-        .append_many_raw(notes)
+        .append_many_raw(notes, GroveVersion::latest())
         .value
         .expect("batched commitment-tree seeding");
     // Flush the MMR overlay into the storage batch now that we're done

@@ -86,8 +86,7 @@ impl GroveDb {
 
         let result = cost_return_on_error_no_add!(
             cost,
-            tree.append_with_version(&value, grove_version)
-                .map_err(map_bulk_err)
+            tree.append(&value, grove_version).map_err(map_bulk_err)
         );
 
         cost.hash_node_calls += result.hash_count;
@@ -530,8 +529,7 @@ impl GroveDb {
             for value in values {
                 let result = cost_return_on_error_no_add!(
                     cost,
-                    tree.append_with_version(value, grove_version)
-                        .map_err(map_bulk_err)
+                    tree.append(value, grove_version).map_err(map_bulk_err)
                 );
                 cost.hash_node_calls += result.hash_count;
             }

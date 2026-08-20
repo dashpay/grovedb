@@ -61,19 +61,12 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// state root computation. For batched inserts prefer
     /// [`append_many`](Self::append_many) or [`append_no_state_root`](Self::append_no_state_root)
     /// — they skip the per-leaf state-root blake3 call.
-    /// Reports the shipped (v0) hash count; see
-    /// [`append_no_state_root`](Self::append_no_state_root).
-    pub fn append(&mut self, value: &[u8]) -> Result<AppendResult, BulkAppendError> {
-        self.append_with_version(value, GroveVersion::first())
-    }
-
-    /// Version-dispatched [`append`](Self::append).
-    pub fn append_with_version(
+    pub fn append(
         &mut self,
         value: &[u8],
         grove_version: &GroveVersion,
     ) -> Result<AppendResult, BulkAppendError> {
-        let r = self.append_no_state_root_with_version(value, grove_version)?;
+        let r = self.append_no_state_root(value, grove_version)?;
         let state_root = self.compute_current_state_root()?;
         Ok(AppendResult {
             state_root,
@@ -94,23 +87,11 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// Storage mutation is identical to [`append`](Self::append).
     ///
     /// [`CommitmentTree::append_many_raw`]: ../../grovedb_commitment_tree/struct.CommitmentTree.html#method.append_many_raw
-    /// Reports the shipped (v0) hash count. Callers holding a
-    /// [`GroveVersion`] should prefer
-    /// [`append_no_state_root_with_version`](Self::append_no_state_root_with_version):
-    /// this entry point exists so paths that predate the gate keep their
-    /// released figure by construction.
-    pub fn append_no_state_root(
-        &mut self,
-        value: &[u8],
-    ) -> Result<AppendNoStateRootResult, BulkAppendError> {
-        self.append_no_state_root_with_version(value, GroveVersion::first())
-    }
-
-    /// Version-dispatched [`append_no_state_root`](Self::append_no_state_root).
     ///
-    /// Stored bytes, chunks and roots are identical under every version; only
-    /// the reported `hash_count` differs, and only for an append that compacts.
-    pub fn append_no_state_root_with_version(
+    /// Stored bytes, chunks and roots are identical under every grove
+    /// version; only the reported `hash_count` differs, and only for an append
+    /// that compacts.
+    pub fn append_no_state_root(
         &mut self,
         value: &[u8],
         grove_version: &GroveVersion,
@@ -524,9 +505,7 @@ mod compaction_hash_count_gate_tests {
             let mut counts = Vec::new();
             let mut roots = Vec::new();
             for i in 0..20u8 {
-                let r = t
-                    .append_no_state_root_with_version(&[i; 8], version)
-                    .expect("append");
+                let r = t.append_no_state_root(&[i; 8], version).expect("append");
                 if r.compacted {
                     counts.push(r.hash_count);
                 }
@@ -588,12 +567,12 @@ mod compaction_hash_count_gate_tests {
         let mut t = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
         // Fill the buffer so the next append compacts and reaches the gate.
         for i in 0..3u8 {
-            t.append_no_state_root_with_version(&[i; 8], &bad)
+            t.append_no_state_root(&[i; 8], &bad)
                 .expect("buffered appends do not reach the gate");
         }
         assert!(
             matches!(
-                t.append_no_state_root_with_version(&[9u8; 8], &bad),
+                t.append_no_state_root(&[9u8; 8], &bad),
                 Err(BulkAppendError::VersionError(_))
             ),
             "a compacting append must reject an unknown charge version"
