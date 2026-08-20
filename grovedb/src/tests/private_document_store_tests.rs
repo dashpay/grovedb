@@ -1641,3 +1641,75 @@ fn test_private_document_store_creation_bills_its_two_hashes() {
         bulk_cost
     );
 }
+
+/// A store element that CLAIMS entries it has no data for must be refused at
+/// creation, on every path.
+///
+/// `Element::PrivateDocumentStore` is a public variant with public fields, so
+/// `total_count` is not guaranteed to come from
+/// `Element::empty_private_document_store` — a caller can construct one
+/// directly, and one can arrive by deserialization. Accepting it would commit
+/// an element whose committed count has no backing chunks or buffer entries:
+/// the state root would be derived as if empty, and reads of the claimed
+/// positions would fail against a tree that verifies as intact.
+#[test]
+fn test_private_document_store_rejects_nonempty_total_count_at_creation() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+    db.insert(
+        EMPTY_PATH,
+        b"root",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert root tree");
+
+    let claims_five = Element::PrivateDocumentStore(5, TEST_ENTRY_SIZE, TEST_CHUNK_POWER, None);
+
+    // Direct insert.
+    let direct = db
+        .insert(
+            &[b"root"],
+            b"store",
+            claims_five.clone(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap();
+    assert!(
+        direct.is_err(),
+        "direct insert must refuse a store claiming entries it has no data \
+         for, got {:?}",
+        direct
+    );
+
+    // Batch insert.
+    let batch = vec![QualifiedGroveDbOp::insert_or_replace_op(
+        vec![b"root".to_vec()],
+        b"store".to_vec(),
+        claims_five,
+    )];
+    let batched = db.apply_batch(batch, None, None, grove_version).unwrap();
+    assert!(
+        batched.is_err(),
+        "batch insert must refuse it too, got {:?}",
+        batched
+    );
+
+    // Nothing was created either way.
+    assert!(
+        db.get_raw(
+            [b"root".as_slice()].as_ref().into(),
+            b"store",
+            None,
+            grove_version
+        )
+        .unwrap()
+        .is_err(),
+        "no element should exist at the key"
+    );
+}
