@@ -715,15 +715,7 @@ fn verify_indexed_axis_paginated_inner(
             "indexed-axis paginated proof: secondary count-offset proof failed to verify: {e}"
         ))
     })?;
-    let entries = decode_axis_entries_from_count_offset_items(
-        axis,
-        &count_offset_result.returned_items,
-        &envelope.target_chains,
-        grove_version,
-    )?;
-    let (secondary_root_hash, skipped) =
-        (count_offset_result.root_hash, count_offset_result.skipped);
-
+    let secondary_root_hash = count_offset_result.root_hash;
     let initial_root = verify_deepest_layer(
         &envelope.layer_proofs,
         path,
@@ -742,6 +734,19 @@ fn verify_indexed_axis_paginated_inner(
         initial_root,
         "indexed-axis paginated proof",
     )?;
+
+    // Chain checks first, matching the range path: both reject a relabeled
+    // or rebound envelope, but the chain check names the actual defect
+    // where a row check reports only the downstream symptom — and it avoids
+    // folding one target chain per row for an envelope that fails anyway.
+    let entries = decode_axis_entries_from_count_offset_items(
+        axis,
+        &count_offset_result.returned_items,
+        &envelope.target_chains,
+        grove_version,
+    )?;
+    let (secondary_root_hash, skipped) =
+        (count_offset_result.root_hash, count_offset_result.skipped);
 
     Ok(IndexedAxisPaginatedResult {
         root_hash,

@@ -540,7 +540,13 @@ impl GroveDb {
                 tree_type: axis_secondary_tree_type(*axis),
                 // 1:1 with the primary.
                 estimated_layer_count: primary_layer_information.estimated_layer_count,
-                estimated_layer_sizes: EstimatedLayerSizes::AllItems(
+                // The row shape's OWN variant, not `AllItems`: the two
+                // carry different element overheads (+15 vs +3), and a
+                // secondary row is a `ReferenceWithSumItem`. Describing it
+                // as an item under-charged every row by 12 bytes — and
+                // `added_bytes` is the one dimension a storage-fee
+                // reservation must never come in under.
+                estimated_layer_sizes: EstimatedLayerSizes::AllReferencesWithSumItem(
                     secondary_key_size,
                     row_value_size,
                     None,

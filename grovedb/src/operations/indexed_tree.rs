@@ -1337,7 +1337,7 @@ impl GroveDb {
             collect_top_k_via_iterator(&secondary_merk, axis, k, descending, &decode)
         );
         drop(secondary_merk);
-        resolve_axis_entries(self, path, rows, transaction, grove_version).add_cost(cost)
+        resolve_axis_entries(self, path, rows, tx_ref, grove_version).add_cost(cost)
     }
 
     /// One implementation of the `indexed_<axis>_top_k_paginated` shape.
@@ -1381,7 +1381,7 @@ impl GroveDb {
                 collect_top_k_via_iterator(&secondary_merk, axis, k, descending, &decode)
             );
             drop(secondary_merk);
-            return resolve_axis_entries(self, path, rows, transaction, grove_version)
+            return resolve_axis_entries(self, path, rows, tx_ref, grove_version)
                 .map_ok(|entries| IndexedTopKPage {
                     entries,
                     skipped: 0,
@@ -1477,7 +1477,7 @@ impl GroveDb {
                 }
             }
         }
-        resolve_axis_entries(self, path_for_resolution, rows, transaction, grove_version)
+        resolve_axis_entries(self, path_for_resolution, rows, tx_ref, grove_version)
             .map_ok(|entries| IndexedTopKPage { entries, skipped })
             .add_cost(cost)
     }
@@ -1543,7 +1543,7 @@ impl GroveDb {
         drop(iter);
         drop(secondary_merk);
 
-        resolve_axis_entries(self, path, results, transaction, grove_version).add_cost(cost)
+        resolve_axis_entries(self, path, results, tx_ref, grove_version).add_cost(cost)
     }
 
     // ---- count axis ----
@@ -2717,7 +2717,7 @@ fn resolve_axis_entries<'b, B, T>(
     db: &GroveDb,
     indexed_path: SubtreePath<'b, B>,
     rows: Vec<(T, Vec<u8>)>,
-    transaction: TransactionArg,
+    transaction: &Transaction,
     grove_version: &GroveVersion,
 ) -> CostResult<Vec<IndexedAxisEntry<T>>, Error>
 where
@@ -2728,10 +2728,13 @@ where
         return Ok(Vec::new()).wrap_with_cost(cost);
     }
 
-    let tx = TxRef::new(&db.db, transaction);
+    // The CALLER's transaction, not a fresh one. The secondary scan that
+    // produced `rows` already ran under it; opening a second snapshot here
+    // would let a commit in between pair a stale row with a newer primary
+    // value, or report a primary the row still names as corrupted.
     let primary_merk = cost_return_on_error!(
         &mut cost,
-        db.open_transactional_merk_at_path(indexed_path.clone(), tx.as_ref(), None, grove_version)
+        db.open_transactional_merk_at_path(indexed_path.clone(), transaction, None, grove_version)
     );
 
     let mut entries = Vec::with_capacity(rows.len());
@@ -2767,7 +2770,7 @@ where
                     db.follow_reference(
                         absolute.as_slice().into(),
                         true,
-                        transaction,
+                        Some(transaction),
                         grove_version
                     )
                 )

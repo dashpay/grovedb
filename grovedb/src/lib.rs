@@ -760,13 +760,22 @@ impl GroveDb {
                 .map_err(Error::MerkError)
         );
         let (count, sum) = element.count_sum_value_or_default();
-        Ok(value_hash.map(
-            |value_hash| crate::operations::indexed_tree::IndexedEntryState {
-                count,
-                sum,
-                value_hash,
-            },
-        ))
+        // A present entry with no reachable node hash is corruption, not
+        // absence. Collapsing the two would hand the mirror `None` and
+        // delete a live row (or, on the old side, skip the delete of a row
+        // that moved). Fail loudly instead.
+        let value_hash = cost_return_on_error_no_add!(
+            cost,
+            value_hash.ok_or(Error::CorruptedCodeExecution(
+                "an indexed primary entry exists but its node is unreachable from the \
+                 committed root",
+            ))
+        );
+        Ok(Some(crate::operations::indexed_tree::IndexedEntryState {
+            count,
+            sum,
+            value_hash,
+        }))
         .wrap_with_cost(cost)
     }
 
@@ -967,12 +976,19 @@ impl GroveDb {
                                 .map_err(Error::MerkError)
                         );
                         let (count, sum) = element.count_sum_value_or_default();
-                        value_hash.map(|value_hash| {
-                            crate::operations::indexed_tree::IndexedEntryState {
-                                count,
-                                sum,
-                                value_hash,
-                            }
+                        // Present-but-unreachable is corruption, not
+                        // absence: collapsing them would delete a live row.
+                        let value_hash = cost_return_on_error_no_add!(
+                            cost,
+                            value_hash.ok_or(Error::CorruptedCodeExecution(
+                                "a rewritten indexed entry exists but its node is unreachable \
+                                 from the committed root",
+                            ))
+                        );
+                        Some(crate::operations::indexed_tree::IndexedEntryState {
+                            count,
+                            sum,
+                            value_hash,
                         })
                     }
                 }
@@ -1103,12 +1119,20 @@ impl GroveDb {
                         .map_err(Error::MerkError)
                 );
                 let (count, sum) = old_element.count_sum_value_or_default();
-                old_value_hash.map(|value_hash| {
-                    crate::operations::indexed_tree::IndexedEntryState {
-                        count,
-                        sum,
-                        value_hash,
-                    }
+                // `Element::get` above already established the entry
+                // exists, so a missing node hash is corruption. Treating it
+                // as absence would skip the delete of a row that moved.
+                let value_hash = cost_return_on_error_no_add!(
+                    cost,
+                    old_value_hash.ok_or(Error::CorruptedCodeExecution(
+                        "an indexed primary entry exists but its node is unreachable from the \
+                         committed root",
+                    ))
+                );
+                Some(crate::operations::indexed_tree::IndexedEntryState {
+                    count,
+                    sum,
+                    value_hash,
                 })
             } else {
                 None

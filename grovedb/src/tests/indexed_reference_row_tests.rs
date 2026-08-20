@@ -163,6 +163,29 @@ mod tests {
                     .collect::<Vec<_>>())
                 .collect::<Vec<_>>()
         );
+        // Exclusivity is the point of the name: each test breaks exactly
+        // one part of the row, so exactly one ROW sentinel should fire.
+        // Without this the sentinels could quietly overlap and the
+        // per-corruption tests would stop distinguishing anything.
+        //
+        // Scoped to `__cidx_*` on purpose. Damaging a row moves the
+        // secondary root, so the indexed element's own H1-A binding stops
+        // matching and `verify_grovedb` reports that too — a real and
+        // expected consequence, not a second row diagnosis.
+        let row_sentinels: Vec<_> = issues
+            .keys()
+            .filter(|k| k.iter().any(|seg| seg.starts_with(b"__cidx_")))
+            .map(|k| {
+                k.iter()
+                    .map(|s| String::from_utf8_lossy(s).to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(
+            row_sentinels.len(),
+            1,
+            "expected `__cidx_{kind}__` to be the only ROW sentinel, got {row_sentinels:?}"
+        );
     }
 
     /// Baseline: an untouched tree verifies clean, and its row really is
@@ -629,6 +652,32 @@ mod tests {
         assert!(
             issues.is_empty(),
             "bulk_append left the row stale: {issues:?}"
+        );
+
+        // Commitment tree. Its state root moves on insert exactly like the
+        // other three, and it is the one non-Merk append that is LIVE on
+        // mainnet, so leaving it uncovered would be the worst of the four
+        // to get wrong.
+        let db = pcit_with_child(
+            Element::empty_commitment_tree(10).expect("valid chunk_power"),
+            b"ct",
+        );
+        db.commitment_tree_insert_raw(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"ct",
+            [7u8; 32],
+            [8u8; 32],
+            [9u8; 32],
+            vec![0u8; 216],
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("commitment tree insert");
+        let issues = db.verify_grovedb(None, true, false, grove_version).unwrap();
+        assert!(
+            issues.is_empty(),
+            "commitment_tree_insert_raw left the row stale: {issues:?}"
         );
 
         // Dense.

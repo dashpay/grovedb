@@ -1928,12 +1928,22 @@ impl GroveDb {
                             *sum,
                         )
                     }
-                    TreeFeatureType::ProvableCountedMerkNode(count) => Node::KVRefValueHashCount(
-                        key.to_owned(),
-                        serialized_referenced_elem,
-                        reference_element_hash,
-                        *count,
-                    ),
+                    // `ProvableCountSumTree` is an eligible count-offset
+                    // host but commits only the COUNT into its node hash
+                    // (`binds_sum_into_hash` is true for PCPS alone), so
+                    // its reference rows take the count-only node — the
+                    // same variant `emit_returned_node` picks for its
+                    // directly-valued rows. Without this arm a reference in
+                    // such a tree hard-errored.
+                    TreeFeatureType::ProvableCountedMerkNode(count)
+                    | TreeFeatureType::ProvableCountedSummedMerkNode(count, _) => {
+                        Node::KVRefValueHashCount(
+                            key.to_owned(),
+                            serialized_referenced_elem,
+                            reference_element_hash,
+                            *count,
+                        )
+                    }
                     other => {
                         return Err(Error::CorruptedData(format!(
                             "count-offset proof: reference row {} carries non-count feature type \

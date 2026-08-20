@@ -841,6 +841,73 @@ mod tests {
     // `merk/src/proofs/query/count_offset/tests.rs`) covers the
     // verifier symmetric.
 
+    /// A reference row in a `ProvableCountSumTree` host.
+    ///
+    /// That host is eligible for count-offset pagination but commits only
+    /// the COUNT into its node hash, so its feature type is
+    /// `ProvableCountedSummedMerkNode` rather than the dual-axis one. The
+    /// reference post-pass matched only the count-only and dual-axis
+    /// variants, so a reference here hard-errored on an otherwise valid
+    /// query.
+    #[test]
+    fn count_offset_resolves_references_in_a_provable_count_sum_tree() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            crate::tests::common::EMPTY_PATH,
+            b"counts",
+            Element::empty_provable_count_sum_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert provable count-sum tree");
+        db.insert(&[b"counts"], b"a", Element::new_sum_item(5), None, None, v)
+            .unwrap()
+            .expect("insert a");
+        use crate::reference_path::ReferencePathType;
+        db.insert(
+            &[b"counts"],
+            b"b",
+            Element::new_reference(ReferencePathType::SiblingReference(b"a".to_vec())),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert reference b");
+        db.insert(&[b"counts"], b"c", Element::new_sum_item(7), None, None, v)
+            .unwrap()
+            .expect("insert c");
+
+        let mut q = Query::new();
+        q.insert_range_inclusive(b"a".to_vec()..=b"z".to_vec());
+        let path_query = PathQuery::new(
+            vec![b"counts".to_vec()],
+            SizedQuery::new(q, Some(2), Some(1)),
+        );
+        let proof = db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("a reference in a ProvableCountSumTree must be provable");
+        let (root_hash, verified) =
+            GroveDb::verify_query(&proof, &path_query, v).expect("proof must verify");
+        assert_eq!(root_hash, db.root_hash(None, v).unwrap().unwrap());
+
+        let values: Vec<(Vec<u8>, Element)> = verified
+            .into_iter()
+            .map(|(_, key, element)| (key, element.expect("value present")))
+            .collect();
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0].0, b"b".to_vec());
+        assert_eq!(
+            values[0].1,
+            Element::new_sum_item(5),
+            "the reference row must surface its dereferenced target"
+        );
+    }
+
     /// `Reference` in-range entries are RESOLVED, not rejected.
     ///
     /// The count-offset short-circuit used to return before the regular

@@ -240,7 +240,11 @@ mod build {
         let mut visited = std::collections::HashSet::new();
         visited.insert(head_qualified);
 
-        for _ in 0..=MAX_REFERENCE_HOPS {
+        // `0..`, not `0..=`: `follow_reference` allows exactly
+        // MAX_REFERENCE_HOPS hops, and an inclusive bound here would let
+        // the prover build a chain one hop deeper than `db.get` will
+        // follow — a proof that succeeds where the direct read refuses.
+        for _ in 0..MAX_REFERENCE_HOPS {
             let reference_path = match current_element.underlying() {
                 Element::Reference(reference_path, ..)
                 | Element::ReferenceWithSumItem(reference_path, ..) => reference_path.clone(),

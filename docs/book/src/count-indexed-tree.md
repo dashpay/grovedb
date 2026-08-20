@@ -488,7 +488,8 @@ let proof_bytes = db
     .prove_indexed_count_top_k(path, k, /* descending: */ true, transaction, grove_version)?
     .expect("prove");
 let result = GroveDb::verify_indexed_count_top_k(&proof_bytes, &path, k)?;
-// result.entries: Vec<IndexedAxisEntry<u64>>, result.root_hash: [u8; 32]
+// result.entries: AxisEntries::Count(Vec<IndexedAxisEntry<u64>>)
+// result.root_hash: [u8; 32]
 ```
 
 The query returns `IndexedAxisEntry` rows — the count, the primary key,
