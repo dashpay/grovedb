@@ -2031,7 +2031,14 @@ impl GroveDb {
             let count_for_ref = match op {
                 Op::Push(Node::KVValueHashFeatureType(_, _, _, ft))
                 | Op::PushInverted(Node::KVValueHashFeatureType(_, _, _, ft)) => match ft {
-                    TreeFeatureType::ProvableCountedMerkNode(count) => Some(*count),
+                    // `ProvableCountSumTree` hashes via `node_hash_with_count`
+                    // (only PCPS binds the sum in), so its references need the
+                    // COUNT just as a `ProvableCountTree`'s do. Without this
+                    // arm they downgraded to the aggregateless
+                    // `KVRefValueHash` and the host's node hash could not be
+                    // reconstructed — the proof verified nowhere.
+                    TreeFeatureType::ProvableCountedMerkNode(count)
+                    | TreeFeatureType::ProvableCountedSummedMerkNode(count, _) => Some(*count),
                     _ => None,
                 },
                 _ => None,
