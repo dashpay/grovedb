@@ -420,7 +420,8 @@ impl GroveDb {
                 | Ok(Element::CommitmentTree(..))
                 | Ok(Element::MmrTree(..))
                 | Ok(Element::BulkAppendTree(..))
-                | Ok(Element::DenseAppendOnlyFixedSizeTree(..)) => Ok(()).wrap_with_cost(cost),
+                | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
+                | Ok(Element::PrivateDocumentStore(..)) => Ok(()).wrap_with_cost(cost),
                 Ok(_) | Err(Error::PathKeyNotFound(_)) => Err(error_fn()).wrap_with_cost(cost),
                 Err(e) => Err(e).wrap_with_cost(cost),
             }

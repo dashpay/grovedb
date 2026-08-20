@@ -1,17 +1,20 @@
 use crate::version::grovedb_versions::GroveDBAggregateSumPathQueryMethodVersions;
 use crate::version::{
+    bulk_append_tree_versions::{BulkAppendTreeCostVersions, BulkAppendTreeVersions},
     grovedb_versions::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
         GroveDBOperationsDeleteVersions, GroveDBOperationsGetVersions,
         GroveDBOperationsIndexedAxisVersions, GroveDBOperationsInsertVersions,
-        GroveDBOperationsProofVersions, GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
+        GroveDBOperationsPrivateDocumentStoreVersions, GroveDBOperationsProofVersions,
+        GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
         GroveDBReplicationVersions, GroveDBVersions,
     },
     merk_versions::{
         MerkAverageCaseCostsVersions, MerkBatchVersions, MerkProofVersions, MerkVersions,
     },
+    mmr_versions::{MmrCostVersions, MmrVersions},
     GroveVersion,
 };
 
@@ -208,6 +211,14 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 add_worst_case_get_cost: 0,
                 worst_case_commitment_tree_insert: 0,
             },
+            // PrivateDocumentStore is unavailable before GROVE_V4: every
+            // slot is 0 and the operations fail closed.
+            private_document_store: GroveDBOperationsPrivateDocumentStoreVersions {
+                element_creation: 0,
+                insert: 0,
+                get_value: 0,
+                count: 0,
+            },
         },
         aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions { merge: 0 },
         path_query_methods: GroveDBPathQueryMethodVersions {
@@ -243,6 +254,25 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
         // trip if someone calls it directly from a v1 context.
         proof: MerkProofVersions {
             prove_count_offset_on_range: 0,
+        },
+    },
+    // MMR hash charges: the shipped accounting, which billed the
+    // storage reads each operation performed but not the blake3 merges
+    // those reads fed. Locked here — these versions are released and a
+    // replayed block must be charged what it was admitted under.
+    mmr_versions: MmrVersions {
+        cost: MmrCostVersions {
+            push: 0,
+            get_root: 0,
+            gen_proof: 0,
+        },
+    },
+    // Compaction hash count: the shipped figure, which omits the peak
+    // bagging a compaction's own `get_root` performs. Locked — the
+    // shielded pool has been charged this since mainnet activation.
+    bulk_append_tree_versions: BulkAppendTreeVersions {
+        cost: BulkAppendTreeCostVersions {
+            compaction_hash_count: 0,
         },
     },
 };

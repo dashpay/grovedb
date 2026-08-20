@@ -17,6 +17,7 @@ members = [
     "grovedb-bulk-append-tree",
     "grovedb-dense-fixed-sized-merkle-tree",
     "grovedb-query",
+    "grovedb-private-document-store",
 ]
 
 [workspace.dependencies]

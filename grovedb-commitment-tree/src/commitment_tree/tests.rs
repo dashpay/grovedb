@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod storage_tests {
+    use grovedb_version::version::GroveVersion;
     use std::{collections::BTreeMap, marker::PhantomData};
 
     use grovedb_bulk_append_tree::BulkAppendTree;
@@ -515,6 +516,7 @@ mod storage_tests {
                 test_rho(i as u8),
                 test_cv_net(i as u8),
                 &test_ciphertext(i as u8),
+                GroveVersion::latest(),
             )
             .value
             .expect("append should succeed");
@@ -567,6 +569,7 @@ mod storage_tests {
             test_rho(0),
             test_cv_net(0),
             &test_ciphertext(0),
+            GroveVersion::latest(),
         )
         .value
         .expect("append should succeed");
@@ -669,6 +672,7 @@ mod storage_tests {
                 test_rho(i as u8),
                 test_cv_net(i as u8),
                 &test_ciphertext(i as u8),
+                GroveVersion::latest(),
             )
             .value
             .expect("append should succeed");
@@ -708,6 +712,7 @@ mod storage_tests {
                 test_rho(0),
                 test_cv_net(0),
                 &test_ciphertext(0),
+                GroveVersion::latest(),
             )
             .value
             .expect("first append");
@@ -724,6 +729,7 @@ mod storage_tests {
                 test_rho(1),
                 test_cv_net(1),
                 &test_ciphertext(1),
+                GroveVersion::latest(),
             )
             .value
             .expect("second append");
@@ -753,7 +759,13 @@ mod storage_tests {
             .expect("open should succeed");
 
         // Too small
-        let result = ct.append_raw(test_leaf(0), test_rho(0), test_cv_net(0), &[0u8; 10]);
+        let result = ct.append_raw(
+            test_leaf(0),
+            test_rho(0),
+            test_cv_net(0),
+            &[0u8; 10],
+            GroveVersion::latest(),
+        );
         let err = result.value.expect_err("should reject wrong size");
         let msg = format!("{}", err);
         assert!(
@@ -763,7 +775,13 @@ mod storage_tests {
         );
 
         // Too large
-        let result = ct.append_raw(test_leaf(0), test_rho(0), test_cv_net(0), &[0u8; 300]);
+        let result = ct.append_raw(
+            test_leaf(0),
+            test_rho(0),
+            test_cv_net(0),
+            &[0u8; 300],
+            GroveVersion::latest(),
+        );
         assert!(
             result.value.is_err(),
             "should reject payload that is too large"
@@ -776,6 +794,7 @@ mod storage_tests {
             test_rho(0),
             test_cv_net(0),
             &vec![0u8; expected_size],
+            GroveVersion::latest(),
         );
         assert!(result.value.is_ok(), "correct size should succeed");
     }
@@ -854,6 +873,7 @@ mod storage_tests {
             test_rho(0),
             test_cv_net(0),
             &test_ciphertext(0),
+            GroveVersion::latest(),
         )
         .value
         .expect("append should succeed");
@@ -896,6 +916,7 @@ mod storage_tests {
             test_rho(0),
             test_cv_net(0),
             &test_ciphertext(0),
+            GroveVersion::latest(),
         )
         .value
         .expect("append 0");
@@ -905,6 +926,7 @@ mod storage_tests {
                 test_rho(1),
                 test_cv_net(1),
                 &test_ciphertext(1),
+                GroveVersion::latest(),
             )
             .value
             .expect("append 1");
@@ -948,6 +970,7 @@ mod storage_tests {
                 test_rho(0),
                 test_cv_net(0),
                 &test_ciphertext(0),
+                GroveVersion::latest(),
             )
             .value
             .expect("append 0");
@@ -979,6 +1002,7 @@ mod storage_tests {
             test_rho(0),
             test_cv_net(0),
             &test_ciphertext(0),
+            GroveVersion::latest(),
         )
         .value
         .expect("append 0");
@@ -987,6 +1011,7 @@ mod storage_tests {
             test_rho(1),
             test_cv_net(1),
             &test_ciphertext(1),
+            GroveVersion::latest(),
         )
         .value
         .expect("append 1");
@@ -999,6 +1024,7 @@ mod storage_tests {
             test_rho(2),
             test_cv_net(2),
             &test_ciphertext(2),
+            GroveVersion::latest(),
         )
         .value
         .expect("append 2");
@@ -1007,6 +1033,7 @@ mod storage_tests {
             test_rho(3),
             test_cv_net(3),
             &test_ciphertext(3),
+            GroveVersion::latest(),
         )
         .value
         .expect("append 3");
@@ -1033,6 +1060,7 @@ mod storage_tests {
             test_rho(0),
             test_cv_net(0),
             &test_ciphertext(0),
+            GroveVersion::latest(),
         )
         .value
         .expect("append 0");
@@ -1067,6 +1095,7 @@ mod storage_tests {
             test_rho(0),
             test_cv_net(0),
             &test_ciphertext(0),
+            GroveVersion::latest(),
         )
         .value
         .expect("append should succeed");
@@ -1105,6 +1134,7 @@ mod storage_tests {
             test_rho(0),
             test_cv_net(0),
             &test_ciphertext(0),
+            GroveVersion::latest(),
         )
         .value
         .expect("append should succeed");
@@ -1133,7 +1163,13 @@ mod storage_tests {
 
         // All 0xFF is not a valid Pallas field element
         let payload = vec![0u8; ciphertext_payload_size::<DashMemo>()];
-        let result = ct.append_raw([0xFF; 32], test_rho(0), test_cv_net(0), &payload);
+        let result = ct.append_raw(
+            [0xFF; 32],
+            test_rho(0),
+            test_cv_net(0),
+            &payload,
+            GroveVersion::latest(),
+        );
         assert!(
             result.value.is_err(),
             "should reject invalid cmx field element"
@@ -1170,9 +1206,15 @@ mod storage_tests {
             CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, MockDataStorageContext::new())
                 .expect("new should succeed");
         for entry in entries {
-            ct.append_raw(entry.cmx, entry.rho, entry.cv_net, &entry.payload)
-                .value
-                .expect("per-leaf append_raw should succeed");
+            ct.append_raw(
+                entry.cmx,
+                entry.rho,
+                entry.cv_net,
+                &entry.payload,
+                GroveVersion::latest(),
+            )
+            .value
+            .expect("per-leaf append_raw should succeed");
         }
         ct
     }
@@ -1184,7 +1226,7 @@ mod storage_tests {
         let mut ct =
             CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, MockDataStorageContext::new())
                 .expect("new should succeed");
-        ct.append_many_raw(entries)
+        ct.append_many_raw(entries, GroveVersion::latest())
             .value
             .expect("append_many_raw should succeed");
         ct
@@ -1438,7 +1480,7 @@ mod storage_tests {
             },
         ];
         let err = ct
-            .append_many_raw(entries)
+            .append_many_raw(entries, GroveVersion::latest())
             .value
             .expect_err("invalid cmx must propagate out of the batch");
         assert!(
@@ -1472,7 +1514,7 @@ mod storage_tests {
             },
         ];
         let err = ct
-            .append_many_raw(entries)
+            .append_many_raw(entries, GroveVersion::latest())
             .value
             .expect_err("bad payload size must propagate out of the batch");
         assert!(
@@ -1502,7 +1544,7 @@ mod storage_tests {
             payload: seed_payload(0),
         }];
         let err = ct
-            .append_many_raw(entries)
+            .append_many_raw(entries, GroveVersion::latest())
             .value
             .expect_err("bulk storage failure should surface");
         assert!(
@@ -1547,7 +1589,9 @@ mod storage_tests {
             cv_net: test_cv_net(i),
             payload: seed_payload(i),
         });
-        ct.append_many_raw(notes).value.expect("warmup");
+        ct.append_many_raw(notes, GroveVersion::latest())
+            .value
+            .expect("warmup");
 
         ct.commit_mmr().expect("commit_mmr should flush cleanly");
     }
@@ -1571,7 +1615,7 @@ mod storage_tests {
 
         // A single append keeps the item in the dense buffer (epoch_size = 2 for
         // TEST_CHUNK_POWER = 1), so we can read the raw item bytes straight back.
-        ct.append(cmx, rho, cv_net, &ciphertext)
+        ct.append(cmx, rho, cv_net, &ciphertext, GroveVersion::latest())
             .value
             .expect("append should succeed");
 
@@ -1643,9 +1687,15 @@ mod storage_tests {
                 .expect("new should succeed");
         for (i, cmx) in fixed_cmx.iter().enumerate() {
             let idx = i as u8;
-            ct.append_raw(*cmx, test_rho(idx), test_cv_net(idx), &seed_payload(idx))
-                .value
-                .expect("append_raw should succeed");
+            ct.append_raw(
+                *cmx,
+                test_rho(idx),
+                test_cv_net(idx),
+                &seed_payload(idx),
+                GroveVersion::latest(),
+            )
+            .value
+            .expect("append_raw should succeed");
         }
 
         // Build a pure frontier from the SAME cmx sequence (no rho/cv_net/payload).

@@ -68,7 +68,7 @@ impl GroveDb {
 
         // 2. Open transactional storage (write-through cache + MMR overlay
         //    provide read-after-write visibility)
-        let subtree_path_vec = self.build_subtree_path_for_bulk(&path, key);
+        let subtree_path_vec = crate::util::subtree_path_with_key(&path, key);
         let subtree_path_refs: Vec<&[u8]> = subtree_path_vec.iter().map(|v| v.as_slice()).collect();
         let subtree_path = SubtreePath::from(subtree_path_refs.as_slice());
 
@@ -84,7 +84,10 @@ impl GroveDb {
             BulkAppendTree::from_state(total_count, chunk_power, storage_ctx).map_err(map_bulk_err)
         );
 
-        let result = cost_return_on_error_no_add!(cost, tree.append(&value).map_err(map_bulk_err));
+        let result = cost_return_on_error_no_add!(
+            cost,
+            tree.append(&value, grove_version).map_err(map_bulk_err)
+        );
 
         cost.hash_node_calls += result.hash_count;
 
@@ -203,7 +206,7 @@ impl GroveDb {
             return Ok(None).wrap_with_cost(cost);
         }
 
-        let subtree_path_vec = self.build_subtree_path_for_bulk(&path, key);
+        let subtree_path_vec = crate::util::subtree_path_with_key(&path, key);
         let subtree_path_refs: Vec<&[u8]> = subtree_path_vec.iter().map(|v| v.as_slice()).collect();
         let subtree_path = SubtreePath::from(subtree_path_refs.as_slice());
 
@@ -284,7 +287,7 @@ impl GroveDb {
             }
         };
 
-        let subtree_path_vec = self.build_subtree_path_for_bulk(&path, key);
+        let subtree_path_vec = crate::util::subtree_path_with_key(&path, key);
         let subtree_path_refs: Vec<&[u8]> = subtree_path_vec.iter().map(|v| v.as_slice()).collect();
         let subtree_path = SubtreePath::from(subtree_path_refs.as_slice());
 
@@ -338,7 +341,7 @@ impl GroveDb {
             }
         };
 
-        let subtree_path_vec = self.build_subtree_path_for_bulk(&path, key);
+        let subtree_path_vec = crate::util::subtree_path_with_key(&path, key);
         let subtree_path_refs: Vec<&[u8]> = subtree_path_vec.iter().map(|v| v.as_slice()).collect();
         let subtree_path = SubtreePath::from(subtree_path_refs.as_slice());
 
@@ -424,17 +427,6 @@ impl GroveDb {
             }
             _ => Err(Error::InvalidInput("element is not a BulkAppendTree")).wrap_with_cost(cost),
         }
-    }
-
-    /// Build subtree path for a BulkAppendTree at path/key.
-    fn build_subtree_path_for_bulk<B: AsRef<[u8]>>(
-        &self,
-        path: &SubtreePath<B>,
-        key: &[u8],
-    ) -> Vec<Vec<u8>> {
-        let mut v = path.to_vec();
-        v.push(key.to_vec());
-        v
     }
 
     /// Preprocess `BulkAppend` ops in a batch.
@@ -535,8 +527,10 @@ impl GroveDb {
 
             // Process each value
             for value in values {
-                let result =
-                    cost_return_on_error_no_add!(cost, tree.append(value).map_err(map_bulk_err));
+                let result = cost_return_on_error_no_add!(
+                    cost,
+                    tree.append(value, grove_version).map_err(map_bulk_err)
+                );
                 cost.hash_node_calls += result.hash_count;
             }
 

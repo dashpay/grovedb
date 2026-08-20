@@ -116,6 +116,12 @@ impl ElementReconstructExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(c, h, f) => {
                 Some(Element::DenseAppendOnlyFixedSizeTree(*c, *h, f.clone()))
             }
+            // Like the other non-Merk data trees, the private document store
+            // has no root key and no Merk aggregate — the element is
+            // reconstructed verbatim.
+            Element::PrivateDocumentStore(tc, es, cp, f) => {
+                Some(Element::PrivateDocumentStore(*tc, *es, *cp, f.clone()))
+            }
             // Recurse on the inner element and re-wrap. Without this, a
             // batch that mutates a subtree under a wrapped tree would lose
             // the wrapper on the parent's stored element when its root key
@@ -196,6 +202,18 @@ mod tests {
 
     use super::ElementReconstructExtensions;
     use crate::tree::AggregateData;
+
+    #[test]
+    fn reconstruct_private_document_store_is_verbatim() {
+        // Like the other non-Merk data trees, a PrivateDocumentStore has no
+        // root key and no Merk aggregate: reconstruction ignores both inputs
+        // and returns the element verbatim.
+        let element = Element::new_private_document_store(9, 64, 4, Some(vec![1, 2]));
+        let reconstructed = element
+            .reconstruct_with_root_key(Some(b"ignored".to_vec()), AggregateData::NoAggregateData)
+            .expect("reconstruct ok");
+        assert_eq!(reconstructed, element);
+    }
 
     #[test]
     fn reconstruct_preserves_non_counted_wrapper() {

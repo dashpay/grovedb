@@ -242,6 +242,7 @@ where
                 | GroveOp::MmrTreeAppend { .. }
                 | GroveOp::BulkAppend { .. }
                 | GroveOp::DenseTreeInsert { .. }
+                | GroveOp::PrivateDocumentStoreInsert { .. }
                 | GroveOp::ReplaceNonMerkTreeRoot { .. } => {
                     // User-facing tree ops are preprocessed before batch
                     // execution into ReplaceNonMerkTreeRoot ops, which must

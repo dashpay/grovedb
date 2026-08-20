@@ -1,5 +1,6 @@
 //! Read operations for BulkAppendTree.
 
+use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
 use grovedb_merkle_mountain_range::{leaf_to_pos, MmrKeySize, MmrStore, MMR};
 use grovedb_query::Query;
@@ -7,6 +8,7 @@ use grovedb_storage::StorageContext;
 
 use super::BulkAppendTree;
 use crate::{chunk::deserialize_chunk_blob, BulkAppendError};
+use grovedb_version::version::GroveVersion;
 
 /// Result of querying the dense tree buffer.
 #[derive(Debug, Clone)]
@@ -38,12 +40,34 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// from completed chunks. The position is relative to the current buffer
     /// cycle (0-based).
     pub fn get_buffer_value(&self, position: u16) -> Result<Option<Vec<u8>>, BulkAppendError> {
+        self.get_buffer_value_with_cost(position).unwrap()
+    }
+
+    /// Cost-propagating variant of
+    /// [`get_buffer_value`](Self::get_buffer_value).
+    ///
+    /// Identical behavior; the difference is that the dense-tree read's
+    /// `OperationCost` (seek count and loaded bytes) reaches the caller
+    /// instead of being discarded. Callers that bill reads — anything
+    /// returning a `CostResult` to GroveDB — must use this variant, or the
+    /// read is served for free.
+    pub fn get_buffer_value_with_cost(
+        &self,
+        position: u16,
+    ) -> CostResult<Option<Vec<u8>>, BulkAppendError> {
+        let mut cost = OperationCost::default();
         if position >= self.buffer_count() {
-            return Ok(None);
+            return Ok(None).wrap_with_cost(cost);
         }
-        self.dense_tree.get(position).unwrap().map_err(|e| {
-            BulkAppendError::StorageError(format!("dense tree get at {} failed: {}", position, e))
-        })
+        let result = self.dense_tree.get(position).unwrap_add_cost(&mut cost);
+        result
+            .map_err(|e| {
+                BulkAppendError::StorageError(format!(
+                    "dense tree get at {} failed: {}",
+                    position, e
+                ))
+            })
+            .wrap_with_cost(cost)
     }
 
     /// Query the buffer using a dense tree query.
@@ -73,28 +97,45 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// Uses the MMR overlay to find nodes that were pushed during this session
     /// but not yet committed to storage.
     pub fn get_chunk_value(&self, chunk_index: u64) -> Result<Option<Vec<u8>>, BulkAppendError> {
+        self.get_chunk_value_with_cost(chunk_index).unwrap()
+    }
+
+    /// Cost-propagating variant of
+    /// [`get_chunk_value`](Self::get_chunk_value). See
+    /// [`get_buffer_value_with_cost`](Self::get_buffer_value_with_cost) for
+    /// why the cost-bearing form exists.
+    pub fn get_chunk_value_with_cost(
+        &self,
+        chunk_index: u64,
+    ) -> CostResult<Option<Vec<u8>>, BulkAppendError> {
+        let mut cost = OperationCost::default();
         if chunk_index >= self.chunk_count() {
-            return Ok(None);
+            return Ok(None).wrap_with_cost(cost);
         }
         let mmr_pos = leaf_to_pos(chunk_index);
         let mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32);
         let mmr = MMR::new_with_overlay(self.mmr_size(), &mmr_store, self.mmr_overlay.clone());
-        let node = mmr
+        let node = match mmr
             .batch
             .element_at_position(mmr_pos)
-            .unwrap()
-            .map_err(|e| {
-                BulkAppendError::MmrError(format!(
+            .unwrap_add_cost(&mut cost)
+        {
+            Ok(n) => n,
+            Err(e) => {
+                return Err(BulkAppendError::MmrError(format!(
                     "failed to read MMR node for chunk {}: {}",
                     chunk_index, e
-                ))
-            })?;
+                )))
+                .wrap_with_cost(cost);
+            }
+        };
         match node {
-            Some(n) => Ok(n.into_value()),
+            Some(n) => Ok(n.into_value()).wrap_with_cost(cost),
             None => Err(BulkAppendError::CorruptedData(format!(
                 "missing MMR leaf for chunk {}",
                 chunk_index
-            ))),
+            )))
+            .wrap_with_cost(cost),
         }
     }
 
@@ -138,14 +179,17 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             let mmr = MMR::new_with_overlay(mmr_size, &mmr_store, self.mmr_overlay.clone());
 
             let positions: Vec<u64> = chunk_indices.iter().map(|&idx| leaf_to_pos(idx)).collect();
-            let proof = mmr.gen_proof(positions).unwrap().map_err(|e| {
-                BulkAppendError::MmrError(format!("chunk MMR gen_proof failed: {}", e))
-            })?;
+            let proof = mmr
+                .gen_proof(positions, GroveVersion::latest())
+                .unwrap()
+                .map_err(|e| {
+                    BulkAppendError::MmrError(format!("chunk MMR gen_proof failed: {}", e))
+                })?;
 
             let proof_items: Vec<[u8; 32]> =
                 proof.proof_items().iter().map(|node| node.hash()).collect();
 
-            let root = mmr.get_root().unwrap().map_err(|e| {
+            let root = mmr.get_root(GroveVersion::latest()).unwrap().map_err(|e| {
                 BulkAppendError::MmrError(format!("chunk MMR get_root failed: {}", e))
             })?;
 

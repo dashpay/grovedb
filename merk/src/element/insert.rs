@@ -204,6 +204,12 @@ impl ElementInsertToStorageExtensions for Element {
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
     fn validate_insertable_into(&self, tree_type: TreeType) -> Result<(), Error> {
+        if matches!(tree_type, TreeType::PrivateDocumentStore(_)) {
+            return Err(Error::InvalidInputError(
+                "private document stores cannot hold child elements; entries are appended \
+                 via the private_document_store_insert API",
+            ));
+        }
         if self.is_non_counted() && !tree_type.accepts_non_counted_children() {
             return Err(Error::InvalidInputError(
                 "non-counted elements may only be inserted into non-provable count-bearing \
@@ -503,6 +509,14 @@ impl ElementInsertToStorageExtensions for Element {
             grove_version.grovedb_versions.element.insert_reference
         );
 
+        if matches!(merk.tree_type, TreeType::PrivateDocumentStore(_)) {
+            return Err(Error::InvalidInputError(
+                "private document stores cannot hold child elements; entries are appended \
+                 via the private_document_store_insert API",
+            ))
+            .wrap_with_cost(Default::default());
+        }
+
         if self.is_non_counted() && !merk.tree_type.accepts_non_counted_children() {
             return Err(Error::InvalidInputError(
                 "non-counted elements may only be inserted into non-provable count-bearing \
@@ -614,6 +628,14 @@ impl ElementInsertToStorageExtensions for Element {
             "insert_subtree",
             grove_version.grovedb_versions.element.insert_subtree
         );
+
+        if matches!(merk.tree_type, TreeType::PrivateDocumentStore(_)) {
+            return Err(Error::InvalidInputError(
+                "private document stores cannot hold child elements; entries are appended \
+                 via the private_document_store_insert API",
+            ))
+            .wrap_with_cost(Default::default());
+        }
 
         if self.is_non_counted() && !merk.tree_type.accepts_non_counted_children() {
             return Err(Error::InvalidInputError(
@@ -752,6 +774,14 @@ impl ElementInsertToStorageExtensions for Element {
                 "insert_count_indexed_subtree only accepts indexed-tree elements \
                  (ProvableSumIndexedTree, ProvableCountIndexedTree, or \
                  ProvableCountProvableSumIndexedTree)",
+            ))
+            .wrap_with_cost(Default::default());
+        }
+
+        if matches!(merk.tree_type, TreeType::PrivateDocumentStore(_)) {
+            return Err(Error::InvalidInputError(
+                "private document stores cannot hold child elements; entries are appended \
+                 via the private_document_store_insert API",
             ))
             .wrap_with_cost(Default::default());
         }
@@ -908,6 +938,110 @@ mod tests {
         test_utils::{empty_path_merk, empty_path_merk_read_only, TempMerk},
         TreeType,
     };
+
+    #[test]
+    fn private_document_store_merk_rejects_all_child_element_inserts() {
+        // A PrivateDocumentStore's Merk must stay empty forever: every
+        // element-insert entry point rejects when the destination Merk is
+        // PDS-typed — validate_insertable_into (used by insert /
+        // insert_if_not_exists), the inline guards in insert_reference and
+        // insert_subtree, and insert_count_indexed_subtree.
+        let grove_version = GroveVersion::latest();
+        let mut merk =
+            TempMerk::new_with_tree_type(grove_version, TreeType::PrivateDocumentStore(4));
+
+        let item = Element::new_item(b"value".to_vec());
+        assert!(item
+            .validate_insertable_into(TreeType::PrivateDocumentStore(4))
+            .is_err());
+        assert!(item
+            .insert(&mut merk, b"k", None, grove_version)
+            .unwrap()
+            .is_err());
+        assert!(item
+            .insert_if_not_exists(&mut merk, b"k", None, grove_version)
+            .unwrap()
+            .is_err());
+
+        let reference = Element::new_reference(
+            grovedb_element::reference_path::ReferencePathType::AbsolutePathReference(vec![
+                b"a".to_vec()
+            ]),
+        );
+        assert!(reference
+            .insert_reference(&mut merk, b"k", [0u8; 32], None, grove_version)
+            .unwrap()
+            .is_err());
+
+        let subtree = Element::empty_tree();
+        assert!(subtree
+            .insert_subtree(&mut merk, b"k", [0u8; 32], None, grove_version)
+            .unwrap()
+            .is_err());
+
+        let cidx = Element::empty_provable_count_indexed_tree();
+        assert!(cidx
+            .insert_count_indexed_subtree(
+                &mut merk,
+                b"k",
+                [0u8; 32],
+                [0u8; 32],
+                None,
+                grove_version
+            )
+            .unwrap()
+            .is_err());
+
+        // The `*_into_batch_operations` builders cannot see the destination
+        // Merk, so ops CAN be queued — but the apply chokepoint
+        // (`Merk::apply_unchecked`, which every apply variant funnels
+        // through) rejects any non-empty batch aimed at a PDS Merk, so the
+        // queued ops can never take effect.
+        let mut ops: Vec<crate::BatchEntry<Vec<u8>>> = Vec::new();
+        item.insert_into_batch_operations(
+            b"k".to_vec(),
+            &mut ops,
+            crate::TreeFeatureType::BasicMerkNode,
+            grove_version,
+        )
+        .unwrap()
+        .expect("builder itself queues");
+        subtree
+            .insert_subtree_into_batch_operations(
+                b"k2".to_vec(),
+                [0u8; 32],
+                true,
+                &mut ops,
+                crate::TreeFeatureType::BasicMerkNode,
+                grove_version,
+            )
+            .unwrap()
+            .expect("builder itself queues");
+        reference
+            .insert_reference_into_batch_operations(
+                b"k3".to_vec(),
+                [0u8; 32],
+                &mut ops,
+                crate::TreeFeatureType::BasicMerkNode,
+                grove_version,
+            )
+            .unwrap()
+            .expect("builder itself queues");
+        let apply_result = merk
+            .apply_with_specialized_costs::<_, Vec<u8>>(
+                &ops,
+                &[],
+                None,
+                &|_, _| Ok(0),
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            apply_result.is_err(),
+            "applying queued ops to a PDS Merk must be rejected"
+        );
+    }
 
     #[test]
     fn test_success_insert() {

@@ -154,6 +154,16 @@ pub enum NonMerkTreeMeta {
         /// Fixed height of the dense Merkle tree.
         height: u8,
     },
+    /// PrivateDocumentStore state: total_count plus the committed config
+    /// {entry_size, chunk_power}.
+    PrivateDocumentStore {
+        /// Total number of entries appended so far.
+        total_count: u64,
+        /// Committed byte length of every entry.
+        entry_size: u32,
+        /// Power-of-2 chunk size for epochs.
+        chunk_power: u8,
+    },
 }
 
 impl NonMerkTreeMeta {
@@ -169,6 +179,9 @@ impl NonMerkTreeMeta {
             }
             NonMerkTreeMeta::DenseTree { height, .. } => {
                 TreeType::DenseAppendOnlyFixedSizeTree(*height)
+            }
+            NonMerkTreeMeta::PrivateDocumentStore { chunk_power, .. } => {
+                TreeType::PrivateDocumentStore(*chunk_power)
             }
         }
     }
@@ -188,6 +201,13 @@ impl NonMerkTreeMeta {
             NonMerkTreeMeta::DenseTree { count, height } => {
                 Element::new_dense_tree(*count, *height, flags)
             }
+            NonMerkTreeMeta::PrivateDocumentStore {
+                total_count,
+                entry_size,
+                chunk_power,
+            } => {
+                Element::new_private_document_store(*total_count, *entry_size, *chunk_power, flags)
+            }
         }
     }
 
@@ -198,6 +218,7 @@ impl NonMerkTreeMeta {
             NonMerkTreeMeta::MmrTree { mmr_size } => *mmr_size,
             NonMerkTreeMeta::BulkAppendTree { total_count, .. } => *total_count,
             NonMerkTreeMeta::DenseTree { count, .. } => *count as u64,
+            NonMerkTreeMeta::PrivateDocumentStore { total_count, .. } => *total_count,
         }
     }
 }
@@ -484,6 +505,13 @@ pub enum GroveOp {
         /// Value to insert
         value: Vec<u8>,
     },
+    /// Append a fixed-size entry to a PrivateDocumentStore. The entry's
+    /// length must equal the store's committed `entry_size`; the append is
+    /// rejected otherwise.
+    PrivateDocumentStoreInsert {
+        /// Entry to append (exactly `entry_size` bytes)
+        entry: Vec<u8>,
+    },
 }
 
 impl GroveOp {
@@ -513,6 +541,7 @@ impl GroveOp {
             GroveOp::InsertNonMerkTree { .. } => 16,
             GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. } => 17,
             GroveOp::InsertAggregateIndexedTreeRootKeys { .. } => 18,
+            GroveOp::PrivateDocumentStoreInsert { .. } => 19,
         }
     }
 
@@ -574,7 +603,8 @@ impl GroveOp {
             GroveOp::CommitmentTreeInsert { .. }
             | GroveOp::MmrTreeAppend { .. }
             | GroveOp::BulkAppend { .. }
-            | GroveOp::DenseTreeInsert { .. } => false,
+            | GroveOp::DenseTreeInsert { .. }
+            | GroveOp::PrivateDocumentStoreInsert { .. } => false,
         }
     }
 }
@@ -865,6 +895,9 @@ impl fmt::Debug for QualifiedGroveDbOp {
             GroveOp::MmrTreeAppend { .. } => "MMR Tree Append".to_string(),
             GroveOp::BulkAppend { .. } => "Bulk Append".to_string(),
             GroveOp::DenseTreeInsert { .. } => "Dense Tree Insert".to_string(),
+            GroveOp::PrivateDocumentStoreInsert { .. } => {
+                "Private Document Store Insert".to_string()
+            }
             GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. } => {
                 "Replace CountIndexedTree primary+secondary roots".to_string()
             }
@@ -1253,6 +1286,18 @@ impl QualifiedGroveDbOp {
             path,
             key: None,
             op: GroveOp::DenseTreeInsert { value },
+        }
+    }
+
+    /// A private document store insert op. `path` includes the store key as
+    /// its last segment. The entry must be exactly the store's committed
+    /// `entry_size` bytes; the batch preprocessor rejects any other length.
+    pub fn private_document_store_insert_op(path: Vec<Vec<u8>>, entry: Vec<u8>) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: None,
+            op: GroveOp::PrivateDocumentStoreInsert { entry },
         }
     }
 
@@ -1990,9 +2035,10 @@ where
             | Element::DenseAppendOnlyFixedSizeTree(..)
             | Element::ProvableSumIndexedTree(..)
             | Element::ProvableCountIndexedTree(..)
-            | Element::ProvableCountProvableSumIndexedTree(..) => Err(
-                Error::InvalidBatchOperation("references can not point to trees being updated"),
-            )
+            | Element::ProvableCountProvableSumIndexedTree(..)
+            | Element::PrivateDocumentStore(..) => Err(Error::InvalidBatchOperation(
+                "references can not point to trees being updated",
+            ))
             .wrap_with_cost(cost),
             // underlying() unwraps a single level; the constructor and
             // (de)serializer reject nested wrappers, so these are
@@ -2059,7 +2105,8 @@ where
                 | GroveOp::CommitmentTreeInsert { .. }
                 | GroveOp::MmrTreeAppend { .. }
                 | GroveOp::BulkAppend { .. }
-                | GroveOp::DenseTreeInsert { .. } => Err(Error::InvalidBatchOperation(
+                | GroveOp::DenseTreeInsert { .. }
+                | GroveOp::PrivateDocumentStoreInsert { .. } => Err(Error::InvalidBatchOperation(
                     "references can not point to trees being updated",
                 ))
                 .wrap_with_cost(cost),
@@ -2152,12 +2199,11 @@ where
                         | Element::DenseAppendOnlyFixedSizeTree(..)
                         | Element::ProvableSumIndexedTree(..)
                         | Element::ProvableCountIndexedTree(..)
-                        | Element::ProvableCountProvableSumIndexedTree(..) => {
-                            Err(Error::InvalidBatchOperation(
-                                "references can not point to trees being updated",
-                            ))
-                            .wrap_with_cost(cost)
-                        }
+                        | Element::ProvableCountProvableSumIndexedTree(..)
+                        | Element::PrivateDocumentStore(..) => Err(Error::InvalidBatchOperation(
+                            "references can not point to trees being updated",
+                        ))
+                        .wrap_with_cost(cost),
                         // Wrappers are unwrapped via underlying() above.
                         Element::NonCounted(_)
                         | Element::NotSummed(_)
@@ -2206,12 +2252,11 @@ where
                     | Element::DenseAppendOnlyFixedSizeTree(..)
                     | Element::ProvableSumIndexedTree(..)
                     | Element::ProvableCountIndexedTree(..)
-                    | Element::ProvableCountProvableSumIndexedTree(..) => {
-                        Err(Error::InvalidBatchOperation(
-                            "references can not point to trees being updated",
-                        ))
-                        .wrap_with_cost(cost)
-                    }
+                    | Element::ProvableCountProvableSumIndexedTree(..)
+                    | Element::PrivateDocumentStore(..) => Err(Error::InvalidBatchOperation(
+                        "references can not point to trees being updated",
+                    ))
+                    .wrap_with_cost(cost),
                     // Wrappers are unwrapped via underlying() above.
                     Element::NonCounted(_)
                     | Element::NotSummed(_)
@@ -2515,6 +2560,13 @@ where
                     // Without these checks, batch users could persist
                     // wrapped elements into the wrong tree types and silently
                     // violate the wrapper invariant.
+                    if matches!(in_tree_type, TreeType::PrivateDocumentStore(_)) {
+                        return Err(Error::InvalidBatchOperation(
+                            "private document stores cannot hold child elements; entries are \
+                             appended via the PrivateDocumentStoreInsert operation",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
                     if element.is_non_counted() && !in_tree_type.accepts_non_counted_children() {
                         return Err(Error::InvalidBatchOperation(
                             "non-counted elements may only be inserted into non-provable \
@@ -2935,6 +2987,113 @@ where
                                 )
                             );
                         }
+                        Element::PrivateDocumentStore(total_count, entry_size, chunk_power, _) => {
+                            // Fail closed on protocol versions that predate
+                            // the element type.
+                            cost_return_on_error_no_add!(
+                                cost,
+                                crate::operations::private_document_store::check_pds_enabled(
+                                    "batch insert Element::PrivateDocumentStore",
+                                    grove_version
+                                        .grovedb_versions
+                                        .operations
+                                        .private_document_store
+                                        .element_creation,
+                                )
+                            );
+                            // Only empty-creation is allowed: the child hash
+                            // written below is the empty state root for this
+                            // config, and entries can only be added through
+                            // the typed append path.
+                            if *total_count != 0 {
+                                return Err(Error::InvalidBatchOperation(
+                                    "a PrivateDocumentStore must be empty at the moment of batch \
+                                     insertion (total_count = 0); entries are appended via the \
+                                     PrivateDocumentStoreInsert operation",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                            // Same config validation the element constructors
+                            // enforce — a caller-built element must not bypass
+                            // it, since the config is committed into the state
+                            // root.
+                            if *entry_size == 0
+                                || *entry_size > u16::MAX as u32
+                                || !(1..=16).contains(chunk_power)
+                            {
+                                return Err(Error::InvalidBatchOperation(
+                                    "a PrivateDocumentStore requires entry_size in 1..=65535 and \
+                                     chunk_power in 1..=16",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                            // A private document store is write-once, so
+                            // creating one over an existing element is
+                            // ALWAYS rejected — not just under
+                            // `InsertIfNotExists` or
+                            // `validate_insertion_does_not_override`.
+                            //
+                            // Without this, a plain `InsertOrReplace` of a
+                            // fresh (total_count = 0) store over a populated
+                            // one is accepted with default options: the
+                            // element resets to empty and re-binds the empty
+                            // state root while the old chunk blobs, MMR nodes
+                            // and buffer entries stay behind in the subtree's
+                            // data namespace. That both leaks storage and
+                            // breaks the type's central promise, since a
+                            // wholesale overwrite is a delete of every entry.
+                            // Replacing a store means deleting it first,
+                            // which clears the data namespace.
+                            let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                            let existing = cost_return_on_error_into!(
+                                &mut cost,
+                                element.element_at_key_already_exists(
+                                    merk,
+                                    key_info.get_key_clone().as_slice(),
+                                    grove_version,
+                                )
+                            );
+                            if existing {
+                                if is_insert_if_not_exists && !error_if_exists {
+                                    // `InsertIfNotExists` semantics: not an
+                                    // error, just nothing to do.
+                                    continue;
+                                }
+                                return Err(Error::InvalidBatchOperation(
+                                    "a PrivateDocumentStore already exists at this key; it is \
+                                     append-only and cannot be overwritten \u{2014} delete it \
+                                     first, which clears its data namespace",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                            let merk_feature_type = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(in_tree_type)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            // Deriving the empty root performs two blake3
+                            // calls — the committed-config hash and the
+                            // composite `pds_state` hash — neither of which
+                            // the helper can bill, since it returns a bare
+                            // array. Charge them here so creating a store
+                            // through a batch matches the direct path.
+                            cost.hash_node_calls = cost.hash_node_calls.saturating_add(2);
+                            cost_return_on_error_into!(
+                                &mut cost,
+                                element.insert_subtree_into_batch_operations(
+                                    key_info.get_key_clone(),
+                                    grovedb_private_document_store::empty_private_document_store_state_root(
+                                        *entry_size,
+                                        *chunk_power,
+                                    ),
+                                    false,
+                                    &mut batch_operations,
+                                    merk_feature_type,
+                                    grove_version,
+                                )
+                            );
+                        }
                         Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                             let merk_feature_type = cost_return_on_error_into!(
                                 &mut cost,
@@ -3140,6 +3299,13 @@ where
                     // wrapper into a parent that doesn't accept it —
                     // including any `Provable*` count tree where the
                     // count is cryptographically committed.
+                    if matches!(in_tree_type, TreeType::PrivateDocumentStore(_)) {
+                        return Err(Error::InvalidBatchOperation(
+                            "private document stores cannot hold child elements; entries are \
+                             appended via the PrivateDocumentStoreInsert operation",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
                     if element.is_non_counted() && !in_tree_type.accepts_non_counted_children() {
                         return Err(Error::InvalidBatchOperation(
                             "RefreshReference with non_counted=true requires a non-provable \
@@ -3282,15 +3448,46 @@ where
                     );
                 }
                 GroveOp::ReplaceNonMerkTreeRoot { hash, meta } => {
-                    // Read existing element to preserve flags
+                    // Read existing element to preserve flags (and, for a
+                    // PrivateDocumentStore, its NonCounted wrapper).
                     let merk = self.merks.get(path).expect("the Merk is cached");
-                    let existing_flags = cost_return_on_error!(
+                    let existing = cost_return_on_error!(
                         &mut cost,
                         GroveDb::get_element_from_subtree(merk, key_info.as_slice(), grove_version)
-                    )
-                    .get_flags_owned();
+                    );
+                    let existing_non_counted = existing.is_non_counted();
+                    let existing_flags = existing.get_flags_owned();
 
                     let element = meta.to_element(existing_flags);
+                    // `meta.to_element` always builds a BARE element, so a
+                    // stored `NonCounted(tree)` would come back counted and
+                    // change its parent count tree's aggregate — and with it
+                    // the root hash. Restore the wrapper.
+                    //
+                    // Scoped to PrivateDocumentStore deliberately: the same
+                    // latent defect exists for CommitmentTree / MmrTree /
+                    // BulkAppendTree / DenseTree, but those are live on
+                    // GROVE_V1..V3, so repairing them changes a released
+                    // consensus outcome and belongs in its own version-gated
+                    // change. PDS cannot exist before V4, so fixing it here
+                    // alters nothing that has ever been committed. The
+                    // element was already read above, so this costs nothing
+                    // extra.
+                    let element = if existing_non_counted
+                        && matches!(meta, NonMerkTreeMeta::PrivateDocumentStore { .. })
+                    {
+                        cost_return_on_error_no_add!(
+                            cost,
+                            element.into_non_counted().map_err(|_| {
+                                Error::CorruptedCodeExecution(
+                                    "into_non_counted called on a wrapped element during \
+                                     ReplaceNonMerkTreeRoot",
+                                )
+                            })
+                        )
+                    } else {
+                        element
+                    };
                     let merk_feature_type = cost_return_on_error_into_no_add!(
                         cost,
                         element.get_feature_type(in_tree_type)
@@ -3484,6 +3681,13 @@ where
                 GroveOp::DenseTreeInsert { .. } => {
                     return Err(Error::InvalidBatchOperation(
                         "DenseTreeInsert should have been preprocessed before batch execution",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                GroveOp::PrivateDocumentStoreInsert { .. } => {
+                    return Err(Error::InvalidBatchOperation(
+                        "PrivateDocumentStoreInsert should have been preprocessed before batch \
+                         execution",
                     ))
                     .wrap_with_cost(cost);
                 }
@@ -3688,7 +3892,8 @@ where
                                     | Element::DenseAppendOnlyFixedSizeTree(..)
                                     | Element::ProvableSumIndexedTree(..)
                                     | Element::ProvableCountIndexedTree(..)
-                                    | Element::ProvableCountProvableSumIndexedTree(..) => {
+                                    | Element::ProvableCountProvableSumIndexedTree(..)
+                                    | Element::PrivateDocumentStore(..) => {
                                         let tree_type = new_element
                                             .tree_type()
                                             .expect("tree_type guaranteed by match arm");
@@ -4194,6 +4399,28 @@ impl GroveDb {
                                                                 meta,
                                                                 non_counted,
                                                             }
+                                                    } else if let Element::PrivateDocumentStore(
+                                                        total_count,
+                                                        entry_size,
+                                                        chunk_power,
+                                                        flags,
+                                                    ) = element
+                                                    {
+                                                        let meta =
+                                                            NonMerkTreeMeta::PrivateDocumentStore {
+                                                                total_count: *total_count,
+                                                                entry_size: *entry_size,
+                                                                chunk_power: *chunk_power,
+                                                            };
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::InsertNonMerkTree {
+                                                                hash: root_hash,
+                                                                root_key: calculated_root_key,
+                                                                flags: flags.clone(),
+                                                                aggregate_data,
+                                                                meta,
+                                                                non_counted,
+                                                            }
                                                     } else if let Element::MmrTree(
                                                         mmr_size,
                                                         flags,
@@ -4341,6 +4568,13 @@ impl GroveDb {
                                                     return Err(Error::InvalidBatchOperation(
                                                         "DenseTreeInsert ops should have been \
                                                          preprocessed",
+                                                    ))
+                                                    .wrap_with_cost(cost);
+                                                }
+                                                GroveOp::PrivateDocumentStoreInsert { .. } => {
+                                                    return Err(Error::InvalidBatchOperation(
+                                                        "PrivateDocumentStoreInsert ops should \
+                                                         have been preprocessed",
                                                     ))
                                                     .wrap_with_cost(cost);
                                                 }
@@ -4781,6 +5015,26 @@ impl GroveDb {
                             path_slices.as_slice(),
                             &key,
                             value.clone(),
+                            transaction,
+                            grove_version,
+                        )
+                    );
+                }
+                GroveOp::PrivateDocumentStoreInsert { entry } => {
+                    let mut path_vec: Vec<Vec<u8>> = op.path.to_path();
+                    let key = cost_return_on_error_no_add!(
+                        cost,
+                        path_vec.pop().ok_or(Error::InvalidBatchOperation(
+                            "append op path must include tree key"
+                        ))
+                    );
+                    let path_slices: Vec<&[u8]> = path_vec.iter().map(|p| p.as_slice()).collect();
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.private_document_store_insert(
+                            path_slices.as_slice(),
+                            &key,
+                            entry.clone(),
                             transaction,
                             grove_version,
                         )
@@ -5447,6 +5701,18 @@ impl GroveDb {
             self.preprocess_dense_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
         );
 
+        // Preprocess PrivateDocumentStoreInsert ops: execute size-validated
+        // appends then convert to ReplaceNonMerkTreeRoot ops
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_private_document_store_ops(
+                ops,
+                tx.as_ref(),
+                &storage_batch,
+                grove_version
+            )
+        );
+
         // Collect paths of subtrees being deleted (so their storage can be
         // cleaned up after apply_body) and run the pre-apply emptiness
         // checks / Skip filtering. On V1..V3 the cleanup lists are filled
@@ -5839,6 +6105,18 @@ impl GroveDb {
         let ops = cost_return_on_error!(
             &mut cost,
             self.preprocess_dense_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+        );
+
+        // Preprocess PrivateDocumentStoreInsert ops: execute size-validated
+        // appends then convert to ReplaceNonMerkTreeRoot ops
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_private_document_store_ops(
+                ops,
+                tx.as_ref(),
+                &storage_batch,
+                grove_version
+            )
         );
 
         let mut batch_apply_options = batch_apply_options.unwrap_or_default();

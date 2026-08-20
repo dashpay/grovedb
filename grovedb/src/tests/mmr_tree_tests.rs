@@ -56,12 +56,12 @@ fn expected_mmr_root(values: &[Vec<u8>]) -> [u8; 32] {
     let store = MemStore::new();
     let mut mmr = MMR::new(0, &store);
     for v in values {
-        mmr.push(MmrNode::leaf(v.clone()))
+        mmr.push(MmrNode::leaf(v.clone()), GroveVersion::latest())
             .unwrap()
             .expect("push should succeed");
     }
     mmr.commit().unwrap().expect("commit should succeed");
-    mmr.get_root()
+    mmr.get_root(GroveVersion::latest())
         .unwrap()
         .expect("root hash should succeed")
         .hash()
@@ -1991,4 +1991,67 @@ fn test_mmr_successful_batch_after_failed_batch() {
         .unwrap()
         .expect("leaf count");
     assert_eq!(count, 1, "only the second batch's leaf should be present");
+}
+
+/// `MMR::push` bills one hash per peak it collapses, and the ops layer hashes
+/// the leaf eagerly before calling it. Charging `hash_count_for_push` here as
+/// well — that helper is the leaf hash PLUS the same merges — double-counted
+/// every merge.
+///
+/// Asserted as deltas against the first append: each append does identical
+/// Merk work (it replaces the same element with a same-sized value), so the
+/// difference between appends isolates the MMR hashing and the test does not
+/// break when unrelated Merk costs shift.
+#[test]
+fn test_mmr_tree_append_does_not_double_charge_merges() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+    db.insert(
+        EMPTY_PATH,
+        b"log",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert mmr tree");
+
+    let mut hashes = Vec::new();
+    for i in 0..4u8 {
+        let ctx = db.mmr_tree_append(EMPTY_PATH, b"log", vec![i; 8], None, grove_version);
+        ctx.value.expect("append");
+        hashes.push(ctx.cost.hash_node_calls);
+    }
+
+    // MMR hashing per append is the eager leaf hash, plus the merges `push`
+    // performs, plus the peak bagging the trailing `get_root` performs:
+    //
+    //   leaf 0: 1 leaf + 0 push + 0 bag = 1   (mmr_size 1, single-element root)
+    //   leaf 1: 1 leaf + 1 push + 0 bag = 2   (mmr_size 3, one peak)
+    //   leaf 2: 1 leaf + 0 push + 1 bag = 2   (mmr_size 4, two peaks to fold)
+    //   leaf 3: 1 leaf + 2 push + 0 bag = 3   (mmr_size 7, one peak)
+    //
+    // so relative to the first append the deltas are 0, +1, +1, +2. Before the
+    // fix each `push` merge was charged twice, which showed up as 3 hashes on
+    // the second leaf for the 2 it performs.
+    let base = hashes[0];
+    assert_eq!(
+        hashes[1].checked_sub(base),
+        Some(1),
+        "second leaf: one push merge, no bagging, got {:?}",
+        hashes
+    );
+    assert_eq!(
+        hashes[2].checked_sub(base),
+        Some(1),
+        "third leaf: no push merge, but two peaks to bag, got {:?}",
+        hashes
+    );
+    assert_eq!(
+        hashes[3].checked_sub(base),
+        Some(2),
+        "fourth leaf: two push merges, one peak so no bagging, got {:?}",
+        hashes
+    );
 }
