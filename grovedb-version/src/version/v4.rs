@@ -47,6 +47,14 @@
 //!   proved elements. V1..V3 refuse the shape on both sides. Gated because
 //!   it adds an acceptance rule to the live V1 envelope.
 //!
+//! - `path_query_methods.terminal_keys: 1` — `PathQuery::terminal_keys`
+//!   resolves conditional subquery branches per queried item (first matching
+//!   conditional wins, default branch as fallback), so keys never selected by
+//!   the query no longer contribute terminal keys (issue #689). V1..V3 keep
+//!   the legacy walk that expands every conditional branch before the items.
+//!   Gated because terminal keys shape the absence-proof result set assembled
+//!   by verifiers and the `query_keys_optional` result set.
+//!
 //! - `path_query_methods.merge: 1` — `PathQuery::merge` requires every input
 //!   to agree on `left_to_right` (typed error on conflict) and propagates the
 //!   shared direction to the merged root. V1..V3 keep the long-standing
@@ -330,8 +338,8 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
         },
         aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions { merge: 0 },
         path_query_methods: GroveDBPathQueryMethodVersions {
-            terminal_keys: 0,
-            merge: 1, // direction-aware merge: agreement required and propagated (V4+)
+            terminal_keys: 1, // per-item conditional resolution (V4+), see issue #689
+            merge: 1,         // direction-aware merge: agreement required and propagated (V4+)
             query_items_at_path: 0,
             should_add_parent_tree_at_path: 0,
             unified_read_mode: 1,
