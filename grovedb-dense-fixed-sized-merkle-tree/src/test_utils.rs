@@ -161,13 +161,13 @@ impl<'db> StorageContext<'db> for FailingStorageContext {
 
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
         let key_bytes = key.as_ref();
-        if let Some(fail_key) = *self.fail_on_get_key.borrow() {
-            if key_bytes == fail_key {
-                return Err(grovedb_storage::Error::StorageError(
-                    "simulated get failure".to_string(),
-                ))
-                .wrap_with_cost(OperationCost::default());
-            }
+        if let Some(fail_key) = *self.fail_on_get_key.borrow()
+            && key_bytes == fail_key
+        {
+            return Err(grovedb_storage::Error::StorageError(
+                "simulated get failure".to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
         }
         Ok(self.data.borrow().get(key_bytes).cloned()).wrap_with_cost(OperationCost::default())
     }
@@ -180,13 +180,13 @@ impl<'db> StorageContext<'db> for FailingStorageContext {
         _cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), grovedb_storage::Error> {
         let key_bytes = key.as_ref();
-        if let Some(fail_key) = *self.fail_on_put_key.borrow() {
-            if key_bytes == fail_key {
-                return Err(grovedb_storage::Error::StorageError(
-                    "simulated put failure".to_string(),
-                ))
-                .wrap_with_cost(OperationCost::default());
-            }
+        if let Some(fail_key) = *self.fail_on_put_key.borrow()
+            && key_bytes == fail_key
+        {
+            return Err(grovedb_storage::Error::StorageError(
+                "simulated put failure".to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
         }
         self.data
             .borrow_mut()
