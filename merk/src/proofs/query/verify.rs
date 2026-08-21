@@ -7,7 +7,11 @@ use grovedb_element::ElementType;
 use crate::proofs::query::{Map, MapBuilder};
 use crate::{
     error::Error,
-    proofs::{hex_to_ascii, tree::execute, Decoder, Node, Op, Query},
+    proofs::{
+        hex_to_ascii,
+        tree::{execute, MAX_PROOF_OPS},
+        Decoder, Node, Op, Query,
+    },
     tree::{combine_hash, value_hash},
     CryptoHash as MerkHash, CryptoHash,
 };
@@ -1142,9 +1146,25 @@ mod provable_count_provable_sum_tree_bound_regression_tests {
 /// honest prover emits one, and a mixed stream has no single
 /// orientation for the bound-witness checks to be correct against, so
 /// it is refused rather than guessed at.
+///
+/// The scan enforces the same [`MAX_PROOF_OPS`] bound as [`execute`]:
+/// this pass runs on untrusted bytes *before* the bounded execution
+/// pass, so without its own cap an oversized stream would be fully
+/// decoded — node allocations included — only to be rejected by
+/// `execute` at op 50,001. Any stream over the cap fails verification
+/// regardless, so rejecting it here changes no verdict, only how much
+/// work the verifier spends reaching it.
 pub fn proof_stream_direction(proof_bytes: &[u8]) -> Result<Option<bool>, Error> {
     let mut direction: Option<bool> = None;
+    let mut op_count: usize = 0;
     for op_result in Decoder::new(proof_bytes) {
+        op_count += 1;
+        if op_count > MAX_PROOF_OPS {
+            return Err(Error::InvalidProofError(format!(
+                "Proof exceeds maximum operation count ({})",
+                MAX_PROOF_OPS
+            )));
+        }
         let upright = match op_result? {
             Op::Push(_) | Op::Parent | Op::Child => true,
             Op::PushInverted(_) | Op::ParentInverted | Op::ChildInverted => false,
@@ -1262,5 +1282,34 @@ mod proof_stream_direction_tests {
             Op::ParentInverted,
         ]);
         proof_stream_direction(&bytes).expect_err("mixed structural ops must not resolve");
+    }
+
+    /// The scan runs on untrusted bytes before the bounded execution
+    /// pass, so it must enforce the same op-count cap as `execute` —
+    /// otherwise an oversized homogeneous stream would be fully decoded
+    /// here only to be rejected there. Exactly at the cap still reads
+    /// (matching `execute`, which errors only when the count exceeds
+    /// it); one past the cap is refused.
+    #[test]
+    fn oversized_stream_is_refused_at_the_execute_cap() {
+        use crate::proofs::tree::MAX_PROOF_OPS;
+
+        let at_cap: Vec<Op> = (0..MAX_PROOF_OPS)
+            .map(|_| Op::Push(Node::Hash([0u8; 32])))
+            .collect();
+        assert_eq!(
+            proof_stream_direction(&encoded(&at_cap)).expect("at-cap stream reads"),
+            Some(true)
+        );
+
+        let over_cap: Vec<Op> = (0..=MAX_PROOF_OPS)
+            .map(|_| Op::Push(Node::Hash([0u8; 32])))
+            .collect();
+        let err = proof_stream_direction(&encoded(&over_cap))
+            .expect_err("over-cap stream must be refused before full decode");
+        assert!(
+            err.to_string().contains("maximum operation count"),
+            "unexpected error: {err}"
+        );
     }
 }
