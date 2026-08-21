@@ -1997,6 +1997,13 @@ impl GroveDb {
             .query
             .has_aggregate_count_and_sum_on_range_anywhere();
 
+        // `query.left_to_right` is used verbatim, synthesized levels
+        // included: this is the definition of the layer's op family, and
+        // changing it would change proof bytes. The verifier is the side
+        // that cannot reproduce this value — a subset query does not know
+        // what the generating query was — so for a synthesized one-key
+        // level it reads the orientation back off the op family instead.
+        // See `SinglePathSubquery::synthesized_path_component`.
         let mut merk_proof = cost_return_on_error!(
             &mut cost,
             self.generate_merk_proof(

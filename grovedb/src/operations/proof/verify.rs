@@ -1419,9 +1419,57 @@ impl GroveDb {
                 query
             )))?;
 
+        // Which direction this layer's op stream is encoded in.
+        //
+        // For a real query node the direction is query semantics — it
+        // decides which end of a range fills a limit — so it comes from
+        // the query and nothing else. A *synthesized* path-component
+        // level is different: `query_items_at_path` manufactures it for
+        // every path component above the query's own path (and for
+        // positions inside a `subquery_path`), its item list is exactly
+        // one `QueryItem::Key`, and its `left_to_right` is a fixed
+        // placeholder. The generating query — which is what chose the
+        // op family the prover emitted at this path — is not
+        // recoverable from a subset query, so no fixed value is right:
+        // a merged descending query emits this layer inverted, and
+        // running the ascending bound-witness machinery over an
+        // inverted stream is wrong in both directions (it rejects
+        // honest proofs, and worse, it can read an absence out of a
+        // stream that proves presence).
+        //
+        // So for a one-key synthesized level, read the orientation off
+        // the proof's own op family. That is not trusting an
+        // attacker-chosen parameter: `execute` checks, per op, that
+        // upright pushes ascend and inverted pushes descend, so a
+        // stream cannot claim an orientation it does not have — and
+        // with a single `Key` item the direction cannot reorder,
+        // truncate or extend the answer either way. Everything that
+        // binds the result stays where it was: the reconstructed root
+        // hash still has to match what the parent layer committed, and
+        // `QueryItem::contains` still gates every returned key.
+        let single_key_synthesized_level = internal_query.synthesized_path_component
+            && matches!(
+                internal_query.items.as_slice(),
+                [grovedb_merk::proofs::query::QueryItem::Key(_)]
+            );
+        let left_to_right = if single_key_synthesized_level {
+            grovedb_merk::proofs::query::proof_stream_direction(merk_proof_bytes)
+                .map_err(|e| {
+                    Error::InvalidProof(
+                        query.clone(),
+                        format!("Invalid V1 proof op stream at path component layer: {}", e),
+                    )
+                })?
+                // An op-less stream carries no orientation; `execute`
+                // rejects it a moment later for having no root.
+                .unwrap_or(internal_query.left_to_right)
+        } else {
+            internal_query.left_to_right
+        };
+
         let level_query = Query {
             items: internal_query.items.to_vec(),
-            left_to_right: internal_query.left_to_right,
+            left_to_right,
             ..Default::default()
         };
 
@@ -1429,7 +1477,7 @@ impl GroveDb {
             .execute_proof(
                 merk_proof_bytes,
                 *limit_left,
-                internal_query.left_to_right,
+                left_to_right,
                 PROOF_VERSION_LATEST, // V1 proof: strict mode rejects items in value hash nodes
             )
             .unwrap()

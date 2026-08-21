@@ -1577,6 +1577,28 @@ pub struct SinglePathSubquery<'a> {
     pub left_to_right: bool,
     /// In the path of the path_query, or in a subquery path
     pub in_path: Option<Cow<'a, Key>>,
+    /// True when this level was *synthesized* from a path component
+    /// instead of resolved to a real query node — the `Ordering::Less`
+    /// arm of [`PathQuery::query_items_at_path`] plus every
+    /// mid-`subquery_path` arm, all of which go through
+    /// [`SinglePathSubquery::from_key_when_in_path`].
+    ///
+    /// A synthesized level's `items` is exactly one `QueryItem::Key`,
+    /// so its `left_to_right` carries no query semantics at all: the
+    /// answer is that one key or nothing, and there is no ordering or
+    /// limit interaction to observe. The field is a placeholder, fixed
+    /// at `true`, because the direction the *generating* query used at
+    /// this path — which is what decided the op family the prover
+    /// emitted — is not recoverable from a subset query.
+    ///
+    /// Proof verifiers must therefore not take the stream's
+    /// orientation from `left_to_right` on a synthesized level; they
+    /// read it off the proof's own op family via
+    /// `grovedb_merk::proofs::query::proof_stream_direction`, which
+    /// `execute` independently pins to the stream's key ordering. Proof
+    /// *generation* keeps using `left_to_right` verbatim, so proof
+    /// bytes are unaffected.
+    pub synthesized_path_component: bool,
 }
 
 impl fmt::Display for SinglePathSubquery<'_> {
@@ -1593,6 +1615,11 @@ impl fmt::Display for SinglePathSubquery<'_> {
             Some(path) => writeln!(f, "  in_path: Some({})", hex_to_ascii(path)),
             None => writeln!(f, "  in_path: None"),
         }?;
+        writeln!(
+            f,
+            "  synthesized_path_component: {}",
+            self.synthesized_path_component
+        )?;
         write!(f, "}}")
     }
 }
@@ -1624,8 +1651,14 @@ impl<'a> SinglePathSubquery<'a> {
         SinglePathSubquery {
             items: Cow::Owned(vec![QueryItem::Key(key.clone())]),
             has_subquery: HasSubquery::NoSubquery,
+            // Placeholder — see `synthesized_path_component`. Nothing
+            // here knows which direction the generating query walked
+            // this level in, and for a one-key level nothing needs to:
+            // the direction is an encoding detail of the proof, which
+            // is where verifiers read it from.
             left_to_right: true,
             in_path,
+            synthesized_path_component: true,
         }
     }
 
@@ -1648,6 +1681,7 @@ impl<'a> SinglePathSubquery<'a> {
             has_subquery,
             left_to_right: query.left_to_right,
             in_path: None,
+            synthesized_path_component: false,
         }
     }
 }
@@ -2400,6 +2434,7 @@ mod tests {
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
                     in_path: Some(Cow::Borrowed(&root_path_key_2)),
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2420,6 +2455,7 @@ mod tests {
                                                         * subquery for one item */
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: false,
                 }
             );
         }
@@ -2442,7 +2478,8 @@ mod tests {
                     items: Cow::Owned(vec![QueryItem::Key(subquery_path_key_1.clone())]),
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
-                    in_path: Some(Cow::Borrowed(&subquery_path_key_1))
+                    in_path: Some(Cow::Borrowed(&subquery_path_key_1)),
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2466,7 +2503,8 @@ mod tests {
                     items: Cow::Owned(vec![QueryItem::Key(subquery_path_key_2.clone())]),
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
-                    in_path: Some(Cow::Borrowed(&subquery_path_key_2))
+                    in_path: Some(Cow::Borrowed(&subquery_path_key_2)),
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2493,6 +2531,7 @@ mod tests {
                                                         * add items underneath */
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: false,
                 }
             );
         }
@@ -2519,6 +2558,7 @@ mod tests {
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2567,6 +2607,7 @@ mod tests {
                     has_subquery: HasSubquery::Always,
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: false,
                 }
             );
         }
@@ -2585,7 +2626,9 @@ mod tests {
                     items: Cow::Owned(vec![QueryItem::Key(quantum_key.clone())]),
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
-                    in_path: None, // There should be no path because we are at the end of the path
+                    // There should be no path: we are at the end of the path
+                    in_path: None,
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2640,6 +2683,7 @@ mod tests {
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
                     in_path: Some(Cow::Borrowed(&zero_vec)),
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2750,6 +2794,7 @@ mod tests {
                     )),
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: false,
                 }
             );
         }
@@ -2768,6 +2813,7 @@ mod tests {
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
                     in_path: Some(Cow::Borrowed(&identity_id)),
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2788,6 +2834,7 @@ mod tests {
                     )),
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: false,
                 }
             );
         }
@@ -2806,6 +2853,7 @@ mod tests {
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: false,
                 }
             );
         }
