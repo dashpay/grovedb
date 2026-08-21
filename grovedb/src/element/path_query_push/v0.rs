@@ -96,8 +96,12 @@ pub(crate) fn path_query_push_v0(
             );
 
             if let Some(limit) = limit {
+                // v0: decrement even when the emptiness was caused by offset
+                // skipping rows that matched — the issue #690 behaviour,
+                // frozen for GROVE_V1..GROVE_V3. [`super::v1`] (GROVE_V4+)
+                // adds a `skipped == 0` guard here; that guard is the only
+                // difference between the two files.
                 if sub_elements.is_empty() && decrease_limit_on_range_with_no_sub_elements {
-                    // we should decrease by 1 in this case
                     *limit = limit.saturating_sub(1);
                 } else {
                     *limit = limit.saturating_sub(sub_elements.len().min(u16::MAX as usize) as u16);

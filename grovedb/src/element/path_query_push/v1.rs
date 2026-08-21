@@ -95,13 +95,18 @@ pub(crate) fn path_query_push_v1(
             );
 
             if let Some(limit) = limit {
+                // v1: the `skipped == 0` guard is THE change gated by
+                // `element.path_query_push` (GROVE_V4+, issue #690) — the
+                // only difference from [`super::v0`]. An empty inner result
+                // charges a limit slot only on a true no-match; when offset
+                // skipped rows that matched, the emptiness is pagination,
+                // not absence, and the else branch below is a no-op
+                // (`saturating_sub(0)`). GROVE_V1..GROVE_V3 decrement
+                // unconditionally in [`super::v0`].
                 if sub_elements.is_empty()
                     && decrease_limit_on_range_with_no_sub_elements
                     && skipped == 0
                 {
-                    // A true no-match: charge one limit slot. When rows were
-                    // skipped by offset the emptiness is pagination, not
-                    // absence, and the outer limit stays untouched.
                     *limit = limit.saturating_sub(1);
                 } else {
                     *limit = limit.saturating_sub(sub_elements.len().min(u16::MAX as usize) as u16);
