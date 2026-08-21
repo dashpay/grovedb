@@ -74,10 +74,10 @@ pub enum StorageRemovedBytes {
 // [`with_basic_sectioned_removal_addition_version`]) for the duration of the
 // operation.
 //
-// The default is `0` (legacy / shipped v1/v2 behavior). That default is the safe
+// The default is `0` (legacy / shipped v1..v3 behavior). That default is the safe
 // one: an un-guarded caller reproduces historical behavior rather than silently
 // "upgrading" to the fixed arithmetic and diverging from the rest of the
-// network. Only an explicit guard set from a v3+ context enables the fix.
+// network. Only an explicit guard set from a v4+ context enables the fix.
 //
 // Note: this selector only affects the three historically-buggy arms. The
 // `Sectioned += Basic` arm was always correct and bypasses the selector
@@ -123,7 +123,7 @@ fn basic_sectioned_removal_addition_version() -> u16 {
 /// Correct behavior: fold the basic removal into the default identifier's
 /// `UNKNOWN_EPOCH` entry while preserving the rest of the default section. Used
 /// unconditionally for the always-correct `Sectioned += Basic` arm, and for the
-/// fixed (v3+) path of the three historically-buggy arms.
+/// fixed (v4+) path of the three historically-buggy arms.
 fn add_basic_removal_to_sectioned_map(
     map: &mut StorageRemovalPerEpochByIdentifier,
     removed_bytes: u32,
@@ -133,7 +133,7 @@ fn add_basic_removal_to_sectioned_map(
     epoch_map.insert(UNKNOWN_EPOCH, old_value.saturating_add(removed_bytes));
 }
 
-/// Buggy shipped (v1/v2) behavior, preserved verbatim for replay
+/// Buggy shipped (v1..v3) behavior, preserved verbatim for replay
 /// compatibility: when the default identifier already exists it is removed,
 /// mutated, and then **dropped** instead of reinserted, losing the rest of the
 /// default section. Only reachable through the legacy (v0) path of the three
@@ -159,7 +159,7 @@ fn legacy_add_basic_removal_to_sectioned_map(
 
 /// Version-selecting helper for the three historically-buggy arms only
 /// (Add: Basic+Sectioned, Add: Sectioned+Basic, AddAssign: Basic+=Sectioned).
-/// v0 keeps the buggy shipped behavior; v3+ uses the corrected behavior. The
+/// v0 keeps the buggy shipped behavior; v4+ uses the corrected behavior. The
 /// always-correct `Sectioned += Basic` arm must NOT use this — it calls
 /// [`add_basic_removal_to_sectioned_map`] directly.
 fn add_basic_removal_to_sectioned_map_for_current_version(
@@ -247,7 +247,7 @@ impl AddAssign for StorageRemovedBytes {
                     // (Add: Basic+Sectioned, Add: Sectioned+Basic, AddAssign:
                     // Basic+=Sectioned) are gated; this one was never broken, so
                     // routing it through the version selector would *regress*
-                    // shipped v1/v2 output (drop the default section under v0).
+                    // shipped v1..v3 output (drop the default section under v0).
                     add_basic_removal_to_sectioned_map(smap, r);
                 }
                 SectionedStorageRemoval(rmap) => {

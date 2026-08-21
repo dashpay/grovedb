@@ -246,7 +246,10 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
             per_instance_query_limits: 0,
         },
         storage_costs: GroveDBStorageCostVersions {
-            add_basic_storage_removal_to_sectioned_storage_removal: 1,
+            // GROVE_V3 shipped to mainnet with the legacy (default-section-
+            // dropping) removal arithmetic; changing it here would break
+            // replay of v3 blocks. The fix activates in GROVE_V4.
+            add_basic_storage_removal_to_sectioned_storage_removal: 0,
         },
         replication: GroveDBReplicationVersions {
             get_subtrees_metadata: 0,

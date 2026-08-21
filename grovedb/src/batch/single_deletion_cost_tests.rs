@@ -66,6 +66,67 @@ mod tests {
     }
 
     #[test]
+    fn v3_delete_keeps_legacy_basic_plus_default_sectioned_removal_cost() {
+        // GROVE_V3 is live on mainnet with the legacy removal arithmetic that
+        // drops the mutated default section when a basic removal is combined
+        // with a sectioned one (issue #683). Replay of v3 blocks depends on
+        // reproducing that undercount exactly, so v3 must NOT pick up the v4
+        // fix exercised by
+        // `latest_delete_preserves_basic_plus_default_sectioned_removal_cost`.
+        let grove_version = &grovedb_version::version::v3::GROVE_V3;
+        let db = make_empty_grovedb();
+
+        let insertion_cost = db
+            .insert(
+                EMPTY_PATH,
+                b"key1",
+                Element::new_item_with_flags(b"cat".to_vec(), Some(b"apple".to_vec())),
+                None,
+                None,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to insert successfully");
+
+        let deletion_cost = db
+            .delete_with_sectional_storage_function(
+                EMPTY_PATH,
+                b"key1",
+                None,
+                None,
+                &mut |_element_flags, removed_key_bytes, removed_value_bytes| {
+                    let mut removed_bytes = StorageRemovalPerEpochByIdentifier::default();
+                    let mut removed_bytes_for_identity = IntMap::new();
+                    removed_bytes_for_identity.insert(UNKNOWN_EPOCH, removed_value_bytes);
+                    removed_bytes.insert(Identifier::default(), removed_bytes_for_identity);
+                    Ok((
+                        BasicStorageRemoval(removed_key_bytes),
+                        SectionedStorageRemoval(removed_bytes),
+                    ))
+                },
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to delete successfully");
+
+        // Legacy behavior undercounts: the combined removal loses bytes
+        // relative to what was actually inserted.
+        assert!(
+            deletion_cost
+                .storage_cost
+                .removed_bytes
+                .total_removed_bytes()
+                < insertion_cost.storage_cost.added_bytes,
+            "v3 must keep the legacy undercounting removal arithmetic; got {} of {} added bytes",
+            deletion_cost
+                .storage_cost
+                .removed_bytes
+                .total_removed_bytes(),
+            insertion_cost.storage_cost.added_bytes
+        );
+    }
+
+    #[test]
     fn test_batch_one_deletion_tree_costs_match_non_batch_on_transaction() {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
