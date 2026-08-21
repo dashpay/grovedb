@@ -179,7 +179,10 @@ fn v2_has_updated_merk_average_case_costs() {
 }
 
 #[test]
-fn v3_uses_fixed_basic_to_sectioned_storage_removal_addition() {
+fn v4_uses_fixed_basic_to_sectioned_storage_removal_addition() {
+    // v1..v3 are live on mainnet with the legacy (default-section-dropping)
+    // removal arithmetic; only v4+ activates the fix. A `1` on any earlier
+    // version would change replayed historical costs.
     assert_eq!(
         GROVE_V1
             .grovedb_versions
@@ -196,6 +199,13 @@ fn v3_uses_fixed_basic_to_sectioned_storage_removal_addition() {
     );
     assert_eq!(
         GROVE_V3
+            .grovedb_versions
+            .storage_costs
+            .add_basic_storage_removal_to_sectioned_storage_removal,
+        0
+    );
+    assert_eq!(
+        GROVE_V4
             .grovedb_versions
             .storage_costs
             .add_basic_storage_removal_to_sectioned_storage_removal,
