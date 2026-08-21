@@ -487,7 +487,13 @@ let entries: Vec<IndexedAxisEntry<u64>> = db
 let proof_bytes = db
     .prove_indexed_count_top_k(path, k, /* descending: */ true, transaction, grove_version)?
     .expect("prove");
-let result = GroveDb::verify_indexed_count_top_k(&proof_bytes, &path, k)?;
+let result = GroveDb::verify_indexed_count_top_k(
+    &proof_bytes,
+    path,
+    k,
+    /* descending: */ true,
+    grove_version,
+)?;
 // result.entries: AxisEntries::Count(Vec<IndexedAxisEntry<u64>>)
 // result.root_hash: [u8; 32]
 ```
@@ -562,7 +568,8 @@ let proof_bytes = db
     .expect("prove");
 
 // Verify with the SAME query (positional binding):
-let result = GroveDb::verify_indexed_count_query(&proof_bytes, &path, q)?;
+let result =
+    GroveDb::verify_indexed_count_query(&proof_bytes, path, q, Some(limit), grove_version)?;
 ```
 
 `prove_indexed_count_top_k` is just a thin wrapper around
@@ -584,7 +591,7 @@ let mut q = MerkQuery::new();
 q.insert_range(a.to_be_bytes().to_vec()..=b.to_be_bytes().to_vec());
 
 let proof = db.prove_indexed_count_query(path, q.clone(), None, tx, grove_version)?;
-let result = GroveDb::verify_indexed_count_query(&proof, &path, q)?;
+let result = GroveDb::verify_indexed_count_query(&proof, path, q, None, grove_version)?;
 
 let count = result.entries.len();
 let root_hash = result.root_hash;
