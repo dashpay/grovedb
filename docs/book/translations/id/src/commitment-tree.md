@@ -57,7 +57,8 @@ di namespace data menggunakan prefiks key yang berbeda:
 │  │                                                         │  │
 │  │  BulkAppendTree storage (Chapter 14):                   │  │
 │  │    Buffer entries → chunk blobs → chunk MMR             │  │
-│  │    value = cmx (32) || rho (32) || ciphertext (216)     │  │
+│  │    value = cmx (32) || rho (32) || cv_net (32)          │  │
+│  │            || ciphertext (216)                          │  │
 │  │                                                         │  │
 │  │  Sinsemilla Frontier (~1KB):                            │  │
 │  │    key: b"__ct_data__" (COMMITMENT_TREE_DATA_KEY)       │  │
@@ -258,7 +259,7 @@ kolom yang sama menggunakan prefiks key yang berbeda. Tidak ada namespace aux ya
 │                                                                   │
 │  BulkAppendTree storage keys (see §14.7):                         │
 │    b"m" || pos (u64 BE)  → MMR node blobs                        │
-│    b"b" || index (u64 BE)→ buffer entries (cmx || rho || ciphertext) │
+│    b"b" || index (u64 BE)→ buffer entries (cmx||rho||cv_net||ciphertext) │
 │    b"e" || chunk (u64 BE)→ chunk blobs (compacted buffer)         │
 │    b"M"                  → BulkAppendTree metadata                │
 │                                                                   │
@@ -313,10 +314,10 @@ ciphertext. Default `M = DashMemo` memberikan payload 216 byte
 ```rust
 // Insert a commitment (typed) — returns (sinsemilla_root, position)
 // M controls ciphertext size validation
-db.commitment_tree_insert::<_, _, M>(path, key, cmx, rho, ciphertext, tx, version)
+db.commitment_tree_insert::<_, _, M>(path, key, cmx, rho, cv_net, ciphertext, tx, version)
 
 // Insert a commitment (raw bytes) — validates payload.len() == ciphertext_payload_size::<DashMemo>()
-db.commitment_tree_insert_raw(path, key, cmx, rho, payload_vec, tx, version)
+db.commitment_tree_insert_raw(path, key, cmx, rho, cv_net, payload_vec, tx, version)
 
 // Get the current Orchard Anchor
 db.commitment_tree_anchor(path, key, tx, version)
@@ -347,7 +348,7 @@ Step 2: Build ct_path = path ++ [key]
 Step 3: Open data storage context at ct_path
         Load CommitmentTree (frontier + BulkAppendTree)
         Serialize ciphertext → validate payload size matches M
-        Append cmx||rho||ciphertext to BulkAppendTree
+        Append cmx||rho||cv_net||ciphertext to BulkAppendTree
         Append cmx to Sinsemilla frontier → get new sinsemilla_root
         Track Blake3 + Sinsemilla hash costs
 
@@ -366,10 +367,10 @@ Step 7: Commit storage batch and local transaction
 
 ```mermaid
 graph TD
-    A["commitment_tree_insert(path, key, cmx, rho, ciphertext)"] --> B["Validate: is CommitmentTree?"]
+    A["commitment_tree_insert(path, key, cmx, rho, cv_net, ciphertext)"] --> B["Validate: is CommitmentTree?"]
     B --> C["Open data storage, load CommitmentTree"]
     C --> D["Serialize & validate ciphertext size"]
-    D --> E["BulkAppendTree.append(cmx||rho||payload)"]
+    D --> E["BulkAppendTree.append(cmx||rho||cv_net||payload)"]
     E --> F["frontier.append(cmx)"]
     F --> G["Save frontier to data storage"]
     G --> H["Update parent CommitmentTree element<br/>new sinsemilla_root + total_count"]
@@ -402,7 +403,7 @@ proof otorisasi pembelanjaan.
 
 ### commitment_tree_get_value
 
-Mengambil nilai yang tersimpan (cmx || rho || payload) berdasarkan posisi globalnya:
+Mengambil nilai yang tersimpan (cmx || rho || cv_net || payload) berdasarkan posisi globalnya:
 
 ```text
 Step 1: Validate element at path/key is a CommitmentTree
@@ -437,6 +438,7 @@ CommitmentTree mendukung penyisipan batch melalui varian `GroveOp::CommitmentTre
 GroveOp::CommitmentTreeInsert {
     cmx: [u8; 32],      // extracted note commitment
     rho: [u8; 32],      // nullifier of the spent note
+    cv_net: [u8; 32],   // value commitment (for outgoing/OVK recovery)
     payload: Vec<u8>,    // serialized ciphertext (216 bytes for DashMemo)
 }
 ```
@@ -445,10 +447,10 @@ Dua constructor membuat operasi ini:
 
 ```rust
 // Raw constructor — caller serializes payload manually
-QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, rho, payload_vec)
+QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, rho, cv_net, payload_vec)
 
 // Typed constructor — serializes TransmittedNoteCiphertext<M> internally
-QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, rho, &ciphertext)
+QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, rho, cv_net, &ciphertext)
 ```
 
 Beberapa insert yang menargetkan pohon yang sama diizinkan dalam satu batch. Karena
@@ -468,8 +470,8 @@ Step 2: For each group:
         a. Read existing element → verify CommitmentTree, extract chunk_power
         b. Open transactional storage context at ct_path
         c. Load CommitmentTree from data storage (frontier + BulkAppendTree)
-        d. For each (cmx, rho, payload):
-           - ct.append_raw(cmx, rho, payload) — validates size, appends to both
+        d. For each (cmx, rho, cv_net, payload):
+           - ct.append_raw(cmx, rho, cv_net, payload) — validates size, appends to both
         e. Save updated frontier to data storage
 
 Step 3: Replace all CTInsert ops with one ReplaceNonMerkTreeRoot per group
@@ -518,7 +520,7 @@ bekerja tanpa menentukan `M`.
 `CommitmentTreeError::InvalidPayloadSize` pada ketidakcocokan. Metode `append()` bertipe
 menyerialisasi secara internal, sehingga ukuran selalu benar secara konstruksi.
 
-### Tata Letak Record yang Disimpan (280 byte untuk DashMemo)
+### Tata Letak Record yang Disimpan (312 byte untuk DashMemo)
 
 Setiap entri di BulkAppendTree menyimpan record note terenkripsi lengkap.
 Tata letak lengkap, memperhitungkan setiap byte:
@@ -529,11 +531,12 @@ Tata letak lengkap, memperhitungkan setiap byte:
 ├─────────────────────────────────────────────────────────────────────┤
 │  0        32     cmx — extracted note commitment (Pallas base field)│
 │  32       32     rho — nullifier of the spent note                  │
-│  64       32     epk_bytes — ephemeral public key (Pallas point)    │
-│  96       104    enc_ciphertext — encrypted note plaintext + MAC    │
-│  200      80     out_ciphertext — encrypted outgoing data + MAC     │
+│  64       32     cv_net — value commitment (Pallas curve point)     │
+│  96       32     epk_bytes — ephemeral public key (Pallas point)    │
+│  128      104    enc_ciphertext — encrypted note plaintext + MAC    │
+│  232      80     out_ciphertext — encrypted outgoing data + MAC     │
 ├─────────────────────────────────────────────────────────────────────┤
-│  Total:   280 bytes                                                 │
+│  Total:   312 bytes                                                 │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -645,7 +648,7 @@ baru per note — setiap kunci mengenkripsi tepat satu pesan.
 | Note plaintext | 88 byte | 564 byte | 52 tetap + memo |
 | enc_ciphertext | 104 byte | 580 byte | plaintext + 16 MAC |
 | Payload ciphertext (epk+enc+out) | 216 byte | 692 byte | Ditransmisikan per note |
-| Record tersimpan lengkap (cmx+rho+payload) | **280 byte** | **756 byte** | Entri BulkAppendTree |
+| Record tersimpan lengkap (cmx+rho+cv_net+payload) | **312 byte** | **788 byte** | Entri BulkAppendTree |
 
 Memo DashMemo yang lebih kecil (36 vs 512 byte) mengurangi setiap record yang disimpan sebesar
 476 byte — signifikan ketika menyimpan jutaan note.
@@ -656,7 +659,7 @@ Light client yang memindai note miliknya sendiri melakukan urutan ini untuk seti
 record yang disimpan:
 
 ```text
-1. Read record: cmx (32) || rho (32) || epk (32) || enc_ciphertext (104) || out_ciphertext (80)
+1. Read record: cmx (32) || rho (32) || cv_net (32) || epk (32) || enc_ciphertext (104) || out_ciphertext (80)
 
 2. Compute shared_secret = [ivk] * epk     (ECDH with incoming viewing key)
 
@@ -871,7 +874,7 @@ Note commitment at position P
 
 **2. Proof pengambilan item (jalur V1):**
 
-Item individual (cmx || rho || payload) dapat di-query berdasarkan posisi dan dibuktikan menggunakan
+Item individual (cmx || rho || cv_net || payload) dapat di-query berdasarkan posisi dan dibuktikan menggunakan
 proof V1 (bagian 9.6), mekanisme yang sama yang digunakan oleh BulkAppendTree standalone.
 Proof V1 menyertakan jalur autentikasi BulkAppendTree untuk posisi yang
 diminta, dirantai ke proof Merk induk untuk element CommitmentTree.

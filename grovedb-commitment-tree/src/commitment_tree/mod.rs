@@ -4,7 +4,8 @@
 //! Provides [`CommitmentTree`], which owns both the in-memory
 //! [`CommitmentFrontier`] and a [`BulkAppendTree`], combining the Sinsemilla
 //! frontier (for anchor computation) with the two-level append-only store (for
-//! `cmx||payload` persistence with epoch compaction) into a single struct.
+//! `cmx||rho||cv_net||payload` persistence with epoch compaction) into a single
+//! struct.
 //!
 //! All mutating operations return [`CostResult`] to propagate storage costs.
 
@@ -13,6 +14,7 @@ use std::marker::PhantomData;
 use grovedb_bulk_append_tree::BulkAppendTree;
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_storage::StorageContext;
+use grovedb_version::version::GroveVersion;
 use orchard::{
     memo::{DashMemo, MemoSize},
     note::TransmittedNoteCiphertext,
@@ -42,10 +44,32 @@ pub struct CommitmentAppendResult {
     pub compacted: bool,
 }
 
+/// A single entry for [`CommitmentTree::append_many_raw`].
+///
+/// Carries the same data as a per-leaf [`CommitmentTree::append_raw`] call.
+/// Named fields (instead of a bare `([u8; 32], [u8; 32], [u8; 32], Vec<u8>)`
+/// tuple) keep the three adjacent, type-identical 32-byte protocol fields from
+/// being silently transposed: `cmx`, `rho`, and `cv_net` are interchangeable to
+/// the type system but carry distinct meaning, and a swap would build an
+/// internally consistent tree while corrupting nullifier association and
+/// outgoing-note (OVK) recovery.
+#[derive(Debug, Clone)]
+pub struct CommitmentEntry {
+    /// Note commitment (must be a valid Pallas field element).
+    pub cmx: [u8; 32],
+    /// Nullifier (`rho`) of the spent note.
+    pub rho: [u8; 32],
+    /// Value commitment (`cv_net`) of the note — required for OVK recovery.
+    pub cv_net: [u8; 32],
+    /// Serialized ciphertext payload (`ciphertext_payload_size::<M>()` bytes).
+    pub payload: Vec<u8>,
+}
+
 // ── Ciphertext serialization helpers ─────────────────────────────────────
 
-/// Compute the expected ciphertext payload size (excluding the 32-byte cmx
-/// and 32-byte rho prefix) for a given `MemoSize`.
+/// Compute the expected ciphertext payload size (excluding the unencrypted
+/// protocol-level prefix `cmx (32) || rho (32) || cv_net (32)`) for a given
+/// `MemoSize`.
 ///
 /// Layout: `epk_bytes (32) || enc_ciphertext (variable) || out_ciphertext (80)`
 ///
@@ -96,8 +120,8 @@ pub fn deserialize_ciphertext<M: MemoSize>(data: &[u8]) -> Option<TransmittedNot
 ///
 /// - [`open`](CommitmentTree::open) loads the frontier from storage (or starts
 ///   empty) and reconstructs the `BulkAppendTree` from persisted state
-/// - [`append`](CommitmentTree::append) appends `cmx||rho||ciphertext` to the
-///   bulk tree and `cmx` to the frontier
+/// - [`append`](CommitmentTree::append) appends `cmx||rho||cv_net||ciphertext`
+///   to the bulk tree and `cmx` to the frontier
 /// - [`save`](CommitmentTree::save) persists the frontier back to storage
 ///
 /// # Authentication model
@@ -107,8 +131,8 @@ pub fn deserialize_ciphertext<M: MemoSize>(data: &[u8]) -> Option<TransmittedNot
 /// payload** is not independently authenticated by the Sinsemilla root;
 /// instead, it is covered by the [`BulkAppendTree`]'s state root
 /// (`blake3(mmr_root || dense_tree_root)`), which includes the full
-/// `cmx||ciphertext` entries. Both roots flow up through GroveDB's Merk
-/// hierarchy, providing authentication for the entire data set.
+/// `cmx||rho||cv_net||ciphertext` entries. Both roots flow up through GroveDB's
+/// Merk hierarchy, providing authentication for the entire data set.
 ///
 /// # Atomicity
 ///
@@ -197,7 +221,8 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
 
         // Validate that the frontier and bulk tree agree on the number of
         // appended items. A mismatch indicates a partial commit or data
-        // corruption.
+        // corruption; both [`append_raw`] and [`append_many_raw`] keep the two
+        // in sync.
         let frontier_size = frontier.tree_size();
         if frontier_size != total_count {
             return Err(CommitmentTreeError::InvalidData(format!(
@@ -220,35 +245,54 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     /// This is the primary typed API. It serializes the ciphertext internally
     /// and delegates to [`append_raw`](Self::append_raw).
     ///
+    /// `cv_net` is the note's value commitment, stored as an unencrypted
+    /// protocol-level field. It is required for outgoing-note (OVK) recovery —
+    /// it is an input to Orchard's `derive_ock(ovk, cv, cmx, epk)` key that
+    /// decrypts `out_ciphertext`, and it cannot be recomputed from the note.
+    ///
     /// Call [`save`](Self::save) afterwards to persist the updated frontier.
+    /// The note, chunk and roots are identical under every grove version;
+    /// what the version selects is the hash count a compacting append
+    /// reports, which this method bills.
     pub fn append(
         &mut self,
         cmx: [u8; 32],
         rho: [u8; 32],
+        cv_net: [u8; 32],
         ciphertext: &TransmittedNoteCiphertext<M>,
+        grove_version: &GroveVersion,
     ) -> CostResult<CommitmentAppendResult, CommitmentTreeError> {
         let payload = serialize_ciphertext(ciphertext);
-        self.append_raw(cmx, rho, &payload)
+        self.append_raw(cmx, rho, cv_net, &payload, grove_version)
     }
 
     /// Append a note commitment and raw payload bytes to the commitment tree.
     ///
     /// Validates that `payload.len() == ciphertext_payload_size::<M>()`.
+    /// `cv_net` is a separate fixed 32-byte field, inherently validated by its
+    /// `[u8; 32]` type.
     ///
-    /// 1. Appends `cmx || rho || payload` to the `BulkAppendTree` (data
-    ///    storage)
+    /// 1. Appends `cmx || rho || cv_net || payload` to the `BulkAppendTree`
+    ///    (data storage)
     /// 2. Appends `cmx` to the Sinsemilla frontier (in-memory)
     ///
-    /// The `rho` (nullifier) is stored as an unencrypted protocol-level field
-    /// between `cmx` and the ciphertext payload. This allows light clients to
-    /// recover the nullifier association without additional lookups.
+    /// The `rho` (nullifier) and `cv_net` (value commitment) are stored as
+    /// unencrypted protocol-level fields between `cmx` and the ciphertext
+    /// payload. `rho` lets light clients recover the nullifier association
+    /// without additional lookups; `cv_net` is required for outgoing-note (OVK)
+    /// recovery — it is an input to Orchard's `derive_ock(ovk, cv, cmx, epk)`
+    /// key that decrypts `out_ciphertext`, and it cannot be recomputed from the
+    /// note. Neither field enters the Sinsemilla frontier, so the Orchard anchor
+    /// is unaffected.
     ///
     /// Call [`save`](Self::save) afterwards to persist the updated frontier.
     pub fn append_raw(
         &mut self,
         cmx: [u8; 32],
         rho: [u8; 32],
+        cv_net: [u8; 32],
         payload: &[u8],
+        grove_version: &GroveVersion,
     ) -> CostResult<CommitmentAppendResult, CommitmentTreeError> {
         let mut cost = OperationCost::default();
 
@@ -269,13 +313,14 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
             .wrap_with_cost(cost);
         }
 
-        // 1. Build cmx||rho||payload and append to BulkAppendTree
-        let mut item_value = Vec::with_capacity(64 + payload.len());
+        // 1. Build cmx||rho||cv_net||payload and append to BulkAppendTree
+        let mut item_value = Vec::with_capacity(96 + payload.len());
         item_value.extend_from_slice(&cmx);
         item_value.extend_from_slice(&rho);
+        item_value.extend_from_slice(&cv_net);
         item_value.extend_from_slice(payload);
 
-        let bulk_result = match self.bulk_tree.append(&item_value) {
+        let bulk_result = match self.bulk_tree.append(&item_value, grove_version) {
             Ok(r) => r,
             // codecov:ignore — requires BulkAppendTree::append to fail, which only happens on
             // storage faults (put/get errors) during dense tree insert or MMR compaction;
@@ -318,6 +363,191 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
             global_position: bulk_result.global_position,
             hash_count: bulk_result.hash_count,
             compacted: bulk_result.compacted,
+        })
+        .wrap_with_cost(cost)
+    }
+
+    /// Batch-append a sequence of [`CommitmentEntry`] values.
+    ///
+    /// Byte-for-byte equivalent to calling [`append_raw`](Self::append_raw)
+    /// once per entry — same dense-buffer state, same chunk MMR, same
+    /// `CommitmentFrontier` serialization, same final `bulk_state_root` and
+    /// `sinsemilla_root` — but computes the Sinsemilla anchor and the
+    /// BulkAppendTree state root **exactly once at the end** instead of once
+    /// per leaf.
+    ///
+    /// # Why batch
+    ///
+    /// Per-leaf [`append_raw`](Self::append_raw) walks the full depth-32
+    /// Sinsemilla path to derive a fresh anchor on every call — ~32
+    /// Sinsemilla hashes per leaf, ~33× the actual carry-chain work the
+    /// upstream `Frontier::append` performs internally. For 1M leaves that
+    /// dominates everything. Batching defers the depth walk to one final
+    /// `root_hash` call.
+    ///
+    /// # Returns
+    ///
+    /// A [`CommitmentAppendResult`] shaped like what the **final** per-leaf
+    /// [`append_raw`](Self::append_raw) would have returned: `sinsemilla_root`
+    /// and `bulk_state_root` are the post-batch values; `global_position` is
+    /// the position of the last appended entry; `hash_count` is the sum across
+    /// the batch (including the one final state-root blake3); `compacted` is
+    /// `true` if any compaction occurred during the batch.
+    ///
+    /// # Atomicity
+    ///
+    /// On error (e.g. invalid cmx or payload size in the middle of the input)
+    /// any entries already processed remain in the tree — discard the
+    /// surrounding transaction if you need all-or-nothing semantics. This
+    /// matches the per-leaf behavior of calling [`append_raw`](Self::append_raw)
+    /// in a loop.
+    ///
+    /// # Persistence — caller responsibilities
+    ///
+    /// Like [`append_raw`](Self::append_raw), this method does **not** flush
+    /// state to disk on its own. After your final batch — i.e. just before
+    /// committing the surrounding `StorageBatch` / transaction — the caller
+    /// **must** call:
+    ///
+    /// 1. [`commit_mmr`](Self::commit_mmr) to write MMR nodes staged in the
+    ///    overlay during compactions, and
+    /// 2. [`save`](Self::save) to persist the Sinsemilla frontier.
+    ///
+    /// **Do not call [`commit_mmr`](Self::commit_mmr) between chained
+    /// `append_many_raw` calls.** A GroveDB `StorageContext::get` does not see
+    /// writes that are sitting in its `StorageBatch` (reads go straight to the
+    /// underlying transaction). Flushing the overlay mid-session would put the
+    /// MMR peaks into the batch, where the *next* batch's compactions can't
+    /// read them, and the second batch would then fail with `InconsistentStore`.
+    /// Keeping the overlay alive across chained calls is what lets later
+    /// compactions resolve their sibling reads in memory.
+    pub fn append_many_raw<I>(
+        &mut self,
+        entries: I,
+        grove_version: &GroveVersion,
+    ) -> CostResult<CommitmentAppendResult, CommitmentTreeError>
+    where
+        I: IntoIterator<Item = CommitmentEntry>,
+    {
+        let mut cost = OperationCost::default();
+        let expected_payload = ciphertext_payload_size::<M>();
+
+        let mut appended: u64 = 0;
+        let mut hash_count: u32 = 0;
+        let mut any_compacted = false;
+        // Track the last appended position. If the input is empty we fall back
+        // to the tree's current top of range (or 0 if empty) — the byte-for-byte
+        // contract only governs frontier+bulk state, not this field for N=0.
+        let starting_total = self.bulk_tree.total_count;
+        let mut last_global_position: u64 = starting_total.saturating_sub(1);
+
+        for CommitmentEntry {
+            cmx,
+            rho,
+            cv_net,
+            payload,
+        } in entries
+        {
+            // Pre-validate cmx (Pallas field element) and payload size *before*
+            // any mutation for this entry — mirrors append_raw's ordering so a
+            // bad entry doesn't leave a half-written row behind.
+            if crate::commitment_frontier::merkle_hash_from_bytes(&cmx).is_none() {
+                return Err(CommitmentTreeError::InvalidFieldElement).wrap_with_cost(cost);
+            }
+            if payload.len() != expected_payload {
+                return Err(CommitmentTreeError::InvalidPayloadSize {
+                    expected: expected_payload,
+                    actual: payload.len(),
+                })
+                .wrap_with_cost(cost);
+            }
+
+            // 1. Build cmx||rho||cv_net||payload and append to BulkAppendTree,
+            //    deferring the per-leaf state_root blake3.
+            let mut item_value = Vec::with_capacity(96 + payload.len());
+            item_value.extend_from_slice(&cmx);
+            item_value.extend_from_slice(&rho);
+            item_value.extend_from_slice(&cv_net);
+            item_value.extend_from_slice(&payload);
+
+            let r = match self
+                .bulk_tree
+                .append_no_state_root(&item_value, grove_version)
+            {
+                Ok(r) => r,
+                // codecov:ignore — only reachable on a storage fault during the
+                // dense-tree insert or MMR compaction (see `append_raw`'s
+                // sibling branch for the full rationale).
+                Err(e) => {
+                    return Err(CommitmentTreeError::InvalidData(format!(
+                        "bulk append: {}",
+                        e
+                    )))
+                    .wrap_with_cost(cost);
+                }
+            };
+            hash_count = hash_count.saturating_add(r.hash_count);
+            if r.compacted {
+                any_compacted = true;
+            }
+            last_global_position = r.global_position;
+
+            // 2. Append cmx to the Sinsemilla frontier, deferring the depth-32
+            //    root walk. Validation here is now redundant with the pre-check
+            //    above but is cheap and keeps the cost accounting correct.
+            if let Err(e) = self.frontier.append_no_root(cmx).unwrap_add_cost(&mut cost) {
+                // codecov:ignore — `append_no_root` can only error on
+                // `InvalidFieldElement` (already filtered by the pre-validation
+                // above) or `TreeFull` (2^32 leaves, unreachable).
+                return Err(e).wrap_with_cost(cost);
+            }
+
+            appended += 1;
+        }
+
+        // End-of-batch: pay the deferred costs **once**.
+        // * `compute_current_state_root` runs one blake3 (matching the +1 each
+        //   per-leaf `append` would have added).
+        // * `root_hash_with_cost` runs the depth-32 Sinsemilla walk and
+        //   attributes its sinsemilla_hash_calls to `cost`.
+        let bulk_state_root = match self.bulk_tree.compute_current_state_root() {
+            Ok(r) => r,
+            // codecov:ignore — reachable only when an upstream storage read
+            // fails for the dense-tree root or the cached MMR root. The
+            // dense-tree write-through cache and the in-session MMR cache
+            // mean a fault-injecting mock can't hit this from inside
+            // `append_many_raw` without a separately-opened (cache-cold) tree
+            // — out of scope for this unit-test fixture.
+            Err(e) => {
+                return Err(CommitmentTreeError::InvalidData(format!(
+                    "state root: {}",
+                    e
+                )))
+                .wrap_with_cost(cost);
+            }
+        };
+        if appended > 0 {
+            hash_count = hash_count.saturating_add(1);
+        }
+
+        let root_ctx = self.frontier.root_hash_with_cost();
+        cost += root_ctx.cost;
+        let sinsemilla_root = root_ctx.value;
+
+        // Intentionally do NOT call `commit_mmr` here. Any nodes staged in the
+        // MMR overlay during compactions must stay in memory until the caller
+        // finishes the whole session — see the "Persistence" section in the
+        // method docs. Flushing here would put the peaks into the surrounding
+        // `StorageBatch`, where the next chained `append_many_raw` would be
+        // unable to read them (GroveDB `get` does not see batched writes), and
+        // the next compaction would fail with `InconsistentStore`.
+
+        Ok(CommitmentAppendResult {
+            sinsemilla_root,
+            bulk_state_root,
+            global_position: last_global_position,
+            hash_count,
+            compacted: any_compacted,
         })
         .wrap_with_cost(cost)
     }

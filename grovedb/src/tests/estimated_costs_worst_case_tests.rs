@@ -638,3 +638,126 @@ fn test_worst_case_delete_element_small_vs_large_layer() {
         small_result.cost.hash_node_calls
     );
 }
+
+// ---------------------------------------------------------------------------
+// Indexed-tree type variants — exercises the per-variant cost_size() arms
+// for PSIT/PCIT/PCPSIT in worst_case_merk_replace_tree /
+// worst_case_merk_insert_tree / worst_case_merk_delete_tree.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_worst_case_merk_insert_provable_sum_indexed_tree() {
+    let grove_version = GroveVersion::latest();
+    let key = KnownKey(b"psit_key".to_vec());
+    let flags: Option<Vec<u8>> = None;
+    let result = GroveDb::worst_case_merk_insert_tree(
+        &key,
+        &flags,
+        TreeType::ProvableSumIndexedTree,
+        TreeType::NormalTree,
+        0,
+        None,
+        grove_version,
+    );
+    result.value.as_ref().expect("insert PSIT should succeed");
+    assert!(
+        result.cost.storage_cost.added_bytes > 0,
+        "PSIT insert should add bytes: {:?}",
+        result.cost
+    );
+}
+
+#[test]
+fn test_worst_case_merk_insert_provable_count_indexed_tree() {
+    let grove_version = GroveVersion::latest();
+    let key = KnownKey(b"pcit_key".to_vec());
+    let flags: Option<Vec<u8>> = None;
+    let result = GroveDb::worst_case_merk_insert_tree(
+        &key,
+        &flags,
+        TreeType::ProvableCountIndexedTree,
+        TreeType::NormalTree,
+        0,
+        None,
+        grove_version,
+    );
+    result.value.as_ref().expect("insert PCIT should succeed");
+    assert!(
+        result.cost.storage_cost.added_bytes > 0,
+        "PCIT insert should add bytes: {:?}",
+        result.cost
+    );
+}
+
+#[test]
+fn test_worst_case_merk_insert_provable_count_provable_sum_indexed_tree() {
+    let grove_version = GroveVersion::latest();
+    let key = KnownKey(b"pcpsit_key".to_vec());
+    let flags: Option<Vec<u8>> = None;
+    let result = GroveDb::worst_case_merk_insert_tree(
+        &key,
+        &flags,
+        TreeType::ProvableCountProvableSumIndexedTree,
+        TreeType::NormalTree,
+        0,
+        None,
+        grove_version,
+    );
+    result.value.as_ref().expect("insert PCPSIT should succeed");
+    assert!(
+        result.cost.storage_cost.added_bytes > 0,
+        "PCPSIT insert should add bytes: {:?}",
+        result.cost
+    );
+}
+
+#[test]
+fn test_worst_case_merk_replace_tree_indexed_variants() {
+    let grove_version = GroveVersion::latest();
+    let key = KnownKey(b"replace_indexed".to_vec());
+    let layer_info = standard_worst_case_info();
+    for tt in [
+        TreeType::ProvableSumIndexedTree,
+        TreeType::ProvableCountIndexedTree,
+        TreeType::ProvableCountProvableSumIndexedTree,
+    ] {
+        let result = GroveDb::worst_case_merk_replace_tree(
+            &key,
+            tt,
+            TreeType::NormalTree,
+            &layer_info,
+            true,
+            grove_version,
+        );
+        result
+            .value
+            .as_ref()
+            .unwrap_or_else(|_| panic!("replace {:?} should succeed", tt));
+        let cost = result.cost;
+        assert!(
+            cost.seek_count > 0 || cost.hash_node_calls > 0,
+            "{:?} replace cost should be non-trivial: {:?}",
+            tt,
+            cost
+        );
+    }
+}
+
+#[test]
+fn test_worst_case_merk_delete_tree_indexed_variants() {
+    let grove_version = GroveVersion::latest();
+    let key = KnownKey(b"delete_indexed".to_vec());
+    let layer_info = standard_worst_case_info();
+    for tt in [
+        TreeType::ProvableSumIndexedTree,
+        TreeType::ProvableCountIndexedTree,
+        TreeType::ProvableCountProvableSumIndexedTree,
+    ] {
+        let result =
+            GroveDb::worst_case_merk_delete_tree(&key, tt, &layer_info, true, grove_version);
+        result
+            .value
+            .as_ref()
+            .unwrap_or_else(|_| panic!("delete {:?} should succeed", tt));
+    }
+}

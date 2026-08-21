@@ -62,6 +62,44 @@ pub enum TreeType {
     /// (`KVCountSum`, `KVHashCountSum`, `KVDigestCountSum`,
     /// `KVRefValueHashCountSum`, `HashWithCountAndSum`).
     ProvableCountProvableSumTree,
+    /// A provable sum-indexed tree's primary Merk: same node shape as
+    /// `ProvableSumTree` (uses `ProvableSummedMerkNode` aggregation). The
+    /// secondary Merk pointed to by the parent element is a
+    /// `ProvableCountProvableSumTree` opened at a derived storage prefix,
+    /// keyed by `(sum_sortable_be ‖ original_key)`. The primary stays
+    /// lean (sum-only nodes); the secondary carries BOTH aggregates so
+    /// positional queries against the sum ranking are provable via
+    /// count-bound subtree-skip commitments — offset pagination in
+    /// O(log n + k) proof size (k = page size), rank-of-key in
+    /// O(log n).
+    ProvableSumIndexedTree,
+    /// A provable count-indexed tree's primary Merk: same node shape as
+    /// `ProvableCountTree` (uses `ProvableCountedMerkNode` aggregation).
+    /// The secondary Merk pointed to by the parent element is a regular
+    /// `ProvableCountTree` opened at a derived storage prefix, keyed by
+    /// `(count_be ‖ original_key)`. Count-provable already, so offset
+    /// pagination over the count ranking is O(log n + k) proof size
+    /// (k = page size) out of the box.
+    ProvableCountIndexedTree,
+    /// A provable count + provable sum indexed tree's primary Merk: same
+    /// node shape as `ProvableCountProvableSumTree` (uses
+    /// `ProvableCountedAndProvableSummedMerkNode` aggregation). The parent
+    /// element carries a TLV list of 1..=3 secondary Merks, one per
+    /// selected axis (count, sum, avg). Each secondary lives at its own
+    /// derived storage prefix; the count axis opens as a
+    /// `ProvableCountTree` while the sum and avg axes open as
+    /// `ProvableCountProvableSumTree`s — every axis therefore carries a
+    /// hash-bound count aggregate, so all of them support count-bound
+    /// offset pagination, and the sum/avg axes additionally support
+    /// sum-on-range proofs.
+    ProvableCountProvableSumIndexedTree,
+    /// A private document store: an append-only store of fixed-size opaque
+    /// entries over a `BulkAppendTree`, with the `{entry_size, chunk_power}`
+    /// configuration bound into the state root. Carries the chunk power
+    /// (log2 of the epoch size) like `CommitmentTree` / `BulkAppendTree`;
+    /// the entry size lives only in the Element (it does not affect Merk
+    /// node layout).
+    PrivateDocumentStore(u8),
 }
 
 impl TreeType {
@@ -83,6 +121,10 @@ impl TreeType {
             TreeType::DenseAppendOnlyFixedSizeTree(_) => 10,
             TreeType::ProvableSumTree => 11,
             TreeType::ProvableCountProvableSumTree => 12,
+            TreeType::ProvableSumIndexedTree => 13,
+            TreeType::ProvableCountIndexedTree => 14,
+            TreeType::ProvableCountProvableSumIndexedTree => 15,
+            TreeType::PrivateDocumentStore(_) => 16,
         }
     }
 }
@@ -105,7 +147,11 @@ impl TryFrom<u8> for TreeType {
             10 => Ok(TreeType::DenseAppendOnlyFixedSizeTree(0)),
             11 => Ok(TreeType::ProvableSumTree),
             12 => Ok(TreeType::ProvableCountProvableSumTree),
-            n => Err(Error::UnknownTreeType(format!("got {}, max is 12", n))),
+            13 => Ok(TreeType::ProvableSumIndexedTree),
+            14 => Ok(TreeType::ProvableCountIndexedTree),
+            15 => Ok(TreeType::ProvableCountProvableSumIndexedTree),
+            16 => Ok(TreeType::PrivateDocumentStore(0)),
+            n => Err(Error::UnknownTreeType(format!("got {}, max is 16", n))),
         }
     }
 }
@@ -126,6 +172,12 @@ impl fmt::Display for TreeType {
             TreeType::DenseAppendOnlyFixedSizeTree(_) => "Dense Tree",
             TreeType::ProvableSumTree => "Provable Sum Tree",
             TreeType::ProvableCountProvableSumTree => "Provable Count Provable Sum Tree",
+            TreeType::ProvableSumIndexedTree => "Provable Sum Indexed Tree",
+            TreeType::ProvableCountIndexedTree => "Provable Count Indexed Tree",
+            TreeType::ProvableCountProvableSumIndexedTree => {
+                "Provable Count Provable Sum Indexed Tree"
+            }
+            TreeType::PrivateDocumentStore(_) => "Private Document Store",
         };
         write!(f, "{}", s)
     }
@@ -144,6 +196,7 @@ impl TreeType {
                 | TreeType::MmrTree
                 | TreeType::BulkAppendTree(_)
                 | TreeType::DenseAppendOnlyFixedSizeTree(_)
+                | TreeType::PrivateDocumentStore(_)
         )
     }
 
@@ -159,7 +212,30 @@ impl TreeType {
                 | TreeType::ProvableCountTree
                 | TreeType::ProvableCountSumTree
                 | TreeType::ProvableCountProvableSumTree
+                | TreeType::ProvableCountIndexedTree
+                | TreeType::ProvableCountProvableSumIndexedTree
         )
+    }
+
+    /// Returns whether this tree type is an indexed tree's primary Merk.
+    /// Indexed-tree primaries carry one or more secondary Merks that live
+    /// at derived storage prefixes. Used by code that needs to distinguish
+    /// indexed-tree primaries (where children are mirrored into secondaries)
+    /// from ordinary trees.
+    pub const fn is_indexed_primary(&self) -> bool {
+        matches!(
+            self,
+            TreeType::ProvableSumIndexedTree
+                | TreeType::ProvableCountIndexedTree
+                | TreeType::ProvableCountProvableSumIndexedTree
+        )
+    }
+
+    /// Returns whether this tree type is a count-indexed tree's primary
+    /// Merk (single-axis count). Kept for callers that specifically need
+    /// the count-only case; new code should prefer `is_indexed_primary`.
+    pub const fn is_count_indexed_primary(&self) -> bool {
+        matches!(self, TreeType::ProvableCountIndexedTree)
     }
 
     /// Returns whether this tree type carries a sum aggregate that children
@@ -175,6 +251,8 @@ impl TreeType {
                 | TreeType::ProvableCountSumTree
                 | TreeType::ProvableSumTree
                 | TreeType::ProvableCountProvableSumTree
+                | TreeType::ProvableSumIndexedTree
+                | TreeType::ProvableCountProvableSumIndexedTree
         )
     }
 
@@ -194,6 +272,7 @@ impl TreeType {
             TreeType::CountSumTree
                 | TreeType::ProvableCountSumTree
                 | TreeType::ProvableCountProvableSumTree
+                | TreeType::ProvableCountProvableSumIndexedTree
         )
     }
 
@@ -201,13 +280,18 @@ impl TreeType {
     /// `Element::NonCounted` child.
     ///
     /// Stricter than `is_count_bearing`: the wrapper is allowed only in
-    /// the non-provable count-bearing trees (`CountTree`, `CountSumTree`).
-    /// `ProvableCountTree` / `ProvableCountSumTree` bind their aggregate
-    /// count into every node's hash via `node_hash_with_count`, so a
-    /// `NonCounted` child would commit a cryptographic count that
+    /// the non-provable count-bearing trees (`CountTree`, `CountSumTree`,
+    /// `CountIndexedTree`). `ProvableCountTree`,
+    /// `ProvableCountSumTree`, and `ProvableCountIndexedTree` bind their
+    /// aggregate count into every node's hash via `node_hash_with_count`,
+    /// so a `NonCounted` child would commit a cryptographic count that
     /// diverges from the actual number of stored elements — confusing
     /// for callers and a footgun for proof-driven readers. The wrapper
     /// is rejected at insert time in those parents.
+    ///
+    /// Indexed-tree primaries are all `Provable*` and therefore excluded
+    /// from this list for the same reason: their aggregate count (when
+    /// they have one) is bound into node hashes.
     pub const fn accepts_non_counted_children(&self) -> bool {
         matches!(self, TreeType::CountTree | TreeType::CountSumTree)
     }
@@ -240,6 +324,14 @@ impl TreeType {
             TreeType::DenseAppendOnlyFixedSizeTree(_) => false,
             TreeType::ProvableSumTree => true,
             TreeType::ProvableCountProvableSumTree => true,
+            // ProvableSumIndexedTree's primary mirrors ProvableSumTree (sum
+            // items allowed); ProvableCountIndexedTree's primary mirrors
+            // ProvableCountTree (no sum items); PCPS-indexed mirrors
+            // ProvableCountProvableSumTree (sum items allowed).
+            TreeType::ProvableSumIndexedTree => true,
+            TreeType::ProvableCountIndexedTree => false,
+            TreeType::ProvableCountProvableSumIndexedTree => true,
+            TreeType::PrivateDocumentStore(_) => false,
         }
     }
 
@@ -260,6 +352,16 @@ impl TreeType {
             TreeType::DenseAppendOnlyFixedSizeTree(_) => NodeType::NormalNode,
             TreeType::ProvableSumTree => NodeType::ProvableSumNode,
             TreeType::ProvableCountProvableSumTree => NodeType::ProvableCountProvableSumNode,
+            // The primary of a ProvableSumIndexedTree mirrors a
+            // ProvableSumTree.
+            TreeType::ProvableSumIndexedTree => NodeType::ProvableSumNode,
+            // The primary of a ProvableCountIndexedTree mirrors a
+            // ProvableCountTree.
+            TreeType::ProvableCountIndexedTree => NodeType::ProvableCountNode,
+            // The primary of a ProvableCountProvableSumIndexedTree mirrors
+            // a ProvableCountProvableSumTree.
+            TreeType::ProvableCountProvableSumIndexedTree => NodeType::ProvableCountProvableSumNode,
+            TreeType::PrivateDocumentStore(_) => NodeType::NormalNode,
         }
     }
 
@@ -281,6 +383,18 @@ impl TreeType {
             TreeType::ProvableCountProvableSumTree => {
                 TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(0, 0)
             }
+            // The primary of a ProvableSumIndexedTree mirrors a
+            // ProvableSumTree.
+            TreeType::ProvableSumIndexedTree => TreeFeatureType::ProvableSummedMerkNode(0),
+            // The primary of a ProvableCountIndexedTree mirrors a
+            // ProvableCountTree.
+            TreeType::ProvableCountIndexedTree => TreeFeatureType::ProvableCountedMerkNode(0),
+            // The primary of a ProvableCountProvableSumIndexedTree mirrors
+            // a ProvableCountProvableSumTree.
+            TreeType::ProvableCountProvableSumIndexedTree => {
+                TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(0, 0)
+            }
+            TreeType::PrivateDocumentStore(_) => TreeFeatureType::BasicMerkNode,
         }
     }
 
@@ -309,6 +423,12 @@ impl TreeType {
             TreeType::ProvableCountProvableSumTree => {
                 Some(ElementType::ProvableCountProvableSumTree)
             }
+            TreeType::ProvableSumIndexedTree => Some(ElementType::ProvableSumIndexedTree),
+            TreeType::ProvableCountIndexedTree => Some(ElementType::ProvableCountIndexedTree),
+            TreeType::ProvableCountProvableSumIndexedTree => {
+                Some(ElementType::ProvableCountProvableSumIndexedTree)
+            }
+            TreeType::PrivateDocumentStore(_) => Some(ElementType::PrivateDocumentStore),
         }
     }
 }
@@ -333,6 +453,7 @@ mod tests {
             TreeType::DenseAppendOnlyFixedSizeTree(8),
             TreeType::ProvableSumTree,
             TreeType::ProvableCountProvableSumTree,
+            TreeType::PrivateDocumentStore(4),
         ];
         for v in &variants {
             let d = v.discriminant();
@@ -344,8 +465,59 @@ mod tests {
 
     #[test]
     fn tree_type_try_from_invalid() {
-        assert!(TreeType::try_from(13u8).is_err());
+        assert!(TreeType::try_from(17u8).is_err());
         assert!(TreeType::try_from(255u8).is_err());
+    }
+
+    #[test]
+    fn private_document_store_tree_type_basics() {
+        // Discriminant round-trip (chunk_power defaults to 0 through the byte).
+        assert_eq!(TreeType::PrivateDocumentStore(4).discriminant(), 16);
+        assert_eq!(
+            TreeType::try_from(16u8).unwrap(),
+            TreeType::PrivateDocumentStore(0)
+        );
+        let t = TreeType::PrivateDocumentStore(4);
+        assert_eq!(format!("{}", t), "Private Document Store");
+        assert!(t.uses_non_merk_data_storage());
+        assert!(!t.is_count_bearing());
+        assert!(!t.is_sum_bearing());
+        assert!(!t.is_count_and_sum_bearing());
+        assert!(!t.is_indexed_primary());
+        assert!(!t.is_count_indexed_primary());
+        assert!(!t.accepts_non_counted_children());
+        assert!(!t.accepts_not_counted_or_summed_children());
+        assert!(!t.allows_sum_item());
+        assert_eq!(t.inner_node_type(), NodeType::NormalNode);
+        assert_eq!(t.empty_tree_feature_type(), TreeFeatureType::BasicMerkNode);
+        assert_eq!(t.to_element_type(), Some(ElementType::PrivateDocumentStore));
+        assert_eq!(t.cost_size(), PRIVATE_DOCUMENT_STORE_COST_SIZE);
+    }
+
+    #[test]
+    fn indexed_tree_types_round_trip_through_discriminant() {
+        for v in [
+            TreeType::ProvableSumIndexedTree,
+            TreeType::ProvableCountIndexedTree,
+            TreeType::ProvableCountProvableSumIndexedTree,
+        ] {
+            let d = v.discriminant();
+            let back = TreeType::try_from(d).unwrap();
+            assert_eq!(v, back);
+            assert!(v.is_indexed_primary());
+        }
+        // PCIT and PCPSIT are count-bearing; PSIT is not.
+        assert!(TreeType::ProvableCountIndexedTree.is_count_bearing());
+        assert!(TreeType::ProvableCountProvableSumIndexedTree.is_count_bearing());
+        assert!(!TreeType::ProvableSumIndexedTree.is_count_bearing());
+        // PSIT and PCPSIT are sum-bearing; PCIT is not.
+        assert!(TreeType::ProvableSumIndexedTree.is_sum_bearing());
+        assert!(TreeType::ProvableCountProvableSumIndexedTree.is_sum_bearing());
+        assert!(!TreeType::ProvableCountIndexedTree.is_sum_bearing());
+        // Only PCIT is the single-axis count primary (kept for legacy callers).
+        assert!(TreeType::ProvableCountIndexedTree.is_count_indexed_primary());
+        assert!(!TreeType::ProvableSumIndexedTree.is_count_indexed_primary());
+        assert!(!TreeType::ProvableCountProvableSumIndexedTree.is_count_indexed_primary());
     }
 
     #[test]
@@ -488,10 +660,15 @@ mod tests {
         assert!(TreeType::CountSumTree.accepts_non_counted_children());
         // Rejected: provable count-bearing parents (cryptographic count
         // would diverge from actual element count). Includes the
-        // dual-axis PCPS host — its count is hash-committed too.
+        // dual-axis PCPS host — its count is hash-committed too. All
+        // indexed-tree primaries are Provable* and rejected for the
+        // same reason.
         assert!(!TreeType::ProvableCountTree.accepts_non_counted_children());
         assert!(!TreeType::ProvableCountSumTree.accepts_non_counted_children());
         assert!(!TreeType::ProvableCountProvableSumTree.accepts_non_counted_children());
+        assert!(!TreeType::ProvableSumIndexedTree.accepts_non_counted_children());
+        assert!(!TreeType::ProvableCountIndexedTree.accepts_non_counted_children());
+        assert!(!TreeType::ProvableCountProvableSumIndexedTree.accepts_non_counted_children());
         // Everything else: also rejected.
         assert!(!TreeType::NormalTree.accepts_non_counted_children());
         assert!(!TreeType::SumTree.accepts_non_counted_children());
@@ -515,6 +692,9 @@ mod tests {
             TreeType::ProvableCountSumTree,
             TreeType::ProvableSumTree,
             TreeType::ProvableCountProvableSumTree,
+            TreeType::ProvableSumIndexedTree,
+            TreeType::ProvableCountIndexedTree,
+            TreeType::ProvableCountProvableSumIndexedTree,
         ] {
             if tt.accepts_non_counted_children() {
                 assert!(tt.is_count_bearing(), "{:?}", tt);
@@ -541,6 +721,13 @@ mod tests {
         assert!(!TreeType::BulkAppendTree(0).accepts_not_counted_or_summed_children());
         assert!(!TreeType::DenseAppendOnlyFixedSizeTree(0).accepts_not_counted_or_summed_children());
         assert!(!TreeType::ProvableSumTree.accepts_not_counted_or_summed_children());
+        // Indexed-tree primaries are all Provable*; the wrapper is rejected
+        // for the same reason as on plain Provable* trees.
+        assert!(!TreeType::ProvableSumIndexedTree.accepts_not_counted_or_summed_children());
+        assert!(!TreeType::ProvableCountIndexedTree.accepts_not_counted_or_summed_children());
+        assert!(
+            !TreeType::ProvableCountProvableSumIndexedTree.accepts_not_counted_or_summed_children()
+        );
     }
 
     #[test]

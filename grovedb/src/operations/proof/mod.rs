@@ -8,11 +8,31 @@ mod aggregate_count;
 mod aggregate_count_and_sum;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod aggregate_sum;
+/// Versioned dispatch for `bind_terminal_non_merk_tree`, which binds a
+/// terminally-reported non-Merk tree's element bytes to the parent-committed
+/// `value_hash`. Consensus-critical — see the module docs.
+#[cfg(feature = "minimal")]
+mod bind_terminal_non_merk_tree;
 #[cfg(feature = "minimal")]
 mod generate;
+// The prover lives in `indexed_axis::generate` and is `minimal`-gated there;
+// the envelope types and verification entry points must be reachable from a
+// verifier-only build (Dash Platform's `drive` crate compiles its
+// proof-verification layer with `--no-default-features --features verify`).
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub mod indexed_axis;
 /// Utility functions for proof display and conversion.
 pub mod util;
 mod verify;
+/// The unified verify entry point (`verify_path_query`), serving every
+/// provable `PathQuery` shape. Verify-reachable for light clients.
+#[cfg(any(feature = "minimal", feature = "verify"))]
+mod verify_path_query;
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use verify::SumBudgetStop;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use verify_path_query::VerifiedPathQuery;
 
 use std::{collections::BTreeMap, fmt};
 
@@ -213,7 +233,7 @@ impl<'de, Context> BorrowDecode<'de, Context> for MerkOnlyLayerProof {
 }
 
 /// Encoded proof bytes for different tree backing store types.
-#[derive(Encode, Decode)]
+#[derive(Encode, Decode, Clone)]
 pub enum ProofBytes {
     /// Merk (Merkle AVL) tree proof bytes.
     Merk(Vec<u8>),
@@ -226,13 +246,199 @@ pub enum ProofBytes {
     /// CommitmentTree proof: `sinsemilla_root (32 bytes) || bulk_append_proof`.
     /// Binds the Orchard anchor to the GroveDB root hash.
     CommitmentTree(Vec<u8>),
+    /// CountIndexedTree proof: `secondary_root_hash (32 bytes) || merk_proof`.
+    /// The `secondary_root_hash` is the cidx's secondary Merk root hash at
+    /// proof time (used by the verifier in `combine_hash_three` to chain
+    /// the value_hash recorded for this cidx in its parent Merk). The
+    /// `merk_proof` is a standard Merk proof against the cidx **primary**
+    /// covering the subquery result set; subqueries into cidx via the
+    /// generic V1 envelope use the primary as the descent target. Callers
+    /// who want secondary-ordered output should use the dedicated
+    /// `prove_indexed_count_top_k` proof shape instead.
+    CountIndexedTree(Vec<u8>),
+    /// Terminal attestation for an indexed tree that is itself a query
+    /// result with nothing queried below it:
+    /// `attestation (32 bytes) || primary_root_hash (32 bytes)`.
+    ///
+    /// Regular trees cover this case at the Merk level with a
+    /// `KVValueHashFeatureTypeWithChildHash` node, whose verification
+    /// recomputes the two-input `combine_hash(H(value), child_hash)`. An
+    /// indexed tree's parent binding is the three-input
+    /// `combine_hash_three(H(value), primary_root, attestation)`, which that
+    /// node type can never reproduce, so the two hashes travel here instead
+    /// and the verifier performs the three-input check itself. Supplying them
+    /// raw is safe for exactly the same reason `child_hash` is: a wrong value
+    /// fails the comparison against the parent-committed `value_hash`.
+    ///
+    /// `attestation` is the secondary Merk root hash for PCIT / PSIT, and the
+    /// `axes_digest` over every axis's secondary root hash for PCPSIT —
+    /// identical to the 32-byte prefix on [`ProofBytes::CountIndexedTree`].
+    ///
+    /// Appended last so the existing variants keep their discriminants; it is
+    /// only ever emitted for indexed trees, which no released version can
+    /// store.
+    IndexedTreeTerminal(Vec<u8>),
+    /// Axis-ordered descent into an indexed tree: instead of descending
+    /// the primary (the [`ProofBytes::CountIndexedTree`] shape), the
+    /// layer carries a proof over the queried per-axis **secondary** —
+    /// the [`AxisDescentProof`] payload, encoded with the same
+    /// big-endian canonical config as the envelope itself.
+    ///
+    /// Emitted only when the query node governing this layer carries
+    /// `ReadMode::Axis` (see `PathQuery::axis_read_at_path`); gated on
+    /// `proof.axis_descent_in_v1_envelope` (GROVE_V4+). The verifier
+    /// **recomputes** the secondary-root attestation from the payload's
+    /// secondary proof rather than accepting 32 raw bytes, then
+    /// performs the same `combine_hash_three` parent binding as the
+    /// other indexed shapes.
+    ///
+    /// Appended after [`ProofBytes::IndexedTreeTerminal`] so every
+    /// existing variant keeps its discriminant.
+    IndexedTreeAxisDescent(Vec<u8>),
+    /// Sum-budget window: the layer for a merk-backed tree whose query
+    /// node carries `ReadMode::SumBudget`. The payload
+    /// ([`SumBudgetWindowProof`]) carries an ordinary Merk proof over
+    /// exactly the window of elements the budget walk scanned, plus the
+    /// window's size and whether the walk exhausted the range; the
+    /// verifier re-executes the proof with the query's own items and
+    /// **replays the budget fold** over the proved elements, so a
+    /// window that stops early, runs long, or hides elements fails.
+    /// The layer's root binds through the ordinary
+    /// `combine_hash(H(value), child_root)` parent check.
+    ///
+    /// Gated on `proof.sum_budget_in_v1_envelope` (GROVE_V4+). Appended
+    /// last so every existing variant keeps its discriminant.
+    SumBudgetWindow(Vec<u8>),
+}
+
+/// Payload of [`ProofBytes::SumBudgetWindow`].
+///
+/// Trust model: `merk_proof` is verified cryptographically against the
+/// query's items. `window_len` and `exhausted` are prover-supplied but
+/// attested by the fold replay — a lying `window_len` disagrees with
+/// the executed result set, and a lying `exhausted` either fails the
+/// merk execution (a limited proof executed without a limit demands
+/// data it does not carry) or contradicts the replayed stop condition.
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub struct SumBudgetWindowProof {
+    /// Whether the walk ended because the query's ranges were exhausted
+    /// (`true`) rather than because a stop condition fired (`false`).
+    /// Decides the limit the verifier executes the merk proof with:
+    /// none when exhausted, `window_len` otherwise.
+    pub exhausted: bool,
+    /// Number of elements the walk scanned — the proof's window size.
+    pub window_len: u16,
+    /// Ordinary Merk proof over the window, built with the query's own
+    /// items and direction.
+    pub merk_proof: Vec<u8>,
+}
+
+impl SumBudgetWindowProof {
+    /// Encode with the same big-endian config as the surrounding
+    /// envelope.
+    pub fn encode_canonical(&self) -> Result<Vec<u8>, Error> {
+        let config = bincode::config::standard().with_big_endian();
+        bincode::encode_to_vec(self, config)
+            .map_err(|e| Error::CorruptedData(format!("unable to encode sum-budget window: {e}")))
+    }
+
+    /// Decode with trailing-byte rejection and a payload size cap.
+    pub fn decode_canonical(bytes: &[u8]) -> Result<Self, Error> {
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_limit::<{ 16 * 1024 * 1024 }>();
+        let (decoded, consumed): (Self, usize) = bincode::decode_from_slice(bytes, config)
+            .map_err(|e| {
+                Error::CorruptedData(format!("unable to decode sum-budget window: {e}"))
+            })?;
+        if consumed != bytes.len() {
+            return Err(Error::CorruptedData(format!(
+                "sum-budget window payload has {} trailing bytes",
+                bytes.len() - consumed
+            )));
+        }
+        Ok(decoded)
+    }
+}
+
+/// Payload of [`ProofBytes::IndexedTreeAxisDescent`]: everything the
+/// verifier needs to check an axis-ordered read of one indexed tree,
+/// *given* the query (which carries the axis, traversal, direction, and
+/// bounds — none of those are echoed here, matching the envelope's
+/// query-as-input philosophy).
+///
+/// Trust model per field:
+/// - `secondary_proof` is verified cryptographically; the queried
+///   axis's secondary root hash is **recomputed** from it.
+/// - `primary_root_hash` and `other_axes_root_hashes` are
+///   prover-supplied but bound: they enter `combine_hash_three(H(value),
+///   primary_root, attestation)` (with `attestation` the recomputed
+///   secondary root for PCIT/PSIT, or the axes digest over
+///   `other_axes_root_hashes` + the recomputed queried-axis root for
+///   PCPSIT), which must equal the parent-committed `value_hash` — any
+///   forgery fails that comparison.
+/// - `rank` is present iff the traversal is `RankOfKey`: the verifier
+///   needs the claimed rank to drive the count-offset verification
+///   walk, whose counted commitments then attest it (a wrong claim
+///   fails verification), and the single yielded entry must be the
+///   queried key.
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub struct AxisDescentProof {
+    /// Tag byte of the queried axis; must equal the query's axis.
+    pub axis_tag: u8,
+    /// Whether the target element is a PCPSIT (multi-axis TLV) rather
+    /// than a single-secondary PCIT / PSIT.
+    pub target_is_pcpsit: bool,
+    /// PCPSIT only: `(tag, secondary_root_hash)` for every axis the
+    /// element carries *except* the queried one. Must be empty for
+    /// PCIT / PSIT.
+    pub other_axes_root_hashes: Vec<(u8, [u8; 32])>,
+    /// Root hash of the indexed tree's primary Merk at proof time.
+    pub primary_root_hash: [u8; 32],
+    /// `RankOfKey` traversals only: the prover-computed rank.
+    pub rank: Option<u64>,
+    /// The secondary-Merk proof for the query's traversal: a
+    /// count-offset paginated proof for `TopK` / `RankOfKey`, a plain
+    /// Merk range proof for `Bounded`, an aggregate-on-range proof for
+    /// `AggregateOverValueRange`.
+    pub secondary_proof: Vec<u8>,
+    /// One resolved-target chain per returned secondary row, in the
+    /// secondary proof's result order. Empty for aggregate traversals,
+    /// which enumerate no rows.
+    pub target_chains: Vec<crate::operations::proof::indexed_axis::IndexedTargetChain>,
+}
+
+impl AxisDescentProof {
+    /// Encode with the same big-endian config as the surrounding
+    /// envelope.
+    pub fn encode_canonical(&self) -> Result<Vec<u8>, Error> {
+        let config = bincode::config::standard().with_big_endian();
+        bincode::encode_to_vec(self, config)
+            .map_err(|e| Error::CorruptedData(format!("unable to encode axis descent: {e}")))
+    }
+
+    /// Decode with trailing-byte rejection and a payload size cap.
+    pub fn decode_canonical(bytes: &[u8]) -> Result<Self, Error> {
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_limit::<{ 16 * 1024 * 1024 }>();
+        let (decoded, consumed): (Self, usize) = bincode::decode_from_slice(bytes, config)
+            .map_err(|e| Error::CorruptedData(format!("unable to decode axis descent: {e}")))?;
+        if consumed != bytes.len() {
+            return Err(Error::CorruptedData(format!(
+                "axis descent payload has {} trailing bytes",
+                bytes.len() - consumed
+            )));
+        }
+        Ok(decoded)
+    }
 }
 
 /// A single layer of a v1 GroveDB proof supporting multiple tree types.
 ///
 /// Uses a custom `Decode` implementation that enforces [`MAX_PROOF_DEPTH`]
 /// during deserialization to prevent stack overflow from deeply nested proofs.
-#[derive(Encode)]
+#[derive(Encode, Clone)]
 pub struct LayerProof {
     /// Proof bytes for this layer (may be any supported tree type).
     pub merk_proof: ProofBytes,
@@ -638,6 +844,62 @@ impl fmt::Display for ProofBytes {
                     )
                 } else {
                     write!(f, "CommitmentTree(<invalid: {} bytes>)", bytes.len())
+                }
+            }
+            ProofBytes::CountIndexedTree(bytes) => {
+                if bytes.len() >= 32 {
+                    write!(
+                        f,
+                        "CountIndexedTree(secondary_root={}, primary_proof={})",
+                        hex::encode(&bytes[..32]),
+                        decode_merk_proof(&bytes[32..])?
+                    )
+                } else {
+                    write!(f, "CountIndexedTree(<invalid: {} bytes>)", bytes.len())
+                }
+            }
+            ProofBytes::IndexedTreeTerminal(bytes) => {
+                if bytes.len() == 64 {
+                    write!(
+                        f,
+                        "IndexedTreeTerminal(attestation={}, primary_root={})",
+                        hex::encode(&bytes[..32]),
+                        hex::encode(&bytes[32..])
+                    )
+                } else {
+                    write!(f, "IndexedTreeTerminal(<invalid: {} bytes>)", bytes.len())
+                }
+            }
+            ProofBytes::SumBudgetWindow(bytes) => {
+                match SumBudgetWindowProof::decode_canonical(bytes) {
+                    Ok(payload) => write!(
+                        f,
+                        "SumBudgetWindow(exhausted={}, window_len={}, merk_proof={} bytes)",
+                        payload.exhausted,
+                        payload.window_len,
+                        payload.merk_proof.len(),
+                    ),
+                    Err(_) => write!(f, "SumBudgetWindow(<invalid: {} bytes>)", bytes.len()),
+                }
+            }
+            ProofBytes::IndexedTreeAxisDescent(bytes) => {
+                match AxisDescentProof::decode_canonical(bytes) {
+                    Ok(payload) => write!(
+                        f,
+                        "IndexedTreeAxisDescent(axis_tag={}, pcpsit={}, other_axes={}, \
+                     primary_root={}, rank={:?}, secondary_proof={} bytes)",
+                        payload.axis_tag,
+                        payload.target_is_pcpsit,
+                        payload.other_axes_root_hashes.len(),
+                        hex::encode(payload.primary_root_hash),
+                        payload.rank,
+                        payload.secondary_proof.len(),
+                    ),
+                    Err(_) => write!(
+                        f,
+                        "IndexedTreeAxisDescent(<invalid: {} bytes>)",
+                        bytes.len()
+                    ),
                 }
             }
         }

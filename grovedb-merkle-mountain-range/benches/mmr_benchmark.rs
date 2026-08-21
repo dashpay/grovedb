@@ -3,7 +3,8 @@ extern crate criterion;
 
 use criterion::{BenchmarkId, Criterion};
 use grovedb_merkle_mountain_range::{MMRStoreReadOps, MemStore, MmrNode, MMR};
-use rand::seq::SliceRandom;
+use grovedb_version::version::GroveVersion;
+use rand::seq::IndexedRandom;
 
 /// Create an MmrNode leaf from an integer (for benchmarking).
 fn leaf_from_u32(i: u32) -> MmrNode {
@@ -14,7 +15,11 @@ fn prepare_mmr(count: u32) -> (u64, MemStore, Vec<u64>) {
     let store = MemStore::default();
     let mut mmr = MMR::new(0, &store);
     let positions: Vec<u64> = (0u32..count)
-        .map(|i| mmr.push(leaf_from_u32(i)).unwrap().expect("push"))
+        .map(|i| {
+            mmr.push(leaf_from_u32(i), GroveVersion::latest())
+                .unwrap()
+                .expect("push")
+        })
         .collect();
     let mmr_size = mmr.mmr_size;
     mmr.commit().unwrap().expect("write to store");
@@ -37,8 +42,11 @@ fn bench(c: &mut Criterion) {
         let mmr = MMR::new(mmr_size, &store);
         let mut rng = rand::rng();
         b.iter(|| {
-            mmr.gen_proof(vec![*positions.choose(&mut rng).unwrap()])
-                .unwrap()
+            mmr.gen_proof(
+                vec![*positions.choose(&mut rng).unwrap()],
+                GroveVersion::latest(),
+            )
+            .unwrap()
         });
     });
 
@@ -46,7 +54,10 @@ fn bench(c: &mut Criterion) {
         let (mmr_size, store, positions) = prepare_mmr(100_0000);
         let mmr = MMR::new(mmr_size, &store);
         let mut rng = rand::rng();
-        let root = mmr.get_root().unwrap().expect("get root");
+        let root = mmr
+            .get_root(GroveVersion::latest())
+            .unwrap()
+            .expect("get root");
         let proofs: Vec<_> = (0..10_000)
             .map(|_| {
                 let pos = positions.choose(&mut rng).unwrap();
@@ -55,7 +66,10 @@ fn bench(c: &mut Criterion) {
                     .unwrap()
                     .expect("read")
                     .expect("exists");
-                let proof = mmr.gen_proof(vec![*pos]).unwrap().expect("gen proof");
+                let proof = mmr
+                    .gen_proof(vec![*pos], GroveVersion::latest())
+                    .unwrap()
+                    .expect("gen proof");
                 (pos, elem, proof)
             })
             .collect();

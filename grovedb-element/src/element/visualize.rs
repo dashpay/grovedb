@@ -176,10 +176,81 @@ impl Visualize for Element {
                     drawer = f.visualize(drawer)?;
                 }
             }
+            Element::PrivateDocumentStore(total_count, entry_size, chunk_power, flags) => {
+                drawer.write(
+                    format!(
+                        "private_document_store: count: {total_count} entry_size: {entry_size} \
+                         chunk_power: {chunk_power}",
+                    )
+                    .as_bytes(),
+                )?;
+
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
+                }
+            }
             Element::NonCounted(inner) => {
                 drawer.write(b"non_counted(")?;
                 drawer = inner.visualize(drawer)?;
                 drawer.write(b")")?;
+            }
+            Element::ProvableSumIndexedTree(primary, secondary, sum_value, flags) => {
+                drawer.write(b"provable_sum_indexed_tree: primary=")?;
+                drawer = primary.as_deref().visualize(drawer)?;
+                drawer.write(b", secondary=")?;
+                drawer = secondary.as_deref().visualize(drawer)?;
+                drawer.write(format!(", sum: {sum_value}").as_bytes())?;
+
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
+                }
+            }
+            Element::ProvableCountIndexedTree(primary, secondary, count_value, flags) => {
+                drawer.write(b"provable_count_indexed_tree: primary=")?;
+                drawer = primary.as_deref().visualize(drawer)?;
+                drawer.write(b", secondary=")?;
+                drawer = secondary.as_deref().visualize(drawer)?;
+                drawer.write(format!(", count: {count_value}").as_bytes())?;
+
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
+                }
+            }
+            Element::ProvableCountProvableSumIndexedTree(
+                primary,
+                count_value,
+                sum_value,
+                axes,
+                flags,
+            ) => {
+                drawer.write(b"provable_count_provable_sum_indexed_tree: primary=")?;
+                drawer = primary.as_deref().visualize(drawer)?;
+                drawer.write(
+                    format!(", count: {count_value}, sum: {sum_value}, axes: [").as_bytes(),
+                )?;
+                let mut first = true;
+                for (tag, sk) in axes {
+                    if !first {
+                        drawer.write(b", ")?;
+                    }
+                    first = false;
+                    drawer.write(format!("({tag}, ").as_bytes())?;
+                    drawer = sk.as_deref().visualize(drawer)?;
+                    drawer.write(b")")?;
+                }
+                drawer.write(b"]")?;
+
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
+                }
             }
             Element::NotSummed(inner) => {
                 drawer.write(b"not_summed(")?;
@@ -295,5 +366,59 @@ mod tests {
             ),
             String::from_utf8_lossy(result.as_ref())
         );
+    }
+
+    #[test]
+    fn test_visualize_provable_sum_indexed_tree_empty() {
+        let e = Element::ProvableSumIndexedTree(None, None, 0, None);
+        let mut result = Vec::new();
+        let drawer = Drawer::new(&mut result);
+        e.visualize(drawer).expect("visualize IO error");
+        let rendered = String::from_utf8_lossy(result.as_ref()).into_owned();
+        assert!(
+            rendered.contains("provable_sum_indexed_tree"),
+            "rendered: {rendered}"
+        );
+        assert!(rendered.contains("sum: 0"), "rendered: {rendered}");
+    }
+
+    #[test]
+    fn test_visualize_provable_count_provable_sum_indexed_tree() {
+        let e = Element::ProvableCountProvableSumIndexedTree(
+            Some(vec![0x11]),
+            5,
+            42,
+            vec![(0, Some(vec![0xab])), (1, None)],
+            None,
+        );
+        let mut result = Vec::new();
+        let drawer = Drawer::new(&mut result);
+        e.visualize(drawer).expect("visualize IO error");
+        let rendered = String::from_utf8_lossy(result.as_ref()).into_owned();
+        assert!(
+            rendered.contains("provable_count_provable_sum_indexed_tree"),
+            "rendered: {rendered}"
+        );
+        assert!(rendered.contains("count: 5"), "rendered: {rendered}");
+        assert!(rendered.contains("sum: 42"), "rendered: {rendered}");
+    }
+
+    #[test]
+    fn test_visualize_provable_count_indexed_tree() {
+        let e = Element::ProvableCountIndexedTree(
+            Some(vec![0x11]),
+            Some(vec![0x22]),
+            42,
+            Some(vec![1]),
+        );
+        let mut result = Vec::new();
+        let drawer = Drawer::new(&mut result);
+        e.visualize(drawer).expect("visualize IO error");
+        let rendered = String::from_utf8_lossy(result.as_ref()).into_owned();
+        assert!(
+            rendered.contains("provable_count_indexed_tree"),
+            "rendered: {rendered}"
+        );
+        assert!(rendered.contains("count: 42"), "rendered: {rendered}");
     }
 }

@@ -125,8 +125,9 @@ impl Query {
     /// Adds a range of all potential values to the query, so that the query
     /// will return all values
     ///
-    /// All other items in the query will be discarded as you are now getting
-    /// back all elements.
+    /// All other plain key/range items in the query will be discarded as you
+    /// are now getting back all elements. Aggregate meta-items
+    /// (`AggregateCountOnRange` etc.) are kept — see [`Self::insert_item`].
     pub fn insert_all(&mut self) {
         let range = QueryItem::RangeFull(RangeFull);
         self.insert_item(range);
@@ -137,17 +138,30 @@ impl Query {
     /// then merged together so that the query includes the minimum number of
     /// items (with no items covering any duplicate parts of keyspace) while
     /// still including every key or range that has been added to the query.
+    ///
+    /// Aggregate meta-variants (`AggregateCountOnRange`,
+    /// `AggregateSumOnRange`, `AggregateCountAndSumOnRange`) are **never**
+    /// range-merged: merging would erase the aggregate wrapper and silently
+    /// turn the query into a plain range query. An exact structural
+    /// duplicate is deduplicated; anything else that overlaps an aggregate
+    /// item is kept as a separate item, producing a multi-item query that
+    /// the `validate_aggregate_*` entry points reject at prove/execute time.
     pub fn insert_item(&mut self, mut item: QueryItem) {
-        // since `QueryItem::eq` considers items equal if they collide at all
-        // (including keys within ranges or ranges which partially overlap),
-        // `items.take` will remove the first item which collides
+        let item_is_aggregate = item.is_aggregate();
 
         self.items = self
             .items
             .iter()
             .filter_map(|our_item| {
-                if our_item.is_key() && item.is_key() && our_item == &item {
+                if our_item == &item {
+                    // Exact structural duplicate (key, range, or aggregate):
+                    // drop the existing copy, `item` replaces it below.
                     None
+                } else if item_is_aggregate || our_item.is_aggregate() {
+                    // Aggregate wrappers are not mergeable with anything —
+                    // keep both items so the semantic conflict surfaces as a
+                    // validation error instead of a silent wrapper drop.
+                    Some(our_item.clone())
                 } else if our_item.collides_with(&item) {
                     item.merge_assign(our_item);
                     None
@@ -158,9 +172,11 @@ impl Query {
             .collect();
 
         // Insert item at the correct sorted position.
-        // Ord-equal items are always removed by the collision filter above,
-        // so binary_search always returns Err. We use unwrap_or_else to
-        // extract the insertion index from either variant without panicking.
+        // `QueryItem::cmp` compares by covered range, so an aggregate item
+        // and a plain item covering the same range are Ord-equal while being
+        // kept as distinct items above; binary_search may therefore return
+        // either Ok or Err. We use unwrap_or_else to extract the insertion
+        // index from either variant without panicking.
         let pos = self.items.binary_search(&item).unwrap_or_else(|e| e);
         self.items.insert(pos, item);
     }
@@ -195,6 +211,115 @@ mod tests {
             query.insert_key(value.clone());
 
             assert_matches!(query.items.as_slice(), [QueryItem::Key(v)] if v == &value);
+        }
+
+        #[test]
+        fn test_insert_key_into_aggregate_query_preserves_aggregate_wrapper() {
+            // Regression test: inserting a key that falls inside the inner
+            // range of an aggregate meta-item used to merge the two items,
+            // silently dropping the aggregate wrapper and turning the query
+            // into a plain range query.
+            let mut query = Query::new_aggregate_count_and_sum_on_range(QueryItem::Range(
+                b"a".to_vec()..b"z".to_vec(),
+            ));
+
+            query.insert_key(b"extra".to_vec());
+
+            assert_matches!(
+                query.items.as_slice(),
+                [
+                    QueryItem::AggregateCountAndSumOnRange(inner),
+                    QueryItem::Key(k),
+                ] if matches!(inner.as_ref(), QueryItem::Range(r) if r.start == b"a" && r.end == b"z")
+                    && k == b"extra"
+            );
+            // The resulting malformed shape must be rejected downstream.
+            assert!(query.validate_aggregate_count_and_sum_on_range().is_err());
+        }
+
+        #[test]
+        fn test_insert_range_into_aggregate_count_query_preserves_aggregate_wrapper() {
+            let mut query =
+                Query::new_aggregate_count_on_range(QueryItem::Range(b"a".to_vec()..b"m".to_vec()));
+
+            // Overlapping plain range must not be merged into the aggregate.
+            query.insert_range(b"f".to_vec()..b"z".to_vec());
+
+            assert_matches!(
+                query.items.as_slice(),
+                [
+                    QueryItem::AggregateCountOnRange(_),
+                    QueryItem::Range(r),
+                ] if r.start == b"f" && r.end == b"z"
+            );
+            assert!(query.validate_aggregate_count_on_range().is_err());
+        }
+
+        #[test]
+        fn test_insert_all_into_aggregate_sum_query_preserves_aggregate_wrapper() {
+            let mut query = Query::new_aggregate_sum_on_range(QueryItem::RangeInclusive(
+                b"a".to_vec()..=b"z".to_vec(),
+            ));
+
+            // RangeFull collides with everything; the aggregate must survive.
+            query.insert_all();
+
+            assert_matches!(
+                query.items.as_slice(),
+                [QueryItem::RangeFull(_), QueryItem::AggregateSumOnRange(_)]
+                    | [QueryItem::AggregateSumOnRange(_), QueryItem::RangeFull(_)]
+            );
+            assert!(query.validate_aggregate_sum_on_range().is_err());
+        }
+
+        #[test]
+        fn test_insert_aggregate_item_into_plain_query_keeps_both_items() {
+            let mut query = Query::new();
+            query.insert_range(b"a".to_vec()..b"z".to_vec());
+
+            query.insert_item(QueryItem::AggregateSumOnRange(Box::new(QueryItem::Range(
+                b"b".to_vec()..b"c".to_vec(),
+            ))));
+
+            assert_matches!(
+                query.items.as_slice(),
+                [QueryItem::Range(_), QueryItem::AggregateSumOnRange(_)]
+                    | [QueryItem::AggregateSumOnRange(_), QueryItem::Range(_)]
+            );
+            assert!(query.validate_aggregate_sum_on_range().is_err());
+        }
+
+        #[test]
+        fn test_insert_identical_aggregate_item_twice_dedupes() {
+            let aggregate = QueryItem::AggregateCountOnRange(Box::new(QueryItem::Range(
+                b"a".to_vec()..b"z".to_vec(),
+            )));
+
+            let mut query = Query::new();
+            query.insert_item(aggregate.clone());
+            query.insert_item(aggregate.clone());
+
+            assert_eq!(query.items.as_slice(), [aggregate]);
+        }
+
+        #[test]
+        fn test_insert_colliding_non_identical_aggregates_keeps_both() {
+            // Two overlapping aggregates of the same kind stay separate; the
+            // malformed multi-item shape is rejected by the validator instead
+            // of being silently merged.
+            let mut query =
+                Query::new_aggregate_count_on_range(QueryItem::Range(b"a".to_vec()..b"m".to_vec()));
+
+            query.insert_item(QueryItem::AggregateCountOnRange(Box::new(
+                QueryItem::Range(b"f".to_vec()..b"z".to_vec()),
+            )));
+
+            assert_eq!(query.items.len(), 2);
+            assert!(query
+                .items
+                .iter()
+                .all(|item| item.is_aggregate_count_on_range()));
+            assert!(query.validate_aggregate_count_on_range().is_err());
         }
     }
 }

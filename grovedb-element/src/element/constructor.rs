@@ -500,6 +500,198 @@ impl Element {
         Element::DenseAppendOnlyFixedSizeTree(count, height, flags)
     }
 
+    /// Set element to an empty private document store.
+    ///
+    /// Returns `InvalidInput` unless `entry_size` is in `1..=65535` and
+    /// `chunk_power` is in `1..=16` (the underlying `BulkAppendTree` dense-buffer height
+    /// range). Unlike `empty_commitment_tree` / `empty_bulk_append_tree`,
+    /// the constraints are enforced eagerly here: the configuration is
+    /// committed into the state root, so an unusable config must never be
+    /// constructible.
+    pub fn empty_private_document_store(
+        entry_size: u32,
+        chunk_power: u8,
+    ) -> Result<Self, ElementError> {
+        Self::empty_private_document_store_with_flags(entry_size, chunk_power, None)
+    }
+
+    /// Set element to an empty private document store with flags.
+    ///
+    /// Same validation as [`Element::empty_private_document_store`].
+    pub fn empty_private_document_store_with_flags(
+        entry_size: u32,
+        chunk_power: u8,
+        flags: Option<ElementFlags>,
+    ) -> Result<Self, ElementError> {
+        if entry_size == 0 || entry_size > u16::MAX as u32 {
+            // Upper bound keeps `2^16 * entry_size` (the worst-case
+            // compaction blob) inside the u32 `added_bytes` field, so the
+            // worst-case storage estimate stays a real bound. An entry
+            // larger than 64 KiB is outside this type's design envelope
+            // anyway.
+            return Err(ElementError::InvalidInput(
+                "private document store entry_size must be in 1..=65535",
+            ));
+        }
+        if !(1..=16).contains(&chunk_power) {
+            return Err(ElementError::InvalidInput(
+                "private document store chunk_power must be between 1 and 16",
+            ));
+        }
+        Ok(Element::PrivateDocumentStore(
+            0,
+            entry_size,
+            chunk_power,
+            flags,
+        ))
+    }
+
+    /// Set element to a private document store with all fields.
+    ///
+    /// Restoration constructor: unchecked, mirroring `new_commitment_tree` /
+    /// `new_bulk_append_tree` — it rebuilds an element from already-validated
+    /// state (stored bytes, batch metadata). Invalid configurations are
+    /// rejected at every real ingress: the `empty_*` constructors, the direct
+    /// and batch insert paths, and both (de)serialization codecs
+    /// (`Element::serialize` / `Element::deserialize` / serde) via
+    /// [`Element::validate_private_document_store_config`].
+    pub fn new_private_document_store(
+        total_count: u64,
+        entry_size: u32,
+        chunk_power: u8,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::PrivateDocumentStore(total_count, entry_size, chunk_power, flags)
+    }
+
+    /// Set element to an empty provable sum-indexed tree without flags.
+    pub fn empty_provable_sum_indexed_tree() -> Self {
+        Element::ProvableSumIndexedTree(None, None, 0, None)
+    }
+
+    /// Set element to an empty provable sum-indexed tree with flags.
+    pub fn empty_provable_sum_indexed_tree_with_flags(flags: Option<ElementFlags>) -> Self {
+        Element::ProvableSumIndexedTree(None, None, 0, flags)
+    }
+
+    /// Construct a provable sum-indexed tree with given primary/secondary
+    /// root keys and aggregate sum.
+    pub fn new_provable_sum_indexed_tree_with_root_keys_and_sum_value(
+        primary_root_key: Option<Vec<u8>>,
+        secondary_root_key: Option<Vec<u8>>,
+        sum_value: SumValue,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::ProvableSumIndexedTree(primary_root_key, secondary_root_key, sum_value, flags)
+    }
+
+    /// Set element to an empty provable count-indexed tree without flags.
+    pub fn empty_provable_count_indexed_tree() -> Self {
+        Element::ProvableCountIndexedTree(None, None, 0, None)
+    }
+
+    /// Set element to an empty provable count-indexed tree with flags.
+    pub fn empty_provable_count_indexed_tree_with_flags(flags: Option<ElementFlags>) -> Self {
+        Element::ProvableCountIndexedTree(None, None, 0, flags)
+    }
+
+    /// Construct a provable count-indexed tree with given primary/secondary
+    /// root keys and aggregate count.
+    pub fn new_provable_count_indexed_tree_with_root_keys_and_count_value(
+        primary_root_key: Option<Vec<u8>>,
+        secondary_root_key: Option<Vec<u8>>,
+        count_value: CountValue,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::ProvableCountIndexedTree(primary_root_key, secondary_root_key, count_value, flags)
+    }
+
+    /// Validate a `ProvableCountProvableSumIndexedTree` axes TLV: sorted by
+    /// tag ascending, no duplicate tags, 1..=3 entries, every tag in
+    /// `0..=2` (matching [`crate::indexed::IndexAxis`]).
+    ///
+    /// Public so write paths that accept a caller-supplied
+    /// `Element::ProvableCountProvableSumIndexedTree` (e.g. direct/batch
+    /// empty-tree creation, which would otherwise hash the axes via
+    /// `axes_digest` without validating them) can enforce the same
+    /// canonical-axes invariant the constructors do. The `Element` enum
+    /// is `pub`, so callers can build a PCPSIT with invalid / duplicate /
+    /// unsorted axes that the constructors would have rejected.
+    pub fn validate_pcpsit_axes(axes: &[(u8, Option<Vec<u8>>)]) -> Result<(), ElementError> {
+        if axes.is_empty() {
+            return Err(ElementError::InvalidInput(
+                "ProvableCountProvableSumIndexedTree axes must have at least one entry",
+            ));
+        }
+        if axes.len() > 3 {
+            return Err(ElementError::InvalidInput(
+                "ProvableCountProvableSumIndexedTree axes must have at most three entries",
+            ));
+        }
+        let mut prev: Option<u8> = None;
+        for (tag, _) in axes {
+            // Every tag must be a known axis (0..=2). Re-using the
+            // canonical mapping in IndexAxis::try_from_tag.
+            crate::indexed::IndexAxis::try_from_tag(*tag)?;
+            match prev {
+                Some(p) if *tag <= p => {
+                    return Err(ElementError::InvalidInput(
+                        "ProvableCountProvableSumIndexedTree axes must be sorted ascending by \
+                         tag with no duplicates",
+                    ));
+                }
+                _ => prev = Some(*tag),
+            }
+        }
+        Ok(())
+    }
+
+    /// Set element to an empty provable count + provable sum indexed tree
+    /// without flags. `axes` must be canonical (sorted by tag, no
+    /// duplicates, 1..=3 entries).
+    pub fn empty_provable_count_provable_sum_indexed_tree(
+        axes: Vec<(u8, Option<Vec<u8>>)>,
+    ) -> Result<Self, ElementError> {
+        Self::validate_pcpsit_axes(&axes)?;
+        Ok(Element::ProvableCountProvableSumIndexedTree(
+            None, 0, 0, axes, None,
+        ))
+    }
+
+    /// Set element to an empty provable count + provable sum indexed tree
+    /// with flags. See [`empty_provable_count_provable_sum_indexed_tree`].
+    pub fn empty_provable_count_provable_sum_indexed_tree_with_flags(
+        axes: Vec<(u8, Option<Vec<u8>>)>,
+        flags: Option<ElementFlags>,
+    ) -> Result<Self, ElementError> {
+        Self::validate_pcpsit_axes(&axes)?;
+        Ok(Element::ProvableCountProvableSumIndexedTree(
+            None, 0, 0, axes, flags,
+        ))
+    }
+
+    /// Construct a provable count + provable sum indexed tree with given
+    /// primary root key, aggregate count, aggregate sum, and canonical
+    /// axes TLV. Returns `InvalidInput` if `axes` is empty, has more than
+    /// three entries, contains an unknown tag, or is not strictly sorted
+    /// ascending by tag.
+    pub fn new_provable_count_provable_sum_indexed_tree(
+        primary_root_key: Option<Vec<u8>>,
+        count_value: CountValue,
+        sum_value: SumValue,
+        axes: Vec<(u8, Option<Vec<u8>>)>,
+        flags: Option<ElementFlags>,
+    ) -> Result<Self, ElementError> {
+        Self::validate_pcpsit_axes(&axes)?;
+        Ok(Element::ProvableCountProvableSumIndexedTree(
+            primary_root_key,
+            count_value,
+            sum_value,
+            axes,
+            flags,
+        ))
+    }
+
     /// Wrap an element in `NonCounted` so it contributes 0 to its parent count
     /// tree's aggregate count when inserted. Sums (if any) still propagate.
     ///

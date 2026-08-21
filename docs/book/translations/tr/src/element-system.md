@@ -274,7 +274,7 @@ graph TD
 - Sinsemilla koku Element'te DEPOLANMAZ -- GroveDB hash hiyerarsisi uzerinden Merk cocuk hash olarak akar
 
 **Islemler:**
-- `commitment_tree_insert(path, key, cmx, ciphertext, tx)` -- `TransmittedNoteCiphertext<M>` kabul eden tipli ekleme; `(yeni_kok, konum)` dondurur
+- `commitment_tree_insert(path, key, cmx, rho, cv_net, ciphertext, tx)` -- `TransmittedNoteCiphertext<M>` kabul eden tipli ekleme; `(yeni_kok, konum)` dondurur
 - `commitment_tree_anchor(path, key, tx)` -- Mevcut Orchard Anchor'u al
 - `commitment_tree_get_value(path, key, position, tx)` -- Konuma gore deger al
 - `commitment_tree_count(path, key, tx)` -- Toplam ogeler sayisini al

@@ -34,7 +34,8 @@ Il CommitmentTree memorizza **tutti i dati nello spazio dei nomi dati** allo ste
 │  │                                                         │  │
 │  │  BulkAppendTree storage (Chapter 14):                   │  │
 │  │    Buffer entries → chunk blobs → chunk MMR             │  │
-│  │    value = cmx (32) || rho (32) || ciphertext (216)     │  │
+│  │    value = cmx (32) || rho (32) || cv_net (32)          │  │
+│  │            || ciphertext (216)                          │  │
 │  │                                                         │  │
 │  │  Sinsemilla Frontier (~1KB):                            │  │
 │  │    key: b"__ct_data__" (COMMITMENT_TREE_DATA_KEY)       │  │
@@ -211,7 +212,7 @@ Il CommitmentTree memorizza tutti i suoi dati in un singolo **spazio dei nomi da
 │                                                                   │
 │  BulkAppendTree storage keys (see §14.7):                         │
 │    b"m" || pos (u64 BE)  → MMR node blobs                        │
-│    b"b" || index (u64 BE)→ buffer entries (cmx || rho || ciphertext) │
+│    b"b" || index (u64 BE)→ buffer entries (cmx||rho||cv_net||ciphertext) │
 │    b"e" || chunk (u64 BE)→ chunk blobs (compacted buffer)         │
 │    b"M"                  → BulkAppendTree metadata                │
 │                                                                   │
@@ -250,10 +251,10 @@ Il CommitmentTree fornisce quattro operazioni. L'operazione di inserimento e gen
 ```rust
 // Insert a commitment (typed) — returns (sinsemilla_root, position)
 // M controls ciphertext size validation
-db.commitment_tree_insert::<_, _, M>(path, key, cmx, rho, ciphertext, tx, version)
+db.commitment_tree_insert::<_, _, M>(path, key, cmx, rho, cv_net, ciphertext, tx, version)
 
 // Insert a commitment (raw bytes) — validates payload.len() == ciphertext_payload_size::<DashMemo>()
-db.commitment_tree_insert_raw(path, key, cmx, rho, payload_vec, tx, version)
+db.commitment_tree_insert_raw(path, key, cmx, rho, cv_net, payload_vec, tx, version)
 
 // Get the current Orchard Anchor
 db.commitment_tree_anchor(path, key, tx, version)
@@ -280,7 +281,7 @@ Step 2: Build ct_path = path ++ [key]
 Step 3: Open data storage context at ct_path
         Load CommitmentTree (frontier + BulkAppendTree)
         Serialize ciphertext → validate payload size matches M
-        Append cmx||rho||ciphertext to BulkAppendTree
+        Append cmx||rho||cv_net||ciphertext to BulkAppendTree
         Append cmx to Sinsemilla frontier → get new sinsemilla_root
         Track Blake3 + Sinsemilla hash costs
 
@@ -299,10 +300,10 @@ Step 7: Commit storage batch and local transaction
 
 ```mermaid
 graph TD
-    A["commitment_tree_insert(path, key, cmx, rho, ciphertext)"] --> B["Validate: is CommitmentTree?"]
+    A["commitment_tree_insert(path, key, cmx, rho, cv_net, ciphertext)"] --> B["Validate: is CommitmentTree?"]
     B --> C["Open data storage, load CommitmentTree"]
     C --> D["Serialize & validate ciphertext size"]
-    D --> E["BulkAppendTree.append(cmx||rho||payload)"]
+    D --> E["BulkAppendTree.append(cmx||rho||cv_net||payload)"]
     E --> F["frontier.append(cmx)"]
     F --> G["Save frontier to data storage"]
     G --> H["Update parent CommitmentTree element<br/>new sinsemilla_root + total_count"]
@@ -333,7 +334,7 @@ Il tipo `Anchor` e la rappresentazione nativa Orchard della radice Sinsemilla, a
 
 ### commitment_tree_get_value
 
-Recupera un valore memorizzato (cmx || rho || payload) dalla sua posizione globale:
+Recupera un valore memorizzato (cmx || rho || cv_net || payload) dalla sua posizione globale:
 
 ```text
 Step 1: Validate element at path/key is a CommitmentTree
@@ -366,6 +367,7 @@ Il CommitmentTree supporta inserimenti batch attraverso la variante `GroveOp::Co
 GroveOp::CommitmentTreeInsert {
     cmx: [u8; 32],      // extracted note commitment
     rho: [u8; 32],      // nullifier of the spent note
+    cv_net: [u8; 32],   // value commitment (for outgoing/OVK recovery)
     payload: Vec<u8>,    // serialized ciphertext (216 bytes for DashMemo)
 }
 ```
@@ -374,10 +376,10 @@ Due costruttori creano questa operazione:
 
 ```rust
 // Raw constructor — caller serializes payload manually
-QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, rho, payload_vec)
+QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, rho, cv_net, payload_vec)
 
 // Typed constructor — serializes TransmittedNoteCiphertext<M> internally
-QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, rho, &ciphertext)
+QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, rho, cv_net, &ciphertext)
 ```
 
 Inserimenti multipli che puntano allo stesso albero sono consentiti in un singolo batch. Poiche `execute_ops_on_path` non ha accesso all'archiviazione dati, tutte le operazioni CommitmentTree devono essere pre-elaborate prima di `apply_body`.
@@ -395,8 +397,8 @@ Step 2: For each group:
         a. Read existing element → verify CommitmentTree, extract chunk_power
         b. Open transactional storage context at ct_path
         c. Load CommitmentTree from data storage (frontier + BulkAppendTree)
-        d. For each (cmx, rho, payload):
-           - ct.append_raw(cmx, rho, payload) — validates size, appends to both
+        d. For each (cmx, rho, cv_net, payload):
+           - ct.append_raw(cmx, rho, cv_net, payload) — validates size, appends to both
         e. Save updated frontier to data storage
 
 Step 3: Replace all CTInsert ops with one ReplaceNonMerkTreeRoot per group
@@ -435,7 +437,7 @@ Il valore predefinito `M = DashMemo` significa che il codice esistente che non s
 
 **Validazione del payload**: Il metodo `append_raw()` valida che `payload.len() == ciphertext_payload_size::<M>()` e restituisce `CommitmentTreeError::InvalidPayloadSize` in caso di mancata corrispondenza. Il metodo tipizzato `append()` serializza internamente, quindi la dimensione e sempre corretta per costruzione.
 
-### Layout del record memorizzato (280 byte per DashMemo)
+### Layout del record memorizzato (312 byte per DashMemo)
 
 Ogni voce nel BulkAppendTree memorizza il record completo della nota crittografata.
 Il layout completo, byte per byte:
@@ -446,11 +448,12 @@ Il layout completo, byte per byte:
 ├─────────────────────────────────────────────────────────────────────┤
 │  0        32     cmx — extracted note commitment (Pallas base field)│
 │  32       32     rho — nullifier of the spent note                  │
-│  64       32     epk_bytes — ephemeral public key (Pallas point)    │
-│  96       104    enc_ciphertext — encrypted note plaintext + MAC    │
-│  200      80     out_ciphertext — encrypted outgoing data + MAC     │
+│  64       32     cv_net — value commitment (Pallas curve point)     │
+│  96       32     epk_bytes — ephemeral public key (Pallas point)    │
+│  128      104    enc_ciphertext — encrypted note plaintext + MAC    │
+│  232      80     out_ciphertext — encrypted outgoing data + MAC     │
 ├─────────────────────────────────────────────────────────────────────┤
-│  Total:   280 bytes                                                 │
+│  Total:   312 bytes                                                 │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -562,7 +565,7 @@ Diffie-Hellman fresco per nota — ogni chiave crittografa esattamente un messag
 | Testo in chiaro della nota | 88 byte | 564 byte | 52 fissi + memo |
 | enc_ciphertext | 104 byte | 580 byte | testo in chiaro + 16 MAC |
 | Payload del testo cifrato (epk+enc+out) | 216 byte | 692 byte | Trasmesso per nota |
-| Record memorizzato completo (cmx+rho+payload) | **280 byte** | **756 byte** | Voce BulkAppendTree |
+| Record memorizzato completo (cmx+rho+cv_net+payload) | **312 byte** | **788 byte** | Voce BulkAppendTree |
 
 Il memo piu piccolo di DashMemo (36 vs 512 byte) riduce ogni record memorizzato di
 476 byte — significativo quando si memorizzano milioni di note.
@@ -573,7 +576,7 @@ Un light client che scansiona alla ricerca delle proprie note esegue questa sequ
 record memorizzato:
 
 ```text
-1. Read record: cmx (32) || rho (32) || epk (32) || enc_ciphertext (104) || out_ciphertext (80)
+1. Read record: cmx (32) || rho (32) || cv_net (32) || epk (32) || enc_ciphertext (104) || out_ciphertext (80)
 
 2. Compute shared_secret = [ivk] * epk     (ECDH with incoming viewing key)
 
@@ -770,7 +773,7 @@ Note commitment at position P
 
 **2. Prova di recupero elemento (percorso V1):**
 
-I singoli elementi (cmx || rho || payload) possono essere interrogati per posizione e dimostrati usando prove V1 (§9.6), lo stesso meccanismo usato dal BulkAppendTree autonomo. La prova V1 include il percorso di autenticazione del BulkAppendTree per la posizione richiesta, concatenato alla prova del Merk genitore per l'elemento CommitmentTree.
+I singoli elementi (cmx || rho || cv_net || payload) possono essere interrogati per posizione e dimostrati usando prove V1 (§9.6), lo stesso meccanismo usato dal BulkAppendTree autonomo. La prova V1 include il percorso di autenticazione del BulkAppendTree per la posizione richiesta, concatenato alla prova del Merk genitore per l'elemento CommitmentTree.
 
 ## Tracciamento dei costi
 

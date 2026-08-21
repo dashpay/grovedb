@@ -12,6 +12,7 @@ use std::{
 
 use bincode::{Decode, Encode};
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use grovedb_version::version::GroveVersion;
 
 use crate::{
     helper::{
@@ -440,7 +441,7 @@ impl MmrTreeProof {
 
         // Generate the MerkleProof (drops zero costs from lazy store)
         let mmr = crate::MMR::new(mmr_size, &store);
-        let proof_result = mmr.gen_proof(positions).unwrap();
+        let proof_result = mmr.gen_proof(positions, GroveVersion::latest()).unwrap();
 
         // Check deferred storage errors first — if the store failed, the
         // error (e.g. InconsistentStore) is a symptom, not the root cause.
@@ -616,8 +617,15 @@ impl MmrTreeProof {
         let config = bincode::config::standard()
             .with_big_endian()
             .with_limit::<{ 100 * 1024 * 1024 }>();
-        let (proof, _) = bincode::decode_from_slice(bytes, config)
+        let (proof, consumed): (Self, usize) = bincode::decode_from_slice(bytes, config)
             .map_err(|e| Error::InvalidData(format!("failed to decode MmrTreeProof: {}", e)))?;
+        if consumed != bytes.len() {
+            return Err(Error::InvalidData(format!(
+                "MmrTreeProof decode did not consume all bytes: consumed {}, total {}",
+                consumed,
+                bytes.len()
+            )));
+        }
         Ok(proof)
     }
 }
@@ -708,7 +716,7 @@ mod tests {
         let store = MemStore::default();
         let mut mmr = MMR::new(0, &store);
         for v in values {
-            mmr.push(MmrNode::leaf(v.to_vec()))
+            mmr.push(MmrNode::leaf(v.to_vec()), GroveVersion::latest())
                 .unwrap()
                 .expect("push should succeed");
         }
@@ -720,7 +728,7 @@ mod tests {
     /// Get root hash from a MemStore + mmr_size.
     fn root_hash(store: &MemStore, mmr_size: u64) -> [u8; 32] {
         let mmr = MMR::new(mmr_size, store);
-        mmr.get_root()
+        mmr.get_root(GroveVersion::latest())
             .unwrap()
             .expect("get_root should succeed")
             .hash()
@@ -802,6 +810,21 @@ mod tests {
         assert_eq!(verified.len(), 2);
         assert_eq!(verified[0].1, b"item_0".to_vec());
         assert_eq!(verified[1].1, b"item_2".to_vec());
+    }
+
+    #[test]
+    fn test_mmr_proof_decode_rejects_trailing_bytes() {
+        let (store, mmr_size) = build_mmr(&[b"item_0", b"item_1", b"item_2"]);
+        let proof = MmrTreeProof::generate(mmr_size, &[0, 2], get_node_from_store(&store))
+            .expect("generate proof");
+
+        let mut bytes = proof.encode_to_vec().expect("encode proof");
+        bytes.push(0xff);
+
+        let err = MmrTreeProof::decode_from_slice(&bytes).expect_err("trailing bytes must fail");
+        assert!(
+            matches!(err, Error::InvalidData(message) if message.contains("did not consume all bytes"))
+        );
     }
 
     #[test]

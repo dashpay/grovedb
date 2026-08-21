@@ -97,6 +97,15 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           files: lcov.info
+          # Each test shard runs a disjoint 1/3 of the suite, so its
+          # lcov only covers the lines its tests exercised. Tag each
+          # upload with a distinct flag so codecov computes the commit
+          # total/patch coverage as the UNION across flags (with
+          # carryforward in .codecov.yml). Without distinct flags codecov
+          # does not reliably union per-file line hits across multiple
+          # unflagged same-commit uploads, which under-reports patch
+          # coverage for lines covered by only one shard.
+          flags: shard-${{ matrix.partition }}
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: true
 
@@ -121,6 +130,15 @@ jobs:
           SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: sccache
         run: cargo clippy --workspace --all-features -- -D warnings
+      # Benches and other non-lib targets are not built by the clippy or test
+      # steps, so a rename can leave a registered bench target uncompilable
+      # without any job noticing. Type-check every target (no -D warnings
+      # here — this step is about compile breakage, not lints).
+      - name: Check all targets build
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: sccache
+        run: cargo check --workspace --all-features --all-targets
       - name: Check verify feature
         env:
           SCCACHE_GHA_ENABLED: "true"

@@ -308,15 +308,17 @@ graph TD
 **Architecture:**
 - The *frontier* (rightmost path of the Merkle tree, ~1KB constant size) is
   stored in the **data namespace**, keyed by `COMMITMENT_TREE_DATA_KEY`
-- The actual note data (`cmx || ciphertext`) is stored via a **BulkAppendTree**
-  in the **data namespace** — chunk-compacted, retrievable by position
+- The actual note data (`cmx || rho || cv_net || ciphertext`) is stored via a
+  **BulkAppendTree** in the **data namespace** — chunk-compacted, retrievable by
+  position. `rho` and `cv_net` are unencrypted protocol fields and never enter
+  the Sinsemilla frontier.
 - Historical anchors are tracked by Platform in a separate provable tree
 - The Sinsemilla root is NOT stored in the Element — it flows as the Merk child
   hash through the GroveDB hash hierarchy
 
 **Operations:**
-- `commitment_tree_insert(path, key, cmx, ciphertext, tx)` — Typed append
-  accepting `TransmittedNoteCiphertext<M>`; returns `(new_root, position)`
+- `commitment_tree_insert(path, key, cmx, rho, cv_net, ciphertext, tx)` — Typed
+  append accepting `TransmittedNoteCiphertext<M>`; returns `(new_root, position)`
 - `commitment_tree_anchor(path, key, tx)` — Get current Orchard Anchor
 - `commitment_tree_get_value(path, key, position, tx)` — Retrieve value by position
 - `commitment_tree_count(path, key, tx)` — Get total item count

@@ -1,4 +1,5 @@
 use faster_hex::hex_string;
+use grovedb_version::version::GroveVersion;
 use proptest::prelude::*;
 use rand::{seq::SliceRandom, RngExt};
 
@@ -16,15 +17,23 @@ fn test_mmr(count: u32, proof_elem: Vec<u32>) {
     let store = MemStore::default();
     let mut mmr = MMR::new(0, &store);
     let positions: Vec<u64> = (0u32..count)
-        .map(|i| mmr.push(leaf_from_u32(i)).unwrap().expect("push"))
+        .map(|i| {
+            mmr.push(leaf_from_u32(i), GroveVersion::latest())
+                .unwrap()
+                .expect("push")
+        })
         .collect();
-    let root = mmr.get_root().unwrap().expect("get root");
+    let root = mmr
+        .get_root(GroveVersion::latest())
+        .unwrap()
+        .expect("get root");
     let proof = mmr
         .gen_proof(
             proof_elem
                 .iter()
                 .map(|elem| positions[*elem as usize])
                 .collect(),
+            GroveVersion::latest(),
         )
         .unwrap()
         .expect("gen proof");
@@ -45,17 +54,27 @@ fn test_gen_new_root_from_proof(count: u32) {
     let store = MemStore::default();
     let mut mmr = MMR::new(0, &store);
     let positions: Vec<u64> = (0u32..count)
-        .map(|i| mmr.push(leaf_from_u32(i)).unwrap().expect("push"))
+        .map(|i| {
+            mmr.push(leaf_from_u32(i), GroveVersion::latest())
+                .unwrap()
+                .expect("push")
+        })
         .collect();
     let elem = count - 1;
     let pos = positions[elem as usize];
-    let proof = mmr.gen_proof(vec![pos]).unwrap().expect("gen proof");
+    let proof = mmr
+        .gen_proof(vec![pos], GroveVersion::latest())
+        .unwrap()
+        .expect("gen proof");
     let new_elem = count;
     let new_pos = mmr
-        .push(leaf_from_u32(new_elem))
+        .push(leaf_from_u32(new_elem), GroveVersion::latest())
         .unwrap()
         .expect("push new");
-    let root = mmr.get_root().unwrap().expect("get root");
+    let root = mmr
+        .get_root(GroveVersion::latest())
+        .unwrap()
+        .expect("get root");
     mmr.commit().unwrap().expect("commit changes");
     let calculated_root = proof
         .calculate_root_with_new_leaf(
@@ -73,9 +92,14 @@ fn test_mmr_root() {
     let store = MemStore::default();
     let mut mmr = MMR::new(0, &store);
     (0u32..11).for_each(|i| {
-        mmr.push(leaf_from_u32(i)).unwrap().expect("push");
+        mmr.push(leaf_from_u32(i), GroveVersion::latest())
+            .unwrap()
+            .expect("push");
     });
-    let root = mmr.get_root().unwrap().expect("get root");
+    let root = mmr
+        .get_root(GroveVersion::latest())
+        .unwrap()
+        .expect("get root");
     let hex_root = hex_string(&root.hash());
     // This is the deterministic root for 11 leaves with MmrNode/blake3
     assert_eq!(hex_root.len(), 64, "root hash should be 32 bytes hex");
@@ -85,7 +109,10 @@ fn test_mmr_root() {
 fn test_empty_mmr_root() {
     let store = MemStore::default();
     let mmr = MMR::new(0, &store);
-    assert_eq!(Err(Error::GetRootOnEmpty), mmr.get_root().unwrap());
+    assert_eq!(
+        Err(Error::GetRootOnEmpty),
+        mmr.get_root(GroveVersion::latest()).unwrap()
+    );
 }
 
 #[test]
@@ -165,10 +192,16 @@ fn test_invalid_proof_verification(
     let mut mmr = MMR::new(0, &store);
     let mut positions: Vec<u64> = Vec::new();
     for i in 0u32..leaf_count {
-        let pos = mmr.push(leaf_from_u32(i)).unwrap().expect("push");
+        let pos = mmr
+            .push(leaf_from_u32(i), GroveVersion::latest())
+            .unwrap()
+            .expect("push");
         positions.push(pos);
     }
-    let root = mmr.get_root().unwrap().expect("get root");
+    let root = mmr
+        .get_root(GroveVersion::latest())
+        .unwrap()
+        .expect("get root");
 
     let entries_to_verify: Vec<(u64, MmrNode)> = positions_to_verify
         .iter()
@@ -216,7 +249,10 @@ fn test_invalid_proof_verification(
         assert!(handrolled_proof_result.is_err() || !handrolled_proof_result.expect("verify"));
     }
 
-    match mmr.gen_proof(positions_to_verify.clone()).unwrap() {
+    match mmr
+        .gen_proof(positions_to_verify.clone(), GroveVersion::latest())
+        .unwrap()
+    {
         Ok(proof) => {
             assert!(proof
                 .verify(root.clone(), entries_to_verify)
@@ -265,7 +301,10 @@ fn test_batch_cache_hit_returns_nonzero_cost() {
     // Push a leaf — it goes into MMRBatch.memory_batch
     let leaf = MmrNode::leaf(b"test value".to_vec());
     let expected_size = leaf.serialized_size();
-    let pos = mmr.push(leaf).unwrap().expect("push should succeed");
+    let pos = mmr
+        .push(leaf, GroveVersion::latest())
+        .unwrap()
+        .expect("push should succeed");
 
     // Before commit, read from the batch (cache hit)
     let cost_result = mmr.batch.element_at_position(pos);
@@ -290,7 +329,7 @@ fn test_push_cost_includes_read_costs() {
     let mut mmr = MMR::new(0, &store);
 
     // First push — no merging needed, no sibling reads
-    mmr.push(MmrNode::leaf(b"leaf0".to_vec()))
+    mmr.push(MmrNode::leaf(b"leaf0".to_vec()), GroveVersion::latest())
         .unwrap()
         .expect("push should succeed");
 
@@ -299,10 +338,10 @@ fn test_push_cost_includes_read_costs() {
     let mut mmr = MMR::new(0, &store);
 
     // Push two leaves — second push triggers a merge with the first
-    let push0_result = mmr.push(MmrNode::leaf(b"leaf0".to_vec()));
+    let push0_result = mmr.push(MmrNode::leaf(b"leaf0".to_vec()), GroveVersion::latest());
     let push0_cost = push0_result.cost;
 
-    let push1_result = mmr.push(MmrNode::leaf(b"leaf1".to_vec()));
+    let push1_result = mmr.push(MmrNode::leaf(b"leaf1".to_vec()), GroveVersion::latest());
     let push1_cost = push1_result.cost;
 
     // Second push should have higher cost (reads the first leaf for merging)
@@ -323,12 +362,12 @@ fn test_get_root_cost_reflects_peak_reads() {
 
     // Push 3 leaves → mmr_size=4, 2 peaks (pos 2 and pos 3)
     for i in 0..3u8 {
-        mmr.push(MmrNode::leaf(vec![i]))
+        mmr.push(MmrNode::leaf(vec![i]), GroveVersion::latest())
             .unwrap()
             .expect("push should succeed");
     }
 
-    let root_result = mmr.get_root();
+    let root_result = mmr.get_root(GroveVersion::latest());
     let root_cost = root_result.cost;
 
     // With 2 peaks, get_root reads 2 nodes → at least 2 seeks
@@ -351,14 +390,20 @@ fn test_mmr_tree_proof_standard_leaf_verify_succeeds() {
 
     // Push standard leaves — leaf_hash(value) matches the stored hash
     for i in 0u32..5 {
-        mmr.push(MmrNode::leaf(i.to_le_bytes().to_vec()))
-            .unwrap()
-            .expect("push should succeed");
+        mmr.push(
+            MmrNode::leaf(i.to_le_bytes().to_vec()),
+            GroveVersion::latest(),
+        )
+        .unwrap()
+        .expect("push should succeed");
     }
     mmr.commit().unwrap().expect("commit should succeed");
 
     let mmr_size = mmr.mmr_size;
-    let root = mmr.get_root().unwrap().expect("get root should succeed");
+    let root = mmr
+        .get_root(GroveVersion::latest())
+        .unwrap()
+        .expect("get root should succeed");
 
     let get_node = |pos: u64| -> crate::Result<Option<MmrNode>> {
         (&store)
@@ -388,9 +433,14 @@ fn test_single_element_mmr_root() {
     let mut mmr = MMR::new(0, &store);
     let leaf = MmrNode::leaf(b"only leaf".to_vec());
     let expected_hash = leaf.hash();
-    mmr.push(leaf).unwrap().expect("push should succeed");
+    mmr.push(leaf, GroveVersion::latest())
+        .unwrap()
+        .expect("push should succeed");
 
-    let root = mmr.get_root().unwrap().expect("get_root should succeed");
+    let root = mmr
+        .get_root(GroveVersion::latest())
+        .unwrap()
+        .expect("get_root should succeed");
     assert_eq!(
         root.hash(),
         expected_hash,
@@ -403,13 +453,13 @@ fn test_single_element_mmr_root() {
 fn test_gen_proof_empty_positions() {
     let store = MemStore::default();
     let mut mmr = MMR::new(0, &store);
-    mmr.push(MmrNode::leaf(b"leaf".to_vec()))
+    mmr.push(MmrNode::leaf(b"leaf".to_vec()), GroveVersion::latest())
         .unwrap()
         .expect("push should succeed");
 
     assert!(
         matches!(
-            mmr.gen_proof(vec![]).unwrap(),
+            mmr.gen_proof(vec![], GroveVersion::latest()).unwrap(),
             Err(Error::GenProofForInvalidLeaves)
         ),
         "should reject empty positions"
@@ -422,12 +472,14 @@ fn test_gen_proof_rejects_internal_positions() {
     let store = MemStore::default();
     let mut mmr = MMR::new(0, &store);
     for i in 0u32..4 {
-        mmr.push(leaf_from_u32(i)).unwrap().expect("push");
+        mmr.push(leaf_from_u32(i), GroveVersion::latest())
+            .unwrap()
+            .expect("push");
     }
     // Position 2 is an internal node (height 1, merge of pos 0 and 1)
     assert!(
         matches!(
-            mmr.gen_proof(vec![2]).unwrap(),
+            mmr.gen_proof(vec![2], GroveVersion::latest()).unwrap(),
             Err(Error::NodeProofsNotSupported)
         ),
         "should reject internal node positions"
@@ -440,12 +492,14 @@ fn test_gen_proof_out_of_range_leaf_positions() {
     let store = MemStore::default();
     let mut mmr = MMR::new(0, &store);
     for i in 0u32..4 {
-        mmr.push(leaf_from_u32(i)).unwrap().expect("push");
+        mmr.push(leaf_from_u32(i), GroveVersion::latest())
+            .unwrap()
+            .expect("push");
     }
     // mmr_size = 7. Position 7 is a leaf position (height 0) but beyond range.
     assert!(
         matches!(
-            mmr.gen_proof(vec![7]).unwrap(),
+            mmr.gen_proof(vec![7], GroveVersion::latest()).unwrap(),
             Err(Error::GenProofForInvalidLeaves)
         ),
         "should reject leaf positions beyond MMR range"
@@ -460,14 +514,21 @@ fn test_gen_proof_bags_trailing_peaks() {
     let mut mmr = MMR::new(0, &store);
     // 11 leaves → mmr_size=19, 3 peaks at positions [14, 17, 18]
     let positions: Vec<u64> = (0u32..11)
-        .map(|i| mmr.push(leaf_from_u32(i)).unwrap().expect("push"))
+        .map(|i| {
+            mmr.push(leaf_from_u32(i), GroveVersion::latest())
+                .unwrap()
+                .expect("push")
+        })
         .collect();
-    let root = mmr.get_root().unwrap().expect("get_root");
+    let root = mmr
+        .get_root(GroveVersion::latest())
+        .unwrap()
+        .expect("get_root");
 
     // Prove only leaf 0 (under peak 14). Peaks 17, 18 have no proved leaves
     // → bagging_track = 2 → triggers bag_peaks of the trailing peaks.
     let proof = mmr
-        .gen_proof(vec![positions[0]])
+        .gen_proof(vec![positions[0]], GroveVersion::latest())
         .unwrap()
         .expect("gen_proof should succeed");
     let valid = proof
@@ -496,9 +557,14 @@ fn test_verify_incremental_success() {
 
     // Build initial MMR with 4 leaves → single peak at position 6
     for i in 0u32..4 {
-        mmr.push(leaf_from_u32(i)).unwrap().expect("push");
+        mmr.push(leaf_from_u32(i), GroveVersion::latest())
+            .unwrap()
+            .expect("push");
     }
-    let prev_root = mmr.get_root().unwrap().expect("prev root");
+    let prev_root = mmr
+        .get_root(GroveVersion::latest())
+        .unwrap()
+        .expect("prev root");
     let peak_node = mmr
         .batch
         .element_at_position(6)
@@ -509,9 +575,14 @@ fn test_verify_incremental_success() {
     // Add 3 more incremental leaves
     let incremental_leaves: Vec<MmrNode> = (4u32..7).map(leaf_from_u32).collect();
     for leaf in &incremental_leaves {
-        mmr.push(leaf.clone()).unwrap().expect("push incremental");
+        mmr.push(leaf.clone(), GroveVersion::latest())
+            .unwrap()
+            .expect("push incremental");
     }
-    let current_root = mmr.get_root().unwrap().expect("current root");
+    let current_root = mmr
+        .get_root(GroveVersion::latest())
+        .unwrap()
+        .expect("current root");
 
     // Proof items = previous peak hashes (just [peak at 6])
     let proof = MerkleProof::new(mmr.mmr_size, vec![peak_node]);
@@ -529,7 +600,9 @@ fn test_verify_incremental_wrong_prev_root() {
     let mut mmr = MMR::new(0, &store);
 
     for i in 0u32..4 {
-        mmr.push(leaf_from_u32(i)).unwrap().expect("push");
+        mmr.push(leaf_from_u32(i), GroveVersion::latest())
+            .unwrap()
+            .expect("push");
     }
     let peak_node = mmr
         .batch
@@ -540,9 +613,14 @@ fn test_verify_incremental_wrong_prev_root() {
 
     let incremental_leaves: Vec<MmrNode> = (4u32..7).map(leaf_from_u32).collect();
     for leaf in &incremental_leaves {
-        mmr.push(leaf.clone()).unwrap().expect("push incremental");
+        mmr.push(leaf.clone(), GroveVersion::latest())
+            .unwrap()
+            .expect("push incremental");
     }
-    let current_root = mmr.get_root().unwrap().expect("current root");
+    let current_root = mmr
+        .get_root(GroveVersion::latest())
+        .unwrap()
+        .expect("current root");
 
     let proof = MerkleProof::new(mmr.mmr_size, vec![peak_node]);
     let wrong_prev = MmrNode::internal([0xFFu8; 32]);

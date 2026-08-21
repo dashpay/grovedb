@@ -269,12 +269,12 @@ graph TD
 
 **架构：**
 - *frontier*（默克尔树的最右路径，约 1KB 常量大小）存储在**数据命名空间**中，键为 `COMMITMENT_TREE_DATA_KEY`
-- 实际的 note 数据（`cmx || ciphertext`）通过**数据命名空间**中的 **BulkAppendTree** 存储 — 按块压缩，可按位置检索
+- 实际的 note 数据（`cmx || rho || cv_net || ciphertext`）通过**数据命名空间**中的 **BulkAppendTree** 存储 — 按块压缩，可按位置检索
 - 历史锚点由 Platform 在单独的可证明树中跟踪
 - Sinsemilla 根不存储在 Element 中 — 它作为 Merk 子哈希流经 GroveDB 哈希层次结构
 
 **操作：**
-- `commitment_tree_insert(path, key, cmx, ciphertext, tx)` — 类型化追加，接受 `TransmittedNoteCiphertext<M>`；返回 `(new_root, position)`
+- `commitment_tree_insert(path, key, cmx, rho, cv_net, ciphertext, tx)` — 类型化追加，接受 `TransmittedNoteCiphertext<M>`；返回 `(new_root, position)`
 - `commitment_tree_anchor(path, key, tx)` — 获取当前 Orchard Anchor
 - `commitment_tree_get_value(path, key, position, tx)` — 按位置检索值
 - `commitment_tree_count(path, key, tx)` — 获取总项目数

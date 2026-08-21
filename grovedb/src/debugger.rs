@@ -746,7 +746,12 @@ fn query_to_grovedb(query: Query) -> crate::Query {
             query.conditional_subquery_branches,
         ),
         left_to_right: query.left_to_right,
-        add_parent_tree_on_subquery: false,
+        add_parent_tree_on_subquery: query.add_parent_tree_on_subquery,
+        // The grovedbg wire type has no read-mode vocabulary (the
+        // debugger UI cannot express axis or sum-budget reads, same as
+        // it cannot express aggregate items), so debugger-issued
+        // queries are always plain key selection.
+        read_mode: None,
     }
 }
 
@@ -967,11 +972,38 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
                 element_flags,
             }
         }
+        crate::Element::PrivateDocumentStore(_, _, _, element_flags) => {
+            grovedbg_types::Element::Subtree {
+                root_key: None,
+                element_flags,
+            }
+        }
         // The visualizer wire format has no wrapper variants; render the
         // inner element. The wrapper is invisible at the debug-UI layer.
         crate::Element::NonCounted(inner)
         | crate::Element::NotSummed(inner)
         | crate::Element::NotCountedOrSummed(inner) => element_to_grovedbg(*inner),
+        // Indexed-tree variants are not yet represented in the
+        // grovedbg wire format; render them as a generic subtree pointing
+        // at the primary's root key. The secondary (or axes TLV for
+        // PCPSIT) is invisible to the debug UI for now.
+        crate::Element::ProvableSumIndexedTree(primary_root_key, _, _, element_flags)
+        | crate::Element::ProvableCountIndexedTree(primary_root_key, _, _, element_flags) => {
+            grovedbg_types::Element::Subtree {
+                root_key: primary_root_key,
+                element_flags,
+            }
+        }
+        crate::Element::ProvableCountProvableSumIndexedTree(
+            primary_root_key,
+            _,
+            _,
+            _,
+            element_flags,
+        ) => grovedbg_types::Element::Subtree {
+            root_key: primary_root_key,
+            element_flags,
+        },
     }
 }
 

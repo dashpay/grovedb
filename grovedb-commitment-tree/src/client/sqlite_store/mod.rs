@@ -215,7 +215,7 @@ impl ShardStore for SqliteShardStore {
     where
         F: FnMut(&Self::CheckpointId, &Checkpoint) -> Result<(), Self::Error>,
     {
-        let entries = self.with_conn(|conn| sql_list_checkpoints(conn, limit))?;
+        let entries = self.with_conn(|conn| sql_list_checkpoints_ascending(conn, limit))?;
         for (id, checkpoint) in &entries {
             callback(id, checkpoint)?;
         }
@@ -226,7 +226,7 @@ impl ShardStore for SqliteShardStore {
     where
         F: FnMut(&Self::CheckpointId, &Checkpoint) -> Result<(), Self::Error>,
     {
-        let entries = self.with_conn(|conn| sql_list_checkpoints(conn, limit))?;
+        let entries = self.with_conn(|conn| sql_list_checkpoints_ascending(conn, limit))?;
         for (id, checkpoint) in &entries {
             callback(id, checkpoint)?;
         }

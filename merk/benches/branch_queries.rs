@@ -233,7 +233,21 @@ fn get_key_from_node(node: &Node) -> Option<Vec<u8>> {
         Node::KVRefValueHash(key, ..) => Some(key.clone()),
         Node::KVCount(key, ..) => Some(key.clone()),
         Node::KVRefValueHashCount(key, ..) => Some(key.clone()),
-        Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) | Node::HashWithCount(..) => None,
+        Node::KVSum(key, ..) => Some(key.clone()),
+        Node::KVRefValueHashSum(key, ..) => Some(key.clone()),
+        Node::KVCountSum(key, ..) => Some(key.clone()),
+        Node::KVRefValueHashCountSum(key, ..) => Some(key.clone()),
+        Node::KVDigestSum(key, ..) => Some(key.clone()),
+        Node::KVDigestCountSum(key, ..) => Some(key.clone()),
+        // Hash-only nodes carry no key.
+        Node::Hash(_)
+        | Node::KVHash(_)
+        | Node::KVHashCount(..)
+        | Node::HashWithCount(..)
+        | Node::KVHashSum(..)
+        | Node::HashWithSum(..)
+        | Node::KVHashCountSum(..)
+        | Node::HashWithCountAndSum(..) => None,
     }
 }
 

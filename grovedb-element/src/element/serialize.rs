@@ -28,6 +28,13 @@ impl Element {
     /// `new_not_counted_or_summed` constructors these are impossible, but a
     /// caller could build them directly.
     pub fn serialize(&self, grove_version: &GroveVersion) -> Result<Vec<u8>, ElementError> {
+        // AUDIT NOTE (issue #717 — intentional, do not re-flag): the
+        // `element.serialize` feature version is `0` on every protocol version.
+        // Element bincode encoding is protocol-independent (append-only
+        // discriminants), so newer variants encode identically across versions
+        // — the constant is a cost selector, not a wire-format gate. See the
+        // doc on `GroveDBElementMethodVersions::serialize` for the full
+        // rationale.
         check_grovedb_v0!(
             "Element::serialize",
             grove_version.grovedb_versions.element.serialize
@@ -71,6 +78,16 @@ impl Element {
                     ));
                 }
             }
+        }
+        // A PrivateDocumentStore's committed config is bound into its state
+        // root; an unusable config must never reach disk. The checked
+        // constructors and insert paths already enforce this — the codec
+        // check closes the caller-built-element gap.
+        if let Err(e) = self.validate_private_document_store_config() {
+            return Err(ElementError::CorruptedData(format!(
+                "invalid private document store config: {}",
+                e
+            )));
         }
         let config = config::standard().with_big_endian().with_no_limit();
         bincode::encode_to_vec(self, config)
@@ -126,11 +143,17 @@ impl Element {
             ));
         }
         let config = config::standard().with_big_endian().with_no_limit();
-        let elem: Element = bincode::decode_from_slice(bytes, config)
+        let (elem, consumed): (Element, usize) = bincode::decode_from_slice(bytes, config)
             .map_err(|e| {
                 ElementError::CorruptedData(format!("unable to deserialize element {}", e))
-            })?
-            .0;
+            })?;
+        if consumed != bytes.len() {
+            return Err(ElementError::CorruptedData(format!(
+                "element deserialization did not consume all bytes: consumed {}, total {}",
+                consumed,
+                bytes.len()
+            )));
+        }
         // Defensive belt-and-braces post-check (guards against future
         // bincode/discriminant changes that could let a nested wrapper
         // sneak past the pre-check).
@@ -174,6 +197,18 @@ impl Element {
                     ));
                 }
             }
+        }
+        // Reject a PrivateDocumentStore with an unusable committed config
+        // (entry_size 0 or chunk_power outside 1..=16). No such bytes can
+        // legitimately exist — serialization and every insert path enforce
+        // the same bound — so this cannot reject previously-valid data;
+        // it makes the invalid configuration unrepresentable, mirroring
+        // the wrapper-invariant checks above.
+        if let Err(e) = elem.validate_private_document_store_config() {
+            return Err(ElementError::CorruptedData(format!(
+                "deserialized private document store with invalid config: {}",
+                e
+            )));
         }
         Ok(elem)
     }
@@ -310,5 +345,31 @@ mod tests {
             reference.serialized_size(grove_version).unwrap()
         );
         assert_eq!(hex::encode(serialized), "010003010002abcd0105000103010203");
+    }
+
+    #[test]
+    fn deserialize_rejects_trailing_bytes() {
+        let grove_version = GroveVersion::latest();
+        let elements = [
+            Element::new_item(b"abc".to_vec()),
+            Element::empty_tree(),
+            Element::new_sum_item(5),
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                b"root".to_vec(),
+                b"leaf".to_vec(),
+            ])),
+        ];
+
+        for element in elements {
+            let mut serialized = element.serialize(grove_version).expect("serialize element");
+            serialized.push(0xff);
+
+            let err = Element::deserialize(&serialized, grove_version)
+                .expect_err("trailing bytes must be rejected");
+            assert!(
+                matches!(&err, ElementError::CorruptedData(message) if message.contains("did not consume all bytes")),
+                "unexpected error: {err:?}"
+            );
+        }
     }
 }

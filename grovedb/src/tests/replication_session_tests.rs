@@ -689,4 +689,236 @@ mod tests {
             other => panic!("expected CorruptedData, got: {:?}", other),
         }
     }
+
+    // ---------- Indexed-tree state-sync rejection ----------
+    //
+    // State sync cannot yet handle indexed trees: their primaries commit a
+    // three-input `combine_hash_three` (the restorer only knows the
+    // two-input combine), and their axis secondary namespaces are never
+    // enumerated during discovery. Rather than failing midway with an
+    // opaque "chunk doesn't match expected root hash", both the source
+    // side (`fetch_chunk`) and the target side (discovery in
+    // `discover_new_subtrees_metadata`) now reject up-front with a
+    // descriptive `Error::NotSupported`.
+
+    fn assert_not_supported_indexed(err: &crate::Error, context: &str) {
+        let msg = format!("{err:?}");
+        assert!(
+            matches!(err, crate::Error::NotSupported(_)),
+            "{context}: expected Error::NotSupported, got: {msg}"
+        );
+        assert!(
+            msg.contains("indexed"),
+            "{context}: error should mention indexed trees, got: {msg}"
+        );
+    }
+
+    /// Drive the full source->destination sync loop (mirroring
+    /// `sync_source_to_destination`) but return the first error instead of
+    /// panicking, so the test can assert on it.
+    fn try_sync_source_to_destination(
+        source: &TempGroveDb,
+        grove_version: &GroveVersion,
+    ) -> Result<(), crate::Error> {
+        let checkpoint_dir = TempDir::new().expect("should create temp dir for checkpoint");
+        let checkpoint_path = checkpoint_dir.path().join("checkpoint");
+        source
+            .create_checkpoint(&checkpoint_path)
+            .expect("should create checkpoint");
+        let checkpoint_db = GroveDb::open(&checkpoint_path).expect("should open checkpoint db");
+
+        let app_hash = checkpoint_db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("checkpoint root hash should be available");
+
+        let dest = make_empty_grovedb();
+        let mut session =
+            dest.start_snapshot_syncing(app_hash, 64, CURRENT_STATE_SYNC_VERSION, grove_version)?;
+
+        let mut chunk_queue: VecDeque<Vec<u8>> = VecDeque::new();
+        chunk_queue.push_back(app_hash.to_vec());
+
+        while let Some(chunk_id) = chunk_queue.pop_front() {
+            let chunk_data = checkpoint_db.fetch_chunk(
+                chunk_id.as_slice(),
+                None,
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )?;
+            let more_ids = session.apply_chunk(
+                chunk_id.as_slice(),
+                &chunk_data,
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )?;
+            chunk_queue.extend(more_ids);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn state_sync_rejects_populated_pcit_up_front() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcit",
+                Element::empty_provable_count_indexed_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create PCIT");
+        // Children enter EMPTY and are populated so their counts are
+        // DERIVED. All state sync needs is a populated PCIT; how the
+        // aggregate was produced is irrelevant to the rejection.
+        for (k, c) in &[(b"a" as &[u8], 3u64), (b"b" as &[u8], 7u64)] {
+            source
+                .insert_into_count_indexed_tree(
+                    [TEST_LEAF, b"pcit"].as_ref(),
+                    k,
+                    Element::empty_provable_count_tree(),
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert PCIT entry");
+            for i in 0..*c {
+                source
+                    .insert(
+                        [TEST_LEAF, b"pcit", k].as_ref(),
+                        &i.to_be_bytes(),
+                        Element::new_item(vec![]),
+                        None,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("derive PCIT entry count");
+            }
+        }
+
+        let err = try_sync_source_to_destination(&source, grove_version)
+            .expect_err("state sync of a DB containing a populated PCIT must fail up-front");
+        assert_not_supported_indexed(&err, "PCIT sync");
+    }
+
+    #[test]
+    fn state_sync_rejects_populated_psit_up_front() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"psit",
+                Element::empty_provable_sum_indexed_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create PSIT");
+        for (k, s) in &[(b"a" as &[u8], 4i64), (b"b" as &[u8], -2i64)] {
+            source
+                .insert_into_provable_sum_indexed_tree(
+                    [TEST_LEAF, b"psit"].as_ref(),
+                    k,
+                    Element::new_sum_item(*s),
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert PSIT entry");
+        }
+
+        let err = try_sync_source_to_destination(&source, grove_version)
+            .expect_err("state sync of a DB containing a populated PSIT must fail up-front");
+        assert_not_supported_indexed(&err, "PSIT sync");
+    }
+
+    #[test]
+    fn fetch_chunk_source_side_rejects_indexed_tree_chunk() {
+        // Directly exercise the source-side `fetch_chunk` rejection: build
+        // the global chunk id for the PCIT subtree's own prefix and ask
+        // the source to produce it. The source must reject with
+        // NotSupported rather than emitting a chunk.
+        use crate::replication::utils::{encode_global_chunk_id, pack_nested_bytes};
+
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcit",
+                Element::empty_provable_count_indexed_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create PCIT");
+        // Empty child plus one item inside it: a non-empty PCIT whose
+        // count is DERIVED, which is all fetch_chunk needs to reject.
+        source
+            .insert_into_count_indexed_tree(
+                [TEST_LEAF, b"pcit"].as_ref(),
+                b"a",
+                Element::empty_provable_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert PCIT entry");
+        source
+            .insert(
+                [TEST_LEAF, b"pcit", b"a"].as_ref(),
+                b"row",
+                Element::new_item(b"v".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("derive PCIT entry count");
+
+        // Read the PCIT element to get its root key and confirm tree type.
+        let tx = source.start_transaction();
+        let (merk, root_key, tree_type) = source
+            .open_merk_for_replication([TEST_LEAF, b"pcit"].as_ref().into(), &tx, grove_version)
+            .expect("open pcit merk for replication");
+        drop(merk);
+        assert!(
+            tree_type.is_indexed_primary(),
+            "sanity: opened tree must be an indexed primary, got {tree_type:?}"
+        );
+
+        let pcit_path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let prefix = grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(
+            pcit_path.as_ref().into(),
+        )
+        .unwrap();
+        let global_chunk_id =
+            encode_global_chunk_id(prefix, root_key, tree_type, vec![]).expect("encode chunk id");
+        // fetch_chunk unpacks its input as nested bytes when the length
+        // differs from the root-hash length, then decodes each element as
+        // a global chunk id. Pack the single id the same way the wire
+        // protocol does.
+        let packed = pack_nested_bytes(vec![global_chunk_id]).expect("pack chunk id");
+
+        let err = source
+            .fetch_chunk(
+                packed.as_slice(),
+                Some(&tx),
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )
+            .expect_err("source-side fetch_chunk of an indexed tree must be rejected");
+        assert_not_supported_indexed(&err, "source-side fetch_chunk");
+    }
 }

@@ -254,6 +254,15 @@ fn test_rho(index: u8) -> [u8; 32] {
     bytes
 }
 
+/// Helper: create a deterministic 32-byte cv_net (value commitment) from an
+/// index.
+fn test_cv_net(index: u8) -> [u8; 32] {
+    let mut bytes = [0u8; 32];
+    bytes[0] = index;
+    bytes[1] = 0xCC;
+    bytes
+}
+
 /// Helper: create a deterministic test ciphertext for DashMemo.
 fn test_ciphertext(index: u8) -> TransmittedNoteCiphertext<DashMemo> {
     let mut epk_bytes = [0u8; 32];
@@ -351,6 +360,7 @@ fn test_batch_all_four_non_merk_tree_types() {
             vec![b"parent".to_vec(), b"ct".to_vec()],
             test_cmx(1),
             test_rho(1),
+            test_cv_net(1),
             &test_ciphertext(1),
         ),
         QualifiedGroveDbOp::mmr_tree_append_op(
@@ -459,10 +469,13 @@ fn test_commitment_tree_insert_debug_format() {
     rho[2] = 0x56;
     rho[3] = 0x78;
 
+    let cv_net = [0x9Au8; 32];
+
     let op = QualifiedGroveDbOp::commitment_tree_insert_op(
         vec![b"pool".to_vec()],
         cmx,
         rho,
+        cv_net,
         b"payload".to_vec(),
     );
 

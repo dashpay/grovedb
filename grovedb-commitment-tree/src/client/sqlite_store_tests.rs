@@ -435,6 +435,9 @@ mod tests {
                 .expect("add");
         }
 
+        // The ShardStore contract requires iteration in ascending checkpoint
+        // ID order (oldest first); shardtree's checkpoint pruning depends on
+        // it.
         let mut ids = Vec::new();
         store
             .for_each_checkpoint(3, |id, _| {
@@ -442,7 +445,7 @@ mod tests {
                 Ok(())
             })
             .expect("for_each");
-        assert_eq!(ids, vec![5, 4, 3]);
+        assert_eq!(ids, vec![1, 2, 3]);
     }
 
     #[test]
@@ -454,6 +457,8 @@ mod tests {
                 .expect("add");
         }
 
+        // Ascending checkpoint ID order, same contract as
+        // `for_each_checkpoint`.
         let mut ids = Vec::new();
         store
             .with_checkpoints(2, |id, _| {
@@ -461,7 +466,7 @@ mod tests {
                 Ok(())
             })
             .expect("with_checkpoints");
-        assert_eq!(ids, vec![5, 4]);
+        assert_eq!(ids, vec![1, 2]);
     }
 
     #[test]

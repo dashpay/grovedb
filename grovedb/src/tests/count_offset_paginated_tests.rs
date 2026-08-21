@@ -841,13 +841,83 @@ mod tests {
     // `merk/src/proofs/query/count_offset/tests.rs`) covers the
     // verifier symmetric.
 
-    /// Prover-side rejection for `Reference` in-range entries. Earlier
-    /// drafts returned the raw `Element::Reference` bytes verbatim
-    /// because the count-offset short-circuit doesn't run the regular
-    /// flow's reference post-pass. The prover now refuses to emit
-    /// these.
+    /// A reference row in a `ProvableCountSumTree` host.
+    ///
+    /// That host is eligible for count-offset pagination but commits only
+    /// the COUNT into its node hash, so its feature type is
+    /// `ProvableCountedSummedMerkNode` rather than the dual-axis one. The
+    /// reference post-pass matched only the count-only and dual-axis
+    /// variants, so a reference here hard-errored on an otherwise valid
+    /// query.
     #[test]
-    fn rejects_count_offset_with_reference_entry() {
+    fn count_offset_resolves_references_in_a_provable_count_sum_tree() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            crate::tests::common::EMPTY_PATH,
+            b"counts",
+            Element::empty_provable_count_sum_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert provable count-sum tree");
+        db.insert(&[b"counts"], b"a", Element::new_sum_item(5), None, None, v)
+            .unwrap()
+            .expect("insert a");
+        use crate::reference_path::ReferencePathType;
+        db.insert(
+            &[b"counts"],
+            b"b",
+            Element::new_reference(ReferencePathType::SiblingReference(b"a".to_vec())),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert reference b");
+        db.insert(&[b"counts"], b"c", Element::new_sum_item(7), None, None, v)
+            .unwrap()
+            .expect("insert c");
+
+        let mut q = Query::new();
+        q.insert_range_inclusive(b"a".to_vec()..=b"z".to_vec());
+        let path_query = PathQuery::new(
+            vec![b"counts".to_vec()],
+            SizedQuery::new(q, Some(2), Some(1)),
+        );
+        let proof = db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("a reference in a ProvableCountSumTree must be provable");
+        let (root_hash, verified) =
+            GroveDb::verify_query(&proof, &path_query, v).expect("proof must verify");
+        assert_eq!(root_hash, db.root_hash(None, v).unwrap().unwrap());
+
+        let values: Vec<(Vec<u8>, Element)> = verified
+            .into_iter()
+            .map(|(_, key, element)| (key, element.expect("value present")))
+            .collect();
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0].0, b"b".to_vec());
+        assert_eq!(
+            values[0].1,
+            Element::new_sum_item(5),
+            "the reference row must surface its dereferenced target"
+        );
+    }
+
+    /// `Reference` in-range entries are RESOLVED, not rejected.
+    ///
+    /// The count-offset short-circuit used to return before the regular
+    /// flow's reference post-pass, so the prover refused to emit reference
+    /// rows at all rather than surface raw `Element::Reference` bytes. The
+    /// short-circuit now runs the post-pass itself, so a verified result
+    /// carries the dereferenced TARGET — which is what the regular flow
+    /// has always returned for the same query.
+    #[test]
+    fn count_offset_resolves_reference_entries_to_their_target() {
         let v = GroveVersion::latest();
         let db = make_test_grovedb(v);
         db.insert(
@@ -903,14 +973,36 @@ mod tests {
             vec![b"counts".to_vec()],
             SizedQuery::new(q, Some(2), Some(1)),
         );
-        let result = db.prove_query(&path_query, None, v).unwrap();
-        let err = result.expect_err("prover must reject Reference in-range entry");
-        let msg = format!("{}", err);
-        assert!(
-            msg.contains("Reference"),
-            "prover rejection should mention Reference; got {}",
-            msg
+        let proof = db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("a Reference in-range entry must now be provable");
+        let (root_hash, verified) =
+            GroveDb::verify_query(&proof, &path_query, v).expect("proof must verify");
+        assert_eq!(
+            root_hash,
+            db.root_hash(None, v).unwrap().unwrap(),
+            "the resolved proof must still reconstruct the grove root"
         );
+
+        // offset 1 skips "a"; the page is ["b" (the reference), "c"].
+        let values: Vec<(Vec<u8>, Element)> = verified
+            .into_iter()
+            .map(|(_, key, element)| (key, element.expect("value present")))
+            .collect();
+        assert_eq!(
+            values.len(),
+            2,
+            "limit 2 after offset 1 must return two rows, got {values:?}"
+        );
+        assert_eq!(values[0].0, b"b".to_vec());
+        assert_eq!(
+            values[0].1,
+            Element::new_item(b"target_value".to_vec()),
+            "the reference row must surface its dereferenced TARGET, not the reference"
+        );
+        assert_eq!(values[1].0, b"c".to_vec());
+        assert_eq!(values[1].1, Element::new_item(b"v_c".to_vec()));
     }
 
     // ──────── check_count_offset_target_tree_type error normalization ────────
@@ -1125,9 +1217,18 @@ mod tests {
     }
 
     /// Defense-in-depth: a forged proof that surfaces a NonCounted
-    /// element in `returned_items` must be rejected as `InvalidProof`
-    /// mentioning "NonCounted" — the merk prover refuses to emit these,
-    /// so reaching the GroveDB-layer check means the proof was forged.
+    /// element in `returned_items` must be rejected as `InvalidProof`.
+    ///
+    /// Wraps an `Item("forged_item")` inside `Element::NonCounted` then
+    /// emits it as a `KVValueHashFeatureType` substitution for the
+    /// honest `KVCount` at key "f". The forgery is caught at the
+    /// merk-level KV→KVValueHash guard (the NonCountedItem base type
+    /// resolves to `Item`, which has `has_simple_value_hash() == true`,
+    /// so KVValueHashFeatureType is structurally illegal for it). A
+    /// NonCounted-wrapped tree element (where `base()` returns a tree
+    /// type that doesn't have a simple value-hash) would slip past the
+    /// merk-level guard and be caught by the GroveDB-level NonCounted
+    /// blacklist instead — both layers are needed for defense in depth.
     #[test]
     fn verifier_rejects_forged_non_counted_returned_item() {
         let v = GroveVersion::latest();
@@ -1138,18 +1239,115 @@ mod tests {
         let tampered = forge_count_offset_proof_replacing_value(honest, b"f", forged_bytes);
         let result = GroveDb::verify_query_raw(&tampered, &path_query, v);
         let err = result.expect_err("forged NonCounted return must be rejected");
+        // Accept rejection at either layer: the merk-level guard catches
+        // "simple-value Element type" forgeries (Item / SumItem /
+        // ItemWithSumItem + their NonCounted twins); the GroveDB-level
+        // blacklist catches NonCounted-wrapped tree elements that slip
+        // past the merk layer.
         assert!(
-            matches!(err, crate::Error::InvalidProof(_, ref msg) if msg.contains("NonCounted")),
-            "forged NonCounted return should reject as InvalidProof mentioning NonCounted; got {:?}",
+            matches!(
+                err,
+                crate::Error::InvalidProof(_, ref msg)
+                    if msg.contains("NonCounted")
+                        || msg.contains("simple-value Element")
+                        || msg.contains("KVValueHashFeatureType")
+            ),
+            "forged NonCounted return should reject as InvalidProof at either the \
+             merk-level (simple-value Element / KVValueHashFeatureType) or the \
+             GroveDB-level (NonCounted) guard; got {:?}",
             err,
         );
     }
 
-    /// Defense-in-depth: a forged proof that surfaces a Reference
-    /// element in `returned_items` must be rejected as `NotSupported`
-    /// mentioning "Reference" — the count-offset short-circuit doesn't
-    /// run the regular flow's reference post-pass, so accepting one
-    /// would surface a raw `Element::Reference` to the caller.
+    /// Regression for the P1 KV→KVValueHash forgery against count-offset
+    /// verification.
+    ///
+    /// Attack: an honest count-offset proof emits `KVCount(k, real_value,
+    /// count)` for an in-range Item entry. An attacker rewrites the same
+    /// node as `KVValueHashFeatureType(k, serialized_forged_Item,
+    /// H(real_value), ProvableCountedMerkNode(count))`:
+    ///
+    ///   - The merk tree-hash chain still reconstructs because
+    ///     `KVValueHashFeatureType` consumes the proof-supplied
+    ///     `value_hash` directly rather than recomputing it from `value`.
+    ///   - The own-count assertion (`own_count == 1`) still passes
+    ///     because the feature_type carries the original count.
+    ///   - Without the merk-level guard, `classify_self` would surface
+    ///     `BoundaryKind::ValueReturned { value: forged_bytes,
+    ///     value_hash: H(real_value) }` and GroveDB would push the
+    ///     forged Item to the caller verbatim — same root hash,
+    ///     different bytes.
+    ///
+    /// The merk-level guard in `count_offset/verify.rs` mirrors the V1
+    /// strict-mode check in the regular `Query::execute_proof` and
+    /// rejects `KVValueHashFeatureType` whose `value` deserializes to an
+    /// element type with `has_simple_value_hash() == true` (Item,
+    /// SumItem, ItemWithSumItem). The verifier surfaces the rejection
+    /// via the merk error string; either layer's message satisfies the
+    /// assertion.
+    #[test]
+    fn verifier_rejects_kv_to_kvvaluehash_item_forgery() {
+        let v = GroveVersion::latest();
+        let (_db, honest, path_query) = forge_fixture();
+        // Plain Item (no NonCounted wrapper) — exercises the
+        // simple-value-hash forgery vector specifically.
+        let forged_elem = Element::new_item(b"forged_item".to_vec());
+        let forged_bytes = forged_elem.serialize(v).expect("serialize forged Item");
+        let tampered = forge_count_offset_proof_replacing_value(honest, b"f", forged_bytes);
+        let result = GroveDb::verify_query_raw(&tampered, &path_query, v);
+        let err = result.expect_err(
+            "forged Item-in-KVValueHashFeatureType return must be rejected — \
+             this would otherwise be a silent value-swap forgery against \
+             count-offset paginated proofs",
+        );
+        assert!(
+            matches!(
+                err,
+                crate::Error::InvalidProof(_, ref msg)
+                    if msg.contains("simple-value Element")
+                        || msg.contains("KVValueHashFeatureType")
+            ),
+            "forged Item return should reject as InvalidProof at the merk-level \
+             KV→KVValueHash guard; got {:?}",
+            err,
+        );
+    }
+
+    /// Defense-in-depth: a forged proof whose returned value bytes do
+    /// not deserialize as any `Element` must be rejected as
+    /// `InvalidProof`, not silently surfaced to the caller.
+    ///
+    /// A truncated `Tree` discriminant (`[0x02]`) passes the merk-level
+    /// KV→KVValueHash guard (Tree has a combined value-hash, not a
+    /// simple one) but fails full `Element::deserialize`, exercising the
+    /// non-Element-bytes rejection in `run_count_offset_layer_dispatch`.
+    #[test]
+    fn verifier_rejects_non_element_returned_bytes() {
+        let v = GroveVersion::latest();
+        let (_db, honest, path_query) = forge_fixture();
+        // Valid Tree discriminant byte, but no fields → from_serialized_value
+        // succeeds (Tree, not simple-value) yet Element::deserialize fails.
+        let forged_bytes = vec![0x02u8];
+        let tampered = forge_count_offset_proof_replacing_value(honest, b"f", forged_bytes);
+        let result = GroveDb::verify_query_raw(&tampered, &path_query, v);
+        let err = result.expect_err("non-Element returned bytes must be rejected");
+        assert!(
+            matches!(err, crate::Error::InvalidProof(_, ref msg) if msg.contains("non-Element")),
+            "non-Element returned bytes should reject as InvalidProof mentioning non-Element; \
+             got {err:?}"
+        );
+    }
+
+    /// Defense-in-depth: a forged proof that surfaces an UNRESOLVED
+    /// Reference in `returned_items` must be rejected as `InvalidProof`.
+    ///
+    /// The prover now runs a reference post-pass on the count-offset
+    /// short-circuit, so an honest proof surfaces the dereferenced TARGET
+    /// and never the reference itself (see
+    /// `count_offset_resolves_reference_entries_to_their_target`). A raw
+    /// reference reaching the caller therefore means the value was
+    /// substituted after the fact, not that the shape is unsupported —
+    /// hence `InvalidProof` rather than `NotSupported`.
     #[test]
     fn verifier_rejects_forged_reference_returned_item() {
         use crate::reference_path::ReferencePathType;
@@ -1164,8 +1362,8 @@ mod tests {
         let result = GroveDb::verify_query_raw(&tampered, &path_query, v);
         let err = result.expect_err("forged Reference return must be rejected");
         assert!(
-            matches!(err, crate::Error::NotSupported(ref msg) if msg.contains("Reference")),
-            "forged Reference return should reject as NotSupported mentioning Reference; got {:?}",
+            matches!(err, crate::Error::InvalidProof(_, ref msg) if msg.contains("Reference")),
+            "forged Reference return should reject as InvalidProof mentioning Reference; got {:?}",
             err,
         );
     }
@@ -1192,6 +1390,60 @@ mod tests {
             matches!(err, crate::Error::NotSupported(ref msg) if msg.contains("non-empty tree")),
             "forged non-empty tree return should reject as NotSupported mentioning \
              non-empty tree; got {:?}",
+            err,
+        );
+    }
+
+    /// Defense-in-depth: empty-tree returns must have `value_hash ==
+    /// combine_hash(H(value), NULL_HASH)`.
+    ///
+    /// Even with the merk-level KV→KVValueHash guard, an attacker can
+    /// craft a forgery where the substituted `value` deserializes as
+    /// (e.g.) an empty `Element::Tree(None, _)` — its base type has
+    /// `has_simple_value_hash() == false`, so the merk-level guard
+    /// passes. The proof-carried `value_hash` is still trusted by the
+    /// merk tree-hash chain. Without the GroveDB-side empty-tree check
+    /// the forged empty-tree bytes would be surfaced to the caller as
+    /// if they were legitimately committed.
+    ///
+    /// The GroveDB-side check in `verify.rs:run_count_offset_layer_dispatch`
+    /// recomputes the expected `combine_hash(H(value), NULL_HASH)` for
+    /// any deserialized-as-tree element that isn't `is_non_empty_tree`
+    /// (i.e. empty trees + non-tree elements that don't have the
+    /// simple-hash shape). If the proof-carried `value_hash` doesn't
+    /// match, it's a forgery.
+    ///
+    /// Attack construction: take an honest proof, replace a `KVCount`
+    /// for an in-range Item with `KVValueHashFeatureType(k,
+    /// serialized_empty_tree, H(real_value), feature_type)`. The merk
+    /// chain verifies because `H(real_value)` is the original committed
+    /// value-hash for the entry, but the surfaced value bytes are now
+    /// an empty Tree. The GroveDB-side `combine_hash(H(empty_tree),
+    /// NULL_HASH) != H(real_value)` check catches it.
+    #[test]
+    fn verifier_rejects_forged_empty_tree_with_simple_value_hash() {
+        let v = GroveVersion::latest();
+        let (_db, honest, path_query) = forge_fixture();
+        // Empty Element::Tree(None, _) — empty so it passes
+        // is_non_empty_tree filter; tree-shape so it passes the
+        // merk-level simple-value-hash guard.
+        let forged_elem = Element::Tree(None, None);
+        let forged_bytes = forged_elem.serialize(v).expect("serialize empty tree");
+        let tampered = forge_count_offset_proof_replacing_value(honest, b"f", forged_bytes);
+        let result = GroveDb::verify_query_raw(&tampered, &path_query, v);
+        let err = result.expect_err(
+            "forged empty-tree return with simple value-hash must be rejected — \
+             without the combine_hash(H(value), NULL_HASH) check this is a silent \
+             value-swap forgery",
+        );
+        assert!(
+            matches!(
+                err,
+                crate::Error::InvalidProof(_, ref msg)
+                    if msg.contains("empty-tree") || msg.contains("KV→KVValueHash forgery")
+            ),
+            "forged empty-tree return should reject as InvalidProof at the \
+             GroveDB-level combine_hash(H(value), NULL_HASH) check; got {:?}",
             err,
         );
     }
@@ -1252,5 +1504,70 @@ mod tests {
             "PCPS: offset 5 + limit 3 ascending should return f,g,h — same answer as \
              ProvableCountSumTree, but the proof bytes use the dual-axis Node variants"
         );
+    }
+
+    /// An EMPTY indexed tree returned through the count-offset paginated
+    /// path must verify.
+    ///
+    /// The empty-tree defence-in-depth check recomputes the expected
+    /// value_hash to catch a KV->KVValueHash forgery, but indexed trees
+    /// commit the three-input `combine_hash_three(H(value), NULL_HASH,
+    /// second)` even when empty. Computing the two-input form for them
+    /// rejects an honest proof. Only PSIT is honest-reachable here — PCIT
+    /// and PCPSIT children are NonCounted-wrapped and refused earlier — so
+    /// this pins the arm that had no coverage at all (reverting it to an
+    /// unconditional `combine_hash` left the whole suite green).
+    #[test]
+    fn count_offset_accepts_empty_psit_return() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            &[] as &[&[u8]],
+            b"counts",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert count tree");
+        db.insert(
+            &[b"counts"],
+            b"a",
+            Element::new_item(b"v_a".to_vec()),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert a");
+        // "b" is an EMPTY PSIT: the element the arm under test handles.
+        db.insert(
+            &[b"counts"],
+            b"b",
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert empty PSIT");
+
+        let mut q = Query::new();
+        q.insert_range_inclusive(b"a".to_vec()..=b"z".to_vec());
+        // offset=1 skips "a" so the returned item is the empty PSIT.
+        let path_query = PathQuery::new(
+            vec![b"counts".to_vec()],
+            SizedQuery::new(q, Some(1), Some(1)),
+        );
+        let proof = db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove empty-PSIT count-offset page");
+        let (root, items) = GroveDb::verify_query(&proof, &path_query, v)
+            .expect("an empty indexed tree returned by a count-offset page must verify");
+        assert_eq!(root, db.root_hash(None, v).unwrap().unwrap());
+        assert_eq!(items.len(), 1, "exactly the empty PSIT is returned");
+        assert_eq!(items[0].1, b"b".to_vec());
     }
 }

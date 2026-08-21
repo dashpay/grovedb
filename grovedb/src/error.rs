@@ -169,6 +169,10 @@ pub enum Error {
     #[error("commitment tree error: {0}")]
     /// Commitment tree operation error
     CommitmentTreeError(String),
+
+    #[error("private document store error: {0}")]
+    /// Private document store operation error
+    PrivateDocumentStoreError(String),
 }
 
 impl Error {
@@ -195,7 +199,8 @@ impl Error {
             | Self::ClientReturnedNonClientError(s)
             | Self::PathNotFoundInCacheForEstimatedCosts(s)
             | Self::NotSupported(s)
-            | Self::CommitmentTreeError(s) => {
+            | Self::CommitmentTreeError(s)
+            | Self::PrivateDocumentStoreError(s) => {
                 s.push_str(", ");
                 s.push_str(append.as_ref());
             }
