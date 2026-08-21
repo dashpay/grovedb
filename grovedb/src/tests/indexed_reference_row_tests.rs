@@ -1283,4 +1283,371 @@ mod tests {
             "ordinary references reported: {issues:?}"
         );
     }
+
+    /// A `NonCounted`-wrapped child must be REJECTED by an indexed
+    /// primary, on both write doors.
+    ///
+    /// This pins a boundary rather than a behaviour: direct and proved
+    /// reads build their returned value differently (the direct read hands
+    /// back the fetched element, the proved read decodes the chain head's
+    /// bytes), so a wrapper that could live in a primary would need its
+    /// own read-equivalence case — either path could strip it and every
+    /// unwrapped test would still pass. No such case is needed BECAUSE the
+    /// merk layer refuses wrappers in Provable* count trees (the count is
+    /// committed cryptographically, so an uncounted child has no
+    /// representable contribution). If that guard is ever relaxed, this
+    /// test fails and the read-equivalence coverage must be added.
+    #[test]
+    fn a_non_counted_wrapped_child_is_rejected_by_an_indexed_primary() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("PCIT");
+        let wrapped = Element::new_non_counted(Element::new_item(b"wrapped-value".to_vec()))
+            .expect("a NonCounted item is a valid wrapper");
+
+        // Dedicated API door.
+        let direct = db
+            .insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"w",
+                wrapped.clone(),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            direct.is_err(),
+            "the dedicated indexed insert must refuse a NonCounted child"
+        );
+
+        // Batch door.
+        let batch = db
+            .apply_batch(
+                vec![crate::batch::QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+                    b"w".to_vec(),
+                    wrapped,
+                )],
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            batch.is_err(),
+            "the batch path must refuse a NonCounted child in an indexed primary"
+        );
+
+        // Neither refusal may leave partial state behind.
+        let issues = db.verify_grovedb(None, true, true, grove_version).unwrap();
+        assert!(issues.is_empty(), "rejections left state: {issues:?}");
+    }
+
+    /// A batch `RefreshReference` on a reference-shaped primary whose
+    /// aggregates do NOT move — the exact "old_entry == new_entry swallow"
+    /// the issue's §3 calls out by name.
+    ///
+    /// The refresh re-binds the primary node's combined hash to the
+    /// terminal's new value, so `(count, sum)` is identical on both sides
+    /// of the op and only the committed value hash moves. A mirror that
+    /// compared aggregates alone would skip the row rewrite and strand a
+    /// stale binding; the value-only tests above cover that comparison for
+    /// `Replace`, but `RefreshReference` reaches the mirror through its own
+    /// op arm, so it needs its own case.
+    #[test]
+    fn a_batch_refresh_reference_with_unchanged_aggregates_refreshes_the_row() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"target",
+            Element::new_item(b"first-terminal".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("terminal");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("PCIT");
+        let reference_path =
+            ReferencePathType::UpstreamRootHeightReference(1, vec![b"target".to_vec()]);
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"ref",
+            Element::new_reference(reference_path.clone()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("reference-shaped primary");
+
+        // Move the TERMINAL first, without touching the primary. The row
+        // binds the IMMEDIATE node's stored hash, which has not moved, so
+        // the local indexed invariant must still hold — that locality is
+        // the point of the immediate-binding rule. (References are excluded
+        // from this check: the primary's stored combined hash is stale
+        // against its terminal by construction until the refresh lands,
+        // which is the caller's contract, not row corruption.)
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"target",
+            Element::new_item(b"second-terminal".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("update terminal");
+        let issues = db.verify_grovedb(None, false, true, grove_version).unwrap();
+        assert!(
+            issues.is_empty(),
+            "an external terminal update must not stale the row: {issues:?}"
+        );
+
+        // Now the op under test: RefreshReference through the batch path.
+        db.apply_batch(
+            vec![crate::batch::QualifiedGroveDbOp::refresh_reference_op(
+                vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+                b"ref".to_vec(),
+                reference_path,
+                None,
+                None,
+                false,
+                false,
+            )],
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("batch refresh reference");
+
+        // Everything must line up again, ordinary-reference checks included.
+        let issues = db.verify_grovedb(None, true, true, grove_version).unwrap();
+        assert!(
+            issues.is_empty(),
+            "RefreshReference with unchanged aggregates left the row stale: {issues:?}"
+        );
+
+        // And both read paths must resolve to the NEW terminal.
+        let expected = Element::new_item(b"second-terminal".to_vec());
+        let direct = db
+            .indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, grove_version)
+            .unwrap()
+            .expect("direct top_k");
+        assert_eq!(direct.len(), 1);
+        assert_eq!(direct[0].value, expected);
+
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let proof = db
+            .prove_indexed_count_top_k(path, 5, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result = GroveDb::verify_indexed_count_top_k(&proof, path, 5, true, grove_version)
+            .expect("verify");
+        let entries = match &result.entries {
+            crate::operations::proof::indexed_axis::AxisEntries::Count(v) => v,
+            other => panic!("expected count entries, got {other:?}"),
+        };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].value, expected);
+    }
+
+    /// Each non-Merk append must produce the IDENTICAL grove through the
+    /// direct API and the batch op.
+    ///
+    /// The two entry points are separate implementations of the same
+    /// mutation — the direct APIs refresh the row inside the propagation
+    /// walk, the batch path through the mirror — so root-hash equality is
+    /// the cheapest guard that the two stay in sync. Each kind is its own
+    /// sub-case because each direct API has its own copy of the
+    /// write-then-propagate sequence.
+    #[test]
+    fn each_non_merk_append_matches_between_direct_and_batch_paths() {
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+
+        let pcit_with_child = |child: Element, key: &[u8]| {
+            let db = make_test_grovedb(grove_version);
+            db.insert(
+                [TEST_LEAF].as_ref(),
+                b"cidx",
+                Element::empty_provable_count_indexed_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create PCIT");
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                key,
+                child,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("non-Merk child");
+            db
+        };
+        let check = |direct_db: crate::tests::TempGroveDb,
+                     batch_db: crate::tests::TempGroveDb,
+                     label: &str| {
+            let direct_root = direct_db.root_hash(None, grove_version).unwrap().unwrap();
+            let batch_root = batch_db.root_hash(None, grove_version).unwrap().unwrap();
+            assert_eq!(
+                direct_root, batch_root,
+                "{label}: the direct API and the batch op must produce the identical grove"
+            );
+            for (db, path_label) in [(&direct_db, "direct"), (&batch_db, "batch")] {
+                let issues = db.verify_grovedb(None, true, false, grove_version).unwrap();
+                assert!(issues.is_empty(), "{label} ({path_label}): {issues:?}");
+            }
+        };
+
+        // MMR.
+        let direct_db = pcit_with_child(Element::empty_mmr_tree(), b"mmr");
+        direct_db
+            .mmr_tree_append(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"mmr",
+                b"leaf".to_vec(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("direct mmr append");
+        let batch_db = pcit_with_child(Element::empty_mmr_tree(), b"mmr");
+        batch_db
+            .apply_batch(
+                vec![QualifiedGroveDbOp::mmr_tree_append_op(
+                    vec![TEST_LEAF.to_vec(), b"cidx".to_vec(), b"mmr".to_vec()],
+                    b"leaf".to_vec(),
+                )],
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("batch mmr append");
+        check(direct_db, batch_db, "mmr");
+
+        // Bulk-append.
+        let direct_db = pcit_with_child(
+            Element::empty_bulk_append_tree(4).expect("bulk tree"),
+            b"bulk",
+        );
+        direct_db
+            .bulk_append(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"bulk",
+                b"v".to_vec(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("direct bulk append");
+        let batch_db = pcit_with_child(
+            Element::empty_bulk_append_tree(4).expect("bulk tree"),
+            b"bulk",
+        );
+        batch_db
+            .apply_batch(
+                vec![QualifiedGroveDbOp::bulk_append_op(
+                    vec![TEST_LEAF.to_vec(), b"cidx".to_vec(), b"bulk".to_vec()],
+                    b"v".to_vec(),
+                )],
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("batch bulk append");
+        check(direct_db, batch_db, "bulk");
+
+        // Commitment tree.
+        let direct_db = pcit_with_child(
+            Element::empty_commitment_tree(10).expect("valid chunk_power"),
+            b"ct",
+        );
+        direct_db
+            .commitment_tree_insert_raw(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"ct",
+                [7u8; 32],
+                [8u8; 32],
+                [9u8; 32],
+                vec![0u8; 216],
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("direct commitment insert");
+        let batch_db = pcit_with_child(
+            Element::empty_commitment_tree(10).expect("valid chunk_power"),
+            b"ct",
+        );
+        batch_db
+            .apply_batch(
+                vec![QualifiedGroveDbOp::commitment_tree_insert_op(
+                    vec![TEST_LEAF.to_vec(), b"cidx".to_vec(), b"ct".to_vec()],
+                    [7u8; 32],
+                    [8u8; 32],
+                    [9u8; 32],
+                    vec![0u8; 216],
+                )],
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("batch commitment insert");
+        check(direct_db, batch_db, "commitment");
+
+        // Dense.
+        let direct_db = pcit_with_child(Element::empty_dense_tree(4), b"dense");
+        direct_db
+            .dense_tree_insert(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"dense",
+                b"v".to_vec(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("direct dense insert");
+        let batch_db = pcit_with_child(Element::empty_dense_tree(4), b"dense");
+        batch_db
+            .apply_batch(
+                vec![QualifiedGroveDbOp::dense_tree_insert_op(
+                    vec![TEST_LEAF.to_vec(), b"cidx".to_vec(), b"dense".to_vec()],
+                    b"v".to_vec(),
+                )],
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("batch dense insert");
+        check(direct_db, batch_db, "dense");
+    }
 }
