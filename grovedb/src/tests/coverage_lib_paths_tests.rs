@@ -559,6 +559,62 @@ mod tests {
         );
     }
 
+    #[test]
+    fn propagate_at_root_with_unconsumed_deferred_axes_is_rejected() {
+        // The multi-axis mirror of the case above. A PCPSIT hands per-axis
+        // state down the same walk, and `deferred_secondary` /
+        // `deferred_axes` are set mutually exclusively — so a guard on only
+        // the single-axis half would let the identical corruption through
+        // for PCPSIT. Starting at the root leaves the state nowhere to be
+        // folded, which is the cheapest way to strand it.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let root_before = db.root_hash(None, grove_version).unwrap().unwrap();
+
+        let tx = db.start_transaction();
+        let batch = StorageBatch::new();
+        let result = {
+            let root_path: SubtreePath<[u8; 0]> = SubtreePath::empty();
+            let merk = db
+                .open_transactional_merk_at_path(
+                    root_path.clone(),
+                    &tx,
+                    Some(&batch),
+                    grove_version,
+                )
+                .unwrap()
+                .expect("open root merk");
+            let mut merk_cache: HashMap<
+                SubtreePath<[u8; 0]>,
+                Merk<PrefixedRocksDbTransactionContext>,
+            > = HashMap::new();
+            merk_cache.insert(root_path.clone(), merk);
+            db.propagate_changes_inner(
+                merk_cache,
+                root_path,
+                None,
+                Some(vec![(0u8, ZERO_HASH, Some(b"stale".to_vec()))]),
+                None,
+                &tx,
+                &batch,
+                grove_version,
+            )
+            .unwrap()
+        };
+
+        match result.expect_err("unconsumed deferred axes must be rejected") {
+            Error::CorruptedCodeExecution(message) => assert!(
+                message.contains("deferred per-axis secondary state was set but never consumed"),
+                "unexpected message: {message}"
+            ),
+            other => panic!("expected CorruptedCodeExecution, got {other:?}"),
+        }
+        assert_eq!(
+            db.root_hash(None, grove_version).unwrap().unwrap(),
+            root_before
+        );
+    }
+
     // -----------------------------------------------------------------
     // PCPSIT propagation: rebuilding the axes digest from on-disk state
     // -----------------------------------------------------------------

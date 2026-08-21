@@ -1491,6 +1491,19 @@ impl GroveDb {
             ))
             .wrap_with_cost(cost);
         }
+        // The multi-axis half of the same invariant. `deferred_secondary`
+        // and `deferred_axes` are set mutually exclusively — single-axis
+        // (PCIT/PSIT) sets the former, PCPSIT the latter — so checking
+        // only one leaves the identical corruption undetected for the
+        // other. Kept as a separate check with its own message so a
+        // report says WHICH half was stranded.
+        if deferred_axes.is_some() {
+            return Err(Error::CorruptedCodeExecution(
+                "deferred per-axis secondary state was set but never consumed (loop reached \
+                 the root before updating the PCPSIT element above its primary)",
+            ))
+            .wrap_with_cost(cost);
+        }
 
         Ok(()).wrap_with_cost(cost)
     }
