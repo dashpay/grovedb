@@ -916,23 +916,41 @@ impl PathQuery {
     }
 
     /// Gets the path of all terminal keys
+    ///
+    /// Version dispatch — see the `terminal_keys` module in `grovedb-query`:
+    /// v0 is the legacy walk frozen for `GROVE_V1`..`GROVE_V3`; v1
+    /// (`GROVE_V4`+) resolves conditional subquery branches per queried item
+    /// (issue #689).
     pub fn terminal_keys(
         &self,
         max_results: usize,
         grove_version: &GroveVersion,
     ) -> Result<Vec<PathKey>, Error> {
-        check_grovedb_v0!(
-            "merge",
-            grove_version
-                .grovedb_versions
-                .path_query_methods
-                .terminal_keys
-        );
         let mut result: Vec<(Vec<Vec<u8>>, Vec<u8>)> = vec![];
-        self.query
-            .query
-            .terminal_keys(self.path.clone(), max_results, &mut result)
-            .map_err(Error::QueryError)?;
+        match grove_version
+            .grovedb_versions
+            .path_query_methods
+            .terminal_keys
+        {
+            0 => self
+                .query
+                .query
+                .terminal_keys_v0(self.path.clone(), max_results, &mut result),
+            1 => self
+                .query
+                .query
+                .terminal_keys_v1(self.path.clone(), max_results, &mut result),
+            version => {
+                return Err(Error::VersionError(
+                    grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                        method: "terminal_keys".to_string(),
+                        known_versions: vec![0, 1],
+                        received: version,
+                    },
+                ))
+            }
+        }
+        .map_err(Error::QueryError)?;
         Ok(result)
     }
 
@@ -3413,6 +3431,73 @@ mod tests {
         let result = path_query.should_add_parent_tree_at_path(&[], grove_version);
         assert!(result.is_ok());
         assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn path_query_terminal_keys_uses_versioned_terminal_keys() {
+        let grove_version = GroveVersion::latest();
+        let path_query = PathQuery::new_unsized(
+            vec![b"root".to_vec()],
+            Query::new_single_key(b"leaf".to_vec()),
+        );
+
+        let keys = path_query
+            .terminal_keys(10, grove_version)
+            .expect("terminal keys");
+
+        assert_eq!(keys, vec![(vec![b"root".to_vec()], b"leaf".to_vec())]);
+    }
+
+    #[test]
+    fn path_query_terminal_keys_conditionals_gate_at_v4() {
+        use grovedb_version::version::{v3::GROVE_V3, v4::GROVE_V4};
+
+        // Query selects only "queried"; a conditional branch exists for the
+        // unqueried key "other". The legacy walk (v1-v3) emits a terminal key
+        // for the unqueried conditional branch; the v4 walk only resolves
+        // conditionals against keys the query actually selects (issue #689).
+        let mut query = Query::new_single_key(b"queried".to_vec());
+        query.add_conditional_subquery(
+            QueryItem::Key(b"other".to_vec()),
+            None,
+            Some(Query::new_single_key(b"inner".to_vec())),
+        );
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let legacy_keys = path_query
+            .terminal_keys(10, &GROVE_V3)
+            .expect("terminal keys under v3");
+        assert_eq!(
+            legacy_keys,
+            vec![
+                (vec![b"root".to_vec(), b"other".to_vec()], b"inner".to_vec()),
+                (vec![b"root".to_vec()], b"queried".to_vec()),
+            ]
+        );
+
+        let fixed_keys = path_query
+            .terminal_keys(10, &GROVE_V4)
+            .expect("terminal keys under v4");
+        assert_eq!(
+            fixed_keys,
+            vec![(vec![b"root".to_vec()], b"queried".to_vec())]
+        );
+    }
+
+    #[test]
+    fn path_query_terminal_keys_unknown_version_errors() {
+        let mut version = GroveVersion::latest().clone();
+        version.grovedb_versions.path_query_methods.terminal_keys = 2;
+
+        let path_query = PathQuery::new_unsized(
+            vec![b"root".to_vec()],
+            Query::new_single_key(b"leaf".to_vec()),
+        );
+
+        let err = path_query
+            .terminal_keys(10, &version)
+            .expect_err("unknown terminal_keys version must error");
+        assert!(matches!(err, Error::VersionError(_)));
     }
 
     // ---------- SizedQuery / PathQuery AggregateCountOnRange validation ----------
