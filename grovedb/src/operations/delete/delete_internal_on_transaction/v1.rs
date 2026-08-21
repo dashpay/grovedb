@@ -11,6 +11,15 @@
 //! plus `Merk::open_layered_with_root_key`) disappears with it, which also
 //! changes the operation's cost profile — hence the version gate.
 //!
+//! The same branch also propagates through
+//! `propagate_changes_with_transaction` (the full indexed-aware walk used
+//! by the other two branches) instead of the legacy
+//! `propagate_changes_with_batch_transaction`, whose basic parent update
+//! cannot climb through an indexed-tree primary: deleting a non-empty tree
+//! inside one of a primary's child subtrees erred with "can only propagate
+//! on tree items" for PSIT / PCPSIT and silently desynced the count index
+//! for PCIT.
+//!
 //! v1 differs from [`super::v0`] ONLY in that non-empty-child-tree branch.
 //! Everything else is identical. See the module docs in
 //! [`super`][`mod@super`] for the version rationale.
@@ -302,14 +311,23 @@ impl GroveDb {
                     Merk<PrefixedRocksDbTransactionContext>,
                 > = HashMap::default();
                 merk_cache.insert(path.clone(), subtree_to_delete_from);
+                // Propagate through the full indexed-aware walk, matching
+                // the empty-tree and plain-element branches below. The
+                // legacy batch propagation performed only the basic parent
+                // update, so a walk climbing through an indexed-tree
+                // primary (a non-empty tree deleted INSIDE one of the
+                // primary's child subtrees) left the primary's canonical
+                // secondary row stale — erroring with "can only propagate
+                // on tree items" for PSIT / PCPSIT elements and silently
+                // desyncing the count index for PCIT.
                 cost_return_on_error!(
                     &mut cost,
-                    self.propagate_changes_with_batch_transaction(
-                        batch,
+                    self.propagate_changes_with_transaction(
                         merk_cache,
-                        &path,
+                        path,
                         transaction,
-                        grove_version,
+                        batch,
+                        grove_version
                     )
                 );
             } else {

@@ -23,6 +23,12 @@
 //!   carries the parent's true tree type, so delete propagation hashes and
 //!   aggregates with the parent type, and the redundant reopen (an extra
 //!   storage-context open plus `open_layered_with_root_key`) disappears.
+//!   The branch also propagates through the full indexed-aware walk
+//!   (`propagate_changes_with_transaction`, like the operation's other
+//!   branches) instead of the legacy batch propagation, so a delete nested
+//!   inside an indexed-tree primary's child subtree re-mirrors the
+//!   primary's canonical secondary row instead of erroring (PSIT / PCPSIT)
+//!   or desyncing the count index (PCIT).
 //!
 //! The two implementations differ ONLY in that non-empty-child-tree branch;
 //! everything else is identical. See [v0] / [v1].
