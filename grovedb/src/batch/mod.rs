@@ -646,7 +646,13 @@ impl GroveOp {
             | GroveOp::CommitmentTreeInsert { .. }
             | GroveOp::MmrTreeAppend { .. }
             | GroveOp::BulkAppend { .. }
-            | GroveOp::DenseTreeInsert { .. } => true,
+            | GroveOp::DenseTreeInsert { .. }
+            // `preprocess_private_document_store_ops` rewrites this into
+            // `ReplaceNonMerkTreeRoot` before the level executor runs, so
+            // this arm is unreachable in the current pipeline. It answers
+            // the same as what the op becomes, which keeps it correct if
+            // that preprocessing is ever reordered or removed.
+            | GroveOp::PrivateDocumentStoreInsert { .. } => true,
         }
     }
 }
