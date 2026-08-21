@@ -235,6 +235,105 @@ fn terminal_keys_v0_default_branch_recurses_without_subquery_path() {
 }
 
 #[test]
+fn terminal_keys_v0_conditional_subquery_path_without_subquery_is_terminal() {
+    // Conditional branch with a subquery path but no subquery, on a selector
+    // no queried item matches: v0 still emits its path tail as a terminal
+    // key, ahead of the queried item.
+    let mut query = Query::new_single_key(k(1));
+    query.add_conditional_subquery(QueryItem::Key(k(9)), Some(vec![k(2), k(3)]), None);
+
+    let mut result = vec![];
+    let added = query
+        .terminal_keys_v0(vec![], 10, &mut result)
+        .expect("terminal keys");
+
+    assert_eq!(added, 2);
+    assert_eq!(result, vec![(vec![k(9), k(2)], k(3)), (vec![], k(1))]);
+}
+
+#[test]
+fn terminal_keys_v0_conditional_limit_errors() {
+    // Top-of-loop guard: result already holds more entries than max_results
+    // when the first conditional key is visited.
+    let mut query = Query::new_single_key(k(1));
+    query.add_conditional_subquery(QueryItem::Key(k(9)), Some(vec![k(2)]), None);
+    let mut out = vec![(vec![], k(0)), (vec![], k(7))];
+    let err = query
+        .terminal_keys_v0(vec![], 1, &mut out)
+        .expect_err("must fail when conditional keys exceed the limit");
+    assert!(matches!(err, Error::RequestAmountExceeded(_)));
+
+    // Path-but-no-subquery arm: exactly at the limit when the conditional
+    // would push its terminal key.
+    let mut out = vec![(vec![], k(0))];
+    let err = query
+        .terminal_keys_v0(vec![], 1, &mut out)
+        .expect_err("must fail when the conditional path tail would exceed the limit");
+    assert!(matches!(err, Error::RequestAmountExceeded(_)));
+}
+
+#[test]
+fn terminal_keys_v0_items_limit_guard_errors() {
+    // Items-loop top guard: result already exceeds max_results before the
+    // (unmatched) queried key is processed.
+    let query = Query::new_single_key(k(1));
+    let mut out = vec![(vec![], k(0)), (vec![], k(7))];
+    let err = query
+        .terminal_keys_v0(vec![], 1, &mut out)
+        .expect_err("must fail when items exceed the limit");
+    assert!(matches!(err, Error::RequestAmountExceeded(_)));
+}
+
+#[test]
+fn terminal_keys_v0_conditional_empty_subquery_path_errors() {
+    let mut query = Query::new_single_key(k(1));
+    query.add_conditional_subquery(QueryItem::Key(k(9)), Some(vec![]), None);
+    let mut out = vec![];
+    let err = query
+        .terminal_keys_v0(vec![], 10, &mut out)
+        .expect_err("must fail on empty conditional subquery path");
+    assert!(matches!(err, Error::CorruptedCodeExecution(_)));
+}
+
+#[test]
+fn terminal_keys_v0_propagates_nested_subquery_errors() {
+    let mut unbounded = Query::new();
+    unbounded.insert_all();
+
+    // Through a conditional branch with subquery path + subquery.
+    let mut query = Query::new_single_key(k(1));
+    query.add_conditional_subquery(
+        QueryItem::Key(k(9)),
+        Some(vec![k(2)]),
+        Some(unbounded.clone()),
+    );
+    let mut out = vec![];
+    let err = query
+        .terminal_keys_v0(vec![], 10, &mut out)
+        .expect_err("must propagate nested error through conditional path + subquery");
+    assert!(matches!(err, Error::NotSupported(_)));
+
+    // Through a conditional branch with subquery only.
+    let mut query = Query::new_single_key(k(1));
+    query.add_conditional_subquery(QueryItem::Key(k(9)), None, Some(unbounded.clone()));
+    let mut out = vec![];
+    let err = query
+        .terminal_keys_v0(vec![], 10, &mut out)
+        .expect_err("must propagate nested error through conditional subquery");
+    assert!(matches!(err, Error::NotSupported(_)));
+
+    // Through the default branch with subquery path + subquery.
+    let mut query = Query::new_single_key(k(1));
+    query.set_subquery_path(vec![k(2)]);
+    query.set_subquery(unbounded);
+    let mut out = vec![];
+    let err = query
+        .terminal_keys_v0(vec![], 10, &mut out)
+        .expect_err("must propagate nested error through default path + subquery");
+    assert!(matches!(err, Error::NotSupported(_)));
+}
+
+#[test]
 fn merge_apis_cover_default_and_conditional_paths() {
     let mut base = Query::new();
     base.insert_key(k(1));
