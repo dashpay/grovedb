@@ -438,7 +438,7 @@ impl GroveDb {
     /// Add average case for deletion into Merk
     /// Largest average key size described by a layer, used to derive a
     /// secondary index layer's key sizes from its primary's.
-    fn average_case_layer_key_size(sizes: &EstimatedLayerSizes) -> u32 {
+    pub(crate) fn average_case_layer_key_size(sizes: &EstimatedLayerSizes) -> u32 {
         match sizes {
             EstimatedLayerSizes::AllSubtrees(k, ..)
             | EstimatedLayerSizes::AllItems(k, ..)

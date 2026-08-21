@@ -12,7 +12,8 @@ use grovedb_costs::{
 };
 #[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::average_case_costs::{
-    add_average_case_merk_has_value, average_case_merk_propagate, EstimatedLayerInformation,
+    add_average_case_get_merk_node, add_average_case_merk_has_value, average_case_merk_propagate,
+    EstimatedLayerInformation,
 };
 use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions, tree::AggregateData, tree_type::TreeType,
@@ -888,9 +889,44 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         // and the indexed arm of `average_case_cost` was unreachable.
         if layer_element_estimates.tree_type.is_indexed_primary() {
             let axes = indexed_axes_for_tree_type(layer_element_estimates.tree_type);
+            // The mirror brackets the primary apply with a pre- and a
+            // post-state read of each touched entry
+            // (`read_entry_aggregates`, pre and post), each a `Merk::get`
+            // plus a `Merk::get_value_hash` on the primary node — the
+            // node's STORED hash is what the row must bind, and for tree-
+            // or reference-shaped entries it is a combined hash that
+            // cannot be recomputed from the element bytes. Four node
+            // fetches per touched key, charged at the uncached bound (the
+            // post-apply pair usually hits the in-memory tree, so this
+            // leans over rather than under). Charged HERE and not inside
+            // `average_case_indexed_secondary_mirror` because the reads
+            // are per-key while that function is per-axis additive — one
+            // capture feeds every axis's rewrite.
+            let primary_key_width = GroveDb::average_case_layer_key_size(
+                &layer_element_estimates.estimated_layer_sizes,
+            );
+            let primary_element_size = cost_return_on_error_no_add!(
+                cost,
+                layer_element_estimates
+                    .estimated_layer_sizes
+                    .value_with_feature_and_flags_size(grove_version)
+                    .map_err(Error::MerkError)
+            );
             // Once per mutated key, not once per level: the mirror rewrites
             // every captured key's row on every axis.
             for _ in 0..mirrored_key_count {
+                for _ in 0..4 {
+                    cost_return_on_error_no_add!(
+                        cost,
+                        add_average_case_get_merk_node(
+                            &mut cost,
+                            primary_key_width,
+                            primary_element_size,
+                            layer_element_estimates.tree_type.inner_node_type(),
+                        )
+                        .map_err(Error::MerkError)
+                    );
+                }
                 cost_return_on_error!(
                     &mut cost,
                     GroveDb::average_case_indexed_secondary_mirror(
@@ -2466,6 +2502,241 @@ mod tests {
             "estimated hash_node_calls {} must not be under actual {}",
             average_case_cost.hash_node_calls,
             cost.hash_node_calls
+        );
+    }
+
+    /// The spec's intentional write amplification, measured: a VALUE-ONLY
+    /// update — same count, same sum, different bytes — still rewrites the
+    /// canonical row, because the row binds the primary node's commitment
+    /// and that moved. This is the case the estimate is most tempted to
+    /// skip ("aggregates unchanged ⇒ no secondary write"), so it gets its
+    /// own estimated-vs-actual fixture rather than riding on the insert
+    /// ones above.
+    ///
+    /// `storage_loaded_bytes` is asserted here and not in the insert tests:
+    /// an update is where the mirror's bracketing primary reads (pre- and
+    /// post-state, each a node get plus a value-hash get) actually hit
+    /// existing nodes, so this is the fixture that would catch those reads
+    /// going uncharged. Write bytes are asserted as added+replaced
+    /// combined: the estimator models the row rewrite as delete+insert
+    /// (added), the real apply as an in-place replace (replaced), so the
+    /// per-dimension split differs by construction while the total must
+    /// not come in under.
+    #[test]
+    fn test_batch_indexed_value_only_update_average_case_cost_is_not_under_actual() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(
+            EMPTY_PATH,
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("create pcit");
+        db.insert_into_count_indexed_tree(
+            [b"cidx".as_ref()].as_ref(),
+            b"k1",
+            Element::new_item(b"v1".to_vec()),
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed entry");
+
+        // Same key, same count contribution, different bytes.
+        let ops = vec![QualifiedGroveDbOp::replace_op(
+            vec![b"cidx".to_vec()],
+            b"k1".to_vec(),
+            Element::new_item(b"v2".to_vec()),
+        )];
+
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: ApproximateElements(1),
+                estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+            },
+        );
+        paths.insert(
+            KeyInfoPath(vec![KeyInfo::KnownKey(b"cidx".to_vec())]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::ProvableCountIndexedTree,
+                estimated_layer_count: ApproximateElements(1),
+                estimated_layer_sizes: AllItems(2, 2, None),
+            },
+        );
+
+        let est = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(paths),
+            ops.clone(),
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("estimate");
+
+        let actual = db
+            .apply_batch(ops, None, Some(&tx), grove_version)
+            .cost_as_result()
+            .expect("apply value-only update");
+
+        assert!(
+            est.seek_count >= actual.seek_count,
+            "estimated seeks {} must not be under actual {}",
+            est.seek_count,
+            actual.seek_count
+        );
+        assert!(
+            est.storage_loaded_bytes >= actual.storage_loaded_bytes,
+            "estimated storage_loaded_bytes {} must not be under actual {}",
+            est.storage_loaded_bytes,
+            actual.storage_loaded_bytes
+        );
+        assert!(
+            est.storage_cost.added_bytes >= actual.storage_cost.added_bytes,
+            "estimated added_bytes {} must not be under actual {}",
+            est.storage_cost.added_bytes,
+            actual.storage_cost.added_bytes
+        );
+        let est_written =
+            est.storage_cost.added_bytes as u64 + est.storage_cost.replaced_bytes as u64;
+        let actual_written =
+            actual.storage_cost.added_bytes as u64 + actual.storage_cost.replaced_bytes as u64;
+        assert!(
+            est_written >= actual_written,
+            "estimated written bytes {est_written} (added+replaced) must not be under actual \
+             {actual_written}"
+        );
+        assert!(
+            est.hash_node_calls >= actual.hash_node_calls,
+            "estimated hash_node_calls {} must not be under actual {}",
+            est.hash_node_calls,
+            actual.hash_node_calls
+        );
+    }
+
+    /// The multi-axis form of the value-only fixture above: a PCPSIT
+    /// rewrites the row on EVERY configured axis when the entry's
+    /// commitment moves, so the amplification is per-axis and the estimate
+    /// must scale with it. Same-sum, same-count, different bytes — sort
+    /// keys stay put on all three axes and only the bound commitment moves.
+    #[test]
+    fn test_batch_pcpsit_value_only_update_average_case_cost_is_not_under_actual() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(
+            EMPTY_PATH,
+            b"idx",
+            Element::empty_provable_count_provable_sum_indexed_tree(vec![
+                (0u8, None),
+                (1u8, None),
+                (2u8, None),
+            ])
+            .expect("canonical axes"),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("create pcpsit");
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [b"idx".as_ref()].as_ref(),
+            b"k1",
+            Element::new_item_with_sum_item(b"v1".to_vec(), 777),
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed entry");
+
+        let ops = vec![QualifiedGroveDbOp::replace_op(
+            vec![b"idx".to_vec()],
+            b"k1".to_vec(),
+            Element::new_item_with_sum_item(b"v2".to_vec(), 777),
+        )];
+
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: ApproximateElements(1),
+                estimated_layer_sizes: AllSubtrees(3, NoSumTrees, None),
+            },
+        );
+        paths.insert(
+            KeyInfoPath(vec![KeyInfo::KnownKey(b"idx".to_vec())]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::ProvableCountProvableSumIndexedTree,
+                estimated_layer_count: ApproximateElements(1),
+                estimated_layer_sizes:
+                    grovedb_merk::estimated_costs::average_case_costs::EstimatedLayerSizes::AllItemsWithSumItem(2, 2, None),
+            },
+        );
+
+        let est = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(paths),
+            ops.clone(),
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("estimate");
+
+        let actual = db
+            .apply_batch(ops, None, Some(&tx), grove_version)
+            .cost_as_result()
+            .expect("apply value-only update");
+
+        assert!(
+            est.seek_count >= actual.seek_count,
+            "estimated seeks {} must not be under actual {}",
+            est.seek_count,
+            actual.seek_count
+        );
+        assert!(
+            est.storage_loaded_bytes >= actual.storage_loaded_bytes,
+            "estimated storage_loaded_bytes {} must not be under actual {}",
+            est.storage_loaded_bytes,
+            actual.storage_loaded_bytes
+        );
+        assert!(
+            est.storage_cost.added_bytes >= actual.storage_cost.added_bytes,
+            "estimated added_bytes {} must not be under actual {}",
+            est.storage_cost.added_bytes,
+            actual.storage_cost.added_bytes
+        );
+        let est_written =
+            est.storage_cost.added_bytes as u64 + est.storage_cost.replaced_bytes as u64;
+        let actual_written =
+            actual.storage_cost.added_bytes as u64 + actual.storage_cost.replaced_bytes as u64;
+        assert!(
+            est_written >= actual_written,
+            "estimated written bytes {est_written} (added+replaced) must not be under actual \
+             {actual_written}"
+        );
+        assert!(
+            est.hash_node_calls >= actual.hash_node_calls,
+            "estimated hash_node_calls {} must not be under actual {}",
+            est.hash_node_calls,
+            actual.hash_node_calls
         );
     }
 
