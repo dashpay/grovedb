@@ -154,6 +154,26 @@ mod tests {
         );
     }
 
+    /// Like [`assert_rejected`], but pins WHICH refusal fired. Used where
+    /// several guards could plausibly reject the same forgery and the test
+    /// is only meaningful if the intended one is the guard that ran.
+    #[track_caller]
+    fn assert_rejected_because(proof: &[u8], gv: &GroveVersion, expected: &str, what: &str) {
+        let res = GroveDb::verify_indexed_count_top_k(proof, PATH.as_ref(), 5, true, gv);
+        let err = match res {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!(
+                "verification accepted a proof with {what}; the chain is supposed to make that \
+                 impossible without a per-row inclusion proof"
+            ),
+        };
+        assert!(
+            err.contains(expected),
+            "{what} was rejected, but by the wrong guard: expected a message containing \
+             {expected:?}, got {err:?}"
+        );
+    }
+
     /// Baseline: the honest proofs verify, so the refusals below are
     /// caused by the tampering and not by a broken fixture.
     #[test]
@@ -280,6 +300,50 @@ mod tests {
             chains[0].nodes.truncate(1);
         });
         assert_rejected(&forged, gv, "a reference head with no terminal");
+    }
+
+    /// The mirror of [`promoting_a_direct_head_to_a_reference_is_rejected`]:
+    /// a terminal appended to a head left directly-valued. Only a reference
+    /// resolves onward, so the extra entry must be refused rather than
+    /// quietly taken as the resolved value.
+    #[test]
+    fn a_direct_head_carrying_a_terminal_is_rejected() {
+        let gv = GroveVersion::latest();
+        let db = db_with_item_entry(gv);
+        let honest = honest_proof(&db, gv);
+        let forged = forge(&honest, |chains| {
+            chains[0].nodes.push(IndexedTargetNode {
+                value: Element::new_item(b"attacker-value".to_vec())
+                    .serialize(gv)
+                    .expect("serialize"),
+                commitment: IndexedTargetCommitment::Simple,
+            });
+        });
+        assert_rejected_because(
+            &forged,
+            gv,
+            "a directly-valued head carries a terminal",
+            "a directly-valued head carrying a terminal",
+        );
+    }
+
+    /// A terminal relabelled as a reference. A chain must END at a directly
+    /// valued element — a reference terminal would commit a further hop
+    /// that nothing in the proof binds.
+    #[test]
+    fn a_terminal_that_is_itself_a_reference_is_rejected() {
+        let gv = GroveVersion::latest();
+        let db = db_with_reference_entry(gv);
+        let honest = honest_proof(&db, gv);
+        let forged = forge(&honest, |chains| {
+            chains[0].nodes[1].commitment = IndexedTargetCommitment::Reference;
+        });
+        assert_rejected_because(
+            &forged,
+            gv,
+            "the terminal entry is itself a reference",
+            "a terminal that is itself a reference",
+        );
     }
 
     /// Padding a chain past head-plus-terminal. Extra entries are bound by

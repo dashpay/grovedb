@@ -517,10 +517,10 @@ mod tests {
     /// rather than on one message keeps the test from pinning which guard
     /// happens to fire first.
     #[test]
-    fn an_axis_proof_over_a_mis_targeted_row_is_rejected() {
+    fn an_axis_proof_over_a_mistargeted_row_is_rejected() {
         let grove_version = GroveVersion::latest();
         let db = pcit_with_one_entry(grove_version);
-        // A second entry, so the mis-targeted reference points at a key
+        // A second entry, so the mistargeted reference points at a key
         // that genuinely exists — the interesting case, since a dangling
         // reference would fail earlier and for a duller reason.
         db.insert_into_count_indexed_tree(
@@ -767,6 +767,79 @@ mod tests {
                 Element::ProvableCountIndexedTree(..)
             ),
             "the row must resolve to the nested indexed element itself, got {}",
+            entries[0].value.type_str()
+        );
+    }
+
+    /// A NESTED MULTI-AXIS INDEXED TREE (PCPSIT) as a primary entry.
+    ///
+    /// Where a single-axis nested tree folds one secondary root into its
+    /// commitment, a PCPSIT folds a DIGEST over every configured axis.
+    /// That is a distinct commitment shape, so it needs its own case: a
+    /// chain that rebuilt it as a single-axis commitment would not
+    /// reproduce the row's hash, and the row would fail to authenticate.
+    #[test]
+    fn a_nested_multi_axis_indexed_tree_primary_proves_and_resolves() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("outer PCIT");
+        // TWO axes, so the inner element's commitment folds an axes digest
+        // rather than a single secondary root.
+        let axes: Vec<(u8, Option<Vec<u8>>)> =
+            vec![(IndexAxis::Count.tag(), None), (IndexAxis::Sum.tag(), None)];
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"inner",
+            Element::empty_provable_count_provable_sum_indexed_tree(axes).expect("axes canonical"),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("inner PCPSIT");
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [TEST_LEAF, b"cidx", b"inner"].as_ref(),
+            b"leaf",
+            Element::new_item_with_sum_item(b"v".to_vec(), 7),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("inner entry");
+        let issues = db.verify_grovedb(None, true, true, grove_version).unwrap();
+        assert!(issues.is_empty(), "nested PCPSIT reported: {issues:?}");
+
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let proof = db
+            .prove_indexed_count_top_k(path, 5, true, None, grove_version)
+            .unwrap()
+            .expect("a nested multi-axis primary must be provable");
+        let result = GroveDb::verify_indexed_count_top_k(&proof, path, 5, true, grove_version)
+            .expect("verify");
+        assert_eq!(
+            result.root_hash,
+            db.root_hash(None, grove_version).unwrap().unwrap()
+        );
+        let entries = match &result.entries {
+            crate::operations::proof::indexed_axis::AxisEntries::Count(v) => v,
+            other => panic!("expected count entries, got {other:?}"),
+        };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].primary_key, b"inner".to_vec());
+        assert!(
+            matches!(
+                entries[0].value.underlying(),
+                Element::ProvableCountProvableSumIndexedTree(..)
+            ),
+            "the row must resolve to the nested PCPSIT itself, got {}",
             entries[0].value.type_str()
         );
     }
