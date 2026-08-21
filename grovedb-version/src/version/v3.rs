@@ -72,7 +72,7 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
             get_path_query: 0,
             get_sized_query: 0,
             get_aggregate_sum_query_apply_function: 0,
-            path_query_push: 1,
+            path_query_push: 0,
             aggregate_sum_path_query_push: 0,
             query_item: 0,
             basic_push: 0,

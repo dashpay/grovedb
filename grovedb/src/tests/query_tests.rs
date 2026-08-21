@@ -876,6 +876,7 @@ mod tests {
     #[test]
     fn test_subquery_offset_consumed_empty_does_not_decrease_limit_forward() {
         let grove_version = GroveVersion::latest();
+        assert_eq!(grove_version.protocol_version, 4);
         let db = make_test_grovedb(grove_version);
         populate_tree_for_unique_range_subquery(&db, grove_version);
 
@@ -931,9 +932,11 @@ mod tests {
 
     #[test]
     fn test_subquery_offset_consumed_empty_legacy_version_decreases_limit() {
-        let mut legacy_version = GroveVersion::latest().clone();
-        legacy_version.grovedb_versions.element.path_query_push = 0;
-        let grove_version = &legacy_version;
+        // GROVE_V3 is live in production and must keep the legacy
+        // accounting: an offset-consumed empty subquery still eats a
+        // limit slot, so only one element comes back.
+        let grove_version = &grovedb_version::version::GROVE_VERSIONS[2];
+        assert_eq!(grove_version.protocol_version, 3);
 
         let db = make_test_grovedb(grove_version);
         populate_tree_for_unique_range_subquery(&db, grove_version);
