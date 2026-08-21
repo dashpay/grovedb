@@ -55,6 +55,14 @@
 //!   Gated because terminal keys shape the absence-proof result set assembled
 //!   by verifiers and the `query_keys_optional` result set.
 //!
+//! - `element.path_query_push: 1` — the trusted (non-proof) query walk no
+//!   longer charges the outer limit for a subquery whose matches were
+//!   entirely consumed by `offset` (issue #690): an empty inner result eats
+//!   a limit slot only when nothing was skipped. V1..V3 keep the legacy
+//!   accounting, where e.g. `limit=2, offset=1` can return a single element.
+//!   Proof generation rejects non-zero offsets and never runs this path, so
+//!   only trusted-read result sets are gated.
+//!
 //! - `path_query_methods.merge: 1` — `PathQuery::merge` requires every input
 //!   to agree on `left_to_right` (typed error on conflict) and propagates the
 //!   shared direction to the merged root. V1..V3 keep the long-standing
