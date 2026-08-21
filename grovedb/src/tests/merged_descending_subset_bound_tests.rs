@@ -133,23 +133,23 @@ mod tests {
         merged_subset_round_trip(true);
     }
 
-    /// FAILS ON DEVELOP — deliberately not ignored: this test IS the bug
-    /// report.
+    /// Regression for issue #815.
     ///
-    /// The full merged verify passes, but `verify_subset_query` of the
-    /// cursor branch rejects with "Cannot verify lower bound of queried
-    /// range". The prover classified the shared layer against the merged
-    /// (descending) query and emitted its ops inverted; subset
+    /// The prover classifies the shared layer against the merged
+    /// (descending) query and emits its ops inverted; subset
     /// verification re-derives that layer from the cursor path query
-    /// alone, and `query_items_at_path` synthesizes path-component levels
-    /// with a hardcoded ascending direction
-    /// (`SinglePathSubquery::from_key_when_in_path`), so the verifier
-    /// runs the ascending bound-witness check against inverted pushes and
-    /// trips on the first hash-abridged sibling.
+    /// alone, where `query_items_at_path` synthesizes path-component
+    /// levels with a placeholder direction
+    /// (`SinglePathSubquery::from_key_when_in_path`). The verifier used
+    /// to run the ascending bound-witness check against the inverted
+    /// pushes and reject with "Cannot verify lower bound of queried
+    /// range" on the first hash-abridged sibling; it now reads the
+    /// level's orientation off the proof's own op family
+    /// (`proof_stream_direction`).
     ///
-    /// Note for the fix: no fixed direction is correct for synthesized
-    /// levels — the generating query is unknowable from the subset query.
-    /// Hardcoding ascending is this bug; inheriting the subset query's
+    /// No fixed direction is correct for synthesized levels — the
+    /// generating query is not recoverable from the subset query.
+    /// Hardcoding ascending was this bug; inheriting the subset query's
     /// direction instead breaks proofs whose generation synthesized the
     /// same level ascending (verified against dashpay/platform's
     /// protocol-v13 frozen ascending cursor-proof test).
