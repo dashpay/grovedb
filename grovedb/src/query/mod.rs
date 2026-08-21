@@ -26,9 +26,7 @@ use grovedb_merk::proofs::query::{
 };
 
 use grovedb_merk::proofs::Query;
-use grovedb_version::{
-    check_grovedb_v0, check_grovedb_v0_or_v1, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 use indexmap::IndexMap;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use path_branch_chunk_query::PathBranchChunkQuery;
@@ -918,28 +916,41 @@ impl PathQuery {
     }
 
     /// Gets the path of all terminal keys
+    ///
+    /// Version dispatch — see the `terminal_keys` module in `grovedb-query`:
+    /// v0 is the legacy walk frozen for `GROVE_V1`..`GROVE_V3`; v1
+    /// (`GROVE_V4`+) resolves conditional subquery branches per queried item
+    /// (issue #689).
     pub fn terminal_keys(
         &self,
         max_results: usize,
         grove_version: &GroveVersion,
     ) -> Result<Vec<PathKey>, Error> {
-        let terminal_keys_version = check_grovedb_v0_or_v1!(
-            "terminal_keys",
-            grove_version
-                .grovedb_versions
-                .path_query_methods
-                .terminal_keys
-        );
         let mut result: Vec<(Vec<Vec<u8>>, Vec<u8>)> = vec![];
-        self.query
-            .query
-            .terminal_keys_for_version(
-                self.path.clone(),
-                max_results,
-                &mut result,
-                terminal_keys_version,
-            )
-            .map_err(Error::QueryError)?;
+        match grove_version
+            .grovedb_versions
+            .path_query_methods
+            .terminal_keys
+        {
+            0 => self
+                .query
+                .query
+                .terminal_keys_v0(self.path.clone(), max_results, &mut result),
+            1 => self
+                .query
+                .query
+                .terminal_keys_v1(self.path.clone(), max_results, &mut result),
+            version => {
+                return Err(Error::VersionError(
+                    grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                        method: "terminal_keys".to_string(),
+                        known_versions: vec![0, 1],
+                        received: version,
+                    },
+                ))
+            }
+        }
+        .map_err(Error::QueryError)?;
         Ok(result)
     }
 
@@ -3471,6 +3482,22 @@ mod tests {
             fixed_keys,
             vec![(vec![b"root".to_vec()], b"queried".to_vec())]
         );
+    }
+
+    #[test]
+    fn path_query_terminal_keys_unknown_version_errors() {
+        let mut version = GroveVersion::latest().clone();
+        version.grovedb_versions.path_query_methods.terminal_keys = 2;
+
+        let path_query = PathQuery::new_unsized(
+            vec![b"root".to_vec()],
+            Query::new_single_key(b"leaf".to_vec()),
+        );
+
+        let err = path_query
+            .terminal_keys(10, &version)
+            .expect_err("unknown terminal_keys version must error");
+        assert!(matches!(err, Error::VersionError(_)));
     }
 
     // ---------- SizedQuery / PathQuery AggregateCountOnRange validation ----------
