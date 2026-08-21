@@ -11,8 +11,10 @@ use crate::{
     },
     tree_type::{
         BIG_SUM_TREE_COST_SIZE, BULK_APPEND_TREE_COST_SIZE, COMMITMENT_TREE_COST_SIZE,
-        COUNT_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE, DENSE_TREE_COST_SIZE, MMR_TREE_COST_SIZE,
-        SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE,
+        COUNT_INDEXED_TREE_COST_SIZE, COUNT_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE,
+        DENSE_TREE_COST_SIZE, MMR_TREE_COST_SIZE, PRIVATE_DOCUMENT_STORE_COST_SIZE,
+        PROVABLE_COUNT_PROVABLE_SUM_INDEXED_TREE_COST_SIZE, SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE,
+        TREE_COST_SIZE,
     },
     Error,
 };
@@ -80,6 +82,24 @@ impl ElementCostPrivateExtensions for Element {
             // ProvableCountSumTree: (Option<Vec<u8>>, u64, i64,
             // Option<Vec<u8>>) and reuses COUNT_SUM_TREE_COST_SIZE.
             Element::ProvableCountProvableSumTree(..) => Ok(COUNT_SUM_TREE_COST_SIZE),
+            // ProvableSumIndexedTree shares the indexed-tree two-root-key
+            // layout (primary + secondary root keys + scalar aggregate +
+            // flags), so the cost is the same as the legacy cidx slot.
+            Element::ProvableSumIndexedTree(..) => Ok(COUNT_INDEXED_TREE_COST_SIZE),
+            Element::ProvableCountIndexedTree(..) => Ok(COUNT_INDEXED_TREE_COST_SIZE),
+            // ProvableCountProvableSumIndexedTree carries BOTH aggregates plus
+            // a variable-length axes TLV, so the single-axis indexed constant
+            // is below its own minimum payload — it is not a conservative
+            // bound. Use the same worst-case constant the tree-type cost model
+            // uses (count+sum layer + TLV length byte + 3 axes x 2).
+            //
+            // The previous comment claimed no production path costs PCPSIT
+            // because insert was stubbed; both direct and batch insert are
+            // implemented, so this constant is live.
+            Element::ProvableCountProvableSumIndexedTree(..) => {
+                Ok(PROVABLE_COUNT_PROVABLE_SUM_INDEXED_TREE_COST_SIZE)
+            }
+            Element::PrivateDocumentStore(..) => Ok(PRIVATE_DOCUMENT_STORE_COST_SIZE),
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
             | Element::NotCountedOrSummed(inner) => {
@@ -265,6 +285,46 @@ impl ElementCostExtensions for Element {
                     key_len, value_len, node_type,
                 )
             }
+            Element::ProvableSumIndexedTree(.., flags)
+            | Element::ProvableCountIndexedTree(.., flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = COUNT_INDEXED_TREE_COST_SIZE + flags_len + wrapper_overhead;
+                let key_len = key.len() as u32;
+                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len, value_len, node_type,
+                )
+            }
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, _, flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                // PCPSIT carries both aggregates plus a variable-length axes
+                // TLV, so the single-axis indexed constant is below its own
+                // minimum payload rather than a conservative bound. Use the
+                // same worst-case constant as the other two PCPSIT cost sites.
+                let value_len = PROVABLE_COUNT_PROVABLE_SUM_INDEXED_TREE_COST_SIZE
+                    + flags_len
+                    + wrapper_overhead;
+                let key_len = key.len() as u32;
+                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len, value_len, node_type,
+                )
+            }
+            Element::PrivateDocumentStore(_, _, _, flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = PRIVATE_DOCUMENT_STORE_COST_SIZE + flags_len + wrapper_overhead;
+                let key_len = key.len() as u32;
+                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len, value_len, node_type,
+                )
+            }
             Element::SumItem(.., flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -340,7 +400,11 @@ impl ElementCostExtensions for Element {
             | Element::CommitmentTree(..)
             | Element::MmrTree(..)
             | Element::BulkAppendTree(..)
-            | Element::DenseAppendOnlyFixedSizeTree(..) => Some(cost),
+            | Element::DenseAppendOnlyFixedSizeTree(..)
+            | Element::ProvableSumIndexedTree(..)
+            | Element::ProvableCountIndexedTree(..)
+            | Element::ProvableCountProvableSumIndexedTree(..)
+            | Element::PrivateDocumentStore(..) => Some(cost),
             _ => None,
         }
     }
@@ -360,7 +424,8 @@ impl ElementCostExtensions for Element {
             | Element::CommitmentTree(..)
             | Element::MmrTree(..)
             | Element::BulkAppendTree(..)
-            | Element::DenseAppendOnlyFixedSizeTree(..) => Some(LayeredValueDefinedCost(cost)),
+            | Element::DenseAppendOnlyFixedSizeTree(..)
+            | Element::PrivateDocumentStore(..) => Some(LayeredValueDefinedCost(cost)),
             Element::SumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::BigSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::CountTree(..) => Some(LayeredValueDefinedCost(cost)),
@@ -369,6 +434,9 @@ impl ElementCostExtensions for Element {
             Element::ProvableCountSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableCountProvableSumTree(..) => Some(LayeredValueDefinedCost(cost)),
+            Element::ProvableSumIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
+            Element::ProvableCountIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
+            Element::ProvableCountProvableSumIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::SumItem(..) => Some(SpecializedValueDefinedCost(cost)),
             Element::ItemWithSumItem(item, ..) => {
                 let item_len = item.len() as u32;
@@ -387,5 +455,57 @@ impl ElementCostExtensions for Element {
     ) -> Option<ValueDefinedCostType> {
         let element = Element::deserialize(value, grove_version).ok()?;
         element.value_defined_cost(grove_version)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use grovedb_version::version::GroveVersion;
+
+    use super::*;
+
+    #[test]
+    fn private_document_store_cost_paths() {
+        let grove_version = GroveVersion::latest();
+        let element = Element::new_private_document_store(5, 64, 4, Some(vec![1, 2]));
+
+        // Specialized (layered) cost uses the entry-size-carrying constant.
+        assert_eq!(
+            element.get_specialized_cost(grove_version).expect("cost"),
+            crate::tree_type::PRIVATE_DOCUMENT_STORE_COST_SIZE
+        );
+
+        // Layered value defined cost = specialized cost + flags overhead.
+        let layered = element
+            .layered_value_defined_cost(grove_version)
+            .expect("layered cost");
+        assert_eq!(
+            layered,
+            crate::tree_type::PRIVATE_DOCUMENT_STORE_COST_SIZE + 3
+        );
+        assert!(matches!(
+            element.value_defined_cost(grove_version),
+            Some(LayeredValueDefinedCost(c)) if c == layered
+        ));
+        // Not an item-like element: no specialized (sum-item) value cost.
+        assert!(element
+            .specialized_value_defined_cost(grove_version)
+            .is_none());
+
+        // The serialized-value cost path takes the PDS block in
+        // specialized_costs_for_key_value.
+        let serialized = element.serialize(grove_version).expect("serialize");
+        let cost = Element::specialized_costs_for_key_value(
+            b"key",
+            &serialized,
+            NodeType::NormalNode,
+            grove_version,
+        )
+        .expect("cost for key value");
+        assert!(cost > 0);
+        assert_eq!(
+            Element::value_defined_cost_for_serialized_value(&serialized, grove_version),
+            Some(LayeredValueDefinedCost(layered))
+        );
     }
 }

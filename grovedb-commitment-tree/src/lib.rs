@@ -11,7 +11,8 @@
 //!   computation
 //! - Stores only the rightmost path (~1KB constant size) rather than the full
 //!   tree
-//! - Items (cmx || encrypted_note) are stored as GroveDB CountTree items
+//! - Items (cmx || rho || cv_net || encrypted_note) are stored as GroveDB
+//!   CountTree items
 //! - The frontier is serialized to data storage alongside the BulkAppendTree
 //! - Historical anchors are managed by Platform in a separate tree (not here)
 
@@ -49,8 +50,8 @@ pub const EMPTY_COMMITMENT_TREE_STATE_ROOT: [u8; 32] = [
 /// `ct_state_root = blake3("ct_state" || sinsemilla_root || bulk_state_root)`
 ///
 /// This ensures both the Orchard-compatible anchor (authenticating cmx values)
-/// and the BulkAppendTree root (authenticating cmx||payload entries) are
-/// cryptographically bound to the GroveDB root hash.
+/// and the BulkAppendTree root (authenticating cmx||rho||cv_net||payload
+/// entries) are cryptographically bound to the GroveDB root hash.
 pub fn compute_commitment_tree_state_root(
     sinsemilla_root: &[u8; 32],
     bulk_state_root: &[u8; 32],
@@ -65,7 +66,7 @@ pub fn compute_commitment_tree_state_root(
 #[cfg(feature = "server")]
 pub use commitment_tree::{
     ciphertext_payload_size, deserialize_ciphertext, serialize_ciphertext, CommitmentAppendResult,
-    CommitmentTree, COMMITMENT_TREE_DATA_KEY,
+    CommitmentEntry, CommitmentTree, COMMITMENT_TREE_DATA_KEY,
 };
 pub use error::CommitmentTreeError;
 #[cfg(feature = "server")]
@@ -106,6 +107,8 @@ pub use orchard::builder::{Builder, BundleType};
 pub use orchard::bundle::BatchValidator;
 // Bundle/Action types
 pub use orchard::bundle::{Authorized, Flags};
+// Bundle reconstruction: proof-size policy for `Bundle::try_from_parts`
+pub use orchard::bundle::ProofSizeEnforcement;
 // Proof creation/verification (requires orchard "circuit" feature)
 pub use orchard::circuit::{ProvingKey, VerifyingKey};
 // Key management
@@ -124,18 +127,31 @@ pub use orchard::note::TransmittedNoteCiphertext;
 // Orchard tree types
 pub use orchard::note::{ExtractedNoteCommitment, Nullifier};
 // Note encryption / trial decryption
-pub use orchard::note_encryption::{CompactAction, OrchardDomain};
+// `OrchardNoteEncryption` lets downstream crates construct real encrypted
+// Orchard outputs (e.g. for OVK-recovery round-trip tests) without taking a
+// direct dependency on the orchard fork.
+pub use orchard::note_encryption::{CompactAction, OrchardDomain, OrchardNoteEncryption};
 // Byte wrapper and trait for constructing note ciphertexts
 pub use orchard::zcash_note_encryption::note_bytes::{NoteBytes, NoteBytesData};
 pub use orchard::{
     note::Rho,
     primitives::redpallas,
     tree::{Anchor, MerkleHashOrchard, MerklePath},
-    value::{NoteValue, ValueCommitment},
+    value::{NoteValue, ValueCommitTrapdoor, ValueCommitment},
+    // `try_output_recovery_with_ovk` (+ the `OutgoingCipherKey` it derives) lets the
+    // sender recover an outgoing note from an Orchard action using the outgoing viewing
+    // key, without a direct dependency on the orchard fork.
     zcash_note_encryption::{
-        try_compact_note_decryption, try_note_decryption, Domain, EphemeralKeyBytes, ShieldedOutput,
+        try_compact_note_decryption, try_note_decryption, try_output_recovery_with_ovk, Domain,
+        EphemeralKeyBytes, OutgoingCipherKey, ShieldedOutput,
     },
-    Action, Address as PaymentAddress, Bundle, Note, Proof, NOTE_COMMITMENT_TREE_DEPTH,
+    Action,
+    ActionFromPartsError,
+    Address as PaymentAddress,
+    Bundle,
+    Note,
+    Proof,
+    NOTE_COMMITMENT_TREE_DEPTH,
 };
 #[cfg(feature = "sqlite")]
 pub use rusqlite;

@@ -7,6 +7,63 @@ use std::{
 };
 
 pub use grovedb_merk::proofs::query::{Key, Path, PathKey};
+
+/// One row of a non-aggregate indexed-axis read.
+///
+/// Carries the primary VALUE, not just a pointer to it. A secondary row
+/// is a canonical reference to its primary entry, so the value comes back
+/// with the row — a caller no longer needs `k` follow-up `db.get` calls
+/// after a top-k result, nor (for verified reads) `k` extra inclusion
+/// proofs.
+///
+/// `value` is the entry after ordinary GroveDB reference resolution: if
+/// the primary entry is itself a reference, this is its TERMINAL, exactly
+/// as reading that key through `db.get` would give you. That is a
+/// deliberate asymmetry with how a row is *bound* — a row commits to the
+/// immediate primary node, which is what keeps the mirror's invariant
+/// local — and the two are consistent because the immediate node's
+/// commitment transitively covers the terminal it pointed at when written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedAxisEntry<T> {
+    /// The value this axis sorts on, decoded from the secondary-key
+    /// prefix — a count, a sum, or a fixed-point average.
+    pub ordering_value: T,
+    /// The primary key, decoded from the secondary-key suffix.
+    pub primary_key: Vec<u8>,
+    /// The resolved primary value.
+    pub value: Element,
+}
+
+impl<T> IndexedAxisEntry<T> {
+    /// The `(ordering_value, primary_key)` pair, dropping the value.
+    ///
+    /// For callers that genuinely only rank — leaderboards, ranking views.
+    pub fn key_pair(self) -> (T, Vec<u8>) {
+        (self.ordering_value, self.primary_key)
+    }
+}
+
+/// Project a page of entries down to `(ordering_value, primary_key)`.
+///
+/// The ranking half of an indexed read, for callers that do not need the
+/// values. It is deliberately an explicit projection rather than a
+/// cross-type `PartialEq`: an equality impl that quietly ignored `value`
+/// would let an assertion keep passing while resolution returned the
+/// wrong element, and a caller could not see from the call site which
+/// half was being compared.
+pub trait IndexedAxisEntrySliceExt<T> {
+    /// The `(ordering_value, primary_key)` pairs, in order.
+    fn key_pairs(&self) -> Vec<(T, Vec<u8>)>;
+}
+
+impl<T: Clone> IndexedAxisEntrySliceExt<T> for [IndexedAxisEntry<T>] {
+    fn key_pairs(&self) -> Vec<(T, Vec<u8>)> {
+        self.iter()
+            .map(|e| (e.ordering_value.clone(), e.primary_key.clone()))
+            .collect()
+    }
+}
+
 use grovedb_version::{version::GroveVersion, TryFromVersioned};
 
 use crate::element::SumValue;

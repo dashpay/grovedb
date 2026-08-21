@@ -103,6 +103,7 @@ pub fn apply_memonly_unchecked(
                 BasicStorageRemoval(value_bytes_to_remove),
             ))
         },
+        &mut |_, _, _| {},
         grove_version,
     )
     .unwrap()
@@ -163,6 +164,7 @@ pub fn apply_to_memonly(
                 BasicStorageRemoval(value_bytes_to_remove),
             ))
         },
+        &mut |_, _, _| {},
         grove_version,
     )
     .unwrap()

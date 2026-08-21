@@ -39,9 +39,11 @@ use grovedb_costs::{
 use grovedb_path::SubtreePath;
 use integer_encoding::VarInt;
 use lazy_static::lazy_static;
+#[cfg(feature = "unsafe-dump-load")]
+use rocksdb::IngestExternalFileOptions;
 use rocksdb::{
-    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB,
-    Transaction, WriteBatchWithTransaction, DEFAULT_COLUMN_FAMILY_NAME,
+    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, FlushOptions,
+    OptimisticTransactionDB, Transaction, WriteBatchWithTransaction, DEFAULT_COLUMN_FAMILY_NAME,
 };
 
 use super::{PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbTransactionContext};
@@ -202,6 +204,42 @@ impl RocksDbStorage {
             SubtreePrefix::from(blake3::hash(&body))
                 .wrap_with_cost(OperationCost::with_hash_node_calls(blocks_count as u32))
         }
+    }
+
+    /// Derive the per-axis secondary `SubtreePrefix` for any indexed-tree
+    /// element (`ProvableSumIndexedTree`, `ProvableCountIndexedTree`, or
+    /// `ProvableCountProvableSumIndexedTree`) whose primary prefix is
+    /// given and whose axis is identified by `axis_tag`.
+    ///
+    /// Per S2-B (generalized): `secondary_prefix = Blake3(primary_prefix ‖
+    /// axis_tag)`. The axis tag byte is the `IndexAxis` value carried by
+    /// `grovedb-element::indexed::IndexAxis` (`0 = count`, `1 = sum`,
+    /// `2 = avg`). PCPSIT carries 1..=3 secondaries — one per axis — and
+    /// each lives at a distinct prefix derived via this function.
+    ///
+    /// Three useful properties hold:
+    /// - **Primary parity with `Tree`.** The primary prefix is unchanged
+    ///   from `build_prefix` for the same path, so an indexed-tree's
+    ///   primary Merk lives where a `Tree` would.
+    /// - **Collision-free secondary.** The secondary's Blake3 input is a
+    ///   33-byte block (prefix ‖ axis_tag) that no path-derived prefix can
+    ///   produce — `build_prefix_body` always ends with per-segment length
+    ///   bytes, never a single tag byte after a 32-byte block.
+    /// - **Per-axis isolation.** Different `axis_tag` values map the same
+    ///   primary to different storage namespaces, so a PCPSIT's count /
+    ///   sum / avg secondaries do not collide with each other.
+    ///
+    /// Cost: one Blake3 call (33 bytes fits in a single 64-byte block).
+    pub fn secondary_prefix_for(
+        primary_prefix: &SubtreePrefix,
+        axis_tag: u8,
+    ) -> CostContext<SubtreePrefix> {
+        // 33 bytes (prefix + tag) fits within one Blake3 block.
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(primary_prefix);
+        hasher.update(&[axis_tag]);
+        SubtreePrefix::from(hasher.finalize())
+            .wrap_with_cost(OperationCost::with_hash_node_calls(1))
     }
 
     fn worst_case_body_size<L: WorstKeyLength>(path: &[L]) -> usize {
@@ -494,6 +532,50 @@ impl RocksDbStorage {
         }
     }
 
+    /// Bulk-ingest a single SST file (produced by `rocksdb::SstFileWriter`)
+    /// into the named column family.
+    ///
+    /// Used by snapshot-based bootstrap (e.g. the shielded-pool genesis
+    /// snapshot) to load a precomputed subtree's keys without paying the
+    /// per-write WAL + fsync cost. The SST must be sorted and its key range
+    /// must NOT overlap with any keys already in the CF — otherwise ingest
+    /// fails. For genesis-time usage this is satisfied by definition (the
+    /// target subtree is empty when this is called).
+    ///
+    /// Security notes (set by this method, not caller-configurable):
+    /// - `allow_global_seqno=false`: rejects ingests that would inject a
+    ///   global sequence number, preventing a malicious snapshot from
+    ///   reordering its writes relative to subsequent transactional writes.
+    /// - `snapshot_consistency=false`: snapshot-based bootstrap runs before
+    ///   any reader could hold a RocksDB snapshot of the empty state.
+    ///
+    /// The ingest happens at the DB level and bypasses any open transaction.
+    /// Callers must arrange for txn semantics at a higher layer.
+    ///
+    /// Gated behind the `unsafe-dump-load` feature — production builds (which
+    /// have no need to bulk-load precomputed subtree state) should leave it
+    /// off so this API isn't even compiled in.
+    #[cfg(feature = "unsafe-dump-load")]
+    pub fn ingest_subtree_sst(&self, cf_name: &str, sst_path: &Path) -> Result<(), Error> {
+        let cf_handle = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or(Error::StorageError(format!(
+                "ingest_subtree_sst: missing CF {cf_name}"
+            )))?;
+        let mut opts = IngestExternalFileOptions::default();
+        opts.set_allow_global_seqno(false);
+        opts.set_snapshot_consistency(false);
+        self.db
+            .ingest_external_file_cf_opts(&cf_handle, &opts, vec![sst_path])
+            .map_err(|e| {
+                Error::StorageError(format!(
+                    "ingest_subtree_sst({cf_name}, {}) failed: {e}",
+                    sst_path.display()
+                ))
+            })
+    }
+
     /// Clears all data from the database using range deletion on each
     /// column family. Uses a single range tombstone per CF instead of
     /// iterating and deleting every key individually.
@@ -565,7 +647,19 @@ impl<'db> Storage<'db> for RocksDbStorage {
     }
 
     fn flush(&self) -> Result<(), Error> {
-        self.db.flush().map_err(RocksDBError)
+        // Flush all column families: `set_atomic_flush(true)` requires it, and a
+        // default-only flush leaves the roots/meta/aux memtables unpersisted.
+        self.db
+            .flush_cfs_opt(
+                &[
+                    cf_default(&self.db),
+                    cf_aux(&self.db),
+                    cf_roots(&self.db),
+                    cf_meta(&self.db),
+                ],
+                &FlushOptions::default(),
+            )
+            .map_err(RocksDBError)
     }
 
     fn get_transactional_storage_context<'b, B>(
@@ -668,6 +762,13 @@ fn cf_meta(storage: &Db) -> &ColumnFamily {
         .expect("meta column family must exist")
 }
 
+/// Get the default column family
+fn cf_default(storage: &Db) -> &ColumnFamily {
+    storage
+        .cf_handle(DEFAULT_COLUMN_FAMILY_NAME)
+        .expect("default column family must exist")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -676,6 +777,38 @@ mod tests {
         RawIterator, Storage, StorageContext,
     };
     use grovedb_path::SubtreePath;
+
+    #[test]
+    fn flush_persists_all_column_families() {
+        let storage = TempStorage::new();
+        let db = &storage.db;
+
+        // Populate every column family.
+        db.put_cf(cf_default(db), b"kd", b"vd")
+            .expect("default put");
+        db.put_cf(cf_aux(db), b"ka", b"va").expect("aux put");
+        db.put_cf(cf_roots(db), b"kr", b"vr").expect("roots put");
+        db.put_cf(cf_meta(db), b"km", b"vm").expect("meta put");
+
+        storage.flush().expect("flush");
+
+        // Every CF's active memtable must now be empty (data flushed to SST).
+        for (name, cf) in [
+            (DEFAULT_COLUMN_FAMILY_NAME, cf_default(db)),
+            (AUX_CF_NAME, cf_aux(db)),
+            (ROOTS_CF_NAME, cf_roots(db)),
+            (META_CF_NAME, cf_meta(db)),
+        ] {
+            let entries = db
+                .property_int_value_cf(cf, "rocksdb.num-entries-active-mem-table")
+                .expect("memtable property read")
+                .expect("memtable property present");
+            assert_eq!(
+                entries, 0,
+                "column family '{name}' was not flushed: {entries} entries still in the memtable",
+            );
+        }
+    }
 
     #[test]
     fn test_build_prefix() {
@@ -699,6 +832,83 @@ mod tests {
         // Previously this would silently truncate the length to 0 (256 as u8 == 0),
         // causing different paths to hash to the same prefix (collision).
         let _ = RocksDbStorage::build_prefix(path.as_ref().into());
+    }
+
+    #[test]
+    fn secondary_prefix_for_is_deterministic_and_distinct_from_primary() {
+        let primary =
+            RocksDbStorage::build_prefix([b"foo".as_ref(), b"bar"].as_ref().into()).unwrap();
+
+        let s1 = RocksDbStorage::secondary_prefix_for(&primary, 0).unwrap();
+        let s2 = RocksDbStorage::secondary_prefix_for(&primary, 0).unwrap();
+        assert_eq!(s1, s2, "secondary prefix derivation must be deterministic");
+        assert_ne!(primary, s1, "secondary prefix must differ from its primary");
+    }
+
+    #[test]
+    fn secondary_prefix_for_distinguishes_different_primaries() {
+        let primary_a =
+            RocksDbStorage::build_prefix([b"foo".as_ref(), b"bar"].as_ref().into()).unwrap();
+        let primary_b =
+            RocksDbStorage::build_prefix([b"foo".as_ref(), b"baz"].as_ref().into()).unwrap();
+
+        let s_a = RocksDbStorage::secondary_prefix_for(&primary_a, 0).unwrap();
+        let s_b = RocksDbStorage::secondary_prefix_for(&primary_b, 0).unwrap();
+        assert_ne!(
+            s_a, s_b,
+            "different primaries must produce different secondaries"
+        );
+    }
+
+    #[test]
+    fn secondary_prefix_for_handles_empty_path_root_prefix() {
+        // A root-level indexed tree has primary_prefix = all-zero default.
+        // The derivation must still yield a well-defined 32-byte hash.
+        let primary = SubtreePrefix::default();
+        let secondary = RocksDbStorage::secondary_prefix_for(&primary, 0).unwrap();
+        assert_ne!(secondary, SubtreePrefix::default());
+        // And the derivation is stable.
+        let secondary_again = RocksDbStorage::secondary_prefix_for(&primary, 0).unwrap();
+        assert_eq!(secondary, secondary_again);
+    }
+
+    #[test]
+    fn secondary_prefix_for_distinguishes_different_axes() {
+        // The axis tag byte enters the Blake3 input — different axes for
+        // the SAME primary must produce different secondary prefixes so
+        // PCPSIT's count / sum / avg secondaries do not collide.
+        let primary =
+            RocksDbStorage::build_prefix([b"foo".as_ref(), b"bar"].as_ref().into()).unwrap();
+        let s_count = RocksDbStorage::secondary_prefix_for(&primary, 0).unwrap();
+        let s_sum = RocksDbStorage::secondary_prefix_for(&primary, 1).unwrap();
+        let s_avg = RocksDbStorage::secondary_prefix_for(&primary, 2).unwrap();
+        assert_ne!(s_count, s_sum, "count and sum axes must be distinct");
+        assert_ne!(s_count, s_avg, "count and avg axes must be distinct");
+        assert_ne!(s_sum, s_avg, "sum and avg axes must be distinct");
+    }
+
+    #[test]
+    fn secondary_prefix_for_does_not_collide_with_path_derived_prefix() {
+        // The secondary's Blake3 input is `primary || axis_tag` (33 bytes).
+        // Path-derived prefixes hash a variable-length `path_body` that
+        // always ends with per-segment-length bytes followed by a single
+        // segment-count word — never a single tag byte after a 32-byte
+        // block. So a collision would require Blake3 output collision
+        // (infeasible) AND is structurally impossible to construct via
+        // build_prefix. This test sanity-checks that a few path-derived
+        // prefixes do not happen to collide with secondaries.
+        let primary = RocksDbStorage::build_prefix([b"a".as_ref(), b"b"].as_ref().into()).unwrap();
+        let secondary = RocksDbStorage::secondary_prefix_for(&primary, 0).unwrap();
+
+        for path in [
+            [b"a".as_ref(), b"b"].as_ref(),
+            [b"x".as_ref(), b"y"].as_ref(),
+            [b"foo".as_ref(), b"bar", b"baz"].as_ref(),
+            [].as_ref(),
+        ] {
+            let p = RocksDbStorage::build_prefix(path.into()).unwrap();
+            assert_ne!(p, secondary);
+        }
     }
 
     #[test]

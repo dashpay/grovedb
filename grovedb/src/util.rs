@@ -37,3 +37,18 @@ impl<'db> AsRef<Transaction<'db>> for TxRef<'_, 'db> {
         }
     }
 }
+
+/// Build the storage path of a subtree living at `path`/`key`.
+///
+/// Every non-Merk tree type (commitment tree, bulk-append tree, private
+/// document store) needs its own subtree path to open the data namespace,
+/// and each had grown a private copy of this three-line helper under a
+/// different name. One shared function keeps them provably identical.
+pub(crate) fn subtree_path_with_key<B: AsRef<[u8]>>(
+    path: &grovedb_path::SubtreePath<B>,
+    key: &[u8],
+) -> Vec<Vec<u8>> {
+    let mut v = path.to_vec();
+    v.push(key.to_vec());
+    v
+}

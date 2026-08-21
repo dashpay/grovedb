@@ -7,7 +7,7 @@ use bincode::{
 };
 use indexmap::IndexMap;
 
-use crate::{error::Error, query_item::QueryItem, Key, Path, SubqueryBranch};
+use crate::{error::Error, query_item::QueryItem, Key, Path, ReadMode, SubqueryBranch};
 
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all the requested values.
@@ -41,11 +41,45 @@ pub struct Query {
     /// Parent tree elements will therefore not appear in the verified
     /// result set in those modes.
     pub add_parent_tree_on_subquery: bool,
+    /// How this node reads the tree its (sub)path names. `None` is
+    /// plain key selection — all pre-existing behavior, byte-identical
+    /// on the wire (the encoding version byte stays `1`). `Some(_)`
+    /// switches the node to an axis-ordered or sum-budget read and
+    /// bumps the node's encoding version byte to `2`, which decoders
+    /// that predate read modes reject — fail-closed by construction.
+    ///
+    /// Placement rules (which items/branches may accompany a read mode,
+    /// where in a `PathQuery` it may appear) are enforced by
+    /// `PathQuery::classify` in the `grovedb` crate.
+    ///
+    /// **Boxed deliberately.** A read mode is absent from virtually
+    /// every query, but `AxisQuery`'s `i128` bounds make it 64 bytes
+    /// inline — which would fatten every `Query` (and through
+    /// `PathQuery`, the `Error::InvalidProof` variant and so every
+    /// `CostResult` in the crate) whether or not a read mode is
+    /// present. The indirection costs one allocation on the rare
+    /// read-mode path and keeps `Query` cheap to clone, which the
+    /// engine does constantly. It is invisible on the wire and in
+    /// serde: `Box<T>` encodes exactly as `T`.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub read_mode: Option<Box<ReadMode>>,
 }
 
 impl Encode for Query {
     fn encode<E: bincode::enc::Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
-        1u8.encode(encoder)?;
+        // Version byte. Queries without a read mode — everything that
+        // was expressible before read modes existed — keep encoding as
+        // version 1, byte-for-byte. Only a node that actually carries a
+        // read mode bumps to 2, so old decoders fail closed on exactly
+        // the queries they cannot execute and on nothing else.
+        if self.read_mode.is_some() {
+            2u8.encode(encoder)?;
+        } else {
+            1u8.encode(encoder)?;
+        }
 
         // Encode the items vector
         self.items.encode(encoder)?;
@@ -76,6 +110,12 @@ impl Encode for Query {
 
         self.add_parent_tree_on_subquery.encode(encoder)?;
 
+        // Version 2 appends the read mode. No presence flag: the
+        // version byte already says it's there.
+        if let Some(read_mode) = &self.read_mode {
+            read_mode.encode(encoder)?;
+        }
+
         Ok(())
     }
 }
@@ -104,7 +144,7 @@ impl Query {
             ));
         }
         let version = u8::decode(decoder)?;
-        if version != 1 {
+        if version != 1 && version != 2 {
             return Err(DecodeError::Other("unsupported Query encoding version"));
         }
         let items_len = u64::decode(decoder)? as usize;
@@ -139,12 +179,21 @@ impl Query {
         let left_to_right = bool::decode(decoder)?;
         let add_parent_tree_on_subquery = bool::decode(decoder)?;
 
+        // Version 2 carries a read mode; version 1 never does. No
+        // presence flag — the version byte is the flag.
+        let read_mode = if version == 2 {
+            Some(Box::new(ReadMode::decode(decoder)?))
+        } else {
+            None
+        };
+
         Ok(Query {
             items,
             default_subquery_branch,
             conditional_subquery_branches,
             left_to_right,
             add_parent_tree_on_subquery,
+            read_mode,
         })
     }
 
@@ -158,7 +207,7 @@ impl Query {
             ));
         }
         let version = u8::borrow_decode(decoder)?;
-        if version != 1 {
+        if version != 1 && version != 2 {
             return Err(DecodeError::Other("unsupported Query encoding version"));
         }
         let items_len = u64::borrow_decode(decoder)? as usize;
@@ -193,12 +242,20 @@ impl Query {
         let left_to_right = bool::borrow_decode(decoder)?;
         let add_parent_tree_on_subquery = bool::borrow_decode(decoder)?;
 
+        // Version 2 carries a read mode; version 1 never does.
+        let read_mode = if version == 2 {
+            Some(Box::new(ReadMode::borrow_decode(decoder)?))
+        } else {
+            None
+        };
+
         Ok(Query {
             items,
             default_subquery_branch,
             conditional_subquery_branches,
             left_to_right,
             add_parent_tree_on_subquery,
+            read_mode,
         })
     }
 }
@@ -245,6 +302,9 @@ impl fmt::Display for Query {
             "  add_parent_tree_on_subquery: {},",
             self.add_parent_tree_on_subquery
         )?;
+        if let Some(read_mode) = &self.read_mode {
+            writeln!(f, "  read_mode: {read_mode},")?;
+        }
         write!(f, "}}")
     }
 }
@@ -785,6 +845,7 @@ impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
             conditional_subquery_branches: None,
             left_to_right: true,
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         }
     }
 }
@@ -896,7 +957,7 @@ mod tests {
     fn query_decode_rejects_invalid_version() {
         // Craft a payload with an invalid version byte
         let mut payload = Vec::new();
-        payload.push(2u8); // invalid version (only version 1 is supported)
+        payload.push(3u8); // invalid version (only versions 1 and 2 are supported)
                            // Add some dummy data after
         payload.extend_from_slice(&[0; 20]);
 

@@ -27,6 +27,14 @@ mod aggregate_sum;
 /// Aggregate sum query for sum-up-to style queries.
 pub mod aggregate_sum_query;
 
+/// Axis-ordered read vocabulary for indexed trees: `IndexAxis`,
+/// `AxisQuery`, `AxisTraversal`.
+pub mod axis_query;
+
+/// Read modes: how a `Query` node reads the tree its path names
+/// (`ReadMode`, `SumBudgetRead`).
+pub mod read_mode;
+
 mod common_path;
 
 mod insert;
@@ -48,10 +56,12 @@ mod query;
 mod subquery_branch;
 
 pub use aggregate_sum_query::AggregateSumQuery;
+pub use axis_query::{AggregateFold, AxisQuery, AxisTraversal, IndexAxis, UnknownAxisTag};
 pub use proof_items::ProofItems;
 pub use proof_status::ProofStatus;
 pub use query::Query;
 pub use query_item::{intersect::QueryItemIntersectionResult, QueryItem};
+pub use read_mode::{ReadMode, SumBudgetRead};
 pub use subquery_branch::SubqueryBranch;
 
 /// Type alias for a path.

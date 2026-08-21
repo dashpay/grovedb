@@ -118,6 +118,71 @@ fn element_display_and_type_helpers_cover_all_variants() {
     }
 }
 
+/// Display + type helpers for the indexed-tree element variants
+/// (PCIT, PSIT, PCPSIT) and wrappers (NonCounted, NotSummed,
+/// NotCountedOrSummed). These arms are exercised here in addition
+/// to the all-variant test above which omits them.
+#[test]
+fn element_display_indexed_tree_and_wrapper_variants() {
+    // ProvableCountIndexedTree
+    let pcit =
+        Element::ProvableCountIndexedTree(Some(vec![0xAA]), Some(vec![0xBB]), 42, Some(vec![1, 2]));
+    let s = format!("{pcit}");
+    assert!(
+        s.contains("ProvableCountIndexedTree")
+            && s.contains("primary=aa")
+            && s.contains("secondary=bb")
+            && s.contains("count=42"),
+        "Display: {}",
+        s
+    );
+
+    let pcit_empty = Element::ProvableCountIndexedTree(None, None, 0, None);
+    let s = format!("{pcit_empty}");
+    assert!(s.contains("primary=None") && s.contains("secondary=None"));
+    assert!(!s.contains("flags:"));
+
+    // ProvableSumIndexedTree
+    let psit =
+        Element::ProvableSumIndexedTree(Some(vec![0xCC]), Some(vec![0xDD]), -77, Some(vec![5]));
+    let s = format!("{psit}");
+    assert!(
+        s.contains("ProvableSumIndexedTree") && s.contains("primary=cc") && s.contains("sum=-77"),
+        "Display: {}",
+        s
+    );
+
+    // ProvableCountProvableSumIndexedTree (multi-axis)
+    let pcpsit = Element::ProvableCountProvableSumIndexedTree(
+        Some(vec![0xEE]),
+        3,
+        15,
+        vec![(0u8, Some(vec![0x11])), (1u8, None)],
+        None,
+    );
+    let s = format!("{pcpsit}");
+    assert!(
+        s.contains("ProvableCountProvableSumIndexedTree")
+            && s.contains("count=3")
+            && s.contains("sum=15")
+            && s.contains("axes=[")
+            && s.contains("(0, 11)")
+            && s.contains("(1, None)"),
+        "Display: {}",
+        s
+    );
+
+    // Wrapper variants — Display delegates to inner.
+    let nc = Element::NonCounted(Box::new(Element::Item(b"v".to_vec(), None)));
+    assert_eq!(format!("{nc}"), "NonCounted(Item(v))");
+
+    let ns = Element::NotSummed(Box::new(Element::SumTree(None, 5, None)));
+    assert_eq!(format!("{ns}"), "NotSummed(SumTree(None, 5))");
+
+    let ncs = Element::NotCountedOrSummed(Box::new(Element::SumTree(None, 7, None)));
+    assert_eq!(format!("{ncs}"), "NotCountedOrSummed(SumTree(None, 7))");
+}
+
 #[test]
 fn serialize_deserialize_round_trip_all_element_types_and_errors() {
     let grove_version = GroveVersion::latest();
@@ -379,4 +444,66 @@ fn element_display_without_flags_covers_none_branches() {
             display
         );
     }
+}
+
+#[test]
+fn private_document_store_invalid_config_is_unrepresentable() {
+    let grove_version = GroveVersion::latest();
+    // entry_size 0, chunk_power 0, chunk_power 17 must be rejected by both
+    // directions of the bincode codec (the config is committed into the
+    // store's state root, so an unusable config must never round-trip).
+    for bad in [
+        Element::new_private_document_store(0, 0, 4, None),
+        Element::new_private_document_store(0, 64, 0, None),
+        Element::new_private_document_store(0, 64, 17, None),
+    ] {
+        assert!(
+            bad.serialize(grove_version).is_err(),
+            "serialize must reject {:?}",
+            bad
+        );
+    }
+    // Craft the bytes directly (serialize refuses) and check deserialize
+    // rejects them: a valid element re-encoded with a zeroed entry_size.
+    let good = Element::new_private_document_store(0, 64, 4, None);
+    let mut bytes = good.serialize(grove_version).expect("serialize valid");
+    // Layout: [24 (discriminant), total_count varint (0 = 1 byte),
+    //          entry_size varint (64 = 1 byte), chunk_power, flags None]
+    assert_eq!(bytes[0], 24);
+    assert_eq!(bytes[2], 64);
+    bytes[2] = 0; // entry_size -> 0
+    assert!(
+        Element::deserialize(&bytes, grove_version).is_err(),
+        "deserialize must reject a zero entry_size"
+    );
+    // NonCounted-wrapped invalid config is rejected too (validation looks
+    // through the wrapper).
+    let wrapped = Element::NonCounted(Box::new(Element::new_private_document_store(0, 0, 4, None)));
+    assert!(wrapped.serialize(grove_version).is_err());
+}
+
+#[test]
+fn private_document_store_bincode_rejects_invalid_chunk_power() {
+    let grove_version = GroveVersion::latest();
+    // Craft bytes from a valid element, then corrupt chunk_power. serialize
+    // refuses to produce these, so deserialize is the ingress under test.
+    let good = Element::new_private_document_store(0, 64, 4, None);
+    let bytes = good.serialize(grove_version).expect("serialize valid");
+    // Layout: [24 (discriminant), total_count, entry_size, chunk_power, flags]
+    assert_eq!(bytes[0], 24);
+    assert_eq!(bytes[3], 4, "chunk_power is the fourth byte for this shape");
+
+    for bad_power in [0u8, 17, 255] {
+        let mut corrupted = bytes.clone();
+        corrupted[3] = bad_power;
+        assert!(
+            Element::deserialize(&corrupted, grove_version).is_err(),
+            "deserialize must reject chunk_power {}",
+            bad_power
+        );
+    }
+
+    // And the constructors reject the same values up front.
+    assert!(Element::empty_private_document_store(64, 0).is_err());
+    assert!(Element::empty_private_document_store(64, 17).is_err());
 }

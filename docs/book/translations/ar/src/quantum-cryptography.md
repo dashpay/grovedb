@@ -99,7 +99,7 @@
 
 ```text
 Step 1: Read stored record from CommitmentTree BulkAppendTree:
-        cmx (32) || rho (32) || epk (32) || enc_ciphertext (104) || out_ciphertext (80)
+        cmx (32) || rho (32) || cv_net (32) || epk (32) || enc_ciphertext (104) || out_ciphertext (80)
 
 Step 2: Solve ECDLP on Pallas via Shor's algorithm:
         epk = [esk] * g_d  →  recover esk
@@ -200,26 +200,27 @@ Recipient:
 
 ```text
 ┌──────────────────────────────────────────────────────────────────┐
-│  Current (280 bytes)         Hybrid (1,400 bytes)               │
+│  Current (312 bytes)         Hybrid (1,432 bytes)               │
 │                                                                  │
 │  cmx:             32         cmx:              32               │
 │  rho:             32         rho:              32               │
+│  cv_net:          32         cv_net:           32               │
 │  epk:             32         epk:              32               │
 │  enc_ciphertext: 104         ct_pq:         1,088  ← NEW       │
 │  out_ciphertext:  80         enc_ciphertext:  104               │
 │                              out_ciphertext:  112  ← +32        │
 │  ─────────────────           ──────────────────────             │
-│  Total:          280         Total:          1,400  (5.0x)      │
+│  Total:          312         Total:          1,432  (4.6x)      │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 **التخزين على نطاق واسع:**
 
-| عدد الملاحظات | الحالي (280 B) | الهجين (1,400 B) | الفرق |
+| عدد الملاحظات | الحالي (312 B) | الهجين (1,432 B) | الفرق |
 |-------|----------------|------------------|-------|
-| 100,000 | 26.7 MB | 133 MB | +106 MB |
-| 1,000,000 | 267 MB | 1.33 GB | +1.07 GB |
-| 10,000,000 | 2.67 GB | 13.3 GB | +10.7 GB |
+| 100,000 | 29.8 MB | 137 MB | +107 MB |
+| 1,000,000 | 298 MB | 1.33 GB | +1.04 GB |
+| 10,000,000 | 2.91 GB | 13.3 GB | +10.4 GB |
 
 **حجم العنوان:**
 

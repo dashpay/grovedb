@@ -20,6 +20,17 @@ use crate::{
     Element, Error, GroveDb, PathQuery, SizedQuery,
 };
 
+#[cfg(feature = "unsafe-dump-load")]
+use grovedb_commitment_tree::CommitmentTree;
+#[cfg(feature = "unsafe-dump-load")]
+use grovedb_path::SubtreePath;
+#[cfg(feature = "unsafe-dump-load")]
+use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageContext};
+#[cfg(feature = "unsafe-dump-load")]
+use rocksdb::{Options, SstFileWriter};
+#[cfg(feature = "unsafe-dump-load")]
+use tempfile::TempDir;
+
 /// Default chunk power for tests (2^10 = 1024, large enough that compaction
 /// doesn't happen in most tests with only a few items).
 const TEST_CHUNK_POWER: u8 = 10;
@@ -41,6 +52,14 @@ fn test_rho(index: u8) -> [u8; 32] {
     let mut bytes = [0u8; 32];
     bytes[0] = index;
     bytes[1] = 0xAA; // distinguishes rho from cmx/ciphertext
+    bytes
+}
+
+/// Generate a deterministic 32-byte cv_net (value commitment) from an index.
+fn test_cv_net(index: u8) -> [u8; 32] {
+    let mut bytes = [0u8; 32];
+    bytes[0] = index;
+    bytes[1] = 0xCC; // distinguishes cv_net from cmx/rho/ciphertext
     bytes
 }
 
@@ -216,6 +235,7 @@ fn test_commitment_tree_insert_single() {
             b"pool",
             cmx,
             test_rho(1),
+            test_cv_net(1),
             test_ciphertext(1),
             None,
             grove_version,
@@ -235,11 +255,12 @@ fn test_commitment_tree_insert_single() {
         .unwrap()
         .expect("get stored value");
 
-    // Item value is cmx || rho || payload
+    // Item value is cmx || rho || cv_net || payload
     let value = stored.expect("value should exist");
     assert_eq!(&value[..32], &cmx);
     assert_eq!(&value[32..64], &test_rho(1));
-    assert_eq!(&value[64..], &payload[..]);
+    assert_eq!(&value[64..96], &test_cv_net(1));
+    assert_eq!(&value[96..], &payload[..]);
 }
 
 #[test]
@@ -268,6 +289,7 @@ fn test_commitment_tree_insert_multiple() {
             b"pool",
             cmx0,
             test_rho(1),
+            test_cv_net(1),
             test_ciphertext(1),
             None,
             grove_version,
@@ -280,6 +302,7 @@ fn test_commitment_tree_insert_multiple() {
             b"pool",
             cmx1,
             test_rho(2),
+            test_cv_net(2),
             test_ciphertext(2),
             None,
             grove_version,
@@ -292,6 +315,7 @@ fn test_commitment_tree_insert_multiple() {
             b"pool",
             cmx2,
             test_rho(3),
+            test_cv_net(3),
             test_ciphertext(3),
             None,
             grove_version,
@@ -342,6 +366,7 @@ fn test_commitment_tree_insert_with_transaction() {
             b"pool",
             cmx,
             test_rho(42),
+            test_cv_net(42),
             test_ciphertext(42),
             Some(&tx),
             grove_version,
@@ -398,6 +423,7 @@ fn test_commitment_tree_insert_transaction_rollback() {
         b"pool",
         test_cmx(1),
         test_rho(1),
+        test_cv_net(1),
         test_ciphertext(1),
         Some(&tx),
         grove_version,
@@ -473,6 +499,7 @@ fn test_commitment_tree_anchor_changes_after_insert() {
         b"pool",
         test_cmx(1),
         test_rho(1),
+        test_cv_net(1),
         test_ciphertext(1),
         None,
         grove_version,
@@ -513,6 +540,7 @@ fn test_commitment_tree_anchor_deterministic() {
             b"pool",
             test_cmx(10),
             test_rho(10),
+            test_cv_net(10),
             test_ciphertext(10),
             None,
             grove_version,
@@ -525,6 +553,7 @@ fn test_commitment_tree_anchor_deterministic() {
             b"pool",
             test_cmx(20),
             test_rho(20),
+            test_cv_net(20),
             test_ciphertext(20),
             None,
             grove_version,
@@ -575,6 +604,7 @@ fn test_commitment_tree_insert_propagates_root_hash() {
         b"pool",
         test_cmx(1),
         test_rho(1),
+        test_cv_net(1),
         test_ciphertext(1),
         None,
         grove_version,
@@ -621,6 +651,7 @@ fn test_commitment_tree_nested_propagation() {
         b"pool",
         test_cmx(1),
         test_rho(1),
+        test_cv_net(1),
         test_ciphertext(1),
         None,
         grove_version,
@@ -666,6 +697,7 @@ fn test_commitment_tree_count() {
             b"pool",
             test_cmx(i + 1),
             test_rho(i + 1),
+            test_cv_net(i + 1),
             test_ciphertext(i + 1),
             None,
             grove_version,
@@ -710,6 +742,7 @@ fn test_commitment_tree_get_value() {
         b"pool",
         cmx,
         test_rho(42),
+        test_cv_net(42),
         test_ciphertext(42),
         None,
         grove_version,
@@ -725,7 +758,8 @@ fn test_commitment_tree_get_value() {
     let value = value.expect("value should exist");
     assert_eq!(&value[..32], &cmx);
     assert_eq!(&value[32..64], &test_rho(42));
-    assert_eq!(&value[64..], payload.as_slice());
+    assert_eq!(&value[64..96], &test_cv_net(42));
+    assert_eq!(&value[96..], payload.as_slice());
 
     // Position 1 should not exist
     let none_value = db
@@ -763,6 +797,7 @@ fn test_commitment_tree_compaction() {
             b"pool",
             test_cmx(i + 1),
             test_rho(i + 1),
+            test_cv_net(i + 1),
             test_ciphertext(i + 1),
             None,
             grove_version,
@@ -826,18 +861,21 @@ fn test_commitment_tree_batch_insert() {
             vec![b"pool".to_vec()],
             test_cmx(1),
             test_rho(1),
+            test_cv_net(1),
             &test_ciphertext(1),
         ),
         QualifiedGroveDbOp::commitment_tree_insert_op_typed(
             vec![b"pool".to_vec()],
             test_cmx(2),
             test_rho(2),
+            test_cv_net(2),
             &test_ciphertext(2),
         ),
         QualifiedGroveDbOp::commitment_tree_insert_op_typed(
             vec![b"pool".to_vec()],
             test_cmx(3),
             test_rho(3),
+            test_cv_net(3),
             &test_ciphertext(3),
         ),
     ];
@@ -893,6 +931,7 @@ fn test_commitment_tree_batch_with_transaction() {
         vec![b"pool".to_vec()],
         test_cmx(1),
         test_rho(1),
+        test_cv_net(1),
         &test_ciphertext(1),
     )];
 
@@ -944,6 +983,7 @@ fn test_commitment_tree_batch_and_nonbatch_same_result() {
             b"pool",
             test_cmx(i),
             test_rho(i),
+            test_cv_net(i),
             test_ciphertext(i),
             None,
             grove_version,
@@ -971,6 +1011,7 @@ fn test_commitment_tree_batch_and_nonbatch_same_result() {
                 vec![b"pool".to_vec()],
                 test_cmx(i),
                 test_rho(i),
+                test_cv_net(i),
                 &test_ciphertext(i),
             )
         })
@@ -1023,6 +1064,7 @@ fn test_commitment_tree_delete() {
         b"pool",
         test_cmx(1),
         test_rho(1),
+        test_cv_net(1),
         test_ciphertext(1),
         None,
         grove_version,
@@ -1066,6 +1108,7 @@ fn test_commitment_tree_delete_and_recreate() {
         b"pool",
         test_cmx(1),
         test_rho(1),
+        test_cv_net(1),
         test_ciphertext(1),
         None,
         grove_version,
@@ -1109,6 +1152,7 @@ fn test_commitment_tree_delete_and_recreate() {
             b"pool",
             test_cmx(99),
             test_rho(99),
+            test_cv_net(99),
             test_ciphertext(99),
             None,
             grove_version,
@@ -1145,6 +1189,7 @@ fn test_commitment_tree_insert_on_non_commitment_tree_fails() {
             b"normal",
             test_cmx(1),
             test_rho(1),
+            test_cv_net(1),
             test_ciphertext(1),
             None,
             grove_version,
@@ -1213,6 +1258,7 @@ fn test_multiple_commitment_trees_independent() {
         b"pool_a",
         test_cmx(1),
         test_rho(1),
+        test_cv_net(1),
         test_ciphertext(1),
         None,
         grove_version,
@@ -1225,6 +1271,7 @@ fn test_multiple_commitment_trees_independent() {
         b"pool_b",
         test_cmx(2),
         test_rho(2),
+        test_cv_net(2),
         test_ciphertext(2),
         None,
         grove_version,
@@ -1282,6 +1329,7 @@ fn test_verify_grovedb_commitment_tree_valid() {
         b"ct",
         test_cmx(1),
         test_rho(1),
+        test_cv_net(1),
         test_ciphertext(1),
         None,
         grove_version,
@@ -1294,6 +1342,7 @@ fn test_verify_grovedb_commitment_tree_valid() {
         b"ct",
         test_cmx(2),
         test_rho(2),
+        test_cv_net(2),
         test_ciphertext(2),
         None,
         grove_version,
@@ -1362,6 +1411,7 @@ fn test_commitment_tree_delete_non_empty_error() {
             b"ct",
             test_cmx(i + 1),
             test_rho(i + 1),
+            test_cv_net(i + 1),
             test_ciphertext(i + 1),
             None,
             grove_version,
@@ -1416,6 +1466,7 @@ fn test_verify_grovedb_after_commitment_tree_delete() {
             b"ct",
             test_cmx(i + 1),
             test_rho(i + 1),
+            test_cv_net(i + 1),
             test_ciphertext(i + 1),
             None,
             grove_version,
@@ -1510,6 +1561,7 @@ fn test_commitment_tree_prove_query_v1_empty() {
                 left_to_right: true,
                 conditional_subquery_branches: None,
                 add_parent_tree_on_subquery: false,
+                read_mode: None,
             },
             limit: None,
             offset: None,
@@ -1571,6 +1623,7 @@ fn test_commitment_tree_prove_query_v1_buffer_only() {
     for i in 0..5u8 {
         let cmx = test_cmx(i);
         let rho = test_rho(i);
+        let cv_net = test_cv_net(i);
         let ct = test_ciphertext(i);
         let payload = serialize_ciphertext(&ct);
         db.commitment_tree_insert(
@@ -1578,6 +1631,7 @@ fn test_commitment_tree_prove_query_v1_buffer_only() {
             b"pool",
             cmx,
             rho,
+            cv_net,
             test_ciphertext(i),
             None,
             grove_version,
@@ -1585,9 +1639,10 @@ fn test_commitment_tree_prove_query_v1_buffer_only() {
         .unwrap()
         .expect("commitment tree insert");
 
-        let mut expected = Vec::with_capacity(32 + 32 + payload.len());
+        let mut expected = Vec::with_capacity(32 + 32 + 32 + payload.len());
         expected.extend_from_slice(&cmx);
         expected.extend_from_slice(&rho);
+        expected.extend_from_slice(&cv_net);
         expected.extend_from_slice(&payload);
         expected_values.push(expected);
     }
@@ -1608,6 +1663,7 @@ fn test_commitment_tree_prove_query_v1_buffer_only() {
                 left_to_right: true,
                 conditional_subquery_branches: None,
                 add_parent_tree_on_subquery: false,
+                read_mode: None,
             },
             limit: None,
             offset: None,
@@ -1651,7 +1707,7 @@ fn test_commitment_tree_prove_query_v1_buffer_only() {
             Element::Item(data, _) => {
                 assert_eq!(
                     data, &expected_values[i as usize],
-                    "value at position {} should match (cmx || payload)",
+                    "value at position {} should match (cmx || rho || cv_net || payload)",
                     i
                 );
             }
@@ -1694,6 +1750,7 @@ fn test_commitment_tree_prove_query_v1_with_chunks() {
     for i in 0..6u8 {
         let cmx = test_cmx(i);
         let rho = test_rho(i);
+        let cv_net = test_cv_net(i);
         let ct = test_ciphertext(i);
         let payload = serialize_ciphertext(&ct);
         db.commitment_tree_insert(
@@ -1701,6 +1758,7 @@ fn test_commitment_tree_prove_query_v1_with_chunks() {
             b"pool",
             cmx,
             rho,
+            cv_net,
             test_ciphertext(i),
             None,
             grove_version,
@@ -1708,9 +1766,10 @@ fn test_commitment_tree_prove_query_v1_with_chunks() {
         .unwrap()
         .expect("commitment tree insert");
 
-        let mut expected = Vec::with_capacity(32 + 32 + payload.len());
+        let mut expected = Vec::with_capacity(32 + 32 + 32 + payload.len());
         expected.extend_from_slice(&cmx);
         expected.extend_from_slice(&rho);
+        expected.extend_from_slice(&cv_net);
         expected.extend_from_slice(&payload);
         expected_values.push(expected);
     }
@@ -1731,6 +1790,7 @@ fn test_commitment_tree_prove_query_v1_with_chunks() {
                 left_to_right: true,
                 conditional_subquery_branches: None,
                 add_parent_tree_on_subquery: false,
+                read_mode: None,
             },
             limit: None,
             offset: None,
@@ -1809,6 +1869,7 @@ fn test_commitment_tree_prove_query_v1_partial_range() {
     for i in 0..10u8 {
         let cmx = test_cmx(i);
         let rho = test_rho(i);
+        let cv_net = test_cv_net(i);
         let ct = test_ciphertext(i);
         let payload = serialize_ciphertext(&ct);
         db.commitment_tree_insert(
@@ -1816,6 +1877,7 @@ fn test_commitment_tree_prove_query_v1_partial_range() {
             b"pool",
             cmx,
             rho,
+            cv_net,
             test_ciphertext(i),
             None,
             grove_version,
@@ -1823,9 +1885,10 @@ fn test_commitment_tree_prove_query_v1_partial_range() {
         .unwrap()
         .expect("commitment tree insert");
 
-        let mut expected = Vec::with_capacity(32 + 32 + payload.len());
+        let mut expected = Vec::with_capacity(32 + 32 + 32 + payload.len());
         expected.extend_from_slice(&cmx);
         expected.extend_from_slice(&rho);
+        expected.extend_from_slice(&cv_net);
         expected.extend_from_slice(&payload);
         expected_values.push(expected);
     }
@@ -1846,6 +1909,7 @@ fn test_commitment_tree_prove_query_v1_partial_range() {
                 left_to_right: true,
                 conditional_subquery_branches: None,
                 add_parent_tree_on_subquery: false,
+                read_mode: None,
             },
             limit: None,
             offset: None,
@@ -1990,6 +2054,7 @@ fn test_commitment_tree_persistence_across_reopen() {
                 b"pool",
                 test_cmx(i),
                 test_rho(i),
+                test_cv_net(i),
                 test_ciphertext(i),
                 None,
                 grove_version,
@@ -2129,6 +2194,7 @@ fn test_commitment_batch_discarded_on_later_op_failure() {
             vec![b"parent".to_vec(), b"pool".to_vec()],
             test_cmx(1),
             test_rho(1),
+            test_cv_net(1),
             &test_ciphertext(1),
         ),
         QualifiedGroveDbOp::insert_if_not_exists_op(
@@ -2207,6 +2273,7 @@ fn test_commitment_transaction_rollback_reverts_inserts() {
         b"pool",
         test_cmx(1),
         test_rho(1),
+        test_cv_net(1),
         test_ciphertext(1),
         None,
         grove_version,
@@ -2234,6 +2301,7 @@ fn test_commitment_transaction_rollback_reverts_inserts() {
             b"pool",
             test_cmx(i),
             test_rho(i),
+            test_cv_net(i),
             test_ciphertext(i),
             Some(&tx),
             grove_version,
@@ -2287,6 +2355,7 @@ fn test_commitment_batch_in_transaction_rollback() {
                 vec![b"pool".to_vec()],
                 test_cmx(i),
                 test_rho(i),
+                test_cv_net(i),
                 &test_ciphertext(i),
             )
         })
@@ -2366,6 +2435,7 @@ fn test_commitment_successful_batch_after_failed_batch() {
             vec![b"parent".to_vec(), b"pool".to_vec()],
             test_cmx(1),
             test_rho(1),
+            test_cv_net(1),
             &test_ciphertext(1),
         ),
         QualifiedGroveDbOp::insert_if_not_exists_op(
@@ -2395,6 +2465,7 @@ fn test_commitment_successful_batch_after_failed_batch() {
         vec![b"parent".to_vec(), b"pool".to_vec()],
         test_cmx(2),
         test_rho(2),
+        test_cv_net(2),
         &test_ciphertext(2),
     )];
 
@@ -2458,6 +2529,7 @@ fn test_commitment_compaction_transaction_rollback() {
             b"pool",
             test_cmx(i),
             test_rho(i),
+            test_cv_net(i),
             test_ciphertext(i),
             Some(&tx),
             grove_version,
@@ -2495,4 +2567,299 @@ fn test_commitment_compaction_transaction_rollback() {
         empty_anchor,
         "anchor should revert to empty tree after compaction + rollback"
     );
+}
+
+// ===========================================================================
+// unsafe-dump-load: dump-then-restore subtree round-trip
+// ===========================================================================
+//
+// Exercises the three escape-hatch APIs gated behind `unsafe-dump-load`
+// (`GroveDb::raw_storage`, `RocksDbStorage::ingest_subtree_sst`,
+// `GroveDb::replace_subtree_root`) in a single end-to-end round-trip on a
+// real CommitmentTree subtree. The post-restore GroveDb root_hash must equal
+// the source's, byte-for-byte, demonstrating the snapshot-bootstrap contract
+// described in `replace_subtree_root.rs`'s module docs.
+
+#[cfg(feature = "unsafe-dump-load")]
+#[test]
+fn unsafe_dump_load_subtree_roundtrip_preserves_root_hash() {
+    let grove_version = GroveVersion::latest();
+    const N: u8 = 5;
+
+    // --- A: build a commitment-tree subtree, insert N items ---
+    let db_a = make_empty_grovedb();
+    db_a.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert empty ct on A");
+
+    for i in 0..N {
+        db_a.commitment_tree_insert(
+            EMPTY_PATH,
+            b"pool",
+            test_cmx(i + 1),
+            test_rho(i + 1),
+            test_cv_net(i + 1),
+            test_ciphertext(i + 1),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert leaf on A");
+    }
+
+    let root_a = db_a
+        .root_hash(None, grove_version)
+        .unwrap()
+        .expect("source root_hash");
+
+    // --- Compute combined_root by re-opening CommitmentTree on A's storage ---
+    let pool_segments: [&[u8]; 1] = [b"pool"];
+    let subtree_path = SubtreePath::from(pool_segments.as_slice());
+    let prefix: [u8; 32] = RocksDbStorage::build_prefix(subtree_path.clone()).value;
+
+    let tx_a = db_a.start_transaction();
+    let ctx_open = db_a
+        .raw_storage()
+        .get_transactional_storage_context(subtree_path.clone(), None, &tx_a)
+        .unwrap();
+    let ct_a = CommitmentTree::<_, DashMemo>::open(u64::from(N), TEST_CHUNK_POWER, ctx_open)
+        .value
+        .expect("CommitmentTree::open on A");
+    let combined_root = ct_a
+        .compute_current_state_root()
+        .expect("compute_current_state_root on A");
+    drop(ct_a);
+
+    // --- Dump A's subtree to an SST (re-prepending the prefix that raw_iter strips) ---
+    let pool_segments_iter: [&[u8]; 1] = [b"pool"];
+    let iter_path = SubtreePath::from(pool_segments_iter.as_slice());
+    let iter_ctx = db_a
+        .raw_storage()
+        .get_transactional_storage_context(iter_path, None, &tx_a)
+        .unwrap();
+    let sst_tmp = TempDir::new().expect("sst tempdir");
+    let sst_path = sst_tmp.path().join("dump.sst");
+
+    let opts = Options::default();
+    let mut sst = SstFileWriter::create(&opts);
+    sst.open(&sst_path).expect("SstFileWriter::open");
+
+    let mut iter = iter_ctx.raw_iter();
+    iter.seek_to_first().unwrap();
+    let mut key_count: u64 = 0;
+    while iter.valid().unwrap() {
+        let user_key = iter
+            .key()
+            .unwrap()
+            .expect("iter.key() during dump")
+            .to_vec();
+        let value = iter
+            .value()
+            .unwrap()
+            .expect("iter.value() during dump")
+            .to_vec();
+        let mut full_key = Vec::with_capacity(32 + user_key.len());
+        full_key.extend_from_slice(&prefix);
+        full_key.extend_from_slice(&user_key);
+        sst.put(&full_key, &value).expect("SstFileWriter::put");
+        key_count += 1;
+        iter.next().unwrap();
+    }
+    sst.finish().expect("SstFileWriter::finish");
+    assert!(key_count > 0, "dumped SST must contain at least one key");
+    drop(iter);
+    drop(iter_ctx);
+    drop(tx_a);
+    drop(db_a);
+
+    // --- B: fresh GroveDb with same empty commitment_tree skeleton ---
+    let db_b = make_empty_grovedb();
+    db_b.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert empty ct on B");
+
+    db_b.ingest_subtree_sst("default", &sst_path)
+        .expect("ingest_subtree_sst");
+
+    let restored_element = Element::new_commitment_tree(u64::from(N), TEST_CHUNK_POWER, None);
+    db_b.replace_subtree_root(
+        EMPTY_PATH,
+        b"pool",
+        restored_element,
+        combined_root,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("replace_subtree_root");
+
+    let root_b = db_b
+        .root_hash(None, grove_version)
+        .unwrap()
+        .expect("restored root_hash");
+
+    assert_eq!(
+        root_a, root_b,
+        "post-restore GroveDB root_hash must match source byte-for-byte"
+    );
+}
+
+#[cfg(feature = "unsafe-dump-load")]
+#[test]
+fn replace_subtree_root_rejects_non_tree_element() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+    db.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert ct");
+
+    let item = Element::new_item(b"not a tree".to_vec());
+    let result = db
+        .replace_subtree_root(EMPTY_PATH, b"pool", item, [0u8; 32], None, grove_version)
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::InvalidInput(_))),
+        "expected InvalidInput for non-tree element, got {result:?}"
+    );
+}
+
+/// Regression (Dash Platform shielded-notes shape): the note-count query.
+///
+/// Platform fetches shielded notes with one proof that subqueries INTO the
+/// `CommitmentTree`, then extracts the on-chain total note count from those
+/// SAME proof bytes by subset-verifying a single-key `PathQuery` that targets
+/// the `CommitmentTree` element itself — no subquery, limit 1 — and reading
+/// `Element::CommitmentTree(total_count, ..)`.
+///
+/// The proof therefore carries a lower layer at the tree's key while the
+/// count query has nothing below it. That must verify, and the element must
+/// come back bound to the parent-committed value hash via the lower layer's
+/// derived state root.
+#[test]
+fn test_commitment_tree_element_count_subset_query_against_note_fetch_proof() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+    let chunk_power: u8 = 2;
+
+    db.insert(
+        EMPTY_PATH,
+        b"root",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert root tree");
+
+    db.insert(
+        &[b"root"],
+        b"pool",
+        Element::empty_commitment_tree(chunk_power).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert commitment tree");
+
+    // 6 notes: one full chunk (4) plus 2 buffered.
+    const NOTE_COUNT: u64 = 6;
+    for i in 0..NOTE_COUNT as u8 {
+        db.commitment_tree_insert(
+            &[b"root"],
+            b"pool",
+            test_cmx(i),
+            test_rho(i),
+            test_cv_net(i),
+            test_ciphertext(i),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("commitment tree insert");
+    }
+
+    // The note-fetch proof: descends into the CommitmentTree.
+    let mut inner_query = Query::new();
+    inner_query.insert_range_inclusive(0u64.to_be_bytes().to_vec()..=5u64.to_be_bytes().to_vec());
+    let notes_query = PathQuery {
+        path: vec![b"root".to_vec()],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"pool".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner_query.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+                read_mode: None,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    let proof_bytes = db
+        .prove_query(&notes_query, None, grove_version)
+        .unwrap()
+        .expect("generate note-fetch proof");
+
+    // The count query: the CommitmentTree element itself, no subquery.
+    let count_query = PathQuery {
+        path: vec![b"root".to_vec()],
+        query: SizedQuery {
+            query: Query::new_single_key(b"pool".to_vec()),
+            limit: Some(1),
+            offset: None,
+        },
+    };
+
+    let (count_root_hash, count_results) =
+        GroveDb::verify_subset_query(&proof_bytes, &count_query, grove_version)
+            .expect("count query must subset-verify against the note-fetch proof");
+
+    let expected_root = db.grove_db.root_hash(None, grove_version).unwrap().unwrap();
+    assert_eq!(
+        count_root_hash, expected_root,
+        "the count sub-proof must derive the same root as the note-fetch proof"
+    );
+    assert_eq!(count_results.len(), 1, "exactly the CommitmentTree element");
+
+    let (path, key, element) = &count_results[0];
+    assert_eq!(path, &vec![b"root".to_vec()]);
+    assert_eq!(key, b"pool");
+    match element.as_ref().expect("element present") {
+        Element::CommitmentTree(total_count, height, _) => {
+            assert_eq!(
+                *total_count, NOTE_COUNT,
+                "total_count must be the on-chain note count"
+            );
+            assert_eq!(*height, chunk_power);
+        }
+        other => panic!("expected CommitmentTree element, got {:?}", other),
+    }
 }

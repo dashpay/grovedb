@@ -1088,7 +1088,7 @@ mod test {
     use super::{Merk, RefWalker};
     use crate::{
         merk::source::MerkSource, test_utils::*, tree::kv::ValueDefinedCostType,
-        tree_type::TreeType, Op, TreeFeatureType::BasicMerkNode,
+        tree_type::TreeType, Error, Op, TreeFeatureType::BasicMerkNode,
     };
     // TODO: Close and then reopen test
 
@@ -1117,6 +1117,27 @@ mod test {
                 218, 90, 71, 153, 240, 47, 227, 168, 1, 104, 239, 237, 140, 147
             ]
         );
+    }
+
+    #[test]
+    fn apply_rejects_overlong_keys() {
+        let grove_version = GroveVersion::latest();
+
+        for key_len in [256, 300] {
+            let mut merk = TempMerk::new(grove_version);
+            let batch = [(vec![0xAB; key_len], Op::Put(vec![1], BasicMerkNode))];
+
+            let result = merk
+                .apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+                .unwrap();
+
+            assert!(matches!(
+                result,
+                Err(Error::InvalidInputError(
+                    "key length must be at most 255 bytes"
+                ))
+            ));
+        }
     }
 
     #[test]

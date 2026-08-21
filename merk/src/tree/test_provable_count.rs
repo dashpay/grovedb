@@ -112,4 +112,66 @@ mod tests {
             _ => panic!("Expected ProvableCount aggregate data"),
         }
     }
+
+    /// Regression: indexed-tree primaries (PCIT / PSIT / PCPSIT) must produce
+    /// the same `hash_for_link` as their non-indexed `Provable*` counterparts.
+    ///
+    /// Prior to the fix, `hash_for_link(ProvableCountIndexedTree)` fell
+    /// through to plain `self.hash()` (no count baked in) while the proof
+    /// emitter — which keys off the node's `feature_type` — emitted
+    /// count-aware proof ops. The two encodings produced different root
+    /// hashes for the same tree, causing V1 PCIT subquery proofs to fail
+    /// with "V1 mismatch in cidx lower-layer hash".
+    #[test]
+    fn indexed_primaries_match_non_indexed_provable_hashes() {
+        let pcit_node = TreeNode::new(
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            None,
+            TreeFeatureType::ProvableCountedMerkNode(7),
+        )
+        .unwrap();
+        assert_eq!(
+            pcit_node
+                .hash_for_link(TreeType::ProvableCountIndexedTree)
+                .unwrap(),
+            pcit_node
+                .hash_for_link(TreeType::ProvableCountTree)
+                .unwrap(),
+            "ProvableCountIndexedTree primary must hash identically to ProvableCountTree"
+        );
+
+        let psit_node = TreeNode::new(
+            vec![9, 9, 9],
+            vec![8, 8, 8],
+            None,
+            TreeFeatureType::ProvableSummedMerkNode(42),
+        )
+        .unwrap();
+        assert_eq!(
+            psit_node
+                .hash_for_link(TreeType::ProvableSumIndexedTree)
+                .unwrap(),
+            psit_node.hash_for_link(TreeType::ProvableSumTree).unwrap(),
+            "ProvableSumIndexedTree primary must hash identically to ProvableSumTree"
+        );
+
+        let pcpsit_node = TreeNode::new(
+            vec![0, 1, 2],
+            vec![3, 4, 5],
+            None,
+            TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(3, -11),
+        )
+        .unwrap();
+        assert_eq!(
+            pcpsit_node
+                .hash_for_link(TreeType::ProvableCountProvableSumIndexedTree)
+                .unwrap(),
+            pcpsit_node
+                .hash_for_link(TreeType::ProvableCountProvableSumTree)
+                .unwrap(),
+            "ProvableCountProvableSumIndexedTree primary must hash identically to \
+             ProvableCountProvableSumTree"
+        );
+    }
 }

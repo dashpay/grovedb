@@ -8,7 +8,7 @@ use grovedb_merk::{
         query::{PathKey, QueryProofVerify, VerifyOptions, PROOF_VERSION_LATEST},
         Decoder, Node, Op, Query,
     },
-    tree::{combine_hash, value_hash, NULL_HASH},
+    tree::{axes_digest, combine_hash, combine_hash_three, value_hash, NULL_HASH},
     CryptoHash, TreeFeatureType,
 };
 use grovedb_version::{
@@ -21,14 +21,66 @@ use crate::operations::proof::util::{
 };
 use crate::{
     operations::proof::{
+        indexed_axis::AxisEntries,
         util::{ProvedPathKeyOptionalValue, ProvedPathKeyValues},
-        GroveDBProof, GroveDBProofV0, GroveDBProofV1, LayerProof, MerkOnlyLayerProof, ProofBytes,
-        ProveOptions,
+        AxisDescentProof, GroveDBProof, GroveDBProofV0, GroveDBProofV1, LayerProof,
+        MerkOnlyLayerProof, ProofBytes, ProveOptions,
     },
     query::{GroveTrunkQueryResult, PathTrunkChunkQuery},
     query_result_type::PathKeyOptionalElementTrio,
     Element, Error, GroveDb, PathQuery,
 };
+
+/// One axis-ordered layer verified during a V1 walk: the full path to
+/// the indexed tree whose axis was read, plus the traversal's verified
+/// answer. Collected into a side channel because axis entries are
+/// `(aggregate_value, original_key)` pairs, not elements — they do not
+/// belong in the trio result set.
+#[derive(Debug)]
+pub(crate) struct AxisWalkOutcome {
+    /// Full path (from the GroveDB root) of the indexed tree.
+    pub(crate) path: Vec<Vec<u8>>,
+    /// The traversal's verified answer.
+    pub(crate) result: AxisWalkResult,
+}
+
+/// The verified answer of one read-mode layer, by shape family.
+#[derive(Debug)]
+pub(crate) enum AxisWalkResult {
+    /// `TopK` / `Bounded`: the entries in walk order. `skipped` is the
+    /// count-commitment-attested skip for paginated traversals, `None`
+    /// for bounded ones (which do not skip).
+    Entries {
+        entries: AxisEntries,
+        skipped: Option<u64>,
+    },
+    /// `RankOfKey`: the attested 0-based rank of the queried key.
+    Rank { rank: u64 },
+    /// `AggregateOverValueRange`: the attested aggregate over the value range.
+    Aggregate { value: i128 },
+    /// Sum-budget window: the matched `(key, value)` pairs, their net
+    /// total, and the replay-attested stop condition.
+    SumBudget {
+        matches: Vec<(Vec<u8>, i64)>,
+        total: i64,
+        stop: SumBudgetStop,
+    },
+}
+
+/// Why a verified sum-budget walk stopped — attested by the verifier's
+/// fold replay over the proved window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SumBudgetStop {
+    /// The running net sum reached the budget.
+    BudgetReached,
+    /// The match cap fired first.
+    MatchLimitReached,
+    /// The grove-version global scan cap fired first; more elements may
+    /// exist beyond the window.
+    HardScanCapReached,
+    /// The query's ranges were exhausted before any stop condition.
+    Exhausted,
+}
 
 impl GroveDb {
     /// Verifies a proof against a path query with the given options, returning
@@ -161,6 +213,12 @@ impl GroveDb {
         ),
         Error,
     > {
+        // Read-mode gate: axis / sum-budget reads are not verified by
+        // this verifier. Fail closed rather than misreading such a
+        // query as key selection and accepting a proof about the wrong
+        // thing.
+        query.reject_unserved_read_mode()?;
+
         // Offset gate centralized in `apply_count_offset_envelope_gate`:
         // V0 envelopes reject any non-zero offset (V0 is a shipped
         // wire format that never supported `SizedQuery::offset`);
@@ -301,6 +359,9 @@ impl GroveDb {
         options: VerifyOptions,
         grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, Option<TreeFeatureType>, ProvedPathKeyValues), Error> {
+        // Same fail-closed read-mode gate as `verify_proof_internal`.
+        query.reject_unserved_read_mode()?;
+
         // Same V0-rejects / V1-relaxes envelope gate as
         // `verify_proof_internal` — see `apply_count_offset_envelope_gate`.
         Self::apply_count_offset_envelope_gate(proof, query)?;
@@ -361,13 +422,19 @@ impl GroveDb {
         let mut result = Vec::new();
         let mut limit = query.query.limit;
         let mut last_tree_feature_type = None;
+        // This entry point serves key-selection queries only (read-mode
+        // queries are gated out before reaching it), so axis outcomes
+        // cannot occur; the collector exists to satisfy the walk.
+        let mut axis_outcomes = Vec::new();
         let root_hash = Self::verify_layer_proof_v1(
-            &proof.root_layer,
+            Self::merk_bytes_of_layer(&proof.root_layer, query)?,
+            &proof.root_layer.lower_layers,
             &prove_options,
             query,
             &mut limit,
             &[],
             &mut result,
+            &mut axis_outcomes,
             &mut last_tree_feature_type,
             &options,
             0,
@@ -398,6 +465,53 @@ impl GroveDb {
         Ok((root_hash, last_tree_feature_type, result))
     }
 
+    /// Run the V1 walk for a read-mode (axis-shaped) query, returning
+    /// the reconstructed root hash, the trio result set (which for axis
+    /// shapes carries only absence records and any incidental
+    /// key-selection rows), and the collected axis outcomes.
+    ///
+    /// This is the one V1 entry that does NOT gate read-mode queries
+    /// out — `verify_path_query` is its only caller and applies the
+    /// shape grammar (`classify`) plus the envelope gate first.
+    pub(crate) fn verify_proof_v1_with_axis_outcomes(
+        proof: &GroveDBProofV1,
+        query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<
+        (
+            CryptoHash,
+            Vec<PathKeyOptionalElementTrio>,
+            Vec<AxisWalkOutcome>,
+        ),
+        Error,
+    > {
+        let prove_options = ProveOptions::default();
+        let options = VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: false,
+            verify_proof_succinctness: true,
+            include_empty_trees_in_result: false,
+        };
+        let mut result = Vec::new();
+        let mut limit = query.query.limit;
+        let mut last_tree_feature_type = None;
+        let mut axis_outcomes = Vec::new();
+        let root_hash = Self::verify_layer_proof_v1(
+            Self::merk_bytes_of_layer(&proof.root_layer, query)?,
+            &proof.root_layer.lower_layers,
+            &prove_options,
+            query,
+            &mut limit,
+            &[],
+            &mut result,
+            &mut axis_outcomes,
+            &mut last_tree_feature_type,
+            &options,
+            0,
+            grove_version,
+        )?;
+        Ok((root_hash, result, axis_outcomes))
+    }
+
     fn verify_proof_v1_raw_internal(
         proof: &GroveDBProofV1,
         query: &PathQuery,
@@ -409,13 +523,17 @@ impl GroveDb {
         let mut result = Vec::new();
         let mut limit = query.query.limit;
         let mut last_tree_feature_type = None;
+        // Key-selection-only entry point; see verify_proof_v1_internal.
+        let mut axis_outcomes = Vec::new();
         let root_hash = Self::verify_layer_proof_v1(
-            &proof.root_layer,
+            Self::merk_bytes_of_layer(&proof.root_layer, query)?,
+            &proof.root_layer.lower_layers,
             &prove_options,
             query,
             &mut limit,
             &[],
             &mut result,
+            &mut axis_outcomes,
             &mut last_tree_feature_type,
             &options,
             0,
@@ -511,54 +629,134 @@ impl GroveDb {
         //     normal traversal (own_count = 0) and not surfaced via
         //     the merk's `returned_items`. If one appears here, the
         //     proof was forged.
-        //   • **Reference / ReferenceWithSumItem** — would need the
-        //     regular flow's reference post-pass to dereference the
-        //     target; we don't run that on the count-offset
-        //     short-circuit, so a raw reference here would be returned
-        //     verbatim. Reject.
+        //   • **Raw Reference / ReferenceWithSumItem** — the prover now
+        //     runs a reference post-pass on this short-circuit, so an
+        //     honest proof surfaces the dereferenced TARGET here, never
+        //     the reference itself. An unresolved one is malformed.
         //   • **Non-empty tree** — V1 strict-mode would require a
         //     `KVValueHashFeatureTypeWithChildHash` proof node here;
         //     accepting one without that would silently bypass the
         //     child-hash invariant the regular flow enforces.
         for item in count_offset_result.returned_items.iter() {
-            if let Ok(elem) = Element::deserialize(item.value.as_slice(), grove_version) {
-                // NonCounted-wrapped values are checked **before**
-                // unwrapping via `into_underlying`, since the wrapper
-                // itself is the rejected shape. The merk-level prover
-                // already refuses to emit NonCounted entries as
-                // value-bearing nodes, so an honest proof can never
-                // surface one here. Reject as `InvalidProof`
-                // (forgery) rather than `NotSupported` to make the
-                // distinction visible.
-                if elem.is_non_counted() {
+            // Reject non-Element bytes — a forged proof might surface raw
+            // bytes that don't deserialize as any known Element type. The
+            // count-offset prover only emits real Element bytes, so a
+            // deserialization failure here means a malformed or forged
+            // payload. Previously this branch silently fell through to the
+            // `result.push` below, surfacing the unparsed bytes to the
+            // caller.
+            let elem = Element::deserialize(item.value.as_slice(), grove_version).map_err(|e| {
+                Error::InvalidProof(
+                    query.clone(),
+                    format!(
+                        "count-offset paginated proof returned non-Element bytes at \
+                         key {}: {e}",
+                        hex::encode(&item.key)
+                    ),
+                )
+            })?;
+            // NonCounted-wrapped values are checked **before**
+            // unwrapping via `into_underlying`, since the wrapper
+            // itself is the rejected shape. The merk-level prover
+            // already refuses to emit NonCounted entries as
+            // value-bearing nodes, so an honest proof can never
+            // surface one here. Reject as `InvalidProof`
+            // (forgery) rather than `NotSupported` to make the
+            // distinction visible.
+            if elem.is_non_counted() {
+                return Err(Error::InvalidProof(
+                    query.clone(),
+                    format!(
+                        "count-offset paginated proofs do not surface \
+                         NonCounted-wrapped entries in returned items — proof at \
+                         key {} appears forged",
+                        hex::encode(&item.key)
+                    ),
+                ));
+            }
+            let inner = elem.into_underlying();
+            if inner.is_non_empty_tree() {
+                return Err(Error::NotSupported(format!(
+                    "count-offset paginated proofs do not yet support \
+                     non-empty tree return values (key {})",
+                    hex::encode(&item.key)
+                )));
+            }
+            // A RAW reference must not reach the caller: the prover's
+            // post-pass rewrites reference rows into resolved-value nodes,
+            // so by this point `item.value` is the dereferenced TARGET and
+            // `item.reference_element_hash` records that a reference was
+            // resolved. Seeing an unresolved reference here means the proof
+            // skipped the post-pass — reject rather than surface it.
+            if inner.is_reference() {
+                return Err(Error::InvalidProof(
+                    query.clone(),
+                    format!(
+                        "count-offset paginated proof surfaced a raw \
+                         Reference / ReferenceWithSumItem at key {} — the prover's \
+                         reference post-pass rewrites these into resolved-value \
+                         nodes, so an unresolved reference here is malformed",
+                        hex::encode(&item.key)
+                    ),
+                ));
+            }
+            // Empty-tree value-hash equality check (defense-in-depth on
+            // top of the merk-level KV→KVValueHash forgery guard).
+            //
+            // For an empty Merk subtree (`Tree(None, _)`, `SumTree(None,
+            // ..)`, etc.), the committed value-hash is
+            // `combine_hash(value_hash(value), NULL_HASH)`. The
+            // proof-carried `item.value_hash` is structurally trusted by
+            // the merk-level chain check (it's what the reconstruction
+            // hashes); if it doesn't actually equal the expected
+            // composition, the bytes were swapped without the proof
+            // catching it. Recompute and compare.
+            //
+            // Skipped for non-tree elements (Items / SumItems) — their
+            // value-hash IS `value_hash(value)` and is already enforced
+            // by the merk-level KVCount path, which recomputes it via
+            // `compute_value_hash` rather than trusting the proof.
+            //
+            // Skipped for non-empty trees and references — those are
+            // already rejected above as NotSupported.
+            if inner.is_any_tree() && !inner.is_non_empty_tree() {
+                use grovedb_merk::tree::{
+                    axes_digest, combine_hash, combine_hash_three, value_hash, NULL_HASH,
+                };
+                let value_h = value_hash(item.value.as_slice()).unwrap();
+                // Indexed trees (PCIT / PSIT / PCPSIT) commit a three-input
+                // combine_hash_three(H(value), NULL_HASH, second) even when
+                // empty — `second` is NULL_HASH for PCIT/PSIT and
+                // axes_digest(zero_axes) for PCPSIT. The two-input
+                // combine_hash form applies to every other empty tree. Mirror
+                // the terminal-path fix so honest empty-indexed returns pass.
+                let expected = match &inner {
+                    Element::ProvableCountIndexedTree(None, None, 0, _)
+                    | Element::ProvableSumIndexedTree(None, None, 0, _) => {
+                        combine_hash_three(&value_h, &NULL_HASH, &NULL_HASH).unwrap()
+                    }
+                    Element::ProvableCountProvableSumIndexedTree(None, 0, 0, axes, _)
+                        if axes.iter().all(|(_, sk)| sk.is_none()) =>
+                    {
+                        let zero_axes: Vec<(u8, grovedb_merk::CryptoHash)> =
+                            axes.iter().map(|(t, _)| (*t, NULL_HASH)).collect();
+                        let digest = axes_digest(&zero_axes).unwrap();
+                        combine_hash_three(&value_h, &NULL_HASH, &digest).unwrap()
+                    }
+                    _ => combine_hash(&value_h, &NULL_HASH).unwrap(),
+                };
+                if expected != item.value_hash {
                     return Err(Error::InvalidProof(
                         query.clone(),
                         format!(
-                            "count-offset paginated proofs do not surface \
-                             NonCounted-wrapped entries in returned items — proof at \
-                             key {} appears forged",
-                            hex::encode(&item.key)
+                            "count-offset paginated proof: empty-tree return at key {} \
+                             has value_hash {} but expected {} — possible KV→KVValueHash \
+                             forgery",
+                            hex::encode(&item.key),
+                            hex::encode(item.value_hash),
+                            hex::encode(expected),
                         ),
                     ));
-                }
-                let inner = elem.into_underlying();
-                if inner.is_non_empty_tree() {
-                    return Err(Error::NotSupported(format!(
-                        "count-offset paginated proofs do not yet support \
-                         non-empty tree return values (key {})",
-                        hex::encode(&item.key)
-                    )));
-                }
-                if inner.is_reference() {
-                    return Err(Error::NotSupported(format!(
-                        "count-offset paginated proofs do not yet support \
-                         Reference / ReferenceWithSumItem return values (key {}); the \
-                         regular flow's reference post-pass isn't applied on the \
-                         count-offset short-circuit, so an accepted reference here \
-                         would surface the raw Element::Reference rather than the \
-                         dereferenced target",
-                        hex::encode(&item.key)
-                    )));
                 }
             }
             let proved_key_optional_value = grovedb_merk::proofs::query::ProvedKeyOptionalValue {
@@ -579,13 +777,595 @@ impl GroveDb {
         Ok(count_offset_result.root_hash)
     }
 
+    /// Destructure a layer's proof body, rejecting non-Merk shapes. Callers
+    /// pass the resulting slice to `verify_layer_proof_v1`.
+    fn merk_bytes_of_layer<'a>(
+        layer: &'a LayerProof,
+        query: &PathQuery,
+    ) -> Result<&'a [u8], Error> {
+        match &layer.merk_proof {
+            ProofBytes::Merk(bytes) => Ok(bytes.as_slice()),
+            ProofBytes::MMR(_)
+            | ProofBytes::BulkAppendTree(_)
+            | ProofBytes::DenseTree(_)
+            | ProofBytes::CommitmentTree(_)
+            | ProofBytes::CountIndexedTree(_)
+            | ProofBytes::IndexedTreeTerminal(_)
+            | ProofBytes::IndexedTreeAxisDescent(_)
+            | ProofBytes::SumBudgetWindow(_) => Err(Error::InvalidProof(
+                query.clone(),
+                "Expected Merk proof at this layer, got non-Merk proof type".to_string(),
+            )),
+        }
+    }
+
+    /// Verify one axis-ordered descent layer: the embedded
+    /// (V1-envelope) counterpart of the standalone indexed-axis
+    /// envelopes.
+    ///
+    /// Trust chain, strictly downward:
+    /// 1. The secondary proof is verified for the query's traversal,
+    ///    yielding the entries/aggregate AND the secondary's
+    ///    reconstructed root hash — the attestation is **recomputed**,
+    ///    never accepted as raw bytes.
+    /// 2. The proved element's family is checked against the queried
+    ///    axis, and the third `combine_hash_three` input is derived
+    ///    (recomputed secondary root for PCIT/PSIT; `axes_digest` over
+    ///    the payload's other-axes list plus the recomputed root for
+    ///    PCPSIT). Forged `primary_root_hash` / `other_axes` fail the
+    ///    binding below because they are part of its preimage.
+    /// 3. `combine_hash_three(H(value), primary_root, digest)` must
+    ///    equal the parent-committed `value_hash` the surrounding walk
+    ///    already verified.
+    ///
+    /// On success the traversal's verified answer is pushed into
+    /// `axis_outcomes` keyed by the indexed tree's full path.
+    #[allow(clippy::too_many_arguments)]
+    fn verify_axis_descent_layer(
+        lower_layer: &LayerProof,
+        axis_query: &grovedb_merk::proofs::query::AxisQuery,
+        element_value_bytes: &[u8],
+        parent_committed_hash: &CryptoHash,
+        path: &[&[u8]],
+        axis_outcomes: &mut Vec<AxisWalkOutcome>,
+        query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        use grovedb_merk::proofs::query::{
+            verify_aggregate_count_on_range_proof, verify_aggregate_sum_on_range_proof,
+            verify_count_offset_on_range_proof, AxisTraversal, QueryItem as MerkQueryItemForRange,
+        };
+
+        use crate::operations::proof::indexed_axis::verify::{
+            count_aggregate_inner_range, decode_axis_entries_from_count_offset_items,
+            decode_axis_entries_from_result_set, recompute_axis_binding_digest,
+            sum_aggregate_inner_range,
+        };
+
+        // Envelope gate: the axis descent is a V4 acceptance rule.
+        if grove_version
+            .grovedb_versions
+            .operations
+            .proof
+            .axis_descent_in_v1_envelope
+            != 1
+        {
+            return Err(Error::NotSupported(
+                "axis-ordered descents in the V1 proof envelope are not accepted at this \
+                 grove version"
+                    .to_string(),
+            ));
+        }
+
+        let ProofBytes::IndexedTreeAxisDescent(payload_bytes) = &lower_layer.merk_proof else {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "the query node at this indexed tree is an axis read; its lower layer must \
+                 carry ProofBytes::IndexedTreeAxisDescent"
+                    .to_string(),
+            ));
+        };
+        if !lower_layer.lower_layers.is_empty() {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "an axis descent is terminal and must not carry further lower layers".to_string(),
+            ));
+        }
+        let payload = AxisDescentProof::decode_canonical(payload_bytes)?;
+        let axis = axis_query.axis;
+        if payload.axis_tag != axis.tag() {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                format!(
+                    "axis descent payload claims axis tag {} but the query reads axis {:?}",
+                    payload.axis_tag, axis
+                ),
+            ));
+        }
+        if payload.rank.is_some()
+            && !matches!(axis_query.traversal, AxisTraversal::RankOfKey { .. })
+        {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "axis descent payload carries a rank but the traversal is not RankOfKey"
+                    .to_string(),
+            ));
+        }
+
+        // 1. Verify the secondary proof for the query's traversal,
+        //    recomputing the secondary root hash.
+        let (secondary_root_hash, walk_result) = match &axis_query.traversal {
+            AxisTraversal::RankedPage { k, offset } => {
+                let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
+                let res = verify_count_offset_on_range_proof(
+                    &payload.secondary_proof,
+                    &inner_range,
+                    *offset,
+                    Some(*k as u64),
+                    !axis_query.descending,
+                )
+                .unwrap()
+                .map_err(|e| {
+                    Error::InvalidProof(
+                        query.clone(),
+                        format!("axis descent: secondary count-offset proof failed: {e}"),
+                    )
+                })?;
+                let entries = decode_axis_entries_from_count_offset_items(
+                    axis,
+                    &res.returned_items,
+                    &payload.target_chains,
+                    grove_version,
+                )?;
+                (
+                    res.root_hash,
+                    AxisWalkResult::Entries {
+                        entries,
+                        skipped: Some(res.skipped),
+                    },
+                )
+            }
+            AxisTraversal::RankOfKey { key } => {
+                let Some(rank) = payload.rank else {
+                    return Err(Error::InvalidProof(
+                        query.clone(),
+                        "axis descent for a rank-of-key traversal must carry the rank".to_string(),
+                    ));
+                };
+                let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
+                let res = verify_count_offset_on_range_proof(
+                    &payload.secondary_proof,
+                    &inner_range,
+                    rank,
+                    Some(1),
+                    !axis_query.descending,
+                )
+                .unwrap()
+                .map_err(|e| {
+                    Error::InvalidProof(
+                        query.clone(),
+                        format!("axis descent: rank count-offset proof failed: {e}"),
+                    )
+                })?;
+                // The count commitments attest the skip; the claimed
+                // rank must be fully realized (not merely "walk ran
+                // out"), and the single yielded entry must be the
+                // queried key.
+                if res.skipped != rank {
+                    return Err(Error::InvalidProof(
+                        query.clone(),
+                        format!(
+                            "axis descent: claimed rank {rank} but the count commitments \
+                             attest {} skipped entries",
+                            res.skipped
+                        ),
+                    ));
+                }
+                let entries = decode_axis_entries_from_count_offset_items(
+                    axis,
+                    &res.returned_items,
+                    &payload.target_chains,
+                    grove_version,
+                )?;
+                let yielded_key = entries.first_original_key().map(|k| k.to_vec());
+                if yielded_key.as_deref() != Some(key.as_slice()) {
+                    return Err(Error::InvalidProof(
+                        query.clone(),
+                        format!(
+                            "axis descent: the entry at rank {rank} is {:?}, not the queried \
+                             key {}",
+                            yielded_key.map(hex::encode),
+                            hex::encode(key),
+                        ),
+                    ));
+                }
+                (res.root_hash, AxisWalkResult::Rank { rank })
+            }
+            AxisTraversal::Bounded { limit, .. } => {
+                if payload.secondary_proof.is_empty() {
+                    // Empty-secondary convention (mirrors the
+                    // count-offset and aggregate-on-range verifiers):
+                    // empty proof bytes resolve to a NULL_HASH secondary
+                    // root and no entries. Sound because the binding
+                    // below only passes when the element genuinely
+                    // commits an empty secondary — claiming emptiness
+                    // for a populated one needs a Blake3 second
+                    // preimage.
+                    (
+                        NULL_HASH,
+                        AxisWalkResult::Entries {
+                            entries: AxisEntries::empty_for_axis(axis),
+                            skipped: None,
+                        },
+                    )
+                } else {
+                    let secondary_query =
+                        crate::query::axis_lowering::axis_bounded_merk_query(axis_query)?;
+                    let left_to_right = secondary_query.left_to_right;
+                    // proof_version 0 (lenient) matches the standalone
+                    // envelope's choice and is safe HERE because the
+                    // axis decoders consume only `proved.key` — bound
+                    // into the recomputed secondary root — never
+                    // `proved.value`. If a future change starts reading
+                    // secondary VALUES, it must move to
+                    // PROOF_VERSION_LATEST first.
+                    let (root, res) = secondary_query
+                        .execute_proof(&payload.secondary_proof, Some(*limit), left_to_right, 0)
+                        .unwrap()
+                        .map_err(|e| {
+                            Error::InvalidProof(
+                                query.clone(),
+                                format!("axis descent: secondary range proof failed: {e}"),
+                            )
+                        })?;
+                    let entries = decode_axis_entries_from_result_set(
+                        axis,
+                        &res.result_set,
+                        &payload.target_chains,
+                        grove_version,
+                    )?;
+                    (
+                        root,
+                        AxisWalkResult::Entries {
+                            entries,
+                            skipped: None,
+                        },
+                    )
+                }
+            }
+            AxisTraversal::AggregateOverValueRange { lo, hi, fold } => {
+                // The byte range follows the AXIS; the walker follows
+                // the FOLD — the same split the prover makes, through
+                // the same range reconstructors, so the two sides
+                // cannot drift on clamping, degenerate, or
+                // out-of-domain shapes.
+                let inner_range = match axis {
+                    grovedb_merk::proofs::query::IndexAxis::Count => {
+                        count_aggregate_inner_range(*lo, *hi)
+                    }
+                    grovedb_merk::proofs::query::IndexAxis::Sum => {
+                        sum_aggregate_inner_range(*lo, *hi)
+                    }
+                    grovedb_merk::proofs::query::IndexAxis::Avg => {
+                        return Err(Error::InvalidProof(
+                            query.clone(),
+                            "axis descent: value-range aggregates are not defined for the \
+                             Avg axis"
+                                .to_string(),
+                        ));
+                    }
+                };
+                match fold {
+                    grovedb_merk::proofs::query::AggregateFold::Population => {
+                        let (root, count) = verify_aggregate_count_on_range_proof(
+                            &payload.secondary_proof,
+                            &inner_range,
+                        )
+                        .unwrap()
+                        .map_err(|e| {
+                            Error::InvalidProof(
+                                query.clone(),
+                                format!("axis descent: population proof failed: {e}"),
+                            )
+                        })?;
+                        (
+                            root,
+                            AxisWalkResult::Aggregate {
+                                value: count as i128,
+                            },
+                        )
+                    }
+                    grovedb_merk::proofs::query::AggregateFold::Total => {
+                        let (root, sum) = verify_aggregate_sum_on_range_proof(
+                            &payload.secondary_proof,
+                            &inner_range,
+                        )
+                        .unwrap()
+                        .map_err(|e| {
+                            Error::InvalidProof(
+                                query.clone(),
+                                format!("axis descent: total proof failed: {e}"),
+                            )
+                        })?;
+                        (root, AxisWalkResult::Aggregate { value: sum as i128 })
+                    }
+                }
+            }
+        };
+
+        // 2. Family check + third-input digest, with the RECOMPUTED
+        //    secondary root.
+        let digest = recompute_axis_binding_digest(
+            element_value_bytes,
+            axis,
+            &secondary_root_hash,
+            &payload.other_axes_root_hashes,
+            payload.target_is_pcpsit,
+            "axis descent",
+        )?;
+
+        // 3. Parent binding.
+        let combined = combine_hash_three(
+            value_hash(element_value_bytes).value(),
+            &payload.primary_root_hash,
+            &digest,
+        )
+        .value()
+        .to_owned();
+        if parent_committed_hash != &combined {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                format!(
+                    "axis descent binding mismatch: parent committed {}, recomputed {}",
+                    hex::encode(parent_committed_hash),
+                    hex::encode(combined),
+                ),
+            ));
+        }
+
+        axis_outcomes.push(AxisWalkOutcome {
+            path: path.iter().map(|segment| segment.to_vec()).collect(),
+            result: walk_result,
+        });
+        Ok(())
+    }
+
+    /// Verify one sum-budget window layer: execute the carried Merk
+    /// proof with the query's own items and **replay the budget fold**
+    /// — the exact per-element arithmetic of the trusted read engine,
+    /// with the provable semantics (skip non-sum elements, skip
+    /// references) — over the proved elements in walk order.
+    ///
+    /// The replay attests the stop condition: a window that continues
+    /// past a fired stop, claims exhaustion while a stop fired, or
+    /// claims a stop that never fired is rejected. Returns the window
+    /// proof's reconstructed root hash, which the surrounding walk
+    /// binds through the ordinary `combine_hash(H(value), child_root)`
+    /// parent check.
+    fn verify_sum_budget_window_layer(
+        payload_bytes: &[u8],
+        path: &[&[u8]],
+        axis_outcomes: &mut Vec<AxisWalkOutcome>,
+        query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<CryptoHash, Error> {
+        use crate::operations::proof::SumBudgetWindowProof;
+
+        // Envelope gate: sum-budget windows are a V4 acceptance rule.
+        if grove_version
+            .grovedb_versions
+            .operations
+            .proof
+            .sum_budget_in_v1_envelope
+            != 1
+        {
+            return Err(Error::NotSupported(
+                "sum-budget windows in the V1 proof envelope are not accepted at this grove \
+                 version"
+                    .to_string(),
+            ));
+        }
+        let Some(budget) = query.sum_budget_read_at_path(path).copied() else {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "the proof carries a sum-budget window at a path whose query node is not a \
+                 sum-budget read"
+                    .to_string(),
+            ));
+        };
+        let node = &query.query.query;
+
+        let payload = SumBudgetWindowProof::decode_canonical(payload_bytes)?;
+
+        // Execute the window proof with the query's own items and
+        // direction. When the prover claims exhaustion the proof must
+        // stand WITHOUT a limit (the range end is proven); otherwise it
+        // is limited to the claimed window.
+        let mut window_query = Query::new_with_direction(node.left_to_right);
+        window_query.items = node.items.clone();
+        let execute_limit = if payload.exhausted {
+            None
+        } else {
+            Some(payload.window_len)
+        };
+        let (window_root, window_result) = window_query
+            .execute_proof(
+                &payload.merk_proof,
+                execute_limit,
+                node.left_to_right,
+                PROOF_VERSION_LATEST,
+            )
+            .unwrap()
+            .map_err(|e| {
+                Error::InvalidProof(
+                    query.clone(),
+                    format!("sum-budget window proof failed to execute: {e}"),
+                )
+            })?;
+
+        // Present rows only, in walk order; absent keys (value None)
+        // are covered by the proof but never scanned by the engine.
+        let window: Vec<(&Vec<u8>, &Vec<u8>)> = window_result
+            .result_set
+            .iter()
+            .filter_map(|row| row.value.as_ref().map(|value| (&row.key, value)))
+            .collect();
+        if window.len() != payload.window_len as usize {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                format!(
+                    "sum-budget window claims {} scanned elements but the proof yields {}",
+                    payload.window_len,
+                    window.len()
+                ),
+            ));
+        }
+
+        // Replay the budget fold with the engine's exact arithmetic.
+        let mut remaining: i64 = i64::try_from(budget.sum_limit)
+            .map_err(|_| Error::InvalidQuery("sum-budget limit must fit in i64"))?;
+        let mut matches_left = budget.match_limit;
+        let global_cap = grove_version
+            .grovedb_versions
+            .query_limits
+            .max_aggregate_sum_query_elements_scanned;
+        let mut scanned: u16 = 0;
+        let mut matches: Vec<(Vec<u8>, i64)> = Vec::new();
+        let mut hard_cap_tripped = false;
+
+        for (key, value_bytes) in &window {
+            // Pre-element conditions (the engine's loop guards): a
+            // window that continues past a fired stop hides where the
+            // walk really ended.
+            if remaining <= 0 || matches_left == Some(0) || hard_cap_tripped {
+                return Err(Error::InvalidProof(
+                    query.clone(),
+                    "sum-budget window continues past its stop condition".to_string(),
+                ));
+            }
+            scanned = scanned.saturating_add(1);
+            if scanned > global_cap {
+                // The engine counts the tripping element but does not
+                // process it.
+                hard_cap_tripped = true;
+                continue;
+            }
+            let element = Element::deserialize(value_bytes, grove_version)?;
+            // Provable fold semantics: references and non-sum elements
+            // are skipped (they cannot be replayed / do not contribute).
+            if element.is_reference() || !element.is_sum_item() {
+                continue;
+            }
+            let value = match element.into_underlying() {
+                Element::SumItem(value, _) => value,
+                Element::ItemWithSumItem(_, value, _) => value,
+                _ => {
+                    return Err(Error::InvalidProof(
+                        query.clone(),
+                        "sum-budget window element passed the sum-item check but carries no \
+                         sum value"
+                            .to_string(),
+                    ));
+                }
+            };
+            matches.push(((*key).clone(), value));
+            if let Some(limit) = matches_left.as_mut() {
+                *limit = limit.saturating_sub(1);
+            }
+            remaining = remaining.saturating_sub(value);
+        }
+
+        let stop_fired = remaining <= 0 || matches_left == Some(0) || hard_cap_tripped;
+        if payload.exhausted && stop_fired {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "sum-budget window claims exhaustion but a stop condition fired within it"
+                    .to_string(),
+            ));
+        }
+        if !payload.exhausted && !stop_fired {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "sum-budget window claims a stop condition but none fired within it — the \
+                 window is short of the real stop"
+                    .to_string(),
+            ));
+        }
+
+        let stop = if payload.exhausted {
+            SumBudgetStop::Exhausted
+        } else if remaining <= 0 {
+            SumBudgetStop::BudgetReached
+        } else if matches_left == Some(0) {
+            SumBudgetStop::MatchLimitReached
+        } else {
+            SumBudgetStop::HardScanCapReached
+        };
+        let total = matches
+            .iter()
+            .map(|(_, value)| *value)
+            .fold(0i64, |acc, v| acc.saturating_add(v));
+
+        axis_outcomes.push(AxisWalkOutcome {
+            path: path.iter().map(|segment| segment.to_vec()).collect(),
+            result: AxisWalkResult::SumBudget {
+                matches,
+                total,
+                stop,
+            },
+        });
+        Ok(window_root)
+    }
+
+    /// Derive a Merk layer's root hash without reporting any of its rows.
+    ///
+    /// Used when a subset verification stops at a tree ELEMENT that the proof
+    /// descended into: the parent still has to bind the element bytes with
+    /// `combine_hash(H(value), child_root)`, but none of the child layer's rows
+    /// belong in this query's result set. An empty query walks the proof for
+    /// its root and matches nothing, so no row is produced and no limit is
+    /// consumed.
+    ///
+    /// The layer's own `lower_layers` are deliberately not descended into. The
+    /// root returned here is computed from this layer's nodes alone, whose
+    /// value hashes already commit to everything beneath them; the deeper
+    /// layers exist only to authenticate rows that are not being reported.
+    fn merk_layer_root_hash(
+        merk_proof_bytes: &[u8],
+        query: &PathQuery,
+    ) -> Result<CryptoHash, Error> {
+        let (root_hash, _) = Query::new()
+            .execute_proof(merk_proof_bytes, None, true, PROOF_VERSION_LATEST)
+            .unwrap()
+            .map_err(|e| {
+                Error::InvalidProof(
+                    query.clone(),
+                    format!("Invalid V1 lower layer proof (root derivation): {}", e),
+                )
+            })?;
+        Ok(root_hash)
+    }
+
+    /// Takes the layer's Merk proof BYTES and its lower layers separately
+    /// rather than a `&LayerProof`.
+    ///
+    /// The indexed-tree descent needs to recurse with a different proof body
+    /// (the primary proof carved out of the indexed envelope) but the SAME
+    /// descendant layers. Passing a `&LayerProof` forced it to synthesize one,
+    /// which meant deep-copying the whole `lower_layers` map at every nesting
+    /// level — O(depth x payload) memory on a proof whose depth and payload an
+    /// untrusted peer chooses. Splitting the parameters lets that descent pass
+    /// a borrowed slice and a borrowed map, so nothing is copied.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn verify_layer_proof_v1<T>(
-        layer_proof: &LayerProof,
+        merk_proof_bytes: &[u8],
+        lower_layers: &BTreeMap<Vec<u8>, LayerProof>,
         prove_options: &ProveOptions,
         query: &PathQuery,
         limit_left: &mut Option<u16>,
         current_path: &[&[u8]],
         result: &mut Vec<T>,
+        axis_outcomes: &mut Vec<AxisWalkOutcome>,
         last_parent_tree_type: &mut Option<TreeFeatureType>,
         options: &VerifyOptions,
         current_depth: usize,
@@ -601,20 +1381,6 @@ impl GroveDb {
                 "proof verification exceeded maximum depth limit".to_string(),
             ));
         }
-        // The merk proof at this layer must be Merk type
-        let merk_proof_bytes = match &layer_proof.merk_proof {
-            ProofBytes::Merk(bytes) => bytes,
-            ProofBytes::MMR(_)
-            | ProofBytes::BulkAppendTree(_)
-            | ProofBytes::DenseTree(_)
-            | ProofBytes::CommitmentTree(_) => {
-                return Err(Error::InvalidProof(
-                    query.clone(),
-                    "Expected Merk proof at this layer, got non-Merk proof type".to_string(),
-                ));
-            }
-        };
-
         // Count-offset paginated dispatch (v1 verify). Fires when:
         //   - we're at the leaf level (current_path == query.path), and
         //   - the path query has a non-zero offset, and
@@ -633,7 +1399,7 @@ impl GroveDb {
             return Self::run_count_offset_layer_dispatch(
                 query,
                 merk_proof_bytes,
-                layer_proof.lower_layers.is_empty(),
+                lower_layers.is_empty(),
                 current_path,
                 limit_left,
                 result,
@@ -653,9 +1419,57 @@ impl GroveDb {
                 query
             )))?;
 
+        // Which direction this layer's op stream is encoded in.
+        //
+        // For a real query node the direction is query semantics — it
+        // decides which end of a range fills a limit — so it comes from
+        // the query and nothing else. A *synthesized* path-component
+        // level is different: `query_items_at_path` manufactures it for
+        // every path component above the query's own path (and for
+        // positions inside a `subquery_path`), its item list is exactly
+        // one `QueryItem::Key`, and its `left_to_right` is a fixed
+        // placeholder. The generating query — which is what chose the
+        // op family the prover emitted at this path — is not
+        // recoverable from a subset query, so no fixed value is right:
+        // a merged descending query emits this layer inverted, and
+        // running the ascending bound-witness machinery over an
+        // inverted stream is wrong in both directions (it rejects
+        // honest proofs, and worse, it can read an absence out of a
+        // stream that proves presence).
+        //
+        // So for a one-key synthesized level, read the orientation off
+        // the proof's own op family. That is not trusting an
+        // attacker-chosen parameter: `execute` checks, per op, that
+        // upright pushes ascend and inverted pushes descend, so a
+        // stream cannot claim an orientation it does not have — and
+        // with a single `Key` item the direction cannot reorder,
+        // truncate or extend the answer either way. Everything that
+        // binds the result stays where it was: the reconstructed root
+        // hash still has to match what the parent layer committed, and
+        // `QueryItem::contains` still gates every returned key.
+        let single_key_synthesized_level = internal_query.synthesized_path_component
+            && matches!(
+                internal_query.items.as_slice(),
+                [grovedb_merk::proofs::query::QueryItem::Key(_)]
+            );
+        let left_to_right = if single_key_synthesized_level {
+            grovedb_merk::proofs::query::proof_stream_direction(merk_proof_bytes)
+                .map_err(|e| {
+                    Error::InvalidProof(
+                        query.clone(),
+                        format!("Invalid V1 proof op stream at path component layer: {}", e),
+                    )
+                })?
+                // An op-less stream carries no orientation; `execute`
+                // rejects it a moment later for having no root.
+                .unwrap_or(internal_query.left_to_right)
+        } else {
+            internal_query.left_to_right
+        };
+
         let level_query = Query {
             items: internal_query.items.to_vec(),
-            left_to_right: internal_query.left_to_right,
+            left_to_right,
             ..Default::default()
         };
 
@@ -663,7 +1477,7 @@ impl GroveDb {
             .execute_proof(
                 merk_proof_bytes,
                 *limit_left,
-                internal_query.left_to_right,
+                left_to_right,
                 PROOF_VERSION_LATEST, // V1 proof: strict mode rejects items in value hash nodes
             )
             .unwrap()
@@ -696,30 +1510,188 @@ impl GroveDb {
 
                     verified_keys.insert(key.clone());
 
-                    if let Some(lower_layer) = layer_proof.lower_layers.get(key) {
+                    // Axis-ordered read: resolved from the QUERY first —
+                    // before the element type is consulted and before
+                    // the lower-layer lookup — so that neither a
+                    // wrong-typed element nor a missing layer can
+                    // fabricate an absence. If the query node governing
+                    // this key carries ReadMode::Axis then this key is
+                    // an axis read, and the only proof that answers it
+                    // is an axis descent over an indexed tree:
+                    //
+                    //   * a non-indexed element here is a hard error. It
+                    //     used to fall through to the ordinary descent,
+                    //     which yields no trio for a present normal tree
+                    //     — so the branched shape saw neither an axis
+                    //     layer nor a present element and endorsed the
+                    //     branch as `None`, i.e. proven absent, while the
+                    //     trusted read rejects the same state as
+                    //     unindexed.
+                    //   * a missing layer is a hard error, not a silent
+                    //     skip (which the branched shape would likewise
+                    //     endorse as a proven-absent slot).
+                    //
+                    // An empty indexed tree still reports an EMPTY axis
+                    // result (verify_axis_descent_layer proves it against
+                    // a NULL-hash secondary), matching the honest prover
+                    // and the trusted read rather than reporting the
+                    // branch absent.
+                    let mut axis_path = current_path.to_vec();
+                    axis_path.push(key);
+                    if let Some(axis_query) = query.axis_read_at_path(&axis_path) {
+                        if !element.is_indexed_tree() {
+                            return Err(Error::InvalidProof(
+                                query.clone(),
+                                format!(
+                                    "V1 axis read at key {} resolves to a non-indexed \
+                                     element ({}); an axis-ordered read has no meaning \
+                                     there, so the proof cannot answer this query — and \
+                                     the key must not be reported as absent",
+                                    hex::encode(key),
+                                    element.type_str(),
+                                ),
+                            ));
+                        }
+                        let Some(lower_layer) = lower_layers.get(key) else {
+                            return Err(Error::InvalidProof(
+                                query.clone(),
+                                format!(
+                                    "V1 axis read at key {} has no axis-descent lower \
+                                     layer; the element cannot be reported as absent",
+                                    hex::encode(key),
+                                ),
+                            ));
+                        };
+                        path.push(key);
+                        *last_parent_tree_type = element.tree_feature_type();
+                        Self::verify_axis_descent_layer(
+                            lower_layer,
+                            axis_query,
+                            value_bytes,
+                            hash,
+                            &path,
+                            axis_outcomes,
+                            query,
+                            grove_version,
+                        )?;
+                        continue;
+                    }
+
+                    if let Some(lower_layer) = lower_layers.get(key) {
                         // MmrTree/BulkAppendTree have root_key=None (no child Merk data),
                         // so they match on (..) rather than (Some(_), ..)
                         match element {
-                            Element::Tree(Some(_), _)
-                            | Element::SumTree(Some(_), ..)
-                            | Element::BigSumTree(Some(_), ..)
-                            | Element::CountTree(Some(_), ..)
-                            | Element::CountSumTree(Some(_), ..)
-                            | Element::ProvableCountTree(Some(_), ..)
-                            | Element::ProvableCountSumTree(Some(_), ..)
-                            | Element::ProvableSumTree(Some(_), ..)
-                            | Element::ProvableCountProvableSumTree(Some(_), ..)
-                            | Element::CommitmentTree(..)
-                            | Element::MmrTree(..)
-                            | Element::BulkAppendTree(..)
-                            | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                            // Indexed-tree descent (PCIT / PSIT / PCPSIT):
+                            // descend into the primary as if it were a
+                            // standard Merk subtree, then chain via
+                            // combine_hash_three(value_hash, primary_root,
+                            // attestation) where `attestation` is the 32-byte
+                            // prefix on the ProofBytes::CountIndexedTree
+                            // envelope. For PCIT/PSIT the prefix is the single
+                            // secondary Merk root hash; for PCPSIT it is the
+                            // axes_digest over every axis's secondary root
+                            // hash. The verifier treats the prefix opaquely as
+                            // the third combine input, so the same descent
+                            // logic serves all three variants — matching the
+                            // shared prover envelope in generate.rs.
+                            Element::ProvableCountIndexedTree(..)
+                            | Element::ProvableSumIndexedTree(..)
+                            | Element::ProvableCountProvableSumIndexedTree(..) => {
+                                // An axis-read indexed tree was already
+                                // handled (and `continue`d) above, before
+                                // this lower-layer lookup, so here the
+                                // query descends the primary as usual.
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
                                 if query.query_items_at_path(&path, grove_version)?.is_none() {
-                                    // Query targets the tree itself, not its contents
+                                    // The indexed tree is itself a result and
+                                    // nothing is queried below it. The element
+                                    // bytes still have to be bound to the
+                                    // parent-committed `value_hash`: a
+                                    // `KVValueHash` node hashes only
+                                    // (key, value_hash), so pushing the value
+                                    // unchecked would let a prover swap in a
+                                    // forged element (any count/sum it likes)
+                                    // under a genuine root hash. Only the
+                                    // terminal envelope can bind it here —
+                                    // a descent envelope is unusable because
+                                    // there is no query at the lower path to
+                                    // verify it against.
+                                    let ProofBytes::IndexedTreeTerminal(terminal_bytes) =
+                                        &lower_layer.merk_proof
+                                    else {
+                                        return Err(Error::InvalidProof(
+                                            query.clone(),
+                                            format!(
+                                                "V1 proof supplies a non-terminal lower layer for \
+                                                 indexed tree at key {} with no query below it; \
+                                                 the element bytes would be unbound",
+                                                hex::encode(key),
+                                            ),
+                                        ));
+                                    };
+                                    if !lower_layer.lower_layers.is_empty() {
+                                        return Err(Error::InvalidProof(
+                                            query.clone(),
+                                            format!(
+                                                "V1 indexed terminal attestation at key {} must \
+                                                 not carry further lower layers",
+                                                hex::encode(key),
+                                            ),
+                                        ));
+                                    }
+                                    if terminal_bytes.len() != 64 {
+                                        return Err(Error::InvalidProof(
+                                            query.clone(),
+                                            format!(
+                                                "V1 indexed terminal attestation at key {} must \
+                                                 be exactly 64 bytes (attestation || \
+                                                 primary_root), got {}",
+                                                hex::encode(key),
+                                                terminal_bytes.len(),
+                                            ),
+                                        ));
+                                    }
+                                    let mut attestation = [0u8; 32];
+                                    attestation.copy_from_slice(&terminal_bytes[..32]);
+                                    let mut primary_root = [0u8; 32];
+                                    primary_root.copy_from_slice(&terminal_bytes[32..]);
+
+                                    let combined_root_hash = combine_hash_three(
+                                        value_hash(value_bytes).value(),
+                                        &primary_root,
+                                        &attestation,
+                                    )
+                                    .value()
+                                    .to_owned();
+                                    if hash != &combined_root_hash {
+                                        return Err(Error::InvalidProof(
+                                            query.clone(),
+                                            format!(
+                                                "V1 mismatch in indexed terminal attestation at \
+                                                 key {}, expected {}, got {}",
+                                                hex::encode(key),
+                                                hex::encode(hash),
+                                                hex::encode(combined_root_hash)
+                                            ),
+                                        ));
+                                    }
+
+                                    // Report under the PARENT path (path
+                                    // without the trailing key we pushed for
+                                    // descent), matching query_raw and the
+                                    // regular-tree terminal arm. Including the
+                                    // key made `(path, key)` lookups miss —
+                                    // absence-proof verification would report
+                                    // an EXISTING indexed tree as absent.
+                                    let parent_path: Vec<Vec<u8>> = path
+                                        [..path.len().saturating_sub(1)]
+                                        .iter()
+                                        .map(|p| p.to_vec())
+                                        .collect();
                                     let path_key_optional_value =
                                         ProvedPathKeyOptionalValue::from_proved_key_value(
-                                            path.iter().map(|p| p.to_vec()).collect(),
+                                            parent_path,
                                             proved_key_value,
                                         );
                                     result.push(
@@ -733,10 +1705,6 @@ impl GroveDb {
                                         break;
                                     }
                                 } else {
-                                    // Known limitation: this parent tree result
-                                    // is pushed without decrementing limit_left.
-                                    // Will be addressed by per-level limits
-                                    // redesign.
                                     if query.should_add_parent_tree_at_path(
                                         current_path,
                                         grove_version,
@@ -752,20 +1720,233 @@ impl GroveDb {
                                         );
                                     }
 
-                                    // Dispatch based on lower layer proof type
+                                    // Lower layer must carry cidx-shaped
+                                    // proof bytes: secondary_root_hash (32)
+                                    // followed by a standard Merk proof
+                                    // against the primary.
+                                    let cidx_bytes = match &lower_layer.merk_proof {
+                                        ProofBytes::CountIndexedTree(b) => b,
+                                        _ => {
+                                            return Err(Error::InvalidProof(
+                                                query.clone(),
+                                                "V1 lower layer for CountIndexedTree element \
+                                                 must use ProofBytes::CountIndexedTree"
+                                                    .to_string(),
+                                            ));
+                                        }
+                                    };
+                                    if cidx_bytes.len() < 32 {
+                                        return Err(Error::InvalidProof(
+                                            query.clone(),
+                                            "cidx proof bytes shorter than 32-byte secondary \
+                                             root attestation prefix"
+                                                .to_string(),
+                                        ));
+                                    }
+                                    let mut secondary_root: [u8; 32] = [0u8; 32];
+                                    secondary_root.copy_from_slice(&cidx_bytes[..32]);
+                                    // Recurse straight into the primary proof
+                                    // carved out of the indexed envelope,
+                                    // borrowing this layer's descendants. This
+                                    // used to synthesize a LayerProof, which
+                                    // deep-copied `lower_layers` at every
+                                    // nesting level — memory an untrusted peer
+                                    // could multiply by nesting depth.
+                                    let primary_root_hash = Self::verify_layer_proof_v1(
+                                        &cidx_bytes[32..],
+                                        &lower_layer.lower_layers,
+                                        prove_options,
+                                        query,
+                                        limit_left,
+                                        &path,
+                                        result,
+                                        axis_outcomes,
+                                        last_parent_tree_type,
+                                        options,
+                                        current_depth + 1,
+                                        grove_version,
+                                    )?;
+
+                                    let combined_root_hash = combine_hash_three(
+                                        value_hash(value_bytes).value(),
+                                        &primary_root_hash,
+                                        &secondary_root,
+                                    )
+                                    .value()
+                                    .to_owned();
+
+                                    if hash != &combined_root_hash {
+                                        return Err(Error::InvalidProof(
+                                            query.clone(),
+                                            format!(
+                                                "V1 mismatch in cidx lower-layer hash, \
+                                                 expected {}, got {}",
+                                                hex::encode(hash),
+                                                hex::encode(combined_root_hash)
+                                            ),
+                                        ));
+                                    }
+                                    if limit_left == &Some(0) {
+                                        break;
+                                    }
+                                }
+                            }
+                            // The V1 prover rejects subqueries into a
+                            // PrivateDocumentStore (range-read proofs are not
+                            // implemented yet), so an honest proof never
+                            // carries a lower layer for one — refuse to
+                            // fabricate a chain for it.
+                            Element::PrivateDocumentStore(..) => {
+                                return Err(Error::NotSupported(
+                                    "V1 proofs do not yet support lower layers for \
+                                     PrivateDocumentStore elements"
+                                        .to_string(),
+                                ));
+                            }
+                            Element::Tree(Some(_), _)
+                            | Element::SumTree(Some(_), ..)
+                            | Element::BigSumTree(Some(_), ..)
+                            | Element::CountTree(Some(_), ..)
+                            | Element::CountSumTree(Some(_), ..)
+                            | Element::ProvableCountTree(Some(_), ..)
+                            | Element::ProvableCountSumTree(Some(_), ..)
+                            | Element::ProvableSumTree(Some(_), ..)
+                            | Element::ProvableCountProvableSumTree(Some(_), ..)
+                            | Element::CommitmentTree(..)
+                            | Element::MmrTree(..)
+                            | Element::BulkAppendTree(..)
+                            | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                                path.push(key);
+                                *last_parent_tree_type = element.tree_feature_type();
+                                // Does the current query ask for anything BELOW
+                                // this tree, or only for the tree element
+                                // itself?
+                                //
+                                // "Only the element itself" while the proof
+                                // still carries a lower layer is the ordinary
+                                // shape of a SUBSET verification: the proof was
+                                // generated for a wider query that descended
+                                // here, and is now being re-verified against a
+                                // narrower one that stops at the tree. Dash
+                                // Platform does exactly this to read a
+                                // CommitmentTree's total note count out of the
+                                // note-fetch proof it already has.
+                                //
+                                // Either way the element bytes must stay bound
+                                // to the parent-committed `value_hash`: a
+                                // `KVValueHash`-family node hashes only
+                                // (key, value_hash), so reporting `value`
+                                // unchecked would let a prover attach a dummy
+                                // lower layer and substitute forged element
+                                // bytes under a genuine root hash. The
+                                // `combine_hash` chain check below is what binds
+                                // it, and it needs the lower layer's root — so
+                                // the lower layer is consumed for its root hash
+                                // in BOTH cases. Only the reporting differs:
+                                // with no query below, none of the lower layer's
+                                // rows belong in this query's result set, so the
+                                // tree element itself is reported instead.
+                                let has_query_below =
+                                    query.query_items_at_path(&path, grove_version)?.is_some();
+
+                                if !has_query_below && options.verify_proof_succinctness {
+                                    // Succinct mode demands the proof carry
+                                    // nothing beyond what the query needs, and
+                                    // an honest prover never emits this layer
+                                    // for this query (every `lower_layers.insert`
+                                    // site is gated on there being a subquery
+                                    // for the key). Reject as extra data.
+                                    return Err(Error::InvalidProof(
+                                        query.clone(),
+                                        format!(
+                                            "V1 proof supplies a lower layer for tree at key {} \
+                                             with no query below it; the element bytes would be \
+                                             unbound",
+                                            hex::encode(key),
+                                        ),
+                                    ));
+                                }
+
+                                {
+                                    // Known limitation: this parent tree result
+                                    // is pushed without decrementing limit_left.
+                                    // Will be addressed by per-level limits
+                                    // redesign.
+                                    if has_query_below
+                                        && query.should_add_parent_tree_at_path(
+                                            current_path,
+                                            grove_version,
+                                        )?
+                                    {
+                                        let path_key_optional_value =
+                                            ProvedPathKeyOptionalValue::from_proved_key_value(
+                                                path.iter().map(|p| p.to_vec()).collect(),
+                                                proved_key_value.clone(),
+                                            );
+                                        result.push(
+                                            path_key_optional_value
+                                                .try_into_versioned(grove_version)?,
+                                        );
+                                    }
+
+                                    // Dispatch based on lower layer proof type.
+                                    // `has_query_below == false` derives the
+                                    // layer's root WITHOUT reporting any of its
+                                    // contents — every lower-layer flavour
+                                    // computes its root independently of the
+                                    // query, which only ever selects rows.
                                     let lower_hash = match &lower_layer.merk_proof {
                                         ProofBytes::Merk(_) => {
+                                            // A sum-budget layer must carry
+                                            // the window envelope; a plain
+                                            // Merk descent here would let a
+                                            // prover serve a read-mode query
+                                            // as key selection.
+                                            if query.sum_budget_read_at_path(&path).is_some() {
+                                                return Err(Error::InvalidProof(
+                                                    query.clone(),
+                                                    "the query node at this tree is a \
+                                                     sum-budget read; its lower layer must \
+                                                     carry ProofBytes::SumBudgetWindow"
+                                                        .to_string(),
+                                                ));
+                                            }
                                             // Standard Merk subtree - recurse
-                                            Self::verify_layer_proof_v1(
-                                                lower_layer,
-                                                prove_options,
-                                                query,
-                                                limit_left,
+                                            let merk_bytes =
+                                                Self::merk_bytes_of_layer(lower_layer, query)?;
+                                            if has_query_below {
+                                                Self::verify_layer_proof_v1(
+                                                    merk_bytes,
+                                                    &lower_layer.lower_layers,
+                                                    prove_options,
+                                                    query,
+                                                    limit_left,
+                                                    &path,
+                                                    result,
+                                                    axis_outcomes,
+                                                    last_parent_tree_type,
+                                                    options,
+                                                    current_depth + 1,
+                                                    grove_version,
+                                                )?
+                                            } else {
+                                                Self::merk_layer_root_hash(merk_bytes, query)?
+                                            }
+                                        }
+                                        ProofBytes::SumBudgetWindow(payload_bytes) => {
+                                            if !lower_layer.lower_layers.is_empty() {
+                                                return Err(Error::InvalidProof(
+                                                    query.clone(),
+                                                    "a sum-budget window is terminal and must \
+                                                     not carry further lower layers"
+                                                        .to_string(),
+                                                ));
+                                            }
+                                            Self::verify_sum_budget_window_layer(
+                                                payload_bytes,
                                                 &path,
-                                                result,
-                                                last_parent_tree_type,
-                                                options,
-                                                current_depth + 1,
+                                                axis_outcomes,
+                                                query,
                                                 grove_version,
                                             )?
                                         }
@@ -776,6 +1957,7 @@ impl GroveDb {
                                             limit_left,
                                             result,
                                             query,
+                                            has_query_below,
                                             grove_version,
                                         )?,
                                         ProofBytes::BulkAppendTree(bulk_bytes) => {
@@ -786,6 +1968,7 @@ impl GroveDb {
                                                 limit_left,
                                                 result,
                                                 query,
+                                                has_query_below,
                                                 grove_version,
                                             )?
                                         }
@@ -797,6 +1980,7 @@ impl GroveDb {
                                                 limit_left,
                                                 result,
                                                 query,
+                                                has_query_below,
                                                 grove_version,
                                             )?
                                         }
@@ -808,8 +1992,26 @@ impl GroveDb {
                                                 limit_left,
                                                 result,
                                                 query,
+                                                has_query_below,
                                                 grove_version,
                                             )?
+                                        }
+                                        ProofBytes::CountIndexedTree(_)
+                                        | ProofBytes::IndexedTreeTerminal(_)
+                                        | ProofBytes::IndexedTreeAxisDescent(_) => {
+                                            // Indexed-tree envelopes are
+                                            // dispatched in the dedicated
+                                            // arm above; reaching this point
+                                            // means the proof envelope put
+                                            // a cidx-shaped lower layer on
+                                            // a non-cidx parent element,
+                                            // which is malformed.
+                                            return Err(Error::InvalidProof(
+                                                query.clone(),
+                                                "indexed-tree proof envelope under a non-indexed \
+                                                 parent element"
+                                                    .to_string(),
+                                            ));
                                         }
                                     };
 
@@ -829,6 +2031,33 @@ impl GroveDb {
                                             ),
                                         ));
                                     }
+
+                                    if !has_query_below {
+                                        // The tree element itself is the
+                                        // result, now bound by the
+                                        // `combine_hash` check above. Report it
+                                        // under the PARENT path (not the path
+                                        // we pushed the key onto for the root
+                                        // derivation), matching query_raw and
+                                        // the no-lower-layer terminal arm —
+                                        // including the key would make
+                                        // `(path, key)` lookups miss.
+                                        let parent_path: Vec<Vec<u8>> =
+                                            current_path.iter().map(|p| p.to_vec()).collect();
+                                        let path_key_optional_value =
+                                            ProvedPathKeyOptionalValue::from_proved_key_value(
+                                                parent_path,
+                                                proved_key_value,
+                                            );
+                                        result.push(
+                                            path_key_optional_value
+                                                .try_into_versioned(grove_version)?,
+                                        );
+                                        limit_left
+                                            .iter_mut()
+                                            .for_each(|limit| *limit = limit.saturating_sub(1));
+                                    }
+
                                     if limit_left == &Some(0) {
                                         break;
                                     }
@@ -854,6 +2083,8 @@ impl GroveDb {
                                     "V1 proof has lower layer for a non-tree element.".to_string(),
                                 ));
                             }
+                            // PSIT / PCPSIT descent is handled together with
+                            // PCIT in the shared indexed-tree arm above.
                             Element::NonCounted(_)
                             | Element::NotSummed(_)
                             | Element::NotCountedOrSummed(_) => {
@@ -872,7 +2103,64 @@ impl GroveDb {
                         // SumTree→Tree) in KVValueHash nodes without breaking
                         // the merk proof, since the value bytes are not part of
                         // the KVValueHash tree hash computation.
-                        if element.is_any_tree() && !element.is_non_empty_tree() {
+                        //
+                        // Indexed-tree elements (PCIT / PSIT / PCPSIT) have TWO
+                        // (or more) child Merks — a primary and one-or-more
+                        // secondaries — so their empty terminal proofs commit
+                        // `combine_hash_three(H(value), NULL_HASH, second)`
+                        // rather than the two-input `combine_hash`.
+                        //   - Empty PCIT / PSIT: `second = NULL_HASH` (the lone
+                        //     secondary's root hash while empty).
+                        //   - Empty PCPSIT: `second = axes_digest(zero_axes)`,
+                        //     the digest over the element's own axes list with
+                        //     every axis's secondary root hash = NULL_HASH.
+                        // These mirror the insert commit path in
+                        // add_element_on_transaction/v1.rs. Without the
+                        // indexed-specific arms, honest empty-indexed terminal
+                        // proofs fail verification.
+                        let empty_indexed_expected: Option<CryptoHash> = match &element {
+                            Element::ProvableCountIndexedTree(None, None, 0, _)
+                            | Element::ProvableSumIndexedTree(None, None, 0, _) => Some(
+                                combine_hash_three(
+                                    value_hash(value_bytes).value(),
+                                    &NULL_HASH,
+                                    &NULL_HASH,
+                                )
+                                .value()
+                                .to_owned(),
+                            ),
+                            Element::ProvableCountProvableSumIndexedTree(None, 0, 0, axes, _)
+                                if axes.iter().all(|(_, sk)| sk.is_none()) =>
+                            {
+                                let zero_axes: Vec<(u8, CryptoHash)> =
+                                    axes.iter().map(|(t, _)| (*t, NULL_HASH)).collect();
+                                let digest = axes_digest(&zero_axes).value().to_owned();
+                                Some(
+                                    combine_hash_three(
+                                        value_hash(value_bytes).value(),
+                                        &NULL_HASH,
+                                        &digest,
+                                    )
+                                    .value()
+                                    .to_owned(),
+                                )
+                            }
+                            _ => None,
+                        };
+                        if let Some(expected_value_hash) = empty_indexed_expected {
+                            if hash != &expected_value_hash {
+                                return Err(Error::InvalidProof(
+                                    query.clone(),
+                                    format!(
+                                        "V1 empty indexed-tree value hash mismatch at key {}: \
+                                         expected {}, got {}",
+                                        hex::encode(key),
+                                        hex::encode(hash),
+                                        hex::encode(expected_value_hash)
+                                    ),
+                                ));
+                            }
+                        } else if element.is_any_tree() && !element.is_non_empty_tree() {
                             let expected_value_hash =
                                 combine_hash(value_hash(value_bytes).value(), &NULL_HASH)
                                     .value()
@@ -891,17 +2179,46 @@ impl GroveDb {
                             }
                         }
 
-                        // For non-empty Merk trees without a subquery (no
-                        // lower layer proof), the prover must use
+                        // For trees reported without a subquery (no lower layer
+                        // proof), the prover must use
                         // KVValueHashFeatureTypeWithChildHash so the merk
                         // verifier can confirm combine_hash(H(value),
                         // child_hash) == value_hash. If child_hash_verified is
                         // false, an attacker may have downgraded the node type
                         // to hide child hash verification.
-                        // Non-Merk trees (MmrTree, BulkAppendTree, etc.) are
-                        // excluded — they use different proof structures.
-                        if element.is_non_empty_merk_tree() && !proved_key_value.child_hash_verified
-                        {
+                        //
+                        // Non-empty Merk trees (child_hash = child Merk root)
+                        // have required this since V3 and are checked at every
+                        // version.
+                        //
+                        // The four non-Merk trees — CommitmentTree, MmrTree,
+                        // BulkAppendTree, DenseAppendOnlyFixedSizeTree
+                        // (child_hash = the tree's own state root, which their
+                        // parent commits through the same two-input
+                        // combine_hash) — are checked only from V4, under
+                        // `proof.terminal_non_merk_tree_child_hash`. V1..V3
+                        // provers emit a bare KVValueHash here, so demanding
+                        // the child hash from them would reject honest
+                        // released proofs; the gate moves prover and verifier
+                        // together at the protocol boundary. Until it
+                        // activates, the element bytes of a terminally-reported
+                        // non-Merk tree stay unbound and a prover can forge the
+                        // entry count callers read from them.
+                        //
+                        // `is_non_empty_tree` is true unconditionally for those
+                        // four, so an empty one is bound too — its committed
+                        // child hash is NULL_HASH, or
+                        // EMPTY_COMMITMENT_TREE_STATE_ROOT for a
+                        // CommitmentTree.
+                        let requires_child_hash = element.is_non_empty_merk_tree()
+                            || (grove_version
+                                .grovedb_versions
+                                .operations
+                                .proof
+                                .terminal_non_merk_tree_child_hash
+                                >= 1
+                                && element.is_non_empty_tree());
+                        if requires_child_hash && !proved_key_value.child_hash_verified {
                             return Err(Error::InvalidProof(
                                 query.clone(),
                                 format!(
@@ -942,7 +2259,7 @@ impl GroveDb {
         // Succinctness check: reject proof if it contains lower layers
         // for keys that the query did not require
         if options.verify_proof_succinctness {
-            for key in layer_proof.lower_layers.keys() {
+            for key in lower_layers.keys() {
                 if !verified_keys.contains(key) {
                     return Err(Error::InvalidProof(
                         query.clone(),
@@ -962,6 +2279,7 @@ impl GroveDb {
     /// Returns the computed MMR root hash, which the caller uses as the
     /// child hash for Merk authentication (`combine_hash(value_hash ||
     /// mmr_root)`).
+    #[allow(clippy::too_many_arguments)]
     fn verify_mmr_lower_layer<T>(
         mmr_bytes: &[u8],
         element: &Element,
@@ -969,6 +2287,7 @@ impl GroveDb {
         limit_left: &mut Option<u16>,
         result: &mut Vec<T>,
         query: &PathQuery,
+        report_contents: bool,
         grove_version: &GroveVersion,
     ) -> Result<CryptoHash, Error>
     where
@@ -1021,6 +2340,13 @@ impl GroveDb {
         let (mmr_root, verified_leaves) = mmr_proof
             .verify_and_get_root()
             .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
+
+        // Root only: the caller is binding the parent element and does not
+        // report this layer's leaves, so there is no query at this path to
+        // check completeness/succinctness against.
+        if !report_contents {
+            return Ok(mmr_root);
+        }
 
         // Get the sub-query items for this path to enforce succinctness.
         let sub_query =
@@ -1093,6 +2419,7 @@ impl GroveDb {
     /// For both `BulkAppendTree` and `CommitmentTree` elements: verifies
     /// internal consistency and returns the computed state_root as the lower
     /// hash (authenticated via child Merk hash).
+    #[allow(clippy::too_many_arguments)]
     fn verify_bulk_append_lower_layer<T>(
         bulk_bytes: &[u8],
         element: &Element,
@@ -1100,6 +2427,7 @@ impl GroveDb {
         limit_left: &mut Option<u16>,
         result: &mut Vec<T>,
         query: &PathQuery,
+        report_contents: bool,
         grove_version: &GroveVersion,
     ) -> Result<CryptoHash, Error>
     where
@@ -1124,6 +2452,13 @@ impl GroveDb {
         let (bulk_state_root, proof_result) = bulk_proof
             .verify_and_compute_root(element_height, element_total_count)
             .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
+
+        // Root only: the caller is binding the parent element and does not
+        // report this layer's entries, so there is no query at this path to
+        // extract a position range from.
+        if !report_contents {
+            return Ok(bulk_state_root);
+        }
 
         // Get the query range from the path query to extract matching values
         let sub_query =
@@ -1205,6 +2540,7 @@ impl GroveDb {
     /// Verifies the BulkAppendTree proof to get `bulk_state_root`, then returns
     /// `blake3("ct_state" || sinsemilla_root || bulk_state_root)` as the
     /// authenticated child hash.
+    #[allow(clippy::too_many_arguments)]
     fn verify_commitment_tree_lower_layer<T>(
         ct_bytes: &[u8],
         element: &Element,
@@ -1212,6 +2548,7 @@ impl GroveDb {
         limit_left: &mut Option<u16>,
         result: &mut Vec<T>,
         query: &PathQuery,
+        report_contents: bool,
         grove_version: &GroveVersion,
     ) -> Result<CryptoHash, Error>
     where
@@ -1238,6 +2575,7 @@ impl GroveDb {
             limit_left,
             result,
             query,
+            report_contents,
             grove_version,
         )?;
 
@@ -1254,6 +2592,7 @@ impl GroveDb {
 
     /// Verify a DenseAppendOnlyFixedSizeTree lower layer proof and add results.
     /// Returns NULL_HASH since DenseTree has no child Merk.
+    #[allow(clippy::too_many_arguments)]
     fn verify_dense_tree_lower_layer<T>(
         dense_bytes: &[u8],
         element: &Element,
@@ -1261,6 +2600,7 @@ impl GroveDb {
         limit_left: &mut Option<u16>,
         result: &mut Vec<T>,
         query: &PathQuery,
+        report_contents: bool,
         grove_version: &GroveVersion,
     ) -> Result<CryptoHash, Error>
     where
@@ -1281,6 +2621,16 @@ impl GroveDb {
         let dense_proof =
             grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof::decode_from_slice(dense_bytes)
                 .map_err(|e| Error::CorruptedData(format!("{}", e)))?;
+
+        // Root only: the caller is binding the parent element and does not
+        // report this layer's entries, so there is no query at this path to
+        // check completeness/soundness against.
+        if !report_contents {
+            let (computed_root, _entries): ([u8; 32], Vec<(u16, Vec<u8>)>) = dense_proof
+                .verify_and_get_root(element_height, element_count)
+                .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
+            return Ok(computed_root);
+        }
 
         // Get the sub-query items for this path to build a query for
         // verify_for_query, which enforces both completeness and soundness.
@@ -1729,6 +3079,23 @@ impl GroveDb {
                             println!("lower layer had key {}", hex_to_ascii(key));
                         }
                         match element {
+                            // V0 is a frozen wire format and does not
+                            // describe cidx descent (the prover rejects
+                            // it for the same reason). The verifier
+                            // refuses to fabricate a chain for an
+                            // envelope shape V0 cannot produce.
+                            Element::ProvableSumIndexedTree(..)
+                            | Element::ProvableCountIndexedTree(..)
+                            | Element::ProvableCountProvableSumIndexedTree(..) => {
+                                return Err(Error::NotSupported(
+                                    "V0 proofs do not support descent into any indexed-tree \
+                                     element (ProvableSumIndexedTree / \
+                                     ProvableCountIndexedTree / \
+                                     ProvableCountProvableSumIndexedTree); use V1 or the \
+                                     dedicated verify_indexed_count_top_k API"
+                                        .to_string(),
+                                ));
+                            }
                             Element::Tree(Some(_), _)
                             | Element::SumTree(Some(_), ..)
                             | Element::BigSumTree(Some(_), ..)
@@ -1751,7 +3118,7 @@ impl GroveDb {
                                     {
                                         println!(
                                             "pushing {} limit left after is {:?}",
-                                            &path_key_optional_value, limit_left
+                                            path_key_optional_value, limit_left
                                         );
                                     }
                                     result.push(
@@ -1866,6 +3233,7 @@ impl GroveDb {
                             | Element::MmrTree(..)
                             | Element::BulkAppendTree(..)
                             | Element::DenseAppendOnlyFixedSizeTree(..)
+                            | Element::PrivateDocumentStore(..)
                             | Element::SumItem(..)
                             | Element::Item(..)
                             | Element::ItemWithSumItem(..)
@@ -1926,7 +3294,7 @@ impl GroveDb {
                         {
                             println!(
                                 "pushing {} limit left after is {:?}",
-                                &path_key_optional_value, limit_left
+                                path_key_optional_value, limit_left
                             );
                         }
                         result.push(path_key_optional_value.try_into_versioned(grove_version)?);

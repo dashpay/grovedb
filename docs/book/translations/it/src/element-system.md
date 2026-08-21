@@ -266,12 +266,12 @@ graph TD
 
 **Architettura:**
 - La *frontiera* (percorso piu a destra dell'albero di Merkle, ~1KB di dimensione costante) e memorizzata nel **namespace dati**, con chiave `COMMITMENT_TREE_DATA_KEY`
-- I dati effettivi delle note (`cmx || ciphertext`) sono memorizzati tramite un **BulkAppendTree** nel **namespace dati** — compattati in chunk, recuperabili per posizione
+- I dati effettivi delle note (`cmx || rho || cv_net || ciphertext`) sono memorizzati tramite un **BulkAppendTree** nel **namespace dati** — compattati in chunk, recuperabili per posizione
 - Gli ancoraggi storici vengono tracciati dalla Piattaforma in un albero dimostrabile separato
 - La radice Sinsemilla NON e memorizzata nell'Element — fluisce come hash figlio Merk attraverso la gerarchia di hash di GroveDB
 
 **Operazioni:**
-- `commitment_tree_insert(path, key, cmx, ciphertext, tx)` — Append tipizzato che accetta `TransmittedNoteCiphertext<M>`; restituisce `(new_root, position)`
+- `commitment_tree_insert(path, key, cmx, rho, cv_net, ciphertext, tx)` — Append tipizzato che accetta `TransmittedNoteCiphertext<M>`; restituisce `(new_root, position)`
 - `commitment_tree_anchor(path, key, tx)` — Ottieni l'ancoraggio Orchard corrente
 - `commitment_tree_get_value(path, key, position, tx)` — Recupera un valore per posizione
 - `commitment_tree_count(path, key, tx)` — Ottieni il conteggio totale degli elementi

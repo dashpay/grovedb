@@ -2,6 +2,7 @@
 mod proof_tests {
     use grovedb_merkle_mountain_range::MmrTreeProof;
     use grovedb_query::{Query, QueryItem};
+    use grovedb_version::version::GroveVersion;
 
     use crate::{proof::*, test_utils::MemStorageContext, BulkAppendTree};
 
@@ -17,7 +18,9 @@ mod proof_tests {
 
         let mut last_state_root = [0u8; 32];
         for value in values {
-            let result = tree.append(value).expect("append value");
+            let result = tree
+                .append(value, GroveVersion::latest())
+                .expect("append value");
             last_state_root = result.state_root;
         }
 
@@ -263,6 +266,24 @@ mod proof_tests {
             .expect("verify decoded proof");
         let vals = result.values_in_range(0, 4).expect("extract range");
         assert_eq!(vals.len(), 4);
+    }
+
+    #[test]
+    fn test_bulk_proof_decode_rejects_trailing_bytes() {
+        let height = 2u8;
+        let values: Vec<Vec<u8>> = (0..4u32).map(|i| format!("r_{}", i).into_bytes()).collect();
+        let (_state_root, tree) = build_test_tree(height, &values);
+        let proof =
+            BulkAppendTreeProof::generate(&range_query(0, 4), &tree).expect("generate proof");
+
+        let mut bytes = proof.encode_to_vec().expect("encode proof");
+        bytes.push(0xff);
+
+        let err =
+            BulkAppendTreeProof::decode_from_slice(&bytes).expect_err("trailing bytes must fail");
+        assert!(
+            matches!(err, BulkAppendError::CorruptedData(message) if message.contains("did not consume all bytes"))
+        );
     }
 
     #[test]

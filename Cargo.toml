@@ -16,9 +16,8 @@ members = [
     "grovedb-merkle-mountain-range",
     "grovedb-bulk-append-tree",
     "grovedb-dense-fixed-sized-merkle-tree",
-    "grovedb-bulk-append-tree",
-    "grovedb-commitment-tree",
     "grovedb-query",
+    "grovedb-private-document-store",
 ]
 
 [workspace.dependencies]
@@ -43,3 +42,26 @@ num_cpus = "1.17.0"
 axum = { version = "0.8", features = ["macros"] }
 tokio-util = "0.7.17"
 tower-http = { version = "0.6.8", features = ["fs"] }
+
+# Sinsemilla hashing (used by grovedb-commitment-tree) is Pallas-curve
+# arithmetic, which is orders of magnitude slower without optimization.
+# Optimizing just these dependencies keeps debug/test builds of workspace
+# crates fully debuggable while making commitment-tree tests run in seconds
+# instead of minutes. Applies to dev/test profiles only; release is unaffected.
+[profile.dev.package.pasta_curves]
+opt-level = 3
+
+[profile.dev.package.halo2_gadgets]
+opt-level = 3
+
+[profile.dev.package.halo2_proofs]
+opt-level = 3
+
+[profile.dev.package.sinsemilla]
+opt-level = 3
+
+[profile.dev.package.orchard]
+opt-level = 3
+
+[profile.dev.package.incrementalmerkletree]
+opt-level = 3

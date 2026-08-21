@@ -402,6 +402,58 @@ where
         );
         Ok(self).wrap_with_cost(cost)
     }
+
+    /// Similar to `Tree#put_value_with_two_reference_value_hashes_and_value_cost`.
+    /// Used for `CountIndexedTree` / `ProvableCountIndexedTree` elements.
+    #[allow(clippy::too_many_arguments)]
+    pub fn put_value_with_two_reference_value_hashes_and_value_cost(
+        mut self,
+        value: Vec<u8>,
+        primary_root_hash: CryptoHash,
+        secondary_root_hash: CryptoHash,
+        value_fixed_cost: u32,
+        feature_type: TreeFeatureType,
+        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        get_temp_new_value_with_old_flags: &impl Fn(
+            &Vec<u8>,
+            &Vec<u8>,
+        ) -> Result<Option<Vec<u8>>, Error>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> CostResult<Self, Error> {
+        let mut cost = OperationCost::default();
+        cost_return_on_error_no_add!(
+            cost,
+            self.tree.own_result(|t| t
+                .put_value_with_two_reference_value_hashes_and_value_cost(
+                    value,
+                    primary_root_hash,
+                    secondary_root_hash,
+                    value_fixed_cost,
+                    feature_type,
+                    old_specialized_cost,
+                    get_temp_new_value_with_old_flags,
+                    update_tree_value_based_on_costs,
+                    section_removal_bytes
+                )
+                .unwrap_add_cost(&mut cost))
+        );
+        Ok(self).wrap_with_cost(cost)
+    }
 }
 
 #[cfg(feature = "minimal")]

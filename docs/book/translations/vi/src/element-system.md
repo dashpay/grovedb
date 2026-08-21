@@ -278,14 +278,14 @@ graph TD
 **Kiến trúc:**
 - *Frontier* (đường dẫn bên phải nhất của cây Merkle, kích thước hằng ~1KB) được
   lưu trong **không gian tên dữ liệu**, với khóa `COMMITMENT_TREE_DATA_KEY`
-- Dữ liệu ghi chú thực (`cmx || ciphertext`) được lưu qua **BulkAppendTree**
+- Dữ liệu ghi chú thực (`cmx || rho || cv_net || ciphertext`) được lưu qua **BulkAppendTree**
   trong **không gian tên dữ liệu** — nén theo chunk, truy xuất theo vị trí
 - Anchor lịch sử được Platform theo dõi trong một cây chứng minh riêng
 - Root Sinsemilla KHÔNG được lưu trong Element — nó chảy như child hash
   của Merk qua hệ thống phân cấp hash của GroveDB
 
 **Các thao tác:**
-- `commitment_tree_insert(path, key, cmx, ciphertext, tx)` — Thêm có kiểu
+- `commitment_tree_insert(path, key, cmx, rho, cv_net, ciphertext, tx)` — Thêm có kiểu
   nhận `TransmittedNoteCiphertext<M>`; trả về `(new_root, position)`
 - `commitment_tree_anchor(path, key, tx)` — Lấy Orchard Anchor hiện tại
 - `commitment_tree_get_value(path, key, position, tx)` — Truy xuất giá trị theo vị trí

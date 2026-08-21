@@ -1,6 +1,6 @@
 [package]
 name = "grovedb-query"
-version = "4.0.0"
+version = "5.0.1"
 edition = "2024"
 license = "MIT"
 description = "Query primitives for GroveDB"
@@ -19,8 +19,8 @@ byteorder = { workspace = true }
 integer-encoding = { workspace = true }
 
 # Feature-gated deps for merk integration
-grovedb-costs = { version = "4.0.0", path = "../costs", optional = true }
-grovedb-storage = { version = "4.0.0", path = "../storage", optional = true }
+grovedb-costs = { version = "5.0.1", path = "../costs", optional = true }
+grovedb-storage = { version = "5.0.1", path = "../storage", optional = true }
 
 
 

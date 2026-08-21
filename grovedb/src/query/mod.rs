@@ -1,10 +1,12 @@
 //! Queries
 
 pub mod aggregate_sum_path_query;
+pub(crate) mod axis_lowering;
 mod grove_branch_query_result;
 mod grove_trunk_query_result;
 mod path_branch_chunk_query;
 mod path_trunk_chunk_query;
+pub(crate) mod shape;
 
 use std::{
     borrow::{Cow, Cow::Borrowed},
@@ -19,7 +21,9 @@ pub use grove_branch_query_result::GroveBranchQueryResult;
 pub use grove_trunk_query_result::{GroveTrunkQueryResult, LeafInfo};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_merk::proofs::query::query_item::QueryItem;
-use grovedb_merk::proofs::query::{Key, SubqueryBranch};
+use grovedb_merk::proofs::query::{
+    AggregateFold, AxisQuery, IndexAxis, Key, ReadMode, SubqueryBranch, SumBudgetRead,
+};
 
 use grovedb_merk::proofs::Query;
 use grovedb_version::{
@@ -30,6 +34,8 @@ use indexmap::IndexMap;
 pub use path_branch_chunk_query::PathBranchChunkQuery;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use path_trunk_chunk_query::PathTrunkChunkQuery;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use shape::{AggregateKind, PathQueryShape};
 
 use crate::operations::proof::util::hex_to_ascii;
 
@@ -555,6 +561,154 @@ impl PathQuery {
         Self::new_unsized(path, Query::new_aggregate_count_and_sum_on_range(range))
     }
 
+    /// A `Query` node whose whole read is `axis_query` — the terminal
+    /// node of every axis-read shape.
+    fn axis_read_node(axis_query: AxisQuery) -> Query {
+        Query {
+            read_mode: Some(Box::new(ReadMode::Axis(axis_query))),
+            ..Query::new()
+        }
+    }
+
+    /// An axis-ordered read of the indexed tree at `path`: a page of
+    /// `k` entries on `axis`, starting at rank `offset` (0 = first
+    /// page).
+    ///
+    /// `descending` chooses which end the ranking starts from: `true`
+    /// gives the `k` largest by aggregate (top-k), `false` the `k`
+    /// smallest (bottom-k).
+    pub fn new_axis_top_k(
+        path: Vec<Vec<u8>>,
+        axis: IndexAxis,
+        k: u16,
+        offset: u64,
+        descending: bool,
+    ) -> Self {
+        Self::new_unsized(
+            path,
+            Self::axis_read_node(AxisQuery::top_k(axis, k, offset, descending)),
+        )
+    }
+
+    /// An axis-ordered read of the indexed tree at `path`: every entry
+    /// whose `axis` aggregate is in the inclusive `[lo, hi]`, up to
+    /// `limit` entries.
+    pub fn new_axis_bounded(
+        path: Vec<Vec<u8>>,
+        axis: IndexAxis,
+        lo: i128,
+        hi: i128,
+        limit: u16,
+        descending: bool,
+    ) -> Self {
+        Self::new_unsized(
+            path,
+            Self::axis_read_node(AxisQuery::bounded(axis, lo, hi, limit, descending)),
+        )
+    }
+
+    /// The rank of `key` in the directional walk over `axis` of the
+    /// indexed tree at `path`.
+    pub fn new_axis_rank_of_key(
+        path: Vec<Vec<u8>>,
+        axis: IndexAxis,
+        key: Vec<u8>,
+        descending: bool,
+    ) -> Self {
+        Self::new_unsized(
+            path,
+            Self::axis_read_node(AxisQuery::rank_of_key(axis, key, descending)),
+        )
+    }
+
+    /// `[lo, hi]` selects the entries of the indexed tree at `path` by
+    /// their own `axis` value; `fold` says which scalar over exactly
+    /// those entries is the answer. Count and Sum axes only.
+    ///
+    /// The fold is explicit because both readings are meaningful on
+    /// both axes and the "obvious" one flips per axis. Over counts
+    /// `[3, 1, 5]`, the band `[2, 10]` selects the `3` and the `5`:
+    /// [`AggregateFold::Population`](grovedb_query::AggregateFold)
+    /// answers `2`, [`AggregateFold::Total`](grovedb_query::AggregateFold)
+    /// answers `8`. See
+    /// [`AxisTraversal::AggregateOverValueRange`](grovedb_query::AxisTraversal::AggregateOverValueRange)
+    /// for the full matrix; every (Count/Sum, fold) cell is served.
+    pub fn new_axis_aggregate_over_value_range(
+        path: Vec<Vec<u8>>,
+        axis: IndexAxis,
+        lo: i128,
+        hi: i128,
+        fold: AggregateFold,
+    ) -> Self {
+        Self::new_unsized(
+            path,
+            Self::axis_read_node(AxisQuery::aggregate_over_value_range(axis, lo, hi, fold)),
+        )
+    }
+
+    /// The same axis read fanned over N sibling branches: for each key
+    /// in `branch_keys` (selected under `prefix`), descend the shared
+    /// `suffix` to an indexed tree and perform `axis_query` on it.
+    ///
+    /// This is the query form of the branched indexed-axis proof:
+    /// `prefix / branch_key_i / suffix -> axis read`.
+    pub fn new_branched_axis(
+        prefix: Vec<Vec<u8>>,
+        branch_keys: Vec<Vec<u8>>,
+        suffix: Vec<Vec<u8>>,
+        axis_query: AxisQuery,
+    ) -> Self {
+        let mut query = Query::new();
+        for key in branch_keys {
+            query.insert_key(key);
+        }
+        query.set_subquery_path(suffix);
+        query.set_subquery(Self::axis_read_node(axis_query));
+        Self::new_unsized(prefix, query)
+    }
+
+    /// A key-ordered read of `items` under `path` that stops once the
+    /// running sum of matched sum-item values reaches `sum_limit` —
+    /// the unified form of `AggregateSumPathQuery`.
+    pub fn new_sum_budget(
+        path: Vec<Vec<u8>>,
+        items: Vec<QueryItem>,
+        left_to_right: bool,
+        sum_limit: u64,
+        match_limit: Option<u16>,
+    ) -> Self {
+        let mut query = Query::new_with_direction(left_to_right);
+        query.items = items;
+        query.read_mode = Some(Box::new(ReadMode::SumBudget(SumBudgetRead {
+            sum_limit,
+            match_limit,
+        })));
+        Self::new_unsized(path, query)
+    }
+
+    /// Whether this query — at any nesting level — carries a
+    /// [`ReadMode`]. Entry points that don't serve read modes use this
+    /// to fail closed instead of silently running a read-mode query as
+    /// plain key selection.
+    pub fn has_read_mode(&self) -> bool {
+        self.query.query.has_read_mode_anywhere()
+    }
+
+    /// Fail-closed gate for entry points that don't (yet) serve
+    /// read-mode queries. Serving arrives with the unified read/prove
+    /// dispatch; until then every existing entry point rejects rather
+    /// than misreading an axis or sum-budget query as key selection.
+    pub(crate) fn reject_unserved_read_mode(&self) -> Result<(), Error> {
+        if self.has_read_mode() {
+            Err(Error::NotSupported(
+                "this entry point does not serve read-mode (axis / sum-budget) path queries"
+                    .to_string(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Validates that this `PathQuery` is a well-formed
     /// `AggregateCountOnRange` query in either the leaf or carrier shape.
     /// On success, returns a reference to the leaf inner range item.
@@ -794,17 +948,58 @@ impl PathQuery {
         mut path_queries: Vec<&PathQuery>,
         grove_version: &GroveVersion,
     ) -> Result<Self, Error> {
-        check_grovedb_v0!(
-            "merge",
-            grove_version.grovedb_versions.path_query_methods.merge
-        );
+        let merge_version = grove_version.grovedb_versions.path_query_methods.merge;
+        if merge_version > 1 {
+            return Err(Error::VersionError(
+                grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                    method: "merge".to_string(),
+                    known_versions: vec![0, 1],
+                    received: merge_version,
+                },
+            ));
+        }
         if path_queries.is_empty() {
             return Err(Error::InvalidInput(
                 "merge function requires at least 1 path query",
             ));
         }
+        // Read-mode queries do not merge (yet): the underlying
+        // Query::merge_multiple machinery would silently drop the read
+        // mode and mangle an axis or sum-budget read into key
+        // selection. Merging sibling axis reads into the branched shape
+        // arrives with explicit read-mode merge rules.
+        if path_queries
+            .iter()
+            .any(|path_query| path_query.has_read_mode())
+        {
+            return Err(Error::NotSupported(
+                "can not merge path queries carrying read modes (axis / sum-budget reads)"
+                    .to_string(),
+            ));
+        }
         if path_queries.len() == 1 {
             return Ok(path_queries.remove(0).clone());
+        }
+
+        // Direction handling, version-gated. `merge` slot 0 (V1..V3)
+        // keeps the long-standing behavior: input directions are
+        // silently dropped (sub-level inputs end up under a synthesized
+        // root whose direction is the default). Slot 1 (V4+) requires
+        // every input to agree and propagates the shared direction to
+        // the merged root. Merged queries feed proofs and the verifier
+        // re-runs the same merge with the same grove version, so both
+        // sides stay in agreement at every version.
+        let shared_direction = path_queries[0].query.query.left_to_right;
+        if merge_version >= 1
+            && path_queries
+                .iter()
+                .any(|path_query| path_query.query.query.left_to_right != shared_direction)
+        {
+            return Err(Error::NotSupported(
+                "can not merge path queries with conflicting directions (left_to_right \
+                 differs); align the directions before merging"
+                    .to_string(),
+            ));
         }
 
         let (common_path, next_index) = PathQuery::get_common_path(&path_queries);
@@ -845,7 +1040,19 @@ impl PathQuery {
                 })
         })?;
 
-        let mut merged_query = Query::merge_multiple(queries_for_common_path_this_level);
+        // Version-gated direction handling. The `merge` slot's `0`
+        // (V1..V3) keeps the long-standing silent first-wins behavior;
+        // `1` (V4+) requires every merged query to agree on
+        // `left_to_right` and propagates it, erroring on conflict —
+        // merged queries feed proofs, and the verifier re-runs the same
+        // merge with the same grove version, so both sides stay in
+        // agreement at every version.
+        let mut merged_query = match merge_version {
+            0 => Query::merge_multiple(queries_for_common_path_this_level)
+                .map_err(|e| Error::NotSupported(e.to_string()))?,
+            _ => Query::merge_multiple_directional(queries_for_common_path_this_level)
+                .map_err(|e| Error::NotSupported(e.to_string()))?,
+        };
         // add conditional subqueries
         for sub_path_query in queries_for_common_path_sub_level {
             let SubqueryBranch {
@@ -865,7 +1072,21 @@ impl PathQuery {
                 subquery_path: rest_of_path,
                 subquery,
             };
-            merged_query.merge_conditional_boxed_subquery(QueryItem::Key(key), subquery_branch);
+            // The read-mode gate at the top of `merge` already rejected
+            // any input carrying one, so this cannot fire today —
+            // propagate rather than discard, so a future path that
+            // reaches here with a read mode surfaces it instead of
+            // silently dropping the mode.
+            merged_query
+                .merge_conditional_boxed_subquery(QueryItem::Key(key), subquery_branch)
+                .map_err(|e| Error::NotSupported(e.to_string()))?;
+        }
+
+        // V4+: the agreed direction travels to the merged root (it
+        // would otherwise be lost whenever the inputs land at a sub
+        // level under a synthesized root query).
+        if merge_version >= 1 {
+            merged_query.left_to_right = shared_direction;
         }
 
         Ok(PathQuery::new_unsized(common_path, merged_query))
@@ -1054,6 +1275,114 @@ impl PathQuery {
                 recursive_should_add_parent_tree_at_path(&self.query.query, &path[self_path_len..])
             }
         })
+    }
+
+    /// Returns the axis read governing the subtree at `path`, if the
+    /// query node resolved at exactly that path carries
+    /// [`ReadMode::Axis`]. `path` is a full path from the GroveDB root
+    /// (the same convention as [`Self::query_items_at_path`]).
+    ///
+    /// This is how the proof walk — prover and verifier alike — learns
+    /// that a layer is an axis-ordered read of an indexed tree rather
+    /// than a key-selecting descent into its primary. Both sides
+    /// resolve from the same query through this one function, so they
+    /// cannot disagree about which layers are axis reads.
+    ///
+    /// Positions *inside* a subquery branch's `subquery_path` resolve
+    /// to `None` (a read mode lives on a query node, never mid-path),
+    /// as do paths that diverge from the query entirely.
+    pub fn axis_read_at_path(&self, path: &[&[u8]]) -> Option<&AxisQuery> {
+        match self.read_mode_at_path(path) {
+            Some(ReadMode::Axis(axis_query)) => Some(axis_query),
+            _ => None,
+        }
+    }
+
+    /// The sum-budget read governing the subtree at `path`, if any —
+    /// the sum-budget sibling of [`Self::axis_read_at_path`]. The
+    /// budget's items live on the same node; callers re-resolve them
+    /// from the query root (a sum-budget read only classifies at the
+    /// root node).
+    pub fn sum_budget_read_at_path(&self, path: &[&[u8]]) -> Option<&SumBudgetRead> {
+        match self.read_mode_at_path(path) {
+            Some(ReadMode::SumBudget(budget)) => Some(budget),
+            _ => None,
+        }
+    }
+
+    /// Returns the read mode of the query node resolved at exactly
+    /// `path`, if any. `path` is a full path from the GroveDB root (the
+    /// same convention as [`Self::query_items_at_path`]).
+    ///
+    /// This is how the proof walk — prover and verifier alike — learns
+    /// that a layer is a read-mode layer rather than a key-selecting
+    /// descent. Both sides resolve from the same query through this one
+    /// function, so they cannot disagree about which layers carry read
+    /// modes.
+    fn read_mode_at_path(&self, path: &[&[u8]]) -> Option<&ReadMode> {
+        /// Resolve the query NODE at exactly `path` below `query`,
+        /// following conditional and default subquery branches the same
+        /// way `query_items_at_path`'s resolver does — but returning
+        /// the node itself rather than its per-layer view, and `None`
+        /// for mid-`subquery_path` positions.
+        fn resolve_node_at_path<'b>(query: &'b Query, path: &[&[u8]]) -> Option<&'b Query> {
+            if path.is_empty() {
+                return Some(query);
+            }
+            let key = path[0];
+            let rest = &path[1..];
+
+            if let Some(conditional_branches) = &query.conditional_subquery_branches {
+                for (query_item, subquery_branch) in conditional_branches {
+                    if query_item.contains(key) {
+                        return resolve_branch_at_path(subquery_branch, rest);
+                    }
+                }
+            }
+            resolve_branch_at_path(&query.default_subquery_branch, rest)
+        }
+
+        fn resolve_branch_at_path<'b>(
+            branch: &'b SubqueryBranch,
+            rest: &[&[u8]],
+        ) -> Option<&'b Query> {
+            match &branch.subquery_path {
+                Some(subquery_path) => {
+                    if rest.len() < subquery_path.len() {
+                        // Mid-subquery_path: no query node here.
+                        return None;
+                    }
+                    if !rest
+                        .iter()
+                        .take(subquery_path.len())
+                        .zip(subquery_path)
+                        .all(|(a, b)| *a == b.as_slice())
+                    {
+                        return None;
+                    }
+                    let after = &rest[subquery_path.len()..];
+                    branch
+                        .subquery
+                        .as_deref()
+                        .and_then(|subquery| resolve_node_at_path(subquery, after))
+                }
+                None => branch
+                    .subquery
+                    .as_deref()
+                    .and_then(|subquery| resolve_node_at_path(subquery, rest)),
+            }
+        }
+
+        let self_path_len = self.path.len();
+        if path.len() < self_path_len {
+            // Above the query root: nothing can carry a read mode.
+            return None;
+        }
+        if !self.path.iter().zip(path).all(|(a, b)| a.as_slice() == *b) {
+            return None;
+        }
+        let node = resolve_node_at_path(&self.query.query, &path[self_path_len..])?;
+        node.read_mode.as_deref()
     }
 
     /// Returns the query items applicable at the given path, if any.
@@ -1255,6 +1584,28 @@ pub struct SinglePathSubquery<'a> {
     pub left_to_right: bool,
     /// In the path of the path_query, or in a subquery path
     pub in_path: Option<Cow<'a, Key>>,
+    /// True when this level was *synthesized* from a path component
+    /// instead of resolved to a real query node — the `Ordering::Less`
+    /// arm of [`PathQuery::query_items_at_path`] plus every
+    /// mid-`subquery_path` arm, all of which go through
+    /// [`SinglePathSubquery::from_key_when_in_path`].
+    ///
+    /// A synthesized level's `items` is exactly one `QueryItem::Key`,
+    /// so its `left_to_right` carries no query semantics at all: the
+    /// answer is that one key or nothing, and there is no ordering or
+    /// limit interaction to observe. The field is a placeholder, fixed
+    /// at `true`, because the direction the *generating* query used at
+    /// this path — which is what decided the op family the prover
+    /// emitted — is not recoverable from a subset query.
+    ///
+    /// Proof verifiers must therefore not take the stream's
+    /// orientation from `left_to_right` on a synthesized level; they
+    /// read it off the proof's own op family via
+    /// `grovedb_merk::proofs::query::proof_stream_direction`, which
+    /// `execute` independently pins to the stream's key ordering. Proof
+    /// *generation* keeps using `left_to_right` verbatim, so proof
+    /// bytes are unaffected.
+    pub synthesized_path_component: bool,
 }
 
 impl fmt::Display for SinglePathSubquery<'_> {
@@ -1271,6 +1622,11 @@ impl fmt::Display for SinglePathSubquery<'_> {
             Some(path) => writeln!(f, "  in_path: Some({})", hex_to_ascii(path)),
             None => writeln!(f, "  in_path: None"),
         }?;
+        writeln!(
+            f,
+            "  synthesized_path_component: {}",
+            self.synthesized_path_component
+        )?;
         write!(f, "}}")
     }
 }
@@ -1302,8 +1658,14 @@ impl<'a> SinglePathSubquery<'a> {
         SinglePathSubquery {
             items: Cow::Owned(vec![QueryItem::Key(key.clone())]),
             has_subquery: HasSubquery::NoSubquery,
+            // Placeholder — see `synthesized_path_component`. Nothing
+            // here knows which direction the generating query walked
+            // this level in, and for a one-key level nothing needs to:
+            // the direction is an encoding detail of the proof, which
+            // is where verifiers read it from.
             left_to_right: true,
             in_path,
+            synthesized_path_component: true,
         }
     }
 
@@ -1326,6 +1688,7 @@ impl<'a> SinglePathSubquery<'a> {
             has_subquery,
             left_to_right: query.left_to_right,
             in_path: None,
+            synthesized_path_component: false,
         }
     }
 }
@@ -1333,6 +1696,7 @@ impl<'a> SinglePathSubquery<'a> {
 #[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
+    use grovedb_merk::proofs::query::AggregateFold;
     use std::{borrow::Cow, ops::RangeFull};
 
     use bincode::{config::standard, decode_from_slice, encode_to_vec};
@@ -2037,6 +2401,7 @@ mod tests {
             left_to_right: true,
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         };
 
         // Constructing the PathQuery
@@ -2055,6 +2420,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -2075,6 +2441,7 @@ mod tests {
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
                     in_path: Some(Cow::Borrowed(&root_path_key_2)),
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2095,6 +2462,7 @@ mod tests {
                                                         * subquery for one item */
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: false,
                 }
             );
         }
@@ -2117,7 +2485,8 @@ mod tests {
                     items: Cow::Owned(vec![QueryItem::Key(subquery_path_key_1.clone())]),
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
-                    in_path: Some(Cow::Borrowed(&subquery_path_key_1))
+                    in_path: Some(Cow::Borrowed(&subquery_path_key_1)),
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2141,7 +2510,8 @@ mod tests {
                     items: Cow::Owned(vec![QueryItem::Key(subquery_path_key_2.clone())]),
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
-                    in_path: Some(Cow::Borrowed(&subquery_path_key_2))
+                    in_path: Some(Cow::Borrowed(&subquery_path_key_2)),
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2168,6 +2538,7 @@ mod tests {
                                                         * add items underneath */
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: false,
                 }
             );
         }
@@ -2194,6 +2565,7 @@ mod tests {
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2220,6 +2592,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(100),
                 offset: None,
@@ -2241,6 +2614,7 @@ mod tests {
                     has_subquery: HasSubquery::Always,
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: false,
                 }
             );
         }
@@ -2259,7 +2633,9 @@ mod tests {
                     items: Cow::Owned(vec![QueryItem::Key(quantum_key.clone())]),
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
-                    in_path: None, // There should be no path because we are at the end of the path
+                    // There should be no path: we are at the end of the path
+                    in_path: None,
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2292,6 +2668,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: Some(conditional_subquery_branches),
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(100),
                 offset: None,
@@ -2313,6 +2690,7 @@ mod tests {
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
                     in_path: Some(Cow::Borrowed(&zero_vec)),
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2342,6 +2720,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 })),
             },
         )]);
@@ -2360,6 +2739,7 @@ mod tests {
                         left_to_right: true,
                         conditional_subquery_branches: None,
                         add_parent_tree_on_subquery: false,
+                        read_mode: None,
                     })),
                 },
             ),
@@ -2378,6 +2758,7 @@ mod tests {
                         ),
                         left_to_right: true,
                         add_parent_tree_on_subquery: false,
+                        read_mode: None,
                     })),
                 },
             ),
@@ -2395,6 +2776,7 @@ mod tests {
                     conditional_subquery_branches: Some(conditional_subquery_branches.clone()),
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(100),
                 offset: None,
@@ -2419,6 +2801,7 @@ mod tests {
                     )),
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: false,
                 }
             );
         }
@@ -2437,6 +2820,7 @@ mod tests {
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
                     in_path: Some(Cow::Borrowed(&identity_id)),
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2457,6 +2841,7 @@ mod tests {
                     )),
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: false,
                 }
             );
         }
@@ -2475,6 +2860,7 @@ mod tests {
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: false,
                 }
             );
         }
@@ -2524,6 +2910,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: None,
                 offset: None,
@@ -2547,6 +2934,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     left_to_right: false,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(10),
                 offset: Some(2),
@@ -2570,6 +2958,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(5),
                 offset: None,
@@ -2602,6 +2991,7 @@ mod tests {
                     conditional_subquery_branches: Some(conditional_branches),
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: None,
                 offset: None,
@@ -2646,6 +3036,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: None,
                 offset: None,
@@ -2669,6 +3060,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     left_to_right: false,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(100),
                 offset: Some(10),
@@ -2694,6 +3086,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 })),
             },
         );
@@ -2707,6 +3100,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     left_to_right: false,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 })),
             },
         );
@@ -2720,6 +3114,7 @@ mod tests {
                     conditional_subquery_branches: Some(conditional_branches),
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(50),
                 offset: Some(5),
@@ -2747,11 +3142,13 @@ mod tests {
                             conditional_subquery_branches: None,
                             left_to_right: true,
                             add_parent_tree_on_subquery: false,
+                            read_mode: None,
                         })),
                     },
                     conditional_subquery_branches: None,
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: None,
                 offset: None,
@@ -2775,6 +3172,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(20),
                 offset: None,

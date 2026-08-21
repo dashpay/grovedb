@@ -187,6 +187,35 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
         }
     }
 
+    /// Insert a value **without** recomputing the root hash.
+    ///
+    /// Same storage effect as [`try_insert`](Self::try_insert) — the value is
+    /// written at the next free position and `count` is incremented — but the
+    /// O(count) `compute_root_hash` walk is skipped. Returns the position, or
+    /// `None` when the tree is already full.
+    ///
+    /// Use this when inserting a run of values and only the FINAL root
+    /// matters: calling [`try_insert`](Self::try_insert) in a loop is
+    /// O(n^2) in hash calls, because every insert re-walks every filled
+    /// position. Recover the root once at the end with
+    /// [`root_hash`](Self::root_hash).
+    pub fn try_insert_no_root(
+        &mut self,
+        value: &[u8],
+    ) -> CostResult<Option<u16>, DenseMerkleError> {
+        let mut cost = OperationCost::default();
+
+        if self.count >= self.capacity() {
+            return Ok(None).wrap_with_cost(cost);
+        }
+
+        let position = self.count;
+        cost_return_on_error!(cost, self.put_value(position, value));
+        self.count += 1;
+
+        Ok(Some(position)).wrap_with_cost(cost)
+    }
+
     /// Get a value by position.
     ///
     /// Returns `None` if position >= count. Returns an error if position <

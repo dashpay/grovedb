@@ -34,7 +34,8 @@ CommitmentTree lưu **tất cả dữ liệu trong không gian tên data** tại
 │  │                                                         │  │
 │  │  BulkAppendTree storage (Chapter 14):                   │  │
 │  │    Buffer entries → chunk blobs → chunk MMR             │  │
-│  │    value = cmx (32) || rho (32) || ciphertext (216)     │  │
+│  │    value = cmx (32) || rho (32) || cv_net (32)          │  │
+│  │            || ciphertext (216)                          │  │
 │  │                                                         │  │
 │  │  Sinsemilla Frontier (~1KB):                            │  │
 │  │    key: b"__ct_data__" (COMMITMENT_TREE_DATA_KEY)       │  │
@@ -211,7 +212,7 @@ CommitmentTree lưu tất cả dữ liệu trong một **không gian tên data**
 │                                                                   │
 │  Khóa lưu trữ BulkAppendTree (xem §14.7):                        │
 │    b"m" || pos (u64 BE)  → blob nút MMR                          │
-│    b"b" || index (u64 BE)→ mục buffer (cmx || rho || ciphertext)   │
+│    b"b" || index (u64 BE)→ mục buffer (cmx || rho || cv_net || ciphertext)   │
 │    b"e" || chunk (u64 BE)→ blob chunk (buffer đã nén)             │
 │    b"M"                  → metadata BulkAppendTree                │
 │                                                                   │
@@ -250,10 +251,10 @@ CommitmentTree cung cấp bốn thao tác. Thao tác chèn là generic trên `M:
 ```rust
 // Chèn một cam kết (typed) — trả về (sinsemilla_root, position)
 // M điều khiển xác thực kích thước ciphertext
-db.commitment_tree_insert::<_, _, M>(path, key, cmx, rho, ciphertext, tx, version)
+db.commitment_tree_insert::<_, _, M>(path, key, cmx, rho, cv_net, ciphertext, tx, version)
 
 // Chèn một cam kết (byte thô) — xác thực payload.len() == ciphertext_payload_size::<DashMemo>()
-db.commitment_tree_insert_raw(path, key, cmx, rho, payload_vec, tx, version)
+db.commitment_tree_insert_raw(path, key, cmx, rho, cv_net, payload_vec, tx, version)
 
 // Lấy Orchard Anchor hiện tại
 db.commitment_tree_anchor(path, key, tx, version)
@@ -280,7 +281,7 @@ Bước 2: Xây dựng ct_path = path ++ [key]
 Bước 3: Mở ngữ cảnh data storage tại ct_path
         Tải CommitmentTree (frontier + BulkAppendTree)
         Tuần tự hóa ciphertext → xác thực kích thước payload khớp M
-        Thêm cmx||rho||ciphertext vào BulkAppendTree
+        Thêm cmx||rho||cv_net||ciphertext vào BulkAppendTree
         Thêm cmx vào frontier Sinsemilla → lấy sinsemilla_root mới
         Theo dõi chi phí hash Blake3 + Sinsemilla
 
@@ -299,10 +300,10 @@ Bước 7: Commit lô lưu trữ và giao dịch cục bộ
 
 ```mermaid
 graph TD
-    A["commitment_tree_insert(path, key, cmx, rho, ciphertext)"] --> B["Validate: is CommitmentTree?"]
+    A["commitment_tree_insert(path, key, cmx, rho, cv_net, ciphertext)"] --> B["Validate: is CommitmentTree?"]
     B --> C["Open data storage, load CommitmentTree"]
     C --> D["Serialize & validate ciphertext size"]
-    D --> E["BulkAppendTree.append(cmx||rho||payload)"]
+    D --> E["BulkAppendTree.append(cmx||rho||cv_net||payload)"]
     E --> F["frontier.append(cmx)"]
     F --> G["Save frontier to data storage"]
     G --> H["Update parent CommitmentTree element<br/>new sinsemilla_root + total_count"]
@@ -332,7 +333,7 @@ Kiểu `Anchor` là biểu diễn gốc Orchard của root Sinsemilla, phù hợ
 
 ### commitment_tree_get_value
 
-Truy xuất giá trị đã lưu (cmx || rho || payload) theo vị trí toàn cục:
+Truy xuất giá trị đã lưu (cmx || rho || cv_net || payload) theo vị trí toàn cục:
 
 ```text
 Bước 1: Xác thực element tại path/key là CommitmentTree
@@ -373,10 +374,10 @@ Hai constructor tạo thao tác này:
 
 ```rust
 // Constructor thô -- người gọi tuần tự hóa payload thủ công
-QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, rho, payload_vec)
+QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, rho, cv_net, payload_vec)
 
 // Constructor typed -- tuần tự hóa TransmittedNoteCiphertext<M> nội bộ
-QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, rho, &ciphertext)
+QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, rho, cv_net, &ciphertext)
 ```
 
 Nhiều lần chèn nhắm cùng cây được cho phép trong một lô duy nhất. Vì `execute_ops_on_path` không có quyền truy cập data storage, tất cả thao tác CommitmentTree phải được tiền xử lý trước `apply_body`.
@@ -394,8 +395,8 @@ Bước 2: Cho mỗi nhóm:
         a. Đọc element hiện có → xác minh CommitmentTree, trích xuất chunk_power
         b. Mở ngữ cảnh lưu trữ giao dịch tại ct_path
         c. Tải CommitmentTree từ data storage (frontier + BulkAppendTree)
-        d. Cho mỗi (cmx, rho, payload):
-           - ct.append_raw(cmx, rho, payload) — xác thực kích thước, thêm vào cả hai
+        d. Cho mỗi (cmx, rho, cv_net, payload):
+           - ct.append_raw(cmx, rho, cv_net, payload) — xác thực kích thước, thêm vào cả hai
         e. Lưu frontier đã cập nhật vào data storage
 
 Bước 3: Thay thế tất cả thao tác CTInsert bằng một ReplaceNonMerkTreeRoot mỗi nhóm
@@ -434,7 +435,7 @@ Mặc định `M = DashMemo` có nghĩa mã hiện có không quan tâm kích th
 
 **Xác thực payload**: Phương thức `append_raw()` xác thực rằng `payload.len() == ciphertext_payload_size::<M>()` và trả về `CommitmentTreeError::InvalidPayloadSize` khi không khớp. Phương thức typed `append()` tuần tự hóa nội bộ, nên kích thước luôn đúng theo thiết kế.
 
-### Bố cục bản ghi lưu trữ (280 byte cho DashMemo)
+### Bố cục bản ghi lưu trữ (312 byte cho DashMemo)
 
 Mỗi mục trong BulkAppendTree lưu bản ghi note mã hóa hoàn chỉnh. Bố cục đầy đủ, tính đến từng byte:
 
@@ -444,11 +445,12 @@ Mỗi mục trong BulkAppendTree lưu bản ghi note mã hóa hoàn chỉnh. B�
 ├─────────────────────────────────────────────────────────────────────┤
 │  0        32     cmx — extracted note commitment (Pallas base field)│
 │  32       32     rho — nullifier of the spent note                  │
-│  64       32     epk_bytes — ephemeral public key (Pallas point)    │
-│  96       104    enc_ciphertext — encrypted note plaintext + MAC    │
-│  200      80     out_ciphertext — encrypted outgoing data + MAC     │
+│  64       32     cv_net — value commitment (Pallas curve point)     │
+│  96       32     epk_bytes — ephemeral public key (Pallas point)    │
+│  128      104    enc_ciphertext — encrypted note plaintext + MAC    │
+│  232      80     out_ciphertext — encrypted outgoing data + MAC     │
 ├─────────────────────────────────────────────────────────────────────┤
-│  Total:   280 bytes                                                 │
+│  Total:   312 bytes                                                 │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -532,7 +534,7 @@ Nonce bằng không an toàn vì khóa đối xứng được dẫn xuất từ 
 | Note plaintext | 88 bytes | 564 bytes | 52 fixed + memo |
 | enc_ciphertext | 104 bytes | 580 bytes | plaintext + 16 MAC |
 | Ciphertext payload (epk+enc+out) | 216 bytes | 692 bytes | Transmitted per note |
-| Full stored record (cmx+rho+payload) | **280 bytes** | **756 bytes** | BulkAppendTree entry |
+| Full stored record (cmx+rho+cv_net+payload) | **312 bytes** | **788 bytes** | BulkAppendTree entry |
 
 Memo nhỏ hơn của DashMemo (36 so với 512 byte) giảm mỗi bản ghi lưu trữ 476 byte -- đáng kể khi lưu hàng triệu note.
 
@@ -541,7 +543,7 @@ Memo nhỏ hơn của DashMemo (36 so với 512 byte) giảm mỗi bản ghi lư
 Client nhẹ quét tìm note của mình thực hiện trình tự sau cho mỗi bản ghi lưu trữ:
 
 ```text
-1. Read record: cmx (32) || rho (32) || epk (32) || enc_ciphertext (104) || out_ciphertext (80)
+1. Read record: cmx (32) || rho (32) || cv_net (32) || epk (32) || enc_ciphertext (104) || out_ciphertext (80)
 
 2. Compute shared_secret = [ivk] * epk     (ECDH with incoming viewing key)
 
@@ -736,7 +738,7 @@ Cam kết note tại vị trí P
 
 **2. Chứng minh truy xuất mục (đường V1):**
 
-Các mục riêng lẻ (cmx || rho || payload) có thể được truy vấn theo vị trí và chứng minh sử dụng chứng minh V1 (mục 9.6), cùng cơ chế được sử dụng bởi BulkAppendTree độc lập. Chứng minh V1 bao gồm đường xác thực BulkAppendTree cho vị trí được yêu cầu, chuỗi đến chứng minh Merk cha cho element CommitmentTree.
+Các mục riêng lẻ (cmx || rho || cv_net || payload) có thể được truy vấn theo vị trí và chứng minh sử dụng chứng minh V1 (mục 9.6), cùng cơ chế được sử dụng bởi BulkAppendTree độc lập. Chứng minh V1 bao gồm đường xác thực BulkAppendTree cho vị trí được yêu cầu, chuỗi đến chứng minh Merk cha cho element CommitmentTree.
 
 ## Theo dõi chi phí
 

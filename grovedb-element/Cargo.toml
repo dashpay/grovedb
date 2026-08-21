@@ -1,7 +1,7 @@
 [package]
 name = "grovedb-element"
 description = "The storage element crate for grovedb"
-version = "4.0.0"
+version = "5.0.1"
 authors = ["Samuel Westrich <sam@dash.org>"]
 edition = "2024"
 license = "MIT"
@@ -17,15 +17,18 @@ serde = { workspace = true, optional = true }
 hex = { workspace = true }
 integer-encoding = { workspace = true }
 thiserror = { workspace = true }
-grovedb-version = { version = "4.0.0", path = "../grovedb-version" }
-grovedb-visualize = { version = "4.0.0", path = "../visualize", optional = true }
-grovedb-path = { version = "4.0.0", path = "../path" }
+grovedb-version = { version = "5.0.1", path = "../grovedb-version" }
+grovedb-visualize = { version = "5.0.1", path = "../visualize", optional = true }
+grovedb-path = { version = "5.0.1", path = "../path" }
+grovedb-query = { version = "5.0.1", path = "../grovedb-query" }
 
 [features]
 default = ["verify", "constructor"]
 verify = []
 constructor = []
-serde = ["dep:serde"]
+# Forwarded to grovedb-query so the re-exported `IndexAxis` (defined
+# there) carries its serde impls whenever this crate's serde is on.
+serde = ["dep:serde", "grovedb-query/serde"]
 visualize = ["dep:grovedb-visualize"]
 
 [dev-dependencies]

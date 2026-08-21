@@ -1,10 +1,12 @@
 use crate::version::grovedb_versions::GroveDBAggregateSumPathQueryMethodVersions;
 use crate::version::{
+    bulk_append_tree_versions::{BulkAppendTreeCostVersions, BulkAppendTreeVersions},
     grovedb_versions::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
         GroveDBOperationsDeleteVersions, GroveDBOperationsGetVersions,
-        GroveDBOperationsInsertVersions, GroveDBOperationsProofVersions,
+        GroveDBOperationsIndexedAxisVersions, GroveDBOperationsInsertVersions,
+        GroveDBOperationsPrivateDocumentStoreVersions, GroveDBOperationsProofVersions,
         GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
         GroveDBReplicationVersions, GroveDBVersions,
@@ -12,6 +14,7 @@ use crate::version::{
     merk_versions::{
         MerkAverageCaseCostsVersions, MerkBatchVersions, MerkProofVersions, MerkVersions,
     },
+    mmr_versions::{MmrCostVersions, MmrVersions},
     GroveVersion,
 };
 
@@ -30,6 +33,9 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
             apply_batch_with_element_flags_update: 0,
             apply_partial_batch_with_element_flags_update: 0,
             estimated_case_operations_for_batch: 0,
+            delete_tree_cleanup_type_source: 0,
+            overwrite_indexed_cleanup_inspection: 0,
+            keyless_op_cost_dispatch: 0,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,
@@ -104,7 +110,11 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
                 insert: 0,
                 insert_on_transaction: 0,
                 insert_without_transaction: 0,
-                add_element_on_transaction: 0,
+                // v1: non-batch insert writes CountSumTree / ProvableCountTree /
+                // ProvableCountSumTree as layered subtrees, consistent with the
+                // batch path. GROVE_V1 / GROVE_V2 keep v0 (Op::Put) to preserve
+                // the protocol-v11 consensus root (testnet block 245,344).
+                add_element_on_transaction: 1,
                 add_element_without_transaction: 0,
                 insert_if_not_exists: 0,
                 insert_if_not_exists_return_existing_element: 0,
@@ -146,6 +156,12 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
                 query_keys_optional: 0,
                 query_raw_keys_optional: 0,
                 follow_element: 0,
+                run_path_query: 0,
+            },
+            indexed_axis: GroveDBOperationsIndexedAxisVersions {
+                read: 0,
+                prove_single_path: 0,
+                verify_single_path: 0,
             },
             proof: GroveDBOperationsProofVersions {
                 prove_query: 0,
@@ -164,6 +180,9 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
                 verify_subset_query_with_absence_proof: 0,
                 verify_query_with_chained_path_queries: 0,
                 verify_query_get_parent_tree_info_with_options: 0,
+                terminal_non_merk_tree_child_hash: 0,
+                axis_descent_in_v1_envelope: 0,
+                sum_budget_in_v1_envelope: 0,
             },
             average_case: GroveDBOperationsAverageCaseVersions {
                 add_average_case_get_merk_at_path: 0,
@@ -179,6 +198,7 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
                 add_average_case_get_raw_cost: 0,
                 add_average_case_get_raw_tree_cost: 0,
                 add_average_case_get_cost: 0,
+                average_case_commitment_tree_insert: 0,
             },
             worst_case: GroveDBOperationsWorstCaseVersions {
                 add_worst_case_get_merk_at_path: 0,
@@ -193,6 +213,15 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
                 add_worst_case_get_raw_tree_cost: 0,
                 add_worst_case_get_raw_cost: 0,
                 add_worst_case_get_cost: 0,
+                worst_case_commitment_tree_insert: 0,
+            },
+            // PrivateDocumentStore is unavailable before GROVE_V4: every
+            // slot is 0 and the operations fail closed.
+            private_document_store: GroveDBOperationsPrivateDocumentStoreVersions {
+                element_creation: 0,
+                insert: 0,
+                get_value: 0,
+                count: 0,
             },
         },
         aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions { merge: 0 },
@@ -201,6 +230,7 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
             merge: 0,
             query_items_at_path: 0,
             should_add_parent_tree_at_path: 0,
+            unified_read_mode: 0,
         },
         replication: GroveDBReplicationVersions {
             get_subtrees_metadata: 0,
@@ -238,6 +268,25 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
             // Initial implementation; introduced alongside the V1
             // proof envelope.
             prove_count_offset_on_range: 0,
+        },
+    },
+    // MMR hash charges: the shipped accounting, which billed the
+    // storage reads each operation performed but not the blake3 merges
+    // those reads fed. Locked here — these versions are released and a
+    // replayed block must be charged what it was admitted under.
+    mmr_versions: MmrVersions {
+        cost: MmrCostVersions {
+            push: 0,
+            get_root: 0,
+            gen_proof: 0,
+        },
+    },
+    // Compaction hash count: the shipped figure, which omits the peak
+    // bagging a compaction's own `get_root` performs. Locked — the
+    // shielded pool has been charged this since mainnet activation.
+    bulk_append_tree_versions: BulkAppendTreeVersions {
+        cost: BulkAppendTreeCostVersions {
+            compaction_hash_count: 0,
         },
     },
 };

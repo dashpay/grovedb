@@ -284,14 +284,14 @@ graph TD
 **Arsitektur:**
 - *Frontier* (jalur paling kanan pohon Merkle, ukuran konstan ~1KB) disimpan
   dalam **namespace data**, dikunci oleh `COMMITMENT_TREE_DATA_KEY`
-- Data note aktual (`cmx || ciphertext`) disimpan melalui **BulkAppendTree**
+- Data note aktual (`cmx || rho || cv_net || ciphertext`) disimpan melalui **BulkAppendTree**
   di **namespace data** — dikompaksi chunk, dapat diambil berdasarkan posisi
 - Anchor historis dilacak oleh Platform di pohon provable terpisah
 - Root Sinsemilla TIDAK disimpan dalam Element — ia mengalir sebagai child hash
   Merk melalui hierarki hash GroveDB
 
 **Operasi:**
-- `commitment_tree_insert(path, key, cmx, ciphertext, tx)` — Append bertipe
+- `commitment_tree_insert(path, key, cmx, rho, cv_net, ciphertext, tx)` — Append bertipe
   menerima `TransmittedNoteCiphertext<M>`; mengembalikan `(new_root, position)`
 - `commitment_tree_anchor(path, key, tx)` — Dapatkan Anchor Orchard saat ini
 - `commitment_tree_get_value(path, key, position, tx)` — Ambil value berdasarkan posisi

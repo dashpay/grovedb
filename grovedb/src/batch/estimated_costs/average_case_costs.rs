@@ -2,7 +2,7 @@
 
 #[cfg(feature = "minimal")]
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt,
 };
 
@@ -12,14 +12,20 @@ use grovedb_costs::{
 };
 #[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::average_case_costs::{
-    add_average_case_merk_has_value, average_case_merk_propagate, EstimatedLayerInformation,
+    add_average_case_get_merk_node, add_average_case_merk_has_value, average_case_merk_propagate,
+    EstimatedLayerInformation,
 };
-use grovedb_merk::{tree::AggregateData, tree_type::TreeType, RootHashKeyAndAggregateData};
+use grovedb_merk::{
+    element::tree_type::ElementTreeTypeExtensions, tree::AggregateData, tree_type::TreeType,
+    RootHashKeyAndAggregateData,
+};
 #[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "minimal")]
 use grovedb_storage::worst_case_costs::WorstKeyLength;
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{error::GroveVersionError, version::GroveVersion};
+#[cfg(feature = "minimal")]
+use integer_encoding::VarInt;
 #[cfg(feature = "minimal")]
 use itertools::Itertools;
 
@@ -42,6 +48,13 @@ impl GroveOp {
         &self,
         key: &KeyInfo,
         layer_element_estimates: &EstimatedLayerInformation,
+        // The declared chunk power of the append-only tree this op targets
+        // — a `CommitmentTreeInsert`'s commitment tree or a
+        // `PrivateDocumentStoreInsert`'s store — read from that tree's own
+        // layer in the estimation paths. Both types size their dense-recompute
+        // and compaction terms by `2^chunk_power`, which the op itself does
+        // not carry. Ignored by every other op type.
+        append_tree_chunk_power: Option<u8>,
         propagate: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -205,41 +218,14 @@ impl GroveOp {
                 grove_version,
             ),
             GroveOp::CommitmentTreeInsert { payload, .. } => {
-                // After preprocessing, CommitmentTreeInsert becomes
-                // ReplaceNonMerkTreeRoot. The base cost is a tree root key
-                // replacement in the parent Merk.
-                let item_cost = GroveDb::average_case_merk_replace_tree(
+                Self::average_case_commitment_tree_insert(
+                    payload,
                     key,
                     layer_element_estimates,
-                    TreeType::CommitmentTree(0),
+                    append_tree_chunk_power,
                     propagate,
                     grove_version,
-                );
-                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
-                // Additional cost: frontier I/O (data storage load + save),
-                // buffer entry write, and Sinsemilla hashing.
-                //
-                // Average frontier size with ~16 ommers:
-                // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 16*32 = 554
-                const AVG_FRONTIER_SIZE: u32 = 554;
-                // Buffer entry: cmx (32 bytes) + payload
-                let buffer_entry_size = 32 + payload.len() as u32;
-                // Average Sinsemilla hashes per append:
-                // 32 (root computation) + 1 (avg ommer updates) = 33
-                const AVG_SINSEMILLA_HASHES: u32 = 33;
-                // Average blake3 hashes: 1 for running buffer hash
-                const AVG_BLAKE3_HASHES: u32 = 1;
-                item_cost.add_cost(OperationCost {
-                    seek_count: 3, // frontier load + frontier save + buffer write
-                    storage_cost: StorageCost {
-                        added_bytes: buffer_entry_size,
-                        replaced_bytes: AVG_FRONTIER_SIZE,
-                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
-                    },
-                    storage_loaded_bytes: AVG_FRONTIER_SIZE as u64,
-                    hash_node_calls: AVG_BLAKE3_HASHES,
-                    sinsemilla_hash_calls: AVG_SINSEMILLA_HASHES,
-                })
+                )
             }
             GroveOp::MmrTreeAppend { value } => {
                 // Cost of updating parent element in the Merk
@@ -304,6 +290,83 @@ impl GroveOp {
                     sinsemilla_hash_calls: 0,
                 })
             }
+            GroveOp::PrivateDocumentStoreInsert { entry } => {
+                // The dense-recompute and compaction terms scale with
+                // `2^chunk_power`, which the op does not carry, so the
+                // store's own layer MUST be declared with
+                // `TreeType::PrivateDocumentStore(chunk_power)` — the same
+                // declare-your-layers contract `CommitmentTreeInsert`
+                // follows. A silent fallback would either under-bound or
+                // grotesquely over-reserve; both are worse than a loud error
+                // at integration time.
+                let Some(chunk_power) = append_tree_chunk_power else {
+                    return Err(Error::PathNotFoundInCacheForEstimatedCosts(
+                        "PrivateDocumentStoreInsert estimation requires the store's own layer \
+                         declared with TreeType::PrivateDocumentStore(chunk_power) in the \
+                         estimated layer information"
+                            .to_string(),
+                    ))
+                    .wrap_with_cost(OperationCost::default());
+                };
+                let item_cost = GroveDb::average_case_merk_replace_tree(
+                    key,
+                    layer_element_estimates,
+                    TreeType::PrivateDocumentStore(chunk_power),
+                    propagate,
+                    grove_version,
+                );
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                // `entry.len()` IS the store's committed entry size — the
+                // append path rejects any other length — so the byte terms
+                // need no separate declaration.
+                let entry_size = entry.len() as u32;
+                let epoch_entries: u32 = 1u32 << chunk_power.min(16) as u32;
+                // Amortized over one epoch: every entry is written once to
+                // the buffer, and once more into the chunk blob when the
+                // epoch compacts.
+                let amortized_compaction_bytes = entry_size;
+                // The dense-buffer root walk costs two hashes per filled
+                // position and runs on every append, so across an epoch it
+                // averages half the buffer.
+                let avg_dense_hashes = epoch_entries.saturating_sub(1);
+                // Bulk state root + composite pds_state root + the
+                // committed-config hash paid when the store is opened.
+                const ROOT_AND_CONFIG_HASHES: u32 = 3;
+                // MMR push work, amortized across the epoch it serves.
+                const AMORTIZED_MMR_HASHES: u32 = 1;
+                // The dense-root walk does not just hash: it READS every
+                // filled position. Averaged across an epoch that is about
+                // half a buffer per append, and compaction adds one more
+                // pass, so the I/O terms have to scale with the epoch too —
+                // charging one seek and zero loaded bytes understated this by
+                // O(epoch size).
+                let avg_dense_reads = epoch_entries / 2;
+                // A NonCounted-wrapped store serializes one byte wider, and
+                // the apply path now preserves that wrapper. Neither the op
+                // nor the declared layer records whether this store is
+                // wrapped, so charge the byte unconditionally: over-charging
+                // one byte is harmless, whereas omitting it understates every
+                // append to a non-counted store.
+                const NON_COUNTED_WRAPPER_BYTE: u32 = 1;
+                item_cost.add_cost(OperationCost {
+                    // 1 buffer entry write + the root walk's reads.
+                    seek_count: 1u32.saturating_add(avg_dense_reads),
+                    storage_cost: StorageCost {
+                        added_bytes: entry_size
+                            .saturating_add(amortized_compaction_bytes)
+                            .saturating_add(NON_COUNTED_WRAPPER_BYTE),
+                        replaced_bytes: 0,
+                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+                    },
+                    storage_loaded_bytes: (avg_dense_reads as u64)
+                        .saturating_mul(entry_size as u64),
+                    hash_node_calls: avg_dense_hashes
+                        .saturating_add(ROOT_AND_CONFIG_HASHES)
+                        .saturating_add(AMORTIZED_MMR_HASHES),
+                    sinsemilla_hash_calls: 0,
+                })
+            }
+
             GroveOp::DenseTreeInsert { value } => {
                 // Cost of updating parent element in the Merk
                 let item_cost = GroveDb::average_case_merk_replace_tree(
@@ -360,7 +423,212 @@ impl GroveOp {
                 propagate_if_input(),
                 grove_version,
             ),
+            GroveOp::InsertAggregateIndexedTreeRootKeys { element, .. } => {
+                // Insert-side counterpart of the replace arm below. The tree
+                // type comes from the CARRIED element, not the aggregate: the
+                // estimated execute returns `NoAggregateData`, whose
+                // aggregate-derived fallback is NormalTree (cost size 3) —
+                // 25 bytes under a PCPSIT's 28, which the fresh-path
+                // ≥-actual contract test caught. Flags come off the element;
+                // indexed elements cannot be wrapped, so no wrapper overhead.
+                GroveDb::average_case_merk_insert_tree(
+                    key,
+                    element.get_flags(),
+                    element.tree_type().unwrap_or(TreeType::NormalTree),
+                    in_tree_type,
+                    0,
+                    propagate_if_input(),
+                    grove_version,
+                )
+            }
+            GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+                primary_aggregate_data,
+                ..
+            } => {
+                // The parent-merk node update that recomputes the indexed
+                // element's value_hash. The per-axis secondary Merk work is
+                // charged at the PRIMARY's own level in `execute_ops_on_path`,
+                // where the primary's layer information is in scope.
+                //
+                // The node must be sized as the INDEXED type: an indexed
+                // element serializes its per-axis secondary state, so the
+                // non-indexed type `parent_tree_type()` yields is smaller than
+                // the element's own minimum payload. The fallback covers only
+                // hand-built ops carrying a non-indexed aggregate, which
+                // `execute_ops_on_path` never emits.
+                GroveDb::average_case_merk_replace_tree(
+                    key,
+                    layer_element_estimates,
+                    primary_aggregate_data
+                        .indexed_parent_tree_type()
+                        .unwrap_or_else(|| primary_aggregate_data.parent_tree_type()),
+                    propagate,
+                    grove_version,
+                )
+            }
         }
+    }
+
+    /// Versioned cost of a `CommitmentTreeInsert` op in the average-case
+    /// estimator. Downstream the estimate is an admission bound, so
+    /// historical blocks admitted under the legacy numbers must re-validate
+    /// identically on replay — the model is dispatched on
+    /// `average_case_commitment_tree_insert`.
+    fn average_case_commitment_tree_insert(
+        payload: &[u8],
+        key: &KeyInfo,
+        layer_element_estimates: &EstimatedLayerInformation,
+        append_tree_chunk_power: Option<u8>,
+        propagate: bool,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        match grove_version
+            .grovedb_versions
+            .operations
+            .average_case
+            .average_case_commitment_tree_insert
+        {
+            0 => Self::average_case_commitment_tree_insert_v0(
+                payload,
+                key,
+                layer_element_estimates,
+                propagate,
+                grove_version,
+            ),
+            1 => Self::average_case_commitment_tree_insert_v1(
+                payload,
+                key,
+                layer_element_estimates,
+                append_tree_chunk_power,
+                propagate,
+                grove_version,
+            ),
+            version => Err(Error::VersionError(
+                GroveVersionError::UnknownVersionMismatch {
+                    method: "average_case_commitment_tree_insert".to_string(),
+                    known_versions: vec![0, 1],
+                    received: version,
+                },
+            ))
+            .wrap_with_cost(OperationCost::default()),
+        }
+    }
+
+    /// Legacy (V1..V3) model: averages, NOT upper bounds. Kept byte-for-byte
+    /// for replay of historical admission decisions; unreachable from the
+    /// batch estimation path on those versions (keyless ops are skipped
+    /// there) but reachable through direct dispatch.
+    fn average_case_commitment_tree_insert_v0(
+        payload: &[u8],
+        key: &KeyInfo,
+        layer_element_estimates: &EstimatedLayerInformation,
+        propagate: bool,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        let item_cost = GroveDb::average_case_merk_replace_tree(
+            key,
+            layer_element_estimates,
+            TreeType::CommitmentTree(0),
+            propagate,
+            grove_version,
+        );
+        use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+        // Average frontier size with ~16 ommers:
+        // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 16*32
+        const AVG_FRONTIER_SIZE: u32 = 554;
+        // Buffer entry: cmx (32) + rho (32) + cv_net (32) + payload
+        let buffer_entry_size = 96 + payload.len() as u32;
+        // 32 (root computation) + 1 (avg ommer updates) = 33
+        const AVG_SINSEMILLA_HASHES: u32 = 33;
+        // 1 blake3 for the running buffer hash
+        const AVG_BLAKE3_HASHES: u32 = 1;
+        item_cost.add_cost(OperationCost {
+            seek_count: 3, // frontier load + frontier save + buffer write
+            storage_cost: StorageCost {
+                added_bytes: buffer_entry_size,
+                replaced_bytes: AVG_FRONTIER_SIZE,
+                removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+            },
+            storage_loaded_bytes: AVG_FRONTIER_SIZE as u64,
+            hash_node_calls: AVG_BLAKE3_HASHES,
+            sinsemilla_hash_calls: AVG_SINSEMILLA_HASHES,
+        })
+    }
+
+    /// V4+ model: in the apply path, preprocessing rewrites the op into
+    /// ReplaceNonMerkTreeRoot. The base cost is a tree root key replacement
+    /// in the parent Merk; the append work itself (frontier I/O, Sinsemilla
+    /// hashing, note write, epoch compaction) is charged by the shared
+    /// upper-bound model — deliberately NOT an average, since the append
+    /// cost is position-dependent and the position is adversary-chosen. See
+    /// `commitment_tree_insert_op_cost`.
+    fn average_case_commitment_tree_insert_v1(
+        payload: &[u8],
+        key: &KeyInfo,
+        layer_element_estimates: &EstimatedLayerInformation,
+        append_tree_chunk_power: Option<u8>,
+        propagate: bool,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        // The dense-recompute and compaction terms scale with 2^chunk_power,
+        // which the op does not carry, so the tree's own layer MUST be
+        // declared with `TreeType::CommitmentTree(chunk_power)` in the
+        // estimation paths — the same declare-your-layers contract every
+        // other estimated op follows. A silent fallback here would either
+        // under-bound (too small) or grotesquely over-reserve (the physical
+        // ceiling), both worse than a loud error at integration time.
+        let Some(chunk_power) = append_tree_chunk_power else {
+            return Err(Error::PathNotFoundInCacheForEstimatedCosts(
+                "CommitmentTreeInsert estimation requires the commitment tree's own layer \
+                 declared with TreeType::CommitmentTree(chunk_power) in the estimated layer \
+                 information"
+                    .to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        };
+        // The preprocessing read of the stored element loads its
+        // caller-supplied flags too; bound them with the parent layer's
+        // declared flags size — the same metadata the parent-node replace
+        // below uses, so an undeclared flag size undercounts both
+        // consistently.
+        let element_flags_load_bound = match layer_element_estimates
+            .estimated_layer_sizes
+            .layered_flags_size()
+        {
+            Ok(flags_size) => flags_size
+                .map(|f| f + f.required_space() as u32)
+                .unwrap_or_default(),
+            Err(e) => return Err(Error::MerkError(e)).wrap_with_cost(OperationCost::default()),
+        };
+        GroveDb::average_case_merk_replace_tree(
+            key,
+            layer_element_estimates,
+            TreeType::CommitmentTree(chunk_power),
+            propagate,
+            grove_version,
+        )
+        .add_cost(super::commitment_tree_insert_op_cost(
+            payload.len() as u32,
+            chunk_power,
+            element_flags_load_bound,
+        ))
+    }
+}
+
+#[cfg(feature = "minimal")]
+/// Axes whose secondary Merks an indexed primary maintains.
+///
+/// A PCPSIT's configured axes are a 1..=3 subset carried by the element, which
+/// the estimator cannot see, so the worst case (all three) is charged — the
+/// estimate stays an upper bound.
+fn indexed_axes_for_tree_type(tree_type: TreeType) -> Vec<grovedb_element::indexed::IndexAxis> {
+    use grovedb_element::indexed::IndexAxis;
+    match tree_type {
+        TreeType::ProvableSumIndexedTree => vec![IndexAxis::Sum],
+        TreeType::ProvableCountProvableSumIndexedTree => {
+            vec![IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg]
+        }
+        _ => vec![IndexAxis::Count],
     }
 }
 
@@ -370,6 +638,12 @@ impl GroveOp {
 pub(in crate::batch) struct AverageCaseTreeCacheKnownPaths {
     paths: HashMap<KeyInfoPath, EstimatedLayerInformation>,
     cached_merks: HashMap<KeyInfoPath, TreeType>,
+    /// Paths whose layer is an indexed primary, so the bubble-up emits the
+    /// same `ReplaceAggregateIndexedTreeRootKeys` op a real apply produces.
+    pending_cidx_secondary: HashSet<Vec<Vec<u8>>>,
+    /// The axes each pending path maintains, so the emitted op carries one
+    /// entry per axis exactly as a real apply would.
+    pending_cidx_axes: HashMap<Vec<Vec<u8>>, Vec<grovedb_element::indexed::IndexAxis>>,
 }
 
 #[cfg(feature = "minimal")]
@@ -381,6 +655,8 @@ impl AverageCaseTreeCacheKnownPaths {
         AverageCaseTreeCacheKnownPaths {
             paths,
             cached_merks: HashMap::default(),
+            pending_cidx_secondary: HashSet::default(),
+            pending_cidx_axes: HashMap::default(),
         }
     }
 }
@@ -394,6 +670,32 @@ impl fmt::Debug for AverageCaseTreeCacheKnownPaths {
 
 #[cfg(feature = "minimal")]
 impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
+    /// Report a secondary mirror for layers that are indexed primaries, so the
+    /// bubble-up emits `ReplaceAggregateIndexedTreeRootKeys` — the op a real
+    /// `apply_batch` produces — instead of a plain `ReplaceTreeRootKey`. The
+    /// hash and root key are placeholders: the estimator only needs the op
+    /// SHAPE to charge the right parent-node update.
+    fn take_cidx_secondary_after_apply(
+        &mut self,
+        path: &[Vec<u8>],
+    ) -> Option<Vec<(u8, grovedb_merk::CryptoHash, Option<Vec<u8>>)>> {
+        if self.pending_cidx_secondary.remove(path) {
+            // Placeholder per-axis state: the estimator only needs the op SHAPE
+            // to charge the right parent-node update, not real hashes. One
+            // entry per axis so the shape matches what a real apply produces.
+            Some(
+                self.pending_cidx_axes
+                    .remove(path)
+                    .unwrap_or_else(|| vec![grovedb_element::indexed::IndexAxis::Count])
+                    .into_iter()
+                    .map(|axis| (axis.tag(), [0u8; 32], None))
+                    .collect(),
+            )
+        } else {
+            None
+        }
+    }
+
     fn insert(
         &mut self,
         path: &KeyInfoPath,
@@ -477,10 +779,94 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             self.cached_merks.insert(path.clone(), layer_info.tree_type);
         }
 
+        // How many keys at this level the mirror will actually rewrite. The
+        // real mirror (`apply_cidx_secondary_mirror_post_apply`) does one
+        // delete+insert per captured key, so charging a single key's worth
+        // per level undercharges in proportion to batch width.
+        let mirrored_key_count = ops_at_path_by_key
+            .values()
+            .filter(|op| op.can_mutate_child_count())
+            .count();
+
         for (key, op) in ops_at_path_by_key.into_iter() {
+            // A CommitmentTreeInsert arrives under a synthetic key carrying
+            // the real tree key (see `keyless_op_synthetic_key`). When the
+            // caller declared the tree's own layer with
+            // `TreeType::CommitmentTree(chunk_power)` — as Dash Platform
+            // does — the estimate uses the tree's ACTUAL epoch scale
+            // instead of the constructor-enforced cap.
+            let append_tree_chunk_power = if matches!(
+                op,
+                GroveOp::CommitmentTreeInsert { .. } | GroveOp::PrivateDocumentStoreInsert { .. }
+            ) {
+                crate::batch::batch_structure::keyless_op_tree_key(&key).and_then(|tree_key| {
+                    // Match the declared layer by KEY BYTES, not by
+                    // `KeyInfo` equality. A caller may legitimately declare a
+                    // layer with `KeyInfo::MaxKeySize { unique_id, .. }`, and
+                    // `KeyInfo`'s `PartialEq` deliberately reports
+                    // `KnownKey` and `MaxKeySize` as unequal — so an exact
+                    // `paths.get` with a synthesized `KnownKey` misses such a
+                    // declaration and the estimate then fails with
+                    // `PathNotFoundInCacheForEstimatedCosts` even though the
+                    // layer WAS declared. `KeyInfo::as_slice` yields the key
+                    // for `KnownKey` and the `unique_id` for `MaxKeySize`,
+                    // which is the identity callers declare with in both
+                    // cases.
+                    let parent_segments: Vec<&[u8]> = path.0.iter().map(|k| k.as_slice()).collect();
+                    self.paths
+                        .iter()
+                        .find(|(declared, _)| {
+                            declared.0.len() == parent_segments.len() + 1
+                                && declared
+                                    .0
+                                    .iter()
+                                    .map(|k| k.as_slice())
+                                    .zip(
+                                        parent_segments
+                                            .iter()
+                                            .copied()
+                                            .chain(std::iter::once(tree_key)),
+                                    )
+                                    .all(|(a, b)| a == b)
+                        })
+                        .and_then(|(_, layer)| {
+                            // The declared layer must be the RIGHT KIND of
+                            // append tree for this op. Accepting either kind
+                            // would let a store's epoch be estimated from a
+                            // commitment tree's declaration (or vice versa),
+                            // silently producing a confident but wrong
+                            // figure; a mismatch should fall through to the
+                            // loud "declare your layer" error instead.
+                            let chunk_power = match (&op, layer.tree_type) {
+                                (
+                                    GroveOp::CommitmentTreeInsert { .. },
+                                    TreeType::CommitmentTree(cp),
+                                )
+                                | (
+                                    GroveOp::PrivateDocumentStoreInsert { .. },
+                                    TreeType::PrivateDocumentStore(cp),
+                                ) => cp,
+                                _ => return None,
+                            };
+                            // A declared chunk power outside the range the
+                            // constructors accept cannot describe a real
+                            // tree, so treat it as undeclared rather than
+                            // estimating from it.
+                            (1..=16).contains(&chunk_power).then_some(chunk_power)
+                        })
+                })
+            } else {
+                None
+            };
             cost_return_on_error!(
                 &mut cost,
-                op.average_case_cost(&key, layer_element_estimates, false, grove_version)
+                op.average_case_cost(
+                    &key,
+                    layer_element_estimates,
+                    append_tree_chunk_power,
+                    false,
+                    grove_version
+                )
             );
         }
 
@@ -489,7 +875,87 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             average_case_merk_propagate(layer_element_estimates, grove_version)
                 .map_err(Error::MerkError)
         );
-        Ok(([0u8; 32], None, AggregateData::NoAggregateData)).wrap_with_cost(cost)
+
+        // An indexed primary also maintains one secondary Merk per axis. Those
+        // live at derived prefixes (`Blake3(primary_prefix ‖ axis_tag)`) which
+        // are not GroveDB paths, so they never appear in `self.paths` and no
+        // layer charges them — but this IS the primary's level, so its layer
+        // information is right here and the secondary's shape follows from it.
+        //
+        // Recording the path additionally makes `take_cidx_secondary_after_apply`
+        // report a mirror, so the bubble-up emits
+        // `ReplaceAggregateIndexedTreeRootKeys` exactly as a real apply_batch
+        // does. Without it the estimator emitted a plain `ReplaceTreeRootKey`
+        // and the indexed arm of `average_case_cost` was unreachable.
+        if layer_element_estimates.tree_type.is_indexed_primary() {
+            let axes = indexed_axes_for_tree_type(layer_element_estimates.tree_type);
+            // The mirror brackets the primary apply with a pre- and a
+            // post-state read of each touched entry
+            // (`read_entry_aggregates`, pre and post), each a `Merk::get`
+            // plus a `Merk::get_value_hash` on the primary node — the
+            // node's STORED hash is what the row must bind, and for tree-
+            // or reference-shaped entries it is a combined hash that
+            // cannot be recomputed from the element bytes. Four node
+            // fetches per touched key, charged at the uncached bound (the
+            // post-apply pair usually hits the in-memory tree, so this
+            // leans over rather than under). Charged HERE and not inside
+            // `average_case_indexed_secondary_mirror` because the reads
+            // are per-key while that function is per-axis additive — one
+            // capture feeds every axis's rewrite.
+            let primary_key_width = GroveDb::average_case_layer_key_size(
+                &layer_element_estimates.estimated_layer_sizes,
+            );
+            let primary_element_size = cost_return_on_error_no_add!(
+                cost,
+                layer_element_estimates
+                    .estimated_layer_sizes
+                    .value_with_feature_and_flags_size(grove_version)
+                    .map_err(Error::MerkError)
+            );
+            // Once per mutated key, not once per level: the mirror rewrites
+            // every captured key's row on every axis.
+            for _ in 0..mirrored_key_count {
+                for _ in 0..4 {
+                    cost_return_on_error_no_add!(
+                        cost,
+                        add_average_case_get_merk_node(
+                            &mut cost,
+                            primary_key_width,
+                            primary_element_size,
+                            layer_element_estimates.tree_type.inner_node_type(),
+                        )
+                        .map_err(Error::MerkError)
+                    );
+                }
+                cost_return_on_error!(
+                    &mut cost,
+                    GroveDb::average_case_indexed_secondary_mirror(
+                        path,
+                        layer_element_estimates,
+                        &axes,
+                        grove_version,
+                    )
+                );
+            }
+            self.pending_cidx_secondary.insert(path.to_path());
+            self.pending_cidx_axes.insert(path.to_path(), axes.clone());
+        }
+
+        // Return an aggregate whose KIND matches the layer's tree type, so
+        // the bubble-up ops built from this return size the parent node as
+        // the right element: `NoAggregateData` maps to NormalTree (cost size
+        // 3), silently under-sizing an indexed parent's 13/28 bytes in the
+        // Replace/Insert aggregate arms. Values are zero — only the variant
+        // drives estimator sizing.
+        let aggregate_kind = match layer_element_estimates.tree_type {
+            TreeType::ProvableCountIndexedTree => AggregateData::ProvableCount(0),
+            TreeType::ProvableSumIndexedTree => AggregateData::ProvableSum(0),
+            TreeType::ProvableCountProvableSumIndexedTree => {
+                AggregateData::ProvableCountAndProvableSum(0, 0)
+            }
+            _ => AggregateData::NoAggregateData,
+        };
+        Ok(([0u8; 32], None, aggregate_kind)).wrap_with_cost(cost)
     }
 
     // Clippy's suggestion doesn't respect ownership in this case
@@ -1483,6 +1949,7 @@ mod tests {
         let op = GroveOp::CommitmentTreeInsert {
             cmx: [1u8; 32],
             rho: [2u8; 32],
+            cv_net: [3u8; 32],
             payload: vec![0u8; 100],
         };
         let key = KeyInfo::KnownKey(b"tree_key".to_vec());
@@ -1491,8 +1958,14 @@ mod tests {
             estimated_layer_count: ApproximateElements(10),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
+        // The V4+ model requires the tree's chunk power (normally read from
+        // the tree's own declared layer); an undeclared dispatch errors.
+        assert!(op
+            .average_case_cost(&key, &layer_info, None, false, grove_version)
+            .cost_as_result()
+            .is_err());
         let cost = op
-            .average_case_cost(&key, &layer_info, false, grove_version)
+            .average_case_cost(&key, &layer_info, Some(10), false, grove_version)
             .cost_as_result()
             .expect("expected cost for commitment tree insert");
         // CommitmentTreeInsert includes frontier I/O and buffer writes plus
@@ -1512,7 +1985,7 @@ mod tests {
             "expected hash_node_calls > 0, got {}",
             cost.hash_node_calls
         );
-        // Buffer entry size = 32 + payload.len() = 132
+        // Buffer entry size = 96 + payload.len() = 196
         // Frontier replaced bytes = 554
         assert!(
             cost.storage_cost.added_bytes > 0,
@@ -1539,7 +2012,7 @@ mod tests {
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
         let cost = op
-            .average_case_cost(&key, &layer_info, false, grove_version)
+            .average_case_cost(&key, &layer_info, None, false, grove_version)
             .cost_as_result()
             .expect("expected cost for mmr tree append");
         // MmrTreeAppend includes parent replace cost plus MMR node I/O.
@@ -1580,7 +2053,7 @@ mod tests {
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
         let cost = op
-            .average_case_cost(&key, &layer_info, false, grove_version)
+            .average_case_cost(&key, &layer_info, None, false, grove_version)
             .cost_as_result()
             .expect("expected cost for bulk append");
         // BulkAppend includes parent replace cost plus buffer write + running
@@ -1604,6 +2077,86 @@ mod tests {
     }
 
     #[test]
+    fn test_private_document_store_insert_average_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        let op = GroveOp::PrivateDocumentStoreInsert {
+            entry: vec![42u8; 64],
+        };
+        let key = KeyInfo::KnownKey(b"pds_key".to_vec());
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: ApproximateElements(5),
+            estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+        };
+        let cost = op
+            .average_case_cost(&key, &layer_info, Some(4), false, grove_version)
+            .cost_as_result()
+            .expect("expected cost for private document store insert");
+        // PrivateDocumentStoreInsert mirrors BulkAppend: parent replace cost
+        // plus buffer write + running hash; added bytes are entry-size
+        // parametrized (the entry length is the committed entry_size).
+        assert!(
+            cost.seek_count > 0,
+            "expected seek_count > 0, got {}",
+            cost.seek_count
+        );
+        assert!(
+            cost.hash_node_calls > 0,
+            "expected hash_node_calls > 0, got {}",
+            cost.hash_node_calls
+        );
+        assert!(
+            cost.storage_cost.added_bytes >= 64,
+            "expected added_bytes >= entry size, got {}",
+            cost.storage_cost.added_bytes
+        );
+
+        // Entry-size parametrization: doubling the entry length grows the
+        // added bytes by exactly the difference.
+        let op_large = GroveOp::PrivateDocumentStoreInsert {
+            entry: vec![42u8; 128],
+        };
+        let cost_large = op_large
+            .average_case_cost(&key, &layer_info, Some(4), false, grove_version)
+            .cost_as_result()
+            .expect("expected cost for larger entry");
+
+        // Undeclared layer must fail loudly rather than silently guessing a
+        // chunk power, matching the CommitmentTreeInsert contract.
+        assert!(
+            op.average_case_cost(&key, &layer_info, None, false, grove_version)
+                .cost_as_result()
+                .is_err(),
+            "estimation without a declared PrivateDocumentStore layer must error"
+        );
+
+        // The estimate tracks the declared chunk power: a larger epoch means
+        // a deeper dense-buffer walk.
+        let small = op
+            .average_case_cost(&key, &layer_info, Some(2), false, grove_version)
+            .cost_as_result()
+            .expect("cost at chunk_power 2");
+        let big = op
+            .average_case_cost(&key, &layer_info, Some(10), false, grove_version)
+            .cost_as_result()
+            .expect("cost at chunk_power 10");
+        assert!(
+            big.hash_node_calls > small.hash_node_calls,
+            "a larger declared epoch must cost more hashing ({} vs {})",
+            big.hash_node_calls,
+            small.hash_node_calls
+        );
+        // Each entry is written TWICE across its lifetime: once into the
+        // dense buffer and once more into the chunk blob when the epoch
+        // compacts. The amortized per-append charge is therefore 2x the
+        // entry size, so doubling the entry grows added_bytes by 2 x 64.
+        assert_eq!(
+            cost_large.storage_cost.added_bytes - cost.storage_cost.added_bytes,
+            128
+        );
+    }
+
+    #[test]
     fn test_dense_tree_insert_average_case_cost_direct() {
         let grove_version = GroveVersion::latest();
         let op = GroveOp::DenseTreeInsert {
@@ -1616,7 +2169,7 @@ mod tests {
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
         let cost = op
-            .average_case_cost(&key, &layer_info, false, grove_version)
+            .average_case_cost(&key, &layer_info, None, false, grove_version)
             .cost_as_result()
             .expect("expected cost for dense tree insert");
         // DenseTreeInsert includes parent replace cost plus value write and
@@ -1660,7 +2213,7 @@ mod tests {
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
         let cost = op
-            .average_case_cost(&key, &layer_info, false, grove_version)
+            .average_case_cost(&key, &layer_info, None, false, grove_version)
             .cost_as_result()
             .expect("expected cost for replace non-merk tree root");
         // ReplaceNonMerkTreeRoot delegates to average_case_merk_replace_tree.
@@ -1695,7 +2248,7 @@ mod tests {
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
         let cost = op
-            .average_case_cost(&key, &layer_info, false, grove_version)
+            .average_case_cost(&key, &layer_info, None, false, grove_version)
             .cost_as_result()
             .expect("expected cost for insert non-merk tree");
         // InsertNonMerkTree delegates to average_case_merk_insert_tree.
@@ -1744,7 +2297,7 @@ mod tests {
                 not_summed,
                 not_counted_or_summed,
             };
-            op.average_case_cost(&key, &layer_info, false, grove_version)
+            op.average_case_cost(&key, &layer_info, None, false, grove_version)
                 .cost_as_result()
                 .expect("expected cost for InsertTreeWithRootHash")
         };
@@ -1798,7 +2351,7 @@ mod tests {
                 meta: NonMerkTreeMeta::MmrTree { mmr_size: 50 },
                 non_counted,
             };
-            op.average_case_cost(&key, &layer_info, false, grove_version)
+            op.average_case_cost(&key, &layer_info, None, false, grove_version)
                 .cost_as_result()
                 .expect("expected cost for InsertNonMerkTree")
         };
@@ -1809,6 +2362,737 @@ mod tests {
             "InsertNonMerkTree non_counted should add wrapper byte; nc={:?}, bare={:?}",
             nc,
             bare,
+        );
+    }
+
+    /// Covers the `GroveOp::ReplaceAggregateIndexedTreeRootKeys` arm in
+    /// `average_case_cost`. Cost shape is equivalent to
+    /// `ReplaceTreeRootKey` at this level (the dual-Merk update on the
+    /// secondary is accounted for at the cidx primary level inside
+    /// `execute_ops_on_path`, not here).
+    #[test]
+    fn test_replace_aggregate_indexed_tree_root_keys_average_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        let key = KeyInfo::KnownKey(b"agg_idx".to_vec());
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: ApproximateElements(8),
+            estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+        };
+
+        // Both AggregateData::Count and AggregateData::ProvableCount
+        // route through the same `worst_case_merk_replace_tree` shape;
+        // here we just confirm the arm yields a non-trivial cost.
+        let op_count = GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+            primary_hash: [0xCDu8; 32],
+            primary_root_key: Some(b"prk".to_vec()),
+            primary_aggregate_data: AggregateData::Count(123),
+            axes: vec![(0u8, [0xEFu8; 32], Some(b"srk".to_vec()))],
+        };
+        let cost_count = op_count
+            .average_case_cost(&key, &layer_info, None, false, grove_version)
+            .cost_as_result()
+            .expect("expected average case cost for Count cidx replace");
+        assert!(cost_count.seek_count > 0 || cost_count.hash_node_calls > 0);
+
+        let op_pcount = GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+            primary_hash: [9u8; 32],
+            primary_root_key: None,
+            primary_aggregate_data: AggregateData::ProvableCount(11),
+            axes: vec![(0u8, [8u8; 32], None)],
+        };
+        let cost_pcount = op_pcount
+            .average_case_cost(&key, &layer_info, None, true, grove_version)
+            .cost_as_result()
+            .expect("expected average case cost for ProvableCount cidx replace (propagate)");
+        assert!(
+            cost_pcount.seek_count >= cost_count.seek_count
+                || cost_pcount.hash_node_calls >= cost_count.hash_node_calls,
+            "propagate=true cost should be >= non-propagate baseline; pcount={:?}, count={:?}",
+            cost_pcount,
+            cost_count,
+        );
+    }
+
+    /// The estimator must not UNDER-report an indexed-tree batch.
+    ///
+    /// The per-axis secondary Merk work (open + delete-old + insert-new +
+    /// re-root) is charged from the primary's layer information; before that
+    /// it was charged nowhere, so the estimate came in well under actual on
+    /// exactly the ops a fee reservation is computed from. Estimates for
+    /// indexed trees are an upper bound rather than an equality (the axis set
+    /// of a PCPSIT is not visible to the estimator, so the worst case of three
+    /// axes is charged), hence >= rather than the eq() other tests use.
+    #[test]
+    fn test_batch_indexed_tree_insert_average_case_cost_is_not_under_actual() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        // A PCIT holding one item.
+        db.insert(
+            EMPTY_PATH,
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("create pcit");
+
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![b"cidx".to_vec()],
+            b"k1".to_vec(),
+            Element::new_item(b"v1".to_vec()),
+        )];
+
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: ApproximateElements(1),
+                estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+            },
+        );
+        // The PRIMARY's layer — this is what the secondary's shape is derived
+        // from.
+        paths.insert(
+            KeyInfoPath(vec![KeyInfo::KnownKey(b"cidx".to_vec())]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::ProvableCountIndexedTree,
+                estimated_layer_count: ApproximateElements(1),
+                estimated_layer_sizes: AllItems(2, 2, None),
+            },
+        );
+
+        let average_case_cost = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(paths),
+            ops.clone(),
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected to get average case costs");
+
+        let cost = db
+            .apply_batch(ops, None, Some(&tx), grove_version)
+            .cost_as_result()
+            .expect("expected to apply batch");
+
+        assert!(
+            average_case_cost.seek_count >= cost.seek_count,
+            "estimated seeks {} must not be under actual {}",
+            average_case_cost.seek_count,
+            cost.seek_count
+        );
+        assert!(
+            average_case_cost.storage_cost.added_bytes >= cost.storage_cost.added_bytes,
+            "estimated added_bytes {} must not be under actual {}",
+            average_case_cost.storage_cost.added_bytes,
+            cost.storage_cost.added_bytes
+        );
+        assert!(
+            average_case_cost.hash_node_calls >= cost.hash_node_calls,
+            "estimated hash_node_calls {} must not be under actual {}",
+            average_case_cost.hash_node_calls,
+            cost.hash_node_calls
+        );
+    }
+
+    /// The spec's intentional write amplification, measured: a VALUE-ONLY
+    /// update — same count, same sum, different bytes — still rewrites the
+    /// canonical row, because the row binds the primary node's commitment
+    /// and that moved. This is the case the estimate is most tempted to
+    /// skip ("aggregates unchanged ⇒ no secondary write"), so it gets its
+    /// own estimated-vs-actual fixture rather than riding on the insert
+    /// ones above.
+    ///
+    /// `storage_loaded_bytes` is asserted here and not in the insert tests:
+    /// an update is where the mirror's bracketing primary reads (pre- and
+    /// post-state, each a node get plus a value-hash get) actually hit
+    /// existing nodes, so this is the fixture that would catch those reads
+    /// going uncharged. Write bytes are asserted as added+replaced
+    /// combined: the estimator models the row rewrite as delete+insert
+    /// (added), the real apply as an in-place replace (replaced), so the
+    /// per-dimension split differs by construction while the total must
+    /// not come in under.
+    #[test]
+    fn test_batch_indexed_value_only_update_average_case_cost_is_not_under_actual() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(
+            EMPTY_PATH,
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("create pcit");
+        db.insert_into_count_indexed_tree(
+            [b"cidx".as_ref()].as_ref(),
+            b"k1",
+            Element::new_item(b"v1".to_vec()),
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed entry");
+
+        // Same key, same count contribution, different bytes.
+        let ops = vec![QualifiedGroveDbOp::replace_op(
+            vec![b"cidx".to_vec()],
+            b"k1".to_vec(),
+            Element::new_item(b"v2".to_vec()),
+        )];
+
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: ApproximateElements(1),
+                estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+            },
+        );
+        paths.insert(
+            KeyInfoPath(vec![KeyInfo::KnownKey(b"cidx".to_vec())]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::ProvableCountIndexedTree,
+                estimated_layer_count: ApproximateElements(1),
+                estimated_layer_sizes: AllItems(2, 2, None),
+            },
+        );
+
+        let est = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(paths),
+            ops.clone(),
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("estimate");
+
+        let actual = db
+            .apply_batch(ops, None, Some(&tx), grove_version)
+            .cost_as_result()
+            .expect("apply value-only update");
+
+        assert!(
+            est.seek_count >= actual.seek_count,
+            "estimated seeks {} must not be under actual {}",
+            est.seek_count,
+            actual.seek_count
+        );
+        assert!(
+            est.storage_loaded_bytes >= actual.storage_loaded_bytes,
+            "estimated storage_loaded_bytes {} must not be under actual {}",
+            est.storage_loaded_bytes,
+            actual.storage_loaded_bytes
+        );
+        assert!(
+            est.storage_cost.added_bytes >= actual.storage_cost.added_bytes,
+            "estimated added_bytes {} must not be under actual {}",
+            est.storage_cost.added_bytes,
+            actual.storage_cost.added_bytes
+        );
+        let est_written =
+            est.storage_cost.added_bytes as u64 + est.storage_cost.replaced_bytes as u64;
+        let actual_written =
+            actual.storage_cost.added_bytes as u64 + actual.storage_cost.replaced_bytes as u64;
+        assert!(
+            est_written >= actual_written,
+            "estimated written bytes {est_written} (added+replaced) must not be under actual \
+             {actual_written}"
+        );
+        assert!(
+            est.hash_node_calls >= actual.hash_node_calls,
+            "estimated hash_node_calls {} must not be under actual {}",
+            est.hash_node_calls,
+            actual.hash_node_calls
+        );
+    }
+
+    /// The multi-axis form of the value-only fixture above: a PCPSIT
+    /// rewrites the row on EVERY configured axis when the entry's
+    /// commitment moves, so the amplification is per-axis and the estimate
+    /// must scale with it. Same-sum, same-count, different bytes — sort
+    /// keys stay put on all three axes and only the bound commitment moves.
+    #[test]
+    fn test_batch_pcpsit_value_only_update_average_case_cost_is_not_under_actual() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(
+            EMPTY_PATH,
+            b"idx",
+            Element::empty_provable_count_provable_sum_indexed_tree(vec![
+                (0u8, None),
+                (1u8, None),
+                (2u8, None),
+            ])
+            .expect("canonical axes"),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("create pcpsit");
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [b"idx".as_ref()].as_ref(),
+            b"k1",
+            Element::new_item_with_sum_item(b"v1".to_vec(), 777),
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed entry");
+
+        let ops = vec![QualifiedGroveDbOp::replace_op(
+            vec![b"idx".to_vec()],
+            b"k1".to_vec(),
+            Element::new_item_with_sum_item(b"v2".to_vec(), 777),
+        )];
+
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: ApproximateElements(1),
+                estimated_layer_sizes: AllSubtrees(3, NoSumTrees, None),
+            },
+        );
+        paths.insert(
+            KeyInfoPath(vec![KeyInfo::KnownKey(b"idx".to_vec())]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::ProvableCountProvableSumIndexedTree,
+                estimated_layer_count: ApproximateElements(1),
+                estimated_layer_sizes:
+                    grovedb_merk::estimated_costs::average_case_costs::EstimatedLayerSizes::AllItemsWithSumItem(2, 2, None),
+            },
+        );
+
+        let est = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(paths),
+            ops.clone(),
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("estimate");
+
+        let actual = db
+            .apply_batch(ops, None, Some(&tx), grove_version)
+            .cost_as_result()
+            .expect("apply value-only update");
+
+        assert!(
+            est.seek_count >= actual.seek_count,
+            "estimated seeks {} must not be under actual {}",
+            est.seek_count,
+            actual.seek_count
+        );
+        assert!(
+            est.storage_loaded_bytes >= actual.storage_loaded_bytes,
+            "estimated storage_loaded_bytes {} must not be under actual {}",
+            est.storage_loaded_bytes,
+            actual.storage_loaded_bytes
+        );
+        assert!(
+            est.storage_cost.added_bytes >= actual.storage_cost.added_bytes,
+            "estimated added_bytes {} must not be under actual {}",
+            est.storage_cost.added_bytes,
+            actual.storage_cost.added_bytes
+        );
+        let est_written =
+            est.storage_cost.added_bytes as u64 + est.storage_cost.replaced_bytes as u64;
+        let actual_written =
+            actual.storage_cost.added_bytes as u64 + actual.storage_cost.replaced_bytes as u64;
+        assert!(
+            est_written >= actual_written,
+            "estimated written bytes {est_written} (added+replaced) must not be under actual \
+             {actual_written}"
+        );
+        assert!(
+            est.hash_node_calls >= actual.hash_node_calls,
+            "estimated hash_node_calls {} must not be under actual {}",
+            est.hash_node_calls,
+            actual.hash_node_calls
+        );
+    }
+
+    /// The mirror charge must scale with the number of keys a batch mutates
+    /// in an indexed primary, not be a flat per-level constant.
+    ///
+    /// The real mirror does one delete+insert per captured key on every axis,
+    /// so a flat charge undercharges in proportion to batch width — the exact
+    /// direction that lets an attacker buy unpaid work.
+    #[test]
+    fn test_batch_indexed_tree_mirror_cost_scales_with_batch_width() {
+        let grove_version = GroveVersion::latest();
+
+        let estimate_for = |n: usize| {
+            let db = make_empty_grovedb();
+            let tx = db.start_transaction();
+            db.insert(
+                EMPTY_PATH,
+                b"cidx",
+                Element::empty_provable_count_indexed_tree(),
+                None,
+                Some(&tx),
+                grove_version,
+            )
+            .unwrap()
+            .expect("create pcit");
+
+            let ops: Vec<_> = (0..n)
+                .map(|i| {
+                    QualifiedGroveDbOp::insert_or_replace_op(
+                        vec![b"cidx".to_vec()],
+                        vec![b'k', i as u8],
+                        Element::new_item(b"v".to_vec()),
+                    )
+                })
+                .collect();
+
+            let mut paths = HashMap::new();
+            paths.insert(
+                KeyInfoPath(vec![]),
+                EstimatedLayerInformation {
+                    tree_type: TreeType::NormalTree,
+                    estimated_layer_count: ApproximateElements(1),
+                    estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+                },
+            );
+            paths.insert(
+                KeyInfoPath(vec![KeyInfo::KnownKey(b"cidx".to_vec())]),
+                EstimatedLayerInformation {
+                    tree_type: TreeType::ProvableCountIndexedTree,
+                    estimated_layer_count: ApproximateElements(n as u32),
+                    estimated_layer_sizes: AllItems(2, 2, None),
+                },
+            );
+
+            GroveDb::estimated_case_operations_for_batch(
+                AverageCaseCostsType(paths),
+                ops,
+                None,
+                |_cost, _old_flags, _new_flags| Ok(false),
+                |_flags, _removed_key_bytes, _removed_value_bytes| {
+                    Ok((NoStorageRemoval, NoStorageRemoval))
+                },
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected average case costs")
+        };
+
+        let one = estimate_for(1);
+        let four = estimate_for(4);
+
+        assert!(
+            four.storage_cost.added_bytes > one.storage_cost.added_bytes,
+            "a 4-key batch must be charged more mirror work than a 1-key batch \
+             (1-key: {one:?}, 4-key: {four:?})"
+        );
+        assert!(
+            four.seek_count > one.seek_count,
+            "seek count must scale with the number of mirrored keys \
+             (1-key: {}, 4-key: {})",
+            one.seek_count,
+            four.seek_count
+        );
+    }
+
+    /// The ≥-actual contract must hold for the MULTI-axis variant, not just
+    /// PCIT. The sum and avg axes' secondary rows (`SumItem`,
+    /// `ItemWithSumItem`) are larger than the count axis's empty `Item`;
+    /// sizing all three as an empty item put the PCPSIT estimate ~25 bytes
+    /// per key UNDER actual `added_bytes` — and the PCIT-only test above
+    /// could never see it because there the shapes coincide.
+    ///
+    /// The inserted elements carry worst-width sums (9-byte varint) on
+    /// purpose: `average_case_merk_insert_element` sizes non-tree elements by
+    /// their actual serialized size while the real charge always uses the
+    /// fixed worst-case sum width, a PRE-EXISTING gap shared with live sum
+    /// trees that this PR neither introduced nor may change (live estimator
+    /// outputs feed fees). Worst-width sums make actual serialized size equal
+    /// the charged width, so what this test pins is the indexed machinery's
+    /// own contract, not that unrelated gap.
+    #[test]
+    fn test_batch_pcpsit_insert_average_case_cost_is_not_under_actual() {
+        let grove_version = GroveVersion::latest();
+        // Worst varint width, but small enough that eight of them cannot
+        // overflow the primary's i64 sum aggregate.
+        let worst_width_sum = i64::MAX >> 8;
+        for n in [1usize, 4, 8] {
+            let db = make_empty_grovedb();
+            let tx = db.start_transaction();
+            db.insert(
+                EMPTY_PATH,
+                b"idx",
+                Element::empty_provable_count_provable_sum_indexed_tree(vec![
+                    (0u8, None),
+                    (1u8, None),
+                    (2u8, None),
+                ])
+                .expect("canonical axes"),
+                None,
+                Some(&tx),
+                grove_version,
+            )
+            .unwrap()
+            .expect("create pcpsit");
+
+            let ops: Vec<_> = (0..n)
+                .map(|i| {
+                    QualifiedGroveDbOp::insert_or_replace_op(
+                        vec![b"idx".to_vec()],
+                        vec![b'k', i as u8],
+                        Element::new_item_with_sum_item(b"v".to_vec(), worst_width_sum - i as i64),
+                    )
+                })
+                .collect();
+
+            let mut paths = HashMap::new();
+            paths.insert(
+                KeyInfoPath(vec![]),
+                EstimatedLayerInformation {
+                    tree_type: TreeType::NormalTree,
+                    estimated_layer_count: ApproximateElements(1),
+                    estimated_layer_sizes: AllSubtrees(3, NoSumTrees, None),
+                },
+            );
+            paths.insert(
+                KeyInfoPath(vec![KeyInfo::KnownKey(b"idx".to_vec())]),
+                EstimatedLayerInformation {
+                    tree_type: TreeType::ProvableCountProvableSumIndexedTree,
+                    estimated_layer_count: ApproximateElements(n as u32),
+                    estimated_layer_sizes:
+                        grovedb_merk::estimated_costs::average_case_costs::EstimatedLayerSizes::AllItemsWithSumItem(2, 2, None),
+                },
+            );
+
+            let est = GroveDb::estimated_case_operations_for_batch(
+                AverageCaseCostsType(paths),
+                ops.clone(),
+                None,
+                |_cost, _old_flags, _new_flags| Ok(false),
+                |_flags, _removed_key_bytes, _removed_value_bytes| {
+                    Ok((NoStorageRemoval, NoStorageRemoval))
+                },
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("estimate");
+
+            let actual = db
+                .apply_batch(ops, None, Some(&tx), grove_version)
+                .cost_as_result()
+                .expect("apply");
+
+            assert!(
+                est.storage_cost.added_bytes >= actual.storage_cost.added_bytes,
+                "n={n}: estimated added_bytes {} must not be under actual {}",
+                est.storage_cost.added_bytes,
+                actual.storage_cost.added_bytes
+            );
+            assert!(
+                est.seek_count >= actual.seek_count,
+                "n={n}: estimated seeks {} must not be under actual {}",
+                est.seek_count,
+                actual.seek_count
+            );
+            assert!(
+                est.hash_node_calls >= actual.hash_node_calls,
+                "n={n}: estimated hash_node_calls {} must not be under actual {}",
+                est.hash_node_calls,
+                actual.hash_node_calls
+            );
+            assert!(
+                est.storage_loaded_bytes >= actual.storage_loaded_bytes,
+                "n={n}: estimated storage_loaded_bytes {} must not be under actual {}",
+                est.storage_loaded_bytes,
+                actual.storage_loaded_bytes
+            );
+        }
+    }
+
+    /// The ≥-actual contract must also hold for the FRESH path: a batch that
+    /// CREATES the indexed primary and populates it in one go exercises
+    /// `InsertAggregateIndexedTreeRootKeys` (the insert-side bubble-up arm)
+    /// instead of the replace arm the other contract tests reach.
+    ///
+    /// Worst-width sums for the same reason as the PCPSIT test above.
+    #[test]
+    fn test_batch_fresh_pcpsit_create_and_populate_average_case_cost_is_not_under_actual() {
+        let grove_version = GroveVersion::latest();
+        let worst_width_sum = i64::MAX >> 8;
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let mut ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![],
+            b"idx".to_vec(),
+            Element::empty_provable_count_provable_sum_indexed_tree(vec![
+                (0u8, None),
+                (1u8, None),
+                (2u8, None),
+            ])
+            .expect("canonical axes"),
+        )];
+        ops.extend((0..4usize).map(|i| {
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"idx".to_vec()],
+                vec![b'k', i as u8],
+                Element::new_item_with_sum_item(b"v".to_vec(), worst_width_sum - i as i64),
+            )
+        }));
+
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: ApproximateElements(1),
+                estimated_layer_sizes: AllSubtrees(3, NoSumTrees, None),
+            },
+        );
+        paths.insert(
+            KeyInfoPath(vec![KeyInfo::KnownKey(b"idx".to_vec())]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::ProvableCountProvableSumIndexedTree,
+                estimated_layer_count: ApproximateElements(4),
+                estimated_layer_sizes:
+                    grovedb_merk::estimated_costs::average_case_costs::EstimatedLayerSizes::AllItemsWithSumItem(2, 2, None),
+            },
+        );
+
+        let est = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(paths),
+            ops.clone(),
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("estimate");
+
+        let actual = db
+            .apply_batch(ops, None, Some(&tx), grove_version)
+            .cost_as_result()
+            .expect("apply");
+
+        assert!(
+            est.storage_cost.added_bytes >= actual.storage_cost.added_bytes,
+            "estimated added_bytes {} must not be under actual {}",
+            est.storage_cost.added_bytes,
+            actual.storage_cost.added_bytes
+        );
+        assert!(
+            est.seek_count >= actual.seek_count,
+            "estimated seeks {} must not be under actual {}",
+            est.seek_count,
+            actual.seek_count
+        );
+        assert!(
+            est.hash_node_calls >= actual.hash_node_calls,
+            "estimated hash_node_calls {} must not be under actual {}",
+            est.hash_node_calls,
+            actual.hash_node_calls
+        );
+        assert!(
+            est.storage_loaded_bytes >= actual.storage_loaded_bytes,
+            "estimated storage_loaded_bytes {} must not be under actual {}",
+            est.storage_loaded_bytes,
+            actual.storage_loaded_bytes
+        );
+    }
+
+    /// Replay guarantee: the V1..V3 average-case CommitmentTreeInsert arm
+    /// must keep producing the LEGACY numbers byte-for-byte — 33 Sinsemilla
+    /// hashes, a 554-byte frontier charged as replaced and loaded bytes,
+    /// 1 blake3, 3 seeks on top of the parent-node replace — because
+    /// historical admission bounds were computed with them. The upper-bound
+    /// model is gated to V4+ (`average_case_commitment_tree_insert`).
+    #[test]
+    fn test_commitment_tree_insert_average_case_cost_pinned_before_v4() {
+        use grovedb_version::version::v3::GROVE_V3;
+        let grove_version = &GROVE_V3;
+
+        let payload_len: u32 = 216;
+        let op = GroveOp::CommitmentTreeInsert {
+            cmx: [1u8; 32],
+            rho: [2u8; 32],
+            cv_net: [3u8; 32],
+            payload: vec![0u8; payload_len as usize],
+        };
+        let key = KeyInfo::KnownKey(b"pool".to_vec());
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLevel(1, false),
+            estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+        };
+
+        let arm_cost = op
+            .average_case_cost(&key, &layer_info, None, false, grove_version)
+            .cost_as_result()
+            .expect("expected V3 average case cost");
+        // A declared chunk power must not change the V3 output — the
+        // declared-layer machinery is part of the V4+ model only.
+        let arm_cost_with_declared_chunk_power = op
+            .average_case_cost(&key, &layer_info, Some(4), false, grove_version)
+            .cost_as_result()
+            .expect("expected V3 average case cost with declared chunk power");
+        assert_eq!(arm_cost, arm_cost_with_declared_chunk_power);
+
+        let replace_part = GroveDb::average_case_merk_replace_tree(
+            &key,
+            &layer_info,
+            grovedb_merk::tree_type::TreeType::CommitmentTree(0),
+            false,
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected replace-tree part");
+        let legacy_flat = OperationCost {
+            seek_count: 3,
+            storage_cost: StorageCost {
+                added_bytes: 96 + payload_len,
+                replaced_bytes: 554,
+                removed_bytes: NoStorageRemoval,
+            },
+            storage_loaded_bytes: 554,
+            hash_node_calls: 1,
+            sinsemilla_hash_calls: 33,
+        };
+        assert_eq!(
+            arm_cost,
+            replace_part + legacy_flat,
+            "V3 average-case CommitmentTreeInsert output changed — this breaks replay of \
+             historical admission bounds",
         );
     }
 }

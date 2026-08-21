@@ -2154,6 +2154,7 @@ mod tests {
             b"ct_err",
             [1u8; 32],
             [2u8; 32],
+            [3u8; 32],
             vec![0u8; 216],
             Some(&tx),
             grove_version,
@@ -2201,6 +2202,7 @@ mod tests {
             b"ct_skip",
             [1u8; 32],
             [2u8; 32],
+            [3u8; 32],
             vec![0u8; 216],
             Some(&tx),
             grove_version,
@@ -2251,6 +2253,7 @@ mod tests {
             b"ct_perr",
             [1u8; 32],
             [2u8; 32],
+            [3u8; 32],
             vec![0u8; 216],
             Some(&tx),
             grove_version,
@@ -2306,6 +2309,7 @@ mod tests {
             b"ct_dc",
             [1u8; 32],
             [2u8; 32],
+            [3u8; 32],
             vec![0u8; 216],
             Some(&tx),
             grove_version,
@@ -2425,5 +2429,284 @@ mod tests {
                 .expect("get new_item"),
             Element::new_item(b"hello".to_vec()),
         );
+    }
+
+    // ===================================================================
+    // Pre-scan branch coverage for the zero-cost V4 gates
+    // ===================================================================
+
+    #[test]
+    fn test_batch_delete_tree_missing_key_errors_on_emptiness_check() {
+        // The V4 Error/Skip pre-scan reads the stored element up front (the
+        // same single read V1..V3 pay inside the child-merk open); a
+        // DeleteTree whose target does not exist fails that read.
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let result = db
+            .apply_batch(
+                vec![QualifiedGroveDbOp::delete_tree_op(
+                    vec![],
+                    b"missing".to_vec(),
+                    TreeType::NormalTree,
+                    SubelementsDeletionBehavior::Error,
+                )],
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(Error::CorruptedData(message)) => assert!(
+                message.contains("unable to get element for delete tree emptiness check"),
+                "unexpected message: {message}"
+            ),
+            other => panic!("expected CorruptedData, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_batch_delete_tree_counts_same_batch_child_deletes_as_empty() {
+        // A parent tree containing one child tree may be DeleteTree'd with
+        // Error behavior in the same batch that also deletes the child: the
+        // emptiness check excludes keys other delete ops in the batch will
+        // remove. While scanning it must ignore plain Delete ops that target
+        // other paths and Skip-policy DeleteTree ops (which might not
+        // execute).
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        db.insert(
+            EMPTY_PATH,
+            b"parent",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert parent");
+        db.insert(
+            [b"parent".as_slice()].as_ref(),
+            b"child",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert child");
+        db.insert(
+            EMPTY_PATH,
+            b"item",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert item");
+        // A non-empty sibling tree deleted with Skip policy: skipped, and
+        // its op must not count toward any other tree's emptiness carve-out.
+        db.insert(
+            EMPTY_PATH,
+            b"busy",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert busy");
+        db.insert(
+            [b"busy".as_slice()].as_ref(),
+            b"row",
+            Element::new_item(b"x".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert row");
+
+        db.apply_batch(
+            vec![
+                QualifiedGroveDbOp::delete_tree_op(
+                    vec![],
+                    b"parent".to_vec(),
+                    TreeType::NormalTree,
+                    SubelementsDeletionBehavior::Error,
+                ),
+                QualifiedGroveDbOp::delete_tree_op(
+                    vec![b"parent".to_vec()],
+                    b"child".to_vec(),
+                    TreeType::NormalTree,
+                    SubelementsDeletionBehavior::Error,
+                ),
+                QualifiedGroveDbOp::delete_op(vec![], b"item".to_vec()),
+                QualifiedGroveDbOp::delete_tree_op(
+                    vec![],
+                    b"busy".to_vec(),
+                    TreeType::NormalTree,
+                    SubelementsDeletionBehavior::Skip,
+                ),
+            ],
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("batch should apply: the child delete satisfies the parent's emptiness check");
+
+        assert!(db
+            .get(EMPTY_PATH, b"parent", None, grove_version)
+            .unwrap()
+            .is_err());
+        assert!(db
+            .get(EMPTY_PATH, b"item", None, grove_version)
+            .unwrap()
+            .is_err());
+        // busy was skipped (non-empty) and must survive with its row
+        assert!(db
+            .get(EMPTY_PATH, b"busy", None, grove_version)
+            .unwrap()
+            .is_ok());
+        assert!(db
+            .get([b"busy".as_slice()].as_ref(), b"row", None, grove_version)
+            .unwrap()
+            .is_ok());
+    }
+
+    #[test]
+    fn test_batch_delete_tree_v3_takes_declared_types_at_face_value() {
+        // The released (V1..V3) pre-scan classifies cleanup paths from the
+        // DECLARED type without reading storage. Exercise each declared-type
+        // shape on GROVE_V3 against plain stored trees: an indexed declare
+        // with DontCheckWithNoCleanup, a non-merk declare with Error, an
+        // indexed declare with DeleteChildren, and Skip on a non-empty tree.
+        let grove_version = &grovedb_version::version::v3::GROVE_V3;
+        let db = make_empty_grovedb();
+        for key in [b"a".as_slice(), b"b", b"c", b"d"] {
+            db.insert(
+                EMPTY_PATH,
+                key,
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert tree");
+        }
+        db.insert(
+            [b"d".as_slice()].as_ref(),
+            b"row",
+            Element::new_item(b"x".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert row");
+
+        db.apply_batch(
+            vec![
+                QualifiedGroveDbOp::delete_tree_op(
+                    vec![],
+                    b"a".to_vec(),
+                    TreeType::ProvableCountIndexedTree,
+                    SubelementsDeletionBehavior::DontCheckWithNoCleanup,
+                ),
+                QualifiedGroveDbOp::delete_tree_op(
+                    vec![],
+                    b"b".to_vec(),
+                    TreeType::MmrTree,
+                    SubelementsDeletionBehavior::Error,
+                ),
+                QualifiedGroveDbOp::delete_tree_op(
+                    vec![],
+                    b"c".to_vec(),
+                    TreeType::ProvableSumIndexedTree,
+                    SubelementsDeletionBehavior::DeleteChildren,
+                ),
+                QualifiedGroveDbOp::delete_tree_op(
+                    vec![],
+                    b"d".to_vec(),
+                    TreeType::NormalTree,
+                    SubelementsDeletionBehavior::Skip,
+                ),
+            ],
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("v3 batch should apply, taking every declared type at face value");
+
+        for key in [b"a".as_slice(), b"b", b"c"] {
+            assert!(db
+                .get(EMPTY_PATH, key, None, grove_version)
+                .unwrap()
+                .is_err());
+        }
+        // d was skipped (non-empty) and must survive
+        assert!(db
+            .get(EMPTY_PATH, b"d", None, grove_version)
+            .unwrap()
+            .is_ok());
+    }
+
+    #[test]
+    fn test_batch_delete_tree_second_mismatch_after_first_gate_error() {
+        // Two mismatched DeleteTree ops at the same level: the old-value
+        // observer records the first rejection and short-circuits on the
+        // second; the whole batch aborts and nothing commits.
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        for key in [b"x".as_slice(), b"y"] {
+            db.insert(
+                EMPTY_PATH,
+                key,
+                Element::empty_provable_count_indexed_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert pcit");
+        }
+        let result = db
+            .apply_batch(
+                vec![
+                    QualifiedGroveDbOp::delete_tree_op(
+                        vec![],
+                        b"x".to_vec(),
+                        TreeType::NormalTree,
+                        SubelementsDeletionBehavior::DeleteChildren,
+                    ),
+                    QualifiedGroveDbOp::delete_tree_op(
+                        vec![],
+                        b"y".to_vec(),
+                        TreeType::NormalTree,
+                        SubelementsDeletionBehavior::DeleteChildren,
+                    ),
+                ],
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(Error::InvalidBatchOperation(message)) => assert!(
+                message.contains("declared tree type does not match"),
+                "unexpected message: {message}"
+            ),
+            other => panic!("expected InvalidBatchOperation, got {other:?}"),
+        }
+        // Nothing committed — both indexed trees survive.
+        for key in [b"x".as_slice(), b"y"] {
+            assert!(db
+                .get(EMPTY_PATH, key, None, grove_version)
+                .unwrap()
+                .is_ok());
+        }
     }
 }

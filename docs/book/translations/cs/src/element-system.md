@@ -292,7 +292,7 @@ graph TD
   skrze hierarchii hashu GroveDB
 
 **Operace:**
-- `commitment_tree_insert(path, key, cmx, ciphertext, tx)` -- Typovane pripojeni
+- `commitment_tree_insert(path, key, cmx, rho, cv_net, ciphertext, tx)` -- Typovane pripojeni
   prijimajici `TransmittedNoteCiphertext<M>`; vraci `(novy_koren, pozice)`
 - `commitment_tree_anchor(path, key, tx)` -- Ziskani aktualniho kotviciho bodu Orchard (Anchor)
 - `commitment_tree_get_value(path, key, position, tx)` -- Nacteni hodnoty podle pozice

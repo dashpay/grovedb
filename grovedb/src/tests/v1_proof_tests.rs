@@ -11,8 +11,8 @@ use grovedb_version::version::{v2::GROVE_V2, GroveVersion};
 
 use crate::{
     operations::proof::GroveDBProof,
-    tests::{common::EMPTY_PATH, make_empty_grovedb},
-    Element, GroveDb, PathQuery, SizedQuery,
+    tests::{common::EMPTY_PATH, make_empty_grovedb, TempGroveDb},
+    Element, Error, GroveDb, PathQuery, SizedQuery,
 };
 
 // ===========================================================================
@@ -63,6 +63,7 @@ fn test_mmr_tree_v1_proof_single_leaf() {
                 left_to_right: true,
                 conditional_subquery_branches: None,
                 add_parent_tree_on_subquery: false,
+                read_mode: None,
             },
             limit: None,
             offset: None,
@@ -151,6 +152,7 @@ fn test_mmr_tree_v1_proof_multiple_leaves() {
                 left_to_right: true,
                 conditional_subquery_branches: None,
                 add_parent_tree_on_subquery: false,
+                read_mode: None,
             },
             limit: None,
             offset: None,
@@ -238,6 +240,7 @@ fn test_mmr_tree_v1_proof_wrong_root_detection() {
                 left_to_right: true,
                 conditional_subquery_branches: None,
                 add_parent_tree_on_subquery: false,
+                read_mode: None,
             },
             limit: None,
             offset: None,
@@ -313,6 +316,7 @@ fn test_bulk_append_tree_v1_proof_buffer_range() {
                 left_to_right: true,
                 conditional_subquery_branches: None,
                 add_parent_tree_on_subquery: false,
+                read_mode: None,
             },
             limit: None,
             offset: None,
@@ -398,6 +402,7 @@ fn test_bulk_append_tree_v1_proof_chunk_and_buffer() {
                 left_to_right: true,
                 conditional_subquery_branches: None,
                 add_parent_tree_on_subquery: false,
+                read_mode: None,
             },
             limit: None,
             offset: None,
@@ -494,6 +499,7 @@ fn test_v1_proof_nested_path_with_mmr() {
                 left_to_right: true,
                 conditional_subquery_branches: None,
                 add_parent_tree_on_subquery: false,
+                read_mode: None,
             },
             limit: None,
             offset: None,
@@ -573,6 +579,7 @@ fn test_v1_proof_serialization_roundtrip() {
                 left_to_right: true,
                 conditional_subquery_branches: None,
                 add_parent_tree_on_subquery: false,
+                read_mode: None,
             },
             limit: None,
             offset: None,
@@ -661,6 +668,7 @@ fn test_dense_tree_v1_proof_serialization_roundtrip() {
                 left_to_right: true,
                 conditional_subquery_branches: None,
                 add_parent_tree_on_subquery: false,
+                read_mode: None,
             },
             limit: None,
             offset: None,
@@ -793,6 +801,7 @@ fn test_bulk_append_tree_v1_proof_disjoint_query_succinctness() {
                 left_to_right: true,
                 conditional_subquery_branches: None,
                 add_parent_tree_on_subquery: false,
+                read_mode: None,
             },
             limit: None,
             offset: None,
@@ -895,6 +904,7 @@ fn test_dense_tree_v1_proof_disjoint_query_succinctness() {
                 left_to_right: true,
                 conditional_subquery_branches: None,
                 add_parent_tree_on_subquery: false,
+                read_mode: None,
             },
             limit: None,
             offset: None,
@@ -996,6 +1006,7 @@ fn test_mmr_tree_v1_proof_disjoint_query_succinctness() {
                 left_to_right: true,
                 conditional_subquery_branches: None,
                 add_parent_tree_on_subquery: false,
+                read_mode: None,
             },
             limit: None,
             offset: None,
@@ -1107,6 +1118,7 @@ fn test_v0_proof_rejects_mmr_tree_subquery() {
                 left_to_right: true,
                 conditional_subquery_branches: None,
                 add_parent_tree_on_subquery: false,
+                read_mode: None,
             },
             limit: None,
             offset: None,
@@ -1186,6 +1198,7 @@ fn test_v0_proof_rejects_bulk_append_tree_subquery() {
                 left_to_right: true,
                 conditional_subquery_branches: None,
                 add_parent_tree_on_subquery: false,
+                read_mode: None,
             },
             limit: None,
             offset: None,
@@ -1270,6 +1283,7 @@ fn test_v0_proof_rejects_dense_tree_subquery() {
                 left_to_right: true,
                 conditional_subquery_branches: None,
                 add_parent_tree_on_subquery: false,
+                read_mode: None,
             },
             limit: None,
             offset: None,
@@ -1294,5 +1308,397 @@ fn test_v0_proof_rejects_dense_tree_subquery() {
         Ok(_) => {
             panic!("expected NotSupported error, but prove_query succeeded");
         }
+    }
+}
+
+/// V1 proofs support subqueries into CountIndexedTree elements: the
+/// generic V1 envelope wraps the cidx primary's Merk proof bytes with a
+/// 32-byte secondary-root attestation, and the verifier chains via
+/// combine_hash_three.
+///
+/// Phase 1 status: when this test was originally written it exercised
+/// the now-removed non-provable `Element::CountIndexedTree` variant
+/// (constructed via `empty_count_indexed_tree`). The mechanical port to
+/// `ProvableCountIndexedTree` (PCIT) trips an existing latent
+/// hash-mismatch in the V1 prove/verify chain that predates this refactor
+/// and is out of scope for Phase 1. The cidx-equivalent coverage for
+/// PCIT lives in `tests/count_indexed_tree_tests.rs` (currently
+/// gated off for Phase 1; Phase 2 will restore the split suite).
+#[test]
+fn test_v1_proof_supports_count_indexed_tree_subquery() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"parent",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent tree");
+
+    db.insert(
+        [b"parent"].as_ref(),
+        b"cidx",
+        Element::empty_provable_count_indexed_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert cidx under parent");
+
+    let cidx_path: &[&[u8]] = &[b"parent", b"cidx"];
+    for k in [b"a".as_slice(), b"b", b"c"] {
+        db.insert_into_count_indexed_tree(
+            cidx_path,
+            k,
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate cidx");
+    }
+
+    let mut inner = Query::new();
+    inner.insert_all();
+    let path_query = PathQuery {
+        path: vec![b"parent".to_vec()],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"cidx".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+                read_mode: None,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    let proof = db
+        .prove_query(&path_query, None, grove_version)
+        .unwrap()
+        .expect("prove_query");
+    let (root_hash, results) =
+        GroveDb::verify_query(&proof, &path_query, grove_version).expect("verify_query");
+    assert_eq!(
+        root_hash,
+        db.root_hash(None, grove_version)
+            .unwrap()
+            .expect("root_hash")
+    );
+    // Should contain exactly the three items inserted into the cidx
+    // primary. Length-only check is sufficient here — the proof
+    // verifier already binds the root hash to the items, so a
+    // size-3 match means every inserted item is present.
+    assert_eq!(
+        results.len(),
+        3,
+        "expected 3 results from V1 cidx subquery, got {}",
+        results.len()
+    );
+}
+
+/// Same V1 PCIT subquery as above but with
+/// `add_parent_tree_on_subquery: true` — exercises the
+/// `should_add_parent_tree_at_path` branch of the cidx descent in
+/// `verify_layer_proof_v1` (the parent cidx element is pushed into the
+/// result set alongside the descended primary items).
+#[test]
+fn test_v1_proof_count_indexed_tree_subquery_with_add_parent_tree() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"parent",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent tree");
+    db.insert(
+        [b"parent"].as_ref(),
+        b"cidx",
+        Element::empty_provable_count_indexed_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert cidx under parent");
+    let cidx_path: &[&[u8]] = &[b"parent", b"cidx"];
+    for k in [b"a".as_slice(), b"b", b"c"] {
+        db.insert_into_count_indexed_tree(
+            cidx_path,
+            k,
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate cidx");
+    }
+
+    let mut inner = Query::new();
+    inner.insert_all();
+    let path_query = PathQuery {
+        path: vec![b"parent".to_vec()],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"cidx".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: true,
+                read_mode: None,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    let proof = db
+        .prove_query(&path_query, None, grove_version)
+        .unwrap()
+        .expect("prove_query");
+    let (root_hash, results) =
+        GroveDb::verify_query(&proof, &path_query, grove_version).expect("verify_query");
+    assert_eq!(
+        root_hash,
+        db.root_hash(None, grove_version)
+            .unwrap()
+            .expect("root_hash")
+    );
+    // 3 primary items + the parent cidx element pushed by the
+    // add-parent-tree branch.
+    assert_eq!(
+        results.len(),
+        4,
+        "expected 3 cidx items + 1 parent-tree element, got {}",
+        results.len()
+    );
+}
+
+/// Helper: build the honest PCIT subquery proof used by the V1 cidx
+/// descent tests, returning `(db, proof_bytes, path_query)`.
+#[cfg(test)]
+fn pcit_v1_subquery_fixture() -> (TempGroveDb, Vec<u8>, PathQuery) {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+    db.insert(
+        EMPTY_PATH,
+        b"parent",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent tree");
+    db.insert(
+        [b"parent"].as_ref(),
+        b"cidx",
+        Element::empty_provable_count_indexed_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert cidx");
+    let cidx_path: &[&[u8]] = &[b"parent", b"cidx"];
+    for k in [b"a".as_slice(), b"b", b"c"] {
+        db.insert_into_count_indexed_tree(
+            cidx_path,
+            k,
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate cidx");
+    }
+    let mut inner = Query::new();
+    inner.insert_all();
+    let path_query = PathQuery {
+        path: vec![b"parent".to_vec()],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"cidx".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+                read_mode: None,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+    let proof = db
+        .prove_query(&path_query, None, grove_version)
+        .unwrap()
+        .expect("prove_query");
+    (db, proof, path_query)
+}
+
+/// The V1 cidx descent must reject a lower layer whose `merk_proof` is
+/// not `ProofBytes::CountIndexedTree` (verify.rs cidx-descent guard).
+#[test]
+fn test_v1_proof_cidx_descent_rejects_wrong_proof_bytes_variant() {
+    use crate::operations::proof::{GroveDBProof, GroveDBProofV1, ProofBytes};
+
+    let grove_version = GroveVersion::latest();
+    let (_db, proof, path_query) = pcit_v1_subquery_fixture();
+    let cfg = bincode::config::standard();
+    let (decoded, _) =
+        bincode::decode_from_slice::<GroveDBProof, _>(&proof, cfg).expect("decode proof");
+    let GroveDBProof::V1(GroveDBProofV1 { mut root_layer }) = decoded else {
+        panic!("expected V1 proof");
+    };
+    // The cidx descent lives under root → "parent" → "cidx". Replace the
+    // cidx lower layer's CountIndexedTree bytes with a plain Merk variant.
+    let cidx = root_layer
+        .lower_layers
+        .get_mut(b"parent".as_ref())
+        .expect("parent lower layer present")
+        .lower_layers
+        .get_mut(b"cidx".as_ref())
+        .expect("cidx lower layer present");
+    let inner = match &cidx.merk_proof {
+        ProofBytes::CountIndexedTree(b) => b.clone(),
+        _ => panic!("expected CountIndexedTree lower-layer proof bytes"),
+    };
+    cidx.merk_proof = ProofBytes::Merk(inner);
+    let forged = bincode::encode_to_vec(GroveDBProof::V1(GroveDBProofV1 { root_layer }), cfg)
+        .expect("re-encode");
+    let res = GroveDb::verify_query(&forged, &path_query, grove_version);
+    assert!(
+        matches!(res, Err(Error::InvalidProof(_, ref m)) if m.contains("must use ProofBytes::CountIndexedTree")),
+        "wrong ProofBytes variant under a cidx parent must be rejected; got {res:?}"
+    );
+}
+
+/// The V1 cidx descent must reject a lower layer whose CountIndexedTree
+/// bytes are shorter than the 32-byte secondary-root attestation prefix.
+#[test]
+fn test_v1_proof_cidx_descent_rejects_short_attestation_prefix() {
+    use crate::operations::proof::{GroveDBProof, GroveDBProofV1, ProofBytes};
+
+    let grove_version = GroveVersion::latest();
+    let (_db, proof, path_query) = pcit_v1_subquery_fixture();
+    let cfg = bincode::config::standard();
+    let (decoded, _) =
+        bincode::decode_from_slice::<GroveDBProof, _>(&proof, cfg).expect("decode proof");
+    let GroveDBProof::V1(GroveDBProofV1 { mut root_layer }) = decoded else {
+        panic!("expected V1 proof");
+    };
+    let cidx = root_layer
+        .lower_layers
+        .get_mut(b"parent".as_ref())
+        .expect("parent lower layer present")
+        .lower_layers
+        .get_mut(b"cidx".as_ref())
+        .expect("cidx lower layer present");
+    // Truncate to fewer than 32 bytes.
+    cidx.merk_proof = ProofBytes::CountIndexedTree(vec![0u8; 10]);
+    let forged = bincode::encode_to_vec(GroveDBProof::V1(GroveDBProofV1 { root_layer }), cfg)
+        .expect("re-encode");
+    let res = GroveDb::verify_query(&forged, &path_query, grove_version);
+    assert!(
+        matches!(res, Err(Error::InvalidProof(_, ref m)) if m.contains("shorter than 32-byte")),
+        "cidx proof bytes shorter than the 32-byte attestation prefix must be rejected; \
+         got {res:?}"
+    );
+}
+
+/// V0 fallback path: the V0 prover correctly rejects cidx subqueries
+/// (frozen wire format).
+#[test]
+fn test_v0_proof_rejects_count_indexed_tree_subquery() {
+    use grovedb_version::version::v1::GROVE_V1;
+
+    let grove_version = &GROVE_V1;
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"parent",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent tree");
+
+    db.insert(
+        [b"parent"].as_ref(),
+        b"cidx",
+        Element::empty_provable_count_indexed_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert cidx");
+
+    let cidx_path: &[&[u8]] = &[b"parent", b"cidx"];
+    db.insert_into_count_indexed_tree(
+        cidx_path,
+        b"item",
+        Element::new_item(b"v".to_vec()),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("populate cidx");
+
+    let mut inner = Query::new();
+    inner.insert_all();
+    let path_query = PathQuery {
+        path: vec![b"parent".to_vec()],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"cidx".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+                read_mode: None,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    let result = db.prove_query(&path_query, None, grove_version).unwrap();
+    match result {
+        Err(crate::Error::NotSupported(msg)) => {
+            assert!(msg.contains("V0 proofs"), "got: {msg}");
+        }
+        Err(other) => panic!("expected NotSupported, got: {:?}", other),
+        Ok(_) => panic!("expected NotSupported, but prove_query succeeded"),
     }
 }

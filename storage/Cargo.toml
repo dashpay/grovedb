@@ -1,6 +1,6 @@
 [package]
 name = "grovedb-storage"
-version = "4.0.0"
+version = "5.0.1"
 edition = "2024"
 license = "MIT"
 description = "Storage extension crate for GroveDB"
@@ -9,9 +9,9 @@ documentation = "https://docs.rs/grovedb-storage"
 repository = "https://github.com/dashpay/grovedb"
 
 [dependencies]
-grovedb-costs = { version = "4.0.0", path = "../costs" }
-grovedb-path = { version = "4.0.0", path = "../path" }
-grovedb-visualize = { version = "4.0.0", path = "../visualize" }
+grovedb-costs = { version = "5.0.1", path = "../costs" }
+grovedb-path = { version = "5.0.1", path = "../path" }
+grovedb-visualize = { version = "5.0.1", path = "../visualize" }
 
 blake3 = { workspace = true, optional = true }
 hex = { workspace = true }
@@ -26,3 +26,7 @@ thiserror = { workspace = true }
 
 [features]
 rocksdb_storage = ["rocksdb", "num_cpus", "lazy_static", "tempfile", "blake3", "integer-encoding"]
+# See `grovedb`'s `unsafe-dump-load` feature for context. On this crate it
+# gates `RocksDbStorage::ingest_subtree_sst` — the RocksDB IngestExternalFile
+# wrapper used to bulk-load a precomputed subtree SST.
+unsafe-dump-load = ["rocksdb_storage"]
