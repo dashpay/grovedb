@@ -126,6 +126,14 @@ impl GroveDb {
             )
         );
 
+        // A canonical indexed secondary row binds this entry's committed
+        // value hash, and an append moves it while leaving `(count, sum)`
+        // alone. Snapshot before the rewrite; mirror after.
+        let old_indexed_state = cost_return_on_error!(
+            &mut cost,
+            GroveDb::capture_indexed_entry_state(&parent_merk, key, &element, grove_version)
+        );
+
         let updated_element =
             Element::new_bulk_append_tree(new_total_count, chunk_power, existing_flags);
 
@@ -141,14 +149,17 @@ impl GroveDb {
         );
 
         // 5. Propagate changes
+
         let mut merk_cache = HashMap::new();
         merk_cache.insert(path.clone(), parent_merk);
 
         cost_return_on_error!(
             &mut cost,
-            self.propagate_changes_with_transaction(
+            self.propagate_changes_with_transaction_refreshing_indexed_row(
                 merk_cache,
                 path,
+                key,
+                old_indexed_state,
                 tx.as_ref(),
                 &batch,
                 grove_version,

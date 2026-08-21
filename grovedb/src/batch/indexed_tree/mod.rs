@@ -65,22 +65,30 @@ pub(crate) use preflight::reject_indexed_overwrite_with_descendants;
 
 use crate::{Element, Error};
 
-/// A primary entry's `(count, sum)` aggregate pair, `None` when the entry
-/// does not exist on that side of the transition.
-type AggregatePair = Option<(u64, i64)>;
+use crate::operations::indexed_tree::IndexedEntryState;
 
-/// One captured key's aggregate transition: `(item_key, old, new)`.
-type AggregateTransition = (Vec<u8>, AggregatePair, AggregatePair);
+/// A primary entry's state, `None` when the entry does not exist on that
+/// side of the transition.
+type MaybeEntryState = Option<IndexedEntryState>;
 
-/// Read one primary entry's current `(count, sum)` pair, `None` if the key
-/// does not exist. `phase` labels error messages ("pre" for the capture
-/// before the primary apply, "post" for the delta read after it).
+/// One captured key's transition: `(item_key, old, new)`.
+type AggregateTransition = (Vec<u8>, MaybeEntryState, MaybeEntryState);
+
+/// Read one primary entry's current state, `None` if the key does not
+/// exist. `phase` labels error messages ("pre" for the capture before the
+/// primary apply, "post" for the delta read after it).
+///
+/// Reads the element and the node's value hash. The value hash is taken
+/// from the Merk node rather than recomputed from the serialized bytes:
+/// for a tree-shaped or reference-shaped entry the stored hash is a
+/// combined hash that `value_hash(bytes)` cannot reproduce, and it is the
+/// stored one the row must bind.
 fn read_entry_aggregates<'db, S: StorageContext<'db>>(
     primary_merk: &Merk<S>,
     key: &[u8],
     phase: &str,
     grove_version: &GroveVersion,
-) -> CostResult<AggregatePair, Error> {
+) -> CostResult<MaybeEntryState, Error> {
     let mut cost = OperationCost::default();
     let maybe_bytes = cost_return_on_error!(
         &mut cost,
@@ -96,16 +104,40 @@ fn read_entry_aggregates<'db, S: StorageContext<'db>>(
                 hex::encode(key)
             )))
     );
-    let aggregates = if let Some(bytes) = maybe_bytes {
-        let elem = cost_return_on_error_no_add!(
-            cost,
-            Element::deserialize(bytes.as_slice(), grove_version).map_err(|e| {
-                Error::CorruptedData(format!("indexed {phase}-state deserialize: {e}"))
-            })
-        );
-        Some(elem.count_sum_value_or_default())
-    } else {
-        None
+    let Some(bytes) = maybe_bytes else {
+        return Ok(None).wrap_with_cost(cost);
     };
-    Ok(aggregates).wrap_with_cost(cost)
+    let elem = cost_return_on_error_no_add!(
+        cost,
+        Element::deserialize(bytes.as_slice(), grove_version)
+            .map_err(|e| Error::CorruptedData(format!("indexed {phase}-state deserialize: {e}")))
+    );
+    let value_hash = cost_return_on_error!(
+        &mut cost,
+        primary_merk
+            .get_value_hash(
+                key,
+                true,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .map_err(|e| Error::CorruptedData(format!(
+                "indexed {phase}-state value hash for key {}: {e}",
+                hex::encode(key)
+            )))
+    );
+    let value_hash = cost_return_on_error_no_add!(
+        cost,
+        value_hash.ok_or_else(|| Error::CorruptedData(format!(
+            "indexed {phase}-state: key {} has element bytes but no node value hash",
+            hex::encode(key)
+        )))
+    );
+    let (count, sum) = elem.count_sum_value_or_default();
+    Ok(Some(IndexedEntryState {
+        count,
+        sum,
+        value_hash,
+    }))
+    .wrap_with_cost(cost)
 }

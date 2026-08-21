@@ -27,6 +27,10 @@ mod tests {
     use grovedb_element::indexed::IndexAxis;
     use grovedb_version::version::GroveVersion;
 
+    use crate::IndexedAxisEntrySliceExt;
+
+    use crate::IndexedAxisEntry;
+
     use crate::{
         operations::proof::indexed_axis::AxisEntries,
         tests::{make_test_grovedb, TEST_LEAF},
@@ -88,7 +92,7 @@ mod tests {
         }
     }
 
-    fn entries_as_sum(entries: &AxisEntries) -> &[(i64, Vec<u8>)] {
+    fn entries_as_sum(entries: &AxisEntries) -> &[IndexedAxisEntry<i64>] {
         match entries {
             AxisEntries::Sum(v) => v.as_slice(),
             other => panic!("expected sum entries, got {:?}", other),
@@ -194,7 +198,7 @@ mod tests {
         .expect("verify");
         assert_eq!(result.skipped, 3);
         assert_eq!(
-            entries_as_sum(&result.entries),
+            entries_as_sum(&result.entries).key_pairs(),
             &[
                 (70i64, b"g".to_vec()),
                 (60, b"f".to_vec()),
@@ -219,7 +223,7 @@ mod tests {
         .expect("verify");
         assert_eq!(result.skipped, 4);
         assert_eq!(
-            entries_as_sum(&result.entries),
+            entries_as_sum(&result.entries).key_pairs(),
             &[(50i64, b"e".to_vec()), (60, b"f".to_vec())]
         );
     }
@@ -253,7 +257,7 @@ mod tests {
         .expect("verify");
         assert_eq!(result.skipped, 8);
         assert_eq!(
-            entries_as_sum(&result.entries),
+            entries_as_sum(&result.entries).key_pairs(),
             &[(20i64, b"b".to_vec()), (10, b"a".to_vec())],
             "the page is the walk's tail, shorter than k"
         );
@@ -374,7 +378,7 @@ mod tests {
         .expect("verify 4th biggest");
         assert_eq!(result.skipped, 3);
         assert_eq!(
-            entries_as_sum(&result.entries),
+            entries_as_sum(&result.entries).key_pairs(),
             &[(70i64, b"g".to_vec())],
             "rank 4 descending of sums 10..100 is g(70)"
         );
@@ -407,7 +411,10 @@ mod tests {
             )
             .expect("verify rank window");
             assert_eq!(result.skipped, rank_zero_based as u64);
-            assert_eq!(entries_as_sum(&result.entries), &[(*sum, key.to_vec())]);
+            assert_eq!(
+                entries_as_sum(&result.entries).key_pairs(),
+                &[(*sum, key.to_vec())]
+            );
         }
     }
 
@@ -459,7 +466,7 @@ mod tests {
         .expect("verify mid-tie ascending");
         assert_eq!(result.skipped, 4);
         assert_eq!(
-            entries_as_sum(&result.entries),
+            entries_as_sum(&result.entries).key_pairs(),
             &[
                 (50i64, b"t_c".to_vec()),
                 (50, b"t_d".to_vec()),
@@ -485,7 +492,7 @@ mod tests {
         .expect("verify mid-tie descending");
         assert_eq!(result.skipped, 3);
         assert_eq!(
-            entries_as_sum(&result.entries),
+            entries_as_sum(&result.entries).key_pairs(),
             &[
                 (50i64, b"t_d".to_vec()),
                 (50, b"t_c".to_vec()),
@@ -539,7 +546,7 @@ mod tests {
         .expect("verify");
         assert_eq!(result.skipped, 1);
         assert_eq!(
-            entries_as_sum(&result.entries),
+            entries_as_sum(&result.entries).key_pairs(),
             &[
                 (5i64, b"b".to_vec()),
                 (5, b"c".to_vec()),

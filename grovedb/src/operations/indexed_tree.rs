@@ -51,7 +51,19 @@ use grovedb_storage::{
 };
 use grovedb_version::version::GroveVersion;
 
-use crate::{util::TxRef, Element, Error, GroveDb, Transaction, TransactionArg};
+use crate::{
+    query_result_type::IndexedAxisEntry, util::TxRef, Element, Error, GroveDb, Transaction,
+    TransactionArg,
+};
+
+/// The canonical row definition lives in
+/// [`crate::operations::proof::indexed_axis::canonical_row`] so a
+/// verify-only build can reach it — a light client rebuilds the row a
+/// proof claims from the same definition the mirror writes with. Re-exported
+/// here because this is where the write paths look for it.
+pub(crate) use crate::operations::proof::indexed_axis::canonical_row::{
+    axis_row_reference, axis_sort_key_len, decode_axis_row_reference, make_axis_secondary_key,
+};
 
 /// Per-axis Merk tree type to open the secondary with.
 ///
@@ -88,97 +100,26 @@ pub(crate) fn axis_secondary_tree_type(axis: IndexAxis) -> TreeType {
     }
 }
 
-/// The count-axis secondary stores each entry's `count_value` as its
-/// sum item, and sum items are `i64`: a count above `i64::MAX` cannot
-/// be mirrored faithfully, so it FAILS CLOSED rather than clamping —
-/// a clamped total would silently lie through authenticated state.
-/// Unreachable for any real tree (a count is bounded by the number of
-/// elements), so the guard is a type-level seam, not a live limit.
-#[inline]
-pub(crate) fn count_value_as_sum(count: u64) -> Result<i64, Error> {
-    i64::try_from(count).map_err(|_| {
-        Error::CorruptedData(format!(
-            "count value {count} exceeds i64::MAX and cannot be mirrored into the \
-             count-axis secondary's sum aggregate"
-        ))
-    })
-}
-
-/// THE per-axis secondary row payload — the single definition every
-/// writer and every checker uses. The sort KEY encodes the ordering
-/// value; this payload carries what the secondary's own dual
-/// aggregates must fold to:
+/// One primary entry's mirror-relevant state.
 ///
-/// - Count → `SumItem(count_value)` — contributes `(1, count)`, so a
-///   band TOTAL is one committed scalar (issue #806)
-/// - Sum   → `SumItem(sum)` — contributes `(1, sum)`
-/// - Avg   → `ItemWithSumItem(empty, sum)` — contributes `(1, sum)`
-///
-/// Callers: the batch mirror row builder, the direct-path mirror, the
-/// reconcile repair loop, `verify_grovedb`'s expected-payload check,
-/// and the average-case cost estimator's worst-case row. They MUST all
-/// go through this function: the mirror writes these bytes into
-/// hash-committed state and the checkers recompute them independently,
-/// so a divergent copy at any site either false-flags healthy state or
-/// makes two entry points commit different root hashes for identical
-/// writes. (This function exists because exactly that drift risk was
-/// flagged by the #809 security audit.)
-///
-/// Fallible only through [`count_value_as_sum`]'s fail-closed guard.
-pub(crate) fn axis_row_payload(axis: IndexAxis, count: u64, sum: i64) -> Result<Element, Error> {
-    Ok(match axis {
-        IndexAxis::Count => Element::new_sum_item(count_value_as_sum(count)?),
-        IndexAxis::Sum => Element::new_sum_item(sum),
-        IndexAxis::Avg => Element::new_item_with_sum_item(Vec::new(), sum),
-    })
-}
-
-/// Build the secondary key bytes for an entry at `item_key` under the
-/// given axis, given the relevant aggregate values:
-/// - count axis → `count_be(8) ‖ item_key`
-/// - sum axis   → `sum_sortable_be(8) ‖ item_key`
-/// - avg axis   → `avg_sortable_be(16) ‖ item_key`
-#[inline]
-pub(crate) fn make_axis_secondary_key(
-    axis: IndexAxis,
-    count: u64,
-    sum: i64,
-    item_key: &[u8],
-) -> Vec<u8> {
-    match axis {
-        IndexAxis::Count => {
-            let prefix = encode_count_sort_key(count);
-            let mut k = Vec::with_capacity(prefix.len() + item_key.len());
-            k.extend_from_slice(&prefix);
-            k.extend_from_slice(item_key);
-            k
-        }
-        IndexAxis::Sum => {
-            let prefix = encode_sum_sort_key(sum);
-            let mut k = Vec::with_capacity(prefix.len() + item_key.len());
-            k.extend_from_slice(&prefix);
-            k.extend_from_slice(item_key);
-            k
-        }
-        IndexAxis::Avg => {
-            let avg_fp = grovedb_element::indexed::compute_avg_fixed_point(sum, count);
-            let prefix = encode_avg_sort_key(avg_fp);
-            let mut k = Vec::with_capacity(prefix.len() + item_key.len());
-            k.extend_from_slice(&prefix);
-            k.extend_from_slice(item_key);
-            k
-        }
-    }
-}
-
-/// Width in bytes of an axis's sort-key prefix inside a secondary key
-/// (`sort_key ‖ item_key`).
-#[inline]
-pub(crate) fn axis_sort_key_len(axis: IndexAxis) -> usize {
-    match axis {
-        IndexAxis::Count | IndexAxis::Sum => 8,
-        IndexAxis::Avg => 16,
-    }
+/// The aggregates decide the row's sort key and carried sum; the value
+/// hash decides its reference commitment. Every mirror compares both
+/// sides of a transition as all three, because a canonical row binds the
+/// primary node — an entry whose value changed while its `(count, sum)`
+/// stayed put still needs its row rewritten, which is exactly the case
+/// the pre-reference mirror was free to skip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct IndexedEntryState {
+    /// The entry's count aggregate.
+    pub(crate) count: u64,
+    /// The entry's sum aggregate.
+    pub(crate) sum: i64,
+    /// The primary node's Merk-stored committed value hash — a simple
+    /// hash for an item, a layered/combined hash for a tree, a combined
+    /// hash for a nested reference. This is the immediate-node binding
+    /// target; it is NOT resolved through to a terminal (see
+    /// [`INDEXED_SECONDARY_MAX_HOP`]).
+    pub(crate) value_hash: grovedb_merk::CryptoHash,
 }
 
 /// Child-element rules specific to an indexed primary's variant.
@@ -1018,13 +959,14 @@ impl GroveDb {
             .min()
             .expect("every indexed variant carries at least one axis");
 
-        // 3. Walk the primary once, collecting each entry's (count, sum)
-        //    pair — every axis derives its rows from the same pair.
+        // 3. Walk the primary once, collecting each entry's state — every
+        //    axis derives its rows from the same `(count, sum)` pair, and
+        //    every axis binds the same primary node commitment.
         let mut all_query = Query::new();
         all_query.insert_all();
         let mut iter =
             KVIterator::new(primary_merk.storage.raw_iter(), &all_query).unwrap_add_cost(&mut cost);
-        let mut entries: Vec<(Vec<u8>, (u64, i64))> = Vec::new();
+        let mut entries: Vec<(Vec<u8>, IndexedEntryState)> = Vec::new();
         while let Some((key, value_bytes)) = iter.next_kv().unwrap_add_cost(&mut cost) {
             // Reject oversized primary keys before they can drive
             // make_axis_secondary_key to synthesize a secondary key that
@@ -1052,7 +994,35 @@ impl GroveDb {
                     ))
                 })
             );
-            entries.push((key, element.count_sum_value_or_default()));
+            let value_hash = cost_return_on_error!(
+                &mut cost,
+                primary_merk
+                    .get_value_hash(
+                        key.as_slice(),
+                        true,
+                        Some(&Element::value_defined_cost_for_serialized_value),
+                        grove_version,
+                    )
+                    .map_err(|e| Error::CorruptedData(format!(
+                        "reading primary node value hash while reconciling secondary: {e}"
+                    )))
+            );
+            let value_hash = cost_return_on_error_no_add!(
+                cost,
+                value_hash.ok_or_else(|| Error::CorruptedData(format!(
+                    "primary entry {} has element bytes but no node value hash",
+                    hex::encode(&key)
+                )))
+            );
+            let (count, sum) = element.count_sum_value_or_default();
+            entries.push((
+                key,
+                IndexedEntryState {
+                    count,
+                    sum,
+                    value_hash,
+                },
+            ));
         }
 
         // 4. Rebuild each axis's secondary and capture its post-repair
@@ -1074,27 +1044,32 @@ impl GroveDb {
             );
             let secondary_tree_type = axis_secondary_tree_type(axis);
 
-            // Desired rows: key AND serialized payload. `BTreeMap`, not a
-            // hashed map: the repair loops below iterate it, and a hashed
-            // iteration order would build the secondary AVL in a different
-            // shape on every run — two operators repairing identical
-            // databases must derive identical secondary root hashes, or the
-            // H1-A parent bindings would disagree.
-            let mut desired: std::collections::BTreeMap<Vec<u8>, Vec<u8>> =
-                std::collections::BTreeMap::new();
-            for (key, (count, sum)) in &entries {
-                let secondary_key = make_axis_secondary_key(axis, *count, *sum, key);
-                let payload =
-                    cost_return_on_error_no_add!(cost, axis_row_payload(axis, *count, *sum));
-                let payload_bytes = cost_return_on_error_no_add!(
+            // Desired rows: key, serialized canonical row, and the primary
+            // node commitment the row must bind. `BTreeMap`, not a hashed
+            // map: the repair loops below iterate it, and a hashed iteration
+            // order would build the secondary AVL in a different shape on
+            // every run — two operators repairing identical databases must
+            // derive identical secondary root hashes, or the H1-A parent
+            // bindings would disagree.
+            let mut desired: std::collections::BTreeMap<
+                Vec<u8>,
+                (Vec<u8>, grovedb_merk::CryptoHash),
+            > = std::collections::BTreeMap::new();
+            for (key, state) in &entries {
+                let secondary_key = make_axis_secondary_key(axis, state.count, state.sum, key);
+                let row = cost_return_on_error_no_add!(
                     cost,
-                    payload.serialize(grove_version).map_err(|e| {
+                    axis_row_reference(axis, key, state.count, state.sum)
+                );
+                let row_bytes = cost_return_on_error_no_add!(
+                    cost,
+                    row.serialize(grove_version).map_err(|e| {
                         Error::CorruptedData(format!(
-                            "failed to serialize desired secondary payload: {e}"
+                            "failed to serialize desired secondary row: {e}"
                         ))
                     })
                 );
-                desired.insert(secondary_key, payload_bytes);
+                desired.insert(secondary_key, (row_bytes, state.value_hash));
             }
 
             // Existing row KEYS, raw-iterated so unlinked-but-present rows
@@ -1129,10 +1104,12 @@ impl GroveDb {
                 }
             }
 
-            // Insert missing rows and rewrite payload-damaged ones. Sum and
-            // avg rows carry real payloads, so key-presence alone does not
-            // imply row-correctness; compare the stored element bytes.
-            for (desired_key, desired_payload) in &desired {
+            // Insert missing rows and rewrite damaged ones. Key-presence
+            // alone does not imply row-correctness on any axis: the row
+            // carries a reference path and a payload sum the key does not
+            // encode, and its COMMITMENT can be stale even when every byte
+            // of the row is right. Compare all three.
+            for (desired_key, (desired_row_bytes, desired_target_hash)) in &desired {
                 let needs_write = if existing_keys.contains(desired_key) {
                     let stored = cost_return_on_error!(
                         &mut cost,
@@ -1144,20 +1121,40 @@ impl GroveDb {
                                 grove_version,
                             )
                             .map_err(|e| Error::CorruptedData(format!(
-                                "reading secondary row for payload compare: {e}"
+                                "reading secondary row for compare: {e}"
                             )))
                     );
-                    stored.as_deref() != Some(desired_payload.as_slice())
+                    let stored_value_hash = cost_return_on_error!(
+                        &mut cost,
+                        secondary_merk
+                            .get_value_hash(
+                                desired_key.as_slice(),
+                                true,
+                                Some(&Element::value_defined_cost_for_serialized_value),
+                                grove_version,
+                            )
+                            .map_err(|e| Error::CorruptedData(format!(
+                                "reading secondary row commitment for compare: {e}"
+                            )))
+                    );
+                    let want_committed = grovedb_merk::tree::combine_hash(
+                        &grovedb_merk::tree::value_hash(desired_row_bytes)
+                            .unwrap_add_cost(&mut cost),
+                        desired_target_hash,
+                    )
+                    .unwrap_add_cost(&mut cost);
+                    stored.as_deref() != Some(desired_row_bytes.as_slice())
+                        || stored_value_hash != Some(want_committed)
                 } else {
                     true
                 };
                 if needs_write {
                     let entry = cost_return_on_error_no_add!(
                         cost,
-                        Element::deserialize(desired_payload.as_slice(), grove_version).map_err(
+                        Element::deserialize(desired_row_bytes.as_slice(), grove_version).map_err(
                             |e| {
                                 Error::CorruptedData(format!(
-                                    "failed to round-trip desired secondary payload: {e}"
+                                    "failed to round-trip desired secondary row: {e}"
                                 ))
                             }
                         )
@@ -1165,9 +1162,10 @@ impl GroveDb {
                     cost_return_on_error!(
                         &mut cost,
                         entry
-                            .insert(
+                            .insert_reference(
                                 &mut secondary_merk,
                                 desired_key.as_slice(),
+                                *desired_target_hash,
                                 None,
                                 grove_version,
                             )
@@ -1317,7 +1315,7 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
         decode: impl Fn(&[u8]) -> Option<(T, Vec<u8>)>,
-    ) -> CostResult<Vec<(T, Vec<u8>)>, Error>
+    ) -> CostResult<Vec<IndexedAxisEntry<T>>, Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -1331,10 +1329,15 @@ impl GroveDb {
 
         let secondary_merk = cost_return_on_error!(
             &mut cost,
-            self.open_validated_axis_secondary(path, axis, tx_ref, grove_version)
+            self.open_validated_axis_secondary(path.clone(), axis, tx_ref, grove_version)
         );
 
-        collect_top_k_via_iterator(&secondary_merk, axis, k, descending, &decode).add_cost(cost)
+        let rows = cost_return_on_error!(
+            &mut cost,
+            collect_top_k_via_iterator(&secondary_merk, axis, k, descending, &decode)
+        );
+        drop(secondary_merk);
+        resolve_axis_entries(self, path, rows, tx_ref, grove_version).add_cost(cost)
     }
 
     /// One implementation of the `indexed_<axis>_top_k_paginated` shape.
@@ -1373,7 +1376,12 @@ impl GroveDb {
         // skips zero entries, so `skipped = min(0, population) = 0` needs
         // no tree read.
         if offset == 0 {
-            return collect_top_k_via_iterator(&secondary_merk, axis, k, descending, &decode)
+            let rows = cost_return_on_error!(
+                &mut cost,
+                collect_top_k_via_iterator(&secondary_merk, axis, k, descending, &decode)
+            );
+            drop(secondary_merk);
+            return resolve_axis_entries(self, path, rows, tx_ref, grove_version)
                 .map_ok(|entries| IndexedTopKPage {
                     entries,
                     skipped: 0,
@@ -1407,6 +1415,9 @@ impl GroveDb {
         };
         let parent_prefix =
             RocksDbStorage::build_prefix(parent_path.clone()).unwrap_add_cost(&mut cost);
+        // Kept for resolving the page's primary values once the counted
+        // descent has produced its keys.
+        let path_for_resolution = path.clone();
         let primary_prefix = RocksDbStorage::build_prefix(path).unwrap_add_cost(&mut cost);
         let secondary_prefix = RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
             .unwrap_add_cost(&mut cost);
@@ -1456,17 +1467,19 @@ impl GroveDb {
                 grove_version
             )
         );
-        let mut entries = Vec::with_capacity(secondary_keys.len());
+        let mut rows = Vec::with_capacity(secondary_keys.len());
         for secondary_key in secondary_keys {
             match decode(&secondary_key) {
-                Some(decoded) => entries.push(decoded),
+                Some(decoded) => rows.push(decoded),
                 None => {
                     return Err(corrupted_secondary_key_error(axis, &secondary_key))
                         .wrap_with_cost(cost);
                 }
             }
         }
-        Ok(IndexedTopKPage { entries, skipped }).wrap_with_cost(cost)
+        resolve_axis_entries(self, path_for_resolution, rows, tx_ref, grove_version)
+            .map_ok(|entries| IndexedTopKPage { entries, skipped })
+            .add_cost(cost)
     }
 
     /// One implementation of the `indexed_<axis>_range` shape. The
@@ -1487,7 +1500,7 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
         decode: impl Fn(&[u8]) -> Option<(T, Vec<u8>)>,
-    ) -> CostResult<Vec<(T, Vec<u8>)>, Error>
+    ) -> CostResult<Vec<IndexedAxisEntry<T>>, Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -1501,7 +1514,7 @@ impl GroveDb {
 
         let secondary_merk = cost_return_on_error!(
             &mut cost,
-            self.open_validated_axis_secondary(path, axis, tx_ref, grove_version)
+            self.open_validated_axis_secondary(path.clone(), axis, tx_ref, grove_version)
         );
 
         let mut q = Query::new();
@@ -1527,8 +1540,10 @@ impl GroveDb {
                 None => break,
             }
         }
+        drop(iter);
+        drop(secondary_merk);
 
-        Ok(results).wrap_with_cost(cost)
+        resolve_axis_entries(self, path, results, tx_ref, grove_version).add_cost(cost)
     }
 
     // ---- count axis ----
@@ -1557,7 +1572,7 @@ impl GroveDb {
         descending: bool,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(u64, Vec<u8>)>, Error>
+    ) -> CostResult<Vec<IndexedAxisEntry<u64>>, Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
@@ -1631,7 +1646,7 @@ impl GroveDb {
         limit: u16,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(u64, Vec<u8>)>, Error>
+    ) -> CostResult<Vec<IndexedAxisEntry<u64>>, Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
@@ -1775,7 +1790,7 @@ impl GroveDb {
         descending: bool,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(i64, Vec<u8>)>, Error>
+    ) -> CostResult<Vec<IndexedAxisEntry<i64>>, Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
@@ -1839,7 +1854,7 @@ impl GroveDb {
         limit: u16,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(i64, Vec<u8>)>, Error>
+    ) -> CostResult<Vec<IndexedAxisEntry<i64>>, Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
@@ -2101,7 +2116,7 @@ impl GroveDb {
         descending: bool,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(i128, Vec<u8>)>, Error>
+    ) -> CostResult<Vec<IndexedAxisEntry<i128>>, Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
@@ -2174,7 +2189,7 @@ impl GroveDb {
         limit: u16,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(i128, Vec<u8>)>, Error>
+    ) -> CostResult<Vec<IndexedAxisEntry<i128>>, Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
@@ -2454,83 +2469,63 @@ impl GroveDb {
     }
 }
 
-/// Apply a PCPSIT axis secondary mirror covering insert, update, and
-/// delete via the (old, new) Option pair. Reads `old_count`/`old_sum`
-/// from the prior primary state and `new_count`/`new_sum` from the
-/// post-mutation state.
+/// Apply an axis secondary mirror covering insert, update, and delete via
+/// the (old, new) [`IndexedEntryState`] pair.
 ///
-/// The row payload is [`axis_row_payload`] — see its doc for the
-/// per-axis shapes and why every writer must share it.
-#[allow(clippy::too_many_arguments)]
+/// The row is [`axis_row_reference`] — a canonical one-hop
+/// `ReferenceWithSumItem` back to the primary entry — written as a
+/// COMBINED reference so the secondary root binds
+/// `combine_hash(H(reference bytes), primary_node_value_hash)`.
 pub(crate) fn mirror_indexed_axis_to_secondary<'db, S: StorageContext<'db>>(
     secondary: &mut Merk<S>,
     axis: IndexAxis,
     item_key: &[u8],
-    old_count: Option<u64>,
-    old_sum: Option<i64>,
-    new_count: Option<u64>,
-    new_sum: Option<i64>,
+    old: Option<IndexedEntryState>,
+    new: Option<IndexedEntryState>,
     grove_version: &GroveVersion,
 ) -> CostResult<(), Error> {
     let mut cost = OperationCost::default();
     let secondary_tree_type = axis_secondary_tree_type(axis);
 
-    // The payload is a function of BOTH aggregates (the count axis
-    // mirrors count_value into its sum half), so the fast-path equality
-    // check below must see the full pair — a sum-only view would
-    // silently skip real payload updates.
-    let axis_payload = |count: u64, sum: i64| axis_row_payload(axis, count, sum);
-
-    // Compute old and new sort keys. Either may be None (no entry).
-    let old_key = match (old_count, old_sum) {
-        (Some(c), Some(s)) => Some(make_axis_secondary_key(axis, c, s, item_key)),
-        _ => None,
+    let row_for = |state: Option<IndexedEntryState>| -> Result<_, Error> {
+        state
+            .map(|s| {
+                Ok((
+                    make_axis_secondary_key(axis, s.count, s.sum, item_key),
+                    axis_row_reference(axis, item_key, s.count, s.sum)?,
+                    s.value_hash,
+                ))
+            })
+            .transpose()
     };
-    let new_key = match (new_count, new_sum) {
-        (Some(c), Some(s)) => Some(make_axis_secondary_key(axis, c, s, item_key)),
-        _ => None,
-    };
+    let old_entry = cost_return_on_error_no_add!(cost, row_for(old));
+    let new_entry = cost_return_on_error_no_add!(cost, row_for(new));
 
-    // Fast path: skip the delete+insert only when BOTH the sort key AND
-    // the stored payload are unchanged.
-    //
-    // Equal sort keys do NOT imply equal payloads on the Avg axis: the
-    // avg key is floor(sum * 10^19 / count) while the payload carries the
-    // raw `sum`, so e.g. (count, sum) = (1, 5) and (2, 10) share a key
-    // (avg 5.0) but differ in payload sum (5 vs 10). Returning early on
-    // key-equality alone would leave a stale hash-committed sum in the
-    // avg secondary. On the Count / Sum axes the payload is a pure
-    // function of what the key already encodes, so this reduces to the
-    // former key-only check and preserves the fast path for the common
-    // case.
-    if old_key == new_key && new_key.is_some() {
-        let payload_unchanged = match ((old_count, old_sum), (new_count, new_sum)) {
-            ((Some(oc), Some(os)), (Some(nc), Some(ns))) => {
-                cost_return_on_error_no_add!(cost, axis_payload(oc, os))
-                    == cost_return_on_error_no_add!(cost, axis_payload(nc, ns))
-            }
-            _ => false,
-        };
-        if payload_unchanged {
-            // The sort key didn't move and the stored value is identical;
-            // the previous insert already wrote the correct value, so
-            // nothing more is needed.
-            return Ok(()).wrap_with_cost(cost);
-        }
+    // Fast path: skip only when the sort key, the row bytes AND the bound
+    // target hash are all unchanged. The target hash is what makes this
+    // strictly narrower than the pre-reference check: a value-only primary
+    // update leaves key and row identical while moving the commitment, and
+    // skipping it would leave a row authenticating a value that is no
+    // longer there.
+    if old_entry == new_entry {
+        return Ok(()).wrap_with_cost(cost);
     }
 
-    // A payload change at a FIXED key (avg axis only: a proportional
-    // (count, sum) change keeps the average) must replace in place.
-    // Deleting and reinserting the same key rebalances the AVL twice
-    // and can settle a DIFFERENT shape than the batch mirror's single
-    // replacement write — two write paths committing different
-    // secondary (hence grove) root hashes for identical data, which
+    // A row change at a FIXED key must replace in place. Deleting and
+    // reinserting the same key rebalances the AVL twice and can settle a
+    // DIFFERENT shape than the batch mirror's single replacement write —
+    // two write paths committing different secondary (hence grove) root
+    // hashes for identical data, which
     // `direct_and_batch_agree_on_root_for_a_fixed_key_avg_payload_change`
-    // reproduced on an interior node before this skip existed. The
-    // insert below overwrites the value in place, exactly like the
-    // batch path's put.
-    let key_moved = old_key != new_key;
-    if let (true, Some(ok)) = (key_moved, &old_key) {
+    // reproduced on an interior node before this skip existed. The insert
+    // below overwrites the value in place, exactly like the batch path's
+    // put.
+    let old_key = old_entry.as_ref().map(|(k, ..)| k);
+    let new_key = new_entry.as_ref().map(|(k, ..)| k);
+    if let Some(ok) = old_key
+        && Some(ok) != new_key
+    {
+        let ok = ok.clone();
         cost_return_on_error!(
             &mut cost,
             Element::delete(
@@ -2544,21 +2539,17 @@ pub(crate) fn mirror_indexed_axis_to_secondary<'db, S: StorageContext<'db>>(
             .map_err(Error::MerkError)
         );
     }
-    if let (Some(nk), Some(new_count_val), Some(new_sum_val)) = (&new_key, new_count, new_sum) {
-        // Derived by the same `axis_payload` closure the fast-path
-        // equality check above uses, so the two stay in lockstep.
-        // Every axis's secondary is a dual-aggregate
-        // ProvableCountProvableSumTree:
-        // - Count → SumItem(count_value) — contributes (1, count), so a
-        //   band TOTAL is one committed scalar (issue #806)
-        // - Sum   → SumItem(sum) — contributes (1, sum)
-        // - Avg   → ItemWithSumItem(empty, sum) — contributes (1, sum)
-        let entry = cost_return_on_error_no_add!(cost, axis_payload(new_count_val, new_sum_val));
+    if let Some((nk, row, target_value_hash)) = new_entry {
         cost_return_on_error!(
             &mut cost,
-            entry
-                .insert(secondary, nk.as_slice(), None, grove_version)
-                .map_err(Error::MerkError)
+            row.insert_reference(
+                secondary,
+                nk.as_slice(),
+                target_value_hash,
+                None,
+                grove_version
+            )
+            .map_err(Error::MerkError)
         );
     }
     Ok(()).wrap_with_cost(cost)
@@ -2664,7 +2655,7 @@ fn axis_sort_prefix_len(axis: IndexAxis) -> usize {
 /// surface storage corruption (rather than silently dropping the entry)
 /// when the secondary's keyspace contains a malformed entry.
 #[inline]
-fn corrupted_secondary_key_error(axis: IndexAxis, secondary_key: &[u8]) -> Error {
+pub(crate) fn corrupted_secondary_key_error(axis: IndexAxis, secondary_key: &[u8]) -> Error {
     Error::CorruptedData(format!(
         "secondary key in indexed-tree (axis {:?}) is shorter than {} bytes: {:?}",
         axis,
@@ -2710,6 +2701,92 @@ fn collect_top_k_via_iterator<'db, S: StorageContext<'db>, T>(
     Ok(results).wrap_with_cost(cost)
 }
 
+/// Turn decoded `(ordering_value, primary_key)` pairs into full entries by
+/// reading each primary value.
+///
+/// Resolution applies ORDINARY GroveDB reference semantics: a
+/// reference-shaped primary entry resolves to its terminal, exactly as
+/// `db.get` on that key would. That is deliberately not the rule a row is
+/// *bound* by — a row commits its immediate primary node, which is what
+/// keeps the mirror's invariant local — and the two stay consistent
+/// because the immediate node's commitment transitively covers whatever it
+/// pointed at when written.
+///
+/// The primary Merk is opened once for the whole page rather than per row.
+fn resolve_axis_entries<'b, B, T>(
+    db: &GroveDb,
+    indexed_path: SubtreePath<'b, B>,
+    rows: Vec<(T, Vec<u8>)>,
+    transaction: &Transaction,
+    grove_version: &GroveVersion,
+) -> CostResult<Vec<IndexedAxisEntry<T>>, Error>
+where
+    B: AsRef<[u8]> + 'b,
+{
+    let mut cost = OperationCost::default();
+    if rows.is_empty() {
+        return Ok(Vec::new()).wrap_with_cost(cost);
+    }
+
+    // The CALLER's transaction, not a fresh one. The secondary scan that
+    // produced `rows` already ran under it; opening a second snapshot here
+    // would let a commit in between pair a stale row with a newer primary
+    // value, or report a primary the row still names as corrupted.
+    let primary_merk = cost_return_on_error!(
+        &mut cost,
+        db.open_transactional_merk_at_path(indexed_path.clone(), transaction, None, grove_version)
+    );
+
+    let mut entries = Vec::with_capacity(rows.len());
+    for (ordering_value, primary_key) in rows {
+        let element = cost_return_on_error!(
+            &mut cost,
+            Element::get(&primary_merk, &primary_key, true, grove_version).map_err(|e| {
+                Error::CorruptedData(format!(
+                    "indexed axis read: primary entry {} named by a secondary row is missing: {e}",
+                    hex::encode(&primary_key)
+                ))
+            })
+        );
+        let value = match element.underlying() {
+            Element::Reference(reference_path, ..)
+            | Element::ReferenceWithSumItem(reference_path, ..) => {
+                // The entry's PARENT path, not its own qualified path: a
+                // relative reference resolves against the parent
+                // (`SiblingReference` appends its key to what it is
+                // given), so passing the entry's own path would look for a
+                // child underneath the entry itself.
+                let parent_path = indexed_path.to_vec();
+                let absolute = match crate::reference_path::path_from_reference_path_type(
+                    reference_path.clone(),
+                    &parent_path,
+                    Some(primary_key.as_slice()),
+                ) {
+                    Ok(p) => p,
+                    Err(e) => return Err(Error::from(e)).wrap_with_cost(cost),
+                };
+                cost_return_on_error!(
+                    &mut cost,
+                    db.follow_reference(
+                        absolute.as_slice().into(),
+                        true,
+                        Some(transaction),
+                        grove_version
+                    )
+                )
+            }
+            _ => element,
+        };
+        entries.push(IndexedAxisEntry {
+            ordering_value,
+            primary_key,
+            value,
+        });
+    }
+
+    Ok(entries).wrap_with_cost(cost)
+}
+
 /// Strict provable-count read of an aggregate. The counted skip only ever
 /// runs against axis secondaries, whose tree types (`ProvableCountTree` /
 /// `ProvableCountProvableSumTree`) bind a provable count into every node;
@@ -2734,8 +2811,9 @@ fn provable_count_from_aggregate(aggregate: AggregateData) -> Result<u64, Error>
 /// One page of an `indexed_<axis>_top_k_paginated` read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexedTopKPage<T> {
-    /// Page entries, `(axis_value, original_key)`, in directional order.
-    pub entries: Vec<(T, Vec<u8>)>,
+    /// Page entries in directional order, each carrying its resolved
+    /// primary value.
+    pub entries: Vec<IndexedAxisEntry<T>>,
     /// How many entries the offset actually skipped:
     /// `min(offset, population)`. When the offset runs past the end this
     /// reports the secondary's true population instead of echoing the
@@ -3118,6 +3196,10 @@ impl GroveDb {
     /// change from the replaced code). Kept as the measurement baseline
     /// for `indexed_axis_paginated_cost_tests::measure_paginated_costs`;
     /// compiled only for tests, never reachable in production builds.
+    ///
+    /// Returns bare `(count, key)` pairs, NOT resolved entries: it exists
+    /// to measure what the SECONDARY traversal costs, and resolving
+    /// primary values would fold an unrelated cost into the baseline.
     pub(crate) fn legacy_linear_indexed_count_top_k_paginated<'b, B, P>(
         &self,
         path: P,
@@ -3191,45 +3273,144 @@ impl GroveDb {
 }
 
 #[cfg(test)]
-mod axis_row_payload_tests {
-    //! The payload function is THE definition every writer and checker
+mod axis_row_reference_tests {
+    //! The row function is THE definition every writer and checker
     //! shares; this grid pins its output per (axis, count, sum) so any
     //! change to the shape is a deliberate, reviewed event — the bytes
     //! land in hash-committed state, so an accidental change here means
     //! mirrors and checkers disagree about healthy databases.
 
-    use grovedb_element::indexed::IndexAxis;
+    use grovedb_element::{indexed::IndexAxis, reference_path::ReferencePathType};
     use grovedb_version::version::GroveVersion;
 
-    use super::axis_row_payload;
+    use super::{axis_row_reference, decode_axis_row_reference};
+    use crate::operations::proof::indexed_axis::canonical_row::{
+        axis_payload_sum, INDEXED_SECONDARY_MAX_HOP,
+    };
     use crate::Element;
 
+    fn sibling(key: &[u8], sum: i64) -> Element {
+        Element::new_reference_with_sum_item_with_hops(
+            ReferencePathType::SiblingReference(key.to_vec()),
+            INDEXED_SECONDARY_MAX_HOP,
+            sum,
+        )
+    }
+
     #[test]
-    fn payload_grid_is_pinned_per_axis() {
+    fn row_grid_is_pinned_per_axis() {
         let counts = [0u64, 1, 2, i64::MAX as u64];
         let sums = [i64::MIN, -1, 0, 1, i64::MAX];
+        let key = b"item".as_slice();
         for &count in &counts {
             for &sum in &sums {
                 assert_eq!(
-                    axis_row_payload(IndexAxis::Count, count, sum).unwrap(),
-                    Element::new_sum_item(count as i64),
-                    "count axis stores the COUNT as its sum item; the sum input is ignored"
+                    axis_row_reference(IndexAxis::Count, key, count, sum).unwrap(),
+                    sibling(key, count as i64),
+                    "count axis carries the COUNT as its payload sum; the sum input is ignored"
                 );
                 assert_eq!(
-                    axis_row_payload(IndexAxis::Sum, count, sum).unwrap(),
-                    Element::new_sum_item(sum),
-                    "sum axis stores the sum; the count input is ignored"
+                    axis_row_reference(IndexAxis::Sum, key, count, sum).unwrap(),
+                    sibling(key, sum),
+                    "sum axis carries the sum; the count input is ignored"
                 );
                 assert_eq!(
-                    axis_row_payload(IndexAxis::Avg, count, sum).unwrap(),
-                    Element::new_item_with_sum_item(Vec::new(), sum),
-                    "avg axis stores an empty item carrying the sum"
+                    axis_row_reference(IndexAxis::Avg, key, count, sum).unwrap(),
+                    sibling(key, sum),
+                    "avg axis carries the sum, exactly as the sum axis does"
                 );
             }
         }
         // Above the sum-item domain the count axis fails closed.
-        axis_row_payload(IndexAxis::Count, i64::MAX as u64 + 1, 0)
+        axis_row_reference(IndexAxis::Count, key, i64::MAX as u64 + 1, 0)
             .expect_err("count above i64::MAX must fail closed");
+        axis_payload_sum(IndexAxis::Count, i64::MAX as u64 + 1, 0)
+            .expect_err("count above i64::MAX must fail closed");
+    }
+
+    #[test]
+    fn every_axis_uses_one_canonical_element_family() {
+        // Locked decision 2: one element family across all three axes. A
+        // plain `Reference` on the count axis would fold to (1, 0) in a
+        // PCPS secondary and silently zero every band Total (#806), and a
+        // single-aggregate secondary would reopen the #809 finding-C proof
+        // relabeling. Both regressions start by this assertion failing.
+        for axis in [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg] {
+            let row = axis_row_reference(axis, b"k", 3, 5).unwrap();
+            assert!(
+                matches!(row, Element::ReferenceWithSumItem(..)),
+                "{axis:?} row must be ReferenceWithSumItem, got {}",
+                row.type_str()
+            );
+            assert_eq!(
+                super::axis_secondary_tree_type(axis),
+                grovedb_merk::TreeType::ProvableCountProvableSumTree,
+                "{axis:?} secondary must stay dual-aggregate"
+            );
+        }
+        // The count axis's payload sum is the count, not the primary sum.
+        assert_eq!(axis_payload_sum(IndexAxis::Count, 3, 5).unwrap(), 3);
+        assert_eq!(axis_payload_sum(IndexAxis::Sum, 3, 5).unwrap(), 5);
+        assert_eq!(axis_payload_sum(IndexAxis::Avg, 3, 5).unwrap(), 5);
+    }
+
+    #[test]
+    fn decode_round_trips_and_rejects_non_canonical_rows() {
+        let row = axis_row_reference(IndexAxis::Sum, b"target", 1, 42).unwrap();
+        assert_eq!(
+            decode_axis_row_reference(&row, "test").unwrap(),
+            (b"target".as_slice(), 42)
+        );
+        // Suffix agreement is now enforced by the verifier rebuilding the
+        // canonical row from the authenticated primary value, so it has no
+        // separate helper to unit-test here.
+
+        // Legacy placeholder rows must be rejected outright.
+        for legacy in [
+            Element::new_sum_item(7),
+            Element::new_item_with_sum_item(Vec::new(), 7),
+            Element::new_item(Vec::new()),
+        ] {
+            decode_axis_row_reference(&legacy, "test")
+                .expect_err("legacy placeholder rows are not valid indexed rows");
+        }
+        // A plain `Reference` folds to (1, 0) in a PCPS secondary — it must
+        // not be accepted as a canonical row.
+        decode_axis_row_reference(
+            &Element::new_reference(ReferencePathType::SiblingReference(b"target".to_vec())),
+            "test",
+        )
+        .expect_err("a plain Reference carries no payload sum and is not canonical");
+        // Non-sibling reference types would make row size grow with grove
+        // depth and break the logical-origin rule.
+        decode_axis_row_reference(
+            &Element::new_reference_with_sum_item_with_hops(
+                ReferencePathType::AbsolutePathReference(vec![b"a".to_vec()]),
+                INDEXED_SECONDARY_MAX_HOP,
+                7,
+            ),
+            "test",
+        )
+        .expect_err("only SiblingReference is canonical");
+        // Wrong hop budget: the binding rule is one hop to the immediate
+        // primary node, and a different budget means a different binding.
+        decode_axis_row_reference(
+            &Element::new_reference_with_sum_item_with_hops(
+                ReferencePathType::SiblingReference(b"target".to_vec()),
+                Some(2),
+                7,
+            ),
+            "test",
+        )
+        .expect_err("canonical rows are one-hop");
+        decode_axis_row_reference(
+            &Element::new_reference_with_sum_item(
+                ReferencePathType::SiblingReference(b"target".to_vec()),
+                7,
+            ),
+            "test",
+        )
+        .expect_err("an unbounded hop budget is not canonical");
     }
 
     #[test]
@@ -3237,34 +3418,33 @@ mod axis_row_payload_tests {
         // The exact bytes the mirror hash-commits, pinned as FIXED
         // vectors — not re-serialized at assertion time, so a
         // serialization-format change cannot move both sides of the
-        // comparison and slip through. If this test fails, payload
-        // bytes in authenticated state have changed: that is a
-        // consensus event, not a refactor.
+        // comparison and slip through. If this test fails, row bytes in
+        // authenticated state have changed: that is a consensus event,
+        // not a refactor.
         let grove_version = GroveVersion::latest();
         assert_eq!(
-            axis_row_payload(IndexAxis::Count, 7, 0)
+            axis_row_reference(IndexAxis::Count, b"k", 7, 0)
                 .unwrap()
                 .serialize(grove_version)
                 .unwrap(),
-            vec![3, 14, 0],
-            "count axis: SumItem(7) as [variant, zigzag-varint 7, no flags]"
+            vec![18, 6, 1, 107, 1, 1, 14, 0],
+            "count axis: ReferenceWithSumItem(SiblingReference('k'), hop 1, sum 7)"
         );
         assert_eq!(
-            axis_row_payload(IndexAxis::Sum, 1, -3)
+            axis_row_reference(IndexAxis::Sum, b"k", 1, -3)
                 .unwrap()
                 .serialize(grove_version)
                 .unwrap(),
-            vec![3, 5, 0],
-            "sum axis: SumItem(-3) as [variant, zigzag-varint -3, no flags]"
+            vec![18, 6, 1, 107, 1, 1, 5, 0],
+            "sum axis: ReferenceWithSumItem(SiblingReference('k'), hop 1, sum -3)"
         );
         assert_eq!(
-            axis_row_payload(IndexAxis::Avg, 1, 5)
+            axis_row_reference(IndexAxis::Avg, b"k", 1, 5)
                 .unwrap()
                 .serialize(grove_version)
                 .unwrap(),
-            vec![9, 0, 10, 0],
-            "avg axis: ItemWithSumItem(empty, 5) as [variant, empty item, \
-             zigzag-varint 5, no flags]"
+            vec![18, 6, 1, 107, 1, 1, 10, 0],
+            "avg axis: ReferenceWithSumItem(SiblingReference('k'), hop 1, sum 5)"
         );
     }
 }
@@ -3276,7 +3456,7 @@ mod count_value_as_sum_tests {
     //! because a clamped value would flow into hash-bound authenticated
     //! state as a silently wrong total.
 
-    use super::count_value_as_sum;
+    use crate::operations::proof::indexed_axis::canonical_row::count_value_as_sum;
 
     #[test]
     fn converts_in_domain_and_fails_closed_above_i64_max() {
@@ -3415,42 +3595,88 @@ mod secondary_key_codec_tests {
         }
     }
 }
-
 #[cfg(test)]
-mod bug2_avg_axis_mirror_tests {
-    //! BUG 2 regression: `mirror_indexed_axis_to_secondary` must not
-    //! early-return on the Avg axis when the sort key is unchanged but
-    //! the stored payload sum differs.
+mod direct_axis_mirror_tests {
+    //! Direct-drive tests for `mirror_indexed_axis_to_secondary`.
     //!
-    //! The avg sort key is `floor(sum * 10^19 / count)`, while the stored
-    //! payload is `ItemWithSumItem(_, sum)`. Two `(count, sum)` pairs can
-    //! share a key yet differ in payload sum — e.g. `(1, 5)` and `(2, 10)`
-    //! both encode avg `5.0` but carry payload sums `5` and `10`. The old
-    //! key-only early-return left the stale hash-committed sum `5` in the
-    //! avg secondary.
+    //! Two regression families live here:
     //!
-    //! This path is currently unreachable through the public dedicated
-    //! APIs (each child contributes count 0 or 1, so the mirror never sees
-    //! a `(1, 5) -> (2, 10)` transition for one item key), so we drive the
-    //! module-private mirror function directly against a real Avg
-    //! secondary Merk.
+    //! **BUG 2** — the mirror must not early-return on the Avg axis when the
+    //! sort key is unchanged but the carried sum differs. The avg sort key is
+    //! `floor(sum * 10^19 / count)` while the row carries the raw `sum`, so
+    //! `(1, 5)` and `(2, 10)` share a key yet carry sums `5` and `10`. The old
+    //! key-only early-return left the stale hash-committed `5` behind.
+    //!
+    //! **Commitment refresh** — a canonical row binds the primary node's
+    //! committed value hash, so a transition whose key AND carried sum are
+    //! both unchanged still has to rewrite the row when that hash moves. This
+    //! is the case a `(count, sum)`-only mirror is structurally blind to, and
+    //! it is reachable in production through a value-only update, a deep
+    //! mutation that changes a child subtree's root, and a `RefreshReference`
+    //! on a reference-shaped primary.
+    //!
+    //! Both drive the module-private mirror directly against a real secondary
+    //! Merk: the transitions involved are not all reachable through the
+    //! public dedicated APIs (each child contributes count 0 or 1, so no
+    //! public path produces a `(1, 5) -> (2, 10)` move for one item key).
 
     use grovedb_costs::OperationCost;
     use grovedb_element::indexed::{compute_avg_fixed_point, IndexAxis};
-    use grovedb_merk::{element::get::ElementFetchFromStorageExtensions, tree::AggregateData};
+    use grovedb_merk::{
+        element::{costs::ElementCostExtensions, get::ElementFetchFromStorageExtensions},
+        tree::AggregateData,
+    };
     use grovedb_path::SubtreePath;
     use grovedb_storage::StorageBatch;
     use grovedb_version::version::GroveVersion;
 
-    use super::{make_axis_secondary_key, mirror_indexed_axis_to_secondary};
+    use super::{
+        axis_row_reference, make_axis_secondary_key, mirror_indexed_axis_to_secondary,
+        IndexedEntryState,
+    };
     use crate::{
         tests::{make_test_grovedb, TEST_LEAF},
-        Element,
+        Element, GroveDb,
     };
 
+    /// A distinct stand-in commitment per byte, so a test can move the bound
+    /// target hash without needing a real primary entry behind it.
+    fn target_hash(seed: u8) -> grovedb_merk::CryptoHash {
+        [seed; 32]
+    }
+
+    fn state(count: u64, sum: i64, seed: u8) -> IndexedEntryState {
+        IndexedEntryState {
+            count,
+            sum,
+            value_hash: target_hash(seed),
+        }
+    }
+
+    /// Set up a PCPSIT with a single configured axis and hand back an open,
+    /// empty secondary Merk for it plus the pieces that must outlive it.
+    fn open_axis_secondary<'db>(
+        db: &'db GroveDb,
+        axis: IndexAxis,
+        grove_version: &GroveVersion,
+    ) -> (crate::Transaction<'db>, StorageBatch) {
+        let axes: Vec<(u8, Option<Vec<u8>>)> = vec![(axis.tag(), None)];
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit",
+            Element::empty_provable_count_provable_sum_indexed_tree(axes).expect("canonical axes"),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("empty PCPSIT insert");
+        (db.start_transaction(), StorageBatch::new())
+    }
+
     /// Sanity: `(1, 5)` and `(2, 10)` share an avg sort key but produce
-    /// different payload sums — the precondition that made the old
-    /// key-only early-return unsound.
+    /// different carried sums — the precondition that made the old key-only
+    /// early-return unsound.
     #[test]
     fn avg_key_collision_with_distinct_payload_sums() {
         let item_key = b"row";
@@ -3465,37 +3691,24 @@ mod bug2_avg_axis_mirror_tests {
             compute_avg_fixed_point(10, 2),
             "avg fixed points must match"
         );
-        // Payloads differ (the hash-committed sum the mirror stores).
+        // The rows differ in their carried sum — the hash-committed value the
+        // mirror stores.
         assert_ne!(
-            Element::new_item_with_sum_item(Vec::new(), 5),
-            Element::new_item_with_sum_item(Vec::new(), 10),
-            "payload sums 5 and 10 must differ"
+            axis_row_reference(IndexAxis::Avg, item_key, 1, 5).unwrap(),
+            axis_row_reference(IndexAxis::Avg, item_key, 2, 10).unwrap(),
+            "carried sums 5 and 10 must produce different rows"
         );
     }
 
     /// Drive the mirror directly: first write `(1, 5)`, then transition to
-    /// `(2, 10)` (same avg key). The stored avg-secondary payload sum must
-    /// update to `10`; the old key-only early-return would have left the
-    /// stale `5`.
+    /// `(2, 10)` (same avg key). The stored carried sum must update to `10`;
+    /// the old key-only early-return would have left the stale `5`.
     #[test]
     fn avg_axis_mirror_updates_stale_payload_when_key_unchanged() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
-        // Establish a PCPSIT with an Avg axis so the secondary namespace
-        // is valid.
-        let axes: Vec<(u8, Option<Vec<u8>>)> = vec![(IndexAxis::Avg.tag(), None)];
-        db.insert(
-            [TEST_LEAF].as_ref(),
-            b"pcpsit",
-            Element::empty_provable_count_provable_sum_indexed_tree(axes).expect("canonical axes"),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("empty PCPSIT insert");
+        let (tx, batch) = open_axis_secondary(&db, IndexAxis::Avg, grove_version);
 
-        let tx = db.start_transaction();
         let item_key = b"row";
         let shared_key = make_axis_secondary_key(IndexAxis::Avg, 1, 5, item_key);
         assert_eq!(
@@ -3504,10 +3717,6 @@ mod bug2_avg_axis_mirror_tests {
             "test setup: keys must collide"
         );
 
-        // Open the Avg secondary (empty) and drive the mirror twice
-        // against the same in-memory Merk. A StorageBatch is required so
-        // the merk's Element::insert can stage its commit_batch.
-        let batch = StorageBatch::new();
         let path_segments: [&[u8]; 2] = [TEST_LEAF, b"pcpsit".as_ref()];
         let path: SubtreePath<_> = (&path_segments).into();
         let mut secondary = db
@@ -3522,15 +3731,12 @@ mod bug2_avg_axis_mirror_tests {
             .unwrap()
             .expect("open empty avg secondary");
 
-        // 1) Insert (count=1, sum=5).
         mirror_indexed_axis_to_secondary(
             &mut secondary,
             IndexAxis::Avg,
             item_key,
             None,
-            None,
-            Some(1),
-            Some(5),
+            Some(state(1, 5, 0xAA)),
             grove_version,
         )
         .unwrap()
@@ -3542,18 +3748,15 @@ mod bug2_avg_axis_mirror_tests {
         assert_eq!(
             after_first.sum_value_or_default(),
             5,
-            "payload sum after (1,5) must be 5"
+            "carried sum after (1,5) must be 5"
         );
 
-        // 2) Transition to (count=2, sum=10). Same avg key, new sum.
         mirror_indexed_axis_to_secondary(
             &mut secondary,
             IndexAxis::Avg,
             item_key,
-            Some(1),
-            Some(5),
-            Some(2),
-            Some(10),
+            Some(state(1, 5, 0xAA)),
+            Some(state(2, 10, 0xBB)),
             grove_version,
         )
         .unwrap()
@@ -3565,33 +3768,125 @@ mod bug2_avg_axis_mirror_tests {
         assert_eq!(
             after_second.sum_value_or_default(),
             10,
-            "payload sum must update to 10 even though the avg sort key did not \
+            "carried sum must update to 10 even though the avg sort key did not \
              move (BUG 2 regression: old key-only early-return left stale 5)"
         );
     }
 
-    /// The fast path must still short-circuit when BOTH the key and the
-    /// payload are unchanged (a genuine no-op transition). We verify the
-    /// stored payload is untouched for an identical (count, sum) rewrite.
+    /// The commitment-refresh case: key unchanged, carried sum unchanged, but
+    /// the primary node's value hash moved. The row bytes are identical, so
+    /// only the stored value hash can show the difference — and it must.
+    ///
+    /// This is the transition a `(count, sum)`-only mirror cannot see, and it
+    /// is exactly what a value-only primary update produces.
     #[test]
-    fn avg_axis_mirror_noop_when_key_and_payload_unchanged() {
+    fn mirror_refreshes_the_row_when_only_the_target_hash_moves() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
-        let axes: Vec<(u8, Option<Vec<u8>>)> = vec![(IndexAxis::Avg.tag(), None)];
-        db.insert(
-            [TEST_LEAF].as_ref(),
-            b"pcpsit",
-            Element::empty_provable_count_provable_sum_indexed_tree(axes).expect("canonical axes"),
+        let (tx, batch) = open_axis_secondary(&db, IndexAxis::Count, grove_version);
+
+        let item_key = b"row";
+        let path_segments: [&[u8]; 2] = [TEST_LEAF, b"pcpsit".as_ref()];
+        let path: SubtreePath<_> = (&path_segments).into();
+        let mut secondary = db
+            .open_indexed_secondary_at_path(
+                path,
+                IndexAxis::Count,
+                None,
+                &tx,
+                Some(&batch),
+                grove_version,
+            )
+            .unwrap()
+            .expect("open empty count secondary");
+
+        let key = make_axis_secondary_key(IndexAxis::Count, 1, 0, item_key);
+
+        mirror_indexed_axis_to_secondary(
+            &mut secondary,
+            IndexAxis::Count,
+            item_key,
             None,
-            None,
+            Some(state(1, 0, 0x11)),
             grove_version,
         )
         .unwrap()
-        .expect("empty PCPSIT insert");
+        .expect("insert");
+        let (root_before, ..) = secondary
+            .root_hash_key_and_aggregate_data()
+            .unwrap()
+            .expect("secondary root state");
+        let committed_before = secondary
+            .get_value_hash(
+                key.as_slice(),
+                true,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .unwrap()
+            .expect("value hash read")
+            .expect("row present");
 
-        let tx = db.start_transaction();
+        // Same count, same sum, same row bytes — only the bound commitment
+        // moves, as it does when a primary entry's value changes without
+        // touching its aggregates.
+        mirror_indexed_axis_to_secondary(
+            &mut secondary,
+            IndexAxis::Count,
+            item_key,
+            Some(state(1, 0, 0x11)),
+            Some(state(1, 0, 0x22)),
+            grove_version,
+        )
+        .unwrap()
+        .expect("refresh");
+
+        let committed_after = secondary
+            .get_value_hash(
+                key.as_slice(),
+                true,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .unwrap()
+            .expect("value hash read")
+            .expect("row present");
+        let (root_after, ..) = secondary
+            .root_hash_key_and_aggregate_data()
+            .unwrap()
+            .expect("secondary root state");
+
+        assert_ne!(
+            committed_before, committed_after,
+            "a moved target hash must move the row's committed value hash — \
+             otherwise the row still authenticates a value that is no longer there"
+        );
+        assert_ne!(
+            root_before, root_after,
+            "the refreshed commitment must reach the secondary root, or the \
+             staleness never becomes visible to a proof"
+        );
+        // The row BYTES are unchanged: this drift is invisible to any check
+        // that compares serialized rows alone.
+        let row = Element::get(&secondary, key.as_slice(), true, grove_version)
+            .unwrap()
+            .expect("row present");
+        assert_eq!(
+            row,
+            axis_row_reference(IndexAxis::Count, item_key, 1, 0).unwrap(),
+            "the row bytes must be the canonical ones, unchanged by the refresh"
+        );
+    }
+
+    /// The fast path must still short-circuit for a genuine no-op — key,
+    /// carried sum AND bound target hash all unchanged.
+    #[test]
+    fn avg_axis_mirror_noop_when_key_payload_and_target_unchanged() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let (tx, batch) = open_axis_secondary(&db, IndexAxis::Avg, grove_version);
+
         let item_key = b"row";
-        let batch = StorageBatch::new();
         let path_segments: [&[u8]; 2] = [TEST_LEAF, b"pcpsit".as_ref()];
         let path: SubtreePath<_> = (&path_segments).into();
         let mut secondary = db
@@ -3611,15 +3906,13 @@ mod bug2_avg_axis_mirror_tests {
             IndexAxis::Avg,
             item_key,
             None,
-            None,
-            Some(2),
-            Some(10),
+            Some(state(2, 10, 0x33)),
             grove_version,
         )
         .unwrap()
         .expect("insert (2,10)");
 
-        // Identical (count, sum) rewrite: key AND payload unchanged.
+        // Identical transition: key, row AND target hash unchanged.
         // Assert on the COST, not just the stored value — a delete+reinsert
         // would leave the same value behind, so a value-only assertion passes
         // even with the fast path deleted entirely.
@@ -3628,10 +3921,8 @@ mod bug2_avg_axis_mirror_tests {
             &mut secondary,
             IndexAxis::Avg,
             item_key,
-            Some(2),
-            Some(10),
-            Some(2),
-            Some(10),
+            Some(state(2, 10, 0x33)),
+            Some(state(2, 10, 0x33)),
             grove_version,
         )
         .unwrap_add_cost(&mut noop_cost)
@@ -3657,32 +3948,24 @@ mod bug2_avg_axis_mirror_tests {
         let entry = Element::get(&secondary, key.as_slice(), true, grove_version)
             .unwrap()
             .expect("entry present");
-        assert_eq!(entry.sum_value_or_default(), 10, "payload must remain 10");
+        assert_eq!(
+            entry.sum_value_or_default(),
+            10,
+            "carried sum must remain 10"
+        );
     }
 
-    /// A delete reaches the mirror as `new_count = new_sum = None`, which must
-    /// resolve to "no new key" and leave only the removal. The row has to
-    /// disappear from the axis secondary — not merely stop being findable — or
-    /// the secondary's own aggregate keeps counting it.
+    /// A delete reaches the mirror as a `None` new state, which must resolve
+    /// to "no new key" and leave only the removal. The row has to disappear
+    /// from the axis secondary — not merely stop being findable — or the
+    /// secondary's own aggregate keeps counting it.
     #[test]
     fn avg_axis_mirror_removes_the_row_when_the_new_state_is_absent() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
-        let axes: Vec<(u8, Option<Vec<u8>>)> = vec![(IndexAxis::Avg.tag(), None)];
-        db.insert(
-            [TEST_LEAF].as_ref(),
-            b"pcpsit",
-            Element::empty_provable_count_provable_sum_indexed_tree(axes).expect("canonical axes"),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("empty PCPSIT insert");
+        let (tx, batch) = open_axis_secondary(&db, IndexAxis::Avg, grove_version);
 
-        let tx = db.start_transaction();
         let item_key = b"row";
-        let batch = StorageBatch::new();
         let path_segments: [&[u8]; 2] = [TEST_LEAF, b"pcpsit".as_ref()];
         let path: SubtreePath<_> = (&path_segments).into();
         let mut secondary = db
@@ -3702,9 +3985,7 @@ mod bug2_avg_axis_mirror_tests {
             IndexAxis::Avg,
             item_key,
             None,
-            None,
-            Some(2),
-            Some(10),
+            Some(state(2, 10, 0x44)),
             grove_version,
         )
         .unwrap()
@@ -3730,9 +4011,7 @@ mod bug2_avg_axis_mirror_tests {
             &mut secondary,
             IndexAxis::Avg,
             item_key,
-            Some(2),
-            Some(10),
-            None,
+            Some(state(2, 10, 0x44)),
             None,
             grove_version,
         )

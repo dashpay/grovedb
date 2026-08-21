@@ -629,11 +629,10 @@ impl GroveDb {
         //     normal traversal (own_count = 0) and not surfaced via
         //     the merk's `returned_items`. If one appears here, the
         //     proof was forged.
-        //   • **Reference / ReferenceWithSumItem** — would need the
-        //     regular flow's reference post-pass to dereference the
-        //     target; we don't run that on the count-offset
-        //     short-circuit, so a raw reference here would be returned
-        //     verbatim. Reject.
+        //   • **Raw Reference / ReferenceWithSumItem** — the prover now
+        //     runs a reference post-pass on this short-circuit, so an
+        //     honest proof surfaces the dereferenced TARGET here, never
+        //     the reference itself. An unresolved one is malformed.
         //   • **Non-empty tree** — V1 strict-mode would require a
         //     `KVValueHashFeatureTypeWithChildHash` proof node here;
         //     accepting one without that would silently bypass the
@@ -683,16 +682,23 @@ impl GroveDb {
                     hex::encode(&item.key)
                 )));
             }
+            // A RAW reference must not reach the caller: the prover's
+            // post-pass rewrites reference rows into resolved-value nodes,
+            // so by this point `item.value` is the dereferenced TARGET and
+            // `item.reference_element_hash` records that a reference was
+            // resolved. Seeing an unresolved reference here means the proof
+            // skipped the post-pass — reject rather than surface it.
             if inner.is_reference() {
-                return Err(Error::NotSupported(format!(
-                    "count-offset paginated proofs do not yet support \
-                     Reference / ReferenceWithSumItem return values (key {}); the \
-                     regular flow's reference post-pass isn't applied on the \
-                     count-offset short-circuit, so an accepted reference here \
-                     would surface the raw Element::Reference rather than the \
-                     dereferenced target",
-                    hex::encode(&item.key)
-                )));
+                return Err(Error::InvalidProof(
+                    query.clone(),
+                    format!(
+                        "count-offset paginated proof surfaced a raw \
+                         Reference / ReferenceWithSumItem at key {} — the prover's \
+                         reference post-pass rewrites these into resolved-value \
+                         nodes, so an unresolved reference here is malformed",
+                        hex::encode(&item.key)
+                    ),
+                ));
             }
             // Empty-tree value-hash equality check (defense-in-depth on
             // top of the merk-level KV→KVValueHash forgery guard).
@@ -905,8 +911,12 @@ impl GroveDb {
                         format!("axis descent: secondary count-offset proof failed: {e}"),
                     )
                 })?;
-                let entries =
-                    decode_axis_entries_from_count_offset_items(axis, &res.returned_items)?;
+                let entries = decode_axis_entries_from_count_offset_items(
+                    axis,
+                    &res.returned_items,
+                    &payload.target_chains,
+                    grove_version,
+                )?;
                 (
                     res.root_hash,
                     AxisWalkResult::Entries {
@@ -951,8 +961,12 @@ impl GroveDb {
                         ),
                     ));
                 }
-                let entries =
-                    decode_axis_entries_from_count_offset_items(axis, &res.returned_items)?;
+                let entries = decode_axis_entries_from_count_offset_items(
+                    axis,
+                    &res.returned_items,
+                    &payload.target_chains,
+                    grove_version,
+                )?;
                 let yielded_key = entries.first_original_key().map(|k| k.to_vec());
                 if yielded_key.as_deref() != Some(key.as_slice()) {
                     return Err(Error::InvalidProof(
@@ -1004,7 +1018,12 @@ impl GroveDb {
                                 format!("axis descent: secondary range proof failed: {e}"),
                             )
                         })?;
-                    let entries = decode_axis_entries_from_result_set(axis, &res.result_set)?;
+                    let entries = decode_axis_entries_from_result_set(
+                        axis,
+                        &res.result_set,
+                        &payload.target_chains,
+                        grove_version,
+                    )?;
                     (
                         root,
                         AxisWalkResult::Entries {

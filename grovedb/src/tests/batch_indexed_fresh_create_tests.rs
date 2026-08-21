@@ -21,6 +21,10 @@
 mod tests {
     use grovedb_version::version::GroveVersion;
 
+    use crate::IndexedAxisEntrySliceExt;
+
+    use crate::IndexedAxisEntry;
+
     use crate::{
         batch::QualifiedGroveDbOp,
         tests::{make_test_grovedb, TempGroveDb, TEST_LEAF},
@@ -100,7 +104,8 @@ mod tests {
         assert_eq!(
             one.indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 5, true, None, gv)
                 .unwrap()
-                .expect("top_k"),
+                .expect("top_k")
+                .key_pairs(),
             vec![(7i64, b"a".to_vec()), (-3i64, b"b".to_vec())],
             "sum index must order the rows inserted alongside the creation"
         );
@@ -222,7 +227,8 @@ mod tests {
         assert_eq!(
             one.indexed_count_top_k([TEST_LEAF, b"t", b"cidx"].as_ref(), 5, true, None, gv)
                 .unwrap()
-                .expect("top_k"),
+                .expect("top_k")
+                .key_pairs(),
             vec![(1u64, b"row".to_vec())],
         );
         assert_clean(&one, gv);
@@ -267,12 +273,12 @@ mod tests {
         .expect("fresh inner + row under existing outer");
 
         assert_eq!(
-            one_key_count(&db, &[TEST_LEAF, b"outer"], gv),
+            one_key_count(&db, &[TEST_LEAF, b"outer"], gv).key_pairs(),
             vec![(1u64, b"inner".to_vec())],
             "the outer index must reflect the fresh inner's derived count of 1"
         );
         assert_eq!(
-            one_key_count(&db, &[TEST_LEAF, b"outer", b"inner"], gv),
+            one_key_count(&db, &[TEST_LEAF, b"outer", b"inner"], gv).key_pairs(),
             vec![(1u64, b"row".to_vec())],
             "the fresh inner's own index must hold its row"
         );
@@ -353,7 +359,7 @@ mod tests {
         .expect("fresh indexed + child tree + grandchild in one batch");
 
         assert_eq!(
-            one_key_count(&db, &[TEST_LEAF, b"cidx"], gv),
+            one_key_count(&db, &[TEST_LEAF, b"cidx"], gv).key_pairs(),
             vec![(1u64, b"child".to_vec())],
             "the index must record the child's PROPAGATED count of 1"
         );
@@ -458,7 +464,11 @@ mod tests {
         );
     }
 
-    fn one_key_count(db: &TempGroveDb, path: &[&[u8]], gv: &GroveVersion) -> Vec<(u64, Vec<u8>)> {
+    fn one_key_count(
+        db: &TempGroveDb,
+        path: &[&[u8]],
+        gv: &GroveVersion,
+    ) -> Vec<IndexedAxisEntry<u64>> {
         db.indexed_count_top_k(path, 5, true, None, gv)
             .unwrap()
             .expect("count top_k")

@@ -152,6 +152,14 @@ impl GroveDb {
 
         let updated_element = Element::new_mmr_tree(new_mmr_size, existing_flags);
 
+        // A canonical indexed secondary row binds this entry's committed
+        // value hash, and an append moves it while leaving `(count, sum)`
+        // alone. Snapshot before the rewrite; mirror after.
+        let old_indexed_state = cost_return_on_error!(
+            &mut cost,
+            GroveDb::capture_indexed_entry_state(&parent_merk, key, &element, grove_version)
+        );
+
         // MMR root hash flows as the Merk child hash
         cost_return_on_error!(
             &mut cost,
@@ -160,16 +168,17 @@ impl GroveDb {
                 .map_err(|e| e.into())
         );
 
-        // 5. Propagate changes from parent upward
         let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
             HashMap::new();
         merk_cache.insert(path.clone(), parent_merk);
 
         cost_return_on_error!(
             &mut cost,
-            self.propagate_changes_with_transaction(
+            self.propagate_changes_with_transaction_refreshing_indexed_row(
                 merk_cache,
                 path,
+                key,
+                old_indexed_state,
                 tx.as_ref(),
                 &batch,
                 grove_version,

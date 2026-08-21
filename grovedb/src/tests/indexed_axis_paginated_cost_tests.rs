@@ -17,6 +17,8 @@ mod tests {
     use grovedb_costs::CostContext;
     use grovedb_version::version::GroveVersion;
 
+    use crate::IndexedAxisEntrySliceExt;
+
     use crate::{
         batch::QualifiedGroveDbOp,
         operations::proof::indexed_axis::AxisEntries,
@@ -686,7 +688,8 @@ mod tests {
                         .unwrap()
                         .expect("legacy linear read");
                     assert_eq!(
-                        counted.entries, legacy,
+                        counted.entries.key_pairs(),
+                        legacy,
                         "counted and legacy diverge at offset={offset} k={k} \
                          descending={descending}"
                     );
@@ -743,7 +746,7 @@ mod tests {
             in_tx
                 .entries
                 .iter()
-                .map(|(_, key)| key.clone())
+                .map(|e| e.primary_key.clone())
                 .collect::<Vec<_>>(),
             vec![
                 b"k0000025".to_vec(),
@@ -839,7 +842,8 @@ mod tests {
                     let linear_rows = linear_rows.expect("legacy linear read");
 
                     assert_eq!(
-                        counted_page.entries, linear_rows,
+                        counted_page.entries.key_pairs(),
+                        linear_rows,
                         "counted and linear paths diverged at n={n} k={k} offset={offset}"
                     );
                     assert_eq!(
