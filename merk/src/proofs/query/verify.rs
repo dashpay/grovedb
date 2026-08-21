@@ -1115,6 +1115,55 @@ mod provable_count_provable_sum_tree_bound_regression_tests {
     }
 }
 
+/// The orientation of a Merk layer proof's op stream, read off the op
+/// families in the bytes themselves.
+///
+/// Every proof op comes in an upright / inverted pair — `Push` /
+/// `PushInverted`, `Parent` / `ParentInverted`, `Child` /
+/// `ChildInverted` — and `create_proof` picks the family once per layer
+/// from a single `left_to_right`, so an honest layer proof is
+/// homogeneous: all upright (nodes emitted in ascending key order) or
+/// all inverted (descending).
+///
+/// This is deliberately **not** a trusted read of a proof-supplied
+/// parameter. [`execute`] independently checks, for every op it
+/// decodes, that an upright push's key is strictly greater than the
+/// previous key-bearing node's and an inverted push's key strictly
+/// less. A stream that claims one orientation while being ordered the
+/// other way is therefore rejected by `execute` itself, before any
+/// orientation-sensitive bound-witness check can be misapplied: the
+/// orientation reported here is pinned to a structural property of the
+/// same bytes, not chosen freely by whoever produced them.
+///
+/// Returns `Ok(Some(true))` for an all-upright stream, `Ok(Some(false))`
+/// for an all-inverted one, `Ok(None)` when there is no
+/// direction-bearing op at all (an empty stream, which `execute` then
+/// rejects on its own), and `Err` for a stream that mixes the two: no
+/// honest prover emits one, and a mixed stream has no single
+/// orientation for the bound-witness checks to be correct against, so
+/// it is refused rather than guessed at.
+pub fn proof_stream_direction(proof_bytes: &[u8]) -> Result<Option<bool>, Error> {
+    let mut direction: Option<bool> = None;
+    for op_result in Decoder::new(proof_bytes) {
+        let upright = match op_result? {
+            Op::Push(_) | Op::Parent | Op::Child => true,
+            Op::PushInverted(_) | Op::ParentInverted | Op::ChildInverted => false,
+        };
+        match direction {
+            None => direction = Some(upright),
+            Some(previous) if previous == upright => {}
+            Some(_) => {
+                return Err(Error::InvalidProofError(
+                    "Proof mixes upright and inverted ops; a layer proof is emitted \
+                     entirely in one direction"
+                        .to_string(),
+                ));
+            }
+        }
+    }
+    Ok(direction)
+}
+
 /// Returns all boundary keys found in the given merk proof bytes.
 /// Boundary keys appear as `KVDigest`, `KVDigestCount`, `KVDigestSum`,
 /// or `KVDigestCountSum` (dual-axis PCPS) nodes — they prove a key
@@ -1142,4 +1191,76 @@ pub fn boundaries_in_proof(proof_bytes: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
         }
     }
     Ok(keys)
+}
+
+#[cfg(test)]
+mod proof_stream_direction_tests {
+    //! `proof_stream_direction` is what lets a verifier run the
+    //! orientation-sensitive bound-witness checks over a layer whose
+    //! generating direction it cannot know (a synthesized
+    //! path-component level under `verify_subset_query`). It must
+    //! report the op family faithfully and refuse to pick one when the
+    //! stream does not have a single family.
+
+    use grovedb_query::proofs::encode_into;
+
+    use super::proof_stream_direction;
+    use crate::proofs::{Node, Op};
+
+    fn encoded(ops: &[Op]) -> Vec<u8> {
+        let mut bytes = vec![];
+        encode_into(ops.iter(), &mut bytes);
+        bytes
+    }
+
+    #[test]
+    fn upright_stream_reads_as_left_to_right() {
+        let bytes = encoded(&[
+            Op::Push(Node::KV(vec![1], vec![1])),
+            Op::Push(Node::KV(vec![2], vec![2])),
+            Op::Parent,
+            Op::Push(Node::KV(vec![3], vec![3])),
+            Op::Child,
+        ]);
+        assert_eq!(proof_stream_direction(&bytes).expect("reads"), Some(true));
+    }
+
+    #[test]
+    fn inverted_stream_reads_as_right_to_left() {
+        let bytes = encoded(&[
+            Op::PushInverted(Node::KV(vec![3], vec![3])),
+            Op::PushInverted(Node::KV(vec![2], vec![2])),
+            Op::ParentInverted,
+            Op::PushInverted(Node::KV(vec![1], vec![1])),
+            Op::ChildInverted,
+        ]);
+        assert_eq!(proof_stream_direction(&bytes).expect("reads"), Some(false));
+    }
+
+    #[test]
+    fn empty_stream_has_no_direction() {
+        assert_eq!(proof_stream_direction(&[]).expect("reads"), None);
+    }
+
+    /// A mixed stream has no single orientation, so there is no correct
+    /// mirror of the bound-witness check to run against it. Refuse it
+    /// rather than pick from the first op — an all-but-the-first
+    /// inverted stream is exactly how a forger would try to get the
+    /// ascending checks applied to a descending stream.
+    #[test]
+    fn mixed_stream_is_refused() {
+        let bytes = encoded(&[
+            Op::Push(Node::KV(vec![9], vec![9])),
+            Op::PushInverted(Node::KV(vec![8], vec![8])),
+        ]);
+        proof_stream_direction(&bytes).expect_err("mixed families must not resolve to a direction");
+
+        // Mixed in the structural ops alone counts too.
+        let bytes = encoded(&[
+            Op::Push(Node::KV(vec![1], vec![1])),
+            Op::Push(Node::KV(vec![2], vec![2])),
+            Op::ParentInverted,
+        ]);
+        proof_stream_direction(&bytes).expect_err("mixed structural ops must not resolve");
+    }
 }
