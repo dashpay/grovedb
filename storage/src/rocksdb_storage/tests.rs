@@ -1417,7 +1417,7 @@ mod storage_management {
         }
 
         // Verify DB is still functional after wipe — can insert new data
-        drop(verify_ctx);
+        let _ = verify_ctx;
         storage
             .commit_transaction(verify_tx)
             .unwrap()

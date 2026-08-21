@@ -1007,7 +1007,9 @@ mod tests {
             subquery: Some(Box::new(other_subquery.clone())),
         };
 
-        self_query.merge_default_subquery_branch(other_branch);
+        self_query
+            .merge_default_subquery_branch(other_branch)
+            .expect("merge should succeed");
 
         // After merge:
         // - default subquery should be other's (no path, so it applies broadly)

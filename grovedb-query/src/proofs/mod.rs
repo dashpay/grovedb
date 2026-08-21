@@ -657,7 +657,7 @@ mod tests {
     // additions show up as ~263 uncovered lines.
 
     fn round_trip_push(node: Node) {
-        use ed::{Decode, Encode};
+        use ed::Encode;
         let op = Op::Push(node.clone());
         let mut buf = Vec::new();
         op.encode_into(&mut buf).expect("encode push");

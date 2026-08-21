@@ -365,7 +365,8 @@ fn merge_apis_cover_default_and_conditional_paths() {
     left.merge_default_subquery_branch(SubqueryBranch {
         subquery_path: Some(vec![k(1), k(3)]),
         subquery: Some(Box::new(Query::new_single_key(k(30)))),
-    });
+    })
+    .expect("merge should succeed");
 
     assert_eq!(left.default_subquery_branch.subquery_path, Some(vec![k(1)]));
     let merged_conditionals = left
