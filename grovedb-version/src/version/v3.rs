@@ -226,7 +226,7 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
         },
         aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions { merge: 0 },
         path_query_methods: GroveDBPathQueryMethodVersions {
-            terminal_keys: 1,
+            terminal_keys: 0,
             merge: 0,
             query_items_at_path: 0,
             should_add_parent_tree_at_path: 0,

@@ -479,6 +479,19 @@ fn v1_path_query_methods_all_zero() {
 }
 
 #[test]
+fn terminal_keys_is_legacy_until_v4() {
+    // Per-item conditional resolution (issue #689) activates at GROVE_V4;
+    // v1-v3 are live in production and must keep the legacy walk.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3] {
+        assert_eq!(v.grovedb_versions.path_query_methods.terminal_keys, 0);
+    }
+    assert_eq!(
+        GROVE_V4.grovedb_versions.path_query_methods.terminal_keys,
+        1
+    );
+}
+
+#[test]
 fn v1_replication_all_zero() {
     let rep = &GROVE_V1.grovedb_versions.replication;
     assert_eq!(rep.get_subtrees_metadata, 0);

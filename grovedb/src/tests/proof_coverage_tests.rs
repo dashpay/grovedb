@@ -3300,6 +3300,7 @@ mod tests {
             left_to_right: true,
             conditional_subquery_branches: Some(conditional),
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         };
         let path_query = PathQuery::new(
             vec![b"root".to_vec()],

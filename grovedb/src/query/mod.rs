@@ -3437,6 +3437,42 @@ mod tests {
         assert_eq!(keys, vec![(vec![b"root".to_vec()], b"leaf".to_vec())]);
     }
 
+    #[test]
+    fn path_query_terminal_keys_conditionals_gate_at_v4() {
+        use grovedb_version::version::{v3::GROVE_V3, v4::GROVE_V4};
+
+        // Query selects only "queried"; a conditional branch exists for the
+        // unqueried key "other". The legacy walk (v1-v3) emits a terminal key
+        // for the unqueried conditional branch; the v4 walk only resolves
+        // conditionals against keys the query actually selects (issue #689).
+        let mut query = Query::new_single_key(b"queried".to_vec());
+        query.add_conditional_subquery(
+            QueryItem::Key(b"other".to_vec()),
+            None,
+            Some(Query::new_single_key(b"inner".to_vec())),
+        );
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let legacy_keys = path_query
+            .terminal_keys(10, &GROVE_V3)
+            .expect("terminal keys under v3");
+        assert_eq!(
+            legacy_keys,
+            vec![
+                (vec![b"root".to_vec(), b"other".to_vec()], b"inner".to_vec()),
+                (vec![b"root".to_vec()], b"queried".to_vec()),
+            ]
+        );
+
+        let fixed_keys = path_query
+            .terminal_keys(10, &GROVE_V4)
+            .expect("terminal keys under v4");
+        assert_eq!(
+            fixed_keys,
+            vec![(vec![b"root".to_vec()], b"queried".to_vec())]
+        );
+    }
+
     // ---------- SizedQuery / PathQuery AggregateCountOnRange validation ----------
 
     #[test]
