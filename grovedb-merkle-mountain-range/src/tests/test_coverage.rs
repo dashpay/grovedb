@@ -8,6 +8,7 @@ use crate::{
     MMR,
 };
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use grovedb_version::version::GroveVersion;
 
 /// Create an MmrNode leaf from an integer.
 fn leaf(i: u32) -> MmrNode {
@@ -59,8 +60,12 @@ fn batch_into_iterator() {
     let store = MemStore::default();
     let mut mmr = MMR::new(0, &store);
 
-    mmr.push(leaf(10)).unwrap().expect("push");
-    mmr.push(leaf(11)).unwrap().expect("push");
+    mmr.push(leaf(10), GroveVersion::latest())
+        .unwrap()
+        .expect("push");
+    mmr.push(leaf(11), GroveVersion::latest())
+        .unwrap()
+        .expect("push");
 
     let entries: Vec<(u64, Vec<MmrNode>)> = mmr.batch.into_iter().collect();
     assert_eq!(entries.len(), 2);
@@ -88,7 +93,9 @@ fn batch_commit_surfaces_store_error() {
     let store = FailingWriteStore;
     let mut mmr = MMR::new(0, &store);
 
-    mmr.push(leaf(0)).unwrap().expect("push to batch");
+    mmr.push(leaf(0), GroveVersion::latest())
+        .unwrap()
+        .expect("push to batch");
 
     let result = mmr.commit().unwrap();
     assert!(result.is_err(), "commit should surface store write error");
@@ -107,7 +114,9 @@ fn mmr_is_empty() {
     assert!(mmr.is_empty());
 
     let mut mmr2 = MMR::new(0, &store);
-    mmr2.push(leaf(0)).unwrap().expect("push");
+    mmr2.push(leaf(0), GroveVersion::latest())
+        .unwrap()
+        .expect("push");
     assert!(!mmr2.is_empty());
 }
 
@@ -145,7 +154,7 @@ impl MMRStoreWriteOps for &ErrorStore {
 fn get_root_single_element_missing_returns_inconsistent() {
     let store = EmptyStore;
     let mmr = MMR::new(1, &store);
-    let result = mmr.get_root().unwrap();
+    let result = mmr.get_root(GroveVersion::latest()).unwrap();
     assert_eq!(result, Err(Error::InconsistentStore));
 }
 
@@ -153,7 +162,7 @@ fn get_root_single_element_missing_returns_inconsistent() {
 fn get_root_single_element_store_error_propagates() {
     let store = ErrorStore;
     let mmr = MMR::new(1, &store);
-    let result = mmr.get_root().unwrap();
+    let result = mmr.get_root(GroveVersion::latest()).unwrap();
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
     assert!(msg.contains("read error"), "error: {}", msg);
@@ -163,7 +172,7 @@ fn get_root_single_element_store_error_propagates() {
 fn get_root_multi_peak_store_error_propagates() {
     let store = ErrorStore;
     let mmr = MMR::new(4, &store);
-    let result = mmr.get_root().unwrap();
+    let result = mmr.get_root(GroveVersion::latest()).unwrap();
     assert!(result.is_err());
 }
 
@@ -234,7 +243,7 @@ fn push_propagates_store_read_error_during_merge() {
     let mut mmr = MMR::new(1, &store);
 
     // Push triggers merge with element at position 0 → store read fails
-    let result = mmr.push(leaf(1)).unwrap();
+    let result = mmr.push(leaf(1), GroveVersion::latest()).unwrap();
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
     assert!(
@@ -254,7 +263,7 @@ fn push_returns_inconsistent_store_when_merge_element_missing() {
 
     // Push triggers merge with element at position 0, but EmptyStore
     // returns Ok(None) → InconsistentStore
-    let result = mmr.push(leaf(1)).unwrap();
+    let result = mmr.push(leaf(1), GroveVersion::latest()).unwrap();
     assert_eq!(result, Err(Error::InconsistentStore));
 }
 
@@ -265,7 +274,9 @@ fn push_returns_inconsistent_store_when_merge_element_missing() {
 fn batch_element_at_position_break_falls_through_to_store() {
     let store = MemStore::default();
     let mut mmr = MMR::new(0, &store);
-    mmr.push(leaf(0)).unwrap().expect("push");
+    mmr.push(leaf(0), GroveVersion::latest())
+        .unwrap()
+        .expect("push");
     // batch has entry (0, [leaf(0)]). Position 5 is past this range,
     // triggering the break and falling through to the store.
     let result = mmr
@@ -293,5 +304,192 @@ fn verify_and_get_root_surfaces_calculate_root_error() {
         msg.contains("calculation failed"),
         "should map calculate_root error: {}",
         msg
+    );
+}
+
+// =============================================================================
+// mmr.rs: versioned hash charges for the internal blake3 merges
+// =============================================================================
+
+/// `get_root` bags peaks with one blake3 merge per extra peak. v0 (shipped)
+/// charges none of them; v1 charges `peaks - 1`. The root itself is identical
+/// under both, so only the cost may differ.
+#[test]
+fn get_root_peak_bagging_charge_is_versioned() {
+    use grovedb_version::version::{v1::GROVE_V1, v4::GROVE_V4};
+
+    // (leaves, expected v1 merges): 1 and 2 leaves leave a single peak (or
+    // take the single-element path), 3 leaves give two peaks, 7 give three.
+    for (leaves, expected) in [(1u32, 0u32), (2, 0), (3, 1), (7, 2)] {
+        let store = MemStore::default();
+        let mut mmr = MMR::new(0, &store);
+        for i in 0..leaves {
+            mmr.push(leaf(i), GroveVersion::latest())
+                .unwrap()
+                .expect("push");
+        }
+
+        let v0 = mmr.get_root(&GROVE_V1);
+        let v0_root = v0.value.expect("root");
+        assert_eq!(
+            v0.cost.hash_node_calls, 0,
+            "v0 charges no bagging merges ({} leaves)",
+            leaves
+        );
+
+        let v1 = mmr.get_root(&GROVE_V4);
+        let v1_root = v1.value.expect("root");
+        assert_eq!(
+            v1.cost.hash_node_calls, expected,
+            "v1 charges one hash per fold ({} leaves), got {:?}",
+            leaves, v1.cost
+        );
+
+        assert_eq!(
+            v0_root, v1_root,
+            "the root must not depend on the cost version ({} leaves)",
+            leaves
+        );
+    }
+}
+
+/// `push` merges once per peak it collapses. v0 billed the sibling reads
+/// those merges consume but not the merges; v1 charges them.
+#[test]
+fn push_peak_collapse_charge_is_versioned() {
+    use grovedb_version::version::{v1::GROVE_V1, v4::GROVE_V4};
+
+    // Collapses for the first four leaves: 0, 1, 0, 2.
+    let expected = [0u32, 1, 0, 2];
+
+    let store_v0 = MemStore::default();
+    let mut mmr_v0 = MMR::new(0, &store_v0);
+    let store_v1 = MemStore::default();
+    let mut mmr_v1 = MMR::new(0, &store_v1);
+
+    for (i, exp) in expected.iter().enumerate() {
+        let c0 = mmr_v0.push(leaf(i as u32), &GROVE_V1);
+        c0.value.expect("push");
+        assert_eq!(
+            c0.cost.hash_node_calls, 0,
+            "v0 charges no merges (leaf {})",
+            i
+        );
+
+        let c1 = mmr_v1.push(leaf(i as u32), &GROVE_V4);
+        c1.value.expect("push");
+        assert_eq!(
+            c1.cost.hash_node_calls, *exp,
+            "v1 charges one hash per collapse (leaf {}), got {:?}",
+            i, c1.cost
+        );
+    }
+
+    // Same MMR either way.
+    assert_eq!(
+        mmr_v0
+            .get_root(GroveVersion::latest())
+            .unwrap()
+            .expect("root"),
+        mmr_v1
+            .get_root(GroveVersion::latest())
+            .unwrap()
+            .expect("root"),
+        "the MMR must not depend on the cost version"
+    );
+}
+
+/// `gen_proof` folds right-hand peaks through the same `bag_peaks` helper,
+/// so it carries the same versioned charge.
+#[test]
+fn gen_proof_peak_bagging_charge_is_versioned() {
+    use grovedb_version::version::{v1::GROVE_V1, v4::GROVE_V4};
+
+    // 7 leaves gives three peaks (4 + 2 + 1); a proof for the first leaf
+    // leaves the two right-hand peaks to bag: one merge.
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+    let mut positions = Vec::new();
+    for i in 0..7 {
+        positions.push(
+            mmr.push(leaf(i), GroveVersion::latest())
+                .unwrap()
+                .expect("push"),
+        );
+    }
+
+    let v0 = mmr.gen_proof(vec![positions[0]], &GROVE_V1);
+    let v0_proof = v0.value.expect("proof");
+    assert_eq!(v0.cost.hash_node_calls, 0, "v0 charges no bagging merges");
+
+    let v1 = mmr.gen_proof(vec![positions[0]], &GROVE_V4);
+    let v1_proof = v1.value.expect("proof");
+    assert_eq!(
+        v1.cost.hash_node_calls, 1,
+        "v1 charges the one fold, got {:?}",
+        v1.cost
+    );
+
+    assert_eq!(
+        v0_proof.proof_items(),
+        v1_proof.proof_items(),
+        "the proof must not depend on the cost version"
+    );
+
+    // A single perfect peak has nothing to bag under either version.
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+    let mut positions = Vec::new();
+    for i in 0..4 {
+        positions.push(
+            mmr.push(leaf(i), GroveVersion::latest())
+                .unwrap()
+                .expect("push"),
+        );
+    }
+    let ctx = mmr.gen_proof(vec![positions[0]], &GROVE_V4);
+    ctx.value.expect("proof");
+    assert_eq!(ctx.cost.hash_node_calls, 0, "one peak means no bagging");
+}
+
+/// An unknown version must be rejected rather than silently falling back to
+/// one of the implemented charges.
+#[test]
+fn mmr_cost_dispatch_rejects_unknown_version() {
+    use grovedb_version::version::{v4::GROVE_V4, GroveVersion};
+
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+    for i in 0..3 {
+        mmr.push(leaf(i), GroveVersion::latest())
+            .unwrap()
+            .expect("push");
+    }
+
+    let mut bad: GroveVersion = GROVE_V4.clone();
+    bad.mmr_versions.cost.get_root = 99;
+    assert!(
+        matches!(mmr.get_root(&bad).unwrap(), Err(Error::VersionError(_))),
+        "an unknown get_root charge version must error"
+    );
+
+    let mut bad: GroveVersion = GROVE_V4.clone();
+    bad.mmr_versions.cost.push = 99;
+    assert!(
+        matches!(
+            mmr.push(leaf(9), &bad).unwrap(),
+            Err(Error::VersionError(_))
+        ),
+        "an unknown push charge version must error"
+    );
+
+    let mut bad: GroveVersion = GROVE_V4.clone();
+    bad.mmr_versions.cost.gen_proof = 99;
+    assert!(
+        matches!(
+            mmr.gen_proof(vec![0], &bad).unwrap(),
+            Err(Error::VersionError(_))
+        ),
+        "an unknown gen_proof charge version must error"
     );
 }

@@ -14,6 +14,7 @@ use std::marker::PhantomData;
 use grovedb_bulk_append_tree::BulkAppendTree;
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_storage::StorageContext;
+use grovedb_version::version::GroveVersion;
 use orchard::{
     memo::{DashMemo, MemoSize},
     note::TransmittedNoteCiphertext,
@@ -250,15 +251,19 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     /// decrypts `out_ciphertext`, and it cannot be recomputed from the note.
     ///
     /// Call [`save`](Self::save) afterwards to persist the updated frontier.
+    /// The note, chunk and roots are identical under every grove version;
+    /// what the version selects is the hash count a compacting append
+    /// reports, which this method bills.
     pub fn append(
         &mut self,
         cmx: [u8; 32],
         rho: [u8; 32],
         cv_net: [u8; 32],
         ciphertext: &TransmittedNoteCiphertext<M>,
+        grove_version: &GroveVersion,
     ) -> CostResult<CommitmentAppendResult, CommitmentTreeError> {
         let payload = serialize_ciphertext(ciphertext);
-        self.append_raw(cmx, rho, cv_net, &payload)
+        self.append_raw(cmx, rho, cv_net, &payload, grove_version)
     }
 
     /// Append a note commitment and raw payload bytes to the commitment tree.
@@ -287,6 +292,7 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         rho: [u8; 32],
         cv_net: [u8; 32],
         payload: &[u8],
+        grove_version: &GroveVersion,
     ) -> CostResult<CommitmentAppendResult, CommitmentTreeError> {
         let mut cost = OperationCost::default();
 
@@ -314,7 +320,7 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         item_value.extend_from_slice(&cv_net);
         item_value.extend_from_slice(payload);
 
-        let bulk_result = match self.bulk_tree.append(&item_value) {
+        let bulk_result = match self.bulk_tree.append(&item_value, grove_version) {
             Ok(r) => r,
             // codecov:ignore — requires BulkAppendTree::append to fail, which only happens on
             // storage faults (put/get errors) during dense tree insert or MMR compaction;
@@ -418,6 +424,7 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     pub fn append_many_raw<I>(
         &mut self,
         entries: I,
+        grove_version: &GroveVersion,
     ) -> CostResult<CommitmentAppendResult, CommitmentTreeError>
     where
         I: IntoIterator<Item = CommitmentEntry>,
@@ -463,7 +470,10 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
             item_value.extend_from_slice(&cv_net);
             item_value.extend_from_slice(&payload);
 
-            let r = match self.bulk_tree.append_no_state_root(&item_value) {
+            let r = match self
+                .bulk_tree
+                .append_no_state_root(&item_value, grove_version)
+            {
                 Ok(r) => r,
                 // codecov:ignore — only reachable on a storage fault during the
                 // dense-tree insert or MMR compaction (see `append_raw`'s

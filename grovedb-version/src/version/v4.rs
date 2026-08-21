@@ -101,18 +101,21 @@
 
 use crate::version::grovedb_versions::GroveDBAggregateSumPathQueryMethodVersions;
 use crate::version::{
+    bulk_append_tree_versions::{BulkAppendTreeCostVersions, BulkAppendTreeVersions},
     grovedb_versions::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
         GroveDBOperationsDeleteVersions, GroveDBOperationsGetVersions,
         GroveDBOperationsIndexedAxisVersions, GroveDBOperationsInsertVersions,
-        GroveDBOperationsProofVersions, GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
+        GroveDBOperationsPrivateDocumentStoreVersions, GroveDBOperationsProofVersions,
+        GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
         GroveDBReplicationVersions, GroveDBVersions,
     },
     merk_versions::{
         MerkAverageCaseCostsVersions, MerkBatchVersions, MerkProofVersions, MerkVersions,
     },
+    mmr_versions::{MmrCostVersions, MmrVersions},
     GroveVersion,
 };
 
@@ -313,6 +316,13 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 add_worst_case_get_cost: 0,
                 worst_case_commitment_tree_insert: 1,
             },
+            // PrivateDocumentStore activates in GROVE_V4.
+            private_document_store: GroveDBOperationsPrivateDocumentStoreVersions {
+                element_creation: 1,
+                insert: 1,
+                get_value: 1,
+                count: 1,
+            },
         },
         aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions { merge: 0 },
         path_query_methods: GroveDBPathQueryMethodVersions {
@@ -358,6 +368,26 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             // Initial implementation; introduced alongside the V1
             // proof envelope.
             prove_count_offset_on_range: 0,
+        },
+    },
+    // MMR hash charges: one hash per blake3 merge actually computed —
+    // `push` per collapsed peak, `get_root` and `gen_proof` per peak
+    // folded during bagging. V1..V3 bill the reads but not these
+    // merges. Roots and proofs are bit-identical across both versions;
+    // only `hash_node_calls` differs.
+    mmr_versions: MmrVersions {
+        cost: MmrCostVersions {
+            push: 1,
+            get_root: 1,
+            gen_proof: 1,
+        },
+    },
+    // Compaction hash count: adds the peak-bagging merges the shipped
+    // figure omitted, so a compacting append is charged the hashes it
+    // actually performs. Chunk bytes and roots are unchanged.
+    bulk_append_tree_versions: BulkAppendTreeVersions {
+        cost: BulkAppendTreeCostVersions {
+            compaction_hash_count: 1,
         },
     },
 };

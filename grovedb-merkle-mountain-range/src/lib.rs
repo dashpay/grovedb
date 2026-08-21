@@ -20,6 +20,8 @@
 
 #![deny(missing_docs)]
 
+mod cost;
+pub use cost::push_call_site_hashes;
 mod error;
 /// MMR helper functions for position arithmetic, storage keys, and cost
 /// calculations.
@@ -39,9 +41,10 @@ mod tests;
 pub use error::{Error, Result};
 pub use grovedb_costs::{CostResult, CostsExt, OperationCost};
 pub use helper::{
-    hash_count_for_push, leaf_index_to_mmr_size, leaf_index_to_mmr_size as leaf_to_mmr_size,
-    leaf_index_to_pos, leaf_index_to_pos as leaf_to_pos, mmr_node_key, mmr_node_key_sized,
-    mmr_size_to_leaf_count, MmrKey, MmrKeySize, MAX_U32_MMR_POSITION,
+    hash_count_for_push, hash_count_for_root_bagging, leaf_index_to_mmr_size,
+    leaf_index_to_mmr_size as leaf_to_mmr_size, leaf_index_to_pos,
+    leaf_index_to_pos as leaf_to_pos, mmr_node_key, mmr_node_key_sized, mmr_size_to_leaf_count,
+    MmrKey, MmrKeySize, MAX_U32_MMR_POSITION,
 };
 #[cfg(any(test, feature = "mem_store"))]
 pub use mem_store::MemStore;

@@ -25,6 +25,9 @@ pub mod bulk_append_tree;
 
 #[cfg(feature = "minimal")]
 pub mod dense_tree;
+#[cfg(feature = "minimal")]
+/// Private document store operations
+pub mod private_document_store;
 
 /// Caller-driven subtree-root replacement. Bypasses grovedb's normal
 /// "compute child hash from subtree state" invariant — see the module-level

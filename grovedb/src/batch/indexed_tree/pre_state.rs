@@ -97,7 +97,8 @@ fn validate_indexed_child_ops(
             | GroveOp::CommitmentTreeInsert { .. }
             | GroveOp::MmrTreeAppend { .. }
             | GroveOp::BulkAppend { .. }
-            | GroveOp::DenseTreeInsert { .. } => continue,
+            | GroveOp::DenseTreeInsert { .. }
+            | GroveOp::PrivateDocumentStoreInsert { .. } => continue,
         };
         // Child-type acceptance, delegated to merk's own rule rather than a
         // second copy of it: `get_feature_type` is what decides whether an

@@ -2,6 +2,7 @@
 
 use super::BulkAppendTree;
 use crate::{chunk::deserialize_chunk_blob, test_utils::MemStorageContext};
+use grovedb_version::version::GroveVersion;
 
 #[test]
 fn new_tree() {
@@ -49,7 +50,7 @@ fn cached_mmr_root_matches_recomputation_across_compactions() {
     // height=2 → epoch_size=4, so 20 appends span 5 compaction cycles.
     let mut tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
     for i in 0..20u8 {
-        tree.append(&[i]).expect("append");
+        tree.append(&[i], GroveVersion::latest()).expect("append");
         let fresh = tree.get_mmr_root().expect("recompute mmr root");
         assert_eq!(
             tree.last_mmr_root,
@@ -64,7 +65,9 @@ fn cached_mmr_root_matches_recomputation_across_compactions() {
 fn single_append() {
     let mut tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
 
-    let result = tree.append(b"hello").expect("append hello");
+    let result = tree
+        .append(b"hello", GroveVersion::latest())
+        .expect("append hello");
     assert_eq!(result.global_position, 0);
     assert!(!result.compacted);
     assert_eq!(tree.total_count, 1);
@@ -82,7 +85,9 @@ fn multiple_appends_no_compaction() {
 
     // Height=2, capacity=3. Append 2 values (no compaction).
     for i in 0..2 {
-        let result = tree.append(&[i]).expect("append entry");
+        let result = tree
+            .append(&[i], GroveVersion::latest())
+            .expect("append entry");
         assert_eq!(result.global_position, i as u64);
         assert!(!result.compacted);
     }
@@ -98,10 +103,14 @@ fn compaction_trigger() {
     // Height=2, capacity=3, epoch_size=4. First 3 appends fill the buffer,
     // 4th triggers compaction (try_insert returns None when buffer is full).
     for i in 0..3u8 {
-        let r = tree.append(&[i]).expect("append pre-compaction entry");
+        let r = tree
+            .append(&[i], GroveVersion::latest())
+            .expect("append pre-compaction entry");
         assert!(!r.compacted);
     }
-    let result = tree.append(&[3]).expect("append compacting entry");
+    let result = tree
+        .append(&[3], GroveVersion::latest())
+        .expect("append compacting entry");
     assert!(result.compacted);
     assert_eq!(result.global_position, 3);
     assert_eq!(tree.total_count, 4);
@@ -119,7 +128,8 @@ fn multi_chunk() {
     //   append 2 → buffer (count=1), append 3 → compaction (chunk has [2,3])
     // 4 appends = 2 chunks + 0 buffer
     for i in 0..4u8 {
-        tree.append(&[i]).expect("append entry");
+        tree.append(&[i], GroveVersion::latest())
+            .expect("append entry");
     }
     assert_eq!(tree.total_count, 4);
     assert_eq!(tree.chunk_count(), 2);
@@ -135,10 +145,10 @@ fn get_chunk_value_from_mmr() {
     // append b → try_insert fails (full), compact [a, b] → chunk 0
     // append c → buffer (count=1)
     // append d → try_insert fails, compact [c, d] → chunk 1
-    tree.append(b"a").expect("append a");
-    tree.append(b"b").expect("append b");
-    tree.append(b"c").expect("append c");
-    tree.append(b"d").expect("append d");
+    tree.append(b"a", GroveVersion::latest()).expect("append a");
+    tree.append(b"b", GroveVersion::latest()).expect("append b");
+    tree.append(b"c", GroveVersion::latest()).expect("append c");
+    tree.append(b"d", GroveVersion::latest()).expect("append d");
 
     assert_eq!(tree.chunk_count(), 2);
     assert_eq!(tree.buffer_count(), 0);
@@ -167,8 +177,8 @@ fn get_buffer_value_from_dense_tree() {
     // capacity=3
     let mut tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
 
-    tree.append(b"a").expect("append a");
-    tree.append(b"b").expect("append b");
+    tree.append(b"a", GroveVersion::latest()).expect("append a");
+    tree.append(b"b", GroveVersion::latest()).expect("append b");
 
     // Both from the buffer (dense tree)
     assert_eq!(
@@ -189,8 +199,8 @@ fn get_chunk_blob() {
     let mut tree = BulkAppendTree::new(1u8, MemStorageContext::new()).expect("create tree");
 
     // Need 2 appends to trigger compaction (epoch_size=2)
-    tree.append(b"x").expect("append x");
-    tree.append(b"y").expect("append y"); // compacts [x, y]
+    tree.append(b"x", GroveVersion::latest()).expect("append x");
+    tree.append(b"y", GroveVersion::latest()).expect("append y"); // compacts [x, y]
 
     let blob = tree.get_chunk_value(0).expect("get chunk 0");
     assert!(blob.is_some());
@@ -207,8 +217,8 @@ fn query_buffer_entries() {
     // capacity=3
     let mut tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
 
-    tree.append(b"a").expect("append a");
-    tree.append(b"b").expect("append b");
+    tree.append(b"a", GroveVersion::latest()).expect("append a");
+    tree.append(b"b", GroveVersion::latest()).expect("append b");
 
     // Query all buffer entries with RangeFull
     let query = grovedb_query::Query::new_range_full();
@@ -225,10 +235,10 @@ fn query_chunks_from_mmr() {
     let mut tree = BulkAppendTree::new(1u8, MemStorageContext::new()).expect("create tree");
 
     // 4 appends → 2 chunks: chunk 0 = [a,b], chunk 1 = [c,d]
-    tree.append(b"a").expect("append a");
-    tree.append(b"b").expect("append b");
-    tree.append(b"c").expect("append c");
-    tree.append(b"d").expect("append d");
+    tree.append(b"a", GroveVersion::latest()).expect("append a");
+    tree.append(b"b", GroveVersion::latest()).expect("append b");
+    tree.append(b"c", GroveVersion::latest()).expect("append c");
+    tree.append(b"d", GroveVersion::latest()).expect("append d");
 
     // Query both chunks
     let result = tree.query_chunks(&[0, 1]).expect("query chunks");
@@ -268,8 +278,12 @@ fn state_root_determinism() {
     let mut tree2 = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree2");
 
     for i in 0..5u8 {
-        tree1.append(&[i]).expect("append to tree1");
-        tree2.append(&[i]).expect("append to tree2");
+        tree1
+            .append(&[i], GroveVersion::latest())
+            .expect("append to tree1");
+        tree2
+            .append(&[i], GroveVersion::latest())
+            .expect("append to tree2");
     }
 
     let root1 = tree1.compute_current_state_root().expect("state root 1");
@@ -292,15 +306,17 @@ fn hash_count_accuracy() {
     let mut tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
 
     // Non-compacting append includes dense tree hashing + state root
-    let r = tree.append(b"a").expect("append a");
+    let r = tree.append(b"a", GroveVersion::latest()).expect("append a");
     assert!(r.hash_count > 0);
 
-    tree.append(b"b").expect("append b");
-    tree.append(b"c").expect("append c");
+    tree.append(b"b", GroveVersion::latest()).expect("append b");
+    tree.append(b"c", GroveVersion::latest()).expect("append c");
 
     // 4th append triggers compaction: should have more hash calls (dense + mmr +
     // state root)
-    let r = tree.append(b"d").expect("append d (compaction)");
+    let r = tree
+        .append(b"d", GroveVersion::latest())
+        .expect("append d (compaction)");
     assert!(r.compacted);
     assert!(r.hash_count > 1);
 }
@@ -309,8 +325,10 @@ fn hash_count_accuracy() {
 fn from_state_roundtrip() {
     let mut tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
 
-    tree.append(b"hello").expect("append hello");
-    tree.append(b"world").expect("append world");
+    tree.append(b"hello", GroveVersion::latest())
+        .expect("append hello");
+    tree.append(b"world", GroveVersion::latest())
+        .expect("append world");
 
     let total_count = tree.total_count;
     let mmr_size = tree.mmr_size();
@@ -334,7 +352,7 @@ fn compaction_and_continue() {
 
     // Fill one epoch and continue
     for i in 0..5u8 {
-        tree.append(&[i]).expect("append");
+        tree.append(&[i], GroveVersion::latest()).expect("append");
     }
     assert_eq!(tree.total_count, 5);
     assert_eq!(tree.chunk_count(), 1); // 5/4 = 1 full chunk
@@ -362,7 +380,7 @@ fn multiple_compaction_cycles() {
 
     // 8 values = 2 full chunks (8/4 = 2)
     for i in 0..8u8 {
-        tree.append(&[i]).expect("append");
+        tree.append(&[i], GroveVersion::latest()).expect("append");
     }
     assert_eq!(tree.total_count, 8);
     assert_eq!(tree.chunk_count(), 2);
@@ -382,8 +400,8 @@ fn multiple_compaction_cycles() {
 #[test]
 fn query_chunks_empty_indices_returns_empty_proof() {
     let mut tree = BulkAppendTree::new(1u8, MemStorageContext::new()).expect("create tree");
-    tree.append(b"a").expect("append a");
-    tree.append(b"b").expect("append b"); // one completed chunk exists
+    tree.append(b"a", GroveVersion::latest()).expect("append a");
+    tree.append(b"b", GroveVersion::latest()).expect("append b"); // one completed chunk exists
 
     let result = tree.query_chunks(&[]).expect("query with empty indices");
     assert!(result.chunks.is_empty());

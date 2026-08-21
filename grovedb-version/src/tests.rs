@@ -3,6 +3,7 @@ use crate::version::grovedb_versions::*;
 use crate::version::merk_versions::*;
 use crate::version::v1::GROVE_V1;
 use crate::version::v2::GROVE_V2;
+use crate::version::v3::GROVE_V3;
 use crate::version::v4::GROVE_V4;
 use crate::version::{GroveVersion, GROVE_VERSIONS};
 use crate::{TryFromVersioned, TryIntoVersioned};
@@ -72,6 +73,26 @@ fn grove_version_latest_returns_v4() {
 #[test]
 fn grove_versions_count() {
     assert_eq!(GROVE_VERSIONS.len(), 4);
+}
+
+#[test]
+fn private_document_store_slots_are_gated_to_v4() {
+    // The PrivateDocumentStore family fails closed on every released
+    // version: all slots must be 0 on V1..V3 and 1 on V4. Changing a V1..V3
+    // value would retroactively enable (or a V4 value disable) the element
+    // type on a live protocol version — a consensus break.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3] {
+        let pds = &v.grovedb_versions.operations.private_document_store;
+        assert_eq!(pds.element_creation, 0, "v{}", v.protocol_version);
+        assert_eq!(pds.insert, 0, "v{}", v.protocol_version);
+        assert_eq!(pds.get_value, 0, "v{}", v.protocol_version);
+        assert_eq!(pds.count, 0, "v{}", v.protocol_version);
+    }
+    let pds = &GROVE_V4.grovedb_versions.operations.private_document_store;
+    assert_eq!(pds.element_creation, 1);
+    assert_eq!(pds.insert, 1);
+    assert_eq!(pds.get_value, 1);
+    assert_eq!(pds.count, 1);
 }
 
 #[test]
@@ -527,4 +548,81 @@ fn feature_version_bounds_default() {
     assert_eq!(bounds.default_current_version, 0);
     assert!(bounds.check_version(0));
     assert!(!bounds.check_version(1));
+}
+
+// ── MMR cost version table ───────────────────────────────────────────
+
+/// The MMR hash charges are consensus-visible through fees, so which version
+/// each protocol version selects is pinned here rather than left to whoever
+/// edits a version constant next. V1..V3 are released and must stay on the
+/// shipped accounting; the corrected charges arrive with V4.
+#[test]
+fn mmr_cost_versions_are_pinned_per_protocol_version() {
+    for (name, version) in [
+        ("GROVE_V1", &GROVE_V1),
+        ("GROVE_V2", &GROVE_V2),
+        ("GROVE_V3", &GROVE_V3),
+    ] {
+        let cost = &version.mmr_versions.cost;
+        assert_eq!(cost.push, 0, "{name} must keep the shipped push charge");
+        assert_eq!(
+            cost.get_root, 0,
+            "{name} must keep the shipped get_root charge"
+        );
+        assert_eq!(
+            cost.gen_proof, 0,
+            "{name} must keep the shipped gen_proof charge"
+        );
+    }
+
+    let cost = &GROVE_V4.mmr_versions.cost;
+    assert_eq!(cost.push, 1, "GROVE_V4 charges push merges");
+    assert_eq!(cost.get_root, 1, "GROVE_V4 charges get_root bagging");
+    assert_eq!(cost.gen_proof, 1, "GROVE_V4 charges gen_proof bagging");
+}
+
+/// `GroveVersion::first()` is what the unversioned MMR entry points delegate
+/// to, so it has to be the shipped accounting — otherwise every caller that
+/// predates the gate would silently pick up the new charges.
+#[test]
+fn grove_version_first_selects_shipped_mmr_costs() {
+    let cost = &GroveVersion::first().mmr_versions.cost;
+    assert_eq!(cost.push, 0);
+    assert_eq!(cost.get_root, 0);
+    assert_eq!(cost.gen_proof, 0);
+}
+
+// ── Bulk-append cost version table ───────────────────────────────────
+
+/// The compaction hash count reaches a live fee through CommitmentTree, so
+/// which version each protocol version selects is pinned here.
+#[test]
+fn bulk_append_cost_versions_are_pinned_per_protocol_version() {
+    for (name, version) in [
+        ("GROVE_V1", &GROVE_V1),
+        ("GROVE_V2", &GROVE_V2),
+        ("GROVE_V3", &GROVE_V3),
+    ] {
+        assert_eq!(
+            version.bulk_append_tree_versions.cost.compaction_hash_count, 0,
+            "{name} must keep the shipped compaction hash count"
+        );
+    }
+    assert_eq!(
+        GROVE_V4
+            .bulk_append_tree_versions
+            .cost
+            .compaction_hash_count,
+        1,
+        "GROVE_V4 adds the peak-bagging term"
+    );
+    assert_eq!(
+        GroveVersion::first()
+            .bulk_append_tree_versions
+            .cost
+            .compaction_hash_count,
+        0,
+        "the unversioned entry points delegate here and must stay on the \
+         shipped figure"
+    );
 }

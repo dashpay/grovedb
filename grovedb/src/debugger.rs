@@ -972,6 +972,12 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
                 element_flags,
             }
         }
+        crate::Element::PrivateDocumentStore(_, _, _, element_flags) => {
+            grovedbg_types::Element::Subtree {
+                root_key: None,
+                element_flags,
+            }
+        }
         // The visualizer wire format has no wrapper variants; render the
         // inner element. The wrapper is invisible at the debug-UI layer.
         crate::Element::NonCounted(inner)

@@ -2373,7 +2373,8 @@ impl GroveDb {
                 | Element::CommitmentTree(..)
                 | Element::MmrTree(..)
                 | Element::BulkAppendTree(..)
-                | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                | Element::DenseAppendOnlyFixedSizeTree(..)
+                | Element::PrivateDocumentStore(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
@@ -2409,6 +2410,7 @@ impl GroveDb {
                         new_path_ref.clone(),
                         transaction,
                         merk_root_hash,
+                        grove_version,
                     );
 
                     let actual_value_hash = value_hash(&kv_value).unwrap();
@@ -2418,6 +2420,38 @@ impl GroveDb {
                         issues.insert(
                             new_path.to_vec(),
                             (root_hash, combined_value_hash, element_value_hash),
+                        );
+                    }
+
+                    // PrivateDocumentStore integrity: the state root
+                    // authenticates whatever bytes were written, so a buggy
+                    // or gate-bypassing writer could persist entries that
+                    // violate the committed `entry_size` under a perfectly
+                    // consistent hash chain. Report that as its own issue,
+                    // carrying the specific failure, rather than folding it
+                    // into the hash comparison above.
+                    if let Some(label) = self.private_document_store_entry_size_issue(
+                        &element,
+                        new_path_ref.clone(),
+                        transaction,
+                    ) {
+                        let expected_placeholder: CryptoHash = blake3::hash(
+                            b"private document store entries match committed entry_size",
+                        )
+                        .into();
+                        let actual_placeholder: CryptoHash = blake3::hash(label.as_bytes()).into();
+                        // Record under a dedicated sentinel child path, the
+                        // way the indexed-tree integrity checks do. Keying it
+                        // on `new_path` with `or_insert` would silently drop
+                        // this violation whenever a child-hash mismatch was
+                        // already recorded at the same path — i.e. exactly
+                        // when both checks fail — which defeats the point of
+                        // reporting it as its own diagnostic.
+                        let mut issue_path = new_path.to_vec();
+                        issue_path.push(b"__pds_entry_size__".to_vec());
+                        issues.insert(
+                            issue_path,
+                            (root_hash, expected_placeholder, actual_placeholder),
                         );
                     }
 
@@ -2819,6 +2853,44 @@ impl GroveDb {
         Ok(issues)
     }
 
+    /// Run the PrivateDocumentStore entry-size integrity walk, returning a
+    /// human-readable description of the first violation, or `None` when the
+    /// element is not a store, is empty, or every entry is well-formed.
+    ///
+    /// Kept separate from `compute_non_merk_child_hash` so a violation is
+    /// reported with its actual message instead of being signalled by
+    /// returning a deliberately-wrong hash.
+    fn private_document_store_entry_size_issue<'b, B: AsRef<[u8]>>(
+        &self,
+        element: &Element,
+        subtree_path: SubtreePath<'b, B>,
+        transaction: &Transaction,
+    ) -> Option<String> {
+        let Element::PrivateDocumentStore(total_count, entry_size, chunk_power, _) =
+            element.underlying()
+        else {
+            return None;
+        };
+        if *total_count == 0 {
+            return None;
+        }
+        let storage_ctx = self
+            .db
+            .get_transactional_storage_context(subtree_path, None, transaction)
+            .unwrap();
+        match grovedb_private_document_store::PrivateDocumentStore::from_state(
+            *total_count,
+            *entry_size,
+            *chunk_power,
+            storage_ctx,
+        )
+        .unwrap()
+        {
+            Ok(store) => store.verify_entry_sizes().err().map(|e| e.to_string()),
+            Err(e) => Some(format!("cannot open private document store: {e}")),
+        }
+    }
+
     /// Compute the child hash for a non-Merk tree element by reconstructing
     /// its tree from storage and computing the state root.
     /// Falls back to `merk_root_hash` on any error or for standard Merk trees.
@@ -2828,6 +2900,7 @@ impl GroveDb {
         subtree_path: SubtreePath<'b, B>,
         transaction: &Transaction,
         merk_root_hash: [u8; 32],
+        grove_version: &GroveVersion,
     ) -> [u8; 32] {
         match element {
             Element::CommitmentTree(total_count, chunk_power, _) => {
@@ -2876,7 +2949,7 @@ impl GroveDb {
                     .unwrap();
                 let store = grovedb_merkle_mountain_range::MmrStore::new(&storage_ctx);
                 let mmr = grovedb_merkle_mountain_range::MMR::new(*mmr_size, &store);
-                match mmr.get_root().value {
+                match mmr.get_root(grove_version).value {
                     Ok(root) => root.hash(),
                     Err(_) => merk_root_hash,
                 }
@@ -2895,6 +2968,40 @@ impl GroveDb {
                         Ok(hash) => hash,
                         Err(_) => merk_root_hash,
                     },
+                    Err(_) => merk_root_hash,
+                }
+            }
+            Element::PrivateDocumentStore(total_count, entry_size, chunk_power, _) => {
+                // The state root binds the committed config even when the
+                // store is empty, so the empty case is the config-parametrized
+                // empty root rather than the (empty) Merk root.
+                if *total_count == 0 {
+                    return grovedb_private_document_store::empty_private_document_store_state_root(
+                        *entry_size,
+                        *chunk_power,
+                    );
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                match grovedb_private_document_store::PrivateDocumentStore::from_state(
+                    *total_count,
+                    *entry_size,
+                    *chunk_power,
+                    storage_ctx,
+                )
+                .unwrap()
+                {
+                    // Report only the state root here. The entry-size
+                    // integrity walk is a SEPARATE check reported by
+                    // `private_document_store_entry_size_issue`, so a
+                    // violation surfaces its real message ("entry at
+                    // position N has size X, committed entry size is Y")
+                    // instead of being laundered into an opaque hash
+                    // mismatch — and a transient storage error during that
+                    // walk no longer masquerades as corruption.
+                    Ok(store) => store.compute_current_state_root().unwrap_or(merk_root_hash),
                     Err(_) => merk_root_hash,
                 }
             }
@@ -3097,7 +3204,8 @@ fn aggregate_consistency_labels(
         (Element::CommitmentTree(..), _)
         | (Element::MmrTree(..), _)
         | (Element::BulkAppendTree(..), _)
-        | (Element::DenseAppendOnlyFixedSizeTree(..), _) => None,
+        | (Element::DenseAppendOnlyFixedSizeTree(..), _)
+        | (Element::PrivateDocumentStore(..), _) => None,
 
         // --- Anything else is a variant/aggregate-shape mismatch (e.g.
         // the inner Merk's tree-type has drifted from what the parent

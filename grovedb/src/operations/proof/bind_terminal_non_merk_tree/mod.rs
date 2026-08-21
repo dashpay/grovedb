@@ -70,7 +70,7 @@ impl GroveDb {
             .terminal_non_merk_tree_child_hash
         {
             0 => self.bind_terminal_non_merk_tree_v0(node, element, parent_path, tx),
-            1 => self.bind_terminal_non_merk_tree_v1(node, element, parent_path, tx),
+            1 => self.bind_terminal_non_merk_tree_v1(node, element, parent_path, tx, grove_version),
             version => Err(Error::VersionError(
                 grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
                     method: "bind_terminal_non_merk_tree".to_string(),

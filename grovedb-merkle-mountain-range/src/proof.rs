@@ -12,6 +12,7 @@ use std::{
 
 use bincode::{Decode, Encode};
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use grovedb_version::version::GroveVersion;
 
 use crate::{
     helper::{
@@ -440,7 +441,7 @@ impl MmrTreeProof {
 
         // Generate the MerkleProof (drops zero costs from lazy store)
         let mmr = crate::MMR::new(mmr_size, &store);
-        let proof_result = mmr.gen_proof(positions).unwrap();
+        let proof_result = mmr.gen_proof(positions, GroveVersion::latest()).unwrap();
 
         // Check deferred storage errors first — if the store failed, the
         // error (e.g. InconsistentStore) is a symptom, not the root cause.
@@ -715,7 +716,7 @@ mod tests {
         let store = MemStore::default();
         let mut mmr = MMR::new(0, &store);
         for v in values {
-            mmr.push(MmrNode::leaf(v.to_vec()))
+            mmr.push(MmrNode::leaf(v.to_vec()), GroveVersion::latest())
                 .unwrap()
                 .expect("push should succeed");
         }
@@ -727,7 +728,7 @@ mod tests {
     /// Get root hash from a MemStore + mmr_size.
     fn root_hash(store: &MemStore, mmr_size: u64) -> [u8; 32] {
         let mmr = MMR::new(mmr_size, store);
-        mmr.get_root()
+        mmr.get_root(GroveVersion::latest())
             .unwrap()
             .expect("get_root should succeed")
             .hash()

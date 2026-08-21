@@ -1004,13 +1004,14 @@ impl GroveDb {
                             Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
+                            | Ok(Element::PrivateDocumentStore(..))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
                                 return Err(Error::NotSupported(
                                     "V0 proofs do not support subqueries into MmrTree, \
-                                     BulkAppendTree, or DenseAppendOnlyFixedSizeTree elements; \
-                                     use prove_query_v1 instead"
+                                     BulkAppendTree, DenseAppendOnlyFixedSizeTree, or \
+                                     PrivateDocumentStore elements; use prove_query_v1 instead"
                                         .to_string(),
                                 ))
                                 .wrap_with_cost(cost);
@@ -1036,6 +1037,7 @@ impl GroveDb {
                             | Ok(Element::ProvableSumIndexedTree(..))
                             | Ok(Element::ProvableCountIndexedTree(..))
                             | Ok(Element::ProvableCountProvableSumIndexedTree(..))
+                            | Ok(Element::PrivateDocumentStore(..))
                                 if !done_with_results =>
                             {
                                 #[cfg(feature = "proof_debug")]
@@ -1079,7 +1081,8 @@ impl GroveDb {
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
                             | Ok(Element::ProvableSumIndexedTree(..))
                             | Ok(Element::ProvableCountIndexedTree(..))
-                            | Ok(Element::ProvableCountProvableSumIndexedTree(..)) => continue,
+                            | Ok(Element::ProvableCountProvableSumIndexedTree(..))
+                            | Ok(Element::PrivateDocumentStore(..)) => continue,
                             // NonCounted is unwrapped above via into_underlying().
                             Ok(Element::NonCounted(_))
                             | Ok(Element::NotSummed(_))
@@ -2351,6 +2354,25 @@ impl GroveDb {
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
 
+                            // PrivateDocumentStore range-read proofs are not
+                            // implemented yet (planned at the BulkAppendTree
+                            // layer so the anchored DataCommitmentTree can
+                            // inherit them); reject subqueries instead of
+                            // shipping an unverifiable proof. Terminal
+                            // (no-subquery) queries still bind the store's
+                            // state root via the child-hash arm below.
+                            Ok(Element::PrivateDocumentStore(..))
+                                if !done_with_results
+                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                            {
+                                return Err(Error::NotSupported(
+                                    "V1 proofs do not yet support subqueries into \
+                                     PrivateDocumentStore elements"
+                                        .to_string(),
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+
                             // Axis-ordered read of an indexed tree: the
                             // query node governing this element carries
                             // ReadMode::Axis, so instead of descending the
@@ -2841,6 +2863,7 @@ impl GroveDb {
                                 ref non_merk_elem @ Element::DenseAppendOnlyFixedSizeTree(..),
                             )
                             | Ok(ref non_merk_elem @ Element::CommitmentTree(..))
+                            | Ok(ref non_merk_elem @ Element::PrivateDocumentStore(..))
                                 if !done_with_results =>
                             {
                                 cost_return_on_error!(
@@ -3137,7 +3160,8 @@ impl GroveDb {
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
                             | Ok(Element::ProvableSumIndexedTree(..))
                             | Ok(Element::ProvableCountIndexedTree(..))
-                            | Ok(Element::ProvableCountProvableSumIndexedTree(..)) => continue,
+                            | Ok(Element::ProvableCountProvableSumIndexedTree(..))
+                            | Ok(Element::PrivateDocumentStore(..)) => continue,
                             // NonCounted is unwrapped above via into_underlying().
                             Ok(Element::NonCounted(_))
                             | Ok(Element::NotSummed(_))

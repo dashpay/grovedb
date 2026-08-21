@@ -293,6 +293,10 @@ pub enum ElementType {
     /// `ProvableCountProvableSumTree` + 1..=3 secondaries keyed by axis
     /// sort-prefix) - discriminant 23. The new dual/triple-axis variant.
     ProvableCountProvableSumIndexedTree = 23,
+    /// Private document store (append-only fixed-size opaque entries over a
+    /// `BulkAppendTree`, with the `{entry_size, chunk_power}` config bound
+    /// into the state root) - discriminant 24.
+    PrivateDocumentStore = 24,
     /// Non-counted wrapper around `Item` - discriminant 128
     NonCountedItem = 128,
     /// Non-counted wrapper around `Reference` - discriminant 129
@@ -339,6 +343,9 @@ pub enum ElementType {
     /// Non-counted wrapper around `ProvableCountProvableSumIndexedTree` -
     /// discriminant 151 (`0x80 | 23`)
     NonCountedProvableCountProvableSumIndexedTree = 151,
+    /// Non-counted wrapper around `PrivateDocumentStore` - discriminant 152
+    /// (`0x80 | 24`)
+    NonCountedPrivateDocumentStore = 152,
     /// Not-summed wrapper around `SumTree` - discriminant 180 (`0xB4`)
     NotSummedSumTree = 180,
     /// Not-summed wrapper around `BigSumTree` - discriminant 181 (`0xB5`)
@@ -407,10 +414,11 @@ impl ElementType {
             // those are `0..=14`, `18` (ReferenceWithSumItem), `19`
             // (ProvableSumTree), `20` (ProvableCountProvableSumTree),
             // `21` (ProvableSumIndexedTree), `22` (ProvableCountIndexedTree),
-            // and `23` (ProvableCountProvableSumIndexedTree).
+            // `23` (ProvableCountProvableSumIndexedTree), and `24`
+            // (PrivateDocumentStore).
             // Bytes 15, 16, and 17 are the wrapper bytes themselves
-            // (nested wrappers forbidden in either direction); 24..=127
-            // are unallocated; 128..=151 are the synthetic NonCountedXxx
+            // (nested wrappers forbidden in either direction); 25..=127
+            // are unallocated; 128..=152 are the synthetic NonCountedXxx
             // twins which never appear on disk.
             // Without this check, the bitwise OR below would collapse
             // `0x80 | inner_byte` into `inner_byte` and a payload like
@@ -419,10 +427,10 @@ impl ElementType {
             // Use an explicit allowlist so the next base-variant addition
             // is a one-line edit here and the check stays robust to new
             // variants landing without updating the guard.
-            if !matches!(inner_byte, 0..=14 | 18 | 19 | 20 | 21 | 22 | 23) {
+            if !matches!(inner_byte, 0..=14 | 18 | 19 | 20 | 21 | 22 | 23 | 24) {
                 return Err(ElementError::CorruptedData(format!(
                     "NonCounted inner discriminant must be a base type \
-                     (0..=14, 18, 19, 20, 21, 22, or 23), got {}",
+                     (0..=14, 18, 19, 20, 21, 22, 23, or 24), got {}",
                     inner_byte
                 )));
             }
@@ -738,6 +746,7 @@ impl ElementType {
                 | ElementType::ProvableSumIndexedTree
                 | ElementType::ProvableCountIndexedTree
                 | ElementType::ProvableCountProvableSumIndexedTree
+                | ElementType::PrivateDocumentStore
         )
     }
 
@@ -814,6 +823,7 @@ impl ElementType {
             ElementType::ProvableCountProvableSumIndexedTree => {
                 "provable count provable sum indexed tree"
             }
+            ElementType::PrivateDocumentStore => "private_document_store",
             ElementType::NonCountedItem => "non_counted item",
             ElementType::NonCountedReference => "non_counted reference",
             ElementType::NonCountedTree => "non_counted tree",
@@ -843,6 +853,7 @@ impl ElementType {
             ElementType::NonCountedProvableCountProvableSumIndexedTree => {
                 "non_counted provable count provable sum indexed tree"
             }
+            ElementType::NonCountedPrivateDocumentStore => "non_counted private_document_store",
             ElementType::NotSummedSumTree => "not_summed sum tree",
             ElementType::NotSummedBigSumTree => "not_summed big sum tree",
             ElementType::NotSummedCountSumTree => "not_summed count sum tree",
@@ -902,6 +913,7 @@ impl TryFrom<u8> for ElementType {
             21 => Ok(ElementType::ProvableSumIndexedTree),
             22 => Ok(ElementType::ProvableCountIndexedTree),
             23 => Ok(ElementType::ProvableCountProvableSumIndexedTree),
+            24 => Ok(ElementType::PrivateDocumentStore),
             128 => Ok(ElementType::NonCountedItem),
             129 => Ok(ElementType::NonCountedReference),
             130 => Ok(ElementType::NonCountedTree),
@@ -923,6 +935,7 @@ impl TryFrom<u8> for ElementType {
             149 => Ok(ElementType::NonCountedProvableSumIndexedTree),
             150 => Ok(ElementType::NonCountedProvableCountIndexedTree),
             151 => Ok(ElementType::NonCountedProvableCountProvableSumIndexedTree),
+            152 => Ok(ElementType::NonCountedPrivateDocumentStore),
             // NotSummed twins occupy the 0xB0..=0xBF family range; slots
             // are assigned explicitly per variant.
             177 => Ok(ElementType::NotSummedProvableSumTree),
@@ -1032,8 +1045,12 @@ mod tests {
             ElementType::try_from(23).unwrap(),
             ElementType::ProvableCountProvableSumIndexedTree
         );
-        // 24..=127 are unallocated and invalid.
-        assert!(ElementType::try_from(24).is_err());
+        assert_eq!(
+            ElementType::try_from(24).unwrap(),
+            ElementType::PrivateDocumentStore
+        );
+        // 25..=127 are unallocated and invalid.
+        assert!(ElementType::try_from(25).is_err());
         assert!(ElementType::try_from(100).is_err());
 
         // NonCounted twins (0x80 | base): 128..142, plus 146 (= 0x80|18 =
@@ -1075,6 +1092,10 @@ mod tests {
             ElementType::try_from(151).unwrap(),
             ElementType::NonCountedProvableCountProvableSumIndexedTree
         );
+        assert_eq!(
+            ElementType::try_from(152).unwrap(),
+            ElementType::NonCountedPrivateDocumentStore
+        );
         // Bytes between the base and NonCounted-twin ranges are invalid.
         assert!(ElementType::try_from(127).is_err());
         // 143 (= 0x80|15), 144 (= 0x80|16), 145 (= 0x80|17): wrapper bytes
@@ -1082,10 +1103,10 @@ mod tests {
         assert!(ElementType::try_from(143).is_err());
         assert!(ElementType::try_from(144).is_err());
         assert!(ElementType::try_from(145).is_err());
-        // 152..=176 (between NonCounted-twin and NotSummed-twin ranges) are
+        // 153..=176 (between NonCounted-twin and NotSummed-twin ranges) are
         // invalid (with the exception of 177 = NotSummedProvableSumTree and
         // 178 = NotSummedProvableCountProvableSumTree).
-        assert!(ElementType::try_from(152).is_err());
+        assert!(ElementType::try_from(153).is_err());
         assert!(ElementType::try_from(176).is_err());
 
         // NotSummed twins live in 0xB0..=0xBF with explicit per-variant
@@ -1726,16 +1747,16 @@ mod tests {
         assert!(ElementType::from_serialized_value(&[15, 200]).is_err());
         // Wrapper whose inner byte is itself a synthetic twin discriminant
         // (high bit set) is rejected — only base discriminants 0..=14, 18,
-        // 19, 20, 21, 22, 23 are legal on-disk inner bytes. Without this
+        // 19, 20, 21, 22, 23, 24 are legal on-disk inner bytes. Without this
         // guard, `0x80 | 128 == 128` would silently parse as `NonCountedItem`.
         assert!(ElementType::from_serialized_value(&[15, 128]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 142]).is_err());
         // Wrapper with an unallocated mid-range inner byte (16, 17,
-        // 24..=127) is also rejected, even though it has no high bit
+        // 25..=127) is also rejected, even though it has no high bit
         // set.
         assert!(ElementType::from_serialized_value(&[15, 16]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 17]).is_err());
-        assert!(ElementType::from_serialized_value(&[15, 24]).is_err());
+        assert!(ElementType::from_serialized_value(&[15, 25]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 100]).is_err());
 
         // Inner byte 18 (ReferenceWithSumItem) IS a legal base; resolves to
@@ -1772,6 +1793,12 @@ mod tests {
             ElementType::from_serialized_value(&[15, 23]).unwrap(),
             ElementType::NonCountedProvableCountProvableSumIndexedTree
         );
+        // Inner byte 24 (PrivateDocumentStore) resolves to its NonCounted
+        // twin at slot 152.
+        assert_eq!(
+            ElementType::from_serialized_value(&[15, 24]).unwrap(),
+            ElementType::NonCountedPrivateDocumentStore
+        );
     }
 
     #[test]
@@ -1796,6 +1823,8 @@ mod tests {
         assert!(ElementType::ProvableSumIndexedTree.is_tree());
         assert!(ElementType::ProvableCountIndexedTree.is_tree());
         assert!(ElementType::ProvableCountProvableSumIndexedTree.is_tree());
+        assert!(ElementType::PrivateDocumentStore.is_tree());
+        assert!(ElementType::NonCountedPrivateDocumentStore.is_tree());
         // ReferenceWithSumItem is a reference, not a tree and not an item.
         assert!(!ElementType::ReferenceWithSumItem.is_tree());
         assert!(ElementType::ReferenceWithSumItem.is_reference());
@@ -1982,16 +2011,22 @@ mod tests {
                 ElementType::ProvableCountProvableSumIndexedTree,
                 "ProvableCountProvableSumIndexedTree",
             ),
+            // discriminant 24
+            (
+                Element::PrivateDocumentStore(0, 64, 4, None),
+                ElementType::PrivateDocumentStore,
+                "PrivateDocumentStore",
+            ),
         ];
 
-        // Verify we're testing all 21 base discriminants: 0..=14, 18, 19,
-        // 20, 21, 22, 23. (15 = NonCounted wrapper byte, 16 = NotSummed
+        // Verify we're testing all 22 base discriminants: 0..=14, 18, 19,
+        // 20, 21, 22, 23, 24. (15 = NonCounted wrapper byte, 16 = NotSummed
         // wrapper byte, 17 = NotCountedOrSummed wrapper byte — none has
         // a base ElementType variant.)
         assert_eq!(
             test_cases.len(),
-            21,
-            "Expected 21 base Element variants in test, got {}",
+            22,
+            "Expected 22 base Element variants in test, got {}",
             test_cases.len()
         );
 
