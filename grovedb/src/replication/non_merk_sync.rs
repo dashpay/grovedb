@@ -725,7 +725,7 @@ impl NonMerkRestorer {
                             ))
                         })?;
                 for entry in &entries {
-                    tree.insert(entry).unwrap().map_err(|e| {
+                    tree.insert(entry, grove_version).unwrap().map_err(|e| {
                         Error::CorruptedData(format!("cannot replay dense entry: {e}"))
                     })?;
                 }

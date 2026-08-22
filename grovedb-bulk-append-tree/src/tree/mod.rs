@@ -86,6 +86,17 @@ pub struct AppendNoStateRootResult {
     pub storage_accounting_cost: OperationCost,
 }
 
+/// A dense-buffer hash record that disagrees with the values it should
+/// describe — what [`BulkAppendTree::buffer_record_mismatch`] reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BufferRecordMismatch {
+    /// The root the current position-0 hash record claims (what a GROVE_V4
+    /// root read returns).
+    pub recorded: [u8; 32],
+    /// The root walked from the stored values.
+    pub walked: [u8; 32],
+}
+
 /// A contiguous page of entries returned by a position-range read.
 ///
 /// Produced by [`BulkAppendTree::get_range`], which fetches the entries for

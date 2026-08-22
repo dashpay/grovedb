@@ -18,4 +18,5 @@ bincode = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 grovedb-costs = { version = "5.0.1", path = "../costs" }
 grovedb-query = { version = "5.0.1", path = "../grovedb-query" }
+grovedb-version = { version = "5.0.1", path = "../grovedb-version" }
 grovedb-storage = { version = "5.0.1", path = "../storage", optional = true }

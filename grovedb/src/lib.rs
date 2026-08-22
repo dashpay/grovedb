@@ -2478,6 +2478,24 @@ impl GroveDb {
                         );
                     }
 
+                    // Dense-buffer hash records (GROVE_V4 root maintenance)
+                    // are derived state that normal root reads trust; the
+                    // hash comparison above walks the values instead, so a
+                    // record that disagrees with the values — a payload
+                    // altered behind it, or records written for other
+                    // values — would pass it while every V4 read returned
+                    // the other root. Audit them explicitly.
+                    if let Some(grovedb_bulk_append_tree::BufferRecordMismatch {
+                        recorded,
+                        walked,
+                    }) =
+                        self.dense_buffer_record_issue(&element, new_path_ref.clone(), transaction)
+                    {
+                        let mut issue_path = new_path.to_vec();
+                        issue_path.push(b"__dense_hash_records__".to_vec());
+                        issues.insert(issue_path, (root_hash, walked, recorded));
+                    }
+
                     // Software-consistency check: the aggregate fields
                     // stored in the parent's tree element (e.g.
                     // `sum_value` in `ProvableSumTree(_, sum_value, _)`)
@@ -2914,9 +2932,110 @@ impl GroveDb {
         }
     }
 
+    /// Audit a non-Merk tree's dense-buffer hash records (GROVE_V4 root
+    /// maintenance) against its values: `Some` when a
+    /// current position-0 record exists and disagrees with the root walked
+    /// from the values. `None` for other elements, empty trees, trees whose
+    /// buffer has no current record (filled under GROVE_V1..V3 — caught up by
+    /// the next append, not an error), agreement, or a tree that cannot be
+    /// opened (the hash comparison reports that).
+    fn dense_buffer_record_issue<'b, B: AsRef<[u8]>>(
+        &self,
+        element: &Element,
+        subtree_path: SubtreePath<'b, B>,
+        transaction: &Transaction,
+    ) -> Option<grovedb_bulk_append_tree::BufferRecordMismatch> {
+        match element.underlying() {
+            Element::CommitmentTree(total_count, chunk_power, _) => {
+                if *total_count == 0 {
+                    return None;
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                grovedb_commitment_tree::CommitmentTree::<_>::open(
+                    *total_count,
+                    *chunk_power,
+                    storage_ctx,
+                )
+                .value
+                .ok()?
+                .buffer_record_mismatch()
+                .ok()
+                .flatten()
+            }
+            Element::BulkAppendTree(total_count, chunk_power, _) => {
+                if *total_count == 0 {
+                    return None;
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                grovedb_bulk_append_tree::BulkAppendTree::from_state(
+                    *total_count,
+                    *chunk_power,
+                    storage_ctx,
+                )
+                .ok()?
+                .buffer_record_mismatch()
+                .ok()
+                .flatten()
+            }
+            Element::DenseAppendOnlyFixedSizeTree(count, height, _) => {
+                if *count == 0 {
+                    return None;
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                let tree =
+                    grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree::from_state(
+                        *height,
+                        *count,
+                        storage_ctx,
+                    )
+                    .ok()?;
+                let recorded = tree.recorded_root().unwrap().ok()??;
+                let walked = tree.root_hash_from_values().unwrap().ok()?;
+                (recorded != walked)
+                    .then_some(grovedb_bulk_append_tree::BufferRecordMismatch { recorded, walked })
+            }
+            Element::PrivateDocumentStore(total_count, entry_size, chunk_power, _) => {
+                if *total_count == 0 {
+                    return None;
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                grovedb_private_document_store::PrivateDocumentStore::from_state(
+                    *total_count,
+                    *entry_size,
+                    *chunk_power,
+                    storage_ctx,
+                )
+                .unwrap()
+                .ok()?
+                .buffer_record_mismatch()
+                .ok()
+                .flatten()
+            }
+            _ => None,
+        }
+    }
+
     /// Compute the child hash for a non-Merk tree element by reconstructing
     /// its tree from storage and computing the state root.
     /// Falls back to `merk_root_hash` on any error or for standard Merk trees.
+    ///
+    /// This is an integrity audit, so the dense buffer's root is walked from
+    /// the stored VALUES (`*_from_values`), never read from the GROVE_V4 hash
+    /// records: the record fast path would return what the records say and
+    /// miss a payload altered underneath them. The records themselves are
+    /// audited against the values separately (`dense_buffer_record_issue`).
     fn compute_non_merk_child_hash<'b, B: AsRef<[u8]>>(
         &self,
         element: &Element,
@@ -2941,7 +3060,9 @@ impl GroveDb {
                 )
                 .value
                 {
-                    Ok(ct) => ct.compute_current_state_root().unwrap_or(merk_root_hash),
+                    Ok(ct) => ct
+                        .compute_current_state_root_from_values()
+                        .unwrap_or(merk_root_hash),
                     Err(_) => merk_root_hash,
                 }
             }
@@ -2958,7 +3079,9 @@ impl GroveDb {
                     *chunk_power,
                     storage_ctx,
                 ) {
-                    Ok(tree) => tree.compute_current_state_root().unwrap_or(merk_root_hash),
+                    Ok(tree) => tree
+                        .compute_current_state_root_from_values()
+                        .unwrap_or(merk_root_hash),
                     Err(_) => merk_root_hash,
                 }
             }
@@ -2987,7 +3110,7 @@ impl GroveDb {
                     .unwrap();
                 use grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree;
                 match DenseFixedSizedMerkleTree::from_state(*height, *count, storage_ctx) {
-                    Ok(t) => match t.root_hash().unwrap() {
+                    Ok(t) => match t.root_hash_from_values().unwrap() {
                         Ok(hash) => hash,
                         Err(_) => merk_root_hash,
                     },
@@ -3024,7 +3147,9 @@ impl GroveDb {
                     // instead of being laundered into an opaque hash
                     // mismatch — and a transient storage error during that
                     // walk no longer masquerades as corruption.
-                    Ok(store) => store.compute_current_state_root().unwrap_or(merk_root_hash),
+                    Ok(store) => store
+                        .compute_current_state_root_from_values()
+                        .unwrap_or(merk_root_hash),
                     Err(_) => merk_root_hash,
                 }
             }
@@ -3082,7 +3207,7 @@ impl GroveDb {
                         "cannot open commitment tree of {total_count} entries from payload: {e}"
                     ))
                 })?;
-                ct.compute_current_state_root().map_err(|e| {
+                ct.compute_current_state_root_from_values().map_err(|e| {
                     Error::CorruptedData(format!(
                         "cannot compute commitment tree state root from payload: {e}"
                     ))
@@ -3106,7 +3231,7 @@ impl GroveDb {
                         "cannot open bulk append tree of {total_count} entries from payload: {e}"
                     ))
                 })?;
-                tree.compute_current_state_root().map_err(|e| {
+                tree.compute_current_state_root_from_values().map_err(|e| {
                     Error::CorruptedData(format!(
                         "cannot compute bulk append tree state root from payload: {e}"
                     ))
@@ -3146,7 +3271,7 @@ impl GroveDb {
                             "cannot open dense tree of {count} entries from payload: {e}"
                         ))
                     })?
-                    .root_hash()
+                    .root_hash_from_values()
                     .unwrap()
                     .map_err(|e| {
                         Error::CorruptedData(format!(

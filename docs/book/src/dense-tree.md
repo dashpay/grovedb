@@ -3,8 +3,11 @@
 The DenseAppendOnlyFixedSizeTree is a complete binary tree of a fixed height where
 **every node** — both internal and leaf — stores a data value. Positions are filled
 sequentially in level-order (BFS): root first (position 0), then left-to-right at each
-level. No intermediate hashes are persisted; the root hash is recomputed on the fly by
-recursively hashing from leaves to root.
+level. How the root is derived is selected by the grove version
+(`dense_tree_versions.root_maintenance`): under GROVE_V1..V3 no intermediate hashes
+are persisted and the root is recomputed on the fly by recursively hashing from leaves
+to root; from GROVE_V4 a per-position **hash record** is kept beside each value and an
+insert updates only its ancestor path. The root value is identical under both.
 
 This design is ideal for small, bounded data structures where the maximum capacity is
 known in advance and you need O(1) append, O(1) retrieval by position, and a compact
@@ -37,8 +40,9 @@ in level-order — the most natural traversal order for a complete binary tree.
 
 ## Hash Computation
 
-The root hash is not stored separately — it is recomputed from scratch whenever needed.
-The recursive algorithm visits only filled positions:
+Every node hashes with one uniform scheme. Under GROVE_V1..V3 the root hash is not
+stored separately — it is recomputed from scratch whenever needed by this recursive
+algorithm, which visits only filled positions:
 
 ```text
 hash(position, store):
@@ -69,10 +73,49 @@ This means the root hash encodes a commitment to every stored value and its exac
 position in the tree. Changing any value (if it were mutable) would cascade through
 all ancestor hashes up to the root.
 
-**Hash cost:** Computing the root hash visits all filled positions plus any unfilled
-children. For a tree with *n* values, worst case is O(*n*) blake3 calls. This is
-acceptable because the tree is designed for small, bounded capacities (max height 16,
-max 65,535 positions).
+**Hash cost (GROVE_V1..V3):** Computing the root hash visits all filled positions plus
+any unfilled children. For a tree with *n* values, worst case is O(*n*) blake3 calls —
+and every insert recomputes it, so a run of *n* inserts is O(*n*²). Acceptable for
+small capacities, but as the buffer of the append-only family (Chapter 14, 15) the
+tree reaches 2,047 positions in the shielded pool, where the last insert of every
+epoch cost ≈ 2k reads and ≈ 4k blake3 calls.
+
+### Hash Records (GROVE_V4+)
+
+From GROVE_V4 (`dense_tree_versions.root_maintenance = 1`) the tree persists a
+**hash record** for every filled position under the key `b'h' || position`:
+
+```text
+HashRecord = generation (u64 BE) || value_hash (32) || node_hash (32)     // 72 bytes
+```
+
+- `value_hash = blake3(value)`, so re-hashing an ancestor never reads its value back;
+- `node_hash` is the position's subtree hash as of the last insert into it;
+- `generation` is the epoch tag: the bulk-append tree reuses the same position keys
+  every epoch (its chunk count is the tag, advanced by `reset`), and a record carrying
+  another generation is never trusted.
+
+An insert at position `p` (depth `d`) hashes the new leaf (`blake3(value)`, then
+`blake3(value_hash || 0 || 0)` — both children are beyond `count`), writes `p`'s
+record, and walks up: for each ancestor the on-path child's hash was just computed,
+the off-path sibling's hash is its record's `node_hash` (or `[0; 32]` beyond
+`count`), and the ancestor's own record supplies its `value_hash`; one blake3 and one
+record rewrite per level. That is `2 + d` blake3 calls, at most `2d` record reads and
+`d + 1` record writes — O(height), whatever the fill. The root is the record at
+position 0 (one read).
+
+Records are derived state: `root_hash` trusts them, so integrity audits
+(`verify_grovedb`, the binding check at the end of a state-sync restore) derive the
+root from the values instead (`root_hash_from_values`, and the
+`compute_current_state_root_from_values` of the trees built on the buffer) and
+report a position-0 record that disagrees with the walked root as its own issue
+(`__dense_hash_records__`).
+
+A record that is absent (a buffer filled under GROVE_V1..V3) or stale (an earlier
+generation) is recomputed from the values — the version-0 walk over that subtree —
+and recorded, so the catch-up costs at most one version-0 walk per buffer, once.
+Stored values, positions, proofs and roots are identical under both versions; only
+the records (and the work an insert is charged) differ.
 
 ## The Element Variant
 
@@ -113,11 +156,17 @@ Storage keys:
   ...
 ```
 
+From GROVE_V4 a hash record sits beside each value under a 3-byte key (`b'h' || position`
+as big-endian `u16`); the 2-byte slot keys and 3-byte record keys cannot collide.
+
 The Element itself (stored in the parent Merk) carries the `count` and `height`.
 The root hash flows as the Merk child hash. This means:
-- **Reading the root hash** requires recomputation from storage (O(n) hashing)
+- **Reading the root hash** is one record read from GROVE_V4 (O(n) recomputation from
+  storage under GROVE_V1..V3)
 - **Reading a value by position is O(1)** — single storage lookup
-- **Inserting is O(n) hashing** — one storage write + full root hash recomputation
+- **Inserting is O(height)** from GROVE_V4 — one slot write, the ancestor path's
+  record reads/writes and `2 + depth` blake3 calls (O(n) hashing under GROVE_V1..V3:
+  one storage write + full root hash recomputation)
 
 ## Operations
 

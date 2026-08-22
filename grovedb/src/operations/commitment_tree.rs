@@ -629,7 +629,8 @@ impl GroveDb {
             // Read state for the replacement op
             let bulk_state_root = cost_return_on_error_no_add!(
                 cost,
-                ct.compute_current_state_root().map_err(map_ct_err)
+                ct.compute_current_state_root(grove_version)
+                    .map_err(map_ct_err)
             );
             let current_total_count = ct.total_count();
 

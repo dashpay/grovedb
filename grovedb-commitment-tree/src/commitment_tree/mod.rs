@@ -530,7 +530,7 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         //   per-leaf `append` would have added).
         // * `root_hash_with_cost` runs the depth-32 Sinsemilla walk and
         //   attributes its sinsemilla_hash_calls to `cost`.
-        let bulk_state_root = match self.bulk_tree.compute_current_state_root() {
+        let bulk_state_root = match self.bulk_tree.compute_current_state_root(grove_version) {
             Ok(r) => r,
             // codecov:ignore — reachable only when an upstream storage read
             // fails for the dense-tree root or the cached MMR root. The
@@ -651,16 +651,49 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     /// Returns `blake3("ct_state" || sinsemilla_root || bulk_state_root)`.
     /// This is the value that flows as the Merk child hash, ensuring both the
     /// Orchard anchor and the bulk data are authenticated.
-    pub fn compute_current_state_root(&self) -> Result<[u8; 32], CommitmentTreeError> {
+    ///
+    /// `grove_version` selects how the bulk tree derives its buffer root (the
+    /// value is identical under every version; see
+    /// `BulkAppendTree::compute_current_state_root`).
+    pub fn compute_current_state_root(
+        &self,
+        grove_version: &GroveVersion,
+    ) -> Result<[u8; 32], CommitmentTreeError> {
         let bulk_root = self
             .bulk_tree
-            .compute_current_state_root()
+            .compute_current_state_root(grove_version)
             .map_err(|e| CommitmentTreeError::InvalidData(format!("state root: {}", e)))?;
         let sinsemilla_root = self.frontier.root_hash();
         Ok(compute_commitment_tree_state_root(
             &sinsemilla_root,
             &bulk_root,
         ))
+    }
+
+    /// [`compute_current_state_root`](Self::compute_current_state_root) with
+    /// the buffer root derived from the stored values alone (never the
+    /// GROVE_V4 hash records): the independent audit derivation for integrity
+    /// walks and a restore's binding check.
+    pub fn compute_current_state_root_from_values(&self) -> Result<[u8; 32], CommitmentTreeError> {
+        let bulk_root = self
+            .bulk_tree
+            .compute_current_state_root_from_values()
+            .map_err(|e| CommitmentTreeError::InvalidData(format!("state root: {}", e)))?;
+        let sinsemilla_root = self.frontier.root_hash();
+        Ok(compute_commitment_tree_state_root(
+            &sinsemilla_root,
+            &bulk_root,
+        ))
+    }
+
+    /// Audit the buffer's hash records against its values; see
+    /// `BulkAppendTree::buffer_record_mismatch`.
+    pub fn buffer_record_mismatch(
+        &self,
+    ) -> Result<Option<grovedb_bulk_append_tree::BufferRecordMismatch>, CommitmentTreeError> {
+        self.bulk_tree
+            .buffer_record_mismatch()
+            .map_err(|e| CommitmentTreeError::InvalidData(format!("record audit: {}", e)))
     }
 
     /// Get a single value from the dense tree buffer by buffer-local position.

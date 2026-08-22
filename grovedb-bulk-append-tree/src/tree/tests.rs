@@ -286,8 +286,12 @@ fn state_root_determinism() {
             .expect("append to tree2");
     }
 
-    let root1 = tree1.compute_current_state_root().expect("state root 1");
-    let root2 = tree2.compute_current_state_root().expect("state root 2");
+    let root1 = tree1
+        .compute_current_state_root(GroveVersion::latest())
+        .expect("state root 1");
+    let root2 = tree2
+        .compute_current_state_root(GroveVersion::latest())
+        .expect("state root 2");
     assert_eq!(root1, root2);
 }
 
@@ -295,7 +299,7 @@ fn state_root_determinism() {
 fn compute_current_state_root_empty_tree() {
     let tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
     let root = tree
-        .compute_current_state_root()
+        .compute_current_state_root(GroveVersion::latest())
         .expect("compute empty tree root");
     assert_ne!(root, [0u8; 32]);
 }
@@ -627,4 +631,58 @@ fn get_range_wrong_chunk_entry_count_is_corruption() {
             other => panic!("expected CorruptedData, got {:?}", other),
         }
     }
+}
+
+/// The hash count a buffered append reports is the dense tree's own figure
+/// under every version — the shipped `2 * count` full-buffer walk under
+/// GROVE_V3, the ancestor path (`2 + depth`) under GROVE_V4 — and the state
+/// roots are identical under both: the records change the work, not the
+/// root.
+#[test]
+fn buffered_append_hash_count_follows_the_root_maintenance_version() {
+    use grovedb_version::version::{v3::GROVE_V3, v4::GROVE_V4};
+
+    // capacity 15, epoch 16: one full epoch of buffered appends plus the
+    // compaction, then a few of the next epoch (slot rewrites).
+    let mut v3 = BulkAppendTree::new(4u8, MemStorageContext::new()).expect("v3 tree");
+    let mut v4 = BulkAppendTree::new(4u8, MemStorageContext::new()).expect("v4 tree");
+    for i in 0..20u8 {
+        let r3 = v3.append(&[i; 8], &GROVE_V3).expect("v3 append");
+        let r4 = v4.append(&[i; 8], &GROVE_V4).expect("v4 append");
+        assert_eq!(r3.state_root, r4.state_root, "position {i}: state root");
+        assert_eq!(r3.compacted, r4.compacted);
+        let buffer_position = (i % 16) as u32;
+        if r3.compacted {
+            // No buffer work on a compacting append: the chunk-leaf hash, the
+            // MMR push, and the state root — and v4 adds the root bagging
+            // the v3 figure omits (`compaction_hash_count`), here nothing.
+            assert!(r3.hash_count >= 2, "v3 compaction: {}", r3.hash_count);
+        } else {
+            let filled = buffer_position + 1;
+            let depth = (buffer_position + 1).ilog2();
+            assert_eq!(
+                r3.hash_count,
+                2 * filled + 1,
+                "position {i}: v3 walks the {filled} filled positions (+1 state root)"
+            );
+            assert_eq!(
+                r4.hash_count,
+                2 + depth + 1,
+                "position {i}: v4 hashes the leaf and its {depth} ancestors (+1 state root)"
+            );
+        }
+    }
+    assert_eq!(
+        v3.compute_current_state_root(&GROVE_V3).expect("v3 root"),
+        v4.compute_current_state_root(&GROVE_V4).expect("v4 root")
+    );
+    // And each tree's root reads the same under the other version's
+    // derivation: v3's buffer (no records) walked or read, v4's buffer read
+    // from its records or walked.
+    assert_eq!(
+        v3.compute_current_state_root(&GROVE_V4)
+            .expect("v3 tree, v4 read"),
+        v4.compute_current_state_root(&GROVE_V3)
+            .expect("v4 tree, v3 read")
+    );
 }
