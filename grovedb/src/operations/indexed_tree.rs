@@ -3068,10 +3068,6 @@ pub(crate) fn max_item_key_len_for_axis(axis: IndexAxis) -> usize {
     }
 }
 
-/// Inverse of `make_secondary_key`: split a secondary key into
-/// `(count, original_key)`. Returns `None` if the key is shorter than the
-/// 8-byte count prefix.
-#[inline]
 /// Inclusive count range `[lo, hi]` → the secondary's byte bounds:
 /// `[encode(lo), encode(hi + 1))`, open-ended when `hi` is the maximum.
 fn count_range_bounds(lo_count: u64, hi_count: u64) -> (Vec<u8>, Option<Vec<u8>>) {
@@ -3107,6 +3103,10 @@ fn avg_range_bounds(lo_avg: i128, hi_avg: i128) -> (Vec<u8>, Option<Vec<u8>>) {
     (lo_bytes, upper_bytes)
 }
 
+/// Inverse of `make_secondary_key`: split a secondary key into
+/// `(count, original_key)`. Returns `None` if the key is shorter than the
+/// 8-byte count prefix.
+#[inline]
 fn decode_secondary_key(secondary_key: &[u8]) -> Option<(u64, Vec<u8>)> {
     if secondary_key.len() < 8 {
         return None;
