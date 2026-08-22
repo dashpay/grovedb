@@ -5,6 +5,8 @@ use grovedb_merk::tree_type::TreeType;
 use grovedb_version::version::GroveVersion;
 use tempfile::TempDir;
 
+use crate::IndexedAxisEntrySliceExt;
+
 use crate::{
     batch::{QualifiedGroveDbOp, SubelementsDeletionBehavior},
     tests::{common::EMPTY_PATH, make_test_grovedb, TEST_LEAF},
@@ -108,7 +110,8 @@ fn psit_rejects_big_sum_tree_at_i64_boundary() {
     assert_eq!(
         db.indexed_sum_top_k([b"psit".as_slice()].as_ref(), 10, true, None, grove_version,)
             .unwrap()
-            .unwrap(),
+            .unwrap()
+            .key_pairs(),
         vec![(42, b"sum".to_vec())]
     );
 }
@@ -154,7 +157,8 @@ fn delete_tree_rejects_declared_type_mismatch() {
     assert_eq!(
         db.indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version,)
             .unwrap()
-            .unwrap(),
+            .unwrap()
+            .key_pairs(),
         vec![(1, b"row".to_vec())]
     );
     assert_verify_passes(&db, grove_version);
@@ -280,27 +284,17 @@ fn batch_overwrite_cleans_psit_and_pcpsit_namespaces() {
     assert_verify_passes(&pcpsit, grove_version);
 }
 
-/// DEFERRED — documents a known-open issue, not current behaviour.
+/// Overwriting an indexed tree with a bare `Reference` schedules the per-axis
+/// secondary cleanup like every other overwrite-capable op (closes issue
+/// https://github.com/dashpay/grovedb/issues/776).
 ///
-/// Overwriting an indexed tree with a bare `Reference` does not schedule the
-/// per-axis secondary cleanup, so the secondary namespace is orphaned. The fix
-/// is to route reference overwrites through `inspect_cidx_overwrite` like every
-/// other overwrite-capable op — but that costs one extra stored-element read on
-/// EVERY reference overwrite (+1 seek, +79 storage_loaded_bytes, measured by
-/// `single_insert_cost_tests::test_batch_root_one_update_item_*_with_refresh_reference`).
-/// Cost feeds fees, and references over plain trees are shipped functionality on
-/// GROVE_V1/V2/V3, so paying that read unconditionally changes live behaviour.
-///
-/// The hole requires an indexed tree to be the overwritten element, which cannot
-/// happen on any released version — indexed trees are introduced by this PR. It
-/// should therefore be closed together with the protocol version that activates
-/// indexed trees, gated so live versions keep today's cost. Un-ignore this test
-/// as part of that change.
+/// This used to be deferred because routing reference overwrites through the
+/// classifier started with a dedicated stored-element read (+1 seek, +79
+/// storage_loaded_bytes on every reference overwrite — a live cost change).
+/// The V4 gate now classifies from the old value the merk walk already
+/// fetched, so including references costs nothing and the hole is closed on
+/// V4+ while V1..V3 keep their released behaviour.
 #[test]
-#[ignore = "deferred, tracked in \
-            https://github.com/dashpay/grovedb/issues/776 — closing this changes \
-            reference-overwrite cost on live versions; gate with the protocol \
-            version that activates indexed trees"]
 fn bare_reference_overwrite_cleans_indexed_storage() {
     let grove_version = GroveVersion::latest();
     let db = make_test_grovedb(grove_version);
@@ -428,7 +422,8 @@ fn batch_count_changes_remove_all_old_secondary_rows_first() {
             grove_version,
         )
         .unwrap()
-        .unwrap(),
+        .unwrap()
+        .key_pairs(),
         vec![(2, b"a".to_vec()), (2, b"b".to_vec())]
     );
     assert_verify_passes(&db, grove_version);
@@ -498,7 +493,7 @@ fn derived_counts_order_the_secondary_index() {
         )
         .unwrap()
         .expect("top_k");
-    let order: Vec<Vec<u8>> = top.iter().map(|(_, k)| k.clone()).collect();
+    let order: Vec<Vec<u8>> = top.iter().map(|e| e.primary_key.clone()).collect();
     assert_eq!(
         order,
         vec![b"b".to_vec(), b"c".to_vec(), b"a".to_vec()],
@@ -585,7 +580,7 @@ fn batch_rejects_rootless_aggregate_child_under_indexed_primary() {
         .unwrap()
         .expect("top_k");
     assert_eq!(
-        top,
+        top.key_pairs(),
         vec![(9, b"b".to_vec())],
         "the derived count must reach the secondary index"
     );
@@ -659,11 +654,12 @@ fn batch_patch_cannot_forge_a_rootless_aggregate() {
 /// The DeleteTree cleanup-type fix is gated on V4: active there, absent on the
 /// released versions.
 ///
-/// Reading the stored element to select cleanup namespaces costs an extra seek
-/// and load per op, so applying it to V1..V3 would change tracked costs — and
-/// therefore fees — on a shipped path. This pins both halves of the gate, so a
-/// future change cannot quietly extend it to a released version (which would
-/// be a consensus divergence) or drop it from V4 (which would reopen the
+/// The check derives the stored type from data the apply already loads, so it
+/// no longer costs anything — but it still flips an accepted/rejected
+/// outcome: a mismatched declare that V1..V3 accept is refused on V4+ when an
+/// indexed tree is involved. This pins both halves of the gate, so a future
+/// change cannot quietly extend it to a released version (which would be a
+/// consensus divergence) or drop it from V4 (which would reopen the
 /// type-confusion).
 #[test]
 fn delete_tree_cleanup_type_gate_is_v4_only() {
@@ -684,7 +680,7 @@ fn delete_tree_cleanup_type_gate_is_v4_only() {
             .apply_batch
             .delete_tree_cleanup_type_source,
         1,
-        "V4 must read the stored element to select cleanup namespaces"
+        "V4 must select cleanup namespaces from the stored element's type"
     );
 
     // Behaviour: a mismatched declared type on a populated PCIT.

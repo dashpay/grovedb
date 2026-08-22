@@ -68,7 +68,7 @@ impl GroveDb {
 
         // 2. Open transactional storage (write-through cache + MMR overlay
         //    provide read-after-write visibility)
-        let subtree_path_vec = self.build_subtree_path_for_bulk(&path, key);
+        let subtree_path_vec = crate::util::subtree_path_with_key(&path, key);
         let subtree_path_refs: Vec<&[u8]> = subtree_path_vec.iter().map(|v| v.as_slice()).collect();
         let subtree_path = SubtreePath::from(subtree_path_refs.as_slice());
 
@@ -84,15 +84,23 @@ impl GroveDb {
             BulkAppendTree::from_state(total_count, chunk_power, storage_ctx).map_err(map_bulk_err)
         );
 
-        let result = cost_return_on_error_no_add!(cost, tree.append(&value).map_err(map_bulk_err));
+        let result = cost_return_on_error_no_add!(
+            cost,
+            tree.append(&value, grove_version).map_err(map_bulk_err)
+        );
 
         cost.hash_node_calls += result.hash_count;
+        // The value's chunk-blob share — its permanent bytes — is billed at
+        // its own append, with the read of the committed slot that sizes a
+        // rewrite (both zero under the shipped accounting); the compaction
+        // blob is then a replacement of bytes already paid for (issue #822).
+        cost += result.storage_accounting_cost;
 
         let new_state_root = result.state_root;
         let new_total_count = tree.total_count;
 
         // Flush MMR overlay to storage (through the batch)
-        cost_return_on_error_no_add!(cost, tree.commit_mmr().map_err(map_bulk_err));
+        cost_return_on_error_no_add!(cost, tree.commit_mmr(grove_version).map_err(map_bulk_err));
 
         // Drop tree (and its embedded storage context) before opening merk
         drop(tree);
@@ -123,6 +131,14 @@ impl GroveDb {
             )
         );
 
+        // A canonical indexed secondary row binds this entry's committed
+        // value hash, and an append moves it while leaving `(count, sum)`
+        // alone. Snapshot before the rewrite; mirror after.
+        let old_indexed_state = cost_return_on_error!(
+            &mut cost,
+            GroveDb::capture_indexed_entry_state(&parent_merk, key, &element, grove_version)
+        );
+
         let updated_element =
             Element::new_bulk_append_tree(new_total_count, chunk_power, existing_flags);
 
@@ -138,14 +154,17 @@ impl GroveDb {
         );
 
         // 5. Propagate changes
+
         let mut merk_cache = HashMap::new();
         merk_cache.insert(path.clone(), parent_merk);
 
         cost_return_on_error!(
             &mut cost,
-            self.propagate_changes_with_transaction(
+            self.propagate_changes_with_transaction_refreshing_indexed_row(
                 merk_cache,
                 path,
+                key,
+                old_indexed_state,
                 tx.as_ref(),
                 &batch,
                 grove_version,
@@ -203,7 +222,7 @@ impl GroveDb {
             return Ok(None).wrap_with_cost(cost);
         }
 
-        let subtree_path_vec = self.build_subtree_path_for_bulk(&path, key);
+        let subtree_path_vec = crate::util::subtree_path_with_key(&path, key);
         let subtree_path_refs: Vec<&[u8]> = subtree_path_vec.iter().map(|v| v.as_slice()).collect();
         let subtree_path = SubtreePath::from(subtree_path_refs.as_slice());
 
@@ -284,7 +303,7 @@ impl GroveDb {
             }
         };
 
-        let subtree_path_vec = self.build_subtree_path_for_bulk(&path, key);
+        let subtree_path_vec = crate::util::subtree_path_with_key(&path, key);
         let subtree_path_refs: Vec<&[u8]> = subtree_path_vec.iter().map(|v| v.as_slice()).collect();
         let subtree_path = SubtreePath::from(subtree_path_refs.as_slice());
 
@@ -338,7 +357,7 @@ impl GroveDb {
             }
         };
 
-        let subtree_path_vec = self.build_subtree_path_for_bulk(&path, key);
+        let subtree_path_vec = crate::util::subtree_path_with_key(&path, key);
         let subtree_path_refs: Vec<&[u8]> = subtree_path_vec.iter().map(|v| v.as_slice()).collect();
         let subtree_path = SubtreePath::from(subtree_path_refs.as_slice());
 
@@ -424,17 +443,6 @@ impl GroveDb {
             }
             _ => Err(Error::InvalidInput("element is not a BulkAppendTree")).wrap_with_cost(cost),
         }
-    }
-
-    /// Build subtree path for a BulkAppendTree at path/key.
-    fn build_subtree_path_for_bulk<B: AsRef<[u8]>>(
-        &self,
-        path: &SubtreePath<B>,
-        key: &[u8],
-    ) -> Vec<Vec<u8>> {
-        let mut v = path.to_vec();
-        v.push(key.to_vec());
-        v
     }
 
     /// Preprocess `BulkAppend` ops in a batch.
@@ -535,9 +543,14 @@ impl GroveDb {
 
             // Process each value
             for value in values {
-                let result =
-                    cost_return_on_error_no_add!(cost, tree.append(value).map_err(map_bulk_err));
+                let result = cost_return_on_error_no_add!(
+                    cost,
+                    tree.append(value, grove_version).map_err(map_bulk_err)
+                );
                 cost.hash_node_calls += result.hash_count;
+                // The value's chunk-blob share and the committed-slot read,
+                // billed per append as in the direct path (issue #822).
+                cost += result.storage_accounting_cost;
             }
 
             // Compute final state root
@@ -550,7 +563,10 @@ impl GroveDb {
             let current_total_count = tree.total_count;
 
             // Flush MMR overlay to storage (through the batch)
-            cost_return_on_error_no_add!(cost, tree.commit_mmr().map_err(map_bulk_err));
+            cost_return_on_error_no_add!(
+                cost,
+                tree.commit_mmr(grove_version).map_err(map_bulk_err)
+            );
 
             // Drop tree (and its embedded storage context)
             drop(tree);

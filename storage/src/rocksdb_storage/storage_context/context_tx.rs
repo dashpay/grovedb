@@ -33,6 +33,7 @@ use grovedb_costs::{
     cost_return_on_error, storage_cost::key_value_cost::KeyValueStorageCost,
     ChildrenSizesWithIsSumTree, CostResult, CostsExt, OperationCost,
 };
+use integer_encoding::VarInt;
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode};
 
 use super::{batch::PrefixedMultiContextBatchPart, make_prefixed_key, PrefixedRocksDbRawIterator};
@@ -136,12 +137,23 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
                 .wrap_with_cost(OperationCost::default())
             }
         };
-        batch.put(
-            make_prefixed_key(&self.prefix, key),
-            value.to_vec(),
-            children_sizes,
-            cost_info,
-        );
+        let prefixed_key = make_prefixed_key(&self.prefix, key);
+
+        // Same contract as the `Batch` implementations: a caller describing a
+        // NEW node supplies the key cost without the path prefix — it does
+        // not know the prefix — and this layer, which does, completes it.
+        // Left incomplete, the commit's `verify_key_storage_cost` would
+        // reject the put. An update (`new_node: false`) is not verified on
+        // the key and is passed through unchanged.
+        let cost_info = cost_info.map(|mut key_value_storage_cost| {
+            if key_value_storage_cost.new_node {
+                key_value_storage_cost.key_storage_cost.added_bytes +=
+                    (prefixed_key.len() + prefixed_key.len().required_space()) as u32;
+            }
+            key_value_storage_cost
+        });
+
+        batch.put(prefixed_key, value.to_vec(), children_sizes, cost_info);
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 

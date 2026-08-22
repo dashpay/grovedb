@@ -10,6 +10,7 @@
 - [The Storage Layer](storage-layer.md)
 - [The Proof System](proof-system.md)
 - [The Query System](query-system.md)
+- [The Unified PathQuery](unified-path-query.md)
 - [Aggregate Sum Queries](aggregate-sum-queries.md)
 - [Aggregate Count Queries](aggregate-count-queries.md)
 - [Aggregate Sum on Range Queries](aggregate-sum-on-range-queries.md)

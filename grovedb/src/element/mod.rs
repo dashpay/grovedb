@@ -8,6 +8,8 @@ pub mod aggregate_sum_query;
 /// Iterator utilities for traversing stored elements.
 pub mod elements_iterator;
 #[cfg(feature = "minimal")]
+mod path_query_push;
+#[cfg(feature = "minimal")]
 mod path_query_push_args;
 #[cfg(feature = "minimal")]
 /// Query execution logic for elements, including path queries and sized queries.

@@ -4,7 +4,7 @@
 //! - Batch insert of empty indexed-tree primaries.
 //! - Mixed batches (cidx + non-cidx ops apply atomically).
 //! - DeleteTree on each variant cleans up secondary namespaces.
-//! - inspect_cidx_overwrite: cidx → empty cidx safe;
+//! - classify_cidx_overwrite: cidx → empty cidx safe;
 //!   cidx → non-empty cidx rejected; cidx → non-cidx safe.
 //! - Batch capture-pre-state / apply-post-mirror integration.
 //! - Validation rejection: empty-cidx + descendant writes in same
@@ -484,7 +484,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // inspect_cidx_overwrite paths
+    // classify_cidx_overwrite paths
     // -----------------------------------------------------------------
 
     #[test]
@@ -566,12 +566,16 @@ mod tests {
                 grove_version,
             )
             .unwrap();
-        assert!(
-            matches!(result, Err(Error::NotSupported(_)))
-                || matches!(result, Err(Error::InvalidInput(_))),
-            "expected NotSupported / InvalidInput, got {:?}",
-            result
-        );
+        // Refused by the ungated empty-at-batch-insertion guard (a non-empty
+        // indexed element cannot enter a batch at all); the overwrite
+        // classifier's NotSupported stays as defense in depth behind it.
+        match result {
+            Err(Error::InvalidBatchOperation(message)) => assert!(
+                message.contains("must be empty at the moment of batch insertion"),
+                "expected the empty-at-insertion refusal, got: {message}"
+            ),
+            other => panic!("expected InvalidBatchOperation, got {:?}", other),
+        }
     }
 
     #[test]
@@ -597,7 +601,7 @@ mod tests {
         )
         .unwrap()
         .expect("populate");
-        // Overwrite with a plain Item — inspect_cidx_overwrite's
+        // Overwrite with a plain Item — classify_cidx_overwrite's
         // "non-cidx" safe branch.
         db.apply_batch(
             vec![QualifiedGroveDbOp::insert_or_replace_op(
@@ -975,13 +979,13 @@ mod tests {
     // -----------------------------------------------------------------
     // Batch overwrite with Patch / Replace / InsertOrReplace into a
     // non-cidx primary that contains a cidx — exercises
-    // inspect_cidx_overwrite call site (L2322-2342)
+    // classify_cidx_overwrite call site (L2322-2342)
     // -----------------------------------------------------------------
 
     #[test]
     fn batch_overwrite_cidx_with_safe_subset_schedules_cleanup() {
         // Empty PCIT exists; replace with a non-cidx Item.
-        // inspect_cidx_overwrite classifies as safe-subset overwrite
+        // classify_cidx_overwrite classifies as safe-subset overwrite
         // and queues the cidx-cleanup path. The new element bytes are
         // written, and the secondary namespace gets cleaned up.
         let grove_version = GroveVersion::latest();
@@ -997,7 +1001,7 @@ mod tests {
         .unwrap()
         .expect("create");
         // Use a batch with override-tree off so the safe-subset
-        // classifier in inspect_cidx_overwrite runs.
+        // classifier in classify_cidx_overwrite runs.
         let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![TEST_LEAF.to_vec()],
             b"cidx".to_vec(),
@@ -1008,13 +1012,12 @@ mod tests {
             validate_insertion_does_not_override_tree: false,
             ..Default::default()
         };
-        // Either succeeds (safe overwrite path) or returns the
-        // ambiguous-cidx error from inspect_cidx_overwrite. Both
-        // exercise the call site at L2330.
-        let _ = db
-            .apply_batch(ops, Some(options), None, grove_version)
-            .unwrap();
-        // Regardless of outcome the DB is consistent.
+        // Indexed → Item is the safe overwrite subset: the classifier
+        // schedules the old cidx's storage for cleanup and the batch
+        // must succeed.
+        db.apply_batch(ops, Some(options), None, grove_version)
+            .unwrap()
+            .expect("safe-subset cidx overwrite with an Item must succeed");
         assert_verify_passes(&db, grove_version);
     }
 

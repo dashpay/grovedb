@@ -64,24 +64,42 @@ pub enum TreeType {
     ProvableCountProvableSumTree,
     /// A provable sum-indexed tree's primary Merk: same node shape as
     /// `ProvableSumTree` (uses `ProvableSummedMerkNode` aggregation). The
-    /// secondary Merk pointed to by the parent element is a regular
-    /// `ProvableSumTree` opened at a derived storage prefix, keyed by
-    /// `(sum_sortable_be ‖ original_key)`.
+    /// secondary Merk pointed to by the parent element is a
+    /// `ProvableCountProvableSumTree` opened at a derived storage prefix,
+    /// keyed by `(sum_sortable_be ‖ original_key)`. The primary stays
+    /// lean (sum-only nodes); the secondary carries BOTH aggregates so
+    /// positional queries against the sum ranking are provable via
+    /// count-bound subtree-skip commitments — offset pagination in
+    /// O(log n + k) proof size (k = page size), rank-of-key in
+    /// O(log n).
     ProvableSumIndexedTree,
     /// A provable count-indexed tree's primary Merk: same node shape as
     /// `ProvableCountTree` (uses `ProvableCountedMerkNode` aggregation).
     /// The secondary Merk pointed to by the parent element is a regular
     /// `ProvableCountTree` opened at a derived storage prefix, keyed by
-    /// `(count_be ‖ original_key)`.
+    /// `(count_be ‖ original_key)`. Count-provable already, so offset
+    /// pagination over the count ranking is O(log n + k) proof size
+    /// (k = page size) out of the box.
     ProvableCountIndexedTree,
     /// A provable count + provable sum indexed tree's primary Merk: same
     /// node shape as `ProvableCountProvableSumTree` (uses
     /// `ProvableCountedAndProvableSummedMerkNode` aggregation). The parent
     /// element carries a TLV list of 1..=3 secondary Merks, one per
     /// selected axis (count, sum, avg). Each secondary lives at its own
-    /// derived storage prefix and is itself a `ProvableCountProvableSumTree`
-    /// so any axis can produce both count-on-range and sum-on-range proofs.
+    /// derived storage prefix; the count axis opens as a
+    /// `ProvableCountTree` while the sum and avg axes open as
+    /// `ProvableCountProvableSumTree`s — every axis therefore carries a
+    /// hash-bound count aggregate, so all of them support count-bound
+    /// offset pagination, and the sum/avg axes additionally support
+    /// sum-on-range proofs.
     ProvableCountProvableSumIndexedTree,
+    /// A private document store: an append-only store of fixed-size opaque
+    /// entries over a `BulkAppendTree`, with the `{entry_size, chunk_power}`
+    /// configuration bound into the state root. Carries the chunk power
+    /// (log2 of the epoch size) like `CommitmentTree` / `BulkAppendTree`;
+    /// the entry size lives only in the Element (it does not affect Merk
+    /// node layout).
+    PrivateDocumentStore(u8),
 }
 
 impl TreeType {
@@ -106,6 +124,7 @@ impl TreeType {
             TreeType::ProvableSumIndexedTree => 13,
             TreeType::ProvableCountIndexedTree => 14,
             TreeType::ProvableCountProvableSumIndexedTree => 15,
+            TreeType::PrivateDocumentStore(_) => 16,
         }
     }
 }
@@ -131,7 +150,8 @@ impl TryFrom<u8> for TreeType {
             13 => Ok(TreeType::ProvableSumIndexedTree),
             14 => Ok(TreeType::ProvableCountIndexedTree),
             15 => Ok(TreeType::ProvableCountProvableSumIndexedTree),
-            n => Err(Error::UnknownTreeType(format!("got {}, max is 15", n))),
+            16 => Ok(TreeType::PrivateDocumentStore(0)),
+            n => Err(Error::UnknownTreeType(format!("got {}, max is 16", n))),
         }
     }
 }
@@ -157,6 +177,7 @@ impl fmt::Display for TreeType {
             TreeType::ProvableCountProvableSumIndexedTree => {
                 "Provable Count Provable Sum Indexed Tree"
             }
+            TreeType::PrivateDocumentStore(_) => "Private Document Store",
         };
         write!(f, "{}", s)
     }
@@ -175,6 +196,7 @@ impl TreeType {
                 | TreeType::MmrTree
                 | TreeType::BulkAppendTree(_)
                 | TreeType::DenseAppendOnlyFixedSizeTree(_)
+                | TreeType::PrivateDocumentStore(_)
         )
     }
 
@@ -309,6 +331,7 @@ impl TreeType {
             TreeType::ProvableSumIndexedTree => true,
             TreeType::ProvableCountIndexedTree => false,
             TreeType::ProvableCountProvableSumIndexedTree => true,
+            TreeType::PrivateDocumentStore(_) => false,
         }
     }
 
@@ -338,6 +361,7 @@ impl TreeType {
             // The primary of a ProvableCountProvableSumIndexedTree mirrors
             // a ProvableCountProvableSumTree.
             TreeType::ProvableCountProvableSumIndexedTree => NodeType::ProvableCountProvableSumNode,
+            TreeType::PrivateDocumentStore(_) => NodeType::NormalNode,
         }
     }
 
@@ -370,6 +394,7 @@ impl TreeType {
             TreeType::ProvableCountProvableSumIndexedTree => {
                 TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(0, 0)
             }
+            TreeType::PrivateDocumentStore(_) => TreeFeatureType::BasicMerkNode,
         }
     }
 
@@ -403,6 +428,7 @@ impl TreeType {
             TreeType::ProvableCountProvableSumIndexedTree => {
                 Some(ElementType::ProvableCountProvableSumIndexedTree)
             }
+            TreeType::PrivateDocumentStore(_) => Some(ElementType::PrivateDocumentStore),
         }
     }
 }
@@ -427,6 +453,7 @@ mod tests {
             TreeType::DenseAppendOnlyFixedSizeTree(8),
             TreeType::ProvableSumTree,
             TreeType::ProvableCountProvableSumTree,
+            TreeType::PrivateDocumentStore(4),
         ];
         for v in &variants {
             let d = v.discriminant();
@@ -438,8 +465,33 @@ mod tests {
 
     #[test]
     fn tree_type_try_from_invalid() {
-        assert!(TreeType::try_from(16u8).is_err());
+        assert!(TreeType::try_from(17u8).is_err());
         assert!(TreeType::try_from(255u8).is_err());
+    }
+
+    #[test]
+    fn private_document_store_tree_type_basics() {
+        // Discriminant round-trip (chunk_power defaults to 0 through the byte).
+        assert_eq!(TreeType::PrivateDocumentStore(4).discriminant(), 16);
+        assert_eq!(
+            TreeType::try_from(16u8).unwrap(),
+            TreeType::PrivateDocumentStore(0)
+        );
+        let t = TreeType::PrivateDocumentStore(4);
+        assert_eq!(format!("{}", t), "Private Document Store");
+        assert!(t.uses_non_merk_data_storage());
+        assert!(!t.is_count_bearing());
+        assert!(!t.is_sum_bearing());
+        assert!(!t.is_count_and_sum_bearing());
+        assert!(!t.is_indexed_primary());
+        assert!(!t.is_count_indexed_primary());
+        assert!(!t.accepts_non_counted_children());
+        assert!(!t.accepts_not_counted_or_summed_children());
+        assert!(!t.allows_sum_item());
+        assert_eq!(t.inner_node_type(), NodeType::NormalNode);
+        assert_eq!(t.empty_tree_feature_type(), TreeFeatureType::BasicMerkNode);
+        assert_eq!(t.to_element_type(), Some(ElementType::PrivateDocumentStore));
+        assert_eq!(t.cost_size(), PRIVATE_DOCUMENT_STORE_COST_SIZE);
     }
 
     #[test]

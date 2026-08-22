@@ -27,8 +27,9 @@ use grovedb_costs::{
 use grovedb_element::reference_path::path_from_reference_path_type;
 use grovedb_merk::{
     element::{
-        costs::ElementCostExtensions, get::ElementFetchFromStorageExtensions,
-        insert::ElementInsertToStorageExtensions, ElementExt,
+        costs::ElementCostExtensions, exists::ElementExistsInStorageExtensions,
+        get::ElementFetchFromStorageExtensions, insert::ElementInsertToStorageExtensions,
+        ElementExt,
     },
     tree::NULL_HASH,
     tree_type::TreeType,
@@ -186,6 +187,62 @@ impl GroveDb {
                         &mut subtree_to_insert_into,
                         key,
                         grovedb_commitment_tree::EMPTY_COMMITMENT_TREE_STATE_ROOT,
+                        Some(options.as_merk_options()),
+                        grove_version
+                    )
+                );
+            }
+            // PrivateDocumentStore: the initial child hash is the empty
+            // state root for the element's committed config (the state root
+            // binds {entry_size, chunk_power}), so V1 proof verification and
+            // verify_grovedb agree even before the first append. Creation is
+            // version-gated and only an empty store may be inserted; entries
+            // are appended via the typed private_document_store_insert path.
+            Element::PrivateDocumentStore(total_count, entry_size, chunk_power, _) => {
+                cost_return_on_error_no_add!(
+                    cost,
+                    crate::operations::private_document_store::validate_private_document_store_creation(
+                        *total_count,
+                        *entry_size,
+                        *chunk_power,
+                        grove_version,
+                    )
+                );
+                // Write-once: creating a store over an existing element is
+                // rejected on the direct path too, matching the batch arm.
+                // A silent overwrite would reset the element to empty while
+                // leaving the old chunk blobs and MMR nodes in the data
+                // namespace.
+                let already_exists = cost_return_on_error_into!(
+                    &mut cost,
+                    element.element_at_key_already_exists(
+                        &mut subtree_to_insert_into,
+                        key,
+                        grove_version,
+                    )
+                );
+                if already_exists {
+                    return Err(Error::InvalidInput(
+                        "a private document store already exists at this key; it is append-only \
+                         and cannot be overwritten",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                // Deriving the empty root performs two blake3 calls — the
+                // committed-config hash and the composite `pds_state` hash —
+                // neither of which the helper can bill, since it returns a
+                // bare array. Charge them here so creating a store is not
+                // two hashes cheaper than it really is.
+                cost.hash_node_calls = cost.hash_node_calls.saturating_add(2);
+                cost_return_on_error_into!(
+                    &mut cost,
+                    element.insert_subtree(
+                        &mut subtree_to_insert_into,
+                        key,
+                        grovedb_private_document_store::empty_private_document_store_state_root(
+                            *entry_size,
+                            *chunk_power,
+                        ),
                         Some(options.as_merk_options()),
                         grove_version
                     )

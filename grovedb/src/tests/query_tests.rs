@@ -874,6 +874,298 @@ mod tests {
     }
 
     #[test]
+    fn test_subquery_offset_consumed_empty_does_not_decrease_limit_forward() {
+        let grove_version = GroveVersion::latest();
+        assert_eq!(grove_version.protocol_version, 4);
+        let db = make_test_grovedb(grove_version);
+        populate_tree_for_unique_range_subquery(&db, grove_version);
+
+        let path = vec![TEST_LEAF.to_vec()];
+        let mut query = Query::new_with_direction(true);
+        query.insert_range(1988_u32.to_be_bytes().to_vec()..1992_u32.to_be_bytes().to_vec());
+        query.set_subquery(Query::new_range_full());
+
+        let path_query = PathQuery::new(path, SizedQuery::new(query, Some(2), Some(1)));
+
+        let (elements, skipped) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(skipped, 1);
+        assert_eq!(
+            elements,
+            vec![
+                1989_u32.to_be_bytes().to_vec(),
+                1990_u32.to_be_bytes().to_vec()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_subquery_offset_consumed_empty_does_not_decrease_limit_reverse() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        populate_tree_for_unique_range_subquery(&db, grove_version);
+
+        let path = vec![TEST_LEAF.to_vec()];
+        let mut query = Query::new_with_direction(false);
+        query.insert_range(1988_u32.to_be_bytes().to_vec()..1992_u32.to_be_bytes().to_vec());
+        query.set_subquery(Query::new_range_full());
+
+        let path_query = PathQuery::new(path, SizedQuery::new(query, Some(2), Some(1)));
+
+        let (elements, skipped) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(skipped, 1);
+        assert_eq!(
+            elements,
+            vec![
+                1990_u32.to_be_bytes().to_vec(),
+                1989_u32.to_be_bytes().to_vec()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_subquery_offset_consumed_empty_legacy_version_decreases_limit() {
+        // GROVE_V3 is live in production and must keep the legacy
+        // accounting: an offset-consumed empty subquery still eats a
+        // limit slot, so only one element comes back.
+        let grove_version = &grovedb_version::version::GROVE_VERSIONS[2];
+        assert_eq!(grove_version.protocol_version, 3);
+
+        let db = make_test_grovedb(grove_version);
+        populate_tree_for_unique_range_subquery(&db, grove_version);
+
+        let path = vec![TEST_LEAF.to_vec()];
+        let mut query = Query::new_with_direction(true);
+        query.insert_range(1988_u32.to_be_bytes().to_vec()..1992_u32.to_be_bytes().to_vec());
+        query.set_subquery(Query::new_range_full());
+
+        let path_query = PathQuery::new(path, SizedQuery::new(query, Some(2), Some(1)));
+
+        let (elements, skipped) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(skipped, 1);
+        assert_eq!(elements, vec![1989_u32.to_be_bytes().to_vec()]);
+    }
+
+    /// The two grove versions on either side of the `element.path_query_push`
+    /// gate: GROVE_V3 selects the frozen v0 implementation, GROVE_V4 (latest)
+    /// selects v1. The implementations differ only in the offset-consumed
+    /// empty-subquery limit accounting (issue #690), so every other
+    /// `path_query_push` branch must produce identical results under both —
+    /// the tests below assert that equivalence branch by branch.
+    fn path_query_push_gate_versions() -> [&'static GroveVersion; 2] {
+        let v3 = &grovedb_version::version::GROVE_VERSIONS[2];
+        let v4 = GroveVersion::latest();
+        assert_eq!(v3.protocol_version, 3);
+        assert_eq!(v4.protocol_version, 4);
+        [v3, v4]
+    }
+
+    #[test]
+    fn test_subquery_path_result_types_agree_across_path_query_push_versions() {
+        // Covers the subquery_path (no subquery) branch of path_query_push
+        // v0/v1, including all three result-type arms.
+        let mut per_version_results = vec![];
+        for grove_version in path_query_push_gate_versions() {
+            let db = make_test_grovedb(grove_version);
+            populate_tree_for_unique_range_subquery(&db, grove_version);
+
+            let mut query = Query::new();
+            query.insert_range(1988_u32.to_be_bytes().to_vec()..1992_u32.to_be_bytes().to_vec());
+            query.set_subquery_key(b"\0".to_vec());
+            let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+            let mut results_by_type = vec![];
+            for result_type in [
+                QueryResultType::QueryElementResultType,
+                QueryResultType::QueryKeyElementPairResultType,
+                QueryResultType::QueryPathKeyElementTrioResultType,
+            ] {
+                let (elements, skipped) = db
+                    .query_raw(
+                        &path_query,
+                        true,
+                        true,
+                        true,
+                        result_type,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("expected successful query_raw");
+                assert_eq!(skipped, 0);
+                assert_eq!(elements.len(), 4);
+                results_by_type.push(elements.elements);
+            }
+            per_version_results.push(results_by_type);
+        }
+        assert_eq!(
+            per_version_results[0], per_version_results[1],
+            "subquery_path results must be identical on both sides of the gate"
+        );
+    }
+
+    #[test]
+    fn test_subquery_path_offset_skip_agrees_across_path_query_push_versions() {
+        // Covers the subquery_path branch's offset-skip arm. The issue #690
+        // gate only touches the subquery branch, so limit/offset accounting
+        // here must be identical under v0 and v1.
+        let mut per_version_results = vec![];
+        for grove_version in path_query_push_gate_versions() {
+            let db = make_test_grovedb(grove_version);
+            populate_tree_for_unique_range_subquery(&db, grove_version);
+
+            let mut query = Query::new();
+            query.insert_range(1988_u32.to_be_bytes().to_vec()..1992_u32.to_be_bytes().to_vec());
+            query.set_subquery_key(b"\0".to_vec());
+            let path_query = PathQuery::new(
+                vec![TEST_LEAF.to_vec()],
+                SizedQuery::new(query, Some(2), Some(1)),
+            );
+
+            let (elements, skipped) = db
+                .query_item_value(&path_query, true, true, true, None, grove_version)
+                .unwrap()
+                .expect("expected successful query_item_value");
+            assert_eq!(skipped, 1);
+            assert_eq!(
+                elements,
+                vec![
+                    1989_u32.to_be_bytes().to_vec(),
+                    1990_u32.to_be_bytes().to_vec()
+                ]
+            );
+            per_version_results.push(elements);
+        }
+        assert_eq!(per_version_results[0], per_version_results[1]);
+    }
+
+    #[test]
+    fn test_raw_tree_query_agrees_across_path_query_push_versions() {
+        // Covers the allow_get_raw branch: a tree matched with neither a
+        // subquery nor a subquery_path is pushed raw.
+        let mut per_version_results = vec![];
+        for grove_version in path_query_push_gate_versions() {
+            let db = make_test_grovedb(grove_version);
+            populate_tree_for_unique_range_subquery(&db, grove_version);
+
+            let mut query = Query::new();
+            query.insert_range(1988_u32.to_be_bytes().to_vec()..1992_u32.to_be_bytes().to_vec());
+            let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+            let (elements, skipped) = db
+                .query_raw(
+                    &path_query,
+                    true,
+                    true,
+                    true,
+                    QueryResultType::QueryKeyElementPairResultType,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("expected successful raw tree query");
+            assert_eq!(skipped, 0);
+            assert_eq!(elements.len(), 4);
+            per_version_results.push(elements.elements);
+        }
+        assert_eq!(per_version_results[0], per_version_results[1]);
+    }
+
+    #[test]
+    fn test_non_tree_push_agrees_across_path_query_push_versions() {
+        // Covers the non-tree arm: plain items go through basic_push.
+        let mut per_version_results = vec![];
+        for grove_version in path_query_push_gate_versions() {
+            let db = make_test_grovedb(grove_version);
+            populate_tree_for_unique_range_subquery(&db, grove_version);
+
+            let year_key = 1988_u32.to_be_bytes().to_vec();
+            let path_query = PathQuery::new_unsized(
+                vec![TEST_LEAF.to_vec(), year_key.clone()],
+                Query::new_range_full(),
+            );
+
+            let (elements, skipped) = db
+                .query_item_value(&path_query, true, true, true, None, grove_version)
+                .unwrap()
+                .expect("expected successful item query");
+            assert_eq!(skipped, 0);
+            assert_eq!(elements, vec![year_key]);
+            per_version_results.push(elements);
+        }
+        assert_eq!(per_version_results[0], per_version_results[1]);
+    }
+
+    #[test]
+    fn test_empty_subquery_path_errors_across_path_query_push_versions() {
+        // Covers the empty-subquery_path error arm on both sides of the gate.
+        for grove_version in path_query_push_gate_versions() {
+            let db = make_test_grovedb(grove_version);
+            populate_tree_for_unique_range_subquery(&db, grove_version);
+
+            let mut query = Query::new();
+            query.insert_range(1988_u32.to_be_bytes().to_vec()..1992_u32.to_be_bytes().to_vec());
+            query.set_subquery_path(vec![]);
+            let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+            let result = db
+                .query_item_value(&path_query, true, true, true, None, grove_version)
+                .unwrap();
+            match result {
+                Err(crate::Error::CorruptedCodeExecution(message)) => {
+                    assert_eq!(message, "subquery_paths can not be empty")
+                }
+                other => panic!("expected CorruptedCodeExecution, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_path_query_push_unknown_version_is_rejected() {
+        // Covers the dispatcher's unknown-version arm.
+        let mut unknown_version = GroveVersion::latest().clone();
+        unknown_version.grovedb_versions.element.path_query_push = 99;
+        let grove_version = &unknown_version;
+
+        let db = make_test_grovedb(grove_version);
+        populate_tree_for_unique_range_subquery(&db, grove_version);
+
+        let mut query = Query::new();
+        query.insert_range(1988_u32.to_be_bytes().to_vec()..1992_u32.to_be_bytes().to_vec());
+        query.set_subquery(Query::new_range_full());
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+        let result = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap();
+        match result {
+            Err(crate::Error::VersionError(
+                grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                    method,
+                    known_versions,
+                    received,
+                },
+            )) => {
+                assert_eq!(method, "path_query_push");
+                assert_eq!(known_versions, vec![0, 1]);
+                assert_eq!(received, 99);
+            }
+            other => panic!("expected UnknownVersionMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_get_range_query_with_unique_subquery_on_references() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -3492,6 +3784,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3539,6 +3832,7 @@ mod tests {
                     left_to_right: false,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3586,6 +3880,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3633,6 +3928,7 @@ mod tests {
                     left_to_right: false,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3680,6 +3976,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3727,6 +4024,7 @@ mod tests {
                     left_to_right: false,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3776,6 +4074,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3825,6 +4124,7 @@ mod tests {
                     left_to_right: false,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3874,6 +4174,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3923,6 +4224,7 @@ mod tests {
                     left_to_right: false,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3972,6 +4274,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4021,6 +4324,7 @@ mod tests {
                     left_to_right: false,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4070,6 +4374,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4119,6 +4424,7 @@ mod tests {
                     left_to_right: false,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4171,6 +4477,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4223,6 +4530,7 @@ mod tests {
                     left_to_right: false,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4275,6 +4583,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4327,6 +4636,7 @@ mod tests {
                     left_to_right: false,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4379,6 +4689,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4431,6 +4742,7 @@ mod tests {
                     left_to_right: false,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4483,6 +4795,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4535,6 +4848,7 @@ mod tests {
                     left_to_right: false,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4587,6 +4901,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4639,6 +4954,7 @@ mod tests {
                     left_to_right: false,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4691,6 +5007,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4743,6 +5060,7 @@ mod tests {
                     left_to_right: false,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4795,6 +5113,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4853,6 +5172,7 @@ mod tests {
                         },
                     )])),
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4915,6 +5235,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4967,6 +5288,7 @@ mod tests {
                     left_to_right: false,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: Some(2),
                 offset: None,

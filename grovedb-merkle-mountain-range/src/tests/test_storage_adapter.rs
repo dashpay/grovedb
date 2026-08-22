@@ -5,6 +5,7 @@ use grovedb_costs::{
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_storage::StorageContext;
+use grovedb_version::version::GroveVersion;
 
 use crate::{
     helper::{mmr_node_key_sized, MmrKeySize},
@@ -485,18 +486,27 @@ fn mmr_store_full_mmr_roundtrip() {
     // Use MmrStore as the backend for a full MMR
     let mut mmr = MMR::new(0, &store);
     for i in 0u32..7 {
-        mmr.push(MmrNode::leaf(i.to_le_bytes().to_vec()))
-            .unwrap()
-            .expect("push should succeed");
+        mmr.push(
+            MmrNode::leaf(i.to_le_bytes().to_vec()),
+            GroveVersion::latest(),
+        )
+        .unwrap()
+        .expect("push should succeed");
     }
-    let root_before_commit = mmr.get_root().unwrap().expect("get_root should succeed");
+    let root_before_commit = mmr
+        .get_root(GroveVersion::latest())
+        .unwrap()
+        .expect("get_root should succeed");
 
     // Commit to storage
     mmr.commit().unwrap().expect("commit should succeed");
 
     // Re-open MMR from the same store and verify root
     let mmr2 = MMR::new(mmr.mmr_size, &store);
-    let root_after_reopen = mmr2.get_root().unwrap().expect("get_root should succeed");
+    let root_after_reopen = mmr2
+        .get_root(GroveVersion::latest())
+        .unwrap()
+        .expect("get_root should succeed");
 
     assert_eq!(
         root_before_commit.hash(),

@@ -19,6 +19,8 @@ mod tests {
     use grovedb_element::indexed::IndexAxis;
     use grovedb_version::version::GroveVersion;
 
+    use crate::IndexedAxisEntrySliceExt;
+
     use crate::{
         batch::QualifiedGroveDbOp,
         tests::{make_test_grovedb, TEST_LEAF},
@@ -1070,7 +1072,7 @@ mod tests {
             .unwrap()
             .expect("top-k count");
         assert_eq!(
-            top3,
+            top3.key_pairs(),
             vec![
                 (5u64, b"carol".to_vec()),
                 (4, b"bob".to_vec()),
@@ -1100,7 +1102,7 @@ mod tests {
             .unwrap()
             .expect("range");
         assert_eq!(
-            in_range,
+            in_range.key_pairs(),
             vec![
                 (2u64, b"alice".to_vec()),
                 (3, b"eve".to_vec()),
@@ -1110,7 +1112,7 @@ mod tests {
 
         // Aggregate count [2, 4]: 3 entries.
         let agg = db
-            .indexed_count_range_aggregate(
+            .indexed_count_aggregate_over_value_range(
                 [TEST_LEAF, b"pcpsit"].as_ref(),
                 2,
                 4,
@@ -1123,7 +1125,7 @@ mod tests {
 
         // Aggregate full scan = 5.
         let total = db
-            .indexed_count_range_aggregate(
+            .indexed_count_aggregate_over_value_range(
                 [TEST_LEAF, b"pcpsit"].as_ref(),
                 0,
                 u64::MAX,
@@ -1157,7 +1159,7 @@ mod tests {
             .unwrap()
             .expect("top-k sum");
         assert_eq!(
-            top3,
+            top3.key_pairs(),
             vec![
                 (100i64, b"bob".to_vec()),
                 (10, b"alice".to_vec()),
@@ -1177,7 +1179,7 @@ mod tests {
             .unwrap()
             .expect("asc");
         assert_eq!(
-            asc3,
+            asc3.key_pairs(),
             vec![
                 (-25i64, b"carol".to_vec()),
                 (0, b"dave".to_vec()),
@@ -1207,7 +1209,7 @@ mod tests {
             .unwrap()
             .expect("sum range");
         assert_eq!(
-            in_range,
+            in_range.key_pairs(),
             vec![
                 (0i64, b"dave".to_vec()),
                 (9, b"eve".to_vec()),
@@ -1217,7 +1219,7 @@ mod tests {
 
         // Aggregate sum in [0, 10]: 0 + 9 + 10 = 19.
         let agg = db
-            .indexed_sum_range_aggregate(
+            .indexed_sum_aggregate_over_value_range(
                 [TEST_LEAF, b"pcpsit"].as_ref(),
                 0,
                 10,
@@ -1230,7 +1232,7 @@ mod tests {
 
         // Aggregate full sum: -25 + 0 + 9 + 10 + 100 = 94.
         let total = db
-            .indexed_sum_range_aggregate(
+            .indexed_sum_aggregate_over_value_range(
                 [TEST_LEAF, b"pcpsit"].as_ref(),
                 i64::MIN,
                 i64::MAX,
@@ -1269,7 +1271,7 @@ mod tests {
             .unwrap()
             .expect("top-k avg");
         assert_eq!(
-            top3,
+            top3.key_pairs(),
             vec![
                 (25 * AVG_SCALE, b"bob".to_vec()),
                 (5 * AVG_SCALE, b"alice".to_vec()),
@@ -1289,7 +1291,7 @@ mod tests {
             .unwrap()
             .expect("asc avg");
         assert_eq!(
-            asc3,
+            asc3.key_pairs(),
             vec![
                 (-5 * AVG_SCALE, b"carol".to_vec()),
                 (0, b"dave".to_vec()),
@@ -1319,7 +1321,7 @@ mod tests {
             .unwrap()
             .expect("avg range");
         assert_eq!(
-            in_range,
+            in_range.key_pairs(),
             vec![
                 (0i128, b"dave".to_vec()),
                 (3 * AVG_SCALE, b"eve".to_vec()),
@@ -1340,7 +1342,7 @@ mod tests {
             )
             .unwrap()
             .expect("exact");
-        assert_eq!(exact, vec![(3 * AVG_SCALE, b"eve".to_vec())]);
+        assert_eq!(exact.key_pairs(), vec![(3 * AVG_SCALE, b"eve".to_vec())]);
 
         // lo > hi: empty.
         let empty = db
@@ -1395,7 +1397,7 @@ mod tests {
             .unwrap()
             .expect("page 1");
         assert_eq!(
-            page1,
+            page1.entries.key_pairs(),
             vec![
                 (25 * AVG_SCALE, b"bob".to_vec()),
                 (5 * AVG_SCALE, b"alice".to_vec()),
@@ -1415,7 +1417,7 @@ mod tests {
             .unwrap()
             .expect("page 2");
         assert_eq!(
-            page2,
+            page2.entries.key_pairs(),
             vec![(3 * AVG_SCALE, b"eve".to_vec()), (0, b"dave".to_vec())]
         );
 
@@ -1431,7 +1433,7 @@ mod tests {
             )
             .unwrap()
             .expect("beyond");
-        assert!(beyond.is_empty());
+        assert!(beyond.entries.is_empty());
     }
 
     #[test]
@@ -1461,7 +1463,7 @@ mod tests {
             )
             .unwrap()
             .expect("zero only");
-        assert_eq!(zero_only, vec![(0i128, b"dave".to_vec())]);
+        assert_eq!(zero_only.key_pairs(), vec![(0i128, b"dave".to_vec())]);
     }
 
     #[test]
@@ -1490,7 +1492,7 @@ mod tests {
             .expect("asc");
         // Both share avg = 7*SCALE; tie-break by original_key ascending.
         assert_eq!(
-            asc,
+            asc.key_pairs(),
             vec![
                 (7 * AVG_SCALE, b"aaa".to_vec()),
                 (7 * AVG_SCALE, b"zzz".to_vec()),
@@ -1609,7 +1611,7 @@ mod tests {
             )
             .unwrap()
             .expect("count");
-        assert_eq!(by_count, vec![(1u64, b"row".to_vec())]);
+        assert_eq!(by_count.key_pairs(), vec![(1u64, b"row".to_vec())]);
         let by_sum = db
             .indexed_sum_top_k(
                 [TEST_LEAF, b"pcpsit"].as_ref(),
@@ -1620,7 +1622,7 @@ mod tests {
             )
             .unwrap()
             .expect("sum");
-        assert_eq!(by_sum, vec![(17i64, b"row".to_vec())]);
+        assert_eq!(by_sum.key_pairs(), vec![(17i64, b"row".to_vec())]);
         let by_avg = db
             .indexed_avg_top_k(
                 [TEST_LEAF, b"pcpsit"].as_ref(),
@@ -1632,7 +1634,7 @@ mod tests {
             .unwrap()
             .expect("avg");
         // avg = floor(17 * SCALE / 1) = 17 * SCALE.
-        assert_eq!(by_avg, vec![(17 * AVG_SCALE, b"row".to_vec())]);
+        assert_eq!(by_avg.key_pairs(), vec![(17 * AVG_SCALE, b"row".to_vec())]);
     }
 
     // -----------------------------------------------------------------
@@ -2182,6 +2184,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: None,
                 offset: None,
@@ -2206,6 +2209,7 @@ mod tests {
                     left_to_right: true,
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
+                    read_mode: None,
                 },
                 limit: None,
                 offset: None,

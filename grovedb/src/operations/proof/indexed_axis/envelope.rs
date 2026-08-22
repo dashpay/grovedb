@@ -9,6 +9,8 @@ use bincode::{Decode, Encode};
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::tree::CryptoHash;
 
+use crate::IndexedAxisEntry;
+
 /// Per-ancestor attestation for chaining the cidx/psit/pcpsit layer
 /// composition during verification.
 ///
@@ -39,6 +41,91 @@ pub enum AncestorAttestation {
     /// same `(axis_tag, secondary_root_hash)` order the ancestor uses
     /// to compute its on-disk `axes_digest`.
     MultiAxis(Vec<(u8, [u8; 32])>),
+}
+
+/// How a node's serialized element bytes compose into the value hash its
+/// parent Merk committed.
+///
+/// This is what makes a resolved indexed row shape-complete: the element
+/// bytes alone determine the commitment only for item-like values, and
+/// every other shape folds in something the bytes do not carry.
+#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
+pub enum IndexedTargetCommitment {
+    /// Item-like value, committed as `H(value)`.
+    Simple,
+    /// Merk-backed or non-Merk tree, committed as
+    /// `combine_hash(H(value), child_root_hash)`.
+    Layered([u8; 32]),
+    /// PCIT / PSIT, committed as
+    /// `combine_hash_three(H(value), primary_root, secondary_root)`.
+    IndexedSingle {
+        /// Root hash of the indexed tree's primary Merk.
+        primary_root_hash: [u8; 32],
+        /// Root hash of its only secondary Merk.
+        secondary_root_hash: [u8; 32],
+    },
+    /// PCPSIT, committed as
+    /// `combine_hash_three(H(value), primary_root, axes_digest(axes))`.
+    IndexedMulti {
+        /// Root hash of the indexed tree's primary Merk.
+        primary_root_hash: [u8; 32],
+        /// Canonical `(axis_tag, secondary_root_hash)` list, tag-sorted.
+        axes: Vec<(u8, [u8; 32])>,
+    },
+    /// Reference node, committed as
+    /// `combine_hash(H(value), terminal_commitment)`.
+    ///
+    /// Note the TERMINAL, not the next hop: `follow_reference_get_value_hash`
+    /// recurses past every intermediate reference before the hash is baked
+    /// into `PutCombinedReference`, so a reference three hops from its
+    /// terminal still commits that terminal's hash directly. Folding
+    /// hop-by-hop instead happens to agree at one hop and diverges at two.
+    Reference,
+}
+
+/// One node of a resolved target chain: its serialized element bytes and
+/// the shape rule that turns them into a commitment.
+#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
+pub struct IndexedTargetNode {
+    /// The node's serialized element bytes.
+    pub value: Vec<u8>,
+    /// How those bytes compose into the value hash its parent committed.
+    pub commitment: IndexedTargetCommitment,
+}
+
+impl IndexedTargetNode {
+    /// Whether this node is a reference (and so commits its terminal's
+    /// hash rather than its own bytes' hash).
+    pub fn is_reference(&self) -> bool {
+        matches!(self.commitment, IndexedTargetCommitment::Reference)
+    }
+}
+
+/// The resolved target of one secondary row: the immediate primary node,
+/// and — only when that node is a reference — the TERMINAL it resolves to.
+///
+/// **No per-node path proofs.** A chain authenticates itself from the
+/// row's own committed value hash: each entry's commitment is
+/// reconstructed from its bytes plus the NEXT entry's commitment, and the
+/// head's commitment is what the row binds. Since the row's hash is bound
+/// into the secondary root — and that into the indexed element, and that
+/// to the grove root — substituting any value in the chain breaks the
+/// root.
+///
+/// That is the same trust model shipped GroveDB reference proofs already
+/// use (`KVRefValueHash*` binds a reference's committed target hash to the
+/// returned value without separately proving the target's path
+/// inclusion), so a chain is neither weaker nor stronger than reading the
+/// same reference through an ordinary proof. It is what lets a top-k
+/// result carry `k` values for a per-row cost of the value plus a hash,
+/// instead of `k` inclusion proofs.
+#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
+pub struct IndexedTargetChain {
+    /// One entry when the primary entry is directly valued; two — head
+    /// then terminal — when it is a reference. Intermediate hops are not
+    /// carried: nothing binds them, since the head commits the terminal
+    /// directly.
+    pub nodes: Vec<IndexedTargetNode>,
 }
 
 /// Wire-format envelope for a range / top-k / arbitrary-query proof
@@ -79,6 +166,9 @@ pub struct IndexedAxisRangeProof {
     pub target_is_pcpsit: bool,
     /// Encoded Merk range proof for the per-axis secondary.
     pub secondary_proof: Vec<u8>,
+    /// One resolved-target chain per returned secondary row, in the
+    /// secondary proof's result order.
+    pub target_chains: Vec<IndexedTargetChain>,
     /// Echoed query limit (preserves `None`-vs-`Some(0)` semantics).
     pub requested_limit: Option<u16>,
     /// Echoed iteration direction. `false` = ascending, `true` =
@@ -89,15 +179,12 @@ pub struct IndexedAxisRangeProof {
 /// Wire-format envelope for an offset-paginated top-k proof over an
 /// indexed-tree's per-axis secondary.
 ///
-/// For count and avg axes (`ProvableCountTree` / dual-axis
-/// `ProvableCountProvableSumTree` secondaries) the secondary proof is
-/// produced by `Merk::prove_count_offset_on_range`, giving
-/// `O(log n + k)` proof size regardless of `offset`. For the sum axis
-/// (`ProvableSumTree` secondary) there is no count-bound offset
-/// primitive, so the prover instead emits a regular range proof with
-/// `limit = offset + k` and the verifier discards the first `offset`
-/// items independently. The `axis_tag` field disambiguates the two
-/// shapes.
+/// Every axis's secondary binds a count aggregate into its node hashes
+/// (every axis is a dual-aggregate `ProvableCountProvableSumTree`), so
+/// the secondary proof is always produced by
+/// `Merk::prove_count_offset_on_range`: the skipped prefix is attested
+/// by counted subtree commitments (`HashWithCountAndSum`), giving
+/// `O(log n + k)` proof size regardless of `offset`.
 #[derive(Encode, Decode, Debug)]
 pub struct IndexedAxisPaginatedProof {
     /// Echoed [`IndexAxis::tag`] of the queried axis. The verifier
@@ -113,13 +200,12 @@ pub struct IndexedAxisPaginatedProof {
     pub other_axes_root_hashes: Vec<(u8, [u8; 32])>,
     /// Same as [`IndexedAxisRangeProof::target_is_pcpsit`].
     pub target_is_pcpsit: bool,
-    /// Encoded paginated proof bytes for the per-axis secondary.
-    ///
-    /// For count/avg axes this is the
-    /// `prove_count_offset_on_range`-produced `Vec<Op>` stream. For
-    /// the sum axis this is a regular `Merk::prove`-produced range
-    /// proof bound by `limit = offset + k`.
+    /// Encoded paginated proof bytes for the per-axis secondary: the
+    /// `prove_count_offset_on_range`-produced `Vec<Op>` stream (every
+    /// axis's secondary carries a provable count).
     pub secondary_proof: Vec<u8>,
+    /// Same as [`IndexedAxisRangeProof::target_chains`].
+    pub target_chains: Vec<IndexedTargetChain>,
     /// Echoed pagination parameters.
     pub requested_k: u16,
     /// Echoed offset.
@@ -149,8 +235,10 @@ pub struct IndexedAxisAggregateProof {
     /// Same as [`IndexedAxisRangeProof::target_is_pcpsit`].
     pub target_is_pcpsit: bool,
     /// Encoded aggregate proof bytes for the per-axis secondary.
-    /// For count axis: `prove_aggregate_count_on_range` output.
-    /// For sum axis: `prove_aggregate_sum_on_range` output.
+    /// The walker follows the FOLD, not the axis:
+    /// `AggregateFold::Population` → `prove_aggregate_count_on_range`
+    /// output; `AggregateFold::Total` → `prove_aggregate_sum_on_range`
+    /// output. The byte range the proof covers follows the axis.
     pub secondary_proof: Vec<u8>,
     /// Echoed inclusive lower bound on the secondary's sort-value
     /// (i.e. `count_value` for count axis, `sum_value` for sum axis).
@@ -158,18 +246,23 @@ pub struct IndexedAxisAggregateProof {
     pub lo: i128,
     /// Echoed inclusive upper bound.
     pub hi: i128,
+    /// Echoed [`AggregateFold::tag`](grovedb_query::AggregateFold::tag)
+    /// of the fold the proof answers. The verifier authenticates this
+    /// against the caller's `expected_fold` — a population proof must
+    /// not satisfy a question about a total, or vice versa.
+    pub fold_tag: u8,
 }
 
 /// Sort-value variants per axis. Returned in
 /// [`IndexedAxisQueryResult::entries`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AxisEntries {
-    /// Count-axis entries: `(count_value, original_key)`.
-    Count(Vec<(u64, Vec<u8>)>),
-    /// Sum-axis entries: `(sum_value, original_key)`.
-    Sum(Vec<(i64, Vec<u8>)>),
-    /// Avg-axis entries: `(avg_fixed_point_i128, original_key)`.
-    Avg(Vec<(i128, Vec<u8>)>),
+    /// Count-axis entries, ordered by count.
+    Count(Vec<IndexedAxisEntry<u64>>),
+    /// Sum-axis entries, ordered by sum.
+    Sum(Vec<IndexedAxisEntry<i64>>),
+    /// Avg-axis entries, ordered by fixed-point average.
+    Avg(Vec<IndexedAxisEntry<i128>>),
 }
 
 impl AxisEntries {
@@ -183,6 +276,26 @@ impl AxisEntries {
     }
 
     /// Whether the result list is empty.
+    /// An empty entry list of the right variant for `axis`.
+    pub fn empty_for_axis(axis: grovedb_element::indexed::IndexAxis) -> Self {
+        match axis {
+            grovedb_element::indexed::IndexAxis::Count => AxisEntries::Count(Vec::new()),
+            grovedb_element::indexed::IndexAxis::Sum => AxisEntries::Sum(Vec::new()),
+            grovedb_element::indexed::IndexAxis::Avg => AxisEntries::Avg(Vec::new()),
+        }
+    }
+
+    /// The first entry's original (primary) key, if any — the yielded
+    /// item of a `k = 1` page, used by rank verification.
+    pub fn first_original_key(&self) -> Option<&[u8]> {
+        match self {
+            AxisEntries::Count(entries) => entries.first().map(|e| e.primary_key.as_slice()),
+            AxisEntries::Sum(entries) => entries.first().map(|e| e.primary_key.as_slice()),
+            AxisEntries::Avg(entries) => entries.first().map(|e| e.primary_key.as_slice()),
+        }
+    }
+
+    /// Whether there are no entries.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -204,16 +317,19 @@ pub struct IndexedAxisPaginatedResult {
     pub root_hash: CryptoHash,
     /// Per-axis decoded entries (after the `skipped` offset region).
     pub entries: AxisEntries,
-    /// Number of secondary entries the proof committed as skipped.
-    /// For count/avg axes this is independently re-derived by the
-    /// verifier from `HashWithCount` commitments in the proof bytes
-    /// (i.e. *cryptographically* committed). For the sum axis this
-    /// is the verifier-side count of items returned by the regular
-    /// range proof up to the `offset` cutoff — also independently
-    /// derived from the proof bytes, but constrained only by the
-    /// merk's regular range-walk discipline (NOT a count
-    /// commitment). The caller must cross-check
-    /// `skipped == expected_offset` if exact-page semantics matter.
+    /// Number of secondary entries the proof committed as skipped,
+    /// independently re-derived by the verifier from the counted
+    /// subtree commitments (`HashWithCount` / `HashWithCountAndSum`)
+    /// in the proof bytes — i.e. *cryptographically* attested for
+    /// every axis.
+    ///
+    /// `skipped == requested_offset` unless the walk was exhausted
+    /// first, in which case `skipped < requested_offset` and
+    /// `entries` is empty — that shape is itself a proof that the
+    /// secondary's total population is exactly `skipped` (the counted
+    /// commitments cover the whole walk). Callers wanting strict
+    /// "page exists" semantics should cross-check
+    /// `skipped == expected_offset`.
     pub skipped: u64,
 }
 

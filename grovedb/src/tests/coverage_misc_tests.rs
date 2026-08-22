@@ -412,20 +412,24 @@ mod tests {
         )
         .storage_cost
         .added_bytes;
-        // +8 bytes of primary key => +8 bytes in each of the two rows the
-        // mirror writes.
-        assert_eq!(k16_count - k8_count, 16);
-        // A 8-byte primary + the avg axis and a 16-byte primary + the
-        // count axis both produce a 24-byte secondary key, so what is
-        // left is the avg secondary's two widenings: its count-AND-sum
-        // merk nodes carry a 16-byte-wider aggregate, and its row payload
-        // is an `ItemWithSumItem` (12 bytes at worst sum width) where the
-        // count axis stores a 3-byte empty `Item` — the mirror estimator
-        // sizes each axis's row with its REAL payload shape, since sizing
-        // all three as an empty item put the PCPSIT estimate under actual
-        // `added_bytes`.
-        assert_eq!(k8_avg - k16_count, 16 + 9);
-        assert_eq!(k8_avg - k8_count, 32 + 9);
+        // +8 bytes of primary key costs 24, not 16, because a canonical
+        // row carries the primary key TWICE: once in the secondary key
+        // (both the delete and the insert widen, +8 each) and once inside
+        // the row's `SiblingReference` (only the insert adds bytes, +8).
+        assert_eq!(k16_count - k8_count, 8 + 8 + 8);
+        // Every axis now writes the SAME row shape — a canonical
+        // `ReferenceWithSumItem` — so an axis comparison isolates two
+        // things only: the sort-key width, and the length of the primary
+        // key the row references.
+        //
+        // 8-byte primary + avg (16-byte sort) and 16-byte primary + count
+        // (8-byte sort) produce the same 24-byte secondary key, so what is
+        // left is the referenced key: avg's rows reference an 8-byte key
+        // where count's reference a 16-byte one.
+        assert_eq!(k16_count - k8_avg, 8);
+        // Same primary key, wider sort key: +8 bytes on each of the two
+        // rows the mirror writes, and no change to the referenced key.
+        assert_eq!(k8_avg - k8_count, 16);
         let count_axis = narrow;
 
         let sizes = EstimatedLayerSizes::AllItems(8, 100, None);
@@ -448,10 +452,26 @@ mod tests {
     #[test]
     fn indexed_secondary_mirror_key_width_saturates_at_u8_max() {
         let axes = [IndexAxis::Avg];
+        let at_250 = mirror_cost(EstimatedLayerSizes::AllItems(250, 100, None), &axes);
+        let at_255 = mirror_cost(EstimatedLayerSizes::AllItems(255, 100, None), &axes);
+
+        // The secondary KEY still saturates: 250+16 and 255+16 both clamp
+        // to 255 bytes, so the tree-shape work the key drives is identical.
         assert_eq!(
-            mirror_cost(EstimatedLayerSizes::AllItems(250, 100, None), &axes),
-            mirror_cost(EstimatedLayerSizes::AllItems(255, 100, None), &axes),
-            "both 250+16 and 255+16 clamp to a 255-byte secondary key"
+            (at_250.seek_count, at_250.hash_node_calls),
+            (at_255.seek_count, at_255.hash_node_calls),
+            "a clamped secondary key must do identical seek/hash work"
+        );
+
+        // The row VALUE does not saturate, and must not: a canonical row
+        // carries the primary key inside its `SiblingReference`, so a
+        // longer primary key means a genuinely larger row even once the
+        // secondary key has clamped. An estimate that saturated here would
+        // under-charge `added_bytes`, which is the one dimension a storage
+        // fee reservation cannot come in under.
+        assert!(
+            at_255.storage_cost.added_bytes > at_250.storage_cost.added_bytes,
+            "a longer referenced primary key must cost more even when the              secondary key clamps: {at_250:?} vs {at_255:?}"
         );
     }
 }

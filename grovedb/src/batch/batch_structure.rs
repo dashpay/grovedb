@@ -11,6 +11,10 @@ use grovedb_costs::{
 };
 use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 #[cfg(feature = "minimal")]
+use grovedb_storage::worst_case_costs::WorstKeyLength;
+#[cfg(feature = "minimal")]
+use grovedb_version::version::GroveVersion;
+#[cfg(feature = "minimal")]
 use grovedb_visualize::{DebugByteVectors, DebugBytes};
 #[cfg(feature = "minimal")]
 use intmap::IntMap;
@@ -27,6 +31,35 @@ pub type OpsByPath = BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, GroveOp>>;
 /// Level, path, key, op
 #[cfg(feature = "minimal")]
 pub type OpsByLevelPath = IntMap<u32, OpsByPath>;
+
+/// Build the synthetic key under which a keyless append-only op is filed.
+///
+/// The `MaxKeySize` variant sizes estimates with the real tree-key length,
+/// while the 8-byte big-endian op-index prefix in `unique_id` keeps several
+/// appends to the same tree from collapsing into a single `BTreeMap` entry
+/// (each append must be charged). [`keyless_op_tree_key`] is the inverse.
+#[cfg(feature = "minimal")]
+pub(in crate::batch) fn keyless_op_synthetic_key(op_index: usize, tree_key: &KeyInfo) -> KeyInfo {
+    let mut unique_id = (op_index as u64).to_be_bytes().to_vec();
+    unique_id.extend_from_slice(tree_key.as_slice());
+    KeyInfo::MaxKeySize {
+        unique_id,
+        max_size: tree_key.max_length(),
+    }
+}
+
+/// Recover the real tree-key bytes from a [`keyless_op_synthetic_key`].
+///
+/// Only meaningful for keys of ops that arrive keyless (the append-only tree
+/// ops) — a user-supplied `MaxKeySize` key on a keyed op has no such
+/// structure, so callers must check the op type before trusting the result.
+#[cfg(feature = "minimal")]
+pub(in crate::batch) fn keyless_op_tree_key(key: &KeyInfo) -> Option<&[u8]> {
+    match key {
+        KeyInfo::MaxKeySize { unique_id, .. } => unique_id.get(8..),
+        KeyInfo::KnownKey(_) => None,
+    }
+}
 
 /// Batch structure
 #[cfg(feature = "minimal")]
@@ -90,6 +123,7 @@ where
         update_element_flags_function: F,
         split_remove_bytes_function: SR,
         merk_tree_cache: C,
+        grove_version: &GroveVersion,
     ) -> CostResult<BatchStructure<C, F, SR>, Error> {
         Self::continue_from_ops(
             None,
@@ -97,6 +131,7 @@ where
             update_element_flags_function,
             split_remove_bytes_function,
             merk_tree_cache,
+            grove_version,
         )
     }
 
@@ -107,7 +142,13 @@ where
         update_element_flags_function: F,
         split_remove_bytes_function: SR,
         mut merk_tree_cache: C,
+        grove_version: &GroveVersion,
     ) -> CostResult<BatchStructure<C, F, SR>, Error> {
+        let keyless_ops_reach_cost_dispatch = grove_version
+            .grovedb_versions
+            .apply_batch
+            .keyless_op_cost_dispatch
+            >= 1;
         let mut cost = OperationCost::default();
 
         let mut ops_by_level_paths: OpsByLevelPath = previous_ops.unwrap_or_default();
@@ -117,18 +158,46 @@ where
         // qualified paths meaning path + key
         let mut ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, GroveOp> = BTreeMap::new();
 
-        for op in ops.into_iter() {
+        for (op_index, op) in ops.into_iter().enumerate() {
             let QualifiedGroveDbOp {
                 path: op_path,
                 key: op_key,
                 op: grove_op,
             } = op;
 
-            // Keyless ops (append-only tree ops) are handled by preprocessing.
-            // In estimated-cost paths they have no cost model yet — skip.
-            let key = match op_key {
-                Some(k) => k,
-                None => continue,
+            // Keyless ops (append-only tree ops: CommitmentTreeInsert,
+            // MmrTreeAppend, BulkAppend, DenseTreeInsert) carry the tree key
+            // as the last segment of `path`. In the apply path they are
+            // rewritten into keyed ops by preprocessing before reaching here;
+            // in the estimated-cost paths there is no preprocessing, so split
+            // the tree key off the path and let the op flow to the cost
+            // dispatch. Silently dropping them (as V1..V3 do below) makes
+            // every append estimate as free — see issue #812. The old skip
+            // is version-gated, not deleted: downstream the estimate is an
+            // admission bound, and historical blocks admitted under the old
+            // under-estimate must re-validate identically on replay.
+            //
+            // The synthetic key (see `keyless_op_synthetic_key`) sizes
+            // estimates with the real tree-key length while keeping one map
+            // entry per op, so each append is charged. If such an op ever
+            // reaches real execution, `execute_ops_on_path` rejects it with
+            // "should have been preprocessed" — a loud failure instead of a
+            // silent drop.
+            let (op_path, key, is_keyless_append) = match op_key {
+                Some(k) => (op_path, k, false),
+                None if !keyless_ops_reach_cost_dispatch => continue,
+                None => {
+                    let mut path = op_path;
+                    let Some(tree_key) = path.0.pop() else {
+                        return Err(Error::InvalidBatchOperation(
+                            "keyless append-only op must have the tree key as its path's last \
+                             segment",
+                        ))
+                        .wrap_with_cost(cost);
+                    };
+                    let key = keyless_op_synthetic_key(op_index, &tree_key);
+                    (path, key, true)
+                }
             };
 
             // Validate key length: Merk link encoding stores key length as a
@@ -141,10 +210,15 @@ where
                     .wrap_with_cost(cost);
             }
 
-            // Build qualified path (path + key) for reference lookups
-            let mut qualified_path = op_path.clone();
-            qualified_path.push(key.clone());
-            ops_by_qualified_paths.insert(qualified_path.to_path_consume(), grove_op.clone());
+            // Build qualified path (path + key) for reference lookups.
+            // Keyless append ops are skipped: they are not elements a
+            // reference can target, and their synthetic keys must not
+            // shadow the tree element itself.
+            if !is_keyless_append {
+                let mut qualified_path = op_path.clone();
+                qualified_path.push(key.clone());
+                ops_by_qualified_paths.insert(qualified_path.to_path_consume(), grove_op.clone());
+            }
 
             let op_cost = OperationCost::default();
             let op_result = match &grove_op {
@@ -168,6 +242,7 @@ where
                 | GroveOp::MmrTreeAppend { .. }
                 | GroveOp::BulkAppend { .. }
                 | GroveOp::DenseTreeInsert { .. }
+                | GroveOp::PrivateDocumentStoreInsert { .. }
                 | GroveOp::ReplaceNonMerkTreeRoot { .. } => {
                     // User-facing tree ops are preprocessed before batch
                     // execution into ReplaceNonMerkTreeRoot ops, which must

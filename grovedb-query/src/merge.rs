@@ -16,16 +16,49 @@ impl SubqueryBranch {
             (None, Some(subquery)) => Some(subquery),
             (Some(subquery), Some(other_subquery)) => {
                 let mut merged_subquery = subquery.clone();
-                merged_subquery.merge_with(*other_subquery);
+                merged_subquery.merge_with_unchecked(*other_subquery);
                 Some(merged_subquery)
             }
         }
     }
 
+    /// Whether either side of a branch merge carries a read mode
+    /// anywhere in its subquery. Branch merges combine subqueries by
+    /// field, which cannot express "both of these are axis reads" — so
+    /// the public entry points refuse rather than drop the mode.
+    fn branch_merge_carries_read_mode(&self, other: &Self) -> bool {
+        let carries = |branch: &Self| {
+            branch
+                .subquery
+                .as_deref()
+                .is_some_and(|subquery| subquery.has_read_mode_anywhere())
+        };
+        carries(self) || carries(other)
+    }
+
     /// Merges two subquery branches, combining their subquery paths and
     /// subqueries. When paths differ, creates conditional subqueries to
     /// preserve both branches.
-    pub fn merge(&self, other: &Self) -> Self {
+    ///
+    /// Errors if either side carries a [`ReadMode`](crate::ReadMode)
+    /// anywhere: merging combines subqueries field by field, and the
+    /// mode is not one of the combined fields, so a merge would answer
+    /// key selection where the caller asked for an axis or sum-budget
+    /// read.
+    pub fn merge(&self, other: &Self) -> Result<Self, crate::error::Error> {
+        if self.branch_merge_carries_read_mode(other) {
+            return Err(crate::error::Error::NotSupported(
+                "can not merge subquery branches carrying read modes (axis / sum-budget reads)"
+                    .to_string(),
+            ));
+        }
+        Ok(self.merge_unchecked(other))
+    }
+
+    /// The merge body, private: every public path checks read modes
+    /// first, and the recursive internals only ever see branches whose
+    /// descendants passed that check.
+    fn merge_unchecked(&self, other: &Self) -> Self {
         match (&self.subquery_path, &other.subquery_path) {
             (None, None) => {
                 // they both just have subqueries without paths
@@ -81,7 +114,7 @@ impl SubqueryBranch {
                             Some(left_path_leftovers)
                         };
                         merged_query.insert_key(left_top_key.clone());
-                        merged_query.merge_conditional_boxed_subquery(
+                        merged_query.merge_conditional_boxed_subquery_unchecked(
                             QueryItem::Key(left_top_key),
                             SubqueryBranch {
                                 subquery_path: maybe_left_path_leftovers,
@@ -96,7 +129,7 @@ impl SubqueryBranch {
                         };
 
                         merged_query.insert_key(right_top_key.clone());
-                        merged_query.merge_conditional_boxed_subquery(
+                        merged_query.merge_conditional_boxed_subquery_unchecked(
                             QueryItem::Key(right_top_key),
                             SubqueryBranch {
                                 subquery_path: maybe_right_path_leftovers,
@@ -121,7 +154,7 @@ impl SubqueryBranch {
                         merged_query.insert_key(first_key.clone());
                         // our subquery stays the same as we didn't change level
                         // add a conditional subquery for other
-                        merged_query.merge_conditional_boxed_subquery(
+                        merged_query.merge_conditional_boxed_subquery_unchecked(
                             QueryItem::Key(first_key),
                             SubqueryBranch {
                                 subquery_path: maybe_left_path_leftovers,
@@ -146,7 +179,7 @@ impl SubqueryBranch {
                         merged_query.insert_key(other_first.clone());
                         // our subquery stays the same as we didn't change level
                         // add a conditional subquery for other
-                        merged_query.merge_conditional_boxed_subquery(
+                        merged_query.merge_conditional_boxed_subquery_unchecked(
                             QueryItem::Key(other_first),
                             SubqueryBranch {
                                 subquery_path: maybe_right_path_leftovers,
@@ -184,7 +217,7 @@ impl SubqueryBranch {
                 };
                 // our subquery stays the same as we didn't change level
                 // add a conditional subquery for other
-                merged_subquery.merge_conditional_boxed_subquery(
+                merged_subquery.merge_conditional_boxed_subquery_unchecked(
                     // there are no conditional subquery branches yes
                     QueryItem::Key(our_top_key),
                     SubqueryBranch {
@@ -220,7 +253,7 @@ impl SubqueryBranch {
                 };
                 // their subquery stays the same as we didn't change level
                 // add a conditional subquery for other
-                merged_subquery.merge_conditional_boxed_subquery(
+                merged_subquery.merge_conditional_boxed_subquery_unchecked(
                     // there are no conditional subquery branches yes
                     QueryItem::Key(their_top_key),
                     SubqueryBranch {
@@ -245,7 +278,7 @@ impl Query {
     ) {
         if let Some(current_subquery) = self.default_subquery_branch.subquery.as_mut() {
             if let Some(other_subquery) = other_default_branch_subquery {
-                current_subquery.merge_with(*other_subquery);
+                current_subquery.merge_with_unchecked(*other_subquery);
             }
         } else {
             // None existed yet
@@ -258,7 +291,36 @@ impl Query {
     /// or subqueried to the subquery_path/subquery if a subquery is
     /// present. Merging involves creating conditional subqueries in the
     /// subqueries subqueries and paths.
-    pub fn merge_default_subquery_branch(&mut self, other_default_subquery_branch: SubqueryBranch) {
+    ///
+    /// Errors if either side carries a [`ReadMode`](crate::ReadMode)
+    /// anywhere — see [`SubqueryBranch::merge`] for why a branch merge
+    /// cannot carry one through.
+    pub fn merge_default_subquery_branch(
+        &mut self,
+        other_default_subquery_branch: SubqueryBranch,
+    ) -> Result<(), crate::error::Error> {
+        let carries = |branch: &SubqueryBranch| {
+            branch
+                .subquery
+                .as_deref()
+                .is_some_and(|subquery| subquery.has_read_mode_anywhere())
+        };
+        if carries(&self.default_subquery_branch) || carries(&other_default_subquery_branch) {
+            return Err(crate::error::Error::NotSupported(
+                "can not merge a default subquery branch carrying a read mode (axis / \
+                 sum-budget read)"
+                    .to_string(),
+            ));
+        }
+        self.merge_default_subquery_branch_unchecked(other_default_subquery_branch);
+        Ok(())
+    }
+
+    /// The merge body, private: see [`SubqueryBranch::merge_unchecked`].
+    fn merge_default_subquery_branch_unchecked(
+        &mut self,
+        other_default_subquery_branch: SubqueryBranch,
+    ) {
         match (
             &self.default_subquery_branch.subquery_path,
             &other_default_subquery_branch.subquery_path,
@@ -307,7 +369,7 @@ impl Query {
                         } else {
                             Some(left_path_leftovers)
                         };
-                        self.merge_conditional_boxed_subquery(
+                        self.merge_conditional_boxed_subquery_unchecked(
                             QueryItem::Key(left_top_key),
                             SubqueryBranch {
                                 subquery_path: maybe_left_path_leftovers,
@@ -321,7 +383,7 @@ impl Query {
                             Some(right_path_leftovers)
                         };
 
-                        self.merge_conditional_boxed_subquery(
+                        self.merge_conditional_boxed_subquery_unchecked(
                             QueryItem::Key(right_top_key),
                             SubqueryBranch {
                                 subquery_path: maybe_right_path_leftovers,
@@ -343,7 +405,7 @@ impl Query {
 
                         // our subquery stays the same as we didn't change level
                         // add a conditional subquery for other
-                        self.merge_conditional_boxed_subquery(
+                        self.merge_conditional_boxed_subquery_unchecked(
                             QueryItem::Key(first_key),
                             SubqueryBranch {
                                 subquery_path: maybe_left_path_leftovers,
@@ -362,7 +424,7 @@ impl Query {
                         };
                         // our subquery stays the same as we didn't change level
                         // add a conditional subquery for other
-                        self.merge_conditional_boxed_subquery(
+                        self.merge_conditional_boxed_subquery_unchecked(
                             QueryItem::Key(other_first),
                             SubqueryBranch {
                                 subquery_path: maybe_right_path_leftovers,
@@ -397,7 +459,7 @@ impl Query {
                 };
                 // our subquery stays the same as we didn't change level
                 // add a conditional subquery for other
-                self.merge_conditional_boxed_subquery(
+                self.merge_conditional_boxed_subquery_unchecked(
                     QueryItem::Key(our_top_key),
                     SubqueryBranch {
                         subquery_path: maybe_our_subquery_path,
@@ -422,7 +484,7 @@ impl Query {
                 };
                 // our subquery stays the same as we didn't change level
                 // add a conditional subquery for other
-                self.merge_conditional_boxed_subquery(
+                self.merge_conditional_boxed_subquery_unchecked(
                     QueryItem::Key(their_top_key),
                     SubqueryBranch {
                         subquery_path: maybe_their_subquery_path,
@@ -463,7 +525,10 @@ impl Query {
             // No old items were using the default, or no old items existed. Just
             // apply the incoming default directly.
             for item in items {
-                self.merge_conditional_boxed_subquery(item, default_subquery_branch.clone());
+                self.merge_conditional_boxed_subquery_unchecked(
+                    item,
+                    default_subquery_branch.clone(),
+                );
             }
             return;
         }
@@ -476,9 +541,15 @@ impl Query {
             let existing_default = self.default_subquery_branch.clone();
             for item in in_both {
                 if existing_default.subquery.is_some() || existing_default.subquery_path.is_some() {
-                    self.merge_conditional_boxed_subquery(item.clone(), existing_default.clone());
+                    self.merge_conditional_boxed_subquery_unchecked(
+                        item.clone(),
+                        existing_default.clone(),
+                    );
                 }
-                self.merge_conditional_boxed_subquery(item, default_subquery_branch.clone());
+                self.merge_conditional_boxed_subquery_unchecked(
+                    item,
+                    default_subquery_branch.clone(),
+                );
             }
         }
 
@@ -486,14 +557,70 @@ impl Query {
         // items, just get the incoming default.
         if let Some(theirs_only) = intersection.theirs {
             for item in theirs_only {
-                self.merge_conditional_boxed_subquery(item, default_subquery_branch.clone());
+                self.merge_conditional_boxed_subquery_unchecked(
+                    item,
+                    default_subquery_branch.clone(),
+                );
             }
         }
     }
 
     /// Merges multiple queries into a single query. Items are unioned and
     /// conditional subquery branches are merged where they intersect.
-    pub fn merge_multiple(mut queries: Vec<Query>) -> Self {
+    ///
+    /// Errors if any input carries a [`ReadMode`](crate::ReadMode) at
+    /// any nesting level — axis and sum-budget reads have no defined
+    /// merge semantics, and merging them silently as key selection
+    /// would change what the query means.
+    ///
+    /// The **direction** (`left_to_right`) of every query after the
+    /// first is discarded — the merged query keeps the first query's
+    /// direction, at every nesting level. Use
+    /// [`Self::merge_multiple_directional`] to require agreement
+    /// instead of silently keeping the first.
+    pub fn merge_multiple(queries: Vec<Query>) -> Result<Self, crate::error::Error> {
+        for query in &queries {
+            if query.has_read_mode_anywhere() {
+                return Err(crate::error::Error::NotSupported(
+                    "cannot merge queries carrying read modes (axis / sum-budget reads)"
+                        .to_string(),
+                ));
+            }
+        }
+        Ok(Self::merge_multiple_unchecked(queries))
+    }
+
+    /// [`Self::merge_multiple`] with **direction agreement**: every
+    /// input's top-level `left_to_right` must match, and the merged
+    /// query carries it, instead of silently keeping the first query's
+    /// direction. (Directions at deeper nesting levels still follow the
+    /// first-branch-wins behavior of the underlying merge.)
+    pub fn merge_multiple_directional(queries: Vec<Query>) -> Result<Self, crate::error::Error> {
+        if let Some(first) = queries.first() {
+            let direction = first.left_to_right;
+            if queries.iter().any(|query| query.left_to_right != direction) {
+                return Err(crate::error::Error::NotSupported(
+                    "cannot merge queries with conflicting directions (left_to_right differs)"
+                        .to_string(),
+                ));
+            }
+        }
+        Self::merge_multiple(queries)
+    }
+
+    /// The merge body, private. The `_unchecked` family is the whole
+    /// recursive machinery; the invariant that keeps it sound is that
+    /// **every** public entry point rejects read modes before calling
+    /// in — the whole-query merges (`merge_multiple`,
+    /// `merge_multiple_directional`, `merge_with`) and the branch
+    /// merges alike (`SubqueryBranch::merge`,
+    /// `merge_default_subquery_branch`,
+    /// `merge_conditional_boxed_subquery`,
+    /// `merge_conditional_subquery_branches_with_new_at_query_item`).
+    /// A new public wrapper that skips the check reintroduces the
+    /// silent-drop bug, because these bodies destructure `read_mode`
+    /// away by design.
+    fn merge_multiple_unchecked(mut queries: Vec<Query>) -> Self {
         if queries.is_empty() {
             return Query::new();
         }
@@ -507,6 +634,8 @@ impl Query {
                 conditional_subquery_branches,
                 left_to_right: _,
                 add_parent_tree_on_subquery,
+                // Checked by the public wrappers; read-mode-free here.
+                read_mode: _,
             } = query;
             // Preserve add_parent_tree_on_subquery if any query requests it
             if add_parent_tree_on_subquery {
@@ -525,7 +654,7 @@ impl Query {
 
                 for (conditional_item, conditional_subquery_branch) in conditional_subquery_branches
                 {
-                    merged_query.merge_conditional_boxed_subquery(
+                    merged_query.merge_conditional_boxed_subquery_unchecked(
                         conditional_item.clone(),
                         conditional_subquery_branch,
                     );
@@ -548,13 +677,31 @@ impl Query {
 
     /// Merges another query into this one, combining items and conditional
     /// subquery branches.
-    pub fn merge_with(&mut self, other: Query) {
+    ///
+    /// Errors if either side carries a [`ReadMode`](crate::ReadMode) at
+    /// any nesting level — see [`Self::merge_multiple`]. `other`'s
+    /// direction is discarded (this query's is kept), matching the
+    /// long-standing merge behavior.
+    pub fn merge_with(&mut self, other: Query) -> Result<(), crate::error::Error> {
+        if self.has_read_mode_anywhere() || other.has_read_mode_anywhere() {
+            return Err(crate::error::Error::NotSupported(
+                "cannot merge queries carrying read modes (axis / sum-budget reads)".to_string(),
+            ));
+        }
+        self.merge_with_unchecked(other);
+        Ok(())
+    }
+
+    /// The merge-with body, private: see [`Self::merge_multiple_unchecked`].
+    fn merge_with_unchecked(&mut self, other: Query) {
         let Query {
             mut items,
             default_subquery_branch,
             conditional_subquery_branches,
             left_to_right: _,
             add_parent_tree_on_subquery,
+            // Checked by the public wrappers; read-mode-free here.
+            read_mode: _,
         } = other;
         // Preserve add_parent_tree_on_subquery if either query requests it
         if add_parent_tree_on_subquery {
@@ -568,7 +715,7 @@ impl Query {
 
         if let Some(conditional_subquery_branches) = conditional_subquery_branches {
             for (conditional_item, conditional_subquery_branch) in conditional_subquery_branches {
-                self.merge_conditional_boxed_subquery(
+                self.merge_conditional_boxed_subquery_unchecked(
                     conditional_item.clone(),
                     conditional_subquery_branch,
                 );
@@ -592,7 +739,42 @@ impl Query {
     /// subquery and subquery_path if the item matches for the key. If
     /// multiple conditional subquery items match, then the first one that
     /// matches is used (in order that they were added).
+    ///
+    /// Errors if EITHER side carries a [`ReadMode`](crate::ReadMode)
+    /// anywhere — the receiving query's existing conditional branches
+    /// as well as the incoming one. A one-sided check is not enough:
+    /// merging an overlapping item splits both sides' branches and
+    /// recombines them through
+    /// [`merge_with_unchecked`](Query::merge_with_unchecked), so an
+    /// existing read mode can end up governing a different key range
+    /// than the caller established. See [`SubqueryBranch::merge`] for
+    /// why a branch merge cannot carry one through.
     pub fn merge_conditional_boxed_subquery(
+        &mut self,
+        query_item_merging_in: QueryItem,
+        subquery_branch_merging_in: SubqueryBranch,
+    ) -> Result<(), crate::error::Error> {
+        if self.has_read_mode_anywhere()
+            || subquery_branch_merging_in
+                .subquery
+                .as_deref()
+                .is_some_and(|subquery| subquery.has_read_mode_anywhere())
+        {
+            return Err(crate::error::Error::NotSupported(
+                "can not merge a conditional subquery branch carrying a read mode (axis / \
+                 sum-budget read)"
+                    .to_string(),
+            ));
+        }
+        self.merge_conditional_boxed_subquery_unchecked(
+            query_item_merging_in,
+            subquery_branch_merging_in,
+        );
+        Ok(())
+    }
+
+    /// The merge body, private: see [`SubqueryBranch::merge_unchecked`].
+    fn merge_conditional_boxed_subquery_unchecked(
         &mut self,
         query_item_merging_in: QueryItem,
         subquery_branch_merging_in: SubqueryBranch,
@@ -601,7 +783,7 @@ impl Query {
             || subquery_branch_merging_in.subquery_path.is_some()
         {
             self.conditional_subquery_branches = Some(
-                Self::merge_conditional_subquery_branches_with_new_at_query_item(
+                Self::merge_conditional_subquery_branches_with_new_at_query_item_unchecked(
                     self.conditional_subquery_branches.take(),
                     query_item_merging_in,
                     subquery_branch_merging_in,
@@ -614,7 +796,49 @@ impl Query {
     /// subquery and subquery_path if the item matches for the key. If
     /// multiple conditional subquery items match, then the first one that
     /// matches is used (in order that they were added).
+    ///
+    /// Errors if EITHER the existing branch map or the incoming branch
+    /// carries a [`ReadMode`](crate::ReadMode) anywhere — see
+    /// [`Query::merge_conditional_boxed_subquery`] for why the existing
+    /// side has to be inspected too.
     pub fn merge_conditional_subquery_branches_with_new_at_query_item(
+        conditional_subquery_branches: Option<IndexMap<QueryItem, SubqueryBranch>>,
+        query_item_merging_in: QueryItem,
+        subquery_branch_merging_in: SubqueryBranch,
+    ) -> Result<IndexMap<QueryItem, SubqueryBranch>, crate::error::Error> {
+        let existing_carries = conditional_subquery_branches
+            .as_ref()
+            .is_some_and(|branches| {
+                branches.values().any(|branch| {
+                    branch
+                        .subquery
+                        .as_deref()
+                        .is_some_and(|subquery| subquery.has_read_mode_anywhere())
+                })
+            });
+        if existing_carries
+            || subquery_branch_merging_in
+                .subquery
+                .as_deref()
+                .is_some_and(|subquery| subquery.has_read_mode_anywhere())
+        {
+            return Err(crate::error::Error::NotSupported(
+                "can not merge a conditional subquery branch carrying a read mode (axis / \
+                 sum-budget read)"
+                    .to_string(),
+            ));
+        }
+        Ok(
+            Self::merge_conditional_subquery_branches_with_new_at_query_item_unchecked(
+                conditional_subquery_branches,
+                query_item_merging_in,
+                subquery_branch_merging_in,
+            ),
+        )
+    }
+
+    /// The merge body, private: see [`SubqueryBranch::merge_unchecked`].
+    fn merge_conditional_subquery_branches_with_new_at_query_item_unchecked(
         conditional_subquery_branches: Option<IndexMap<QueryItem, SubqueryBranch>>,
         query_item_merging_in: QueryItem,
         subquery_branch_merging_in: SubqueryBranch,
@@ -659,7 +883,7 @@ impl Query {
                         }
                         // merge the overlapping subquery branches
                         let merged_subquery_branch =
-                            subquery_branch.merge(&subquery_branch_merging_in);
+                            subquery_branch.merge_unchecked(&subquery_branch_merging_in);
                         merged_items.insert(in_both, merged_subquery_branch);
 
                         match (ours_left, ours_right, theirs_left, theirs_right) {
@@ -783,7 +1007,9 @@ mod tests {
             subquery: Some(Box::new(other_subquery.clone())),
         };
 
-        self_query.merge_default_subquery_branch(other_branch);
+        self_query
+            .merge_default_subquery_branch(other_branch)
+            .expect("merge should succeed");
 
         // After merge:
         // - default subquery should be other's (no path, so it applies broadly)

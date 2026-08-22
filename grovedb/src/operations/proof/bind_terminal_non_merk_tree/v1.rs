@@ -27,6 +27,7 @@ use grovedb_merk::{
     CryptoHash, TreeFeatureType,
 };
 use grovedb_storage::{Storage, StorageContext};
+use grovedb_version::version::GroveVersion;
 
 use crate::{Element, Error, GroveDb, Transaction};
 
@@ -38,6 +39,7 @@ impl GroveDb {
         element: &Element,
         parent_path: &[&[u8]],
         tx: &Transaction,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -64,7 +66,7 @@ impl GroveDb {
 
         let child_hash = cost_return_on_error!(
             &mut cost,
-            self.non_merk_tree_child_hash(element, &child_path, tx)
+            self.non_merk_tree_child_hash(element, &child_path, tx, grove_version)
         );
 
         // Reuse the value_hash the node already carries — it is the one the
@@ -136,6 +138,7 @@ impl GroveDb {
         element: &Element,
         subtree_path: &[&[u8]],
         tx: &Transaction,
+        grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error> {
         let mut cost = OperationCost::default();
 
@@ -156,7 +159,7 @@ impl GroveDb {
                 let mmr = grovedb_merkle_mountain_range::MMR::new(*mmr_size, &store);
                 let root = cost_return_on_error!(
                     &mut cost,
-                    mmr.get_root()
+                    mmr.get_root(grove_version)
                         .map_err(|e| Error::CorruptedData(format!("MMR get_root failed: {}", e)))
                 );
                 Ok(root.hash()).wrap_with_cost(cost)
@@ -260,6 +263,54 @@ impl GroveDb {
                     &bulk_state_root,
                 ))
                 .wrap_with_cost(cost)
+            }
+            Element::PrivateDocumentStore(total_count, entry_size, chunk_power, _) => {
+                // The state root binds the committed config even when the
+                // store is empty, so the empty case is the precomputed
+                // config-parametrized root rather than NULL_HASH.
+                if *total_count == 0 {
+                    // Two blake3 calls: the committed-config hash and the
+                    // composite pds_state root.
+                    cost.hash_node_calls = cost.hash_node_calls.saturating_add(2);
+                    return Ok(
+                        grovedb_private_document_store::empty_private_document_store_state_root(
+                            *entry_size,
+                            *chunk_power,
+                        ),
+                    )
+                    .wrap_with_cost(cost);
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(storage_path, None, tx)
+                    .unwrap_add_cost(&mut cost);
+                let store = cost_return_on_error!(
+                    &mut cost,
+                    grovedb_private_document_store::PrivateDocumentStore::from_state(
+                        *total_count,
+                        *entry_size,
+                        *chunk_power,
+                        storage_ctx,
+                    )
+                    .map(|r| r.map_err(|e| Error::CorruptedData(format!(
+                        "failed to open PrivateDocumentStore: {}",
+                        e
+                    ))))
+                );
+                let state_root = cost_return_on_error!(
+                    &mut cost,
+                    store
+                        .compute_current_state_root_with_cost(grove_version)
+                        .map(|r| {
+                            r.map_err(|e| {
+                                Error::CorruptedData(format!(
+                                    "private document store state root failed: {}",
+                                    e
+                                ))
+                            })
+                        })
+                );
+                Ok(state_root).wrap_with_cost(cost)
             }
             _ => Err(Error::CorruptedCodeExecution(
                 "non_merk_tree_child_hash called on an element that is not a non-Merk tree",

@@ -31,12 +31,6 @@ use crate::{
     Element, ElementFlags, Error, GroveDb,
 };
 
-/// Upper bound on an indexed secondary row's value. The payload is fixed
-/// per axis — an empty `Item` (count), a `SumItem` (sum) or an empty
-/// `ItemWithSumItem` (avg) — and the largest of those serializes well under
-/// this bound, which also leaves room for the feature type and flags byte.
-pub const INDEXED_SECONDARY_MAX_VALUE_SIZE: u32 = 16;
-
 impl GroveDb {
     /// Add average case for getting a merk tree
     pub fn add_average_case_get_merk_at_path<'db, S: Storage<'db>>(
@@ -444,7 +438,7 @@ impl GroveDb {
     /// Add average case for deletion into Merk
     /// Largest average key size described by a layer, used to derive a
     /// secondary index layer's key sizes from its primary's.
-    fn average_case_layer_key_size(sizes: &EstimatedLayerSizes) -> u32 {
+    pub(crate) fn average_case_layer_key_size(sizes: &EstimatedLayerSizes) -> u32 {
         match sizes {
             EstimatedLayerSizes::AllSubtrees(k, ..)
             | EstimatedLayerSizes::AllItems(k, ..)
@@ -481,15 +475,24 @@ impl GroveDb {
     ///   sparse or conditional indexing).
     /// - **Key size** is the primary's key size plus the axis sort-key width
     ///   (8 bytes for count/sum, 16 for avg).
-    /// - **Value size** is bounded by the fixed per-axis payload shape:
-    ///   an empty `Item` (count), a `SumItem` (sum), or an empty
-    ///   `ItemWithSumItem` (avg) — all under
-    ///   [`INDEXED_SECONDARY_MAX_VALUE_SIZE`].
+    /// - **Value size** is the canonical reference row's own serialized
+    ///   size. Unlike the fixed-shape placeholder rows this replaced, a
+    ///   reference row carries the primary key it points at, so its size
+    ///   scales with the primary's key size — it is derived from the real
+    ///   row rather than pinned to a constant.
     /// - **Tree type** is fixed per axis.
     ///
     /// Each axis is charged one Merk open, one delete of the old row and one
     /// insert of the new row, each propagating — which is what
     /// `mirror_*_to_secondary` actually performs.
+    ///
+    /// **Reference refresh is charged unconditionally.** A canonical row
+    /// binds the primary node's commitment, so a value-only primary update
+    /// — one that moves neither count nor sum — still rewrites every
+    /// configured axis. The estimate must reflect that: it is an admission
+    /// bound replayed against historical blocks, and an estimate that
+    /// assumed "aggregates unchanged ⇒ no secondary write" would come in
+    /// under actual `added_bytes`.
     pub fn average_case_indexed_secondary_mirror(
         primary_path: &KeyInfoPath,
         primary_layer_information: &EstimatedLayerInformation,
@@ -508,13 +511,44 @@ impl GroveDb {
         for axis in axes {
             let secondary_key_size =
                 (primary_key_size + axis_sort_key_len(*axis) as u32).min(u8::MAX as u32) as u8;
+            // The worst-case canonical row for this axis, sized against a
+            // primary key of the estimated width. Built through THE row
+            // function the mirror writes with, so the estimate cannot drift
+            // from the write path: sum values are charged at their fixed
+            // worst-case varint width, so `i64::MAX` is an upper bound rather
+            // than an average (and is inside `count_value_as_sum`'s domain,
+            // so the conversion cannot fail here).
+            let worst_case_row = cost_return_on_error_no_add!(
+                cost,
+                crate::operations::indexed_tree::axis_row_reference(
+                    *axis,
+                    &vec![0u8; primary_key_size as usize],
+                    i64::MAX as u64,
+                    i64::MAX,
+                )
+            );
+            let row_value_size = cost_return_on_error_no_add!(
+                cost,
+                worst_case_row
+                    .serialized_size(grove_version)
+                    .map_err(|e| Error::CorruptedData(format!(
+                        "sizing the worst-case indexed secondary row: {e}"
+                    )))
+            )
+            .min(u32::MAX as usize) as u32;
             let secondary_layer = EstimatedLayerInformation {
                 tree_type: axis_secondary_tree_type(*axis),
                 // 1:1 with the primary.
                 estimated_layer_count: primary_layer_information.estimated_layer_count,
-                estimated_layer_sizes: EstimatedLayerSizes::AllItems(
+                // The row shape's OWN variant, not `AllItems`: the two
+                // carry different element overheads (+15 vs +3), and a
+                // secondary row is a `ReferenceWithSumItem`. Describing it
+                // as an item under-charged every row by 12 bytes — and
+                // `added_bytes` is the one dimension a storage-fee
+                // reservation must never come in under.
+                estimated_layer_sizes: EstimatedLayerSizes::AllReferencesWithSumItem(
                     secondary_key_size,
-                    INDEXED_SECONDARY_MAX_VALUE_SIZE,
+                    row_value_size,
                     None,
                 ),
             };
@@ -540,22 +574,17 @@ impl GroveDb {
             // The mirror is delete-old-row then insert-new-row, each of which
             // rebalances and re-roots the secondary.
             //
-            // The inserted row must be sized with the AXIS's real payload
-            // shape: `average_case_merk_insert_element` charges non-tree
-            // elements by their own serialized size, and the sum and avg rows
-            // are larger than the count axis's empty `Item`. Sizing all three
-            // as an empty `Item` put the PCPSIT estimate ~25 bytes per key
-            // UNDER actual `added_bytes` — the one dimension a storage-fee
-            // reservation cannot come in under. Sum values are charged at
-            // their fixed worst-case varint width, so `i64::MAX` here is the
-            // upper bound, not an average.
-            let worst_case_row = match axis {
-                grovedb_element::indexed::IndexAxis::Count => Element::new_item(vec![]),
-                grovedb_element::indexed::IndexAxis::Sum => Element::new_sum_item(i64::MAX),
-                grovedb_element::indexed::IndexAxis::Avg => {
-                    Element::new_item_with_sum_item(vec![], i64::MAX)
-                }
-            };
+            // The inserted row must be sized with the AXIS's real row shape:
+            // `average_case_merk_insert_element` charges non-tree elements by
+            // their own serialized size, and under-sizing put the PCPSIT
+            // estimate ~25 bytes per key UNDER actual `added_bytes` — the one
+            // dimension a storage-fee reservation cannot come in under.
+            //
+            // Writing the row is one extra hash beyond a plain put: a
+            // combined reference commits
+            // `combine_hash(H(row bytes), target hash)`, so the value hash is
+            // hashed twice rather than once.
+            cost.hash_node_calls += 1;
             cost_return_on_error!(
                 &mut cost,
                 Self::average_case_merk_delete_element(

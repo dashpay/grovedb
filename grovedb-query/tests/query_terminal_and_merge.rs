@@ -8,104 +8,328 @@ fn p(v: &[u8]) -> Vec<u8> {
     v.to_vec()
 }
 
+/// Both terminal-key versions, for behavior shared between them.
+type TerminalKeysFn =
+    fn(&Query, Vec<Vec<u8>>, usize, &mut Vec<(Vec<Vec<u8>>, Vec<u8>)>) -> Result<usize, Error>;
+const TERMINAL_KEYS_VERSIONS: [TerminalKeysFn; 2] =
+    [Query::terminal_keys_v0, Query::terminal_keys_v1];
+
 #[test]
 fn terminal_keys_plain_and_subquery_path_forms() {
-    let mut plain = Query::new();
-    plain.insert_keys(vec![k(1), k(2)]);
+    for terminal_keys in TERMINAL_KEYS_VERSIONS {
+        let mut plain = Query::new();
+        plain.insert_keys(vec![k(1), k(2)]);
 
-    let mut result = vec![];
-    let added = plain
-        .terminal_keys(vec![k(99)], 10, &mut result)
-        .expect("terminal keys");
-    assert_eq!(added, 2);
-    assert_eq!(result.len(), 2);
-    assert!(result.contains(&(vec![k(99)], k(1))));
-    assert!(result.contains(&(vec![k(99)], k(2))));
+        let mut result = vec![];
+        let added = terminal_keys(&plain, vec![k(99)], 10, &mut result).expect("terminal keys");
+        assert_eq!(added, 2);
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&(vec![k(99)], k(1))));
+        assert!(result.contains(&(vec![k(99)], k(2))));
 
-    let mut with_path = Query::new_single_key(k(7));
-    with_path.set_subquery_path(vec![k(8), k(9)]);
+        let mut with_path = Query::new_single_key(k(7));
+        with_path.set_subquery_path(vec![k(8), k(9)]);
 
-    let mut result = vec![];
-    let added = with_path
-        .terminal_keys(vec![k(1)], 10, &mut result)
-        .expect("terminal keys");
-    assert_eq!(added, 1);
-    assert_eq!(result, vec![(vec![k(1), k(7), k(8)], k(9))]);
+        let mut result = vec![];
+        let added = terminal_keys(&with_path, vec![k(1)], 10, &mut result).expect("terminal keys");
+        assert_eq!(added, 1);
+        assert_eq!(result, vec![(vec![k(1), k(7), k(8)], k(9))]);
+    }
 }
 
 #[test]
 fn terminal_keys_recursive_and_deduplicated() {
-    let mut leaf = Query::new();
-    leaf.insert_key(k(3));
+    // The queried key has a matching conditional branch; both versions must
+    // resolve it to the conditional branch exactly once (v0 via its dedup
+    // set, v1 via per-item branch resolution).
+    for terminal_keys in TERMINAL_KEYS_VERSIONS {
+        let mut leaf = Query::new();
+        leaf.insert_key(k(3));
 
-    let mut root = Query::new_single_key(k(1));
-    root.set_subquery_path(vec![k(2)]);
-    root.set_subquery(leaf);
+        let mut root = Query::new_single_key(k(1));
+        root.set_subquery_path(vec![k(2)]);
+        root.set_subquery(leaf);
 
-    // Duplicate key in conditional branch must not be added from top-level items twice.
-    root.add_conditional_subquery(
-        QueryItem::Key(k(1)),
-        Some(vec![k(4), k(5)]),
-        Some(Query::new_single_key(k(6))),
+        root.add_conditional_subquery(
+            QueryItem::Key(k(1)),
+            Some(vec![k(4), k(5)]),
+            Some(Query::new_single_key(k(6))),
+        );
+
+        let mut result = vec![];
+        let added = terminal_keys(&root, vec![], 10, &mut result).expect("terminal keys");
+
+        assert_eq!(added, 1);
+        assert_eq!(result, vec![(vec![k(1), k(4), k(5)], k(6))]);
+    }
+}
+
+#[test]
+fn terminal_keys_v1_conditionals_only_apply_to_queried_items() {
+    let mut query = Query::new_single_key(k(1));
+    query.add_conditional_subquery(
+        QueryItem::Key(k(2)),
+        Some(vec![k(3)]),
+        Some(Query::new_single_key(k(4))),
     );
 
     let mut result = vec![];
-    let added = root
-        .terminal_keys(vec![], 10, &mut result)
+    let added = query
+        .terminal_keys_v1(vec![], 10, &mut result)
         .expect("terminal keys");
 
     assert_eq!(added, 1);
-    assert_eq!(result, vec![(vec![k(1), k(4), k(5)], k(6))]);
+    assert_eq!(result, vec![(vec![], k(1))]);
+}
+
+#[test]
+fn terminal_keys_v0_applies_conditionals_before_items() {
+    let mut query = Query::new_single_key(k(1));
+    query.add_conditional_subquery(
+        QueryItem::Key(k(2)),
+        Some(vec![k(3)]),
+        Some(Query::new_single_key(k(4))),
+    );
+
+    let mut result = vec![];
+    let added = query
+        .terminal_keys_v0(vec![], 10, &mut result)
+        .expect("terminal keys");
+
+    assert_eq!(added, 2);
+    assert_eq!(result, vec![(vec![k(2), k(3)], k(4)), (vec![], k(1))]);
+}
+
+#[test]
+fn terminal_keys_v1_empty_conditional_branch_keeps_matching_key_terminal() {
+    let mut query = Query::new_single_key(k(1));
+    query.add_conditional_subquery(QueryItem::Key(k(1)), None, None);
+
+    let mut result = vec![];
+    let added = query
+        .terminal_keys_v1(vec![], 10, &mut result)
+        .expect("terminal keys");
+
+    assert_eq!(added, 1);
+    assert_eq!(result, vec![(vec![], k(1))]);
+}
+
+#[test]
+fn terminal_keys_v0_empty_conditional_branch_drops_matching_key() {
+    // Frozen v0 quirk (issue #689): a (None, None) conditional override marks
+    // the key as already added without pushing a terminal key for it.
+    let mut query = Query::new_single_key(k(1));
+    query.add_conditional_subquery(QueryItem::Key(k(1)), None, None);
+
+    let mut result = vec![];
+    let added = query
+        .terminal_keys_v0(vec![], 10, &mut result)
+        .expect("terminal keys");
+
+    assert_eq!(added, 0);
+    assert!(result.is_empty());
 }
 
 #[test]
 fn terminal_keys_error_paths_are_reported() {
-    let mut with_unbounded = Query::new();
-    with_unbounded.insert_all();
-    let mut out = vec![];
-    let err = with_unbounded
-        .terminal_keys(vec![], 10, &mut out)
-        .expect_err("must fail on unbounded item");
-    assert!(matches!(err, Error::NotSupported(_)));
+    for terminal_keys in TERMINAL_KEYS_VERSIONS {
+        let mut with_unbounded = Query::new();
+        with_unbounded.insert_all();
+        let mut out = vec![];
+        let err = terminal_keys(&with_unbounded, vec![], 10, &mut out)
+            .expect_err("must fail on unbounded item");
+        assert!(matches!(err, Error::NotSupported(_)));
 
-    let mut conditional_unbounded = Query::new_single_key(k(1));
-    conditional_unbounded.add_conditional_subquery(QueryItem::RangeFull(..), None, None);
-    let mut out = vec![];
-    let err = conditional_unbounded
-        .terminal_keys(vec![], 10, &mut out)
-        .expect_err("must fail on unbounded conditional item");
-    assert!(matches!(err, Error::NotSupported(_)));
+        let mut conditional_unbounded = Query::new_single_key(k(1));
+        conditional_unbounded.add_conditional_subquery(QueryItem::RangeFull(..), None, None);
+        let mut out = vec![];
+        let err = terminal_keys(&conditional_unbounded, vec![], 10, &mut out)
+            .expect_err("must fail on unbounded conditional item");
+        assert!(matches!(err, Error::NotSupported(_)));
 
-    let mut exceeding = Query::new();
-    exceeding.insert_keys(vec![k(1), k(2)]);
-    let mut out = vec![];
-    let err = exceeding
-        .terminal_keys(vec![], 1, &mut out)
-        .expect_err("must fail on max results");
-    assert!(matches!(err, Error::RequestAmountExceeded(_)));
+        let mut exceeding = Query::new();
+        exceeding.insert_keys(vec![k(1), k(2)]);
+        let mut out = vec![];
+        let err =
+            terminal_keys(&exceeding, vec![], 1, &mut out).expect_err("must fail on max results");
+        assert!(matches!(err, Error::RequestAmountExceeded(_)));
 
-    let mut corrupted_path = Query::new_single_key(k(1));
-    corrupted_path.set_subquery_path(vec![]);
-    let mut out = vec![];
-    let err = corrupted_path
-        .terminal_keys(vec![], 10, &mut out)
-        .expect_err("must fail on empty subquery path");
-    assert!(matches!(err, Error::CorruptedCodeExecution(_)));
+        let mut corrupted_path = Query::new_single_key(k(1));
+        corrupted_path.set_subquery_path(vec![]);
+        let mut out = vec![];
+        let err = terminal_keys(&corrupted_path, vec![], 10, &mut out)
+            .expect_err("must fail on empty subquery path");
+        assert!(matches!(err, Error::CorruptedCodeExecution(_)));
+
+        let mut exceeding_subquery_path = Query::new_single_key(k(1));
+        exceeding_subquery_path.set_subquery_path(vec![k(2)]);
+        let mut out = vec![(vec![], k(0))];
+        let err = terminal_keys(&exceeding_subquery_path, vec![], 1, &mut out)
+            .expect_err("must fail when subquery path result would exceed limit");
+        assert!(matches!(err, Error::RequestAmountExceeded(_)));
+    }
 }
 
 #[test]
 fn terminal_keys_rejects_excessive_nesting_depth() {
-    // Build a chain of 65 nested subqueries (limit is 64)
-    let mut inner = Query::new_single_key(k(1));
-    for _ in 0..65 {
-        let mut outer = Query::new_single_key(k(1));
-        outer.set_subquery(inner);
-        inner = outer;
+    for terminal_keys in TERMINAL_KEYS_VERSIONS {
+        // Build a chain of 65 nested subqueries (limit is 64)
+        let mut inner = Query::new_single_key(k(1));
+        for _ in 0..65 {
+            let mut outer = Query::new_single_key(k(1));
+            outer.set_subquery(inner);
+            inner = outer;
+        }
+        let mut out = vec![];
+        let err = terminal_keys(&inner, vec![], 1000, &mut out)
+            .expect_err("must fail on excessive depth");
+        assert!(matches!(err, Error::NotSupported(_)));
     }
+}
+
+#[test]
+fn terminal_keys_v0_conditional_subquery_skips_duplicate_item_key() {
+    let mut query = Query::new_single_key(k(1));
+    query.add_conditional_subquery(
+        QueryItem::Key(k(1)),
+        None,
+        Some(Query::new_single_key(k(2))),
+    );
+
+    let mut result = vec![];
+    let added = query
+        .terminal_keys_v0(vec![], 10, &mut result)
+        .expect("terminal keys");
+
+    assert_eq!(added, 1);
+    assert_eq!(result, vec![(vec![k(1)], k(2))]);
+}
+
+#[test]
+fn terminal_keys_v0_default_branch_recurses_with_subquery_path() {
+    let mut query = Query::new_single_key(k(1));
+    query.set_subquery_path(vec![k(2)]);
+    query.set_subquery(Query::new_single_key(k(3)));
+
+    let mut result = vec![];
+    let added = query
+        .terminal_keys_v0(vec![], 10, &mut result)
+        .expect("terminal keys");
+
+    assert_eq!(added, 1);
+    assert_eq!(result, vec![(vec![k(1), k(2)], k(3))]);
+}
+
+#[test]
+fn terminal_keys_v0_default_branch_recurses_without_subquery_path() {
+    let mut query = Query::new_single_key(k(4));
+    query.set_subquery(Query::new_single_key(k(5)));
+
+    let mut result = vec![];
+    let added = query
+        .terminal_keys_v0(vec![], 10, &mut result)
+        .expect("terminal keys");
+
+    assert_eq!(added, 1);
+    assert_eq!(result, vec![(vec![k(4)], k(5))]);
+}
+
+#[test]
+fn terminal_keys_v0_conditional_subquery_path_without_subquery_is_terminal() {
+    // Conditional branch with a subquery path but no subquery, on a selector
+    // no queried item matches: v0 still emits its path tail as a terminal
+    // key, ahead of the queried item.
+    let mut query = Query::new_single_key(k(1));
+    query.add_conditional_subquery(QueryItem::Key(k(9)), Some(vec![k(2), k(3)]), None);
+
+    let mut result = vec![];
+    let added = query
+        .terminal_keys_v0(vec![], 10, &mut result)
+        .expect("terminal keys");
+
+    assert_eq!(added, 2);
+    assert_eq!(result, vec![(vec![k(9), k(2)], k(3)), (vec![], k(1))]);
+}
+
+#[test]
+fn terminal_keys_v0_conditional_limit_errors() {
+    // Top-of-loop guard: result already holds more entries than max_results
+    // when the first conditional key is visited.
+    let mut query = Query::new_single_key(k(1));
+    query.add_conditional_subquery(QueryItem::Key(k(9)), Some(vec![k(2)]), None);
+    let mut out = vec![(vec![], k(0)), (vec![], k(7))];
+    let err = query
+        .terminal_keys_v0(vec![], 1, &mut out)
+        .expect_err("must fail when conditional keys exceed the limit");
+    assert!(matches!(err, Error::RequestAmountExceeded(_)));
+
+    // Path-but-no-subquery arm: exactly at the limit when the conditional
+    // would push its terminal key.
+    let mut out = vec![(vec![], k(0))];
+    let err = query
+        .terminal_keys_v0(vec![], 1, &mut out)
+        .expect_err("must fail when the conditional path tail would exceed the limit");
+    assert!(matches!(err, Error::RequestAmountExceeded(_)));
+}
+
+#[test]
+fn terminal_keys_v0_items_limit_guard_errors() {
+    // Items-loop top guard: result already exceeds max_results before the
+    // (unmatched) queried key is processed.
+    let query = Query::new_single_key(k(1));
+    let mut out = vec![(vec![], k(0)), (vec![], k(7))];
+    let err = query
+        .terminal_keys_v0(vec![], 1, &mut out)
+        .expect_err("must fail when items exceed the limit");
+    assert!(matches!(err, Error::RequestAmountExceeded(_)));
+}
+
+#[test]
+fn terminal_keys_v0_conditional_empty_subquery_path_errors() {
+    let mut query = Query::new_single_key(k(1));
+    query.add_conditional_subquery(QueryItem::Key(k(9)), Some(vec![]), None);
     let mut out = vec![];
-    let err = inner
-        .terminal_keys(vec![], 1000, &mut out)
-        .expect_err("must fail on excessive depth");
+    let err = query
+        .terminal_keys_v0(vec![], 10, &mut out)
+        .expect_err("must fail on empty conditional subquery path");
+    assert!(matches!(err, Error::CorruptedCodeExecution(_)));
+}
+
+#[test]
+fn terminal_keys_v0_propagates_nested_subquery_errors() {
+    let mut unbounded = Query::new();
+    unbounded.insert_all();
+
+    // Through a conditional branch with subquery path + subquery.
+    let mut query = Query::new_single_key(k(1));
+    query.add_conditional_subquery(
+        QueryItem::Key(k(9)),
+        Some(vec![k(2)]),
+        Some(unbounded.clone()),
+    );
+    let mut out = vec![];
+    let err = query
+        .terminal_keys_v0(vec![], 10, &mut out)
+        .expect_err("must propagate nested error through conditional path + subquery");
+    assert!(matches!(err, Error::NotSupported(_)));
+
+    // Through a conditional branch with subquery only.
+    let mut query = Query::new_single_key(k(1));
+    query.add_conditional_subquery(QueryItem::Key(k(9)), None, Some(unbounded.clone()));
+    let mut out = vec![];
+    let err = query
+        .terminal_keys_v0(vec![], 10, &mut out)
+        .expect_err("must propagate nested error through conditional subquery");
+    assert!(matches!(err, Error::NotSupported(_)));
+
+    // Through the default branch with subquery path + subquery.
+    let mut query = Query::new_single_key(k(1));
+    query.set_subquery_path(vec![k(2)]);
+    query.set_subquery(unbounded);
+    let mut out = vec![];
+    let err = query
+        .terminal_keys_v0(vec![], 10, &mut out)
+        .expect_err("must propagate nested error through default path + subquery");
     assert!(matches!(err, Error::NotSupported(_)));
 }
 
@@ -118,7 +342,7 @@ fn merge_apis_cover_default_and_conditional_paths() {
     other.insert_key(k(2));
     other.set_subquery_path(vec![k(9)]);
 
-    base.merge_with(other);
+    base.merge_with(other).expect("merge must succeed");
     assert_eq!(base.items.len(), 2);
     assert!(base.items.contains(&QueryItem::Key(k(1))));
     assert!(base.items.contains(&QueryItem::Key(k(2))));
@@ -129,7 +353,7 @@ fn merge_apis_cover_default_and_conditional_paths() {
         .expect("conditional branch should be created");
     assert!(conditional.contains_key(&QueryItem::Key(k(2))));
 
-    let merged_empty = Query::merge_multiple(vec![]);
+    let merged_empty = Query::merge_multiple(vec![]).expect("merge must succeed");
     assert!(merged_empty.items.is_empty());
 
     let mut left = Query::new_single_key(k(10));
@@ -141,7 +365,8 @@ fn merge_apis_cover_default_and_conditional_paths() {
     left.merge_default_subquery_branch(SubqueryBranch {
         subquery_path: Some(vec![k(1), k(3)]),
         subquery: Some(Box::new(Query::new_single_key(k(30)))),
-    });
+    })
+    .expect("merge should succeed");
 
     assert_eq!(left.default_subquery_branch.subquery_path, Some(vec![k(1)]));
     let merged_conditionals = left
@@ -172,7 +397,8 @@ fn merge_conditional_subquery_branches_splits_intersections() {
             subquery_path: Some(vec![p(b"a")]),
             subquery: None,
         },
-    );
+    )
+    .expect("no read modes involved");
 
     assert_eq!(merged.len(), 3);
     assert!(merged.contains_key(&QueryItem::Range(k(1)..k(3))));

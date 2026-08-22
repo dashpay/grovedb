@@ -147,6 +147,89 @@ mod tests {
         assert!(get_result.is_err());
     }
 
+    /// A generic non-empty tree delete NESTED BELOW an indexed primary must
+    /// re-mirror the primary's secondary row on the way up: the delete
+    /// changes the child subtree's root (and possibly its count), and the
+    /// canonical secondary row binds that node's commitment. The v1
+    /// (GROVE_V4) delete path routes propagation through the full
+    /// indexed-aware walk; the legacy batch propagation performed only the
+    /// basic parent update and left the secondary stale.
+    #[test]
+    fn delete_non_empty_tree_nested_below_pcit_remirrors_secondary() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcit",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create PCIT");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"pcit"].as_ref(),
+            b"a",
+            Element::empty_provable_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert PCIT entry");
+        // Populate the entry subtree generically (allowed: `a` is a plain
+        // ProvableCountTree, not a primary), including a nested non-empty
+        // tree whose deletion will exercise the non-empty delete branch.
+        db.insert(
+            [TEST_LEAF, b"pcit", b"a"].as_ref(),
+            b"sibling",
+            Element::new_item(vec![]),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert sibling item");
+        db.insert(
+            [TEST_LEAF, b"pcit", b"a"].as_ref(),
+            b"t",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert nested tree");
+        db.insert(
+            [TEST_LEAF, b"pcit", b"a", b"t"].as_ref(),
+            b"leaf",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert nested leaf");
+
+        // Delete the NON-EMPTY nested tree `t`. Its parent `a` is not a
+        // primary, so the generic-write rejection does not fire, and the
+        // propagation walk climbs a -> pcit (indexed primary) -> test_leaf.
+        db.delete(
+            [TEST_LEAF, b"pcit", b"a"].as_ref(),
+            b"t",
+            Some(delete_options_allow_non_empty()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("delete non-empty nested tree below a PCIT entry");
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify grovedb");
+        assert!(issues.is_empty(), "verification issues: {:?}", issues);
+    }
+
     #[test]
     fn delete_empty_pcit_succeeds_and_clears_secondary() {
         let grove_version = GroveVersion::latest();

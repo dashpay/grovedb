@@ -4,18 +4,22 @@
 //! and no longer is — gates land here as they are written. Currently flipped:
 //!
 //! - `apply_batch.delete_tree_cleanup_type_source: 1` — a batch `DeleteTree`
-//!   reads the stored element and uses its ACTUAL type to select cleanup
-//!   namespaces, rejecting a declared/stored mismatch that involves an indexed
-//!   tree. V1..V3 keep taking the declared type at face value. Costs one extra
-//!   stored-element read per op, which is why it cannot apply to the released
-//!   versions.
+//!   uses the stored element's ACTUAL type to select cleanup namespaces,
+//!   rejecting a declared/stored mismatch that involves an indexed tree.
+//!   V1..V3 keep taking the declared type at face value. The stored element
+//!   comes from data the apply already loads (the emptiness pre-scan's own
+//!   read, or the old value the merk delete surfaces through the old-value
+//!   observer), so V4 charges exactly the V1..V3 cost — the gate exists
+//!   because it flips an accepted/rejected outcome, not because of cost.
 //!
-//! - `apply_batch.overwrite_indexed_cleanup_inspection: 1` — a batch overwrite
-//!   of a non-reference element (with tree-override protection off) reads the
-//!   stored element to detect an indexed tree being overwritten, scheduling
-//!   its per-axis secondary storage for cleanup or refusing the ambiguous
-//!   case. Same shape as the gate above: one extra stored-element read per
-//!   overwrite-capable op, so V1..V3 keep their released cost shape.
+//! - `apply_batch.overwrite_indexed_cleanup_inspection: 1` — a batch
+//!   overwrite (with tree-override protection off, references included)
+//!   classifies the element it displaces to detect an indexed tree being
+//!   overwritten, scheduling its per-axis secondary storage for cleanup or
+//!   refusing the ambiguous case. The old bytes come from the node the merk
+//!   walk fetched anyway to rewrite the key, so — like the gate above —
+//!   V1..V3 cost is charged exactly and only the accepted/rejected outcome
+//!   is gated.
 //!
 //! - `proof.terminal_non_merk_tree_child_hash: 1` — a V1 proof that reports a
 //!   `CommitmentTree` / `MmrTree` / `BulkAppendTree` /
@@ -27,6 +31,90 @@
 //!   — free for a prover to forge under a genuine root hash. Gated because it
 //!   flips a rejected/accepted outcome and because deriving the state root
 //!   costs the prover extra storage reads and hash calls.
+//!
+//! - `proof.axis_descent_in_v1_envelope: 1` — the V1 proof envelope carries
+//!   axis-ordered descents into indexed trees
+//!   (`ProofBytes::IndexedTreeAxisDescent`): a proof over the queried
+//!   per-axis secondary in place of the primary descent, with the
+//!   secondary-root attestation recomputed by the verifier rather than
+//!   supplied raw. V1..V3 refuse the shape on both sides. Gated because it
+//!   adds an acceptance rule to the live V1 envelope.
+//!
+//! - `proof.sum_budget_in_v1_envelope: 1` — the V1 proof envelope carries
+//!   sum-budget windows (`ProofBytes::SumBudgetWindow`): an ordinary Merk
+//!   proof over exactly the window the budget walk scanned, whose stop
+//!   condition the verifier attests by replaying the engine's fold over the
+//!   proved elements. V1..V3 refuse the shape on both sides. Gated because
+//!   it adds an acceptance rule to the live V1 envelope.
+//!
+//! - `path_query_methods.terminal_keys: 1` — `PathQuery::terminal_keys`
+//!   resolves conditional subquery branches per queried item (first matching
+//!   conditional wins, default branch as fallback), so keys never selected by
+//!   the query no longer contribute terminal keys (issue #689). V1..V3 keep
+//!   the legacy walk that expands every conditional branch before the items.
+//!   Gated because terminal keys shape the absence-proof result set assembled
+//!   by verifiers and the `query_keys_optional` result set.
+//!
+//! - `element.path_query_push: 1` — the trusted (non-proof) query walk no
+//!   longer charges the outer limit for a subquery whose matches were
+//!   entirely consumed by `offset` (issue #690): an empty inner result eats
+//!   a limit slot only when nothing was skipped. V1..V3 keep the legacy
+//!   accounting, where e.g. `limit=2, offset=1` can return a single element.
+//!   Proof generation rejects non-zero offsets and never runs this path, so
+//!   only trusted-read result sets are gated.
+//!
+//! - `path_query_methods.merge: 1` — `PathQuery::merge` requires every input
+//!   to agree on `left_to_right` (typed error on conflict) and propagates the
+//!   shared direction to the merged root. V1..V3 keep the long-standing
+//!   silent behavior (input directions dropped; sub-level merges take the
+//!   synthesized default). Gated because merged queries feed proofs and both
+//!   sides must re-derive the identical merged query.
+//!
+//! - `path_query_methods.unified_read_mode: 1` — `PathQuery` read modes
+//!   (axis-ordered and sum-budget reads carried in `Query::read_mode`) are
+//!   served by the unified dispatch (`run_path_query`, and the unified
+//!   prove/verify as they land). V1..V3 reject any read-mode-bearing query
+//!   with `NotSupported` at every entry point — those versions also reject
+//!   the version-2 `Query` wire encoding outright, so the slot's `0` value
+//!   is the in-process mirror of that fail-closed decode.
+//!
+//! - `apply_batch.keyless_op_cost_dispatch: 1` — keyless append-only ops
+//!   (`CommitmentTreeInsert`, `MmrTreeAppend`, `BulkAppend`,
+//!   `DenseTreeInsert`) reach the cost dispatch in the estimated-cost batch
+//!   structure, filed under unique synthetic keys so every append is
+//!   charged. V1..V3 silently skip them — the append estimates as free,
+//!   the under-estimate behind issue #812's admission-control bypass —
+//!   preserved so historical admission decisions replay identically. The
+//!   apply path is unaffected on every version (preprocessing rewrites
+//!   keyless ops before the batch structure is built).
+//!
+//! - `operations.average_case.average_case_commitment_tree_insert: 1` and
+//!   `operations.worst_case.worst_case_commitment_tree_insert: 1` — the
+//!   `CommitmentTreeInsert` estimation arms charge the depth-derived
+//!   upper-bound model (full ommer cascade, dense-buffer recompute, epoch
+//!   compaction, flags-bounded element load). V1..V3 keep the legacy
+//!   constants (average-case 33 Sinsemilla / 554-byte frontier; worst-case
+//!   64 / 1066 but no compaction), which are NOT upper bounds — preserved
+//!   for replay only. Gated because downstream the estimate is the
+//!   admission bound: raising it ungated would make already-committed
+//!   shield transitions re-validate as under-funded and brick sync.
+//!
+//! - `bulk_append_tree_versions.cost.append_storage_accounting: 1` and
+//!   `commitment_tree_versions.cost.frontier_save_storage_accounting: 1` —
+//!   the append-only family (`BulkAppendTree`, `CommitmentTree`,
+//!   `PrivateDocumentStore`) reports write churn as replacement instead of
+//!   as new storage (issue #822). Each entry's permanent bytes — its share
+//!   of the eventual chunk blob — are charged as `added_bytes` once, at its
+//!   own append; a dense-buffer slot that already holds a committed value
+//!   (epoch 2 onward) is reported as `replaced_bytes` (growth added, shrink
+//!   not credited); the compaction blob is reported as a replacement of the
+//!   entry bytes it supersedes, so only its framing and the MMR internal
+//!   nodes are added; and the in-place frontier rewrite is a replacement of
+//!   the bytes loaded at open. V1..V3 keep issuing every data put with no
+//!   cost information, which bills key + value as new storage every time —
+//!   ≈ 2× the bytes that persist, with the whole ≈ 630 KB blob landing on
+//!   one append per epoch at `chunk_power` 11. Stored bytes, roots and
+//!   proofs are identical under both; gated because the figures are fees.
 //!
 //! Note that `GroveVersion::latest()` resolves to this version, so anything
 //! defaulting to "latest" — tests, benchmarks, tools — exercises every gate
@@ -46,11 +134,14 @@
 
 use crate::version::grovedb_versions::GroveDBAggregateSumPathQueryMethodVersions;
 use crate::version::{
+    bulk_append_tree_versions::{BulkAppendTreeCostVersions, BulkAppendTreeVersions},
+    commitment_tree_versions::{CommitmentTreeCostVersions, CommitmentTreeVersions},
     grovedb_versions::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
         GroveDBOperationsDeleteVersions, GroveDBOperationsGetVersions,
-        GroveDBOperationsInsertVersions, GroveDBOperationsProofVersions,
+        GroveDBOperationsIndexedAxisVersions, GroveDBOperationsInsertVersions,
+        GroveDBOperationsPrivateDocumentStoreVersions, GroveDBOperationsProofVersions,
         GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
         GroveDBReplicationVersions, GroveDBVersions,
@@ -58,6 +149,7 @@ use crate::version::{
     merk_versions::{
         MerkAverageCaseCostsVersions, MerkBatchVersions, MerkProofVersions, MerkVersions,
     },
+    mmr_versions::{MmrCostVersions, MmrVersions},
     GroveVersion,
 };
 
@@ -78,6 +170,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             estimated_case_operations_for_batch: 0,
             delete_tree_cleanup_type_source: 1,
             overwrite_indexed_cleanup_inspection: 1,
+            keyless_op_cost_dispatch: 1,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,
@@ -114,7 +207,11 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             get_path_query: 0,
             get_sized_query: 0,
             get_aggregate_sum_query_apply_function: 0,
-            path_query_push: 0,
+            // Bumped from 0 → 1: v1 no longer decrements the outer limit when
+            // a subquery's emptiness was caused by offset skips rather than a
+            // true no-match (issue #690). v0 keeps the legacy accounting for
+            // shipped grove versions.
+            path_query_push: 1,
             aggregate_sum_path_query_push: 0,
             query_item: 0,
             basic_push: 0,
@@ -169,7 +266,12 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 delete_if_empty_tree: 0,
                 delete_if_empty_tree_with_sectional_storage_function: 0,
                 delete_operation_for_delete_internal: 0,
-                delete_internal_on_transaction: 0,
+                // v1: reuse the already-open parent Merk when deleting a
+                // non-empty child tree instead of reopening the parent layer
+                // with the child's tree type (issue #686). v0 (GROVE_V1..V3)
+                // keeps the legacy reopen byte-for-byte for replay
+                // compatibility.
+                delete_internal_on_transaction: 1,
                 delete_internal_without_transaction: 0,
                 average_case_delete_operation_for_delete: 0,
                 worst_case_delete_operation_for_delete: 0,
@@ -198,6 +300,12 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 query_keys_optional: 0,
                 query_raw_keys_optional: 0,
                 follow_element: 0,
+                run_path_query: 0,
+            },
+            indexed_axis: GroveDBOperationsIndexedAxisVersions {
+                read: 0,
+                prove_single_path: 0,
+                verify_single_path: 0,
             },
             proof: GroveDBOperationsProofVersions {
                 prove_query: 0,
@@ -217,6 +325,8 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 verify_query_with_chained_path_queries: 0,
                 verify_query_get_parent_tree_info_with_options: 0,
                 terminal_non_merk_tree_child_hash: 1, // bind terminal non-Merk tree element bytes to the parent value_hash
+                axis_descent_in_v1_envelope: 1, // axis-ordered descents in the V1 envelope (ReadMode::Axis)
+                sum_budget_in_v1_envelope: 1, // sum-budget windows in the V1 envelope (ReadMode::SumBudget)
             },
             average_case: GroveDBOperationsAverageCaseVersions {
                 add_average_case_get_merk_at_path: 0,
@@ -232,6 +342,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 add_average_case_get_raw_cost: 0,
                 add_average_case_get_raw_tree_cost: 0,
                 add_average_case_get_cost: 0,
+                average_case_commitment_tree_insert: 1,
             },
             worst_case: GroveDBOperationsWorstCaseVersions {
                 add_worst_case_get_merk_at_path: 0,
@@ -246,14 +357,23 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 add_worst_case_get_raw_tree_cost: 0,
                 add_worst_case_get_raw_cost: 0,
                 add_worst_case_get_cost: 0,
+                worst_case_commitment_tree_insert: 1,
+            },
+            // PrivateDocumentStore activates in GROVE_V4.
+            private_document_store: GroveDBOperationsPrivateDocumentStoreVersions {
+                element_creation: 1,
+                insert: 1,
+                get_value: 1,
+                count: 1,
             },
         },
         aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions { merge: 0 },
         path_query_methods: GroveDBPathQueryMethodVersions {
-            terminal_keys: 0,
-            merge: 0,
+            terminal_keys: 1, // per-item conditional resolution (V4+), see issue #689
+            merge: 1,         // direction-aware merge: agreement required and propagated (V4+)
             query_items_at_path: 0,
             should_add_parent_tree_at_path: 0,
+            unified_read_mode: 1,
         },
         replication: GroveDBReplicationVersions {
             get_subtrees_metadata: 0,
@@ -291,6 +411,40 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             // Initial implementation; introduced alongside the V1
             // proof envelope.
             prove_count_offset_on_range: 0,
+        },
+    },
+    // MMR hash charges: one hash per blake3 merge actually computed —
+    // `push` per collapsed peak, `get_root` and `gen_proof` per peak
+    // folded during bagging. V1..V3 bill the reads but not these
+    // merges. Roots and proofs are bit-identical across both versions;
+    // only `hash_node_calls` differs.
+    mmr_versions: MmrVersions {
+        cost: MmrCostVersions {
+            push: 1,
+            get_root: 1,
+            gen_proof: 1,
+        },
+    },
+    // Compaction hash count: adds the peak-bagging merges the shipped
+    // figure omitted, so a compacting append is charged the hashes it
+    // actually performs. Chunk bytes and roots are unchanged.
+    bulk_append_tree_versions: BulkAppendTreeVersions {
+        cost: BulkAppendTreeCostVersions {
+            compaction_hash_count: 1,
+            // Append storage accounting: each entry's permanent bytes are
+            // charged once (its chunk-blob share, at its own append); buffer
+            // slot rewrites and the compaction blob are reported as
+            // replacements of the bytes they supersede instead of as new
+            // storage (issue #822). Stored bytes and roots are unchanged.
+            append_storage_accounting: 1,
+        },
+    },
+    // Frontier save: the in-place rewrite of `__ct_data__` is reported as a
+    // replacement of the bytes loaded at open, with only growth added
+    // (issue #822). Frontier bytes and anchors are unchanged.
+    commitment_tree_versions: CommitmentTreeVersions {
+        cost: CommitmentTreeCostVersions {
+            frontier_save_storage_accounting: 1,
         },
     },
 };

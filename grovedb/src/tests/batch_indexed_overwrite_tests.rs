@@ -10,7 +10,7 @@
 //! back out through top-k. Each op variant that can carry a caller-supplied
 //! element therefore needs its own regression test; `Replace` is one of them.
 //!
-//! `inspect_cidx_overwrite` runs when tree-override protection is off and
+//! `classify_cidx_overwrite` runs when tree-override protection is off and
 //! decides whether replacing an existing indexed tree is safe. Indexed → empty
 //! indexed and indexed → non-indexed are allowed and schedule the old tree's
 //! storage for cleanup; indexed → *non-empty* indexed is refused because the
@@ -35,6 +35,8 @@ mod tests {
     use grovedb_element::indexed::IndexAxis;
     use grovedb_version::version::GroveVersion;
 
+    use crate::IndexedAxisEntrySliceExt;
+
     use crate::{
         batch::{BatchApplyOptions, QualifiedGroveDbOp},
         tests::{make_test_grovedb, TempGroveDb, TEST_LEAF},
@@ -48,7 +50,7 @@ mod tests {
         tags.into_iter().map(|t| (t, None)).collect()
     }
 
-    /// Tree-override protection off — the mode in which `inspect_cidx_overwrite`
+    /// Tree-override protection off — the mode in which `classify_cidx_overwrite`
     /// is consulted at all.
     fn overwrite_allowed() -> BatchApplyOptions {
         BatchApplyOptions {
@@ -149,7 +151,8 @@ mod tests {
         assert_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 5, true, None, gv)
                 .unwrap()
-                .expect("top_k"),
+                .expect("top_k")
+                .key_pairs(),
             vec![(0u64, b"child".to_vec())],
             "the child must still be indexed at its derived count of 0, not the claimed 9"
         );
@@ -223,7 +226,8 @@ mod tests {
         assert_eq!(
             db.indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 5, true, None, gv)
                 .unwrap()
-                .expect("top_k"),
+                .expect("top_k")
+                .key_pairs(),
             vec![(42i64, b"entry".to_vec())],
             "baseline: the entry is indexed at sum 42"
         );
@@ -325,15 +329,15 @@ mod tests {
             )
             .unwrap()
             .expect_err("indexed -> non-empty indexed is ambiguous and must be refused");
+        // The refusal comes from the ungated empty-at-batch-insertion guard,
+        // which runs before the overwrite classification ever sees the op —
+        // a non-empty indexed element cannot enter a batch at all.
         match err {
-            Error::NotSupported(message) => assert!(
-                message.starts_with(
-                    "overwriting an existing indexed tree with a NON-EMPTY indexed tree via the \
-                     batch path is not supported"
-                ),
+            Error::InvalidBatchOperation(message) => assert!(
+                message.contains("must be empty at the moment of batch insertion"),
                 "unexpected message: {message}"
             ),
-            other => panic!("expected NotSupported, got {other:?}"),
+            other => panic!("expected InvalidBatchOperation, got {other:?}"),
         }
         assert_eq!(
             db.root_hash(None, gv).unwrap().expect("root hash"),

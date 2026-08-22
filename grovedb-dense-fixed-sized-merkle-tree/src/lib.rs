@@ -24,4 +24,6 @@ mod tests;
 
 pub use error::DenseMerkleError;
 pub use proof::DenseTreeProof;
+#[cfg(feature = "storage")]
+pub use tree::SlotWriteAccounting;
 pub use tree::{position_key, DenseFixedSizedMerkleTree};

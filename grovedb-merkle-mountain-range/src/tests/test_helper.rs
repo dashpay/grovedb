@@ -1,3 +1,4 @@
+use grovedb_version::version::GroveVersion;
 use lazy_static::lazy_static;
 use proptest::prelude::*;
 
@@ -19,7 +20,7 @@ lazy_static! {
         let store = MemStore::default();
         let mut mmr = MMR::new(0, &store);
         (0u32..100_000)
-            .map(|i| mmr.push(leaf_from_u32(i)).unwrap().expect("push"))
+            .map(|i| mmr.push(leaf_from_u32(i), GroveVersion::latest()).unwrap().expect("push"))
             .collect()
     };
     /// mmr size when 0..100_000 elem
@@ -28,7 +29,7 @@ lazy_static! {
         let mut mmr = MMR::new(0, &store);
         (0u32..100_000)
             .map(|i| {
-                mmr.push(leaf_from_u32(i)).unwrap().expect("push");
+                mmr.push(leaf_from_u32(i), GroveVersion::latest()).unwrap().expect("push");
                 mmr.mmr_size
             })
             .collect()

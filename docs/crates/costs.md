@@ -117,6 +117,44 @@ Count trees add overhead for maintaining element counts:
 - Additional 8 bytes for count storage
 - Propagation costs through parent trees
 
+#### Append-only trees (BulkAppendTree, CommitmentTree, PrivateDocumentStore)
+
+The append-only family writes three kinds of data rows: dense-buffer slots
+(one per position, keys reused every epoch), the chunk blob an epoch is
+compacted into (plus the MMR internal nodes), and — for the commitment
+tree — the frontier, one value rewritten on every append. How those writes
+are reported to the fee layer is version-gated
+(`bulk_append_tree_versions.cost.append_storage_accounting`,
+`commitment_tree_versions.cost.frontier_save_storage_accounting`):
+
+| write | GROVE_V1..V3 (v0) | GROVE_V4 (v1, issue #822) |
+|---|---|---|
+| buffer slot, first epoch | key + value `added` | key + value `added` |
+| buffer slot, epoch ≥ 2 | key + value `added` | value `replaced` (growth `added`, shrink not credited); key not charged |
+| entry's chunk-blob share | — (blob charged at compaction) | entry bytes `added` at the entry's own append |
+| compaction blob | key + whole blob `added` | entry bytes `replaced`, framing + key `added` |
+| MMR internal nodes | `added` | `added` |
+| frontier rewrite | key + value `added` every save | value `replaced`, growth `added`; first save fully `added` |
+
+Under v0 every note is billed roughly twice over its life (slot + blob) and
+the whole blob (≈ 630 KB at `chunk_power` 11) lands on one append per
+epoch. Under v1 each entry's permanent bytes are charged once, at its own
+append, and the rest of the churn is replacement; the sum of `added_bytes`
+over an epoch matches the database growth. `removed_bytes` stays
+`NoStorageRemoval` in both — a rolling buffer refunds nobody. Stored bytes,
+roots and proofs are identical under both versions.
+
+Mechanically: `BulkAppendTree` reads the committed value of a slot that
+already holds one (judged against the count at open; never this session's
+cache) before rewriting it — one billed seek plus the value's bytes — and
+asks the dense tree for `SlotWriteAccounting::Overwrite { previous_value_len }`,
+which attaches `KeyValueStorageCost::for_in_place_value_rewrite`; the MMR
+`MmrStore` takes a `LeafValueStorageCost::PartlyPrepaid` policy that the
+bulk tree feeds `chunk_blob_entry_bytes`; the `Result`-returning appends
+report a `storage_accounting_cost` (the prepaid share plus the slot read)
+for the caller to bill, while the `CostResult`-returning
+`append_deferred_roots` already includes it in its cost.
+
 ## Cost Context
 
 The `CostContext` trait provides functional combinators for cost-aware operations:

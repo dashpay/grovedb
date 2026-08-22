@@ -1,6 +1,7 @@
 use proptest::proptest;
 
 use crate::{mem_store::MemStore, MmrNode, MMR};
+use grovedb_version::version::GroveVersion;
 
 /// Create an MmrNode leaf from an integer (for test convenience).
 fn leaf_from_u32(i: u32) -> MmrNode {
@@ -22,7 +23,10 @@ fn test_incremental_with_params(start: u32, steps: usize, turns: usize) {
 
     let _positions: Vec<u64> = (0u32..start)
         .map(|_| {
-            let pos = mmr.push(leaf_from_u32(curr)).unwrap().expect("push");
+            let pos = mmr
+                .push(leaf_from_u32(curr), GroveVersion::latest())
+                .unwrap()
+                .expect("push");
             curr += 1;
             pos
         })
@@ -30,12 +34,18 @@ fn test_incremental_with_params(start: u32, steps: usize, turns: usize) {
     mmr.commit().unwrap().expect("commit changes");
 
     for turn in 0..turns {
-        let prev_root = mmr.get_root().unwrap().expect("get root");
+        let prev_root = mmr
+            .get_root(GroveVersion::latest())
+            .unwrap()
+            .expect("get root");
         let (positions, leaves) = (0..steps).fold(
             (Vec::new(), Vec::new()),
             |(mut positions, mut leaves), _| {
                 let leaf = leaf_from_u32(curr);
-                let pos = mmr.push(leaf.clone()).unwrap().expect("push");
+                let pos = mmr
+                    .push(leaf.clone(), GroveVersion::latest())
+                    .unwrap()
+                    .expect("push");
                 curr += 1;
                 positions.push(pos);
                 leaves.push(leaf);
@@ -43,8 +53,14 @@ fn test_incremental_with_params(start: u32, steps: usize, turns: usize) {
             },
         );
         mmr.commit().unwrap().expect("commit changes");
-        let proof = mmr.gen_proof(positions).unwrap().expect("gen proof");
-        let root = mmr.get_root().unwrap().expect("get root");
+        let proof = mmr
+            .gen_proof(positions, GroveVersion::latest())
+            .unwrap()
+            .expect("gen proof");
+        let root = mmr
+            .get_root(GroveVersion::latest())
+            .unwrap()
+            .expect("get root");
         let result = proof
             .verify_incremental(root, prev_root, leaves)
             .expect("verify_incremental");
