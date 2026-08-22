@@ -50,13 +50,13 @@ pub(crate) fn frontier_save_cost_info(
 
 #[cfg(test)]
 mod tests {
-    use grovedb_version::version::{v1::GROVE_V1, v3::GROVE_V3, v4::GROVE_V4};
+    use grovedb_version::version::{v1::GROVE_V1, v2::GROVE_V2, v3::GROVE_V3, v4::GROVE_V4};
 
     use super::*;
 
     #[test]
     fn v0_attaches_no_cost_info() {
-        for version in [&GROVE_V1, &GROVE_V3] {
+        for version in [&GROVE_V1, &GROVE_V2, &GROVE_V3] {
             assert!(frontier_save_cost_info(None, 74, version)
                 .unwrap()
                 .is_none());

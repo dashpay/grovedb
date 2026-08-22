@@ -348,12 +348,10 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         cost.hash_node_calls += bulk_result.hash_count;
         // The note's chunk-blob share — its permanent bytes — charged as
         // added storage now, so the compaction blob is later reported as a
-        // replacement of bytes already paid for. Zero under the shipped
+        // replacement of bytes already paid for, plus the read of the
+        // committed slot that sizes a rewrite. Zero under the shipped
         // accounting (GROVE_V1..V3). See `BulkAppendTree` issue #822.
-        cost.storage_cost.added_bytes = cost
-            .storage_cost
-            .added_bytes
-            .saturating_add(bulk_result.prepaid_chunk_bytes);
+        cost += bulk_result.storage_accounting_cost;
 
         // 2. Append cmx to Sinsemilla frontier (tracks sinsemilla_hash_calls)
         let sinsemilla_root = match self.frontier.append(cmx) {
@@ -506,11 +504,9 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
                 }
             };
             hash_count = hash_count.saturating_add(r.hash_count);
-            // The note's chunk-blob share, billed per entry as in `append_raw`.
-            cost.storage_cost.added_bytes = cost
-                .storage_cost
-                .added_bytes
-                .saturating_add(r.prepaid_chunk_bytes);
+            // The note's chunk-blob share and the committed-slot read, billed
+            // per entry as in `append_raw`.
+            cost += r.storage_accounting_cost;
             if r.compacted {
                 any_compacted = true;
             }

@@ -6,7 +6,8 @@
 //! - every append charges the entry's chunk-blob share (its own bytes) as
 //!   `added_bytes`;
 //! - a dense-buffer slot that already holds a committed value (epoch 2 on)
-//!   is `replaced_bytes`, growth added, shrink not credited;
+//!   is read (one billed seek plus the committed bytes) and its rewrite is
+//!   `replaced_bytes`, growth added, shrink not credited;
 //! - the compaction blob replaces the epoch's prepaid entry bytes, so only
 //!   its framing and the MMR internal nodes are added;
 //! - the commitment tree's frontier rewrite replaces the frontier loaded at
@@ -19,21 +20,39 @@
 //! GROVE_V4 and once under GROVE_V4 with the two accounting gates switched
 //! off — so that the difference between the two costs is exactly the
 //! accounting change and nothing else (the parent-Merk update, the hash
-//! counts and the Sinsemilla work are identical on both sides). The legacy
-//! figures themselves are then pinned by the model below.
+//! counts and the Sinsemilla work are identical on both sides; the only
+//! I/O difference is the committed-slot read). The legacy figures
+//! themselves are then pinned by the model below.
+
+use std::collections::HashMap;
 
 use grovedb_commitment_tree::{
     CommitmentFrontier, DashMemo, NoteBytesData, TransmittedNoteCiphertext,
 };
-use grovedb_costs::OperationCost;
+use grovedb_costs::{storage_cost::removal::StorageRemovedBytes::NoStorageRemoval, OperationCost};
+use grovedb_merk::{
+    estimated_costs::{
+        average_case_costs::{
+            EstimatedLayerCount::EstimatedLevel,
+            EstimatedLayerInformation,
+            EstimatedLayerSizes::{AllItems, AllSubtrees},
+            EstimatedSumTrees::NoSumTrees,
+        },
+        worst_case_costs::WorstCaseLayerInformation::MaxElementsNumber,
+    },
+    tree_type::TreeType,
+};
 use grovedb_version::version::{
     v1::GROVE_V1, v2::GROVE_V2, v3::GROVE_V3, v4::GROVE_V4, GroveVersion,
 };
 
 use crate::{
-    batch::QualifiedGroveDbOp,
+    batch::{
+        estimated_costs::EstimatedCostsType::{AverageCaseCostsType, WorstCaseCostsType},
+        KeyInfoPath, QualifiedGroveDbOp,
+    },
     tests::{common::EMPTY_PATH, make_empty_grovedb, TempGroveDb},
-    Element,
+    Element, GroveDb,
 };
 
 /// A stored note entry: cmx (32) || rho (32) || cv_net (32) || DashMemo
@@ -128,6 +147,19 @@ fn expected_delta(
     (added, replaced)
 }
 
+/// Expected `(seek_count, storage_loaded_bytes)` difference, V4 minus
+/// legacy: the read of the committed value a buffer slot holds, which sizes
+/// its rewrite — one seek and `committed_len` bytes, only for a buffered
+/// (non-compacting) append onto a slot committed in an earlier epoch.
+fn expected_read_delta(position: u64, chunk_power: u8, committed_len: u32) -> (u32, u64) {
+    let epoch = 1u64 << chunk_power;
+    if position % epoch == epoch - 1 || position < epoch {
+        (0, 0)
+    } else {
+        (1, committed_len as u64)
+    }
+}
+
 fn delta(v4: &OperationCost, legacy: &OperationCost) -> (i64, i64) {
     (
         v4.storage_cost.added_bytes as i64 - legacy.storage_cost.added_bytes as i64,
@@ -135,12 +167,23 @@ fn delta(v4: &OperationCost, legacy: &OperationCost) -> (i64, i64) {
     )
 }
 
-/// Everything except the storage figures must agree: the accounting gates
-/// move bytes between `added` and `replaced`, nothing else.
-fn assert_only_storage_differs(v4: &OperationCost, legacy: &OperationCost, what: &str) {
-    assert_eq!(v4.seek_count, legacy.seek_count, "{what}: seek_count");
+/// Everything except the storage figures and the committed-slot read must
+/// agree: the accounting gates move bytes between `added` and `replaced`
+/// and add that one read, nothing else.
+fn assert_only_accounting_differs(
+    v4: &OperationCost,
+    legacy: &OperationCost,
+    what: &str,
+    (extra_seeks, extra_loaded): (u32, u64),
+) {
     assert_eq!(
-        v4.storage_loaded_bytes, legacy.storage_loaded_bytes,
+        v4.seek_count,
+        legacy.seek_count + extra_seeks,
+        "{what}: seek_count"
+    );
+    assert_eq!(
+        v4.storage_loaded_bytes,
+        legacy.storage_loaded_bytes + extra_loaded,
         "{what}: storage_loaded_bytes"
     );
     assert_eq!(
@@ -318,7 +361,12 @@ fn commitment_tree_append_storage_accounting_matches_model_across_epochs() {
             expected_delta(position, CHUNK_POWER, NOTE_ENTRY, true),
             "position {position}: v4 {v4_cost:?}\nlegacy {legacy_cost:?}"
         );
-        assert_only_storage_differs(&v4_cost, &legacy_cost, &format!("position {position}"));
+        assert_only_accounting_differs(
+            &v4_cost,
+            &legacy_cost,
+            &format!("position {position}"),
+            expected_read_delta(position, CHUNK_POWER, NOTE_ENTRY),
+        );
         assert_eq!(
             root_hash(&v4_db, &GROVE_V4),
             root_hash(&legacy_db, &legacy),
@@ -344,6 +392,13 @@ fn frontier_rewrite_replaces_previous_size_and_adds_only_growth() {
         let legacy_cost = ct_insert(&legacy_db, position as u32, &legacy);
         let v4_cost = ct_insert(&v4_db, position as u32, &GROVE_V4);
         let (d_added, d_replaced) = delta(&v4_cost, &legacy_cost);
+        // Epoch 1: fresh slots, nothing read.
+        assert_only_accounting_differs(
+            &v4_cost,
+            &legacy_cost,
+            &format!("position {position}"),
+            (0, 0),
+        );
 
         // Strip the (epoch-1, fresh-slot) share so only the frontier is left.
         let frontier_added = d_added - NOTE_ENTRY as i64;
@@ -430,7 +485,8 @@ fn epoch_boundary_at_chunk_power_11_is_not_an_added_bytes_spike() {
         delta(&v4_cost, &legacy_cost),
         expected_delta((EPOCH - 1) as u64, CHUNK_POWER, NOTE_ENTRY, true)
     );
-    assert_only_storage_differs(&v4_cost, &legacy_cost, "boundary");
+    // A compacting append writes no slot and reads none.
+    assert_only_accounting_differs(&v4_cost, &legacy_cost, "boundary", (0, 0));
     assert_eq!(root_hash(&v4_db, &GROVE_V4), root_hash(&legacy_db, &legacy));
 }
 
@@ -509,7 +565,8 @@ fn epoch_boundary_inside_one_batch_charges_slots_once_as_new() {
         v4_ctx.cost,
         legacy_ctx.cost
     );
-    assert_only_storage_differs(&v4_ctx.cost, &legacy_ctx.cost, "batch");
+    // Nothing was committed, so no slot is read.
+    assert_only_accounting_differs(&v4_ctx.cost, &legacy_ctx.cost, "batch", (0, 0));
     assert_eq!(root_hash(&v4_db, &GROVE_V4), root_hash(&legacy_db, &legacy));
     assert_verifies(&v4_db, &GROVE_V4);
 }
@@ -554,6 +611,7 @@ fn bulk_append_tree_accounting_with_variable_size_values() {
 
         let mut added: i64 = len as i64; // the share
         let mut replaced: i64 = 0;
+        let mut read: (u32, u64) = (0, 0);
         epoch_bytes += len;
         if position % 4 == 3 {
             // Compaction: the blob replaces the epoch's entry bytes.
@@ -566,6 +624,8 @@ fn bulk_append_tree_accounting_with_variable_size_values() {
                 added += paid(len).saturating_sub(paid(previous)) as i64
                     - (SLOT_KEY_PAID + paid(len)) as i64;
                 replaced += paid(len).min(paid(previous)) as i64;
+                // The committed value is read to size the rewrite.
+                read = (1, previous as u64);
             }
             slots[slot] = Some(len);
         }
@@ -576,20 +636,19 @@ fn bulk_append_tree_accounting_with_variable_size_values() {
             v4_ctx.cost,
             legacy_ctx.cost
         );
-        assert_only_storage_differs(
+        assert_only_accounting_differs(
             &v4_ctx.cost,
             &legacy_ctx.cost,
             &format!("position {position}"),
+            read,
         );
     }
     assert_eq!(root_hash(&v4_db, &GROVE_V4), root_hash(&legacy_db, &legacy));
     assert_verifies(&v4_db, &GROVE_V4);
 }
 
-/// `PrivateDocumentStore` (fixed entry size) follows the same model. Its
-/// append propagates the dense tree's costs, so V4 also bills the read that
-/// sizes the slot rewrite: one seek per buffered append, loading the
-/// committed entry from epoch 2 on.
+/// `PrivateDocumentStore` (fixed entry size) follows the same model,
+/// including the billed read of the committed entry a rewritten slot holds.
 #[test]
 fn private_document_store_accounting_matches_model() {
     const CHUNK_POWER: u8 = 2; // epoch 4
@@ -633,25 +692,12 @@ fn private_document_store_accounting_matches_model() {
             v4_ctx.cost,
             legacy_ctx.cost
         );
-        let compacting = position % 4 == 3;
-        let (extra_seeks, extra_loaded) = if compacting {
-            (0, 0)
-        } else if position >= 4 {
-            (1, ENTRY as u64)
-        } else {
-            (1, 0)
-        };
-        assert_eq!(
-            v4_ctx.cost.seek_count,
-            legacy_ctx.cost.seek_count + extra_seeks,
-            "position {position}: the slot read before a buffered write"
+        assert_only_accounting_differs(
+            &v4_ctx.cost,
+            &legacy_ctx.cost,
+            &format!("position {position}"),
+            expected_read_delta(position, CHUNK_POWER, ENTRY),
         );
-        assert_eq!(
-            v4_ctx.cost.storage_loaded_bytes,
-            legacy_ctx.cost.storage_loaded_bytes + extra_loaded,
-            "position {position}: the committed entry loaded to size the rewrite"
-        );
-        assert_eq!(v4_ctx.cost.hash_node_calls, legacy_ctx.cost.hash_node_calls);
     }
     assert_eq!(root_hash(&v4_db, &GROVE_V4), root_hash(&legacy_db, &legacy));
     assert_verifies(&v4_db, &GROVE_V4);
@@ -706,4 +752,153 @@ fn standalone_mmr_and_dense_trees_are_unaffected() {
             .cost;
         assert_eq!(a, b, "dense insert {i}");
     }
+}
+
+// ── BulkAppend estimates vs actual at compaction ─────────────────────
+
+fn bulk_op(value: Vec<u8>) -> QualifiedGroveDbOp {
+    QualifiedGroveDbOp::bulk_append_op(vec![b"bulk".to_vec()], value)
+}
+
+/// Average-case estimate with the bulk tree's own layer declared as
+/// `TreeType::BulkAppendTree(chunk_power)` (or not, when `None`).
+fn bulk_average_case_estimate(
+    ops: Vec<QualifiedGroveDbOp>,
+    declared_chunk_power: Option<u8>,
+    value_size: u32,
+    grove_version: &GroveVersion,
+) -> OperationCost {
+    let mut paths = HashMap::new();
+    paths.insert(
+        KeyInfoPath(vec![]),
+        EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLevel(1, false),
+            estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+        },
+    );
+    if let Some(chunk_power) = declared_chunk_power {
+        paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![b"bulk".to_vec()]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::BulkAppendTree(chunk_power),
+                estimated_layer_count: EstimatedLevel(16, false),
+                estimated_layer_sizes: AllItems(8, value_size, None),
+            },
+        );
+    }
+    GroveDb::estimated_case_operations_for_batch(
+        AverageCaseCostsType(paths),
+        ops,
+        None,
+        |_cost, _old_flags, _new_flags| Ok(false),
+        |_flags, _removed_key_bytes, _removed_value_bytes| Ok((NoStorageRemoval, NoStorageRemoval)),
+        grove_version,
+    )
+    .cost_as_result()
+    .expect("average case estimate for BulkAppend")
+}
+
+fn bulk_worst_case_estimate(
+    ops: Vec<QualifiedGroveDbOp>,
+    grove_version: &GroveVersion,
+) -> OperationCost {
+    let mut paths = HashMap::new();
+    paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(2));
+    GroveDb::estimated_case_operations_for_batch(
+        WorstCaseCostsType(paths),
+        ops,
+        None,
+        |_cost, _old_flags, _new_flags| Ok(false),
+        |_flags, _removed_key_bytes, _removed_value_bytes| Ok((NoStorageRemoval, NoStorageRemoval)),
+        grove_version,
+    )
+    .cost_as_result()
+    .expect("worst case estimate for BulkAppend")
+}
+
+/// Seed `seed` values into a fresh chunk_power-4 bulk tree, then apply
+/// `last` as its own batch and return that batch's actual cost.
+fn bulk_compaction_actual(seed: Vec<Vec<u8>>, last: Vec<u8>) -> OperationCost {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+    db.insert(
+        EMPTY_PATH,
+        b"bulk",
+        Element::empty_bulk_append_tree(4).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk append tree");
+    db.apply_batch(
+        seed.into_iter().map(bulk_op).collect(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("seed");
+    let ctx = db.apply_batch(vec![bulk_op(last)], None, None, grove_version);
+    ctx.value.expect("compaction append");
+    ctx.cost
+}
+
+/// The compaction blob replaces the epoch's entry bytes — whatever sizes
+/// an earlier state buffered — so the BulkAppend estimates must dominate a
+/// compaction whose actual `replaced_bytes` comes from large buffered
+/// values even when the compacting value itself is tiny: the worst-case
+/// arm (no declaration channel) saturates that dimension; the declared
+/// average-case arm models an epoch of same-size values and is an upper
+/// bound exactly there.
+#[test]
+fn bulk_append_estimates_dominate_actual_compaction_with_variable_sizes() {
+    let grove_version = GroveVersion::latest();
+    const BIG: usize = 10 * 1024;
+
+    // Fifteen 10 KiB values, then a 16-byte overflow value that compacts
+    // them: 15 * 10 KiB of replaced bytes for a 16-byte op.
+    let small = vec![9u8; 16];
+    let actual_mixed =
+        bulk_compaction_actual((0..15u8).map(|i| vec![i; BIG]).collect(), small.clone());
+    assert!(
+        actual_mixed.storage_cost.replaced_bytes as usize >= 15 * BIG,
+        "the blob replaces the buffered entry bytes: {actual_mixed:?}"
+    );
+    let worst = bulk_worst_case_estimate(vec![bulk_op(small.clone())], grove_version);
+    assert!(
+        worst.worse_or_eq_than(&actual_mixed),
+        "worst case must dominate a compaction over larger buffered values;\nestimated \
+         {worst:?}\nactual {actual_mixed:?}"
+    );
+    // The undeclared average is an amortized one-entry figure; the declared
+    // one models same-size values — neither claims to bound this shape.
+    let average_undeclared =
+        bulk_average_case_estimate(vec![bulk_op(small.clone())], None, 16, grove_version);
+    assert!(
+        average_undeclared.storage_cost.replaced_bytes < actual_mixed.storage_cost.replaced_bytes
+    );
+
+    // Sixteen same-size values: the declared average-case estimate is an
+    // upper bound of the compaction, and the worst case still dominates.
+    let big = vec![15u8; BIG];
+    let actual_same =
+        bulk_compaction_actual((0..15u8).map(|i| vec![i; BIG]).collect(), big.clone());
+    let average_declared = bulk_average_case_estimate(
+        vec![bulk_op(big.clone())],
+        Some(4),
+        BIG as u32,
+        grove_version,
+    );
+    assert!(
+        average_declared.worse_or_eq_than(&actual_same),
+        "declared average case must dominate a same-size compaction;\nestimated \
+         {average_declared:?}\nactual {actual_same:?}"
+    );
+    let worst = bulk_worst_case_estimate(vec![bulk_op(big)], grove_version);
+    assert!(
+        worst.worse_or_eq_than(&actual_same),
+        "worst case must dominate;\nestimated {worst:?}\nactual {actual_same:?}"
+    );
 }

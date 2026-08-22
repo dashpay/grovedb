@@ -184,10 +184,10 @@ pub(in crate::batch) fn commitment_tree_insert_op_cost(
         + epoch_size as u64 * entry_size;
 
     OperationCost {
-        // 2 reads (CommitmentTree element + frontier) and up to
-        // 3 + FRONTIER_DEPTH writes (note entry, frontier, chunk blob,
-        // MMR internal nodes).
-        seek_count: 5 + FRONTIER_DEPTH,
+        // 3 reads (CommitmentTree element, frontier, and the committed
+        // note slot a rewrite is sized against) and up to 3 + FRONTIER_DEPTH
+        // writes (note entry, frontier, chunk blob, MMR internal nodes).
+        seek_count: 6 + FRONTIER_DEPTH,
         storage_cost: StorageCost {
             added_bytes: u32::try_from(added_bytes_u64).unwrap_or(u32::MAX),
             // The parent-Merk node replacement is charged by the
@@ -197,11 +197,13 @@ pub(in crate::batch) fn commitment_tree_insert_op_cost(
         },
         // Reads: the stored CommitmentTree element (fixed serialized
         // fields + Merk node framing, plus the caller-supplied flags
-        // bound) + the serialized frontier.
+        // bound) + the serialized frontier + the committed note the
+        // rewritten buffer slot holds (epoch 2 on).
         storage_loaded_bytes: (CT_ELEMENT_LOAD_BASE
             + element_flags_load_bound
             + MAX_FRONTIER_SIZE
-            + PER_PUT_OVERHEAD) as u64,
+            + PER_PUT_OVERHEAD) as u64
+            + entry_size,
         // Blake3: the dense buffer's root recompute visits every filled
         // slot (2 hashes each, up to a full buffer), plus on compaction
         // the chunk-leaf hash and MMR merge cascade, plus the bulk
