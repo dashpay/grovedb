@@ -2453,11 +2453,27 @@ impl GroveDb {
             .verify_and_compute_root(element_height, element_total_count)
             .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
 
+        // An empty `BulkAppendTree` element chains through NULL_HASH, not the
+        // domain-tagged empty state root: insert commits the element with a
+        // NULL_HASH child hash (there is no bulk state until the first
+        // append), and `verify_grovedb`'s integrity walk mirrors that. This
+        // is sound because `verify_and_compute_root` above already rejected
+        // any proof carrying data for a zero-count tree. `CommitmentTree` is
+        // different — its insert commits `EMPTY_COMMITMENT_TREE_STATE_ROOT`,
+        // which folds in the *computed* empty bulk root, so the CT wrapper
+        // (our caller) keeps the computed value.
+        let child_hash =
+            if element_total_count == 0 && matches!(element, Element::BulkAppendTree(..)) {
+                NULL_HASH
+            } else {
+                bulk_state_root
+            };
+
         // Root only: the caller is binding the parent element and does not
         // report this layer's entries, so there is no query at this path to
         // extract a position range from.
         if !report_contents {
-            return Ok(bulk_state_root);
+            return Ok(child_hash);
         }
 
         // Get the query range from the path query to extract matching values
@@ -2530,8 +2546,8 @@ impl GroveDb {
             }
         }
 
-        // Return computed state_root as child Merk hash
-        Ok(bulk_state_root)
+        // Return the derived child Merk hash (see the empty-tree note above)
+        Ok(child_hash)
     }
 
     /// Verify a CommitmentTree lower layer proof and add results.
@@ -3387,6 +3403,152 @@ impl GroveDb {
             },
             grove_version,
         )
+    }
+
+    /// Verify a proof produced by [`GroveDb::prove_bulk_position_range`],
+    /// returning `(root_hash, page)` for the position range
+    /// `[start, start + limit)` of the append-only, BulkAppendTree-backed
+    /// element at `path`/`key` (`Element::BulkAppendTree` or
+    /// `Element::CommitmentTree`).
+    ///
+    /// The page's entries are the `(position, value)` pairs, ascending and
+    /// contiguous from `start`, clamped to the element's authenticated
+    /// `total_count` (returned in
+    /// [`RangePage::total_count`](grovedb_bulk_append_tree::RangePage::total_count)).
+    /// Completeness is enforced: a proof missing any requested position below
+    /// `total_count` is rejected. Absence beyond the end falls out of the
+    /// provable count — positions `>= total_count` do not exist — so a page
+    /// shorter than `limit` means the scan caught up with the tip; no
+    /// per-position absence proofs are involved.
+    ///
+    /// Both the entries and `total_count` are extracted from the same proof
+    /// bytes: the entries by verifying the canonical
+    /// [`PathQuery::new_bulk_position_range`] query, and `total_count` by
+    /// subset-verifying the element itself, whose serialized bytes are bound
+    /// to the parent Merk (and through it to `root_hash`).
+    pub fn verify_bulk_position_range_proof(
+        proof: &[u8],
+        path: Vec<Vec<u8>>,
+        key: &[u8],
+        start: u64,
+        limit: u16,
+        grove_version: &GroveVersion,
+    ) -> Result<(CryptoHash, grovedb_bulk_append_tree::RangePage), Error> {
+        check_grovedb_v0!(
+            "verify_bulk_position_range_proof",
+            grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .verify_bulk_position_range_proof
+        );
+        // 1. Verify the range entries against the canonical range query.
+        //    Succinctness cannot be required: range proofs are chunk-aligned
+        //    and intentionally carry whole chunk blobs — a superset of the
+        //    queried positions.
+        let range_query =
+            PathQuery::new_bulk_position_range(path.clone(), key.to_vec(), start, limit);
+        let (root_hash, results) = Self::verify_query_with_options(
+            proof,
+            &range_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: false,
+            },
+            grove_version,
+        )?;
+
+        // 2. Extract the element's authenticated total_count from the same
+        //    proof bytes via a single-key subset query on the element itself.
+        let element_query = PathQuery::new_single_key(path, key.to_vec());
+        let (element_root_hash, element_results) =
+            Self::verify_subset_query(proof, &element_query, grove_version)?;
+        if element_root_hash != root_hash {
+            return Err(Error::InvalidProof(
+                range_query,
+                "range and element sub-proofs derived different root hashes".to_string(),
+            ));
+        }
+        let total_count = match element_results.as_slice() {
+            [(_, element_key, Some(element))] if element_key.as_slice() == key => {
+                match element.underlying() {
+                    Element::BulkAppendTree(total_count, _, _)
+                    | Element::CommitmentTree(total_count, _, _) => *total_count,
+                    _ => {
+                        return Err(Error::InvalidProof(
+                            range_query,
+                            "element at path/key is not a BulkAppendTree or CommitmentTree"
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
+            _ => {
+                return Err(Error::InvalidProof(
+                    range_query,
+                    "proof does not bind the append-only element at path/key".to_string(),
+                ));
+            }
+        };
+
+        // 3. Map the results to (position, value) entries and require the
+        //    page to be exactly [start, min(start + limit, total_count)) —
+        //    ascending, contiguous, complete. The lower-layer verification
+        //    already enforces completeness; this re-check keeps the helper's
+        //    guarantee independent of that layer's internals.
+        let end = start
+            .saturating_add(limit as u64)
+            .min(total_count)
+            .max(start);
+        let mut entries = Vec::with_capacity((end - start) as usize);
+        let mut expected_position = start;
+        for (_, position_key, element) in results {
+            let position_bytes: [u8; 8] = position_key.as_slice().try_into().map_err(|_| {
+                Error::InvalidProof(
+                    range_query.clone(),
+                    "range entry key is not an 8-byte big-endian position".to_string(),
+                )
+            })?;
+            let position = u64::from_be_bytes(position_bytes);
+            let value = match element {
+                Some(Element::Item(value, _)) => value,
+                _ => {
+                    return Err(Error::InvalidProof(
+                        range_query,
+                        format!("range entry at position {} is not an item", position),
+                    ));
+                }
+            };
+            if position != expected_position {
+                return Err(Error::InvalidProof(
+                    range_query,
+                    format!(
+                        "range entries not contiguous: expected position {}, got {}",
+                        expected_position, position
+                    ),
+                ));
+            }
+            expected_position += 1;
+            entries.push((position, value));
+        }
+        if expected_position != end {
+            return Err(Error::InvalidProof(
+                range_query,
+                format!(
+                    "range proof incomplete: expected positions [{}, {}), got up to {}",
+                    start, end, expected_position
+                ),
+            ));
+        }
+
+        Ok((
+            root_hash,
+            grovedb_bulk_append_tree::RangePage {
+                entries,
+                total_count,
+            },
+        ))
     }
 
     /// The point of this query is to get the parent tree information which will

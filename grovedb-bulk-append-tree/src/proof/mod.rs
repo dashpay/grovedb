@@ -176,6 +176,25 @@ fn query_to_ranges(query: &Query, total_count: u64) -> Result<Vec<(u64, u64)>, B
     Ok(merged)
 }
 
+/// Build the canonical [`Query`] selecting the position range
+/// `[start, start + limit)`, with positions encoded as 8-byte big-endian
+/// keys.
+///
+/// This is the query shape used by the paginated-scan pattern: prover and
+/// verifier both derive it from `(start, limit)`, so a client only needs its
+/// cursor and page size. `start + limit` saturates at `u64::MAX`, and
+/// verification clamps the range to the tree's provable total count.
+pub fn position_range_query(start: u64, limit: u16) -> Query {
+    let end = start.saturating_add(limit as u64);
+    Query {
+        items: vec![QueryItem::Range(
+            start.to_be_bytes().to_vec()..end.to_be_bytes().to_vec(),
+        )],
+        left_to_right: true,
+        ..Query::default()
+    }
+}
+
 /// Check whether `pos` falls inside any of the sorted, non-overlapping ranges.
 fn in_ranges(pos: u64, ranges: &[(u64, u64)]) -> bool {
     ranges
@@ -323,6 +342,54 @@ impl BulkAppendTreeProof {
             chunk_proof,
             buffer_proof,
         })
+    }
+
+    /// Generate a proof for the paginated position range
+    /// `[start, start + limit)`.
+    ///
+    /// Convenience wrapper over [`generate`](Self::generate) using the
+    /// canonical [`position_range_query`]. The proof is chunk-aligned: it
+    /// carries each completed chunk blob overlapping the range plus the
+    /// buffer entries in range, so proof size is O(chunks touched).
+    ///
+    /// Ranges past the end of the tree are valid and produce a proof of the
+    /// (empty) result: absence of positions `>= total_count` falls out of
+    /// the authenticated element's total count, not out of per-position
+    /// absence proofs.
+    #[cfg(feature = "storage")]
+    pub fn generate_for_range<'db, S: StorageContext<'db>>(
+        tree: &BulkAppendTree<S>,
+        start: u64,
+        limit: u16,
+    ) -> Result<Self, BulkAppendError> {
+        Self::generate(&position_range_query(start, limit), tree)
+    }
+
+    /// Verify this proof against the paginated position range
+    /// `[start, start + limit)`.
+    ///
+    /// Convenience wrapper over
+    /// [`verify_against_query`](Self::verify_against_query) using the
+    /// canonical [`position_range_query`]. Returns the `(global_position,
+    /// value)` pairs in the range, ascending and contiguous, clamped to
+    /// `total_count`. Completeness is enforced: a proof missing any
+    /// requested position below `total_count` is rejected. Positions
+    /// `>= total_count` are provably absent by `total_count` itself, which
+    /// callers must take from the authenticated BulkAppendTree element.
+    pub fn verify_range(
+        &self,
+        expected_state_root: &[u8; 32],
+        height: u8,
+        total_count: u64,
+        start: u64,
+        limit: u16,
+    ) -> Result<Vec<(u64, Vec<u8>)>, BulkAppendError> {
+        self.verify_against_query(
+            expected_state_root,
+            height,
+            total_count,
+            &position_range_query(start, limit),
+        )
     }
 
     /// Verify this proof against an expected state root.

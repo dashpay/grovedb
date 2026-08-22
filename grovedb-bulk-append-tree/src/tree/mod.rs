@@ -86,6 +86,21 @@ pub struct AppendNoStateRootResult {
     pub storage_accounting_cost: OperationCost,
 }
 
+/// A contiguous page of entries returned by a position-range read.
+///
+/// Produced by [`BulkAppendTree::get_range`], which fetches the entries for
+/// `[start, start + limit)` clamped to the tree's total count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RangePage {
+    /// `(global_position, value)` pairs, ascending and contiguous from the
+    /// requested start position (clamped to `total_count`).
+    pub entries: Vec<(u64, Vec<u8>)>,
+    /// Total number of entries in the tree at read time. Positions
+    /// `>= total_count` do not exist, so a page that ends before
+    /// `start + limit` is complete — there is nothing further to fetch.
+    pub total_count: u64,
+}
+
 /// Compute MMR size from leaf count: `2 * n - popcount(n)`.
 ///
 /// This is a well-known MMR property: the total number of nodes (leaves +

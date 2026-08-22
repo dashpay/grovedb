@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use grovedb_bulk_append_tree::{deserialize_chunk_blob, BulkAppendTree};
+use grovedb_bulk_append_tree::{deserialize_chunk_blob, BulkAppendTree, RangePage};
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
     CostsExt, OperationCost,
@@ -267,6 +267,73 @@ impl GroveDb {
             );
             Ok(entries.get(pos_in_chunk).cloned()).wrap_with_cost(cost)
         }
+    }
+
+    /// Fetch entries for the position range `[start, start + limit)` from a
+    /// BulkAppendTree, clamped to its total count.
+    ///
+    /// This is the paginated-scan read path: clients walking "all entries
+    /// since my cursor" call it with their cursor as `start` and advance by
+    /// `entries.len()`. The read is chunk-aligned — each completed chunk
+    /// overlapping the range is read and deserialized exactly once, so a
+    /// page costs O(chunks touched) blob reads plus one read per buffer
+    /// entry, not O(entries) random reads.
+    ///
+    /// The returned [`RangePage`] also carries the tree's `total_count`:
+    /// positions `>= total_count` do not exist, so a page shorter than
+    /// `limit` means the end of the tree was reached.
+    pub fn bulk_get_range<'b, B, P>(
+        &self,
+        path: P,
+        key: &[u8],
+        start: u64,
+        limit: u16,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<RangePage, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let path: SubtreePath<B> = path.into();
+        let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
+
+        let element = cost_return_on_error!(
+            &mut cost,
+            self.get_raw_caching_optional(path.clone(), key, true, transaction, grove_version)
+        );
+
+        // Look through NonCounted: a wrapped BulkAppendTree is still one.
+        let (total_count, chunk_power) = match element.underlying() {
+            Element::BulkAppendTree(tc, cp, _) => (*tc, *cp),
+            _ => {
+                return Err(Error::InvalidInput("element is not a BulkAppendTree"))
+                    .wrap_with_cost(cost);
+            }
+        };
+
+        let subtree_path_vec = crate::util::subtree_path_with_key(&path, key);
+        let subtree_path_refs: Vec<&[u8]> = subtree_path_vec.iter().map(|v| v.as_slice()).collect();
+        let subtree_path = SubtreePath::from(subtree_path_refs.as_slice());
+
+        let storage_ctx = self
+            .db
+            .get_transactional_storage_context(subtree_path, None, tx.as_ref())
+            .unwrap_add_cost(&mut cost);
+
+        let tree = cost_return_on_error_no_add!(
+            cost,
+            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx).map_err(map_bulk_err)
+        );
+
+        let page = cost_return_on_error!(
+            &mut cost,
+            tree.get_range(start, limit)
+                .map(|r| r.map_err(map_bulk_err))
+        );
+
+        Ok(page).wrap_with_cost(cost)
     }
 
     /// Get a completed chunk blob from a BulkAppendTree.

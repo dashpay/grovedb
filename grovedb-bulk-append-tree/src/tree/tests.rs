@@ -408,3 +408,223 @@ fn query_chunks_empty_indices_returns_empty_proof() {
     assert!(result.mmr_proof_items.is_empty());
     assert_eq!(result.mmr_root, [0u8; 32]);
 }
+
+// ── get_range (paginated position-range reads) ───────────────────────
+
+/// Helper: build a tree with `n` single-byte values `[0], [1], ...`.
+fn build_range_tree(height: u8, n: u8) -> BulkAppendTree<MemStorageContext> {
+    let mut tree = BulkAppendTree::new(height, MemStorageContext::new()).expect("create tree");
+    for i in 0..n {
+        tree.append(&[i], GroveVersion::latest()).expect("append");
+    }
+    tree
+}
+
+/// Helper: assert a page holds exactly positions `start..end` with value
+/// `[pos as u8]` at each.
+fn assert_page(page: &super::RangePage, start: u64, end: u64, total_count: u64) {
+    assert_eq!(page.total_count, total_count);
+    assert_eq!(page.entries.len(), (end - start) as usize);
+    for (i, (pos, value)) in page.entries.iter().enumerate() {
+        assert_eq!(*pos, start + i as u64);
+        assert_eq!(value, &vec![*pos as u8]);
+    }
+}
+
+#[test]
+fn get_range_buffer_only() {
+    // height=3, capacity=7: 5 values all in buffer
+    let tree = build_range_tree(3, 5);
+    assert_eq!(tree.chunk_count(), 0);
+
+    let page = tree.get_range(1, 3).unwrap().expect("get range");
+    assert_page(&page, 1, 4, 5);
+}
+
+#[test]
+fn get_range_single_chunk() {
+    // height=2, epoch_size=4: 8 values = 2 full chunks
+    let tree = build_range_tree(2, 8);
+    assert_eq!(tree.chunk_count(), 2);
+    assert_eq!(tree.buffer_count(), 0);
+
+    // Page entirely inside chunk 0
+    let page = tree.get_range(1, 2).unwrap().expect("get range");
+    assert_page(&page, 1, 3, 8);
+}
+
+#[test]
+fn get_range_across_chunk_boundary() {
+    // height=2, epoch_size=4: 10 values = 2 chunks + 2 buffered
+    let tree = build_range_tree(2, 10);
+    assert_eq!(tree.chunk_count(), 2);
+    assert_eq!(tree.buffer_count(), 2);
+
+    // Page [3, 6) spans the chunk 0 / chunk 1 boundary
+    let page = tree.get_range(3, 3).unwrap().expect("get range");
+    assert_page(&page, 3, 6, 10);
+
+    // Page [6, 10) spans the chunk 1 / buffer boundary
+    let page = tree.get_range(6, 4).unwrap().expect("get range");
+    assert_page(&page, 6, 10, 10);
+}
+
+#[test]
+fn get_range_whole_tree() {
+    let tree = build_range_tree(2, 10);
+    let page = tree.get_range(0, 100).unwrap().expect("get range");
+    assert_page(&page, 0, 10, 10);
+}
+
+#[test]
+fn get_range_empty_limit() {
+    let tree = build_range_tree(2, 10);
+    let page = tree.get_range(3, 0).unwrap().expect("get range");
+    assert_page(&page, 3, 3, 10);
+}
+
+#[test]
+fn get_range_past_end() {
+    let tree = build_range_tree(2, 10);
+
+    // Start exactly at total_count
+    let page = tree.get_range(10, 5).unwrap().expect("get range");
+    assert!(page.entries.is_empty());
+    assert_eq!(page.total_count, 10);
+
+    // Start far past total_count
+    let page = tree.get_range(1000, 5).unwrap().expect("get range");
+    assert!(page.entries.is_empty());
+    assert_eq!(page.total_count, 10);
+
+    // Range that starts inside but extends past the end is clamped
+    let page = tree.get_range(8, 100).unwrap().expect("get range");
+    assert_page(&page, 8, 10, 10);
+}
+
+#[test]
+fn get_range_single_entry() {
+    let tree = build_range_tree(2, 10);
+    let page = tree.get_range(7, 1).unwrap().expect("get range");
+    assert_page(&page, 7, 8, 10);
+}
+
+#[test]
+fn get_range_empty_tree() {
+    let tree = build_range_tree(2, 0);
+    let page = tree.get_range(0, 10).unwrap().expect("get range");
+    assert!(page.entries.is_empty());
+    assert_eq!(page.total_count, 0);
+}
+
+#[test]
+fn get_range_start_saturating_overflow() {
+    let tree = build_range_tree(2, 10);
+    let page = tree
+        .get_range(u64::MAX, u16::MAX)
+        .unwrap()
+        .expect("get range");
+    assert!(page.entries.is_empty());
+    assert_eq!(page.total_count, 10);
+}
+
+#[test]
+fn get_range_paged_scan_covers_everything() {
+    // The scanning pattern: walk the whole tree in pages of 3 and check the
+    // concatenation matches per-position reads.
+    let tree = build_range_tree(2, 11); // 2 chunks + 3 buffered
+    let mut cursor = 0u64;
+    let mut seen = Vec::new();
+    loop {
+        let page = tree.get_range(cursor, 3).unwrap().expect("get range");
+        if page.entries.is_empty() {
+            assert!(cursor >= page.total_count, "empty page only at the end");
+            break;
+        }
+        cursor += page.entries.len() as u64;
+        seen.extend(page.entries);
+    }
+    assert_eq!(seen.len(), 11);
+    for (i, (pos, value)) in seen.iter().enumerate() {
+        assert_eq!(*pos, i as u64);
+        assert_eq!(value, &vec![i as u8]);
+    }
+}
+
+#[test]
+fn get_range_missing_chunk_is_corruption() {
+    // Storage claims 2 completed chunks (via from_state) but holds no data:
+    // the chunk MMR leaf lookup comes back empty and the read must surface
+    // corruption, not silently skip entries.
+    let tree = BulkAppendTree::from_state(4, 1, MemStorageContext::new()).expect("from_state");
+    assert_eq!(tree.chunk_count(), 2);
+    let err = tree
+        .get_range(0, 4)
+        .unwrap()
+        .expect_err("missing chunk blob must error");
+    assert!(matches!(err, crate::BulkAppendError::CorruptedData(_)));
+}
+
+#[test]
+fn get_range_missing_buffer_value_is_corruption() {
+    // Storage claims 1 buffered entry (via from_state) but holds no data:
+    // the buffer read must surface an error, not silently skip entries.
+    let tree = BulkAppendTree::from_state(1, 2, MemStorageContext::new()).expect("from_state");
+    assert_eq!(tree.buffer_count(), 1);
+    tree.get_range(0, 1)
+        .unwrap()
+        .expect_err("missing buffer value must error");
+}
+
+#[test]
+fn get_range_storage_read_failure_is_mmr_error() {
+    // A backing store that fails reads must surface as an MMR error from the
+    // chunk lookup, not a panic or a silent empty page.
+    let ctx = MemStorageContext::new();
+    ctx.fail_get.set(true);
+    let tree = BulkAppendTree::from_state(4, 1, ctx).expect("from_state");
+    assert_eq!(tree.chunk_count(), 2);
+    let err = tree
+        .get_range(0, 4)
+        .unwrap()
+        .expect_err("failing storage must error");
+    assert!(matches!(err, crate::BulkAppendError::MmrError(_)));
+}
+
+#[test]
+fn get_range_wrong_chunk_entry_count_is_corruption() {
+    // A completed chunk must hold exactly epoch_size entries: a short blob
+    // would silently omit positions and an oversized one would overlap the
+    // next chunk. Tamper the MMR overlay so chunk 0's blob deserializes to
+    // the wrong entry count and verify the read rejects it.
+    for bad_count in [1usize, 3] {
+        // epoch_size = 2: append 2 values to complete one genuine chunk.
+        let mut tree = BulkAppendTree::new(1u8, MemStorageContext::new()).expect("create tree");
+        tree.append(&[0], GroveVersion::latest()).expect("append");
+        tree.append(&[1], GroveVersion::latest()).expect("append");
+        assert_eq!(tree.chunk_count(), 1);
+
+        let bad_blob =
+            crate::serialize_chunk_blob(&(0..bad_count).map(|i| vec![i as u8]).collect::<Vec<_>>())
+                .expect("serialize bad blob");
+        tree.mmr_overlay = vec![(
+            0,
+            vec![grovedb_merkle_mountain_range::MmrNode::leaf(bad_blob)],
+        )];
+
+        let err = tree
+            .get_range(0, 2)
+            .unwrap()
+            .expect_err("wrong chunk entry count must error");
+        match err {
+            crate::BulkAppendError::CorruptedData(msg) => {
+                assert!(
+                    msg.contains(&format!("holds {} entries, expected 2", bad_count)),
+                    "unexpected message: {}",
+                    msg
+                );
+            }
+            other => panic!("expected CorruptedData, got {:?}", other),
+        }
+    }
+}
