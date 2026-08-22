@@ -2488,9 +2488,12 @@ impl GroveDb {
                     if let Some(grovedb_bulk_append_tree::BufferRecordMismatch {
                         recorded,
                         walked,
-                    }) =
-                        self.dense_buffer_record_issue(&element, new_path_ref.clone(), transaction)
-                    {
+                    }) = self.dense_buffer_record_issue(
+                        &element,
+                        new_path_ref.clone(),
+                        transaction,
+                        grove_version,
+                    ) {
                         let mut issue_path = new_path.to_vec();
                         issue_path.push(b"__dense_hash_records__".to_vec());
                         issues.insert(issue_path, (root_hash, walked, recorded));
@@ -2944,6 +2947,7 @@ impl GroveDb {
         element: &Element,
         subtree_path: SubtreePath<'b, B>,
         transaction: &Transaction,
+        grove_version: &GroveVersion,
     ) -> Option<grovedb_bulk_append_tree::BufferRecordMismatch> {
         match element.underlying() {
             Element::CommitmentTree(total_count, chunk_power, _) => {
@@ -2958,10 +2962,11 @@ impl GroveDb {
                     *total_count,
                     *chunk_power,
                     storage_ctx,
+                    grove_version,
                 )
                 .value
                 .ok()?
-                .buffer_record_mismatch()
+                .buffer_record_mismatch(grove_version)
                 .ok()
                 .flatten()
             }
@@ -2979,7 +2984,7 @@ impl GroveDb {
                     storage_ctx,
                 )
                 .ok()?
-                .buffer_record_mismatch()
+                .buffer_record_mismatch(grove_version)
                 .ok()
                 .flatten()
             }
@@ -3019,7 +3024,7 @@ impl GroveDb {
                 )
                 .unwrap()
                 .ok()?
-                .buffer_record_mismatch()
+                .buffer_record_mismatch(grove_version)
                 .ok()
                 .flatten()
             }
@@ -3057,6 +3062,7 @@ impl GroveDb {
                     *total_count,
                     *chunk_power,
                     storage_ctx,
+                    grove_version,
                 )
                 .value
                 {
@@ -3200,6 +3206,7 @@ impl GroveDb {
                     *total_count,
                     *chunk_power,
                     storage_ctx,
+                    grove_version,
                 )
                 .value
                 .map_err(|e| {

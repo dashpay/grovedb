@@ -102,37 +102,58 @@
 //! - `bulk_append_tree_versions.cost.append_storage_accounting: 1` and
 //!   `commitment_tree_versions.cost.frontier_save_storage_accounting: 1` —
 //!   the append-only family (`BulkAppendTree`, `CommitmentTree`,
-//!   `PrivateDocumentStore`) reports write churn as replacement instead of
-//!   as new storage (issue #822). Each entry's permanent bytes — its share
-//!   of the eventual chunk blob — are charged as `added_bytes` once, at its
-//!   own append; a dense-buffer slot that already holds a committed value
-//!   (epoch 2 onward) is reported as `replaced_bytes` (growth added, shrink
-//!   not credited); the compaction blob is reported as a replacement of the
-//!   entry bytes it supersedes, so only its framing and the MMR internal
-//!   nodes are added; and the in-place frontier rewrite is a replacement of
-//!   the bytes loaded at open. V1..V3 keep issuing every data put with no
-//!   cost information, which bills key + value as new storage every time —
-//!   ≈ 2× the bytes that persist, with the whole ≈ 630 KB blob landing on
-//!   one append per epoch at `chunk_power` 11. Stored bytes, roots and
-//!   proofs are identical under both; gated because the figures are fees.
+//!   `PrivateDocumentStore`) charges every append the FIXED per-append model
+//!   (issue #822): the entry's long-term footprint as `added_bytes` — its
+//!   share of the eventual chunk blob (plus the variable format's four-byte
+//!   per-entry prefix unless the owner declared a fixed entry size, as the
+//!   commitment tree and the private document store do) plus the epoch's
+//!   share of the blob framing and MMR nodes — and churn as `replaced_bytes`
+//!   — its buffer slot and path record (epoch 1 included, nothing read to
+//!   size them) and its own bytes again as its part of the blob rewrite —
+//!   plus the buffer's fixed root-maintenance model and the compaction's
+//!   hashes amortized as a per-chunk bound over the epoch (one blake3 per
+//!   append at `chunk_power` ≥ 7). The
+//!   compacting append writes the blob, the MMR nodes and the persisted MMR
+//!   root (new key `r`) prepaid and is charged the same as any other
+//!   append; a reopened tree reads the persisted root instead of bagging
+//!   the peaks' blobs. V1..V3 keep issuing every data put with no cost
+//!   information, which bills key + value as new storage every time — ≈ 2×
+//!   the bytes that persist, with the whole ≈ 630 KB blob landing on one
+//!   append per epoch at `chunk_power` 11. Stored chunks, roots and proofs
+//!   are identical under both; gated because the figures are fees.
+//!
+//! - `commitment_tree_versions.cost.frontier_cost_model: 1` — the Sinsemilla
+//!   frontier is charged a fixed, depth-derived model on every append: 33
+//!   Sinsemilla hashes (the 32-deep root walk plus the average ommer merge)
+//!   and a 554-byte frontier (the average over the position space) loaded
+//!   at open and replaced at save — instead of `32 + trailing_ones(position)`
+//!   hashes and the position's actual serialized size. With the gates above,
+//!   a `CommitmentTreeInsert` costs the same at every position; the only
+//!   residual is the commit-time seek count of a compacting append's MMR
+//!   puts (bounded, once per epoch). V1..V3 keep the actual figures; gated
+//!   because the figures are fees.
 //!
 //! - `dense_tree_versions.root_maintenance: 1` — the dense fixed-sized Merkle
 //!   tree (the buffer of `BulkAppendTree`, `CommitmentTree` and
 //!   `PrivateDocumentStore`, and the `DenseAppendOnlyFixedSizeTree` element)
-//!   keeps a per-position hash record (`generation || value_hash ||
-//!   node_hash`, key `b'h' || position`) and updates only the inserted
-//!   position's ancestor path: O(height) reads, hashes and record writes per
-//!   insert, and a one-record read for the root. V1..V3 keep no intermediate
-//!   hashes and re-derive the root from every filled position on every insert
-//!   — O(count) per insert, O(2^chunk_power) at the end of each epoch, which
-//!   is the dominant per-append cost of the shielded pool at `chunk_power`
-//!   11 (≈ 2k reads and ≈ 4k blake3 calls on the last insert of every epoch).
-//!   Stored values, positions, proofs and roots are identical under both; a
-//!   buffer filled under V1..V3 is caught up from its values the first time a
-//!   V4 insert needs a record it lacks (at most one V1..V3-sized walk per
-//!   tree), so the V4 estimators keep the full-walk hash bound and add the
-//!   records' storage. Gated because the work — and so the fee — moves, and
-//!   because V4 writes keys V1..V3 never read.
+//!   writes one fixed-size path record per insert (key `b'h' || position`:
+//!   the position's value hash and the node hash of every position on its
+//!   ancestor path) and derives an insert's ancestor hashes from earlier
+//!   inserts' records: O(height) reads and hashes, ONE record write, and a
+//!   one-record read for the root. Every insert is charged a fixed,
+//!   height-derived model (`v1_insert_model_cost`: the reads and hashes
+//!   averaged over a full buffer, rounded up) plus its two
+//!   position-independent puts, so the cost of an append no longer depends
+//!   on the buffer position. V1..V3 keep no intermediate hashes and
+//!   re-derive the root from every filled position on every insert —
+//!   O(count) per insert, O(2^chunk_power) at the end of each epoch, which
+//!   was the dominant per-append cost of the shielded pool at `chunk_power`
+//!   11 (≈ 2k reads and ≈ 4k blake3 calls on the last insert of every
+//!   epoch). Stored values, positions, proofs and roots are identical under
+//!   both; a buffer filled under V1..V3 is caught up from its values by the
+//!   V4 inserts that need it (read-only, billed the same model, over with
+//!   the epoch the switch happened in). Gated because the work — and so the
+//!   fee — moves, and because V4 writes keys V1..V3 never read.
 //!
 //! Note that `GroveVersion::latest()` resolves to this version, so anything
 //! defaulting to "latest" — tests, benchmarks, tools — exercises every gate
@@ -460,12 +481,15 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             append_storage_accounting: 1,
         },
     },
-    // Frontier save: the in-place rewrite of `__ct_data__` is reported as a
-    // replacement of the bytes loaded at open, with only growth added
-    // (issue #822). Frontier bytes and anchors are unchanged.
+    // Frontier: the in-place rewrite of `__ct_data__` is reported as a
+    // replacement, not new storage (issue #822), and — with the cost model —
+    // every append is charged the fixed, depth-derived figure (33 Sinsemilla
+    // hashes, a 554-byte frontier loaded and replaced) whatever its
+    // position. Frontier bytes and anchors are unchanged.
     commitment_tree_versions: CommitmentTreeVersions {
         cost: CommitmentTreeCostVersions {
             frontier_save_storage_accounting: 1,
+            frontier_cost_model: 1,
         },
     },
     // Dense-buffer root maintenance: per-position hash records, so an insert

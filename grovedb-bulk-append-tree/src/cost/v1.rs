@@ -1,41 +1,47 @@
-//! Corrected compaction hash count.
+//! Fixed-model accounting. Used from GROVE_V4.
 //!
-//! Adds the peak-bagging merges [`v0`](super::v0) omitted. Used from GROVE_V4.
+//! The compaction's hashes are amortized into every append
+//! (`amortized_compaction_hashes`), so a compacting append reports nothing
+//! extra here; and each append's storage writes are charged as its long-term
+//! footprint plus churn (issue #822).
 
 #[cfg(feature = "storage")]
 use grovedb_merkle_mountain_range::LeafValueStorageCost;
-use grovedb_merkle_mountain_range::{hash_count_for_push, hash_count_for_root_bagging};
 
 #[cfg(feature = "storage")]
 use super::{AppendStorageAccounting, SlotRewriteAccounting};
-#[cfg(feature = "storage")]
-use crate::chunk::chunk_blob_entry_bytes;
 
-pub(super) fn compaction_hash_count(leaf_count: u64, mmr_size_after_push: u64) -> u32 {
-    // Derived from the MMR shape rather than read back out of the accumulated
-    // `OperationCost`, so this stays correct regardless of whether
-    // `MMR::get_root`'s own charge is enabled for the caller's version — the
-    // two gates are independent.
-    hash_count_for_push(leaf_count).saturating_add(hash_count_for_root_bagging(mmr_size_after_push))
+/// A compacting append reports no hashes of its own: the chunk-leaf hash, the
+/// MMR merges and the root bagging are amortized over the epoch as one blake3
+/// per append (`amortized_compaction_hashes`), charged on every append.
+pub(super) fn compaction_hash_count(_leaf_count: u64, _mmr_size_after_push: u64) -> u32 {
+    0
 }
 
-/// Churn-as-replacement storage accounting (issue #822). Used from GROVE_V4.
+/// Long-term-bytes storage accounting (issue #822). Used from GROVE_V4.
 ///
 /// - The entry's chunk-blob share (its own bytes) is charged as added
-///   storage at its append — these are the bytes that persist.
-/// - The buffer slot write is sized against the value the slot already holds
-///   in committed storage, which is read first (and the read billed): a
-///   rewrite (epoch 2 onward) is replaced, growth is added, shrink is not
-///   credited; a slot written for the first time stays fully added and is
-///   not read.
-/// - The compaction blob is reported as a replacement of the entry bytes it
-///   supersedes (all prepaid), leaving only its framing — and the MMR
-///   internal nodes — as added storage.
+///   storage at its append — these are the bytes that persist — together
+///   with its share of the blob framing and MMR nodes, amortized over the
+///   epoch.
+/// - The dense buffer is churn: every slot write and every path record write
+///   is reported as an in-place replacement of its own size — epoch 1
+///   included, nothing added, no key charged, nothing read to size it. The
+///   buffer is a fixed-size per-tree scratch area rewritten every epoch, not
+///   any entry's long-term storage.
+/// - The compaction blob and the MMR nodes are prepaid: their puts carry
+///   zero-byte cost information. Each append is charged its own bytes once
+///   more as `replaced` — its part of the blob rewrite — so the epoch's blob
+///   write is spread over the epoch's appends.
+/// - Every append — buffered or compacting — is charged the buffer's fixed
+///   root-maintenance model for its height plus one amortized compaction
+///   blake3, whatever its position.
 #[cfg(feature = "storage")]
 pub(super) fn append_storage_accounting() -> AppendStorageAccounting {
     AppendStorageAccounting {
-        slot_rewrite: SlotRewriteAccounting::AgainstCommitted,
-        chunk_leaf: LeafValueStorageCost::PartlyPrepaid(chunk_blob_entry_bytes),
+        slot_rewrite: SlotRewriteAccounting::Churn,
+        chunk_leaf: LeafValueStorageCost::Prepaid,
         prepay_chunk_share: true,
+        fixed_model: true,
     }
 }

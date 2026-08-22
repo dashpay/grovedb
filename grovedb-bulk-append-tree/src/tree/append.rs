@@ -1,10 +1,11 @@
 //! Append and compaction logic for BulkAppendTree.
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
-use grovedb_dense_fixed_sized_merkle_tree::{position_key, SlotWriteAccounting};
+use grovedb_dense_fixed_sized_merkle_tree::{v1_insert_model_cost, SlotWriteAccounting};
 use grovedb_merkle_mountain_range::{mmr_size_to_leaf_count, MmrKeySize, MmrNode, MmrStore, MMR};
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
+use integer_encoding::VarInt;
 
 use super::{
     capacity_for_height, hash::compute_state_root, AppendNoStateRootResult, AppendResult,
@@ -14,10 +15,19 @@ use crate::{
     chunk::serialize_chunk_blob,
     cost::{
         append_storage_accounting, compaction_hash_count, AppendStorageAccounting,
-        SlotRewriteAccounting,
+        SlotRewriteAccounting, VARIABLE_ENTRY_FRAMING_BYTES,
     },
     BulkAppendError,
 };
+
+/// Storage key of the persisted chunk-MMR root (32 bytes), written by
+/// [`BulkAppendTree::commit_mmr`] under the fixed-model accounting so a
+/// reopened tree resolves its MMR root with one small read instead of
+/// bagging the peaks — which are leaf nodes carrying whole chunk blobs, so
+/// bagging reads every peak's blob back. A 1-byte key: the 2-byte slots,
+/// 3-byte records, 4-byte MMR nodes and the owners' named keys cannot
+/// collide with it.
+pub const MMR_ROOT_KEY: &[u8] = b"r";
 
 impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// Create a new empty tree.
@@ -33,8 +43,48 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             mmr_overlay: Vec::new(),
             // Empty tree → empty MMR → zero root.
             last_mmr_root: Some([0u8; 32]),
-            committed_total_count: 0,
+            fixed_entry_size: None,
         })
+    }
+
+    /// Declare that every entry of this tree is exactly `entry_size` bytes:
+    /// an append of any other length is rejected with `InvalidInput` before
+    /// anything is written, every chunk blob therefore takes the fixed
+    /// format, and the fixed cost model (GROVE_V4) charges no per-entry
+    /// blob framing. Owners that enforce one entry size anyway
+    /// (`CommitmentTree`, `PrivateDocumentStore`) declare it so their
+    /// appends are charged exactly their long-term bytes; a tree without the
+    /// declaration is charged the variable format's four-byte prefix per
+    /// entry as a bound.
+    pub fn with_fixed_entry_size(mut self, entry_size: u32) -> Self {
+        self.fixed_entry_size = Some(entry_size);
+        self
+    }
+
+    /// The per-entry chunk-blob framing this tree's entries are charged:
+    /// none under a declared fixed entry size, the variable format's prefix
+    /// otherwise.
+    fn entry_framing_bytes(&self) -> u32 {
+        if self.fixed_entry_size.is_some() {
+            0
+        } else {
+            VARIABLE_ENTRY_FRAMING_BYTES
+        }
+    }
+
+    /// Reject a value that breaks the declared fixed entry size — before any
+    /// write, so a rejected append leaves the tree untouched.
+    fn check_entry_size(&self, value: &[u8]) -> Result<(), BulkAppendError> {
+        if let Some(expected) = self.fixed_entry_size
+            && value.len() != expected as usize
+        {
+            return Err(BulkAppendError::InvalidInput(format!(
+                "entry has {} bytes, the tree's fixed entry size is {}",
+                value.len(),
+                expected
+            )));
+        }
+        Ok(())
     }
 
     /// Restore from persisted state.
@@ -67,58 +117,20 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             // Lazy: the restored MMR may not be readable until an append occurs,
             // so don't compute the root here. The first append fills the cache.
             last_mmr_root: None,
-            committed_total_count: total_count,
+            fixed_entry_size: None,
         })
     }
 
-    /// Whether buffer slot `position` holds a value in committed storage:
-    /// every slot once a chunk has ever been completed (the buffer was full
-    /// when it compacted), otherwise the slots below the committed buffer
-    /// count. Judged against the state at open — see `committed_total_count`.
-    pub(crate) fn slot_is_committed(&self, position: u16) -> bool {
-        let epoch_size = self.epoch_size();
-        self.committed_total_count / epoch_size > 0
-            || (position as u64) < self.committed_total_count % epoch_size
-    }
-
-    /// Decide how the next buffer-slot write is reported, reading the slot's
-    /// committed value when the accounting sizes rewrites against it.
-    ///
-    /// The read — one seek, the committed value's bytes — is billed into
-    /// `cost`. It goes to the underlying storage (committed state plus the
-    /// surrounding transaction), never to the session's write-through cache:
-    /// a `StorageBatch` keeps one put per key, so the put that is eventually
-    /// charged must describe the transition from the committed value. A
-    /// slot written for the first time, and a full buffer (the append
-    /// compacts and writes no slot), are not read. A committed slot that
-    /// storage does not hold — corruption, not a state this code produces —
-    /// is charged as new, the safe direction.
-    fn slot_write_accounting(
-        &self,
-        accounting: &AppendStorageAccounting,
-        cost: &mut OperationCost,
-    ) -> Result<SlotWriteAccounting, BulkAppendError> {
-        if accounting.slot_rewrite == SlotRewriteAccounting::AsNew {
-            return Ok(SlotWriteAccounting::AsNew);
-        }
-        let position = self.dense_tree.count();
-        if position >= self.dense_tree.capacity() || !self.slot_is_committed(position) {
-            return Ok(SlotWriteAccounting::AsNew);
-        }
-        match self
-            .dense_tree
-            .storage
-            .get(position_key(position))
-            .unwrap_add_cost(cost)
-        {
-            Ok(Some(previous)) => Ok(SlotWriteAccounting::Overwrite {
-                previous_value_len: previous.len() as u32,
-            }),
-            Ok(None) => Ok(SlotWriteAccounting::AsNew),
-            Err(e) => Err(BulkAppendError::StorageError(format!(
-                "committed slot {} read before rewrite failed: {}",
-                position, e
-            ))),
+    /// Decide how the next buffer-slot write — and the path record written
+    /// beside it — is reported to the storage cost layer, per the
+    /// accounting version: as new storage (the shipped accounting) or as
+    /// churn (GROVE_V4: an in-place replacement of its own size, nothing
+    /// added, nothing read to size it — the buffer is a rolling scratch area
+    /// and the entry's long-term bytes are its prepaid chunk-blob share).
+    fn slot_write_accounting(&self, accounting: &AppendStorageAccounting) -> SlotWriteAccounting {
+        match accounting.slot_rewrite {
+            SlotRewriteAccounting::AsNew => SlotWriteAccounting::AsNew,
+            SlotRewriteAccounting::Churn => SlotWriteAccounting::Churn,
         }
     }
 
@@ -168,27 +180,63 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     ) -> Result<AppendNoStateRootResult, BulkAppendError> {
         let mut hash_count: u32 = 0;
         let global_position = self.total_count;
+        self.check_entry_size(value)?;
         let accounting = append_storage_accounting(grove_version)?;
         let mut storage_accounting_cost = OperationCost::default();
-        let slot_write = self.slot_write_accounting(&accounting, &mut storage_accounting_cost)?;
+        let slot_write = self.slot_write_accounting(&accounting);
+        self.ensure_mmr_root_resolved(&accounting, grove_version)?;
 
         // 1. Try to insert into the dense tree buffer.
         //
-        // The dense tree's own cost is dropped here except for its hash
-        // count: this path returns a plain `Result` and reports its work
-        // through `hash_count` (the figure CommitmentTree bills) and
-        // `storage_accounting_cost`. The reads the root maintenance performs
-        // — the full-buffer walk under GROVE_V1..V3, the ancestor-path record
-        // reads from GROVE_V4 — are not billed by it, as they never were; the
-        // record writes from GROVE_V4 are charged at commit like every other
-        // put. Callers that bill everything use `append_deferred_roots`.
+        // This path returns a plain `Result` and reports its work through
+        // `hash_count` (the figure CommitmentTree bills) and
+        // `storage_accounting_cost`. Under the fixed model (GROVE_V4) every
+        // append — buffered or compacting — is charged the buffer's
+        // root-maintenance model for its height plus one amortized
+        // compaction blake3, and its reads go through
+        // `storage_accounting_cost`; under the shipped accounting the dense
+        // walk's hashes and the compaction's hashes are reported where they
+        // happen and the reads are dropped. The slot and record writes are
+        // charged at commit like every other put. Callers that bill
+        // everything use `append_deferred_roots`.
         let insert_ctx =
             self.dense_tree
                 .try_insert_with_accounting(value, slot_write, grove_version);
-        let dense_hash_calls = insert_ctx.cost.hash_node_calls;
+        let dense_cost = insert_ctx.cost;
         let try_result = insert_ctx.value.map_err(|e| {
             BulkAppendError::StorageError(format!("dense tree insert failed: {}", e))
         })?;
+        if accounting.fixed_model {
+            let model = v1_insert_model_cost(self.dense_tree.height());
+            hash_count += model.hash_node_calls
+                + crate::cost::amortized_compaction_hashes(self.dense_tree.height());
+            storage_accounting_cost.seek_count = storage_accounting_cost
+                .seek_count
+                .saturating_add(model.seek_count);
+            storage_accounting_cost.storage_loaded_bytes = storage_accounting_cost
+                .storage_loaded_bytes
+                .saturating_add(model.storage_loaded_bytes);
+            // The entry's own bytes as its part of the blob rewrite the
+            // epoch's compaction will perform (the blob put itself is
+            // prepaid).
+            storage_accounting_cost.storage_cost.replaced_bytes = storage_accounting_cost
+                .storage_cost
+                .replaced_bytes
+                .saturating_add(u32::try_from(value.len()).unwrap_or(u32::MAX));
+            if try_result.is_none() {
+                // A compacting append writes no slot and no record; it is
+                // charged their churn all the same, so its storage figure is
+                // the fixed model's.
+                storage_accounting_cost.storage_cost.replaced_bytes = storage_accounting_cost
+                    .storage_cost
+                    .replaced_bytes
+                    .saturating_add(self.buffer_churn_replaced_bytes(value.len()));
+            }
+        } else {
+            // The hashes the insert reports: two per filled position (the
+            // whole buffer re-walked) — the shipped `count * 2`.
+            hash_count += dense_cost.hash_node_calls;
+        }
 
         let compacted = match try_result {
             Some((_dense_root, _position)) => {
@@ -199,12 +247,6 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                 // the caller will recover the state root via
                 // `compute_current_state_root` at the end of the batch, which
                 // populates the cache then.)
-                //
-                // The hashes the insert performed: two per filled position
-                // (the whole buffer re-walked) under root-maintenance version
-                // 0 — the shipped `count * 2` — and two for the leaf plus one
-                // per ancestor level under version 1.
-                hash_count += dense_hash_calls;
                 false
             }
             None => {
@@ -212,6 +254,8 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                 // Must run before incrementing total_count so that
                 // self.mmr_size() reflects the pre-compaction state.
                 let (compact_hashes, mmr_root) = self.compact_with_value(value, grove_version)?;
+                // Nothing under the fixed model (amortized); the shipped
+                // figure otherwise.
                 hash_count += compact_hashes;
                 // MMR mutated by the compaction — refresh the cached root.
                 self.last_mmr_root = Some(mmr_root);
@@ -219,12 +263,14 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             }
         };
 
+        let epoch_size = self.epoch_size();
         self.total_count += 1;
 
         storage_accounting_cost.storage_cost.added_bytes = storage_accounting_cost
             .storage_cost
             .added_bytes
-            .saturating_add(accounting.prepaid_chunk_bytes(value.len()));
+            .saturating_add(accounting.prepaid_chunk_bytes(value.len(), self.entry_framing_bytes()))
+            .saturating_add(accounting.amortized_compaction_added_bytes(epoch_size));
 
         Ok(AppendNoStateRootResult {
             global_position,
@@ -261,27 +307,27 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     ) -> CostResult<AppendNoStateRootResult, BulkAppendError> {
         let mut cost = OperationCost::default();
         let global_position = self.total_count;
+        if let Err(e) = self.check_entry_size(value) {
+            return Err(e).wrap_with_cost(cost);
+        }
         let accounting = match append_storage_accounting(grove_version) {
             Ok(a) => a,
             Err(e) => return Err(e).wrap_with_cost(cost),
         };
-        // The committed-slot read is billed here, in the returned cost, and
-        // mirrored (with the prepaid share) in the result for information.
         let mut storage_accounting_cost = OperationCost::default();
-        let slot_write = self.slot_write_accounting(&accounting, &mut storage_accounting_cost);
-        cost += storage_accounting_cost.clone();
-        let slot_write = match slot_write {
-            Ok(s) => s,
-            Err(e) => return Err(e).wrap_with_cost(cost),
-        };
+        let slot_write = self.slot_write_accounting(&accounting);
+        if let Err(e) = self.ensure_mmr_root_resolved(&accounting, grove_version) {
+            return Err(e).wrap_with_cost(cost);
+        }
 
-        let try_result = match self
-            .dense_tree
-            .try_insert_no_root_with_accounting(value, slot_write, grove_version)
-            .unwrap_add_cost(&mut cost)
-        {
+        let insert_ctx =
+            self.dense_tree
+                .try_insert_no_root_with_accounting(value, slot_write, grove_version);
+        let dense_cost = insert_ctx.cost;
+        let try_result = match insert_ctx.value {
             Ok(r) => r,
             Err(e) => {
+                cost += dense_cost;
                 return Err(BulkAppendError::StorageError(format!(
                     "dense tree insert failed: {}",
                     e
@@ -289,47 +335,68 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                 .wrap_with_cost(cost);
             }
         };
+        if accounting.fixed_model {
+            // The fixed model, whatever the position: the buffer's
+            // root-maintenance model plus one amortized compaction blake3,
+            // the entry's own bytes as its part of the blob rewrite, and —
+            // on a compacting append, which writes no slot and no record —
+            // their churn all the same.
+            let mut model = v1_insert_model_cost(self.dense_tree.height());
+            model.hash_node_calls +=
+                crate::cost::amortized_compaction_hashes(self.dense_tree.height());
+            model.storage_cost.replaced_bytes = u32::try_from(value.len()).unwrap_or(u32::MAX);
+            if try_result.is_none() {
+                model.storage_cost.replaced_bytes = model
+                    .storage_cost
+                    .replaced_bytes
+                    .saturating_add(self.buffer_churn_replaced_bytes(value.len()));
+            }
+            cost += model.clone();
+            storage_accounting_cost += model;
+        } else {
+            cost += dense_cost;
+        }
 
         let compacted = match try_result {
-            // Inserted into the buffer; no root walk, so no hashes yet.
             Some(_position) => false,
             None => {
                 // Buffer full — compact existing entries plus this value.
                 // Must run before incrementing total_count so self.mmr_size()
-                // reflects the pre-compaction state.
-                // The model counter this returns is deliberately unused — see
-                // the `hash_count` derivation below.
-                let (_model_hash_count, mmr_root) = match self
-                    .compact_with_value_with_cost(value, grove_version)
-                    .unwrap_add_cost(&mut cost)
-                {
+                // reflects the pre-compaction state. Under the fixed model
+                // the compaction's own work (the read-back, the chunk-leaf
+                // hash, the MMR merges and bagging) is amortized into every
+                // append and billed nothing here; under the shipped
+                // accounting it is billed as performed.
+                let compaction = self.compact_with_value_with_cost(value, grove_version);
+                let (_model_hash_count, mmr_root) = match compaction.value {
                     Ok(r) => r,
-                    Err(e) => return Err(e).wrap_with_cost(cost),
+                    Err(e) => {
+                        cost += compaction.cost;
+                        return Err(e).wrap_with_cost(cost);
+                    }
                 };
+                if !accounting.fixed_model {
+                    cost += compaction.cost;
+                }
                 self.last_mmr_root = Some(mmr_root);
                 true
             }
         };
 
+        let epoch_size = self.epoch_size();
         self.total_count += 1;
 
-        // Derive the reported counter from what was actually billed rather
-        // than from `hash_count_for_push`. That helper covers the eager leaf
-        // hash and the merges `push` performs, but NOT the peak-bagging
-        // merges `get_root` performs during a compaction, so the model
-        // counter falls below the true figure as soon as the MMR has more
-        // than one peak. Everything accumulated in `cost` here is this
-        // append's own hashing, so the two cannot disagree.
-        //
-        // Scoped to this deferred path on purpose: `compact_with_value` and
-        // `append_no_state_root` keep returning the model counter, because
-        // the live CommitmentTree adds that value straight into its own
-        // `hash_node_calls` and changing it would move a released cost.
+        // The reported counter is what was billed, so the two cannot
+        // disagree (the shipped `hash_count_for_push` model omitted the
+        // peak-bagging merges `get_root` performs).
         let hash_count = cost.hash_node_calls;
 
-        // The entry's chunk-blob share is billed here, in the returned cost;
+        // The entry's chunk-blob share (and, under the fixed model, its share
+        // of the compaction overhead) is billed here, in the returned cost;
         // the mirror field is informational for this path (see its doc).
-        let prepaid_chunk_bytes = accounting.prepaid_chunk_bytes(value.len());
+        let prepaid_chunk_bytes = accounting
+            .prepaid_chunk_bytes(value.len(), self.entry_framing_bytes())
+            .saturating_add(accounting.amortized_compaction_added_bytes(epoch_size));
         cost.storage_cost.added_bytes = cost
             .storage_cost
             .added_bytes
@@ -348,16 +415,28 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         .wrap_with_cost(cost)
     }
 
+    /// The paid bytes of the slot and the path record a buffered append of a
+    /// `value_len`-byte value writes as churn — what a compacting append,
+    /// which writes neither, is charged all the same under the fixed model.
+    fn buffer_churn_replaced_bytes(&self, value_len: usize) -> u32 {
+        let paid = |len: u32| len.saturating_add(len.required_space() as u32);
+        let value_len = u32::try_from(value_len).unwrap_or(u32::MAX);
+        let record_len =
+            grovedb_dense_fixed_sized_merkle_tree::path_record_len(self.dense_tree.height()) as u32;
+        paid(value_len).saturating_add(paid(record_len))
+    }
+
     /// Compute the current state root without modifying the tree.
     ///
     /// Uses the cached MMR root when available, so this is O(1) on the
-    /// post-first-append fast path (no overlay clone). Falls back to a one-shot
-    /// `get_mmr_root` only when the cache is empty (e.g. immediately after a
-    /// lazy `from_state` with no appends yet).
+    /// post-first-append fast path (no overlay clone). Otherwise resolves the
+    /// MMR root through [`get_mmr_root_with_cost`](Self::get_mmr_root_with_cost)
+    /// — the persisted root under the fixed-model accounting, the peak
+    /// bagging before it.
     ///
     /// `grove_version` selects how the dense buffer's root is derived (the
     /// value is the same under every version): walked from every filled
-    /// position under GROVE_V1..V3, read from the position-0 hash record
+    /// position under GROVE_V1..V3, read from the last insert's path record
     /// from GROVE_V4.
     pub fn compute_current_state_root(
         &self,
@@ -365,7 +444,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     ) -> Result<[u8; 32], BulkAppendError> {
         let mmr_root = match self.last_mmr_root {
             Some(r) => r,
-            None => self.get_mmr_root()?,
+            None => self.get_mmr_root_with_cost(grove_version).unwrap()?,
         };
         let dense_root = self
             .dense_tree
@@ -383,10 +462,11 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// Identical to [`compute_current_state_root`](Self::compute_current_state_root)
     /// on a consistent tree; see `DenseFixedSizedMerkleTree::root_hash_from_values`.
     pub fn compute_current_state_root_from_values(&self) -> Result<[u8; 32], BulkAppendError> {
-        let mmr_root = match self.last_mmr_root {
-            Some(r) => r,
-            None => self.get_mmr_root()?,
-        };
+        // Bag the peaks: the persisted MMR root is derived state an audit
+        // must not trust either.
+        let mmr_root = self
+            .bag_mmr_root_with_cost(GroveVersion::first())
+            .unwrap()?;
         let dense_root = self
             .dense_tree
             .root_hash_from_values()
@@ -397,25 +477,19 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         Ok(compute_state_root(&mmr_root, &dense_root))
     }
 
-    /// Audit the buffer's hash records (GROVE_V4 root maintenance) against
-    /// its values: `Some` when a current position-0 record
-    /// exists and disagrees with the root walked from the values, `None`
-    /// when they agree or no current record exists (a buffer filled under
-    /// GROVE_V1..V3 is caught up by its next append and is not an error).
-    pub fn buffer_record_mismatch(&self) -> Result<Option<BufferRecordMismatch>, BulkAppendError> {
-        let recorded = self.dense_tree.recorded_root().unwrap().map_err(|e| {
-            BulkAppendError::StorageError(format!("dense tree recorded root failed: {}", e))
-        })?;
-        let Some(recorded) = recorded else {
-            return Ok(None);
-        };
-        let walked = self
-            .dense_tree
-            .root_hash_from_values()
-            .unwrap()
-            .map_err(|e| {
-                BulkAppendError::StorageError(format!("dense tree root_hash failed: {}", e))
-            })?;
+    /// Audit the tree's derived state — the buffer's path records and the
+    /// persisted MMR root (GROVE_V4) — against its values: `Some` when the
+    /// state root a normal read under `grove_version` returns disagrees with
+    /// the state root walked from the values and bagged from the MMR peaks,
+    /// `None` when they agree (a buffer filled under GROVE_V1..V3 with no
+    /// records, or a tree without a persisted MMR root, reads through the
+    /// same walk and agrees).
+    pub fn buffer_record_mismatch(
+        &self,
+        grove_version: &GroveVersion,
+    ) -> Result<Option<BufferRecordMismatch>, BulkAppendError> {
+        let recorded = self.compute_current_state_root(grove_version)?;
+        let walked = self.compute_current_state_root_from_values()?;
         Ok((recorded != walked).then_some(BufferRecordMismatch { recorded, walked }))
     }
 
@@ -432,13 +506,23 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         grove_version: &GroveVersion,
     ) -> CostResult<[u8; 32], BulkAppendError> {
         let mut cost = OperationCost::default();
+        let accounting = match append_storage_accounting(grove_version) {
+            Ok(a) => a,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
+        // Under the fixed model the two root reads — the persisted MMR root
+        // and the last insert's path record — are charged as the model
+        // (one seek each, their sizes) whether or not this particular state
+        // needs them (an in-session cache, an empty MMR, an empty buffer
+        // right after a compaction); otherwise as performed.
+        let mut work = OperationCost::default();
         let mmr_root = match self.last_mmr_root {
             Some(r) => r,
             // Lazy path: a reopened tree has no cached root, so this read is
-            // real I/O and must be billed.
+            // real I/O.
             None => match self
                 .get_mmr_root_with_cost(grove_version)
-                .unwrap_add_cost(&mut cost)
+                .unwrap_add_cost(&mut work)
             {
                 Ok(r) => r,
                 Err(e) => return Err(e).wrap_with_cost(cost),
@@ -447,7 +531,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         let dense_root = match self
             .dense_tree
             .root_hash(grove_version)
-            .unwrap_add_cost(&mut cost)
+            .unwrap_add_cost(&mut work)
         {
             Ok(r) => r,
             Err(e) => {
@@ -458,12 +542,18 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                 .wrap_with_cost(cost);
             }
         };
-        // `root_hash` already charged its own work — the walk over every
-        // filled position (a value hash and a node hash each) under
-        // root-maintenance version 0, the position-0 record read under
-        // version 1 — and that reached us through `unwrap_add_cost` above.
-        // Only the final blake3 combining the MMR and dense roots is still
-        // unbilled.
+        if accounting.fixed_model {
+            cost.seek_count += 2;
+            cost.storage_loaded_bytes += 32
+                + grovedb_dense_fixed_sized_merkle_tree::path_record_len(self.dense_tree.height())
+                    as u64;
+        } else {
+            // `root_hash` already charged its own work — the walk over every
+            // filled position (a value hash and a node hash each) — and the
+            // lazy MMR root read its bagging; both reached us through `work`.
+            cost += work;
+        }
+        // The final blake3 combining the MMR and dense roots.
         cost.hash_node_calls = cost.hash_node_calls.saturating_add(1);
         Ok(compute_state_root(&mmr_root, &dense_root)).wrap_with_cost(cost)
     }
@@ -599,10 +689,11 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     }
 
     /// Get the MMR root hash, or `[0; 32]` if no chunks exist.
+    #[cfg(test)]
     pub(crate) fn get_mmr_root(&self) -> Result<[u8; 32], BulkAppendError> {
         // Cost discarded here, so the version is unobservable; pinned to the
-        // shipped accounting to match the released callers.
-        self.get_mmr_root_with_cost(GroveVersion::first()).unwrap()
+        // shipped accounting (bagging) to match the released callers.
+        self.bag_mmr_root_with_cost(GroveVersion::first()).unwrap()
     }
 
     /// Cost-propagating variant of [`get_mmr_root`](Self::get_mmr_root).
@@ -612,6 +703,125 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// exactly the case proof binding and the integrity walk hit. Discarding
     /// the read cost there undercharges their storage I/O.
     pub(crate) fn get_mmr_root_with_cost(
+        &self,
+        grove_version: &GroveVersion,
+    ) -> CostResult<[u8; 32], BulkAppendError> {
+        let mut cost = OperationCost::default();
+        if self.mmr_size() == 0 {
+            return Ok([0u8; 32]).wrap_with_cost(cost);
+        }
+        // Under the fixed-model accounting the root written at the last
+        // `commit_mmr` is read back (one small read) instead of bagging the
+        // peaks, whose leaf nodes carry whole chunk blobs. Absent (a tree
+        // whose chunks were all committed before) → bag.
+        let accounting = match append_storage_accounting(grove_version) {
+            Ok(a) => a,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
+        if accounting.fixed_model {
+            match self
+                .dense_tree
+                .storage
+                .get(MMR_ROOT_KEY)
+                .unwrap_add_cost(&mut cost)
+            {
+                Ok(Some(bytes)) if bytes.len() == 32 => {
+                    let mut root = [0u8; 32];
+                    root.copy_from_slice(&bytes);
+                    return Ok(root).wrap_with_cost(cost);
+                }
+                // A present value of any other length is not a state this
+                // tree ever writes: corruption at the key, not a legacy tree.
+                Ok(Some(bytes)) => {
+                    return Err(BulkAppendError::CorruptedData(format!(
+                        "persisted MMR root has {} bytes, expected 32",
+                        bytes.len()
+                    )))
+                    .wrap_with_cost(cost);
+                }
+                // Absent: a tree whose last compaction predates the fixed
+                // model. Bag the peaks; the append path backfills the key.
+                Ok(None) => {}
+                Err(e) => {
+                    return Err(BulkAppendError::StorageError(format!(
+                        "MMR root read failed: {}",
+                        e
+                    )))
+                    .wrap_with_cost(cost);
+                }
+            }
+        }
+        self.bag_mmr_root_with_cost(grove_version).add_cost(cost)
+    }
+
+    /// Persist the chunk-MMR root under [`MMR_ROOT_KEY`] — prepaid like the
+    /// MMR nodes (zero-byte cost information), so the append that issues it
+    /// keeps the fixed model's storage figure.
+    fn persist_mmr_root(&self, root: &[u8; 32]) -> Result<(), BulkAppendError> {
+        let cost_info = Some(
+            grovedb_costs::storage_cost::key_value_cost::KeyValueStorageCost {
+                key_storage_cost: Default::default(),
+                value_storage_cost: Default::default(),
+                new_node: false,
+                needs_value_verification: false,
+            },
+        );
+        self.dense_tree
+            .storage
+            .put(MMR_ROOT_KEY, root, None, cost_info)
+            .unwrap()
+            .map_err(|e| BulkAppendError::StorageError(format!("MMR root put failed: {}", e)))
+    }
+
+    /// Under the fixed-model accounting, make sure a reopened tree's MMR root
+    /// is known before an append: read the persisted root (one of the two
+    /// root reads the model charges on every state-root derivation), or —
+    /// for a tree whose last compaction predates the fixed model and so has
+    /// none — bag the peaks once and BACKFILL the key, prepaid, so the
+    /// bagging (which loads a leaf peak's whole chunk blob when the chunk
+    /// count is odd) happens at most once per tree and the reads that follow
+    /// are the modelled ones. The one-time catch-up is not billed, like the
+    /// dense buffer's read-only catch-up; it is bounded by the peak count and
+    /// over for good once the key exists. Cached for the session either way.
+    fn ensure_mmr_root_resolved(
+        &mut self,
+        accounting: &AppendStorageAccounting,
+        grove_version: &GroveVersion,
+    ) -> Result<(), BulkAppendError> {
+        if !accounting.fixed_model || self.last_mmr_root.is_some() || self.mmr_size() == 0 {
+            return Ok(());
+        }
+        let persisted = self
+            .dense_tree
+            .storage
+            .get(MMR_ROOT_KEY)
+            .unwrap()
+            .map_err(|e| BulkAppendError::StorageError(format!("MMR root read failed: {}", e)))?;
+        let root = match persisted {
+            Some(bytes) if bytes.len() == 32 => {
+                let mut root = [0u8; 32];
+                root.copy_from_slice(&bytes);
+                root
+            }
+            Some(bytes) => {
+                return Err(BulkAppendError::CorruptedData(format!(
+                    "persisted MMR root has {} bytes, expected 32",
+                    bytes.len()
+                )))
+            }
+            None => {
+                let root = self.bag_mmr_root_with_cost(grove_version).unwrap()?;
+                self.persist_mmr_root(&root)?;
+                root
+            }
+        };
+        self.last_mmr_root = Some(root);
+        Ok(())
+    }
+
+    /// The MMR root bagged from the peaks — the independent derivation, which
+    /// never consults the persisted root. `[0; 32]` for an empty MMR.
+    pub(crate) fn bag_mmr_root_with_cost(
         &self,
         grove_version: &GroveVersion,
     ) -> CostResult<[u8; 32], BulkAppendError> {
@@ -665,6 +875,16 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                 "MMR commit failed: {}",
                 e
             )));
+        }
+        // Under the fixed-model accounting, persist the MMR root the
+        // compaction derived (32 bytes) so the next open reads it instead of
+        // bagging the peaks' blobs. Prepaid like the MMR nodes: zero-byte
+        // cost information, so the compacting append's storage figure stays
+        // the fixed model's.
+        if accounting.fixed_model
+            && let Some(root) = self.last_mmr_root
+        {
+            self.persist_mmr_root(&root)?;
         }
         Ok(())
     }

@@ -16,8 +16,12 @@
 //!   slot rewritten in epoch 2+, and the chunk blob that supersedes the
 //!   buffer, are both billed as permanent growth. v1 charges each entry's
 //!   permanent bytes once — its chunk-blob share, at its own append — and
-//!   reports the slot rewrite and the compaction blob as replacements of
-//!   the bytes they supersede.
+//!   reports every buffer write (slot and path record, which are churn: the
+//!   buffer is rewritten each epoch and is not the entry's long-term
+//!   storage) as replacements, never as growth; it charges every append the
+//!   fixed model — the buffer's root-maintenance model plus the compaction
+//!   amortized over the epoch — and bills the compacting append nothing
+//!   extra (the blob and MMR nodes it writes are prepaid).
 
 mod v0;
 mod v1;
@@ -28,16 +32,18 @@ use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
 use crate::BulkAppendError;
 
-/// How the dense-buffer slot write is sized for the storage cost layer.
+/// How the dense-buffer slot write — and the path record written beside it
+/// — is sized for the storage cost layer.
 #[cfg(feature = "storage")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SlotRewriteAccounting {
     /// Every slot write is new storage (no cost information on the put).
     AsNew,
-    /// A slot that holds a committed value is read first (the read is
-    /// billed) and the write is reported as its replacement; a slot written
-    /// for the first time stays new storage.
-    AgainstCommitted,
+    /// The buffer is churn: every slot and record write is reported as an
+    /// in-place replacement of its own size — nothing added, no key charged,
+    /// nothing read to size it. The entry's long-term bytes are its chunk-blob
+    /// share, prepaid at its append.
+    Churn,
 }
 
 /// How an append's data-storage writes are reported to the storage cost
@@ -45,23 +51,98 @@ pub(crate) enum SlotRewriteAccounting {
 #[cfg(feature = "storage")]
 #[derive(Clone, Copy)]
 pub(crate) struct AppendStorageAccounting {
-    /// How the dense-buffer slot write is sized.
+    /// How the dense-buffer slot (and record) write is sized.
     pub slot_rewrite: SlotRewriteAccounting,
     /// How the chunk-blob leaf is reported when the MMR overlay is flushed.
     pub chunk_leaf: LeafValueStorageCost,
     /// Whether the entry's chunk-blob share is charged as added storage at
     /// its own append (so the later blob write can be a replacement).
     prepay_chunk_share: bool,
+    /// Whether an append is charged the FIXED per-append model instead of
+    /// the work of its particular position: the dense buffer's
+    /// root-maintenance model (`v1_insert_model_cost`, reads and hashes) on
+    /// every append — buffered or compacting — plus the compaction amortized
+    /// over the epoch (one blake3 per append, the entry's own bytes as the
+    /// blob rewrite it will be part of, and a share of the blob framing and
+    /// MMR nodes as added storage), with the compacting append's own work
+    /// (the read-back, the chunk-leaf hash, the MMR merges) billed nothing
+    /// extra. The shipped accounting bills the dense walk's hashes and the
+    /// compaction's hashes where they happen and drops the reads.
+    pub fixed_model: bool,
+}
+
+/// The most blake3 calls one compaction can perform: the chunk-leaf hash,
+/// the MMR push's merges (one per trailing one bit of the chunk index) and
+/// the root bagging (one per peak beyond the first). MMR positions are
+/// 32-bit keys, so the chunk MMR never exceeds 2^31 leaves: at most 31
+/// merges and 31 bagging folds — bounded by 32 each here.
+pub const MAX_COMPACTION_HASHES_PER_CHUNK: u32 = 1 + 32 + 32;
+
+/// The blake3 calls a compaction performs, amortized over the epoch it
+/// serves and charged on every append under the fixed model: the per-chunk
+/// bound spread over `2^chunk_power` appends, rounded up — one per append
+/// from `chunk_power` 7 (so at the shielded pool's 11), and 33 at the
+/// smallest `chunk_power`. Charging the bound rather than the average keeps
+/// every prefix of the tree's life prepaid: a chunk's charge
+/// (`2^chunk_power` × this) is never below its actual work, so no run of
+/// small or late epochs can fall behind.
+pub fn amortized_compaction_hashes(chunk_power: u8) -> u32 {
+    MAX_COMPACTION_HASHES_PER_CHUNK.div_ceil(1u32 << chunk_power.min(16) as u32)
+}
+
+/// The largest per-append compaction hash share the type permits — the
+/// smallest epoch, `chunk_power` 1.
+pub fn max_amortized_compaction_hashes() -> u32 {
+    amortized_compaction_hashes(1)
+}
+
+/// The per-entry framing a variable-format chunk blob carries: a four-byte
+/// length prefix before every entry (`serialize_variable`). A tree whose
+/// entries are all one size serializes the fixed format (no per-entry
+/// framing); the bulk-append tree cannot know which format an epoch will
+/// take until it compacts, so an owner that does not declare a fixed entry
+/// size (`BulkAppendTree::with_fixed_entry_size`) is charged this bound on
+/// every entry.
+pub const VARIABLE_ENTRY_FRAMING_BYTES: u32 = 4;
+
+/// Bytes a compaction adds beyond the epoch's entry bytes, amortized over
+/// the epoch: the chunk blob's framing (its MMR leaf key with the 32-byte
+/// path prefix, the leaf envelope, the blob header and length varints —
+/// ≈ 88 bytes) and the MMR internal node the push creates on average (one
+/// per chunk: key, 33-byte node, length — 71 bytes).
+pub const COMPACTION_OVERHEAD_BYTES_PER_EPOCH: u32 = 88 + 71;
+
+/// The compaction overhead an append is charged as added storage under the
+/// fixed model: the epoch's share of [`COMPACTION_OVERHEAD_BYTES_PER_EPOCH`],
+/// rounded up.
+pub fn amortized_compaction_added_bytes(epoch_size: u64) -> u32 {
+    (COMPACTION_OVERHEAD_BYTES_PER_EPOCH as u64).div_ceil(epoch_size.max(1)) as u32
 }
 
 #[cfg(feature = "storage")]
 impl AppendStorageAccounting {
     /// The entry's chunk-blob share to charge as added storage at its append:
-    /// its own bytes, or nothing when the blob is charged in full at
-    /// compaction instead.
-    pub fn prepaid_chunk_bytes(&self, value_len: usize) -> u32 {
+    /// its own bytes plus the per-entry blob framing the owner has not ruled
+    /// out (`entry_framing`: [`VARIABLE_ENTRY_FRAMING_BYTES`] unless the tree
+    /// declares a fixed entry size), or nothing when the blob is charged in
+    /// full at compaction instead.
+    pub fn prepaid_chunk_bytes(&self, value_len: usize, entry_framing: u32) -> u32 {
         if self.prepay_chunk_share {
-            u32::try_from(value_len).unwrap_or(u32::MAX)
+            u32::try_from(value_len)
+                .unwrap_or(u32::MAX)
+                .saturating_add(entry_framing)
+        } else {
+            0
+        }
+    }
+
+    /// The compaction overhead — blob framing and MMR node — an append is
+    /// charged as added storage under the fixed model: the epoch's share,
+    /// rounded up (one byte at `chunk_power` 11). Nothing when the
+    /// compaction is charged where it happens.
+    pub fn amortized_compaction_added_bytes(&self, epoch_size: u64) -> u32 {
+        if self.fixed_model {
+            amortized_compaction_added_bytes(epoch_size)
         } else {
             0
         }
@@ -91,12 +172,14 @@ pub(crate) fn append_storage_accounting(
     }
 }
 
-/// Hashes to report for a compacting append.
+/// Hashes to report for a compacting append, on top of what every append
+/// reports.
 ///
 /// `leaf_count` is the MMR leaf count BEFORE the push (what
 /// `hash_count_for_push` expects); `mmr_size_after_push` is the size the MMR
 /// reached, which determines how many peaks the compaction's `get_root` had
-/// to fold.
+/// to fold. Version 1 reports nothing here: the compaction is amortized into
+/// every append ([`amortized_compaction_hashes`]).
 pub(crate) fn compaction_hash_count(
     leaf_count: u64,
     mmr_size_after_push: u64,

@@ -23,19 +23,26 @@ pub struct DenseTreeVersions {
     /// insert of an epoch costs O(k), and a full `2^h - 1` buffer O(2^h) on
     /// its last insert. Reading the root costs the same walk.
     ///
-    /// Version 1 (GROVE_V4+) persists a per-position hash record
-    /// (`generation || value_hash || node_hash`, keyed `b'h' || position`)
-    /// and updates only the inserted position and its ancestors: an insert
-    /// reads at most two records per level (the parent's own record, for its
-    /// value hash, and the off-path sibling's), writes one record per level,
-    /// and hashes once per level plus twice for the leaf — O(h) for a tree of
-    /// height `h` instead of O(count). The root is the record at position 0
-    /// (one read). Records tagged with an older generation (an earlier epoch
-    /// over the same slot keys) or absent altogether (a buffer filled under
-    /// version 0) are not trusted: the sibling subtree is recomputed from its
-    /// values, exactly as version 0 would, and its record is written so the
-    /// next insert is O(h) again — a one-time catch-up that costs no more than
-    /// the version-0 walk.
+    /// Version 1 (GROVE_V4+) writes ONE path record per insert, under the
+    /// inserting position's key (`b'h' || position`): the position's value
+    /// hash and the node hash of every position on its ancestor path
+    /// (`generation || present mask || value_hash || one 32-byte entry per
+    /// level`, a fixed size for the tree's height). An insert derives its
+    /// ancestors' hashes from earlier inserts' records — the record of the
+    /// last insert into a subtree holds that subtree's current hash, located
+    /// arithmetically from `count` — reading at most two records per level
+    /// and hashing once per level plus twice for the leaf; the root is the
+    /// last insert's record. Every insert is CHARGED a fixed figure for the
+    /// tree's height (the blake3 calls and record reads averaged over a full
+    /// buffer, rounded up — `v1_insert_model_cost`), not the work of its
+    /// particular position, plus its two puts (slot, record) of
+    /// position-independent size: the cost of appending to a tree of a given
+    /// height is the same whatever the position. Records tagged with an older
+    /// generation (an earlier epoch over the same slot keys) or absent
+    /// altogether (a buffer filled under version 0) are not trusted: the
+    /// subtree is recomputed from its values, exactly as version 0 would —
+    /// read-only, billed the same model, and over once the epoch that
+    /// switched versions ends.
     ///
     /// Stored values, positions, proofs and root hashes are identical under
     /// both versions; what differs is the records written alongside the

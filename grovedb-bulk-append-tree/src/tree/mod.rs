@@ -10,6 +10,8 @@
 
 #[cfg(feature = "storage")]
 mod append;
+#[cfg(feature = "storage")]
+pub use append::MMR_ROOT_KEY;
 pub mod hash;
 
 #[cfg(feature = "storage")]
@@ -66,15 +68,19 @@ pub struct AppendNoStateRootResult {
     /// `Result`-returning appends cannot otherwise surface:
     ///
     /// - `storage_cost.added_bytes`: the entry's share of the chunk blob it
-    ///   will eventually be compacted into — its own bytes — charged at this
-    ///   append so that the blob written at compaction can be reported as a
-    ///   replacement of bytes already paid for (issue #822);
-    /// - `seek_count` / `storage_loaded_bytes`: the read of the committed
-    ///   value a buffer slot already holds (epoch 2 onward), performed to
-    ///   size the rewrite.
+    ///   will eventually be compacted into — its own bytes — plus its share
+    ///   of the blob framing and MMR nodes, charged at this append so that
+    ///   the compaction writes nothing that is not already paid for (issue
+    ///   #822);
+    /// - `storage_cost.replaced_bytes`: the entry's own bytes again, as its
+    ///   part of the blob rewrite the epoch's compaction performs;
+    /// - `seek_count` / `storage_loaded_bytes`: the dense buffer's
+    ///   root-maintenance reads — from GROVE_V4 the fixed model for the
+    ///   buffer's height (`v1_insert_model_cost`), whatever the position,
+    ///   compacting appends included.
     ///
     /// Zero under the shipped accounting (GROVE_V1..V3), where the blob is
-    /// charged in full at compaction and no slot is read.
+    /// charged in full at compaction and the buffer's reads are dropped.
     ///
     /// Like `hash_count`, this follows the "caller bills" convention of the
     /// `Result`-returning appends ([`append`](BulkAppendTree::append),
@@ -162,15 +168,13 @@ pub struct BulkAppendTree<S> {
     ///
     /// [`from_state`]: BulkAppendTree::from_state
     pub(crate) last_mmr_root: Option<[u8; 32]>,
-    /// `total_count` as of the open ([`new`] → 0, [`from_state`] → the
-    /// persisted count): what committed storage holds, which this session's
-    /// appends have not changed. Used to tell a buffer slot that holds a
-    /// committed value — whose rewrite is read and reported as a replacement
-    /// — from one written for the first time.
-    ///
-    /// [`new`]: BulkAppendTree::new
-    /// [`from_state`]: BulkAppendTree::from_state
-    pub(crate) committed_total_count: u64,
+    /// The one byte length every entry must have, when the owner declares it
+    /// (`with_fixed_entry_size`): appends of any other length are rejected
+    /// before anything is written, so every chunk blob takes the fixed
+    /// format and the fixed cost model charges no per-entry framing. `None`
+    /// — the default — admits any length and charges the variable format's
+    /// four-byte prefix on every entry (`VARIABLE_ENTRY_FRAMING_BYTES`).
+    pub(crate) fixed_entry_size: Option<u32>,
 }
 
 impl<S> BulkAppendTree<S> {

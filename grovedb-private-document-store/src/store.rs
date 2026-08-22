@@ -112,8 +112,10 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
             ))
             .wrap_with_cost(cost);
         }
+        // The store enforces one entry size; told the size, the bulk tree
+        // charges no per-entry blob framing under the fixed cost model.
         let bulk_tree = match BulkAppendTree::from_state(total_count, chunk_power, storage) {
-            Ok(t) => t,
+            Ok(t) => t.with_fixed_entry_size(entry_size),
             Err(e) => {
                 return Err(PrivateDocumentStoreError::InvalidData(format!(
                     "bulk tree: {}",
@@ -519,10 +521,11 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
     /// `BulkAppendTree::buffer_record_mismatch`.
     pub fn buffer_record_mismatch(
         &self,
+        grove_version: &GroveVersion,
     ) -> Result<Option<grovedb_bulk_append_tree::BufferRecordMismatch>, PrivateDocumentStoreError>
     {
         self.bulk_tree
-            .buffer_record_mismatch()
+            .buffer_record_mismatch(grove_version)
             .map_err(|e| PrivateDocumentStoreError::InvalidData(format!("record audit: {}", e)))
     }
 
@@ -779,92 +782,89 @@ mod atomicity_tests {
             .unwrap()
             .expect("new");
 
-        // First append (position 0, the root of the buffer): the leaf is
-        // hashed twice (value hash + node hash) and has no ancestors; the
-        // bulk state root reads the position-0 record (no hash); then the
-        // bulk state root (1) and the composite pds_state root (1).
-        let ctx = store.append(&[1u8; 8], GroveVersion::latest());
-        ctx.value.expect("append");
-        assert_eq!(
-            ctx.cost.hash_node_calls, 4,
-            "2 dense + 1 bulk root + 1 composite, got {:?}",
-            ctx.cost
-        );
-
-        // Second append (position 1, depth 1): leaf (2) + its one ancestor
-        // (1) = 3 dense hashes, plus the two roots. Under GROVE_V1..V3 this
-        // would re-walk both filled positions (4).
-        let ctx = store.append(&[2u8; 8], GroveVersion::latest());
-        ctx.value.expect("append");
-        assert_eq!(
-            ctx.cost.hash_node_calls, 5,
-            "3 dense + 1 bulk root + 1 composite, got {:?}",
-            ctx.cost
-        );
-
-        // Third (position 2, depth 1 again): 3 dense + 2 roots — the same
-        // as the second append, not 2 more: the work follows the depth of
-        // the inserted position, not how full the buffer is.
-        let ctx = store.append(&[3u8; 8], GroveVersion::latest());
-        ctx.value.expect("append");
-        assert_eq!(
-            ctx.cost.hash_node_calls, 5,
-            "3 dense + 1 bulk root + 1 composite, got {:?}",
-            ctx.cost
-        );
+        // Under GROVE_V4 every append is charged the dense buffer's fixed
+        // model for its height — at `chunk_power = 4`: two leaf hashes plus
+        // the rounded-up average ancestor depth (3) = 5 — plus the amortized
+        // compaction bound (5 at chunk_power 4), the bulk state root (1;
+        // read from the record, no hash) and the composite pds_state root
+        // (1), whatever the position.
+        let model = grovedb_bulk_append_tree::V1InsertModel::for_height(4);
+        assert_eq!(model.hash_node_calls, 5);
+        let amortized = grovedb_bulk_append_tree::amortized_compaction_hashes(4);
+        for entry in [[1u8; 8], [2u8; 8], [3u8; 8]] {
+            let ctx = store.append(&entry, GroveVersion::latest());
+            ctx.value.expect("append");
+            assert_eq!(
+                ctx.cost.hash_node_calls,
+                model.hash_node_calls + amortized + 2,
+                "model dense + amortized compaction + 1 bulk root + 1 composite, got {:?}",
+                ctx.cost
+            );
+        }
     }
 
     /// Compaction is the expensive branch of an append — it reads every
     /// buffered entry back out of storage, hashes the chunk blob, and pushes
-    /// it through the MMR — and all of that used to be discarded, so a
-    /// compacting append billed no more I/O than a buffered one.
+    /// it through the MMR — but under GROVE_V4 that work is amortized into
+    /// every append's fixed model: the compacting append is charged exactly
+    /// what a buffered one is (the model, one amortized compaction blake3,
+    /// the two roots), plus nothing for its read-back; only the bulk state
+    /// root's record read differs (the buffer is empty right after).
     #[test]
-    fn compacting_append_bills_its_reads_and_hashes() {
+    fn compacting_append_is_charged_the_fixed_model() {
         // chunk_power 2: the buffer holds 3, so the 4th append compacts.
         let mut store = PrivateDocumentStore::new(8, 2, MemStorageContext::new())
             .unwrap()
             .expect("new");
+        let model = grovedb_bulk_append_tree::V1InsertModel::for_height(2);
+        let mut buffered_costs = Vec::new();
         for i in 0..3u8 {
-            store
-                .append(&[i; 8], GroveVersion::latest())
-                .unwrap()
-                .expect("append");
+            let ctx = store.append(&[i; 8], GroveVersion::latest());
+            ctx.value.expect("append");
+            buffered_costs.push(ctx.cost);
         }
-
         // The 4th append does not fit the buffer, so it compacts.
         let compacting = store.append(&[3u8; 8], GroveVersion::latest());
         compacting.value.expect("compacting append");
         let compacting_cost = compacting.cost;
 
-        assert!(
-            compacting_cost.seek_count > 0 && compacting_cost.storage_loaded_bytes > 0,
-            "compaction reads every buffered entry; those reads must be billed, got {:?}",
-            compacting_cost
-        );
-        // 3 buffered entries read back, at the committed 8 bytes each.
-        assert!(
-            compacting_cost.storage_loaded_bytes >= 24,
-            "expected at least the 3 x 8 bytes compaction reads back, got {:?}",
-            compacting_cost
-        );
-        // 1 chunk-blob leaf hash + 1 bulk state root + 1 composite root. The
-        // MMR push collapses no peaks at size 0 and the root takes the
-        // single-element path, so neither adds a hash here.
+        // A buffered append's slot and record churn is carried by its puts
+        // (billed at commit, not in this crate-level cost); the compacting
+        // append writes neither and is charged the same churn here instead
+        // — so at the commit level the two are identical.
+        let churn = {
+            let paid = |len: u32| len + 1;
+            paid(8) + paid(grovedb_bulk_append_tree::path_record_len(2) as u32)
+        };
+        for (i, buffered) in buffered_costs.iter().enumerate() {
+            assert_eq!(
+                buffered.hash_node_calls, compacting_cost.hash_node_calls,
+                "append {i}"
+            );
+            assert_eq!(
+                buffered.storage_cost.added_bytes, compacting_cost.storage_cost.added_bytes,
+                "append {i}"
+            );
+            assert_eq!(
+                buffered.storage_cost.replaced_bytes + churn,
+                compacting_cost.storage_cost.replaced_bytes,
+                "append {i}: the compacting append carries the churn its missing puts would"
+            );
+        }
         assert_eq!(
-            compacting_cost.hash_node_calls, 3,
-            "1 leaf + 1 bulk root + 1 composite, got {:?}",
+            compacting_cost.hash_node_calls,
+            model.hash_node_calls + grovedb_bulk_append_tree::amortized_compaction_hashes(2) + 2,
+            "model + amortized compaction + bulk root + composite, got {:?}",
             compacting_cost
         );
-
-        // A plain buffered append afterwards reads nothing back.
-        let plain = store.append(&[4u8; 8], GroveVersion::latest());
-        plain.value.expect("buffered append");
-        assert!(
-            plain.cost.storage_loaded_bytes < compacting_cost.storage_loaded_bytes,
-            "a buffered append must be cheaper in loaded bytes than a \
-             compacting one (buffered {:?} vs compacting {:?})",
-            plain.cost,
-            compacting_cost
+        // The read-back and the MMR work are not billed: the reads are the
+        // model's plus the two fixed root reads of the state root (the
+        // persisted MMR root and the last insert's record), whether or not
+        // this particular state needs them.
+        assert_eq!(compacting_cost.seek_count, model.record_reads + 2);
+        assert_eq!(
+            compacting_cost.storage_loaded_bytes,
+            model.record_reads as u64 * model.record_len as u64 + 32 + model.record_len as u64
         );
     }
 
@@ -1229,7 +1229,7 @@ mod error_path_tests {
         // state every real read after a restart is in.
         let storage = PrivateDocumentStore::into_storage_for_test(store);
         storage.fail_reads();
-        let mut store = PrivateDocumentStore::from_state(6, 8, 2, storage)
+        let store = PrivateDocumentStore::from_state(6, 8, 2, storage)
             .unwrap()
             .expect("reopen");
 

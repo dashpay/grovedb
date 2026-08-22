@@ -121,10 +121,10 @@ Count trees add overhead for maintaining element counts:
 
 The append-only family writes four kinds of data rows: dense-buffer slots
 (one per position, keys reused every epoch), from GROVE_V4 the buffer's
-hash records (one per position, `b'h' || position`, rewritten along the
-inserted position's ancestor path), the chunk blob an epoch is compacted
-into (plus the MMR internal nodes), and — for the commitment tree — the
-frontier, one value rewritten on every append. How those writes are
+path records (one per append, under the inserting position's key
+`b'h' || position`, never rewritten within an epoch), the chunk blob an
+epoch is compacted into (plus the MMR internal nodes), and — for the
+commitment tree — the frontier, one value rewritten on every append. How those writes are
 reported to the fee layer is version-gated
 (`bulk_append_tree_versions.cost.append_storage_accounting`,
 `commitment_tree_versions.cost.frontier_save_storage_accounting`; the
@@ -132,45 +132,48 @@ records exist only under `dense_tree_versions.root_maintenance = 1`):
 
 | write | GROVE_V1..V3 (v0) | GROVE_V4 (v1, issue #822) |
 |---|---|---|
-| buffer slot, first epoch | key + value `added` | key + value `added` |
-| buffer slot, epoch ≥ 2 | key + value `added` | value `replaced` (growth `added`, shrink not credited); key not charged |
-| entry's chunk-blob share | — (blob charged at compaction) | entry bytes `added` at the entry's own append |
-| compaction blob | key + whole blob `added` | entry bytes `replaced`, framing + key `added` |
-| MMR internal nodes | `added` | `added` |
-| frontier rewrite | key + value `added` every save | value `replaced`, growth `added`; first save fully `added` |
-| buffer hash record, key absent in committed storage | — (no records) | key + 72-byte record `added` |
-| buffer hash record, key present | — (no records) | 72 bytes `replaced`; key not charged |
+| buffer slot, any epoch | key + value `added` | value `replaced` (its own paid size); nothing added, key not charged, nothing read |
+| entry's chunk-blob share | — (blob charged at compaction) | entry bytes `added` at the entry's own append (plus the variable format's 4-byte per-entry prefix unless the owner declared a fixed entry size — the commitment tree and the private document store do), plus the epoch's share of the blob framing and MMR nodes (`amortized_compaction_added_bytes`, 1 byte at `chunk_power` 11) |
+| entry's part of the blob rewrite | — | entry bytes `replaced` at the entry's own append |
+| compaction blob, MMR internal nodes, persisted MMR root (`r`) | key + whole blob `added`; nodes `added`; no persisted root | prepaid: zero-byte cost information |
+| frontier rewrite | key + value `added` every save | 556 bytes `replaced` every save — the model's 554-byte frontier plus its two-byte length varint (`frontier_cost_model`), first save included |
+| buffer path record (one per append, `42 + 32·chunk_power` bytes) | — (no records) | `replaced` (its own paid size); nothing added, key not charged |
 
 Under v0 every note is billed roughly twice over its life (slot + blob) and
 the whole blob (≈ 630 KB at `chunk_power` 11) lands on one append per
-epoch. Under v1 each entry's permanent bytes are charged once, at its own
-append, and the rest of the churn is replacement; the sum of `added_bytes`
-over an epoch matches the database growth. `removed_bytes` stays
+epoch. Under v1 each entry's `added_bytes` are its long-term footprint —
+its permanent bytes charged once, at its own append, plus the epoch's share
+of the blob framing and MMR nodes — and everything else (the rolling
+buffer's slots and records, its part of the blob rewrite, the frontier) is
+replacement; the compacting append is charged the same as any other (its
+hashes — at most 65 per chunk — are amortized as a bound over the epoch,
+`⌈65 / 2^chunk_power⌉` blake3 per append, its writes are prepaid, and it
+is charged the slot / record churn it does not write); the dense buffer's
+physical bytes, a bounded per-tree overhead rewritten every epoch, are
+deliberately charged to nobody as growth. `removed_bytes` stays
 `NoStorageRemoval` in both — a rolling buffer refunds nobody. Stored bytes,
 roots and proofs are identical under both versions.
 
-Mechanically: `BulkAppendTree` reads the committed value of a slot that
-already holds one (judged against the count at open; never this session's
-cache) before rewriting it — one billed seek plus the value's bytes — and
-asks the dense tree for `SlotWriteAccounting::Overwrite { previous_value_len }`,
-which attaches `KeyValueStorageCost::for_in_place_value_rewrite`; the MMR
-`MmrStore` takes a `LeafValueStorageCost::PartlyPrepaid` policy that the
-bulk tree feeds `chunk_blob_entry_bytes`; the `Result`-returning appends
-report a `storage_accounting_cost` (the prepaid share plus the slot read)
-for the caller to bill, while the `CostResult`-returning
-`append_deferred_roots` already includes it in its cost.
+Mechanically: the MMR `MmrStore` takes a `LeafValueStorageCost::PartlyPrepaid`
+policy that the bulk tree feeds `chunk_blob_entry_bytes`; the
+`Result`-returning appends report a `storage_accounting_cost` (the prepaid
+share plus the buffer model's reads) for the caller to bill, while the
+`CostResult`-returning `append_deferred_roots` already includes it in its
+cost.
 
-Hash records (GROVE_V4 root maintenance) size their own writes from the
-read that resolving the record performs anyway: a record the session read
-from committed storage, or wrote over one, is rewritten in place
-(`for_in_place_value_rewrite(72, 72)`); one whose key did not exist is new
-storage. The new leaf's record can pre-exist only when its slot does
-(`SlotWriteAccounting::Overwrite`), in which case it is read once. The
-`Result`-returning appends still bill only the dense tree's hash count
-(now `2 + depth` instead of `2 * count`) plus `storage_accounting_cost` —
-the record reads are dropped there, as the buffer-walk reads always were —
-while `append_deferred_roots` (the `PrivateDocumentStore` path) bills the
-record reads too. Record writes reach every caller at commit.
+Under v1 the bulk-append tree asks the dense tree for
+`SlotWriteAccounting::Churn`: the slot put and the path record put are
+issued as in-place replacements of their own size
+(`for_in_place_value_rewrite(len, len)`), whatever the keys held — the
+buffer is not an entry's long-term storage, so nothing of it is ever
+`added` and nothing is read to size a rewrite. The dense tree's
+root-maintenance charge is a fixed model for the buffer's height
+(`v1_insert_model_cost`: the blake3 calls and record reads averaged over a
+full buffer, rounded up); the `Result`-returning appends forward it as
+`hash_count` plus the reads in `storage_accounting_cost`, and
+`append_deferred_roots` (the `PrivateDocumentStore` path) bills it directly.
+A standalone `DenseAppendOnlyFixedSizeTree` keeps `AsNew`: its buffer is its
+long-term storage, so its records are new storage.
 
 ## Cost Context
 

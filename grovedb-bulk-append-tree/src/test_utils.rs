@@ -29,6 +29,8 @@ pub struct MemStorageContext {
     /// Every data `put` in order, with the cost information it carried —
     /// what a real storage context would hand the commit path to bill.
     pub puts: RefCell<Vec<(Vec<u8>, Option<KeyValueStorageCost>)>>,
+    /// Every data `get` in order, by key — what an append actually reads.
+    pub gets: RefCell<Vec<Vec<u8>>>,
 }
 
 impl MemStorageContext {
@@ -64,6 +66,7 @@ impl<'db> StorageContext<'db> for MemStorageContext {
             ))
             .wrap_with_cost(OperationCost::default());
         }
+        self.gets.borrow_mut().push(key.as_ref().to_vec());
         Ok(self.data.borrow().get(key.as_ref()).cloned()).wrap_with_cost(OperationCost::default())
     }
 

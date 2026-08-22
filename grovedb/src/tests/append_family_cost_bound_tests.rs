@@ -304,10 +304,12 @@ mod commitment_tree {
         catch_up_sweep(11, (1 << 11) - 2, 3);
     }
 
-    /// The catch-up happens once: after it, a V4 append is O(chunk_power)
-    /// hashes — far below the V3 full-buffer walk the first append paid.
+    /// The catch-up is physical work, not a charge: the first V4 append
+    /// after a V3 fill (which walks the legacy buffer) and the next one are
+    /// billed exactly the same — the buffer's fixed model plus the
+    /// position-independent rest.
     #[test]
-    fn test_commitment_tree_catch_up_is_paid_once() {
+    fn test_commitment_tree_catch_up_is_not_billed() {
         const CHUNK_POWER: u8 = 8;
         const LEGACY_FILL: u64 = 200;
         let v4 = GroveVersion::latest();
@@ -322,17 +324,14 @@ mod commitment_tree {
         let second = db.apply_batch(vec![ct_op(LEGACY_FILL + 1)], None, None, v4);
         second.value.expect("append after catch-up");
 
-        // The catch-up walks the buffer: two hashes per filled position.
-        assert!(
-            first.cost.hash_node_calls >= 2 * (LEGACY_FILL as u32 + 1),
-            "catch-up should walk the buffer: {:?}",
-            first.cost
-        );
-        // The next append hashes its ancestor path (≤ chunk_power + 1),
-        // the state roots and the Sinsemilla frontier walk only.
-        assert!(
-            second.cost.hash_node_calls < 2 * LEGACY_FILL as u32 / 4,
-            "after catch-up an append must not re-walk the buffer: first {:?}, second {:?}",
+        // What may differ is the frontier (its ommer cascade and serialized
+        // size depend on the global position): the blake3 count and the
+        // seeks — where a walk of the legacy buffer would show — are the
+        // model on both.
+        assert_eq!(
+            (first.cost.hash_node_calls, first.cost.seek_count),
+            (second.cost.hash_node_calls, second.cost.seek_count),
+            "catch-up must not change the charge: first {:?}, second {:?}",
             first.cost,
             second.cost
         );
@@ -582,23 +581,24 @@ mod dense_tree {
             );
             first.get_or_insert(actual.clone());
         }
-        // The catch-up really walked the buffer; the average-case estimate
-        // at the declared height bounds it without the ceiling's 2^16.
+        // The catch-up is not billed: the first insert costs what a later
+        // one does, and the average-case estimate at the declared height is
+        // far below the ceiling's.
         let first = first.expect("first insert ran");
-        assert!(
-            first.hash_node_calls >= 2 * LEGACY_FILL as u32,
-            "catch-up should walk the buffer: {first:?}"
-        );
+        let later = db.apply_batch(vec![dense_op(LEGACY_FILL + 4)], None, None, v4);
+        later.value.expect("insert");
+        assert_eq!(first, later.cost, "catch-up must not change the charge");
         let average = average_case_estimate(
-            vec![dense_op(LEGACY_FILL + 4)],
+            vec![dense_op(LEGACY_FILL + 5)],
             b"dense",
             TreeType::DenseAppendOnlyFixedSizeTree(HEIGHT),
             VALUE_SIZE,
             v4,
         );
+        let worst = worst_case_estimate(vec![dense_op(LEGACY_FILL + 5)], v4);
         assert!(
-            average.hash_node_calls < 2 * (1 << 16),
-            "the declared height bounds below the physical ceiling: {average:?}"
+            average.hash_node_calls < worst.hash_node_calls,
+            "the declared height is tighter than the physical ceiling: {average:?} vs {worst:?}"
         );
     }
 

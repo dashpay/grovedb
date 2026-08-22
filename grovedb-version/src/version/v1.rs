@@ -290,6 +290,8 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
     commitment_tree_versions: CommitmentTreeVersions {
         cost: CommitmentTreeCostVersions {
             frontier_save_storage_accounting: 0,
+            // The frontier's actual per-position work. Locked.
+            frontier_cost_model: 0,
         },
     },
     // Dense-buffer root maintenance: the shipped behaviour, which keeps no

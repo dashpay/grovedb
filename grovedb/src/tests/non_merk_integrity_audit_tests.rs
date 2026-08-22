@@ -6,7 +6,7 @@
 //! written for other values, would verify clean while every V4 read returned
 //! a different root.
 
-use grovedb_dense_fixed_sized_merkle_tree::{position_key, record_key, HashRecord};
+use grovedb_dense_fixed_sized_merkle_tree::{position_key, record_key, PathRecord};
 use grovedb_storage::{Storage, StorageContext};
 use grovedb_version::version::GroveVersion;
 
@@ -76,7 +76,7 @@ fn test_verify_grovedb_detects_dense_payload_tampering_behind_records() {
     );
 }
 
-/// The converse: the values are intact but the position-0 record (current
+/// The converse: the values are intact but the last insert's record (current
 /// generation) claims another root. The child-hash binding still holds —
 /// the audit walks the values — so only the record issue must fire, and it
 /// must fire: every V4 root read would otherwise return the wrong root.
@@ -99,12 +99,13 @@ fn test_verify_grovedb_detects_dense_records_disagreeing_with_values() {
             .unwrap()
             .expect("insert value");
     }
-    let forged = HashRecord {
-        generation: 0,
-        value_hash: [1u8; 32],
-        node_hash: [2u8; 32],
-    };
-    tamper(&db, &[b"dense"], &record_key(0), &forged.to_bytes());
+    // The root is `entry[0]` of the LAST insert's path record (position 4
+    // after five inserts): forge that record with a current generation and
+    // a wrong root.
+    let mut forged = PathRecord::new(0, [1u8; 32], 4);
+    forged.set_entry(0, [2u8; 32]);
+    forged.set_entry(2, [3u8; 32]);
+    tamper(&db, &[b"dense"], &record_key(4), &forged.to_bytes());
 
     let issues = issue_paths(&db, grove_version);
     assert_eq!(

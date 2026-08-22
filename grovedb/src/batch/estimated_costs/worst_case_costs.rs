@@ -248,68 +248,49 @@ impl GroveOp {
                     propagate,
                     grove_version,
                 );
-                // Worst case: compaction trigger. Buffer fills → serialize
-                // chunk blob → compute dense Merkle root → push to MMR.
+                // The fixed per-append model at the physical ceiling (the op
+                // carries only the value): the buffer's root-maintenance
+                // model, the amortized compaction, the value's chunk-blob
+                // share and its churn — plus the compacting append's puts as
+                // a bound, the one position-dependent residual.
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 let value_size = value.len() as u32;
-                /// Largest epoch the type permits: `2^16` entries.
-                const MAX_EPOCH_ENTRIES: u32 = 1 << 16;
-                // Dense buffer: up to a full-buffer walk, two hashes per
-                // filled position (the GROVE_V1..V3 root recompute, and the
-                // one-time catch-up a buffer filled under those versions
-                // pays at its first GROVE_V4 append; a V4 append otherwise
-                // hashes only its ancestor path). Chunk-leaf hash: 1. MMR
-                // push and root bagging: up to 65 merges.
-                const MAX_HASH_CALLS: u32 = 2 * (MAX_EPOCH_ENTRIES - 1) + 1 + 65;
-                const MAX_MMR_MERGES: u32 = 65;
-                // Writes: buffer entry + chunk blob + MMR nodes
-                const MAX_WRITES: u32 = 1 + 1 + MAX_MMR_MERGES;
-                const MAX_READS: u32 = 64; // MMR sibling reads
-                                           // Added storage under the GROVE_V4 accounting (issue #822):
-                                           // the value's buffer slot (new, or grown on a rewrite) and
-                                           // its chunk-blob share, plus on compaction the blob's framing
-                                           // — MMR leaf key and envelope, variable-format header and one
-                                           // 4-byte length prefix per entry of the largest epoch, the
-                                           // value-length varint — and every MMR internal node the push
-                                           // creates (key + 33-byte node + length).
+                let buffer = super::dense_buffer_model(super::PHYSICAL_MAX_CHUNK_POWER);
+                // The compaction share shrinks with the epoch: the smallest
+                // epoch is the bound.
+                let amortized_compaction_added = super::max_amortized_compaction_added_bytes();
+                const MAX_COMPACTION_PUTS: u32 = 1 + 65;
                 const PER_PUT_KEY_AND_LENGTHS: u32 = 50;
-                const MAX_BLOB_FRAMING: u32 = 37 + 37 + 1 + 4 * MAX_EPOCH_ENTRIES + 5;
-                const MMR_INTERNAL_NODE_PUT: u32 = 37 + 33 + 1;
-                // The buffer's hash records (GROVE_V4 root maintenance) at
-                // the physical ceiling, catch-up included; the bulk append
-                // bills their writes (at commit), not their reads.
-                let records =
-                    super::dense_record_maintenance_bound(super::PHYSICAL_MAX_CHUNK_POWER, true);
-                let max_added = value_size
-                    .saturating_mul(2)
-                    .saturating_add(PER_PUT_KEY_AND_LENGTHS)
-                    .saturating_add(MAX_BLOB_FRAMING)
-                    .saturating_add(MMR_INTERNAL_NODE_PUT * MAX_MMR_MERGES)
-                    .saturating_add(records.added_bytes);
+                let paid_value = value_size.saturating_add(5); // + the value-length varint
                 item_cost.add_cost(OperationCost {
-                    // +1: the read of the committed slot value that sizes a
-                    // rewrite. The record writes and the compaction writes
-                    // never stack (a compacting append writes no records);
-                    // summed as a bound.
-                    seek_count: MAX_WRITES + MAX_READS + 1 + records.record_writes,
+                    // The stored element read, the slot and record writes, the
+                    // model's record reads, the compaction's puts.
+                    seek_count: 3u32
+                        .saturating_add(buffer.cost.seek_count)
+                        .saturating_add(MAX_COMPACTION_PUTS),
                     storage_cost: StorageCost {
-                        added_bytes: max_added,
-                        // The compaction blob is reported as a replacement
-                        // of the epoch's entry bytes — the sum of whatever
-                        // values an earlier state buffered, which neither
-                        // the op nor the worst-case layer information can
-                        // bound: the type permits values up to u32::MAX
-                        // bytes (chunk entry lengths are u32). A smaller
-                        // figure would not be an upper bound, so this
-                        // dimension saturates (and so covers the record
-                        // rewrites too).
-                        replaced_bytes: u32::MAX,
+                        // Value + the variable format's per-entry prefix +
+                        // the compaction share.
+                        added_bytes: value_size
+                            .saturating_add(grovedb_bulk_append_tree::VARIABLE_ENTRY_FRAMING_BYTES)
+                            .saturating_add(amortized_compaction_added),
+                        // Slot (key included as a bound), record, and the
+                        // value's part of the blob rewrite.
+                        replaced_bytes: paid_value
+                            .saturating_add(PER_PUT_KEY_AND_LENGTHS)
+                            .saturating_add(buffer.record_len)
+                            .saturating_add(PER_PUT_KEY_AND_LENGTHS)
+                            .saturating_add(value_size),
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
-                    // MMR sibling reads + the committed slot value, which is
-                    // bounded only by the u32 entry length.
-                    storage_loaded_bytes: (33 * MAX_READS) as u64 + u32::MAX as u64,
-                    hash_node_calls: MAX_HASH_CALLS,
+                    // The stored element with the largest flags a Merk node
+                    // can hold, and the model's records.
+                    storage_loaded_bytes: (super::CT_ELEMENT_LOAD_BASE + MERK_BIGGEST_VALUE_SIZE)
+                        as u64
+                        + buffer.cost.storage_loaded_bytes,
+                    hash_node_calls: buffer.cost.hash_node_calls
+                        + grovedb_bulk_append_tree::max_amortized_compaction_hashes()
+                        + 1,
                     sinsemilla_hash_calls: 0,
                 })
             }
@@ -342,6 +323,7 @@ impl GroveOp {
                     entry.len() as u32,
                     super::PHYSICAL_MAX_CHUNK_POWER,
                     MERK_BIGGEST_VALUE_SIZE,
+                    super::max_amortized_compaction_added_bytes(),
                 ))
             }
             GroveOp::DenseTreeInsert { value } => {
@@ -561,6 +543,9 @@ impl GroveOp {
             // worst-case paths — charge the largest value a Merk node can
             // store, consistent with the rest of the worst-case machinery.
             MERK_BIGGEST_VALUE_SIZE,
+            // The buffer model grows with the height, the compaction share
+            // shrinks with the epoch: each at its own worst.
+            super::max_amortized_compaction_added_bytes(),
         ))
     }
 }
@@ -1423,10 +1408,14 @@ mod tests {
         // blob at the physical ceiling — reported as a replacement of the
         // epoch's prepaid entry bytes (GROVE_V4 accounting, issue #822) —
         // plus the per-append slot write and chunk-blob share as added.
-        assert!(cost.storage_cost.replaced_bytes >= 128 * 65536);
-        assert!(cost.storage_cost.added_bytes >= 128 + 128);
-        // The compacting append reads the whole epoch back.
-        assert!(cost.seek_count >= 65535);
+        // The fixed model: the entry's slot and blob-rewrite part replaced,
+        // its share added; nothing scales with the epoch any more.
+        assert!(cost.storage_cost.replaced_bytes >= 2 * 128);
+        assert!(cost.storage_cost.replaced_bytes < 128 * 65536);
+        assert!(cost.storage_cost.added_bytes >= 128 + 1);
+        // The compaction's read-back is amortized into the model: no
+        // epoch-sized seek count any more.
+        assert!(cost.seek_count < 65535);
         assert_eq!(cost.sinsemilla_hash_calls, 0);
     }
 
@@ -1843,11 +1832,14 @@ mod tests {
             )
             .cost_as_result()
             .expect("expected worst case cost for oversized payload");
-        assert_eq!(
-            cost.storage_cost.replaced_bytes,
-            u32::MAX,
-            "oversized-payload estimate must saturate, not wrap",
+        // The epoch no longer multiplies anything: the compaction is
+        // amortized into the per-note model, so the figure is finite and
+        // per-note — the u64 sums exist for hand-built payloads only.
+        assert!(
+            cost.storage_cost.replaced_bytes < u32::MAX,
+            "the per-note estimate does not scale with the epoch: {cost:?}",
         );
+        assert!(cost.storage_cost.replaced_bytes >= 2 * (96 + 70_000));
         // The per-note added term (slot + blob share + frontier + framing)
         // is epoch-independent and stays far from saturation.
         assert!(

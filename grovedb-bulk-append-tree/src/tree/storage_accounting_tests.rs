@@ -2,11 +2,9 @@
 //! the level of the cost information each put carries.
 //!
 //! The in-memory context records every `put` with its `cost_info`, which is
-//! exactly what a real storage context hands the commit path to bill. A
-//! buffer slot counts as holding a committed value by the `total_count` the
-//! tree was opened with, so each epoch here is run on a tree re-opened with
-//! `from_state` over the previous epoch's storage — the way every GroveDB
-//! operation opens it.
+//! exactly what a real storage context hands the commit path to bill. Each
+//! epoch here is run on a tree re-opened with `from_state` over the previous
+//! epoch's storage — the way every GroveDB operation opens it.
 
 use grovedb_costs::{
     storage_cost::{
@@ -41,6 +39,16 @@ fn slot_puts(ctx: &MemStorageContext) -> Vec<Option<KeyValueStorageCost>> {
         .borrow()
         .iter()
         .filter(|(k, _)| k.len() == 2)
+        .map(|(_, c)| c.clone())
+        .collect()
+}
+
+/// Path record puts (3-byte keys), in order.
+fn record_puts(ctx: &MemStorageContext) -> Vec<Option<KeyValueStorageCost>> {
+    ctx.puts
+        .borrow()
+        .iter()
+        .filter(|(k, _)| k.len() == 3)
         .map(|(_, c)| c.clone())
         .collect()
 }
@@ -123,135 +131,148 @@ fn v0_issues_every_put_without_cost_info_and_bills_no_accounting() {
     }
 }
 
-/// v1 (GROVE_V4): a slot written for the first time is new storage; a slot
-/// that already holds a committed value is a replacement — growth added,
-/// shrink not credited, key not charged; every append prepays its own bytes.
+/// v1 (GROVE_V4): the buffer is churn and the charge is fixed. Every slot
+/// write — epoch 1 included, growth and shrink alike — and every path record
+/// write is reported as an in-place replacement of its own size, nothing
+/// added and no key charged; nothing is read to size it. Every append —
+/// buffered or compacting — prepays its own bytes plus the epoch's share of
+/// the compaction overhead as added storage, its own bytes again as its part
+/// of the blob rewrite, and the buffer's fixed root-maintenance model.
 #[test]
-fn v1_slot_rewrites_are_replacements_and_every_append_prepays_its_bytes() {
+fn v1_buffer_writes_are_churn_and_every_append_is_charged_the_fixed_model() {
+    use grovedb_dense_fixed_sized_merkle_tree::{path_record_len, V1InsertModel};
+
     let run = run(&GROVE_V4);
-    // The in-memory context reports no cost for its reads, so the
-    // accounting cost carries the prepaid share only; the read's seek and
-    // bytes are pinned against RocksDB by the GroveDB-level tests.
-    let prepaid: Vec<u32> = run
-        .accounting
-        .iter()
-        .map(|c| c.storage_cost.added_bytes)
-        .collect();
-    let expected_prepaid: Vec<u32> = VALUES.iter().map(|v| v.len() as u32).collect();
-    assert_eq!(prepaid, expected_prepaid);
-    assert!(run
-        .accounting
-        .iter()
-        .all(|c| c.storage_cost.replaced_bytes == 0 && c.hash_node_calls == 0));
+    let model = V1InsertModel::for_height(2);
+    // 159 bytes of compaction overhead over an epoch of 4.
+    let amortized: u32 = (159u32).div_ceil(4);
+    for (i, (cost, value)) in run.accounting.iter().zip(VALUES.iter()).enumerate() {
+        // No declared entry size: the variable format's four-byte prefix is
+        // prepaid with every entry.
+        assert_eq!(
+            cost.storage_cost.added_bytes,
+            value.len() as u32 + crate::VARIABLE_ENTRY_FRAMING_BYTES + amortized,
+            "append {i}: prepaid share + framing + amortized compaction overhead"
+        );
+        // Its part of the blob rewrite — and, for a compacting append,
+        // which writes no slot and no record, their churn billed here
+        // instead of through the puts.
+        let churn = if i % 4 == 3 {
+            paid(value.len() as u32) + paid(path_record_len(2) as u32)
+        } else {
+            0
+        };
+        assert_eq!(
+            cost.storage_cost.replaced_bytes,
+            value.len() as u32 + churn,
+            "append {i}: its part of the blob rewrite (+ the compacting append's churn)"
+        );
+        assert_eq!(
+            cost.hash_node_calls, 0,
+            "append {i}: hashes go through hash_count"
+        );
+        // The model, compacting appends included.
+        assert_eq!(
+            cost.seek_count, model.record_reads,
+            "append {i}: model reads"
+        );
+        assert_eq!(
+            cost.storage_loaded_bytes,
+            model.record_reads as u64 * model.record_len as u64,
+            "append {i}: model bytes"
+        );
+    }
 
-    let slots = slot_puts(&run.ctx);
-    assert_eq!(slots.len(), 9);
-    // Epoch 1: fresh slots.
-    assert!(slots[..3].iter().all(Option::is_none), "{slots:?}");
-
-    let rewrite = |previous: u32, new: u32| KeyValueStorageCost {
+    let churn = |len: u32| KeyValueStorageCost {
         key_storage_cost: Default::default(),
         value_storage_cost: StorageCost {
-            added_bytes: paid(new).saturating_sub(paid(previous)),
-            replaced_bytes: paid(new).min(paid(previous)),
+            added_bytes: 0,
+            replaced_bytes: paid(len),
             removed_bytes: NoStorageRemoval,
         },
         new_node: false,
         needs_value_verification: true,
     };
-    // Epoch 2 over epoch 1's 8-byte values.
-    assert_eq!(slots[3], Some(rewrite(8, 8)), "same size: fully replaced");
-    assert_eq!(
-        slots[4],
-        Some(rewrite(8, 16)),
-        "growth: 9 replaced, 8 added"
+    let slots = slot_puts(&run.ctx);
+    assert_eq!(slots.len(), 9, "three slots per epoch, three epochs");
+    let mut expected = Vec::new();
+    for (i, v) in VALUES.iter().enumerate() {
+        if i % 4 != 3 {
+            expected.push(Some(churn(v.len() as u32)));
+        }
+    }
+    assert_eq!(slots, expected, "every slot write is churn of its own size");
+
+    let records = record_puts(&run.ctx);
+    assert_eq!(records.len(), 9, "one path record per buffered append");
+    let record_len = path_record_len(2) as u32;
+    assert!(
+        records.iter().all(|c| *c == Some(churn(record_len))),
+        "every record write is churn of the fixed record size: {records:?}"
     );
-    assert_eq!(
-        slots[5],
-        Some(rewrite(8, 4)),
-        "shrink: 5 replaced, nothing credited"
-    );
-    assert_eq!(slots[4].as_ref().unwrap().value_storage_cost.added_bytes, 8);
-    assert_eq!(slots[5].as_ref().unwrap().value_storage_cost.added_bytes, 0);
-    // Epoch 3 over epoch 2's values.
-    assert_eq!(slots[6], Some(rewrite(8, 8)));
-    assert_eq!(slots[7], Some(rewrite(16, 8)));
-    assert_eq!(slots[8], Some(rewrite(4, 8)));
 }
 
-/// Whether a slot is rewritten is judged against the state at open: inside
-/// one session a slot written for the first time and rewritten after an
-/// in-session compaction is still new storage (nothing is committed), so
-/// it is never read and never reported as a replacement — a `StorageBatch`
-/// will charge its last put, which must describe the transition from
-/// committed storage. A slot the open count says is committed but storage
-/// does not hold is charged as new, the safe direction.
+/// The churn accounting never reads a slot to size a rewrite — a broken
+/// reader for slot keys does not stop an append — and the same slot written
+/// twice in one session is churn both times.
 #[test]
-fn v1_judges_committed_slots_by_the_count_at_open() {
-    // Two epochs on a tree created in this session: no slot is committed.
+fn v1_never_reads_to_size_a_buffer_write() {
+    // Opened after a completed chunk: under the old accounting every slot
+    // counted as committed and was read first.
+    let mut tree = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
+    for v in &VALUES[..4] {
+        tree.append_no_state_root(v, &GROVE_V4).expect("append");
+    }
+    tree.commit_mmr(&GROVE_V4).expect("commit");
+    let mut tree = BulkAppendTree::from_state(4, 2, tree.dense_tree.storage).expect("open");
+    tree.dense_tree.storage.gets.borrow_mut().clear();
+    tree.dense_tree.storage.puts.borrow_mut().clear();
+    tree.append_no_state_root(&[1; 8], &GROVE_V4)
+        .expect("append");
+    // The only read is the persisted MMR root — one of the two root reads
+    // the model charges on every state-root derivation; no slot, and at
+    // buffer position 0 no record either.
+    assert_eq!(
+        tree.dense_tree.storage.gets.borrow().clone(),
+        vec![crate::MMR_ROOT_KEY.to_vec()]
+    );
+    assert_eq!(slot_puts(&tree.dense_tree.storage).len(), 1);
+    assert!(slot_puts(&tree.dense_tree.storage)[0]
+        .as_ref()
+        .is_some_and(|c| !c.new_node && c.value_storage_cost.added_bytes == 0));
+
     let mut tree = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
     for v in &VALUES[..8] {
         tree.append_no_state_root(v, &GROVE_V4).expect("append");
     }
     let slots = slot_puts(&tree.dense_tree.storage);
     assert_eq!(slots.len(), 6);
-    assert!(slots.iter().all(Option::is_none), "{slots:?}");
-
-    // Opened with two committed buffer entries and no chunk: slots 0 and 1
-    // are committed, slot 2 is not and is written without a read.
-    let mut seeded = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
-    for v in &VALUES[..2] {
-        seeded.append_no_state_root(v, &GROVE_V4).expect("seed");
-    }
-    let mut tree = BulkAppendTree::from_state(2, 2, seeded.dense_tree.storage).expect("open");
-    assert!(tree.slot_is_committed(0) && tree.slot_is_committed(1));
-    assert!(!tree.slot_is_committed(2));
-    tree.append_no_state_root(&[1; 8], &GROVE_V4)
-        .expect("slot 2");
-    let slots = slot_puts(&tree.dense_tree.storage);
-    assert_eq!(slots, vec![None, None, None]);
-
-    // Opened after a completed chunk: every slot is committed — and one
-    // that storage does not hold (corruption, not a state this code
-    // produces) is charged as new rather than as a rewrite of nothing.
-    let mut tree = BulkAppendTree::from_state(4, 2, MemStorageContext::new()).expect("open");
-    assert!((0..3).all(|p| tree.slot_is_committed(p)));
-    tree.append_no_state_root(&[1; 8], &GROVE_V4)
-        .expect("slot 0");
-    assert_eq!(slot_puts(&tree.dense_tree.storage), vec![None]);
+    assert!(
+        slots.iter().all(|c| c
+            .as_ref()
+            .is_some_and(|c| c.value_storage_cost.added_bytes == 0)),
+        "{slots:?}"
+    );
 }
 
-/// v1: the compaction blob is reported as a replacement of the entry bytes
-/// it supersedes — all prepaid — with only its framing added; internal MMR
-/// nodes are new storage.
+/// v1: the compaction blob and the MMR internal nodes are prepaid — every
+/// append charged its share over the epoch — so their puts carry zero-byte
+/// cost information: nothing added, nothing replaced, no key.
 #[test]
-fn v1_commit_mmr_reports_blob_as_replacement_of_prepaid_entry_bytes() {
+fn v1_commit_mmr_writes_are_prepaid() {
     let run = run(&GROVE_V4);
     let nodes = mmr_puts(&run.ctx);
     assert_eq!(nodes.len(), 4, "{nodes:?}");
-
-    let leaf = |entry_bytes: u32, blob_len: u32| {
-        // MmrNode leaf envelope: flag (1) + hash (32) + length (4) + blob.
-        let node_len = 37 + blob_len;
-        KeyValueStorageCost {
-            key_storage_cost: Default::default(),
-            value_storage_cost: StorageCost {
-                added_bytes: paid(node_len) - entry_bytes,
-                replaced_bytes: entry_bytes,
-                removed_bytes: NoStorageRemoval,
-            },
-            new_node: true,
-            needs_value_verification: true,
-        }
+    let prepaid = KeyValueStorageCost {
+        key_storage_cost: Default::default(),
+        value_storage_cost: StorageCost::default(),
+        new_node: false,
+        needs_value_verification: false,
     };
-    // Blob 1: four 8-byte entries, fixed format: 9-byte header + 32.
-    assert_eq!(nodes[0], Some(leaf(32, 9 + 32)));
-    // Blob 2: 8, 16, 4, 8 -> variable format: 1 + sum(4 + len) = 53, 36 entry bytes.
-    assert_eq!(nodes[1], Some(leaf(36, 53)));
-    // The merge of leaves 1 and 2 is an internal node: new storage.
-    assert_eq!(nodes[2], None);
-    // Blob 3: fixed again.
-    assert_eq!(nodes[3], Some(leaf(32, 9 + 32)));
+    assert!(
+        nodes.iter().all(|n| *n == Some(prepaid.clone())),
+        "every MMR put — three chunk leaves and one merge — is prepaid: {nodes:?}"
+    );
 }
 
 /// The tree itself must not depend on the accounting version: the values,
@@ -263,26 +284,50 @@ fn stored_state_and_roots_are_identical_across_accounting_versions() {
     let r3 = run(&GROVE_V3);
     let r4 = run(&GROVE_V4);
     assert_eq!(r3.root, r4.root);
-    let without_records = |ctx: &MemStorageContext| -> std::collections::HashMap<Vec<u8>, Vec<u8>> {
+    // GROVE_V4 adds the path records (3-byte keys) and the persisted MMR
+    // root (the 1-byte key `r`); everything else is byte-identical.
+    let without_derived = |ctx: &MemStorageContext| -> std::collections::HashMap<Vec<u8>, Vec<u8>> {
         ctx.data
             .borrow()
             .iter()
-            .filter(|(k, _)| k.len() != 3)
+            .filter(|(k, _)| k.len() != 3 && k.len() != 1)
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
     };
     assert!(
-        r3.ctx.data.borrow().keys().all(|k| k.len() != 3),
-        "GROVE_V3 writes no hash records"
+        r3.ctx
+            .data
+            .borrow()
+            .keys()
+            .all(|k| k.len() != 3 && k.len() != 1),
+        "GROVE_V3 writes no records and no persisted MMR root"
     );
     assert!(
         r4.ctx.data.borrow().keys().any(|k| k.len() == 3),
-        "GROVE_V4 writes hash records"
+        "GROVE_V4 writes path records"
     );
+    let persisted_root = r4
+        .ctx
+        .data
+        .borrow()
+        .get(crate::MMR_ROOT_KEY)
+        .cloned()
+        .expect("GROVE_V4 persists the MMR root at commit");
+    let reopened = BulkAppendTree::from_state(12, 2, r4.ctx).expect("reopen");
     assert_eq!(
-        without_records(&r3.ctx),
-        without_records(&r4.ctx),
-        "byte-identical storage apart from the hash records"
+        persisted_root.as_slice(),
+        reopened
+            .bag_mmr_root_with_cost(&GROVE_V4)
+            .unwrap()
+            .expect("bag")
+            .as_slice(),
+        "the persisted MMR root is the bagged root"
+    );
+    let r4_ctx = reopened.dense_tree.storage;
+    assert_eq!(
+        without_derived(&r3.ctx),
+        without_derived(&r4_ctx),
+        "byte-identical storage apart from the records and the persisted MMR root"
     );
 }
 
@@ -294,9 +339,13 @@ fn append_deferred_roots_bills_accounting_cost() {
     let mut tree = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
     let ctx = tree.append_deferred_roots(&[7u8; 20], &GROVE_V4);
     let r = ctx.value.expect("append");
-    assert_eq!(r.storage_accounting_cost.storage_cost.added_bytes, 20);
-    assert_eq!(ctx.cost.storage_cost.added_bytes, 20);
-    assert_eq!(ctx.cost.storage_cost.replaced_bytes, 0);
+    // The share (20) plus the variable format's prefix (4) plus the epoch's
+    // amortized compaction overhead (159 bytes over an epoch of 4 → 40), and
+    // the 20 bytes of blob rewrite.
+    assert_eq!(r.storage_accounting_cost.storage_cost.added_bytes, 64);
+    assert_eq!(ctx.cost.storage_cost.added_bytes, 64);
+    assert_eq!(ctx.cost.storage_cost.replaced_bytes, 20);
+    assert_eq!(r.storage_accounting_cost.storage_cost.replaced_bytes, 20);
 
     let mut legacy = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
     let ctx = legacy.append_deferred_roots(&[7u8; 20], &GROVE_V3);
@@ -305,32 +354,6 @@ fn append_deferred_roots_bills_accounting_cost() {
         OperationCost::default()
     );
     assert_eq!(ctx.cost.storage_cost.added_bytes, 0);
-}
-
-/// A storage fault on the committed-slot read surfaces as an error and
-/// nothing is written; the shipped accounting never performs that read.
-#[test]
-fn committed_slot_read_failure_surfaces() {
-    let ctx = MemStorageContext::new();
-    ctx.fail_reads();
-    let mut tree = BulkAppendTree::from_state(4, 2, ctx).expect("open");
-    let err = tree
-        .append_no_state_root(&[1; 8], &GROVE_V4)
-        .expect_err("read failed");
-    assert!(
-        matches!(&err, BulkAppendError::StorageError(m) if m.contains("committed slot")),
-        "{err:?}"
-    );
-    let err = tree
-        .append_deferred_roots(&[1; 8], &GROVE_V4)
-        .value
-        .expect_err("read failed");
-    assert!(matches!(err, BulkAppendError::StorageError(_)));
-    assert!(tree.dense_tree.storage.puts.borrow().is_empty());
-
-    // v0 reads nothing, so it writes straight through the broken reader.
-    tree.append_no_state_root(&[1; 8], &GROVE_V3)
-        .expect("no read under the shipped accounting");
 }
 
 /// An unknown accounting version is rejected at every entry that consults
@@ -361,4 +384,290 @@ fn unknown_storage_accounting_version_is_rejected() {
     tree.commit_mmr(&GROVE_V4)
         .expect("flush with a known version");
     assert_eq!(mmr_puts(&tree.dense_tree.storage).len(), 1);
+}
+
+/// A tree whose last compaction predates the fixed model has no persisted
+/// MMR root. Its first GROVE_V4 append bags the peaks ONCE, backfills the
+/// key — prepaid, so the append's figure is the fixed model's — and from
+/// then on every reopen reads the key instead of the peaks' blobs.
+#[test]
+fn legacy_mmr_root_is_backfilled_once_on_the_first_v4_append() {
+    let prepaid = KeyValueStorageCost {
+        key_storage_cost: Default::default(),
+        value_storage_cost: StorageCost::default(),
+        new_node: false,
+        needs_value_verification: false,
+    };
+    // Epoch 1 under the shipped accounting: chunk committed, no root key.
+    let mut tree = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
+    for v in &VALUES[..4] {
+        tree.append_no_state_root(v, &GROVE_V3).expect("append");
+    }
+    tree.commit_mmr(&GROVE_V3).expect("commit");
+    assert!(!tree
+        .dense_tree
+        .storage
+        .data
+        .borrow()
+        .contains_key(crate::MMR_ROOT_KEY));
+    let bagged = tree
+        .bag_mmr_root_with_cost(&GROVE_V4)
+        .unwrap()
+        .expect("bag");
+
+    // First V4 append on the reopened tree: backfill.
+    let mut tree = BulkAppendTree::from_state(4, 2, tree.dense_tree.storage).expect("open");
+    tree.dense_tree.storage.puts.borrow_mut().clear();
+    let first = tree
+        .append_no_state_root(VALUES[4], &GROVE_V4)
+        .expect("append");
+    let root_puts: Vec<_> = tree
+        .dense_tree
+        .storage
+        .puts
+        .borrow()
+        .iter()
+        .filter(|(k, _)| k == crate::MMR_ROOT_KEY)
+        .map(|(_, c)| c.clone())
+        .collect();
+    assert_eq!(root_puts, vec![Some(prepaid)], "one prepaid backfill put");
+    assert_eq!(
+        tree.dense_tree.storage.data.borrow()[crate::MMR_ROOT_KEY],
+        bagged.to_vec()
+    );
+    // Charged the fixed model, exactly like the same append on a tree that
+    // ran under V4 from the start.
+    let v4 = run(&GROVE_V4);
+    assert_eq!(first.storage_accounting_cost, v4.accounting[4]);
+    assert_eq!(first.hash_count, {
+        let mut t = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
+        for v in &VALUES[..4] {
+            t.append_no_state_root(v, &GROVE_V4).expect("append");
+        }
+        t.append_no_state_root(VALUES[4], &GROVE_V4)
+            .expect("append")
+            .hash_count
+    });
+    tree.commit_mmr(&GROVE_V4).expect("commit");
+
+    // Every later reopen reads the key and never the peaks.
+    let mut tree = BulkAppendTree::from_state(5, 2, tree.dense_tree.storage).expect("open");
+    tree.dense_tree.storage.gets.borrow_mut().clear();
+    tree.dense_tree.storage.puts.borrow_mut().clear();
+    tree.append_no_state_root(VALUES[5], &GROVE_V4)
+        .expect("append");
+    let state_root = tree.compute_current_state_root(&GROVE_V4).expect("root");
+    let gets = tree.dense_tree.storage.gets.borrow().clone();
+    assert!(gets.contains(&crate::MMR_ROOT_KEY.to_vec()), "{gets:?}");
+    assert!(
+        gets.iter().all(|k| k.len() != 4),
+        "no MMR node read after the backfill: {gets:?}"
+    );
+    assert!(
+        !tree
+            .dense_tree
+            .storage
+            .puts
+            .borrow()
+            .iter()
+            .any(|(k, _)| k == crate::MMR_ROOT_KEY),
+        "no second backfill"
+    );
+    // And the state is the one a V4-only tree reaches.
+    let mut v4_tree = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
+    for v in &VALUES[..6] {
+        v4_tree.append_no_state_root(v, &GROVE_V4).expect("append");
+    }
+    assert_eq!(
+        state_root,
+        v4_tree.compute_current_state_root(&GROVE_V4).expect("root")
+    );
+    assert_eq!(
+        state_root,
+        tree.compute_current_state_root_from_values().expect("root")
+    );
+}
+
+/// A persisted MMR root of any length but 32 is corruption (or the key
+/// collision the layout rules out), never a legacy tree: reported, not
+/// silently bagged over.
+#[test]
+fn wrong_length_persisted_mmr_root_is_corrupted_data() {
+    let mut tree = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
+    for v in &VALUES[..4] {
+        tree.append_no_state_root(v, &GROVE_V4).expect("append");
+    }
+    tree.commit_mmr(&GROVE_V4).expect("commit");
+    tree.dense_tree
+        .storage
+        .data
+        .borrow_mut()
+        .insert(crate::MMR_ROOT_KEY.to_vec(), vec![7u8; 5]);
+    let mut tree = BulkAppendTree::from_state(4, 2, tree.dense_tree.storage).expect("open");
+    assert!(matches!(
+        tree.get_mmr_root_with_cost(&GROVE_V4).unwrap(),
+        Err(BulkAppendError::CorruptedData(_))
+    ));
+    assert!(matches!(
+        tree.append_no_state_root(VALUES[4], &GROVE_V4),
+        Err(BulkAppendError::CorruptedData(_))
+    ));
+    assert!(matches!(
+        tree.append_deferred_roots(VALUES[4], &GROVE_V4).unwrap(),
+        Err(BulkAppendError::CorruptedData(_))
+    ));
+    // The shipped accounting never consults the key.
+    assert!(tree.get_mmr_root_with_cost(&GROVE_V3).unwrap().is_ok());
+}
+
+/// The per-chunk compaction hash bound holds at every chunk index the
+/// 32-bit MMR keys admit, and the amortized charge — the bound spread over
+/// the epoch, rounded up — keeps every prefix of the tree's life prepaid at
+/// every height, the smallest included. (One hash per append would not: at
+/// `chunk_power` 1 the first six chunks perform 13 compaction hashes against
+/// 12 prepaid, and the bagging term keeps growing with the peak count.)
+#[test]
+fn amortized_compaction_hashes_prepay_every_prefix_at_every_height() {
+    // The blake3 calls chunk `i` (0-based) costs: the leaf hash, one merge
+    // per trailing one bit of `i`, and the root bagging over the peaks of
+    // the `i + 1`-leaf MMR.
+    fn actual(i: u64) -> u32 {
+        1 + i.trailing_ones() + (i + 1).count_ones().saturating_sub(1)
+    }
+    // The bound at the extremes and around every power of two.
+    for k in 0..31u32 {
+        let p = 1u64 << k;
+        for i in [p - 1, p, p + 1, 2 * p - 2, 2 * p - 1] {
+            assert!(
+                actual(i) <= crate::MAX_COMPACTION_HASHES_PER_CHUNK,
+                "chunk {i}: {}",
+                actual(i)
+            );
+        }
+    }
+    assert_eq!(actual((1u64 << 31) - 1), 1 + 31 + 0);
+    assert_eq!(actual((1u64 << 31) - 2), 1 + 0 + 30);
+    // Prefix sums at the smallest heights, exhaustively over many chunks.
+    for chunk_power in 1..=4u8 {
+        let epoch = 1u64 << chunk_power;
+        let per_chunk_charge = epoch * crate::amortized_compaction_hashes(chunk_power) as u64;
+        let (mut charged, mut performed) = (0u64, 0u64);
+        for i in 0..(1u64 << 16) {
+            charged += per_chunk_charge;
+            performed += actual(i) as u64;
+            assert!(
+                charged >= performed,
+                "chunk_power {chunk_power}, chunk {i}: charged {charged} < performed {performed}"
+            );
+        }
+    }
+    // The figures.
+    assert_eq!(crate::amortized_compaction_hashes(1), 33);
+    assert_eq!(crate::amortized_compaction_hashes(2), 17);
+    assert_eq!(crate::amortized_compaction_hashes(4), 5);
+    assert_eq!(crate::amortized_compaction_hashes(6), 2);
+    assert_eq!(crate::amortized_compaction_hashes(7), 1);
+    assert_eq!(crate::amortized_compaction_hashes(11), 1);
+    assert_eq!(crate::amortized_compaction_hashes(16), 1);
+    assert_eq!(
+        crate::max_amortized_compaction_hashes(),
+        crate::amortized_compaction_hashes(1)
+    );
+}
+
+/// A height-1 tree run for many epochs under the fixed model: every append
+/// reports the model plus the amortized bound, and the total reported never
+/// falls below the dense work plus the compaction work actually performed.
+#[test]
+fn height_one_tree_stays_prepaid_over_its_life() {
+    let mut tree = BulkAppendTree::new(1, MemStorageContext::new()).expect("new");
+    let model = grovedb_dense_fixed_sized_merkle_tree::V1InsertModel::for_height(1);
+    let amortized = crate::amortized_compaction_hashes(1);
+    let (mut reported, mut performed) = (0u64, 0u64);
+    for i in 0..4096u64 {
+        let r = tree
+            .append_no_state_root(&[i as u8; 4], &GROVE_V4)
+            .expect("append");
+        assert_eq!(
+            r.hash_count,
+            model.hash_node_calls + amortized,
+            "append {i}"
+        );
+        reported += r.hash_count as u64;
+        // Height 1: one leaf insert (2 hashes) per epoch, then a compaction
+        // per 2 appends.
+        if i % 2 == 0 {
+            performed += 2;
+        } else {
+            let chunk = i / 2;
+            performed += 1 + chunk.trailing_ones() as u64 + (chunk + 1).count_ones() as u64 - 1;
+        }
+        assert!(
+            reported >= performed,
+            "append {i}: {reported} < {performed}"
+        );
+    }
+}
+
+/// With a declared fixed entry size every append is charged exactly its own
+/// bytes (no per-entry framing) and any other length is rejected before a
+/// write; without it the variable format's four-byte prefix is prepaid on
+/// every entry, and a mixed-size epoch's added bytes cover the blob and MMR
+/// bytes the compaction persists.
+#[test]
+fn entry_framing_is_charged_unless_a_fixed_entry_size_is_declared() {
+    // Declared: exact, and enforced.
+    let mut fixed = BulkAppendTree::new(2, MemStorageContext::new())
+        .expect("new")
+        .with_fixed_entry_size(8);
+    let r = fixed
+        .append_no_state_root(&[1u8; 8], &GROVE_V4)
+        .expect("append");
+    assert_eq!(
+        r.storage_accounting_cost.storage_cost.added_bytes,
+        8 + (159u32).div_ceil(4)
+    );
+    assert!(matches!(
+        fixed.append_no_state_root(&[2u8; 9], &GROVE_V4),
+        Err(BulkAppendError::InvalidInput(_))
+    ));
+    assert!(matches!(
+        fixed.append_deferred_roots(&[2u8; 7], &GROVE_V4).unwrap(),
+        Err(BulkAppendError::InvalidInput(_))
+    ));
+    assert_eq!(fixed.total_count, 1, "a rejected append writes nothing");
+    assert_eq!(slot_puts(&fixed.dense_tree.storage).len(), 1);
+
+    // Undeclared: a full mixed-size epoch at chunk_power 4. The epoch's
+    // added bytes must cover everything the compaction persists — the blob
+    // (variable format: 1 + Σ(4 + len)) and the MMR nodes, keys and length
+    // varints included.
+    let mut tree = BulkAppendTree::new(4, MemStorageContext::new()).expect("new");
+    let mut added = 0u64;
+    for i in 0..16u32 {
+        let value = vec![i as u8; 1 + (i as usize % 5) * 3];
+        let r = tree
+            .append_no_state_root(&value, &GROVE_V4)
+            .expect("append");
+        assert_eq!(
+            r.storage_accounting_cost.storage_cost.added_bytes,
+            value.len() as u32 + crate::VARIABLE_ENTRY_FRAMING_BYTES + (159u32).div_ceil(16)
+        );
+        added += r.storage_accounting_cost.storage_cost.added_bytes as u64;
+    }
+    tree.commit_mmr(&GROVE_V4).expect("commit");
+    let persisted: u64 = tree
+        .dense_tree
+        .storage
+        .data
+        .borrow()
+        .iter()
+        .filter(|(k, _)| k.len() == 4 || k.as_slice() == crate::MMR_ROOT_KEY)
+        .map(|(k, v)| 32 + k.len() as u64 + paid(v.len() as u32) as u64)
+        .sum();
+    assert!(persisted > 0);
+    assert!(
+        added >= persisted,
+        "mixed-size epoch: added {added} < persisted {persisted}"
+    );
 }
