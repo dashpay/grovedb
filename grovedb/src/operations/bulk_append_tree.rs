@@ -91,12 +91,10 @@ impl GroveDb {
 
         cost.hash_node_calls += result.hash_count;
         // The value's chunk-blob share — its permanent bytes — is billed at
-        // its own append (zero under the shipped accounting); the compaction
+        // its own append, with the read of the committed slot that sizes a
+        // rewrite (both zero under the shipped accounting); the compaction
         // blob is then a replacement of bytes already paid for (issue #822).
-        cost.storage_cost.added_bytes = cost
-            .storage_cost
-            .added_bytes
-            .saturating_add(result.prepaid_chunk_bytes);
+        cost += result.storage_accounting_cost;
 
         let new_state_root = result.state_root;
         let new_total_count = tree.total_count;
@@ -550,12 +548,9 @@ impl GroveDb {
                     tree.append(value, grove_version).map_err(map_bulk_err)
                 );
                 cost.hash_node_calls += result.hash_count;
-                // The value's chunk-blob share, billed per append as in the
-                // direct path (issue #822).
-                cost.storage_cost.added_bytes = cost
-                    .storage_cost
-                    .added_bytes
-                    .saturating_add(result.prepaid_chunk_bytes);
+                // The value's chunk-blob share and the committed-slot read,
+                // billed per append as in the direct path (issue #822).
+                cost += result.storage_accounting_cost;
             }
 
             // Compute final state root

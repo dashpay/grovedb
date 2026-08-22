@@ -1,6 +1,7 @@
 //! Append and compaction logic for BulkAppendTree.
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use grovedb_dense_fixed_sized_merkle_tree::{position_key, SlotWriteAccounting};
 use grovedb_merkle_mountain_range::{mmr_size_to_leaf_count, MmrKeySize, MmrNode, MmrStore, MMR};
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
@@ -11,7 +12,10 @@ use super::{
 };
 use crate::{
     chunk::serialize_chunk_blob,
-    cost::{append_storage_accounting, compaction_hash_count},
+    cost::{
+        append_storage_accounting, compaction_hash_count, AppendStorageAccounting,
+        SlotRewriteAccounting,
+    },
     BulkAppendError,
 };
 
@@ -29,6 +33,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             mmr_overlay: Vec::new(),
             // Empty tree → empty MMR → zero root.
             last_mmr_root: Some([0u8; 32]),
+            committed_total_count: 0,
         })
     }
 
@@ -56,7 +61,59 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             // Lazy: the restored MMR may not be readable until an append occurs,
             // so don't compute the root here. The first append fills the cache.
             last_mmr_root: None,
+            committed_total_count: total_count,
         })
+    }
+
+    /// Whether buffer slot `position` holds a value in committed storage:
+    /// every slot once a chunk has ever been completed (the buffer was full
+    /// when it compacted), otherwise the slots below the committed buffer
+    /// count. Judged against the state at open — see `committed_total_count`.
+    pub(crate) fn slot_is_committed(&self, position: u16) -> bool {
+        let epoch_size = self.epoch_size();
+        self.committed_total_count / epoch_size > 0
+            || (position as u64) < self.committed_total_count % epoch_size
+    }
+
+    /// Decide how the next buffer-slot write is reported, reading the slot's
+    /// committed value when the accounting sizes rewrites against it.
+    ///
+    /// The read — one seek, the committed value's bytes — is billed into
+    /// `cost`. It goes to the underlying storage (committed state plus the
+    /// surrounding transaction), never to the session's write-through cache:
+    /// a `StorageBatch` keeps one put per key, so the put that is eventually
+    /// charged must describe the transition from the committed value. A
+    /// slot written for the first time, and a full buffer (the append
+    /// compacts and writes no slot), are not read. A committed slot that
+    /// storage does not hold — corruption, not a state this code produces —
+    /// is charged as new, the safe direction.
+    fn slot_write_accounting(
+        &self,
+        accounting: &AppendStorageAccounting,
+        cost: &mut OperationCost,
+    ) -> Result<SlotWriteAccounting, BulkAppendError> {
+        if accounting.slot_rewrite == SlotRewriteAccounting::AsNew {
+            return Ok(SlotWriteAccounting::AsNew);
+        }
+        let position = self.dense_tree.count();
+        if position >= self.dense_tree.capacity() || !self.slot_is_committed(position) {
+            return Ok(SlotWriteAccounting::AsNew);
+        }
+        match self
+            .dense_tree
+            .storage
+            .get(position_key(position))
+            .unwrap_add_cost(cost)
+        {
+            Ok(Some(previous)) => Ok(SlotWriteAccounting::Overwrite {
+                previous_value_len: previous.len() as u32,
+            }),
+            Ok(None) => Ok(SlotWriteAccounting::AsNew),
+            Err(e) => Err(BulkAppendError::StorageError(format!(
+                "committed slot {} read before rewrite failed: {}",
+                position, e
+            ))),
+        }
     }
 
     /// Append a value to the tree.
@@ -78,7 +135,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             // +1 for the blake3 state-root computation we just did.
             hash_count: r.hash_count.saturating_add(1),
             compacted: r.compacted,
-            prepaid_chunk_bytes: r.prepaid_chunk_bytes,
+            storage_accounting_cost: r.storage_accounting_cost,
         })
     }
 
@@ -97,7 +154,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// version; what the version selects is the reported `hash_count` (for an
     /// append that compacts) and the storage accounting of the data writes —
     /// the cost information attached to the slot put, and the
-    /// `prepaid_chunk_bytes` the caller bills as added storage.
+    /// `storage_accounting_cost` the caller bills.
     pub fn append_no_state_root(
         &mut self,
         value: &[u8],
@@ -106,11 +163,13 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         let mut hash_count: u32 = 0;
         let global_position = self.total_count;
         let accounting = append_storage_accounting(grove_version)?;
+        let mut storage_accounting_cost = OperationCost::default();
+        let slot_write = self.slot_write_accounting(&accounting, &mut storage_accounting_cost)?;
 
         // 1. Try to insert into the dense tree buffer.
         let try_result = self
             .dense_tree
-            .try_insert_with_accounting(value, accounting.slot_write)
+            .try_insert_with_accounting(value, slot_write)
             .unwrap()
             .map_err(|e| {
                 BulkAppendError::StorageError(format!("dense tree insert failed: {}", e))
@@ -142,11 +201,16 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
 
         self.total_count += 1;
 
+        storage_accounting_cost.storage_cost.added_bytes = storage_accounting_cost
+            .storage_cost
+            .added_bytes
+            .saturating_add(accounting.prepaid_chunk_bytes(value.len()));
+
         Ok(AppendNoStateRootResult {
             global_position,
             hash_count,
             compacted,
-            prepaid_chunk_bytes: accounting.prepaid_chunk_bytes(value.len()),
+            storage_accounting_cost,
         })
     }
 
@@ -178,10 +242,19 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             Ok(a) => a,
             Err(e) => return Err(e).wrap_with_cost(cost),
         };
+        // The committed-slot read is billed here, in the returned cost, and
+        // mirrored (with the prepaid share) in the result for information.
+        let mut storage_accounting_cost = OperationCost::default();
+        let slot_write = self.slot_write_accounting(&accounting, &mut storage_accounting_cost);
+        cost += storage_accounting_cost.clone();
+        let slot_write = match slot_write {
+            Ok(s) => s,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
 
         let try_result = match self
             .dense_tree
-            .try_insert_no_root_with_accounting(value, accounting.slot_write)
+            .try_insert_no_root_with_accounting(value, slot_write)
             .unwrap_add_cost(&mut cost)
         {
             Ok(r) => r,
@@ -238,12 +311,16 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             .storage_cost
             .added_bytes
             .saturating_add(prepaid_chunk_bytes);
+        storage_accounting_cost.storage_cost.added_bytes = storage_accounting_cost
+            .storage_cost
+            .added_bytes
+            .saturating_add(prepaid_chunk_bytes);
 
         Ok(AppendNoStateRootResult {
             global_position,
             hash_count,
             compacted,
-            prepaid_chunk_bytes,
+            storage_accounting_cost,
         })
         .wrap_with_cost(cost)
     }
