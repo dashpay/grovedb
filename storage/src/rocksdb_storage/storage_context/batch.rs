@@ -77,7 +77,9 @@ impl Batch for PrefixedRocksDbBatch<'_> {
     ) -> Result<(), grovedb_costs::error::Error> {
         let prefixed_key = make_prefixed_key(&self.prefix, key);
 
-        self.cost_acc.seek_count += 1;
+        if !cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
+            self.cost_acc.seek_count += 1;
+        }
         self.cost_acc.add_key_value_storage_costs(
             prefixed_key.len() as u32,
             value.len() as u32,
@@ -97,7 +99,9 @@ impl Batch for PrefixedRocksDbBatch<'_> {
     ) -> Result<(), grovedb_costs::error::Error> {
         let prefixed_key = make_prefixed_key(&self.prefix, key);
 
-        self.cost_acc.seek_count += 1;
+        if !cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
+            self.cost_acc.seek_count += 1;
+        }
         // put root only pays if cost info is set
         if cost_info.is_some() {
             self.cost_acc.add_key_value_storage_costs(

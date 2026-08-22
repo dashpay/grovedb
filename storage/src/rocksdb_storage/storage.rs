@@ -341,7 +341,9 @@ impl RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put_cf(cf_aux(&self.db), &key, &value);
-                    cost.seek_count += 1;
+                    if !cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
+                        cost.seek_count += 1;
+                    }
                     cost_return_on_error_no_add!(
                         cost,
                         pending_costs
@@ -360,7 +362,9 @@ impl RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put_cf(cf_roots(&self.db), &key, &value);
-                    cost.seek_count += 1;
+                    if !cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
+                        cost.seek_count += 1;
+                    }
                     // We only add costs for put root if they are set, otherwise it is free
                     if cost_info.is_some() {
                         cost_return_on_error_no_add!(
@@ -382,7 +386,9 @@ impl RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put_cf(cf_meta(&self.db), &key, &value);
-                    cost.seek_count += 1;
+                    if !cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
+                        cost.seek_count += 1;
+                    }
                     cost_return_on_error_no_add!(
                         cost,
                         pending_costs

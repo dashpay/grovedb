@@ -1055,6 +1055,125 @@ mod batch_transaction {
         );
     }
 
+    /// Every costed put variant honours the marker, on both commit paths:
+    /// the `StorageBatch` committed through `continue_write_batch` (data,
+    /// aux, roots, meta) and the direct `PrefixedRocksDbBatch` of an
+    /// immediate context (data, aux, roots). Prepaid puts seek nothing;
+    /// the ordinary puts beside them seek once each.
+    #[test]
+    fn test_prepaid_puts_of_every_variant_are_charged_no_seek() {
+        use grovedb_costs::storage_cost::key_value_cost::KeyValueStorageCost;
+
+        // StorageBatch path.
+        let storage = TempStorage::new();
+        let transaction = storage.start_transaction();
+        let batch = StorageBatch::new();
+        let context = storage
+            .get_transactional_storage_context(
+                [b"ayya"].as_ref().into(),
+                Some(&batch),
+                &transaction,
+            )
+            .unwrap();
+        let prepaid = || Some(KeyValueStorageCost::prepaid());
+        context
+            .put(b"d", &[1u8; 10], None, prepaid())
+            .unwrap()
+            .expect("put");
+        context
+            .put_aux(b"a", &[2u8; 10], prepaid())
+            .unwrap()
+            .expect("put_aux");
+        context
+            .put_root(b"r", &[3u8; 10], prepaid())
+            .unwrap()
+            .expect("put_root");
+        context
+            .put_meta(b"m", &[4u8; 10], prepaid())
+            .unwrap()
+            .expect("put_meta");
+        context
+            .put(b"d2", &[5u8; 10], None, None)
+            .unwrap()
+            .expect("put");
+        context
+            .put_aux(b"a2", &[6u8; 10], None)
+            .unwrap()
+            .expect("put_aux");
+        context
+            .put_root(b"r2", &[7u8; 10], None)
+            .unwrap()
+            .expect("put_root");
+        context
+            .put_meta(b"m2", &[8u8; 10], None)
+            .unwrap()
+            .expect("put_meta");
+        let commit = storage.commit_multi_context_batch(batch, Some(&transaction));
+        commit.value.expect("commit");
+        assert_eq!(
+            commit.cost.seek_count, 4,
+            "one seek per ordinary put, none for the prepaid ones: {:?}",
+            commit.cost
+        );
+        let ctx = storage
+            .get_transactional_storage_context([b"ayya"].as_ref().into(), None, &transaction)
+            .unwrap();
+        assert_eq!(ctx.get(b"d").unwrap().expect("get"), Some(vec![1u8; 10]));
+        assert_eq!(
+            ctx.get_aux(b"a").unwrap().expect("get_aux"),
+            Some(vec![2u8; 10])
+        );
+        assert_eq!(
+            ctx.get_root(b"r").unwrap().expect("get_root"),
+            Some(vec![3u8; 10])
+        );
+        assert_eq!(
+            ctx.get_meta(b"m").unwrap().expect("get_meta"),
+            Some(vec![4u8; 10])
+        );
+
+        // Direct batch path of an immediate context.
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let context = storage
+            .get_immediate_storage_context([b"ayya"].as_ref().into(), &tx)
+            .unwrap();
+        let mut db_batch = context.new_batch();
+        db_batch
+            .put(b"d", &[1u8; 10], None, prepaid())
+            .expect("put");
+        db_batch
+            .put_aux(b"a", &[2u8; 10], prepaid())
+            .expect("put_aux");
+        db_batch
+            .put_root(b"r", &[3u8; 10], prepaid())
+            .expect("put_root");
+        db_batch.put(b"d2", &[5u8; 10], None, None).expect("put");
+        db_batch.put_aux(b"a2", &[6u8; 10], None).expect("put_aux");
+        db_batch
+            .put_root(b"r2", &[7u8; 10], None)
+            .expect("put_root");
+        let commit = context.commit_batch(db_batch);
+        commit.value.expect("commit");
+        assert_eq!(
+            commit.cost.seek_count, 3,
+            "one seek per ordinary put, none for the prepaid ones: {:?}",
+            commit.cost
+        );
+        assert_eq!(
+            context.get(b"d").unwrap().expect("get"),
+            Some(vec![1u8; 10])
+        );
+        assert_eq!(
+            context.get_aux(b"a").unwrap().expect("get_aux"),
+            Some(vec![2u8; 10])
+        );
+        assert_eq!(
+            context.get_root(b"r").unwrap().expect("get_root"),
+            Some(vec![3u8; 10])
+        );
+    }
+
     #[test]
     fn test_transactional_put_completes_new_node_key_cost() {
         use grovedb_costs::storage_cost::{
