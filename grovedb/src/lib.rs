@@ -3057,6 +3057,7 @@ impl GroveDb {
         element: &Element,
         subtree_path: SubtreePath<'b, B>,
         transaction: &Transaction,
+        grove_version: &GroveVersion,
     ) -> Result<CryptoHash, Error> {
         use grovedb_merk::tree::hash::NULL_HASH;
         match element.underlying() {
@@ -3119,11 +3120,14 @@ impl GroveDb {
                     .unwrap();
                 let store = grovedb_merkle_mountain_range::MmrStore::new(&storage_ctx);
                 let mmr = grovedb_merkle_mountain_range::MMR::new(*mmr_size, &store);
-                mmr.get_root().value.map(|root| root.hash()).map_err(|e| {
-                    Error::CorruptedData(format!(
-                        "cannot compute MMR root of size {mmr_size} from payload: {e}"
-                    ))
-                })
+                mmr.get_root(grove_version)
+                    .value
+                    .map(|root| root.hash())
+                    .map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "cannot compute MMR root of size {mmr_size} from payload: {e}"
+                        ))
+                    })
             }
             Element::DenseAppendOnlyFixedSizeTree(count, height, _) => {
                 if *count == 0 {

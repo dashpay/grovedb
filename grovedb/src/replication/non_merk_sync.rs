@@ -27,9 +27,33 @@
 //!   element value hash bound into the (already restored, hash-verified)
 //!   parent Merk. Any tampering with wire bytes — entries, frontier, counts
 //!   — changes the recomputed root and rejects the subtree.
+//!
+//! # Resource bounds against Byzantine peers
+//!
+//! Both ends of the wire are untrusted:
+//!
+//! - The **source** validates every peer-controlled cursor field before it
+//!   drives tree arithmetic: an MMR `state` must be a canonical MMR size
+//!   (so `leaf_to_pos` is never fed an index it cannot represent), dense
+//!   counts must fit `u16`, and bulk/dense parameters go through the trees'
+//!   own `from_state` validation. Any mismatch produces a bounded read error,
+//!   never a panic, and every page is bounded by [`MAX_PAGE_BYTES`] /
+//!   [`MAX_PAGE_ENTRIES`].
+//! - The **target** enforces the same page budget on receipt
+//!   ([`decode_non_merk_page`]) *before* allocating or replaying anything,
+//!   so a few megabytes of wire bytes can never turn into millions of hashes
+//!   and transactional writes; the byzantine page is rejected outright
+//!   instead of at the final root check. The transport's absolute message
+//!   size cap still bounds the single-entry case (entries have no
+//!   protocol-level maximum size).
+//!
+//! `PrivateDocumentStore` also uses non-Merk data storage but has no
+//! entry-replay arm yet (issues #783 / #784): a populated one is rejected
+//! with a descriptive `NotSupported` on both sides, an empty one syncs
+//! through the ordinary Merk path exactly as before.
 
 use grovedb_bulk_append_tree::{deserialize_chunk_blob, BulkAppendTree};
-use grovedb_commitment_tree::COMMITMENT_TREE_DATA_KEY;
+use grovedb_commitment_tree::{CommitmentFrontier, COMMITMENT_TREE_DATA_KEY};
 use grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree;
 use grovedb_merk::{
     tree::{combine_hash, hash::CryptoHash},
@@ -40,6 +64,7 @@ use grovedb_merkle_mountain_range::{
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{Storage, StorageContext};
+use grovedb_version::version::GroveVersion;
 
 use crate::{
     replication::utils::{pack_nested_bytes, unpack_nested_bytes},
@@ -51,11 +76,64 @@ use crate::{
 pub(crate) const MAX_PAGE_BYTES: usize = 1 << 20; // 1 MiB
 
 /// Hard cap on the number of entries in a single page, so pages of tiny
-/// entries stay bounded in element count as well as bytes.
-const MAX_PAGE_ENTRIES: usize = 8192;
+/// entries stay bounded in element count as well as bytes. Enforced by the
+/// sender loops AND by [`decode_non_merk_page`] on receipt.
+pub(crate) const MAX_PAGE_ENTRIES: usize = 8192;
 
 /// Encoded length of a [`NonMerkChunkId`]: start (8) + state (8) + param (1).
 const NON_MERK_CHUNK_ID_LEN: usize = 17;
+
+/// Whether state sync transfers this (non-Merk) tree type by entry replay.
+///
+/// This is deliberately narrower than
+/// [`TreeType::uses_non_merk_data_storage`]: that predicate also covers
+/// `PrivateDocumentStore`, which has no replay arm yet and must keep failing
+/// closed with a descriptive error rather than being routed here.
+pub(crate) fn supports_entry_replay(tree_type: TreeType) -> bool {
+    matches!(
+        tree_type,
+        TreeType::CommitmentTree(_)
+            | TreeType::MmrTree
+            | TreeType::BulkAppendTree(_)
+            | TreeType::DenseAppendOnlyFixedSizeTree(_)
+    )
+}
+
+/// Element-level twin of [`supports_entry_replay`].
+pub(crate) fn element_supports_entry_replay(element: &Element) -> bool {
+    matches!(
+        element.underlying(),
+        Element::CommitmentTree(..)
+            | Element::MmrTree(..)
+            | Element::BulkAppendTree(..)
+            | Element::DenseAppendOnlyFixedSizeTree(..)
+    )
+}
+
+/// Validate that `mmr_size` is a canonical MMR size and return its leaf
+/// count.
+///
+/// `mmr_size_to_leaf_count` silently maps a non-canonical size to the leaf
+/// count of the last valid MMR below it, and for sizes near `u64::MAX` it
+/// yields leaf counts whose positions `leaf_to_pos` cannot compute without
+/// overflowing. Both the source (peer-controlled cursor) and the target
+/// (element from the parent) go through this check so the arithmetic that
+/// follows is always in range.
+pub(crate) fn validate_mmr_size(mmr_size: u64) -> Result<u64, Error> {
+    let leaf_count = mmr_size_to_leaf_count(mmr_size);
+    // Canonical size for `leaf_count` leaves is `2 * leaf_count -
+    // popcount(leaf_count)`; compute it with checked arithmetic so a
+    // pathological size can never overflow here either.
+    let canonical = leaf_count
+        .checked_mul(2)
+        .and_then(|twice| twice.checked_sub(u64::from(leaf_count.count_ones())));
+    if canonical != Some(mmr_size) {
+        return Err(Error::CorruptedData(format!(
+            "{mmr_size} is not a valid MMR size"
+        )));
+    }
+    Ok(leaf_count)
+}
 
 /// Local chunk id for a non-Merk subtree page request. The target — which
 /// holds the hash-verified element — tells the source everything it needs to
@@ -122,6 +200,16 @@ pub(crate) fn encode_non_merk_page(
 }
 
 /// Decode a page of entries. Returns `(more, aux, entries)`.
+///
+/// Enforces the sender's page budget on receipt, before anything is
+/// allocated per entry or replayed:
+/// - at most [`MAX_PAGE_ENTRIES`] entries (the packed section count is
+///   checked *before* `unpack_nested_bytes` materialises the sections), and
+/// - the honest sender stops adding entries once the running byte total
+///   reaches [`MAX_PAGE_BYTES`], so every entry but the last must fit under
+///   that budget cumulatively. Only the final entry may overhang it, which
+///   bounds a page to `MAX_PAGE_BYTES + one entry` — the transport's message
+///   size cap bounds that last term.
 pub(crate) fn decode_non_merk_page(data: &[u8]) -> Result<(bool, Vec<u8>, Vec<Vec<u8>>), Error> {
     let (&flag, packed) = data.split_first().ok_or_else(|| {
         Error::CorruptedData("non-merk page is empty (missing more-flag)".to_string())
@@ -135,6 +223,20 @@ pub(crate) fn decode_non_merk_page(data: &[u8]) -> Result<(bool, Vec<u8>, Vec<Ve
             )));
         }
     };
+    // Peek the section count (aux + entries) and apply the entry cap before
+    // `unpack_nested_bytes` allocates one `Vec` header per declared section.
+    let declared_sections = packed
+        .get(0..4)
+        .map(|b| u32::from_be_bytes(b.try_into().expect("4 bytes")) as usize)
+        .ok_or_else(|| {
+            Error::CorruptedData("non-merk page is missing its section count".to_string())
+        })?;
+    if declared_sections > MAX_PAGE_ENTRIES + 1 {
+        return Err(Error::CorruptedData(format!(
+            "non-merk page declares {} entries, more than the {MAX_PAGE_ENTRIES} per-page cap",
+            declared_sections.saturating_sub(1)
+        )));
+    }
     let mut sections = unpack_nested_bytes(packed)?;
     if sections.is_empty() {
         return Err(Error::CorruptedData(
@@ -143,6 +245,18 @@ pub(crate) fn decode_non_merk_page(data: &[u8]) -> Result<(bool, Vec<u8>, Vec<Ve
     }
     let entries = sections.split_off(1);
     let aux = sections.pop().expect("checked non-empty");
+
+    // Byte budget: everything before the last entry must have fit under the
+    // sender's budget, otherwise the sender would have cut the page earlier.
+    if let Some((_last, head)) = entries.split_last() {
+        let head_bytes: usize = head.iter().map(Vec::len).sum();
+        if head_bytes >= MAX_PAGE_BYTES {
+            return Err(Error::CorruptedData(format!(
+                "non-merk page carries {head_bytes} entry bytes before its final entry, \
+                 exceeding the {MAX_PAGE_BYTES}-byte page budget"
+            )));
+        }
+    }
     Ok((more, aux, entries))
 }
 
@@ -157,7 +271,9 @@ impl GroveDb {
     /// element. An honest pair always agrees with the source's own data; a
     /// mismatching cursor from a byzantine peer only produces read errors or
     /// short pages here (bounded by the page budget) — target-side
-    /// verification is what protects the *syncing* node.
+    /// verification is what protects the *syncing* node. Every
+    /// peer-controlled field is validated before it drives tree arithmetic
+    /// (see the module docs).
     pub(crate) fn fetch_non_merk_page(
         &self,
         chunk_prefix: crate::SubtreePrefix,
@@ -267,8 +383,9 @@ impl GroveDb {
                 encode_non_merk_page(pos < total, aux, entries)
             }
             TreeType::MmrTree => {
-                let mmr_size = id.state;
-                let leaf_count = mmr_size_to_leaf_count(mmr_size);
+                // `id.state` is peer-controlled: reject non-canonical sizes
+                // before any leaf index is converted to a position.
+                let leaf_count = validate_mmr_size(id.state)?;
                 let ctx = self
                     .db
                     .get_transactional_storage_context_by_subtree_prefix(
@@ -398,7 +515,7 @@ impl NonMerkRestorer {
             Element::BulkAppendTree(total_count, chunk_power, _) => {
                 (*total_count, *total_count, *chunk_power)
             }
-            Element::MmrTree(mmr_size, _) => (mmr_size_to_leaf_count(*mmr_size), *mmr_size, 0),
+            Element::MmrTree(mmr_size, _) => (validate_mmr_size(*mmr_size)?, *mmr_size, 0),
             Element::DenseAppendOnlyFixedSizeTree(count, height, _) => {
                 (*count as u64, *count as u64, *height)
             }
@@ -432,9 +549,72 @@ impl NonMerkRestorer {
         .encode()
     }
 
+    /// Validate the aux section of a page and, for a populated commitment
+    /// tree's first page, return the frontier bytes to persist.
+    ///
+    /// The frontier is authenticated at finalize time through the Sinsemilla
+    /// root inside the state root, but that root only covers the *decoded*
+    /// frontier: `CommitmentFrontier::deserialize` tolerates trailing bytes,
+    /// and the target stores the wire bytes verbatim. Their length is what
+    /// later frontier saves are billed against (`persisted_frontier_len`),
+    /// so padded-but-decodable bytes would silently make the synced node's
+    /// storage accounting diverge from the network's. Hence the frontier
+    /// must round-trip byte-for-byte through the codec, and its declared
+    /// tree size must already agree with the element (the same invariant
+    /// `CommitmentTree::open` enforces, checked early here for a precise
+    /// error).
+    ///
+    /// An empty commitment tree never has a stored frontier (the honest
+    /// source sends an empty aux), and its state root is a constant that
+    /// never reads the payload — so a planted frontier would pass
+    /// verification yet be loaded by the target's next append. Reject it.
+    fn validate_aux<'a>(&self, aux: &'a [u8]) -> Result<Option<&'a [u8]>, Error> {
+        if !(self.element.is_commitment_tree() && self.replayed == 0) {
+            if !aux.is_empty() {
+                return Err(Error::CorruptedData(
+                    "unexpected aux data in non-merk page".to_string(),
+                ));
+            }
+            return Ok(None);
+        }
+        if self.expected_entries == 0 {
+            if !aux.is_empty() {
+                return Err(Error::CorruptedData(
+                    "empty commitment tree page must not carry a frontier".to_string(),
+                ));
+            }
+            return Ok(None);
+        }
+        if aux.is_empty() {
+            return Err(Error::CorruptedData(
+                "populated commitment tree page 0 is missing the frontier".to_string(),
+            ));
+        }
+        let frontier = CommitmentFrontier::deserialize(aux).map_err(|e| {
+            Error::CorruptedData(format!("commitment tree frontier is invalid: {e}"))
+        })?;
+        if frontier.serialize() != aux {
+            return Err(Error::CorruptedData(
+                "commitment tree frontier is not canonically encoded".to_string(),
+            ));
+        }
+        if frontier.tree_size() != self.expected_entries {
+            return Err(Error::CorruptedData(format!(
+                "commitment tree frontier covers {} entries, element declares {}",
+                frontier.tree_size(),
+                self.expected_entries
+            )));
+        }
+        Ok(Some(aux))
+    }
+
     /// Apply one received page: replay its entries through the real append
     /// primitives and return the next page cursor(s), empty when the source
     /// declared this the final page.
+    ///
+    /// `grove_version` only selects how the replayed writes would be
+    /// *billed* (costs are discarded during sync); the bytes written are
+    /// identical under every version.
     pub(crate) fn apply_page(
         &mut self,
         db: &GroveDb,
@@ -442,6 +622,7 @@ impl NonMerkRestorer {
         path: &[Vec<u8>],
         chunk_id: &[u8],
         data: &[u8],
+        grove_version: &GroveVersion,
     ) -> Result<Vec<Vec<u8>>, Error> {
         let id = NonMerkChunkId::decode(chunk_id)?;
         if id.start != self.replayed || id.state != self.state_for_source || id.param != self.param
@@ -472,33 +653,21 @@ impl NonMerkRestorer {
                 "non-merk page declares more data but carries no entries".to_string(),
             ));
         }
+        let frontier_to_store = self.validate_aux(&aux)?;
 
         let path_refs: Vec<&[u8]> = path.iter().map(|v| v.as_slice()).collect();
         let subtree_path: SubtreePath<&[u8]> = SubtreePath::from(path_refs.as_slice());
 
-        // Aux section: only a commitment tree's first page may carry data —
-        // the serialized frontier, copied verbatim (it is authenticated at
-        // finalize time through the sinsemilla root inside the state root).
-        if self.element.is_commitment_tree() && self.replayed == 0 {
-            if !aux.is_empty() {
-                let ctx = db
-                    .db
-                    .get_immediate_storage_context(subtree_path.clone(), tx)
-                    .unwrap();
-                ctx.put(COMMITMENT_TREE_DATA_KEY, &aux, None, None)
-                    .unwrap()
-                    .map_err(|e| {
-                        Error::CorruptedData(format!("cannot write commitment tree frontier: {e}"))
-                    })?;
-            } else if self.expected_entries > 0 {
-                return Err(Error::CorruptedData(
-                    "populated commitment tree page 0 is missing the frontier".to_string(),
-                ));
-            }
-        } else if !aux.is_empty() {
-            return Err(Error::CorruptedData(
-                "unexpected aux data in non-merk page".to_string(),
-            ));
+        if let Some(frontier) = frontier_to_store {
+            let ctx = db
+                .db
+                .get_immediate_storage_context(subtree_path.clone(), tx)
+                .unwrap();
+            ctx.put(COMMITMENT_TREE_DATA_KEY, frontier, None, None)
+                .unwrap()
+                .map_err(|e| {
+                    Error::CorruptedData(format!("cannot write commitment tree frontier: {e}"))
+                })?;
         }
 
         match self.element.underlying() {
@@ -515,11 +684,11 @@ impl NonMerkRestorer {
                         ))
                     })?;
                 for entry in &entries {
-                    tree.append(entry).map_err(|e| {
+                    tree.append(entry, grove_version).map_err(|e| {
                         Error::CorruptedData(format!("cannot replay bulk entry: {e}"))
                     })?;
                 }
-                tree.commit_mmr().map_err(|e| {
+                tree.commit_mmr(grove_version).map_err(|e| {
                     Error::CorruptedData(format!("cannot flush replayed chunk MMR: {e}"))
                 })?;
             }
@@ -531,9 +700,11 @@ impl NonMerkRestorer {
                 let store = MmrStore::new(&ctx);
                 let mut mmr = MMR::new(self.mmr_size_so_far, &store);
                 for entry in entries.iter().cloned() {
-                    mmr.push(MmrNode::leaf(entry)).unwrap().map_err(|e| {
-                        Error::CorruptedData(format!("cannot replay MMR leaf: {e}"))
-                    })?;
+                    mmr.push(MmrNode::leaf(entry), grove_version)
+                        .unwrap()
+                        .map_err(|e| {
+                            Error::CorruptedData(format!("cannot replay MMR leaf: {e}"))
+                        })?;
                 }
                 mmr.commit()
                     .unwrap()
@@ -585,6 +756,7 @@ impl NonMerkRestorer {
         db: &GroveDb,
         tx: &Transaction,
         path: &[Vec<u8>],
+        grove_version: &GroveVersion,
     ) -> Result<(), Error> {
         if self.replayed != self.expected_entries {
             return Err(Error::CorruptedData(format!(
@@ -604,7 +776,8 @@ impl NonMerkRestorer {
         let path_refs: Vec<&[u8]> = path.iter().map(|v| v.as_slice()).collect();
         let subtree_path: SubtreePath<&[u8]> = SubtreePath::from(path_refs.as_slice());
 
-        let state_root = db.compute_non_merk_state_root(&self.element, subtree_path, tx)?;
+        let state_root =
+            db.compute_non_merk_state_root(&self.element, subtree_path, tx, grove_version)?;
         let combined = combine_hash(&self.actual_value_hash, &state_root).unwrap();
         if combined != self.expected_elem_value_hash {
             return Err(Error::CorruptedData(format!(
@@ -664,6 +837,8 @@ mod tests {
         assert!(decode_non_merk_page(&[]).is_err());
         // Invalid flag.
         assert!(decode_non_merk_page(&[2u8, 0, 0, 0, 0]).is_err());
+        // Valid flag but no section count at all.
+        assert!(decode_non_merk_page(&[0u8]).is_err());
         // Valid flag but no sections at all (count = 0): aux is mandatory.
         let no_sections = {
             let mut d = vec![0u8];
@@ -671,5 +846,123 @@ mod tests {
             d
         };
         assert!(decode_non_merk_page(&no_sections).is_err());
+    }
+
+    /// A page with exactly `MAX_PAGE_ENTRIES` (zero-length) entries is the
+    /// largest an honest sender produces and must decode; one more entry is
+    /// rejected — from the declared section count alone, before any section
+    /// is materialised — so a few megabytes of tiny entries can never turn
+    /// into millions of replayed writes on the target.
+    #[test]
+    fn non_merk_page_enforces_entry_cap_on_receipt() {
+        let at_cap =
+            encode_non_merk_page(false, Vec::new(), vec![Vec::new(); MAX_PAGE_ENTRIES]).unwrap();
+        let (_, _, entries) = decode_non_merk_page(&at_cap).unwrap();
+        assert_eq!(entries.len(), MAX_PAGE_ENTRIES);
+
+        let over_cap =
+            encode_non_merk_page(false, Vec::new(), vec![Vec::new(); MAX_PAGE_ENTRIES + 1])
+                .unwrap();
+        let err = decode_non_merk_page(&over_cap).unwrap_err();
+        assert!(format!("{err:?}").contains("per-page cap"), "got: {err:?}");
+
+        // The cap is applied to the declared count even when the body is
+        // truncated — the decoder must not trust the count and allocate.
+        let mut lying = vec![0u8];
+        lying.extend_from_slice(&(u32::MAX).to_be_bytes());
+        lying.extend_from_slice(&[0u8; 64]);
+        let err = decode_non_merk_page(&lying).unwrap_err();
+        assert!(format!("{err:?}").contains("per-page cap"), "got: {err:?}");
+    }
+
+    /// The honest sender stops once the running byte total reaches
+    /// `MAX_PAGE_BYTES`, so only the final entry may overhang the budget.
+    #[test]
+    fn non_merk_page_enforces_byte_budget_on_receipt() {
+        // Largest honest shape: just under budget, then one big final entry.
+        let honest = encode_non_merk_page(
+            true,
+            Vec::new(),
+            vec![vec![1u8; MAX_PAGE_BYTES - 1], vec![2u8; 4096]],
+        )
+        .unwrap();
+        assert!(decode_non_merk_page(&honest).is_ok());
+
+        // A single entry far over budget is legal (the transport caps it).
+        let single =
+            encode_non_merk_page(false, Vec::new(), vec![vec![3u8; 3 * MAX_PAGE_BYTES]]).unwrap();
+        assert!(decode_non_merk_page(&single).is_ok());
+
+        // Budget already reached before the final entry: the sender would
+        // have cut the page — reject.
+        let over = encode_non_merk_page(
+            true,
+            Vec::new(),
+            vec![vec![1u8; MAX_PAGE_BYTES], vec![2u8; 1]],
+        )
+        .unwrap();
+        let err = decode_non_merk_page(&over).unwrap_err();
+        assert!(format!("{err:?}").contains("page budget"), "got: {err:?}");
+    }
+
+    #[test]
+    fn validate_mmr_size_accepts_canonical_and_rejects_others() {
+        // Leaf counts and their canonical sizes 2n - popcount(n), including
+        // the largest representable ones: 2^63 - 1 is one perfect tree of
+        // 2^62 leaves, 2^63 is that tree plus a single leaf.
+        for (size, leaves) in [
+            (0u64, 0u64),
+            (1, 1),
+            (3, 2),
+            (4, 3),
+            (7, 4),
+            (8, 5),
+            (10, 6),
+            (11, 7),
+            (15, 8),
+            ((1 << 63) - 1, 1 << 62),
+            (1 << 63, (1 << 62) + 1),
+        ] {
+            assert_eq!(validate_mmr_size(size).unwrap(), leaves, "size {size}");
+        }
+        // Non-canonical sizes, including the ones whose naive leaf count
+        // (2^63 for u64::MAX) would overflow `leaf_to_pos`.
+        for size in [
+            2u64,
+            5,
+            6,
+            9,
+            12,
+            13,
+            14,
+            (1 << 63) + 1,
+            u64::MAX - 1,
+            u64::MAX,
+        ] {
+            let err = validate_mmr_size(size).unwrap_err();
+            assert!(
+                format!("{err:?}").contains("not a valid MMR size"),
+                "size {size}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn entry_replay_predicate_excludes_private_document_store() {
+        assert!(supports_entry_replay(TreeType::CommitmentTree(4)));
+        assert!(supports_entry_replay(TreeType::MmrTree));
+        assert!(supports_entry_replay(TreeType::BulkAppendTree(4)));
+        assert!(supports_entry_replay(
+            TreeType::DenseAppendOnlyFixedSizeTree(4)
+        ));
+        assert!(!supports_entry_replay(TreeType::PrivateDocumentStore(4)));
+        assert!(!supports_entry_replay(TreeType::NormalTree));
+        assert!(TreeType::PrivateDocumentStore(4).uses_non_merk_data_storage());
+
+        assert!(element_supports_entry_replay(&Element::empty_mmr_tree()));
+        assert!(!element_supports_entry_replay(
+            &Element::empty_private_document_store(16, 4).unwrap()
+        ));
+        assert!(!element_supports_entry_replay(&Element::empty_tree()));
     }
 }

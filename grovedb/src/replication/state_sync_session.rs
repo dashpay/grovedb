@@ -19,7 +19,7 @@ use grovedb_storage::{
 use grovedb_version::version::GroveVersion;
 
 use super::{
-    non_merk_sync::NonMerkRestorer,
+    non_merk_sync::{element_supports_entry_replay, supports_entry_replay, NonMerkRestorer},
     utils::{decode_vec_ops, encode_global_chunk_id, path_to_string},
     CURRENT_STATE_SYNC_VERSION,
 };
@@ -152,6 +152,7 @@ impl SubtreeStateSyncInfo<'_> {
                     &self.current_path,
                     chunk_id,
                     chunk_data,
+                    grove_version,
                 )?;
                 self.num_processed_chunks += 1;
                 for next_chunk_id in next_chunk_ids {
@@ -378,11 +379,13 @@ impl<'db> MultiStateSyncSession<'db> {
             self.db
                 .open_merk_for_replication(path.clone(), transaction_ref, grove_version)
         {
-            if tree_type.uses_non_merk_data_storage() {
+            if supports_entry_replay(tree_type) {
                 // Non-Merk append-only subtree: restored by replaying leaf
                 // entries rather than Merk chunks (see issue #785). The
                 // Merk opened above is structurally empty for these types
-                // and is not needed.
+                // and is not needed. (A PrivateDocumentStore reaches the
+                // Merk restorer below instead: discovery only lets an
+                // EMPTY one through, which the Merk path handles.)
                 drop(merk);
                 let element = element.ok_or_else(|| {
                     Error::InternalError(
@@ -647,7 +650,12 @@ impl<'db> MultiStateSyncSession<'db> {
                             // source that tampered with any wire byte is
                             // rejected here.
                             is_non_merk_subtree = true;
-                            non_merk_restorer.finalize(db, transaction_ref, &completed_path)?;
+                            non_merk_restorer.finalize(
+                                db,
+                                transaction_ref,
+                                &completed_path,
+                                grove_version,
+                            )?;
                         }
                     }
                 } else {
@@ -808,6 +816,24 @@ impl<'db> MultiStateSyncSession<'db> {
                 // discovered like any subtree; `add_subtree_sync_info`
                 // routes them to the entry-replay restore path instead of
                 // Merk chunk restore (see issue #785).
+                //
+                // Any other non-Merk data tree (PrivateDocumentStore, see
+                // issues #783 / #784) has no replay arm yet. An EMPTY one
+                // is fine — the Merk path transfers its (empty) Merk and
+                // the parent binding is already verified — but a populated
+                // one has no Merk nodes to chunk and would only fail
+                // opaquely in the source's chunk producer, so reject it
+                // up-front here where the decoded `Element` is available.
+                if value.uses_non_merk_data_storage()
+                    && !element_supports_entry_replay(&value)
+                    && value.non_merk_entry_count().unwrap_or(0) > 0
+                {
+                    return Err(Error::NotSupported(format!(
+                        "state sync does not yet support populated {} subtrees \
+                         (non-Merk data storage without an entry-replay arm)",
+                        value.type_str()
+                    )));
+                }
                 subtree_keys.insert(key.to_vec());
             }
         }

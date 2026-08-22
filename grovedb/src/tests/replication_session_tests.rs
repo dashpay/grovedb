@@ -1141,6 +1141,230 @@ mod tests {
         assert_not_supported_append_only(&err, "source-side fetch_chunk");
     }
 
+    /// The MMR page cursor's `state` (the mmr_size) is peer-controlled. A
+    /// non-canonical size must be rejected before it drives any leaf →
+    /// position arithmetic: `state = u64::MAX` yields a leaf count of
+    /// `2^63`, and `start = 2^63 - 1` would then overflow `leaf_to_pos`
+    /// (a debug-build panic, a wrapped position in release).
+    #[test]
+    fn fetch_chunk_rejects_non_canonical_mmr_cursor() {
+        use crate::replication::{
+            non_merk_sync::NonMerkChunkId,
+            utils::{encode_global_chunk_id, pack_nested_bytes},
+        };
+
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"mmr",
+                Element::empty_mmr_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert mmr tree");
+        for i in 0u8..3 {
+            source
+                .mmr_tree_append(
+                    [TEST_LEAF].as_ref(),
+                    b"mmr",
+                    vec![i; 8],
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("append mmr leaf");
+        }
+
+        let tx = source.start_transaction();
+        let (merk, root_key, tree_type, _element) = source
+            .open_merk_for_replication([TEST_LEAF, b"mmr"].as_ref().into(), &tx, grove_version)
+            .expect("open mmr merk for replication");
+        drop(merk);
+        let mmr_path: &[&[u8]] = &[TEST_LEAF, b"mmr"];
+        let prefix = grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(
+            mmr_path.as_ref().into(),
+        )
+        .unwrap();
+
+        let fetch = |id: NonMerkChunkId| -> Result<Vec<u8>, crate::Error> {
+            let global_chunk_id =
+                encode_global_chunk_id(prefix, root_key.clone(), tree_type, vec![id.encode()])?;
+            let packed = pack_nested_bytes(vec![global_chunk_id])?;
+            source.fetch_chunk(
+                packed.as_slice(),
+                Some(&tx),
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )
+        };
+
+        // Sanity: the honest cursor (3 leaves → mmr_size 4) serves the page.
+        fetch(NonMerkChunkId {
+            start: 0,
+            state: 4,
+            param: 0,
+        })
+        .expect("honest cursor must be served");
+
+        for (state, start) in [
+            (u64::MAX, (1u64 << 63) - 1),
+            (u64::MAX, 0),
+            ((1u64 << 63) + 1, 0),
+            (5, 0),
+            (2, 1),
+        ] {
+            let err = fetch(NonMerkChunkId {
+                start,
+                state,
+                param: 0,
+            })
+            .expect_err("non-canonical mmr size in cursor must be rejected");
+            assert!(
+                format!("{err:?}").contains("not a valid MMR size"),
+                "state {state} start {start}: got {err:?}"
+            );
+        }
+
+        // A canonical-but-wrong size (2^63 = 2^62 + 1 leaves) passes the
+        // shape check and then fails as a bounded read of a missing leaf —
+        // never a panic, never an unrelated position.
+        let err = fetch(NonMerkChunkId {
+            start: 0,
+            state: 1u64 << 63,
+            param: 0,
+        })
+        .expect_err("oversized canonical mmr size must fail as a missing-leaf read");
+        assert!(
+            format!("{err:?}").contains("missing MMR leaf"),
+            "got {err:?}"
+        );
+    }
+
+    /// `PrivateDocumentStore` also uses non-Merk data storage but has no
+    /// entry-replay arm yet. An EMPTY one must keep syncing through the
+    /// ordinary Merk path (exactly as before the append-only work), and the
+    /// restored store must be usable afterwards.
+    #[test]
+    fn state_sync_empty_private_document_store_round_trip() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"docs",
+                Element::empty_private_document_store(16, 2).expect("valid config"),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert empty private document store");
+
+        let dest = sync_source_to_destination(&source, grove_version);
+
+        assert_eq!(
+            source.root_hash(None, grove_version).unwrap().unwrap(),
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+        );
+        let dest_issues = dest
+            .verify_grovedb(None, true, false, grove_version)
+            .expect("dest verify_grovedb should run");
+        assert!(dest_issues.is_empty(), "got: {:?}", dest_issues);
+
+        for db in [&source, &dest] {
+            db.private_document_store_insert(
+                [TEST_LEAF].as_ref(),
+                b"docs",
+                vec![9u8; 16],
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("post-sync document insert");
+        }
+        assert_eq!(
+            source.root_hash(None, grove_version).unwrap().unwrap(),
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+            "post-sync inserts must produce identical states"
+        );
+    }
+
+    /// A POPULATED `PrivateDocumentStore` cannot be transferred yet: the
+    /// target rejects it descriptively at discovery (never a silent
+    /// truncation to an empty store), and the source rejects a chunk request
+    /// for it descriptively too.
+    #[test]
+    fn state_sync_rejects_populated_private_document_store_up_front() {
+        use crate::replication::utils::{encode_global_chunk_id, pack_nested_bytes};
+
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"docs",
+                Element::empty_private_document_store(16, 2).expect("valid config"),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert private document store");
+        source
+            .private_document_store_insert(
+                [TEST_LEAF].as_ref(),
+                b"docs",
+                vec![1u8; 16],
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert document");
+
+        let err = try_sync_source_to_destination(&source, grove_version)
+            .expect_err("state sync of a DB containing a populated PDS must fail up-front");
+        let msg = format!("{err:?}");
+        assert!(
+            matches!(err, crate::Error::NotSupported(_)) && msg.contains("populated"),
+            "target-side: expected descriptive NotSupported, got: {msg}"
+        );
+
+        // Source side: the Merk-path request shape for this subtree.
+        let tx = source.start_transaction();
+        let (merk, root_key, tree_type, _element) = source
+            .open_merk_for_replication([TEST_LEAF, b"docs"].as_ref().into(), &tx, grove_version)
+            .expect("open pds merk for replication");
+        drop(merk);
+        let pds_path: &[&[u8]] = &[TEST_LEAF, b"docs"];
+        let prefix = grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(
+            pds_path.as_ref().into(),
+        )
+        .unwrap();
+        let global_chunk_id =
+            encode_global_chunk_id(prefix, root_key, tree_type, vec![]).expect("encode chunk id");
+        let packed = pack_nested_bytes(vec![global_chunk_id]).expect("pack chunk id");
+        let err = source
+            .fetch_chunk(
+                packed.as_slice(),
+                Some(&tx),
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )
+            .expect_err("populated PDS chunk request must be rejected");
+        let msg = format!("{err:?}");
+        assert!(
+            matches!(err, crate::Error::NotSupported(_)) && msg.contains("populated"),
+            "source-side: expected descriptive NotSupported, got: {msg}"
+        );
+    }
+
     /// An EMPTY CommitmentTree state-syncs cleanly: it has no payload
     /// entries, so the entry-replay path transfers a single empty page and
     /// verification reduces to the empty-tree state-root convention.
@@ -1499,6 +1723,7 @@ mod tests {
         let msg = format!("{err:?}");
         assert!(
             msg.contains("state root mismatch after replay")
+                || msg.contains("commitment tree frontier is invalid")
                 || msg.contains("cannot open commitment tree")
                 || msg.contains("cannot compute commitment tree state root"),
             "expected frontier-integrity rejection, got: {msg}"
@@ -1516,6 +1741,109 @@ mod tests {
         assert!(
             format!("{err:?}").contains("replay incomplete"),
             "expected incomplete-replay rejection, got: {err:?}"
+        );
+    }
+
+    /// A Byzantine source can pad the serialized frontier with trailing
+    /// bytes: `CommitmentFrontier::deserialize` tolerates them, so the
+    /// Sinsemilla root — and therefore the bound state root — is unchanged.
+    /// The target must still reject the page: it stores the frontier bytes
+    /// verbatim, and their length feeds the V4 storage-cost accounting of
+    /// every later frontier save, so accepting padded bytes would make the
+    /// synced node's fee computation diverge from the network's.
+    #[test]
+    fn state_sync_commitment_tree_rejects_non_canonical_frontier() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"ct",
+                Element::empty_commitment_tree(2).expect("valid chunk power"),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert commitment tree");
+        for i in 1u8..=3 {
+            source
+                .commitment_tree_insert_raw(
+                    [TEST_LEAF].as_ref(),
+                    b"ct",
+                    [i; 32],
+                    [i.wrapping_add(100); 32],
+                    [i.wrapping_add(200); 32],
+                    vec![i; 216],
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert commitment tree note");
+        }
+
+        // Padded frontier: decodes to the genuine frontier, different bytes.
+        let err =
+            try_sync_with_ct_page_mutation(&source, grove_version, &|more, mut aux, entries| {
+                if !aux.is_empty() {
+                    aux.push(0x00);
+                }
+                (more, aux, entries)
+            })
+            .expect_err("padded frontier must be rejected");
+        assert!(
+            format!("{err:?}").contains("not canonically encoded"),
+            "expected canonical-encoding rejection, got: {err:?}"
+        );
+
+        // Garbage that does not decode at all is rejected too.
+        let err = try_sync_with_ct_page_mutation(&source, grove_version, &|more, aux, entries| {
+            let aux = if aux.is_empty() {
+                aux
+            } else {
+                vec![0x07, 0x07, 0x07]
+            };
+            (more, aux, entries)
+        })
+        .expect_err("undecodable frontier must be rejected");
+        assert!(
+            format!("{err:?}").contains("frontier is invalid"),
+            "expected frontier-decoding rejection, got: {err:?}"
+        );
+    }
+
+    /// An EMPTY commitment tree never has a stored frontier, so an honest
+    /// source sends an empty aux section. A Byzantine source planting one
+    /// must be rejected: the empty-tree state root is a constant that would
+    /// never look at the planted bytes, yet the target's next append would
+    /// load them.
+    #[test]
+    fn state_sync_empty_commitment_tree_rejects_planted_frontier() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"ct",
+                Element::empty_commitment_tree(2).expect("valid chunk power"),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert empty commitment tree");
+
+        // `[0x00]` is the canonical serialization of an EMPTY frontier: a
+        // perfectly well-formed value that still must not be accepted.
+        let err = try_sync_with_ct_page_mutation(&source, grove_version, &|more, _aux, entries| {
+            (more, vec![0x00], entries)
+        })
+        .expect_err("planted frontier on an empty commitment tree must be rejected");
+        assert!(
+            format!("{err:?}").contains("must not carry a frontier"),
+            "expected planted-frontier rejection, got: {err:?}"
         );
     }
 
@@ -1694,7 +2022,7 @@ mod tests {
         let page = encode_non_merk_page(false, frontier.clone(), vec![b"e".to_vec()])
             .expect("encode page");
         let err = restorer
-            .apply_page(&db, &tx, &path, &[0u8; 3], &page)
+            .apply_page(&db, &tx, &path, &[0u8; 3], &page, grove_version)
             .expect_err("short chunk id must be rejected");
         assert!(format!("{err:?}").contains("17 bytes"), "got: {err:?}");
 
@@ -1706,7 +2034,7 @@ mod tests {
         }
         .encode();
         let err = restorer
-            .apply_page(&db, &tx, &path, &bad_id, &page)
+            .apply_page(&db, &tx, &path, &bad_id, &page, grove_version)
             .expect_err("out-of-order cursor must be rejected");
         assert!(format!("{err:?}").contains("out of order"), "got: {err:?}");
 
@@ -1714,7 +2042,7 @@ mod tests {
 
         // Empty page data cannot even be decoded.
         let err = restorer
-            .apply_page(&db, &tx, &path, &good_id, &[])
+            .apply_page(&db, &tx, &path, &good_id, &[], grove_version)
             .expect_err("empty page must be rejected");
         assert!(
             format!("{err:?}").contains("missing more-flag"),
@@ -1725,7 +2053,7 @@ mod tests {
         // forever; it must be rejected.
         let page = encode_non_merk_page(true, frontier.clone(), vec![]).expect("encode page");
         let err = restorer
-            .apply_page(&db, &tx, &path, &good_id, &page)
+            .apply_page(&db, &tx, &path, &good_id, &page, grove_version)
             .expect_err("more-without-entries must be rejected");
         assert!(
             format!("{err:?}").contains("carries no entries"),
@@ -1736,7 +2064,7 @@ mod tests {
         let too_many: Vec<Vec<u8>> = (0u8..4).map(|i| vec![i; 8]).collect();
         let page = encode_non_merk_page(false, frontier.clone(), too_many).expect("encode page");
         let err = restorer
-            .apply_page(&db, &tx, &path, &good_id, &page)
+            .apply_page(&db, &tx, &path, &good_id, &page, grove_version)
             .expect_err("entry overflow must be rejected");
         assert!(format!("{err:?}").contains("overflows"), "got: {err:?}");
 
@@ -1744,7 +2072,7 @@ mod tests {
         let page =
             encode_non_merk_page(false, Vec::new(), vec![b"e".to_vec()]).expect("encode page");
         let err = restorer
-            .apply_page(&db, &tx, &path, &good_id, &page)
+            .apply_page(&db, &tx, &path, &good_id, &page, grove_version)
             .expect_err("missing frontier must be rejected");
         assert!(
             format!("{err:?}").contains("missing the frontier"),
@@ -1753,7 +2081,7 @@ mod tests {
 
         // Finalizing before all entries arrived is rejected.
         let err = restorer
-            .finalize(&db, &tx, &path)
+            .finalize(&db, &tx, &path, grove_version)
             .expect_err("incomplete replay must be rejected");
         assert!(
             format!("{err:?}").contains("replay incomplete"),
@@ -1768,7 +2096,14 @@ mod tests {
                 .expect("valid MMR element");
         let page = encode_non_merk_page(false, b"bogus aux".to_vec(), vec![]).expect("encode page");
         let err = mmr_restorer
-            .apply_page(&db, &tx, &mmr_path, &mmr_restorer.initial_chunk_id(), &page)
+            .apply_page(
+                &db,
+                &tx,
+                &mmr_path,
+                &mmr_restorer.initial_chunk_id(),
+                &page,
+                grove_version,
+            )
             .expect_err("aux on a non-CT page must be rejected");
         assert!(
             format!("{err:?}").contains("unexpected aux"),
@@ -1786,10 +2121,10 @@ mod tests {
         let final_page = encode_non_merk_page(false, Vec::new(), vec![]).expect("encode page");
         let dense_id = dense_restorer.initial_chunk_id();
         dense_restorer
-            .apply_page(&db, &tx, &dense_path, &dense_id, &final_page)
+            .apply_page(&db, &tx, &dense_path, &dense_id, &final_page, grove_version)
             .expect("final page applies");
         let err = dense_restorer
-            .apply_page(&db, &tx, &dense_path, &dense_id, &final_page)
+            .apply_page(&db, &tx, &dense_path, &dense_id, &final_page, grove_version)
             .expect_err("page after final must be rejected");
         assert!(
             format!("{err:?}").contains("after the final page"),
