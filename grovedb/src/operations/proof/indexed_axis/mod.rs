@@ -62,15 +62,17 @@
 //! shape only when the range really is out of the axis's domain.
 
 mod axis_api;
+pub(crate) mod canonical_row;
 mod envelope;
 #[cfg(feature = "minimal")]
 mod generate;
-mod verify;
+pub(crate) mod target_chain;
+pub(crate) mod verify;
 
 pub use envelope::{
     AncestorAttestation, AxisEntries, IndexedAxisAggregateProof, IndexedAxisAggregateResult,
     IndexedAxisPaginatedProof, IndexedAxisPaginatedResult, IndexedAxisQueryResult,
-    IndexedAxisRangeProof,
+    IndexedAxisRangeProof, IndexedTargetChain, IndexedTargetCommitment, IndexedTargetNode,
 };
 use grovedb_element::indexed::IndexAxis;
 

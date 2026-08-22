@@ -2,6 +2,7 @@
 mod proof_tests {
     use grovedb_merkle_mountain_range::MmrTreeProof;
     use grovedb_query::{Query, QueryItem};
+    use grovedb_version::version::GroveVersion;
 
     use crate::{proof::*, test_utils::MemStorageContext, BulkAppendTree};
 
@@ -17,7 +18,9 @@ mod proof_tests {
 
         let mut last_state_root = [0u8; 32];
         for value in values {
-            let result = tree.append(value).expect("append value");
+            let result = tree
+                .append(value, GroveVersion::latest())
+                .expect("append value");
             last_state_root = result.state_root;
         }
 

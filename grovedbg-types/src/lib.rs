@@ -229,6 +229,11 @@ pub struct Query {
     pub default_subquery_branch: SubqueryBranch,
     pub conditional_subquery_branches: Vec<(QueryItem, SubqueryBranch)>,
     pub left_to_right: bool,
+    /// Mirrors `grovedb_query::Query::add_parent_tree_on_subquery`.
+    /// Defaults to `false` so payloads from frontends that predate the
+    /// field keep decoding.
+    #[serde(default)]
+    pub add_parent_tree_on_subquery: bool,
 }
 
 #[serde_as]

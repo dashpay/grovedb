@@ -129,6 +129,21 @@ impl fmt::Debug for Op {
     }
 }
 
+/// How a batch operation displaced the stored value of an existing node.
+///
+/// Passed to the old-value observer (see
+/// [`Merk::apply_unchecked_with_old_value_observer`](crate::Merk)) together
+/// with the node's key and its pre-op value bytes. The walker had to fetch
+/// the node to rewrite or remove it, so surfacing the old value here is free
+/// — no additional storage read and no additional tracked cost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OldValueDisposition {
+    /// A put-style op overwrote the node's value.
+    Replaced,
+    /// A delete-style op removed the node.
+    Deleted,
+}
+
 /// A single `(key, operation)` pair.
 pub type BatchEntry<K> = (K, Op);
 
@@ -172,7 +187,7 @@ where
     /// not require a non-empty tree.
     ///
     /// Keys in batch must be sorted and unique.
-    pub fn apply_to<K: AsRef<[u8]>, C, V, T, U, R>(
+    pub fn apply_to<K: AsRef<[u8]>, C, V, T, U, R, O>(
         maybe_tree: Option<Self>,
         batch: &MerkBatch<K>,
         source: S,
@@ -181,6 +196,7 @@ where
         get_temp_new_value_with_old_flags: &T,
         update_tree_value_based_on_costs: &mut U,
         section_removal_bytes: &mut R,
+        old_value_observer: &mut O,
         grove_version: &GroveVersion,
     ) -> CostContext<Result<(Option<TreeNode>, KeyUpdates), Error>>
     where
@@ -193,6 +209,7 @@ where
             &mut Vec<u8>,
         ) -> Result<(bool, Option<ValueDefinedCostType>), Error>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
+        O: FnMut(&[u8], &[u8], OldValueDisposition),
     {
         let mut cost = OperationCost::default();
 
@@ -217,6 +234,7 @@ where
                         get_temp_new_value_with_old_flags,
                         update_tree_value_based_on_costs,
                         section_removal_bytes,
+                        old_value_observer,
                         grove_version,
                     )
                     .map_ok(|tree| {
@@ -245,6 +263,7 @@ where
                             get_temp_new_value_with_old_flags,
                             update_tree_value_based_on_costs,
                             section_removal_bytes,
+                            old_value_observer,
                             grove_version
                         )
                     )
@@ -259,7 +278,7 @@ where
     /// Builds a `Tree` from a batch of operations.
     ///
     /// Keys in batch must be sorted and unique.
-    fn build<K: AsRef<[u8]>, C, V, T, U, R>(
+    fn build<K: AsRef<[u8]>, C, V, T, U, R, O>(
         batch: &MerkBatch<K>,
         source: S,
         old_tree_cost: &C,
@@ -267,6 +286,7 @@ where
         get_temp_new_value_with_old_flags: &T,
         update_tree_value_based_on_costs: &mut U,
         section_removal_bytes: &mut R,
+        old_value_observer: &mut O,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<TreeNode>, Error>
     where
@@ -279,6 +299,7 @@ where
             &mut Vec<u8>,
         ) -> Result<(bool, Option<ValueDefinedCostType>), Error>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
+        O: FnMut(&[u8], &[u8], OldValueDisposition),
     {
         let mut cost = OperationCost::default();
 
@@ -303,6 +324,7 @@ where
                         get_temp_new_value_with_old_flags,
                         update_tree_value_based_on_costs,
                         section_removal_bytes,
+                        old_value_observer,
                         grove_version
                     )
                 )
@@ -318,6 +340,7 @@ where
                                 get_temp_new_value_with_old_flags,
                                 update_tree_value_based_on_costs,
                                 section_removal_bytes,
+                                old_value_observer,
                                 grove_version
                             )
                         )
@@ -333,6 +356,7 @@ where
                             get_temp_new_value_with_old_flags,
                             update_tree_value_based_on_costs,
                             section_removal_bytes,
+                            old_value_observer,
                             grove_version
                         )
                     )
@@ -432,6 +456,7 @@ where
                 get_temp_new_value_with_old_flags,
                 update_tree_value_based_on_costs,
                 section_removal_bytes,
+                old_value_observer,
                 grove_version,
             )
         )
@@ -458,6 +483,7 @@ where
                     BasicStorageRemoval(value_bytes_to_remove),
                 ))
             },
+            &mut |_, _, _| {},
             grove_version,
         )
     }
@@ -466,7 +492,7 @@ where
     /// `Walker<S>::apply`_to, but requires a populated tree.
     ///
     /// Keys in batch must be sorted and unique.
-    fn apply_sorted<K: AsRef<[u8]>, C, V, T, U, R>(
+    fn apply_sorted<K: AsRef<[u8]>, C, V, T, U, R, O>(
         self,
         batch: &MerkBatch<K>,
         old_specialized_cost: &C,
@@ -474,6 +500,7 @@ where
         get_temp_new_value_with_old_flags: &T,
         update_tree_value_based_on_costs: &mut U,
         section_removal_bytes: &mut R,
+        old_value_observer: &mut O,
         grove_version: &GroveVersion,
     ) -> CostResult<(Option<Self>, KeyUpdates), Error>
     where
@@ -486,6 +513,7 @@ where
             &mut Vec<u8>,
         ) -> Result<(bool, Option<ValueDefinedCostType>), Error>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
+        O: FnMut(&[u8], &[u8], OldValueDisposition),
     {
         let mut cost = OperationCost::default();
 
@@ -496,6 +524,23 @@ where
 
         let tree = if let Ok(index) = search {
             let (_, op) = &batch[index];
+
+            // This node is being rewritten or removed, and the walker already
+            // holds its stored value — surface it to the observer before the
+            // op consumes it. This is the free source of "old element" bytes
+            // callers would otherwise have to re-read (and re-pay) from
+            // storage.
+            let disposition = match op {
+                Delete | DeleteLayered | DeleteLayeredMaybeSpecialized | DeleteMaybeSpecialized => {
+                    OldValueDisposition::Deleted
+                }
+                _ => OldValueDisposition::Replaced,
+            };
+            old_value_observer(
+                key_vec.as_slice(),
+                self.tree().value_ref().as_slice(),
+                disposition,
+            );
 
             // a key matches this node's key, apply op to this node
             match op {
@@ -667,6 +712,7 @@ where
                                         get_temp_new_value_with_old_flags,
                                         update_tree_value_based_on_costs,
                                         section_removal_bytes,
+                                        old_value_observer,
                                         grove_version,
                                     )
                                 );
@@ -694,6 +740,7 @@ where
                                         get_temp_new_value_with_old_flags,
                                         update_tree_value_based_on_costs,
                                         section_removal_bytes,
+                                        old_value_observer,
                                         grove_version
                                     )
                                 )
@@ -727,6 +774,7 @@ where
                                         get_temp_new_value_with_old_flags,
                                         update_tree_value_based_on_costs,
                                         section_removal_bytes,
+                                        old_value_observer,
                                         grove_version,
                                     )
                                 );
@@ -754,6 +802,7 @@ where
                                         get_temp_new_value_with_old_flags,
                                         update_tree_value_based_on_costs,
                                         section_removal_bytes,
+                                        old_value_observer,
                                         grove_version
                                     )
                                 )
@@ -803,6 +852,7 @@ where
             get_temp_new_value_with_old_flags,
             update_tree_value_based_on_costs,
             section_removal_bytes,
+            old_value_observer,
             grove_version,
         )
         .add_cost(cost)
@@ -813,7 +863,7 @@ where
     ///
     /// This recursion executes serially in the same thread, but in the future
     /// will be dispatched to workers in other threads.
-    fn recurse<K: AsRef<[u8]>, C, V, T, U, R>(
+    fn recurse<K: AsRef<[u8]>, C, V, T, U, R, O>(
         self,
         batch: &MerkBatch<K>,
         mid: usize,
@@ -824,6 +874,7 @@ where
         get_temp_new_value_with_old_flags: &T,
         update_tree_value_based_on_costs: &mut U,
         section_removal_bytes: &mut R,
+        old_value_observer: &mut O,
         grove_version: &GroveVersion,
     ) -> CostResult<(Option<Self>, KeyUpdates), Error>
     where
@@ -836,6 +887,7 @@ where
         ) -> Result<(bool, Option<ValueDefinedCostType>), Error>,
         V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
+        O: FnMut(&[u8], &[u8], OldValueDisposition),
     {
         let mut cost = OperationCost::default();
 
@@ -864,6 +916,7 @@ where
                             get_temp_new_value_with_old_flags,
                             update_tree_value_based_on_costs,
                             section_removal_bytes,
+                            old_value_observer,
                             grove_version,
                         )
                         .map_ok(|(maybe_left, mut key_updates_left)| {
@@ -901,6 +954,7 @@ where
                             get_temp_new_value_with_old_flags,
                             update_tree_value_based_on_costs,
                             section_removal_bytes,
+                            old_value_observer,
                             grove_version,
                         )
                         .map_ok(|(maybe_right, mut key_updates_right)| {
@@ -1141,6 +1195,34 @@ mod test {
         tree::{tree_feature_type::TreeFeatureType::BasicMerkNode, *},
     };
 
+    /// `Walker::apply_to` with inert cost callbacks and a no-op old-value
+    /// observer — the shape every test in this module wants. Consolidated so
+    /// each case exercises the same plumbing (including the observer, which
+    /// fires whenever a batch op lands on an existing key).
+    fn apply_to_plain(
+        maybe_walker: Option<Walker<PanicSource>>,
+        batch: &MerkBatch<Vec<u8>>,
+        grove_version: &GroveVersion,
+    ) -> CostContext<Result<(Option<TreeNode>, KeyUpdates), Error>> {
+        Walker::<PanicSource>::apply_to(
+            maybe_walker,
+            batch,
+            PanicSource {},
+            &|_, _| Ok(0),
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            &|_, _| Ok(None),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
+                Ok((
+                    BasicStorageRemoval(key_bytes_to_remove),
+                    BasicStorageRemoval(value_bytes_to_remove),
+                ))
+            },
+            &mut |_, _, _| {},
+            grove_version,
+        )
+    }
+
     #[test]
     fn simple_insert() {
         let grove_version = GroveVersion::latest();
@@ -1301,51 +1383,49 @@ mod test {
     #[test]
     fn apply_empty_none() {
         let grove_version = GroveVersion::latest();
-        let (maybe_tree, key_updates) = Walker::<PanicSource>::apply_to::<Vec<u8>, _, _, _, _, _>(
-            None,
-            &[],
-            PanicSource {},
-            &|_, _| Ok(0),
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            &|_, _| Ok(None),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
-                Ok((
-                    BasicStorageRemoval(key_bytes_to_remove),
-                    BasicStorageRemoval(value_bytes_to_remove),
-                ))
-            },
-            grove_version,
-        )
-        .unwrap()
-        .expect("apply_to failed");
+        let (maybe_tree, key_updates) = apply_to_plain(None, &[], grove_version)
+            .unwrap()
+            .expect("apply_to failed");
         assert!(maybe_tree.is_none());
         assert!(key_updates.updated_keys.is_empty());
         assert!(key_updates.deleted_keys.is_empty());
     }
 
     #[test]
+    fn build_with_mid_delete_ignores_missing_key() {
+        // Building a fresh tree from a batch whose middle op is a Delete
+        // exercises `build`'s delete arm: the left half is built, then the
+        // right half is applied to it via `apply_sorted`, and the delete of
+        // a key that never existed is simply skipped.
+        let grove_version = GroveVersion::latest();
+        let batch = vec![
+            (vec![0], Put(vec![1], BasicMerkNode)),
+            (vec![1], Delete),
+            (vec![2], Put(vec![3], BasicMerkNode)),
+        ];
+        let (maybe_tree, _key_updates) = apply_to_plain(None, &batch, grove_version)
+            .unwrap()
+            .expect("apply_to failed");
+        let tree = maybe_tree.expect("expected tree");
+        // Both puts landed; the deleted key never existed.
+        let mut keys = vec![tree.key().to_vec()];
+        if let Some(child) = tree.child(true) {
+            keys.push(child.key().to_vec());
+        }
+        if let Some(child) = tree.child(false) {
+            keys.push(child.key().to_vec());
+        }
+        keys.sort();
+        assert_eq!(keys, vec![vec![0], vec![2]]);
+    }
+
+    #[test]
     fn insert_empty_single() {
         let grove_version = GroveVersion::latest();
         let batch = vec![(vec![0], Put(vec![1], BasicMerkNode))];
-        let (maybe_tree, key_updates) = Walker::<PanicSource>::apply_to(
-            None,
-            &batch,
-            PanicSource {},
-            &|_, _| Ok(0),
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            &|_, _| Ok(None),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
-                Ok((
-                    BasicStorageRemoval(key_bytes_to_remove),
-                    BasicStorageRemoval(value_bytes_to_remove),
-                ))
-            },
-            grove_version,
-        )
-        .unwrap()
-        .expect("apply_to failed");
+        let (maybe_tree, key_updates) = apply_to_plain(None, &batch, grove_version)
+            .unwrap()
+            .expect("apply_to failed");
         let tree = maybe_tree.expect("expected tree");
         assert_eq!(tree.key(), &[0]);
         assert_eq!(tree.value_as_slice(), &[1]);
@@ -1358,24 +1438,9 @@ mod test {
     fn insert_updated_single() {
         let grove_version = GroveVersion::latest();
         let batch = vec![(vec![0], Put(vec![1], BasicMerkNode))];
-        let (maybe_tree, key_updates) = Walker::<PanicSource>::apply_to(
-            None,
-            &batch,
-            PanicSource {},
-            &|_, _| Ok(0),
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            &|_, _| Ok(None),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
-                Ok((
-                    BasicStorageRemoval(key_bytes_to_remove),
-                    BasicStorageRemoval(value_bytes_to_remove),
-                ))
-            },
-            grove_version,
-        )
-        .unwrap()
-        .expect("apply_to failed");
+        let (maybe_tree, key_updates) = apply_to_plain(None, &batch, grove_version)
+            .unwrap()
+            .expect("apply_to failed");
         assert!(key_updates.updated_keys.is_empty());
         assert!(key_updates.deleted_keys.is_empty());
 
@@ -1384,24 +1449,9 @@ mod test {
             (vec![0], Put(vec![2], BasicMerkNode)),
             (vec![1], Put(vec![2], BasicMerkNode)),
         ];
-        let (maybe_tree, key_updates) = Walker::<PanicSource>::apply_to(
-            maybe_walker,
-            &batch,
-            PanicSource {},
-            &|_, _| Ok(0),
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            &|_, _| Ok(None),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
-                Ok((
-                    BasicStorageRemoval(key_bytes_to_remove),
-                    BasicStorageRemoval(value_bytes_to_remove),
-                ))
-            },
-            grove_version,
-        )
-        .unwrap()
-        .expect("apply_to failed");
+        let (maybe_tree, key_updates) = apply_to_plain(maybe_walker, &batch, grove_version)
+            .unwrap()
+            .expect("apply_to failed");
         let tree = maybe_tree.expect("expected tree");
         assert_eq!(tree.key(), &[0]);
         assert_eq!(tree.value_as_slice(), &[2]);
@@ -1417,24 +1467,9 @@ mod test {
             (vec![1], Put(vec![2], BasicMerkNode)),
             (vec![2], Put(vec![3], BasicMerkNode)),
         ];
-        let (maybe_tree, key_updates) = Walker::<PanicSource>::apply_to(
-            None,
-            &batch,
-            PanicSource {},
-            &|_, _| Ok(0),
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            &|_, _| Ok(None),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
-                Ok((
-                    BasicStorageRemoval(key_bytes_to_remove),
-                    BasicStorageRemoval(value_bytes_to_remove),
-                ))
-            },
-            grove_version,
-        )
-        .unwrap()
-        .expect("apply_to failed");
+        let (maybe_tree, key_updates) = apply_to_plain(None, &batch, grove_version)
+            .unwrap()
+            .expect("apply_to failed");
         assert!(key_updates.updated_keys.is_empty());
         assert!(key_updates.deleted_keys.is_empty());
 
@@ -1444,24 +1479,9 @@ mod test {
             (vec![1], Put(vec![8], BasicMerkNode)),
             (vec![2], Delete),
         ];
-        let (maybe_tree, key_updates) = Walker::<PanicSource>::apply_to(
-            maybe_walker,
-            &batch,
-            PanicSource {},
-            &|_, _| Ok(0),
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            &|_, _| Ok(None),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
-                Ok((
-                    BasicStorageRemoval(key_bytes_to_remove),
-                    BasicStorageRemoval(value_bytes_to_remove),
-                ))
-            },
-            grove_version,
-        )
-        .unwrap()
-        .expect("apply_to failed");
+        let (maybe_tree, key_updates) = apply_to_plain(maybe_walker, &batch, grove_version)
+            .unwrap()
+            .expect("apply_to failed");
         let tree = maybe_tree.expect("expected tree");
         assert_eq!(tree.key(), &[1]);
         assert_eq!(tree.value_as_slice(), &[8]);

@@ -249,7 +249,12 @@ pub enum Element {
     ProvableCountProvableSumTree(Option<Vec<u8>>, CountValue, SumValue, Option<ElementFlags>),
     /// Provable sum-indexed tree: a `ProvableSumTree`-style primary Merk
     /// paired with a single secondary Merk keyed by
-    /// `(sum_sortable_be ‖ original_key)`. Both Merks contribute to the
+    /// `(sum_sortable_be ‖ original_key)`. The secondary is a
+    /// `ProvableCountProvableSumTree` — each row is a `SumItem`
+    /// contributing `(count = 1, sum)` — so positional queries against
+    /// the sum ranking are provable via counted subtree commitments:
+    /// offset pagination in O(log n + k) proof size (k = page size),
+    /// rank-of-key in O(log n). Both Merks contribute to the
     /// element's `combined_value_hash` via the three-input hash composition
     /// `combine_hash_three(value_hash, primary_root_hash,
     /// secondary_root_hash)`.
@@ -288,9 +293,11 @@ pub enum Element {
     /// `ProvableCountedAndProvableSummedMerkNode` (both count AND sum
     /// baked into node hash) and carries a TLV list of 1..=3 secondary
     /// Merks — one per selected axis (count, sum, avg). Each secondary
-    /// lives at its own derived storage prefix and is itself a
-    /// `ProvableCountProvableSumTree` so any axis can produce both
-    /// count-on-range and sum-on-range proofs.
+    /// lives at its own derived storage prefix; the count axis is a
+    /// `ProvableCountTree` while the sum and avg axes are
+    /// `ProvableCountProvableSumTree`s, so every axis carries a
+    /// hash-bound count (enabling count-bound offset pagination) and
+    /// the sum/avg axes can additionally produce sum-on-range proofs.
     ///
     /// Fields: `(primary_root_key, count_value, sum_value, axes, flags)`
     /// - `primary_root_key`: root key of the primary
@@ -316,6 +323,31 @@ pub enum Element {
         Vec<(u8, Option<Vec<u8>>)>,
         Option<ElementFlags>,
     ),
+    /// Private document store: an append-only store of fixed-size opaque
+    /// entries, a thin wrapper over a `BulkAppendTree` (the same
+    /// relationship `CommitmentTree` has to it, minus the Sinsemilla
+    /// frontier). Entries are write-once — there is no per-entry delete or
+    /// update; immutability is enforced by the type.
+    ///
+    /// Fields: `(total_count, entry_size, chunk_power, flags)`
+    /// - `total_count`: Number of entries appended so far.
+    /// - `entry_size`: Committed byte length of every entry, in `1..=65535`;
+    ///   appends of any other length are rejected.
+    /// - `chunk_power`: Log2 of the chunk size (actual size = `1 <<
+    ///   chunk_power`).
+    /// - `flags`: Optional per-element metadata.
+    ///
+    /// The state root
+    /// (`blake3("pds_state" || config_hash || bulk_state_root)`, where
+    /// `config_hash` commits to `{entry_size, chunk_power}`) flows through
+    /// the Merk child hash mechanism (`insert_subtree`'s
+    /// `subtree_root_hash` parameter), so the declared configuration is
+    /// consensus-visible and a proof can never be reinterpreted under a
+    /// different config.
+    ///
+    /// Variant order in this enum determines bincode's variant-index
+    /// encoding on disk. This variant gets index 24.
+    PrivateDocumentStore(u64, u32, u8, Option<ElementFlags>),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -583,6 +615,18 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::PrivateDocumentStore(total_count, entry_size, chunk_power, flags) => {
+                write!(
+                    f,
+                    "PrivateDocumentStore(count: {}, entry_size: {}, chunk_power: {}{})",
+                    total_count,
+                    entry_size,
+                    chunk_power,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
             Element::NotSummed(inner) => {
                 write!(f, "NotSummed({})", inner)
             }
@@ -660,6 +704,7 @@ impl Element {
             Element::ProvableCountProvableSumIndexedTree(..) => {
                 ElementType::ProvableCountProvableSumIndexedTree
             }
+            Element::PrivateDocumentStore(..) => ElementType::PrivateDocumentStore,
             Element::NonCounted(inner) => match inner.element_type() {
                 ElementType::Item => ElementType::NonCountedItem,
                 ElementType::Reference => ElementType::NonCountedReference,
@@ -692,6 +737,7 @@ impl Element {
                 ElementType::ProvableCountProvableSumIndexedTree => {
                     ElementType::NonCountedProvableCountProvableSumIndexedTree
                 }
+                ElementType::PrivateDocumentStore => ElementType::NonCountedPrivateDocumentStore,
                 // Inner is always a base type — nested wrappers are
                 // forbidden at construction and (de)serialization.
                 already_non_counted => already_non_counted,
@@ -731,6 +777,38 @@ impl Element {
 
     pub fn type_str(&self) -> &str {
         self.element_type().as_str()
+    }
+
+    /// Validate the committed configuration of a `PrivateDocumentStore`
+    /// element, looking through `NonCounted`: `entry_size` must be in
+    /// `1..=65535`
+    /// (the upper bound keeps `2^16 * entry_size` — the worst-case
+    /// compaction blob — representable in the u32 storage-cost field, so the
+    /// worst-case estimate stays a real bound), and `chunk_power` must be in
+    /// `1..=16` (the underlying `BulkAppendTree` dense-buffer height range).
+    /// Returns `Ok(())` for every other variant.
+    ///
+    /// The configuration is committed into the store's state root, so an
+    /// unusable configuration must not be representable: the checked
+    /// constructors, the insert paths, and both (de)serialization codecs
+    /// (bincode and serde) all enforce this. `new_private_document_store`
+    /// itself stays unchecked — it is the restoration constructor used to
+    /// rebuild elements from already-validated on-disk state, mirroring
+    /// `new_commitment_tree` / `new_bulk_append_tree`.
+    pub fn validate_private_document_store_config(&self) -> Result<(), crate::error::ElementError> {
+        if let Element::PrivateDocumentStore(_, entry_size, chunk_power, _) = self.underlying() {
+            if *entry_size == 0 || *entry_size > u16::MAX as u32 {
+                return Err(crate::error::ElementError::InvalidInput(
+                    "private document store entry_size must be in 1..=65535",
+                ));
+            }
+            if !(1..=16).contains(chunk_power) {
+                return Err(crate::error::ElementError::InvalidInput(
+                    "private document store chunk_power must be between 1 and 16",
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Verify the wrapper invariants for `self`:
@@ -885,6 +963,7 @@ mod serde_impl {
             Vec<(u8, Option<Vec<u8>>)>,
             Option<ElementFlags>,
         ),
+        PrivateDocumentStore(u64, u32, u8, Option<ElementFlags>),
     }
 
     impl From<ElementShadow> for Element {
@@ -934,6 +1013,9 @@ mod serde_impl {
                 ElementShadow::ProvableCountProvableSumIndexedTree(pk, c, s, axes, f) => {
                     Element::ProvableCountProvableSumIndexedTree(pk, c, s, axes, f)
                 }
+                ElementShadow::PrivateDocumentStore(c, e, p, f) => {
+                    Element::PrivateDocumentStore(c, e, p, f)
+                }
             }
         }
     }
@@ -949,6 +1031,11 @@ mod serde_impl {
             // built by recursive `From<ElementShadow>` calls, so the check
             // at each level catches a violation at any depth.
             Self::check_recursive_wrapper_invariants(&element).map_err(D::Error::custom)?;
+            // A PrivateDocumentStore's committed config must be valid at
+            // every ingress — including this external-tooling codec.
+            element
+                .validate_private_document_store_config()
+                .map_err(D::Error::custom)?;
             Ok(element)
         }
     }
@@ -983,6 +1070,7 @@ mod serde_impl {
             let cases = vec![
                 Element::Item(b"abc".to_vec(), None),
                 Element::SumTree(Some(b"r".to_vec()), 42, None),
+                Element::PrivateDocumentStore(9, 64, 4, Some(vec![1])),
                 Element::new_non_counted(Element::Item(b"x".to_vec(), None)).unwrap(),
                 Element::new_not_summed(Element::SumTree(None, 100, None)).unwrap(),
                 Element::new_not_counted_or_summed(Element::CountSumTree(None, 3, 100, None))
@@ -1050,6 +1138,42 @@ mod serde_impl {
             )
             .expect("deserialize");
             assert_eq!(back, pcpsit);
+        }
+
+        /// A `PrivateDocumentStore` carrying an unusable committed config
+        /// must be rejected by the serde codec as well as bincode: the
+        /// config is bound into the store's state root, so an invalid one
+        /// must not be representable through any ingress.
+        #[test]
+        fn serde_rejects_invalid_private_document_store_config() {
+            for payload in [
+                // entry_size = 0
+                r#"{"PrivateDocumentStore":[0,0,4,null]}"#,
+                // entry_size above the 65535 cap
+                r#"{"PrivateDocumentStore":[0,65536,4,null]}"#,
+                // chunk_power = 0 and 17 (outside 1..=16)
+                r#"{"PrivateDocumentStore":[0,64,0,null]}"#,
+                r#"{"PrivateDocumentStore":[0,64,17,null]}"#,
+                // the same violations behind a NonCounted wrapper
+                r#"{"NonCounted":{"PrivateDocumentStore":[0,64,0,null]}}"#,
+                r#"{"NonCounted":{"PrivateDocumentStore":[0,0,4,null]}}"#,
+            ] {
+                let result: Result<Element, _> = serde_json::from_str(payload);
+                assert!(
+                    result.is_err(),
+                    "serde must reject {}; got {:?}",
+                    payload,
+                    result
+                );
+            }
+
+            // A valid config still round-trips.
+            let valid = Element::PrivateDocumentStore(3, 64, 4, None);
+            let json = serde_json::to_string(&valid).expect("serialize");
+            assert_eq!(
+                serde_json::from_str::<Element>(&json).expect("deserialize"),
+                valid
+            );
         }
 
         /// `NotCountedOrSummed(NotCountedOrSummed(_))` and cross-nestings

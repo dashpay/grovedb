@@ -152,19 +152,71 @@ The secondary Merk holds one entry per element in the primary, keyed by:
 
 ```text
 secondary_key = count_be_bytes(8) ‖ original_key
-secondary_val = ()        // empty; the original_key is encoded in the key
+secondary_val = ReferenceWithSumItem(
+                    SiblingReference(original_key),
+                    max_reference_hop = Some(1),
+                    sum = count_value,
+                )
 ```
 
 - **`count_be_bytes`** is the element's `count_value` encoded big-endian, 8
   bytes. Big-endian gives natural numeric order under lexicographic
   comparison, so right-to-left iteration yields highest-count-first.
 - **`original_key`** is appended to break ties among elements with equal
-  counts and to make each secondary key unique and reversible.
+  counts and to make each secondary key unique and reversible. It stays
+  in the key even though the row also names it: the key is what orders
+  and de-duplicates, and it has to be decodable on its own.
 
-The secondary Merk uses node feature type `ProvableCountedMerkNode(1)` —
-every entry contributes a count of `1`, so the aggregated count at the
-secondary's root equals the total number of indexed entries (which also
-equals the number of entries in the primary).
+<a id="secondary-rows"></a>
+
+### Secondary rows
+
+A row is a **canonical one-hop reference back to its primary entry**,
+written as a *combined* reference so the row's committed value hash is
+
+```text
+combine_hash(H(reference bytes), primary_node_committed_value_hash)
+```
+
+Three consequences worth stating plainly:
+
+- **Reads and proofs return the primary value.** Every non-aggregate
+  indexed read returns `IndexedAxisEntry { ordering_value, primary_key,
+  value }`, so a top-k result carries the values rather than pointers to
+  them — no follow-up `db.get` per row, and no extra inclusion proof per
+  row for a verified read. If the primary entry is itself a reference,
+  `value` is its TERMINAL, exactly as `db.get` on that key would give
+  you.
+
+  Callers that genuinely only rank (leaderboards, ranking views) can drop
+  the value with `IndexedAxisEntry::key_pair`.
+- **The binding is to the IMMEDIATE primary node**, not to a terminal
+  reached by following a chain. That keeps the invariant local: the only
+  thing that can staleness a row is a write to the primary entry itself,
+  which is exactly the event the mirror is driven by. This is dedicated
+  indexed-tree behaviour — ordinary GroveDB references keep their normal
+  terminal semantics, and an ordinary `max_hop = 1` reference pointing at
+  another reference remains ill-formed.
+- **Value-only updates now write.** Because the row binds a commitment,
+  an update that changes a primary entry's bytes without moving its
+  `count_value` still rewrites the row on every configured axis. So does
+  a deep mutation that only moves a child subtree's root. This write
+  amplification is intentional and is charged in the cost estimates.
+
+`SiblingReference` rather than an absolute path keeps a row's size
+independent of how deep the grove is. The reference is interpreted
+against the row's **logical origin** — the indexed primary's path — not
+against the derived storage prefix the secondary physically lives under.
+That prefix is `blake3(primary_prefix ‖ axis_tag)` and is not a GroveDB
+path at all, so resolution of a row's reference is purpose-built
+machinery rather than the ordinary path-keyed reference following.
+
+The secondary Merk uses node feature type
+`ProvableCountedAndProvableSummedMerkNode(1, count_value)` — every entry
+contributes a count of `1`, so the aggregated count at the secondary's
+root equals the total number of indexed entries (which also equals the
+number of entries in the primary), while the sum half makes a band TOTAL
+answerable as one committed scalar.
 
 The reason the secondary is a *provable* count tree (rather than the
 simpler `BasicMerkNode`) is that this lets the existing
@@ -427,7 +479,7 @@ Merk is not touched. The verifier receives the primary's root hash plus a
 
 ```rust
 // Shipped API on `GroveDb`:
-let entries: Vec<(u64, Vec<u8>)> = db
+let entries: Vec<IndexedAxisEntry<u64>> = db
     .indexed_count_top_k(path, k, /* descending: */ true, transaction, grove_version)?
     .expect("top-k");
 
@@ -435,15 +487,19 @@ let entries: Vec<(u64, Vec<u8>)> = db
 let proof_bytes = db
     .prove_indexed_count_top_k(path, k, /* descending: */ true, transaction, grove_version)?
     .expect("prove");
-let result = GroveDb::verify_indexed_count_top_k(&proof_bytes, &path, k)?;
-// result.entries: Vec<(u64, Vec<u8>)>, result.root_hash: [u8; 32]
+let result = GroveDb::verify_indexed_count_top_k(
+    &proof_bytes,
+    path,
+    k,
+    /* descending: */ true,
+    grove_version,
+)?;
+// result.entries: AxisEntries::Count(Vec<IndexedAxisEntry<u64>>)
+// result.root_hash: [u8; 32]
 ```
 
-The query returns `(count, key)` pairs. To resolve a primary value the
-caller follows up with `db.get(path, key, ...)`; the dedicated proof
-shape carries only the secondary range proof + a 32-byte attestation
-of the primary's root hash. Workloads that don't need values
-(leaderboards, ranking views) pay nothing for data they wouldn't read.
+The query returns `IndexedAxisEntry` rows — the count, the primary key,
+and the resolved primary value.
 
 Internally:
 
@@ -453,19 +509,32 @@ Internally:
 3. Run a **descending range query** with `limit = k` over the full
    secondary keyspace. This yields the k highest-count entries, with a
    standard Merk range proof.
-4. *(only if `resolve_values: true`)* For each `(c_be ‖ k)` in the
-   result, open the **primary** Merk and query for `k`. Each resolution
-   is one extra Merk read with one extra Merk inclusion proof.
+4. Attach one **target chain** per returned row: the immediate primary
+   entry, then any ordinary reference hops through to the terminal. Each
+   chain entry carries its serialized bytes plus the rule that turns them
+   into a commitment (`Simple`, `Layered`, `IndexedSingle`,
+   `IndexedMulti`, `Reference`).
 
-The default keeps the proof minimal: secondary range proof + a 32-byte
-attestation of the primary's root hash. Workloads that don't need the
-values (leaderboards, ranking views, "top N usernames") pay nothing for
-data they wouldn't read.
+A chain carries **no per-row path proofs**. It authenticates itself from
+the row's own committed hash: each entry's commitment is rebuilt from its
+bytes plus the next entry's, and the head's is what the row binds — and
+the row is bound into the secondary root, the indexed element, and the
+grove root. That is the same trust model shipped GroveDB reference proofs
+already use, so a chain is neither weaker nor stronger than reading the
+same reference through an ordinary proof. The practical effect is that a
+top-k result costs roughly one value plus one hash per row, instead of
+`k` inclusion proofs.
+
+The verifier also rebuilds the canonical row that the resolved primary
+value implies, and compares it against what the proof carried. That one
+comparison covers the ordering prefix, the primary-key suffix, the
+reference path, the hop budget and the carried sum — so a row filed under
+one key whose reference points at another cannot verify.
 
 ### Range by count
 
 ```rust
-let entries: Vec<(u64, Vec<u8>)> = db
+let entries: Vec<IndexedAxisEntry<u64>> = db
     .indexed_count_range(
         path,
         min,                       // u64, inclusive
@@ -499,7 +568,8 @@ let proof_bytes = db
     .expect("prove");
 
 // Verify with the SAME query (positional binding):
-let result = GroveDb::verify_indexed_count_query(&proof_bytes, &path, q)?;
+let result =
+    GroveDb::verify_indexed_count_query(&proof_bytes, path, q, Some(limit), grove_version)?;
 ```
 
 `prove_indexed_count_top_k` is just a thin wrapper around
@@ -521,7 +591,7 @@ let mut q = MerkQuery::new();
 q.insert_range(a.to_be_bytes().to_vec()..=b.to_be_bytes().to_vec());
 
 let proof = db.prove_indexed_count_query(path, q.clone(), None, tx, grove_version)?;
-let result = GroveDb::verify_indexed_count_query(&proof, &path, q)?;
+let result = GroveDb::verify_indexed_count_query(&proof, path, q, None, grove_version)?;
 
 let count = result.entries.len();
 let root_hash = result.root_hash;
@@ -542,11 +612,19 @@ which is what `indexed_count_top_k(path, k, descending = true, ..)` produces.
 Ascending traversal is also supported for "smallest counts first" /
 "items with the lowest counts in [a, b]" patterns.
 
-### Lookup of count for a key
+### How many entries fall in a count band
 
-`indexed_count_range_aggregate(path, lo, hi, ..)` returns the count without returning the
-value. It can be answered by reading the primary node's feature type
-(which carries `count_value`). No secondary lookup needed; one Merk read.
+`indexed_count_aggregate_over_value_range(path, lo, hi, ..)` answers **how many
+entries have a `count_value` in `[lo, hi]`** — a bucket population, in
+which each matching entry contributes 1. It is *not* the total of those
+entries' counts: over counts `[3, 1, 5]`, the band `[2, 10]` selects the
+`3` and the `5` and answers `2`, not `8`. If you want the total, use
+`indexed_count_range(path, lo, hi, ..)` to list the selected entries
+with their counts and sum them caller-side.
+
+The walk folds each fully-contained subtree's stored aggregate in one
+step and descends only along the two range boundaries, so the cost is
+`O(log n)` with no term in the number of matching entries.
 
 ### Subqueries
 

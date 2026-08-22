@@ -46,6 +46,22 @@ pub struct PrefixedRocksDbRawIterator<I> {
     pub(super) raw_iterator: I,
 }
 
+impl<I> PrefixedRocksDbRawIterator<I> {
+    /// Re-scope this iterator to a different subtree prefix while keeping
+    /// the underlying RocksDB iterator — and therefore its pinned snapshot
+    /// view — alive. A multi-subtree read that must be internally
+    /// consistent (e.g. discovering a subtree's root key in one subtree
+    /// and then traversing that subtree) can hop scopes without giving up
+    /// the view; consuming `self` makes the hand-off explicit, so one
+    /// pinned view serves one subtree at a time, in sequence.
+    pub fn retarget(self, prefix: SubtreePrefix) -> Self {
+        Self {
+            prefix,
+            raw_iterator: self.raw_iterator,
+        }
+    }
+}
+
 impl RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'_, Db>> {
     fn seek_to_first(&mut self) -> CostContext<()> {
         self.raw_iterator.seek(self.prefix);

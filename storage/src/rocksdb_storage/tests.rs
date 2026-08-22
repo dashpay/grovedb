@@ -984,6 +984,91 @@ mod batch_transaction {
         );
     }
 
+    /// A direct `put` through the transactional context that describes a
+    /// NEW node must have its key cost completed with the path prefix by the
+    /// context — the caller cannot know the prefix — exactly as the `Batch`
+    /// implementations do. An update (`new_node: false`) is passed through
+    /// unchanged. Both must then survive the commit-time verification.
+    #[test]
+    fn test_transactional_put_completes_new_node_key_cost() {
+        use grovedb_costs::storage_cost::{
+            key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::NoStorageRemoval,
+            StorageCost,
+        };
+        use integer_encoding::VarInt;
+
+        let storage = TempStorage::new();
+        let transaction = storage.start_transaction();
+        let batch = StorageBatch::new();
+        let context = storage
+            .get_transactional_storage_context(
+                [b"ayya"].as_ref().into(),
+                Some(&batch),
+                &transaction,
+            )
+            .unwrap();
+
+        // A new node: key cost supplied WITHOUT the prefix (zero), value cost
+        // split into a replaced and an added part.
+        let value = vec![7u8; 100];
+        let paid_value = value.len() as u32 + value.len().required_space() as u32;
+        context
+            .put(
+                b"new",
+                &value,
+                None,
+                Some(KeyValueStorageCost {
+                    key_storage_cost: StorageCost::default(),
+                    value_storage_cost: StorageCost {
+                        added_bytes: 11,
+                        replaced_bytes: paid_value - 11,
+                        removed_bytes: NoStorageRemoval,
+                    },
+                    new_node: true,
+                    needs_value_verification: true,
+                }),
+            )
+            .unwrap()
+            .expect("put new node");
+
+        // An update: key cost zero, value fully replaced.
+        context
+            .put(
+                b"old",
+                &value,
+                None,
+                Some(KeyValueStorageCost {
+                    key_storage_cost: StorageCost::default(),
+                    value_storage_cost: StorageCost {
+                        added_bytes: 0,
+                        replaced_bytes: paid_value,
+                        removed_bytes: NoStorageRemoval,
+                    },
+                    new_node: false,
+                    needs_value_verification: true,
+                }),
+            )
+            .unwrap()
+            .expect("put update");
+
+        let commit = storage.commit_multi_context_batch(batch, Some(&transaction));
+        commit.value.expect("commit must pass cost verification");
+        let cost = commit.cost;
+
+        // prefix (32) + "new" (3) = 35, + 1 byte of length.
+        let new_key_paid = 32 + 3 + 1;
+        assert_eq!(
+            cost.storage_cost.added_bytes,
+            new_key_paid + 11,
+            "new node: prefixed key + the added part of the value"
+        );
+        assert_eq!(
+            cost.storage_cost.replaced_bytes,
+            (paid_value - 11) + paid_value,
+            "replaced parts of both values; no key cost for the update"
+        );
+    }
+
     #[test]
     fn test_db_batch_in_transaction_merged_into_context_batch() {
         let storage = TempStorage::new();
@@ -1417,7 +1502,7 @@ mod storage_management {
         }
 
         // Verify DB is still functional after wipe — can insert new data
-        drop(verify_ctx);
+        let _ = verify_ctx;
         storage
             .commit_transaction(verify_tx)
             .unwrap()

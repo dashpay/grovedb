@@ -1102,3 +1102,64 @@ fn test_verify_for_query_rejects_subquery() {
         "verify_for_query should reject queries with subqueries"
     );
 }
+
+mod slot_write_accounting {
+    use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
+
+    use crate::{test_utils::MemStorageContext, DenseFixedSizedMerkleTree, SlotWriteAccounting};
+
+    /// `AsNew` (and the plain inserts) attach no cost information; the
+    /// commit path bills key + value as new storage.
+    #[test]
+    fn as_new_attaches_no_cost_info() {
+        let mut tree = DenseFixedSizedMerkleTree::new(2, MemStorageContext::new()).unwrap();
+        tree.insert(&[1u8; 8]).unwrap().unwrap();
+        tree.try_insert(&[2u8; 8]).unwrap().unwrap();
+        tree.try_insert_no_root_with_accounting(&[3u8; 8], SlotWriteAccounting::AsNew)
+            .unwrap()
+            .unwrap();
+        let puts = tree.storage.puts.borrow();
+        assert_eq!(puts.len(), 3);
+        assert!(puts.iter().all(|(_, c)| c.is_none()));
+    }
+
+    /// `Overwrite` reports the write as a replacement of the committed value
+    /// the owner measured: growth added, shrink not credited, key not
+    /// charged — and nothing is read by the tree itself.
+    #[test]
+    fn overwrite_sizes_the_rewrite_from_the_supplied_previous_length() {
+        let mut tree = DenseFixedSizedMerkleTree::new(2, MemStorageContext::new()).unwrap();
+        let grow = tree
+            .try_insert_no_root_with_accounting(
+                &[9u8; 16],
+                SlotWriteAccounting::Overwrite {
+                    previous_value_len: 8,
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(grow, Some(0));
+        let shrink = tree
+            .try_insert_with_accounting(
+                &[9u8; 4],
+                SlotWriteAccounting::Overwrite {
+                    previous_value_len: 8,
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(shrink.map(|(_, p)| p), Some(1));
+
+        let puts = tree.storage.puts.borrow();
+        let c = puts[0].1.as_ref().expect("rewrite carries cost info");
+        assert!(!c.new_node);
+        assert!(c.needs_value_verification);
+        assert_eq!(c.key_storage_cost, Default::default());
+        assert_eq!(c.value_storage_cost.replaced_bytes, 9, "paid(8)");
+        assert_eq!(c.value_storage_cost.added_bytes, 8, "paid(16) - paid(8)");
+        let c = puts[1].1.as_ref().expect("rewrite carries cost info");
+        assert_eq!(c.value_storage_cost.replaced_bytes, 5, "paid(4)");
+        assert_eq!(c.value_storage_cost.added_bytes, 0);
+        assert_eq!(c.value_storage_cost.removed_bytes, NoStorageRemoval);
+    }
+}

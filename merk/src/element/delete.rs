@@ -76,6 +76,7 @@ impl ElementDeleteFromStorageExtensions for Element {
             | (TreeType::DenseAppendOnlyFixedSizeTree(_), true)
             | (TreeType::ProvableSumIndexedTree, true)
             | (TreeType::ProvableCountProvableSumIndexedTree, true)
+            | (TreeType::PrivateDocumentStore(_), true)
             | (TreeType::ProvableCountIndexedTree, true) => Op::DeleteLayeredMaybeSpecialized,
             (TreeType::SumTree, false)
             | (TreeType::BigSumTree, false)
@@ -91,6 +92,7 @@ impl ElementDeleteFromStorageExtensions for Element {
             | (TreeType::DenseAppendOnlyFixedSizeTree(_), false)
             | (TreeType::ProvableSumIndexedTree, false)
             | (TreeType::ProvableCountProvableSumIndexedTree, false)
+            | (TreeType::PrivateDocumentStore(_), false)
             | (TreeType::ProvableCountIndexedTree, false) => Op::DeleteMaybeSpecialized,
         };
         let batch = [(key, op)];
@@ -154,6 +156,7 @@ impl ElementDeleteFromStorageExtensions for Element {
             | (TreeType::DenseAppendOnlyFixedSizeTree(_), true)
             | (TreeType::ProvableSumIndexedTree, true)
             | (TreeType::ProvableCountProvableSumIndexedTree, true)
+            | (TreeType::PrivateDocumentStore(_), true)
             | (TreeType::ProvableCountIndexedTree, true) => Op::DeleteLayeredMaybeSpecialized,
             (TreeType::SumTree, false)
             | (TreeType::BigSumTree, false)
@@ -169,6 +172,7 @@ impl ElementDeleteFromStorageExtensions for Element {
             | (TreeType::DenseAppendOnlyFixedSizeTree(_), false)
             | (TreeType::ProvableSumIndexedTree, false)
             | (TreeType::ProvableCountProvableSumIndexedTree, false)
+            | (TreeType::PrivateDocumentStore(_), false)
             | (TreeType::ProvableCountIndexedTree, false) => Op::DeleteMaybeSpecialized,
         };
         let batch = [(key, op)];
@@ -228,6 +232,7 @@ impl ElementDeleteFromStorageExtensions for Element {
             | (TreeType::DenseAppendOnlyFixedSizeTree(_), true)
             | (TreeType::ProvableSumIndexedTree, true)
             | (TreeType::ProvableCountProvableSumIndexedTree, true)
+            | (TreeType::PrivateDocumentStore(_), true)
             | (TreeType::ProvableCountIndexedTree, true) => Op::DeleteLayeredMaybeSpecialized,
             (TreeType::SumTree, false)
             | (TreeType::BigSumTree, false)
@@ -243,6 +248,7 @@ impl ElementDeleteFromStorageExtensions for Element {
             | (TreeType::DenseAppendOnlyFixedSizeTree(_), false)
             | (TreeType::ProvableSumIndexedTree, false)
             | (TreeType::ProvableCountProvableSumIndexedTree, false)
+            | (TreeType::PrivateDocumentStore(_), false)
             | (TreeType::ProvableCountIndexedTree, false) => Op::DeleteMaybeSpecialized,
         };
         let entry = (key, op);

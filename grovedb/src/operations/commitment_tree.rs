@@ -136,7 +136,7 @@ impl GroveDb {
 
         // 2. Build subtree path and open transactional storage (write-through
         //    cache + MMR overlay provide read-after-write visibility)
-        let ct_path_vec = self.build_ct_path(&path, key);
+        let ct_path_vec = crate::util::subtree_path_with_key(&path, key);
         let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
         let ct_path = SubtreePath::from(ct_path_refs.as_slice());
 
@@ -156,12 +156,15 @@ impl GroveDb {
 
         let append_result = cost_return_on_error!(
             &mut cost,
-            ct.append_raw(cmx, rho, cv_net, &payload)
+            ct.append_raw(cmx, rho, cv_net, &payload, grove_version)
                 .map(|r| r.map_err(map_ct_err))
         );
 
         // 4. Save frontier to storage
-        cost_return_on_error!(&mut cost, ct.save().map(|r| r.map_err(map_ct_err)));
+        cost_return_on_error!(
+            &mut cost,
+            ct.save(grove_version).map(|r| r.map_err(map_ct_err))
+        );
 
         let new_sinsemilla_root = append_result.sinsemilla_root;
         let bulk_state_root = append_result.bulk_state_root;
@@ -177,7 +180,7 @@ impl GroveDb {
         );
 
         // Flush MMR overlay to storage (through the batch)
-        cost_return_on_error_no_add!(cost, ct.commit_mmr().map_err(map_ct_err));
+        cost_return_on_error_no_add!(cost, ct.commit_mmr(grove_version).map_err(map_ct_err));
 
         // Drop ct (and its storage context) before opening merk
         drop(ct);
@@ -208,6 +211,14 @@ impl GroveDb {
             )
         );
 
+        // A canonical indexed secondary row binds this entry's committed
+        // value hash, and an append moves it while leaving `(count, sum)`
+        // alone. Snapshot before the rewrite; mirror after.
+        let old_indexed_state = cost_return_on_error!(
+            &mut cost,
+            GroveDb::capture_indexed_entry_state(&parent_merk, key, &element, grove_version)
+        );
+
         let updated_element =
             Element::new_commitment_tree(new_total_count, chunk_power, existing_flags);
 
@@ -223,14 +234,17 @@ impl GroveDb {
         );
 
         // 6. Propagate changes from parent upward
+
         let mut merk_cache = HashMap::new();
         merk_cache.insert(path.clone(), parent_merk);
 
         cost_return_on_error!(
             &mut cost,
-            self.propagate_changes_with_transaction(
+            self.propagate_changes_with_transaction_refreshing_indexed_row(
                 merk_cache,
                 path,
+                key,
+                old_indexed_state,
                 tx.as_ref(),
                 &batch,
                 grove_version,
@@ -284,7 +298,7 @@ impl GroveDb {
             }
         };
 
-        let ct_path_vec = self.build_ct_path(&path, key);
+        let ct_path_vec = crate::util::subtree_path_with_key(&path, key);
         let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
         let ct_path = SubtreePath::from(ct_path_refs.as_slice());
 
@@ -340,7 +354,7 @@ impl GroveDb {
             return Ok(None).wrap_with_cost(cost);
         }
 
-        let ct_path_vec = self.build_ct_path(&path, key);
+        let ct_path_vec = crate::util::subtree_path_with_key(&path, key);
         let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
         let ct_path = SubtreePath::from(ct_path_refs.as_slice());
 
@@ -432,7 +446,7 @@ impl GroveDb {
             }
         };
 
-        let ct_path_vec = self.build_ct_path(&path, key);
+        let ct_path_vec = crate::util::subtree_path_with_key(&path, key);
         let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
         let ct_path = SubtreePath::from(ct_path_refs.as_slice());
 
@@ -480,13 +494,6 @@ impl GroveDb {
             Element::CommitmentTree(total_count, ..) => Ok(total_count).wrap_with_cost(cost),
             _ => Err(Error::InvalidInput("element is not a commitment tree")).wrap_with_cost(cost),
         }
-    }
-
-    /// Build the subtree path for a commitment tree at path/key.
-    fn build_ct_path<B: AsRef<[u8]>>(&self, path: &SubtreePath<B>, key: &[u8]) -> Vec<Vec<u8>> {
-        let mut v = path.to_vec();
-        v.push(key.to_vec());
-        v
     }
 
     /// Preprocess `CommitmentTreeInsert` ops in a batch.
@@ -608,13 +615,16 @@ impl GroveDb {
             for (cmx, rho, cv_net, payload) in inserts {
                 cost_return_on_error!(
                     &mut cost,
-                    ct.append_raw(*cmx, *rho, *cv_net, payload)
+                    ct.append_raw(*cmx, *rho, *cv_net, payload, grove_version)
                         .map(|r| r.map_err(map_ct_err))
                 );
             }
 
             // Save frontier to storage
-            cost_return_on_error!(&mut cost, ct.save().map(|r| r.map_err(map_ct_err)));
+            cost_return_on_error!(
+                &mut cost,
+                ct.save(grove_version).map(|r| r.map_err(map_ct_err))
+            );
 
             // Read state for the replacement op
             let bulk_state_root = cost_return_on_error_no_add!(
@@ -624,7 +634,7 @@ impl GroveDb {
             let current_total_count = ct.total_count();
 
             // Flush MMR overlay to storage (through the batch)
-            cost_return_on_error_no_add!(cost, ct.commit_mmr().map_err(map_ct_err));
+            cost_return_on_error_no_add!(cost, ct.commit_mmr(grove_version).map_err(map_ct_err));
 
             // Drop ct (and its storage context)
             drop(ct);

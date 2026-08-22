@@ -14,7 +14,7 @@ documentation = "https://docs.rs/grovedb"
 
 [features]
 default = ["storage"]
-storage = ["grovedb-storage"]
+storage = ["grovedb-storage", "integer-encoding"]
 mem_store = []
 
 [dependencies]
@@ -22,6 +22,8 @@ blake3 = { workspace = true }
 bincode = { workspace = true, features = ["derive"] }
 grovedb-costs = { version = "5.0.1", path = "../costs" }
 grovedb-storage = { version = "5.0.1", path = "../storage", optional = true }
+grovedb-version = { version = "5.0.1", path = "../grovedb-version" }
+integer-encoding = { workspace = true, optional = true }
 
 [dev-dependencies]
 faster-hex = "0.10.0"

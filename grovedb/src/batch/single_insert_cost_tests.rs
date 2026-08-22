@@ -19,8 +19,10 @@ mod tests {
     use integer_encoding::VarInt;
     use intmap::IntMap;
 
+    use grovedb_merk::TreeType;
+
     use crate::{
-        batch::QualifiedGroveDbOp,
+        batch::{QualifiedGroveDbOp, SubelementsDeletionBehavior},
         reference_path::ReferencePathType::SiblingReference,
         tests::{common::EMPTY_PATH, make_empty_grovedb},
         Element,
@@ -1584,21 +1586,19 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                // +1 seek and +129 storage_loaded_bytes vs. V1..V3: with
+                // Identical to the `_v3_keeps_live_costs` companion below:
                 // `overwrite_indexed_cleanup_inspection >= 1` (V4+, which is
-                // what `latest()` resolves to) and tree-override validation
-                // off, the batch path reads each existing element for
-                // indexed-overwrite detection, preventing silent
-                // secondary-storage orphaning. The `_v3_keeps_live_costs`
-                // companion below pins that released versions do NOT pay
-                // this read.
-                seek_count: 8,
+                // what `latest()` resolves to) classifies each overwritten
+                // element for indexed-overwrite detection, but it does so
+                // from the old value the merk walk already fetched, so the
+                // gate adds no seeks and no loaded bytes over V1..V3.
+                seek_count: 7,
                 storage_cost: StorageCost {
                     added_bytes: 4,
                     replaced_bytes: 285,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 509,
+                storage_loaded_bytes: 380,
                 hash_node_calls: 12,
                 sinsemilla_hash_calls: 0,
             }
@@ -1616,6 +1616,75 @@ mod tests {
                 .map(|(hash, (a, b, c))| format!("{}: {} {} {}", hash, a, b, c))
                 .collect::<Vec<_>>()
                 .join(" | ")
+        );
+    }
+
+    #[test]
+    fn test_batch_plain_overwrites_and_tree_delete_cost_parity_v3_v4() {
+        // A batch touching NO indexed trees must cost byte-for-byte the same
+        // under GROVE_V3 and GROVE_V4. Both V4 gates
+        // (`overwrite_indexed_cleanup_inspection` and
+        // `delete_tree_cleanup_type_source`) derive the old element from
+        // data the apply already loads — the merk walk's own fetch of the
+        // node being rewritten or deleted, and the emptiness pre-scan's own
+        // read — instead of issuing a dedicated stored-element read, so
+        // their classification work is invisible to tracked cost.
+        let run = |grove_version: &GroveVersion| {
+            let db = make_empty_grovedb();
+            let tx = db.start_transaction();
+            let ops = vec![
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![],
+                    b"key1".to_vec(),
+                    Element::new_item([0u8; 30].to_vec()),
+                ),
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![],
+                    b"keyref".to_vec(),
+                    Element::new_reference(SiblingReference(b"key1".to_vec())),
+                ),
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![],
+                    b"tree".to_vec(),
+                    Element::empty_tree(),
+                ),
+            ];
+            db.apply_batch(ops, None, Some(&tx), grove_version)
+                .value
+                .expect("expected to execute setup batch");
+
+            // Every op shape the V4 gates watch: an item overwrite via
+            // InsertOrReplace, a reference overwrite via Replace, and a
+            // DeleteTree of a plain tree with the emptiness check on.
+            let ops = vec![
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![],
+                    b"key1".to_vec(),
+                    Element::new_item([1u8; 30].to_vec()),
+                ),
+                QualifiedGroveDbOp::replace_op(
+                    vec![],
+                    b"keyref".to_vec(),
+                    Element::new_reference(SiblingReference(b"key1".to_vec())),
+                ),
+                QualifiedGroveDbOp::delete_tree_op(
+                    vec![],
+                    b"tree".to_vec(),
+                    TreeType::NormalTree,
+                    SubelementsDeletionBehavior::Error,
+                ),
+            ];
+            db.apply_batch(ops, None, Some(&tx), grove_version)
+        };
+
+        let v3 = run(&grovedb_version::version::v3::GROVE_V3);
+        let v4 = run(&grovedb_version::version::v4::GROVE_V4);
+        v3.value.as_ref().expect("v3 batch should apply");
+        v4.value.as_ref().expect("v4 batch should apply");
+        assert_eq!(
+            v3.cost, v4.cost,
+            "a batch of plain overwrites plus a plain DeleteTree must \
+             produce an identical CostResult under V3 and V4"
         );
     }
 
@@ -1701,11 +1770,11 @@ mod tests {
             OperationCost {
                 // The exact constants this batch shape cost on the released
                 // versions. `overwrite_indexed_cleanup_inspection` is 0 on
-                // V1..V3, so the stored-element read the V4 test above pays
-                // (+1 seek, +129 loaded bytes) must NOT happen here — cost
-                // feeds fees, and released versions must keep their released
-                // cost shape. If this test starts failing, a live fee just
-                // changed.
+                // V1..V3; on V4+ the gate classifies overwrites from the
+                // already-fetched old value, so the SAME constants hold in
+                // the V4 test above. Cost feeds fees, and released versions
+                // must keep their released cost shape. If this test starts
+                // failing, a live fee just changed.
                 seek_count: 7,
                 storage_cost: StorageCost {
                     added_bytes: 4,

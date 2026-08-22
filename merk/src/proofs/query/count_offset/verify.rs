@@ -73,9 +73,15 @@ pub struct CountOffsetReturnedItem {
     /// The matched key.
     pub key: Vec<u8>,
     /// The element's serialized value bytes, as emitted by the prover.
-    /// GroveDB's reference-resolution post-pass (mirroring the regular
-    /// count-tree proof flow) operates on this byte stream — reference
-    /// dereferencing happens at the GroveDB layer, not here.
+    ///
+    /// For a `KVRefValueHash*` node these are the RESOLVED target's
+    /// bytes, not the reference's: the caller's reference post-pass runs
+    /// before the proof is encoded, so by verify time the dereferencing
+    /// has already happened and `reference_element_hash` is what records
+    /// that this row was a reference. (This is a change from the earlier
+    /// contract, which said dereferencing happened at the GroveDB layer
+    /// after verification — it never did, and reference rows were
+    /// rejected outright instead.)
     pub value: Vec<u8>,
     /// The value-hash the proof's merk node committed for this entry.
     /// For `KVCount` nodes this is `H(value)` (the Item-flavored value
@@ -173,7 +179,13 @@ pub fn verify_count_offset_on_range_proof(
             | Node::KVValueHashFeatureType(_, _, _, _)
             | Node::HashWithCountAndSum(_, _, _, _, _)
             | Node::KVDigestCountSum(_, _, _, _)
-            | Node::KVCountSum(_, _, _, _) => Ok(()),
+            | Node::KVCountSum(_, _, _, _)
+            // Resolved-reference returns. GroveDB's post-pass rewrites a
+            // reference row's `KVValueHashFeatureType` into these before
+            // encoding, so the value bytes are the dereferenced target's
+            // and the node's own hash field is the reference element's.
+            | Node::KVRefValueHashCount(_, _, _, _)
+            | Node::KVRefValueHashCountSum(_, _, _, _, _) => Ok(()),
             other => Err(Error::InvalidProofError(format!(
                 "unexpected node type in count-offset proof: {}",
                 other
@@ -245,6 +257,10 @@ fn aggregate_of_proof_tree_node(tree: &ProofTree) -> Result<u64, Error> {
         Node::HashWithCountAndSum(_, _, _, c, _) => Ok(*c),
         Node::KVDigestCountSum(_, _, c, _) => Ok(*c),
         Node::KVCountSum(_, _, c, _) => Ok(*c),
+        // Resolved-reference returns carry their aggregates in the same
+        // conceptual position as the value-bearing variants.
+        Node::KVRefValueHashCount(_, _, _, c) => Ok(*c),
+        Node::KVRefValueHashCountSum(_, _, _, c, _) => Ok(*c),
         Node::KVValueHashFeatureType(_, _, _, ft) => match ft {
             TreeFeatureType::ProvableCountedMerkNode(c) => Ok(*c),
             TreeFeatureType::ProvableCountedSummedMerkNode(c, _) => Ok(*c),
@@ -399,6 +415,9 @@ fn verify_count_offset_shape(
         // Dual-axis (PCPS) per-element variants.
         Node::KVDigestCountSum(key, _, _, _) => key.as_slice(),
         Node::KVCountSum(key, _, _, _) => key.as_slice(),
+        // Resolved-reference per-element variants.
+        Node::KVRefValueHashCount(key, _, _, _) => key.as_slice(),
+        Node::KVRefValueHashCountSum(key, _, _, _, _) => key.as_slice(),
         // Reaching here would require:
         //   - the `execute_with_options` allowlist accepted a node
         //     that doesn't carry a key (only `HashWithCount` /
@@ -677,6 +696,72 @@ fn classify_self<'a>(
                 key: key.as_slice(),
                 value: value.as_slice(),
                 value_hash: *vh,
+            })
+        }
+        // ─── Resolved-reference returns ──────────────────────────────
+        //
+        // GroveDB's post-pass rewrote a reference row into one of these
+        // before encoding, so `value` is the RESOLVED target's bytes and
+        // the node's hash field is the REFERENCE element's own value
+        // hash. Phase 1 already bound both together: the tree-hash
+        // reconstruction for these variants computes
+        // `combine_hash(reference_element_hash, H(value))`, so a forged
+        // target value or a forged reference hash breaks the root.
+        //
+        // Note the KV→KVValueHash forgery guard that `KVValueHashFeatureType`
+        // needs does NOT apply here, and its absence is not a gap: that
+        // guard exists because a proof-carried `value_hash` is not checked
+        // against `H(value)`. For these variants the value hash IS
+        // recomputed from the value bytes as part of the combine, so a
+        // substituted `value` cannot survive.
+        Node::KVRefValueHashCount(key, value, reference_element_hash, _) => {
+            if !in_range {
+                return Err(Error::InvalidProofError(
+                    "count-offset proof: KVRefValueHashCount at an out-of-range position"
+                        .to_string(),
+                ));
+            }
+            if own_count != 1 {
+                return Err(Error::InvalidProofError(format!(
+                    "count-offset proof: KVRefValueHashCount at own_count={} (expected 1)",
+                    own_count
+                )));
+            }
+            Ok(BoundaryKind::ValueReturned {
+                key: key.as_slice(),
+                value: value.as_slice(),
+                // The committed value hash for a combined reference is
+                // `combine_hash(reference_element_hash, H(target))` —
+                // recomputed here so the surfaced hash is the one the
+                // secondary root actually binds, not just half of it.
+                value_hash: crate::tree::combine_hash(
+                    reference_element_hash,
+                    &compute_value_hash(value.as_slice()).unwrap(),
+                )
+                .unwrap(),
+            })
+        }
+        Node::KVRefValueHashCountSum(key, value, reference_element_hash, _, _) => {
+            if !in_range {
+                return Err(Error::InvalidProofError(
+                    "count-offset proof: KVRefValueHashCountSum at an out-of-range position"
+                        .to_string(),
+                ));
+            }
+            if own_count != 1 {
+                return Err(Error::InvalidProofError(format!(
+                    "count-offset proof: KVRefValueHashCountSum at own_count={} (expected 1)",
+                    own_count
+                )));
+            }
+            Ok(BoundaryKind::ValueReturned {
+                key: key.as_slice(),
+                value: value.as_slice(),
+                value_hash: crate::tree::combine_hash(
+                    reference_element_hash,
+                    &compute_value_hash(value.as_slice()).unwrap(),
+                )
+                .unwrap(),
             })
         }
         Node::KVValueHash(key, value, _) => {

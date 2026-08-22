@@ -22,19 +22,11 @@ use grovedb_merk::{
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
-use super::{read_entry_aggregates, AggregatePair, AggregateTransition};
-use crate::{operations::indexed_tree::make_axis_secondary_key, Element, Error};
-
-/// The per-axis payload stored alongside the sort key. The key encodes the
-/// ordering value; the payload carries what the secondary's own aggregate
-/// must sum to, which is why the sum and avg axes cannot store a bare item.
-fn axis_row_payload(axis: IndexAxis, sum: i64) -> Element {
-    match axis {
-        IndexAxis::Count => Element::new_item(Vec::new()),
-        IndexAxis::Sum => Element::new_sum_item(sum),
-        IndexAxis::Avg => Element::new_item_with_sum_item(Vec::new(), sum),
-    }
-}
+use super::{read_entry_aggregates, AggregateTransition, MaybeEntryState};
+use crate::{
+    operations::indexed_tree::{axis_row_reference, make_axis_secondary_key},
+    Element, Error,
+};
 
 /// Enforce the precise per-axis item-key bound: avg prepends a 16-byte sort
 /// key, count and sum 8, so the same item key can be legal on one axis and
@@ -71,7 +63,7 @@ fn enforce_axis_item_key_bound<'a>(
 /// what makes each axis's assembled batch deterministic.
 pub(crate) fn read_post_apply_transitions<'db, S: StorageContext<'db>>(
     primary_merk: &Merk<S>,
-    pre: &BTreeMap<Vec<u8>, AggregatePair>,
+    pre: &BTreeMap<Vec<u8>, MaybeEntryState>,
     grove_version: &GroveVersion,
 ) -> CostResult<Vec<AggregateTransition>, Error> {
     let mut cost = OperationCost::default();
@@ -88,10 +80,18 @@ pub(crate) fn read_post_apply_transitions<'db, S: StorageContext<'db>>(
 
 /// Assemble one axis's secondary row moves into a sorted Merk batch.
 ///
-/// Each transition is compared as this axis's `(key, payload)` rather than
-/// the raw aggregates: on the avg axis two different `(count, sum)` pairs
-/// can share a sort key while carrying different payloads, and on the count
-/// axis a sum change moves nothing at all.
+/// Each transition is compared as this axis's `(key, row, target hash)`
+/// rather than the raw aggregates: on the avg axis two different
+/// `(count, sum)` pairs can share a sort key while carrying different
+/// payloads, on the count axis a sum change moves nothing at all, and a
+/// canonical reference row is stale whenever the primary node's committed
+/// value hash moves even if nothing about the sort position changed.
+///
+/// That last case is the intentional write amplification the reference
+/// representation buys: a value-only primary update — and equally a deep
+/// mutation that only changes a child subtree's root, or a
+/// `RefreshReference` on a reference-shaped primary — now rewrites every
+/// configured axis's row.
 fn build_axis_mirror_batch(
     transitions: &[AggregateTransition],
     axis: IndexAxis,
@@ -100,19 +100,20 @@ fn build_axis_mirror_batch(
     let mut cost = OperationCost::default();
     let secondary_tree_type = crate::operations::indexed_tree::axis_secondary_tree_type(axis);
     let mut secondary_batch: Vec<BatchEntry<Vec<u8>>> = Vec::with_capacity(transitions.len() * 2);
-    for (key, old_aggregates, new_aggregates) in transitions {
-        let old_entry = old_aggregates.map(|(c, s)| {
-            (
-                make_axis_secondary_key(axis, c, s, key),
-                axis_row_payload(axis, s),
-            )
-        });
-        let new_entry = new_aggregates.map(|(c, s)| {
-            (
-                make_axis_secondary_key(axis, c, s, key),
-                axis_row_payload(axis, s),
-            )
-        });
+    for (key, old_state, new_state) in transitions {
+        let entry_for = |state: &MaybeEntryState| -> Result<_, Error> {
+            state
+                .map(|s| {
+                    Ok((
+                        make_axis_secondary_key(axis, s.count, s.sum, key),
+                        axis_row_reference(axis, key, s.count, s.sum)?,
+                        s.value_hash,
+                    ))
+                })
+                .transpose()
+        };
+        let old_entry = cost_return_on_error_no_add!(cost, entry_for(old_state));
+        let new_entry = cost_return_on_error_no_add!(cost, entry_for(new_state));
         if old_entry == new_entry {
             continue;
         }
@@ -123,8 +124,8 @@ fn build_axis_mirror_batch(
         // Merk batch is rejected outright ("Keys in batch must be unique"),
         // failing the whole GroveDB batch. Where the key is unchanged the put
         // alone overwrites the payload, which is what the row needs.
-        let new_secondary_key_ref = new_entry.as_ref().map(|(key, _)| key);
-        if let Some((old_secondary_key, _)) = &old_entry
+        let new_secondary_key_ref = new_entry.as_ref().map(|(key, ..)| key);
+        if let Some((old_secondary_key, ..)) = &old_entry
             && Some(old_secondary_key) != new_secondary_key_ref
         {
             cost_return_on_error!(
@@ -139,18 +140,26 @@ fn build_axis_mirror_batch(
                 .map_err(Error::MerkError)
             );
         }
-        if let Some((new_secondary_key, entry)) = new_entry {
+        if let Some((new_secondary_key, entry, target_value_hash)) = new_entry {
             let feature_type = cost_return_on_error_no_add!(
                 cost,
                 entry
                     .get_feature_type(secondary_tree_type)
                     .map_err(Error::MerkError)
             );
+            // `PutCombinedReference`, not a plain put: the row's committed
+            // value hash must be
+            // `combine_hash(H(reference bytes), target_value_hash)` so the
+            // secondary root binds the primary entry it points at. A plain
+            // put would commit only the reference bytes, leaving a row that
+            // authenticates its own path while saying nothing about the
+            // value at the other end of it.
             cost_return_on_error!(
                 &mut cost,
                 entry
-                    .insert_into_batch_operations(
+                    .insert_reference_into_batch_operations(
                         new_secondary_key,
+                        target_value_hash,
                         &mut secondary_batch,
                         feature_type,
                         grove_version,

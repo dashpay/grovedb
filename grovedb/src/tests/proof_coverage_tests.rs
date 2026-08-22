@@ -1176,6 +1176,7 @@ mod tests {
             left_to_right: true,
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: true,
+            read_mode: None,
         };
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
@@ -1441,6 +1442,7 @@ mod tests {
             left_to_right: true,
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         };
         let path_query = PathQuery::new_unsized(vec![], query);
 
@@ -1780,6 +1782,7 @@ mod tests {
             default_subquery_branch: SubqueryBranch::default(),
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         };
         let path_query = PathQuery::new(
             vec![TEST_LEAF.to_vec()],
@@ -1848,6 +1851,7 @@ mod tests {
             default_subquery_branch: SubqueryBranch::default(),
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         };
         let path_query = PathQuery::new(
             vec![b"tree".to_vec()],
@@ -2751,6 +2755,7 @@ mod tests {
             left_to_right: true,
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: true,
+            read_mode: None,
         };
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
@@ -2831,6 +2836,7 @@ mod tests {
             left_to_right: true,
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: true,
+            read_mode: None,
         };
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
@@ -2914,6 +2920,7 @@ mod tests {
             left_to_right: true,
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         };
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
@@ -2995,6 +3002,7 @@ mod tests {
             left_to_right: true,
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         };
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
@@ -3075,6 +3083,7 @@ mod tests {
             left_to_right: true,
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         };
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
@@ -3201,6 +3210,7 @@ mod tests {
             left_to_right: true,
             conditional_subquery_branches: Some(conditional),
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         };
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
@@ -3229,6 +3239,98 @@ mod tests {
             3,
             "should have 3 results (1 from alpha + 2 from beta)"
         );
+    }
+
+    #[test]
+    fn verify_absence_ignores_unqueried_conditional_subquery_branches() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert root");
+        db.insert(
+            [b"root"].as_ref(),
+            b"queried",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert queried tree");
+        db.insert(
+            [b"root".as_slice(), b"queried".as_slice()].as_ref(),
+            b"present",
+            Element::new_item(b"value".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert queried item");
+
+        let mut default_subquery = Query::new();
+        default_subquery.insert_key(b"present".to_vec());
+        let mut unqueried_subquery = Query::new();
+        unqueried_subquery.insert_key(b"missing".to_vec());
+
+        let mut conditional = IndexMap::new();
+        conditional.insert(
+            QueryItem::Key(b"unqueried".to_vec()),
+            SubqueryBranch {
+                subquery_path: None,
+                subquery: Some(Box::new(unqueried_subquery)),
+            },
+        );
+
+        let query = Query {
+            items: vec![QueryItem::Key(b"queried".to_vec())],
+            default_subquery_branch: SubqueryBranch {
+                subquery_path: None,
+                subquery: Some(Box::new(default_subquery)),
+            },
+            left_to_right: true,
+            conditional_subquery_branches: Some(conditional),
+            add_parent_tree_on_subquery: false,
+            read_mode: None,
+        };
+        let path_query = PathQuery::new(
+            vec![b"root".to_vec()],
+            SizedQuery::new(query, Some(2), None),
+        );
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should prove queried branch only");
+
+        let (root_hash, results) = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: true,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: false,
+            },
+            grove_version,
+        )
+        .expect("should verify absence proof without unqueried conditional keys");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        assert_eq!(results.len(), 1);
+        assert!(results.iter().any(|(_, key, element)| {
+            key == b"present" && element.as_ref() == Some(&Element::new_item(b"value".to_vec()))
+        }));
+        assert!(results.iter().all(|(_, key, _)| key != b"missing"));
     }
 
     #[test]
@@ -3316,6 +3418,7 @@ mod tests {
             left_to_right: true,
             conditional_subquery_branches: Some(conditional),
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         };
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
@@ -3410,6 +3513,7 @@ mod tests {
             left_to_right: true,
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         };
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
@@ -3571,6 +3675,7 @@ mod tests {
             left_to_right: false, // right to left
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         };
         let path_query = PathQuery::new(
             vec![b"root".to_vec()],
@@ -3956,6 +4061,7 @@ mod tests {
             default_subquery_branch: SubqueryBranch::default(),
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         };
         let path_query = PathQuery::new(
             vec![TEST_LEAF.to_vec()],
@@ -4015,6 +4121,7 @@ mod tests {
             default_subquery_branch: SubqueryBranch::default(),
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         };
         let path_query = PathQuery::new(
             vec![b"tree".to_vec()],
@@ -4269,6 +4376,7 @@ mod tests {
             left_to_right: true,
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         };
         let path_query = PathQuery::new_unsized(vec![], query);
 
@@ -4318,6 +4426,7 @@ mod tests {
             left_to_right: true,
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         };
         let path_query = PathQuery::new_unsized(vec![], query);
 
@@ -5183,6 +5292,7 @@ mod tests {
             left_to_right: true,
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         };
         PathQuery::new_unsized(vec![b"root".to_vec()], query)
     }
@@ -5352,6 +5462,7 @@ mod tests {
             left_to_right: true,
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         };
         let query = Query {
             items: vec![QueryItem::Key(tree_key.to_vec())],
@@ -5362,6 +5473,7 @@ mod tests {
             left_to_right: true,
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         };
         PathQuery::new_unsized(vec![b"root".to_vec()], query)
     }

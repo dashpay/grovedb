@@ -80,3 +80,17 @@ observing an append error.
 **Becomes real if:** a new write path bypasses the 255-byte key check, or a
 verifier starts trusting a decoded field instead of the hash-verified
 element bytes.
+
+## Proof-envelope trailing bytes: strict rejection is canonical, do not re-gate leniency
+
+Two related claim shapes, both resolved:
+
+| Claim | Why not real |
+|---|---|
+| "Proof envelopes accept trailing bytes after the encoded proof (malleability)" | Already fixed. PR [#661](https://github.com/dashpay/grovedb/pull/661) (May 2026) introduced `decode_grovedb_proof_canonical`, which errors unless bincode consumes the full buffer. Every envelope entry point routes through it (`verify_query`, `verify_query_raw`, `verify_query_with_options`, trunk-chunk, `verify_path_query`, all aggregate verifiers), and the newer V1 payload decodes (sum-budget window, axis descent, indexed-axis) carry their own trailing-byte checks. Rejection is version-independent (verified empirically under GROVE_V1–V4) and covered by 10 `trailing_bytes` regression tests. |
+| "Verifier strictness is consensus-behavior-changing, so rejection must be version-gated: legacy versions accept, new versions reject" (PR [#739](https://github.com/dashpay/grovedb/pull/739) shape) | The gating premise is false: **there was never a lenient GROVE_V3 verifier in production.** grovedb v4.1.0 — the last release that accepted trailing bytes — does not contain GROVE_V3 at all, so v3 could not activate on it. Every Dash Platform v4.0.0 build from beta.1 (2026-06-02) onward pins grovedb revs that include the strict decode (platform v4.0.0 final → grovedb v5.0.0; platform v4.1.1 → v5.0.1). GROVE_V3 activated ~mid-June 2026 on one of those strict builds, so strict rejection has been the live v3 behavior since the first v3 block. Re-introducing acceptance for v1/v2/v3 would loosen live verifiers and create exactly the intra-version divergence a gate exists to prevent. v1/v2 proofs are only verified by current-code clients, which have been strict since platform v4.0.0 shipped with no fallout. |
+
+**Becomes real if:** evidence emerges that some production verifier ran a
+lenient grovedb (< v5.0.0) under GROVE_V3, or a consumer surfaces with
+persisted/padded proof blobs that must keep verifying. Absent that, do not
+re-propose version-gated leniency for proof-envelope trailing bytes.

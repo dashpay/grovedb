@@ -746,7 +746,12 @@ fn query_to_grovedb(query: Query) -> crate::Query {
             query.conditional_subquery_branches,
         ),
         left_to_right: query.left_to_right,
-        add_parent_tree_on_subquery: false,
+        add_parent_tree_on_subquery: query.add_parent_tree_on_subquery,
+        // The grovedbg wire type has no read-mode vocabulary (the
+        // debugger UI cannot express axis or sum-budget reads, same as
+        // it cannot express aggregate items), so debugger-issued
+        // queries are always plain key selection.
+        read_mode: None,
     }
 }
 
@@ -962,6 +967,12 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             element_flags,
         },
         crate::Element::DenseAppendOnlyFixedSizeTree(_, _, element_flags) => {
+            grovedbg_types::Element::Subtree {
+                root_key: None,
+                element_flags,
+            }
+        }
+        crate::Element::PrivateDocumentStore(_, _, _, element_flags) => {
             grovedbg_types::Element::Subtree {
                 root_key: None,
                 element_flags,

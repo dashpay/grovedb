@@ -68,7 +68,8 @@ use grovedb_merk::{
         value_hash, AggregateData, NULL_HASH,
     },
     tree_type::{CostSize, TreeType, SUM_ITEM_COST_SIZE},
-    CryptoHash, Error as MerkError, Merk, MerkType, Op, RootHashKeyAndAggregateData,
+    CryptoHash, Error as MerkError, Merk, MerkType, OldValueDisposition, Op,
+    RootHashKeyAndAggregateData,
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
@@ -153,6 +154,16 @@ pub enum NonMerkTreeMeta {
         /// Fixed height of the dense Merkle tree.
         height: u8,
     },
+    /// PrivateDocumentStore state: total_count plus the committed config
+    /// {entry_size, chunk_power}.
+    PrivateDocumentStore {
+        /// Total number of entries appended so far.
+        total_count: u64,
+        /// Committed byte length of every entry.
+        entry_size: u32,
+        /// Power-of-2 chunk size for epochs.
+        chunk_power: u8,
+    },
 }
 
 impl NonMerkTreeMeta {
@@ -168,6 +179,9 @@ impl NonMerkTreeMeta {
             }
             NonMerkTreeMeta::DenseTree { height, .. } => {
                 TreeType::DenseAppendOnlyFixedSizeTree(*height)
+            }
+            NonMerkTreeMeta::PrivateDocumentStore { chunk_power, .. } => {
+                TreeType::PrivateDocumentStore(*chunk_power)
             }
         }
     }
@@ -187,6 +201,13 @@ impl NonMerkTreeMeta {
             NonMerkTreeMeta::DenseTree { count, height } => {
                 Element::new_dense_tree(*count, *height, flags)
             }
+            NonMerkTreeMeta::PrivateDocumentStore {
+                total_count,
+                entry_size,
+                chunk_power,
+            } => {
+                Element::new_private_document_store(*total_count, *entry_size, *chunk_power, flags)
+            }
         }
     }
 
@@ -197,6 +218,7 @@ impl NonMerkTreeMeta {
             NonMerkTreeMeta::MmrTree { mmr_size } => *mmr_size,
             NonMerkTreeMeta::BulkAppendTree { total_count, .. } => *total_count,
             NonMerkTreeMeta::DenseTree { count, .. } => *count as u64,
+            NonMerkTreeMeta::PrivateDocumentStore { total_count, .. } => *total_count,
         }
     }
 }
@@ -483,6 +505,13 @@ pub enum GroveOp {
         /// Value to insert
         value: Vec<u8>,
     },
+    /// Append a fixed-size entry to a PrivateDocumentStore. The entry's
+    /// length must equal the store's committed `entry_size`; the append is
+    /// rejected otherwise.
+    PrivateDocumentStoreInsert {
+        /// Entry to append (exactly `entry_size` bytes)
+        entry: Vec<u8>,
+    },
 }
 
 impl GroveOp {
@@ -512,6 +541,7 @@ impl GroveOp {
             GroveOp::InsertNonMerkTree { .. } => 16,
             GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. } => 17,
             GroveOp::InsertAggregateIndexedTreeRootKeys { .. } => 18,
+            GroveOp::PrivateDocumentStoreInsert { .. } => 19,
         }
     }
 
@@ -573,7 +603,56 @@ impl GroveOp {
             GroveOp::CommitmentTreeInsert { .. }
             | GroveOp::MmrTreeAppend { .. }
             | GroveOp::BulkAppend { .. }
-            | GroveOp::DenseTreeInsert { .. } => false,
+            | GroveOp::DenseTreeInsert { .. }
+            | GroveOp::PrivateDocumentStoreInsert { .. } => false,
+        }
+    }
+
+    /// Whether an op can move an indexed primary entry's canonical
+    /// secondary ROW — a strictly wider question than
+    /// [`Self::can_mutate_child_count`].
+    ///
+    /// A canonical row binds the primary node's committed value hash as
+    /// well as its `(count, sum)`, so any op that rewrites the entry at
+    /// all can staleness the row. The non-Merk append ops are exactly the
+    /// difference: an `MmrTreeAppend` leaves `(count, sum)` untouched but
+    /// writes a new non-Merk root into the entry, which moves its
+    /// commitment. Capturing on `can_mutate_child_count` left those rows
+    /// bound to a hash that no longer existed, which `verify_grovedb`
+    /// then reported as a stale target.
+    ///
+    /// EXHAUSTIVE on purpose — no `_` arm — so a new op variant is a
+    /// compile error here rather than a silently unmirrored mutation.
+    /// That is the same technique `can_mutate_child_count` uses, for the
+    /// same bug class.
+    pub(crate) fn can_mutate_indexed_secondary_row(&self) -> bool {
+        match self {
+            GroveOp::InsertWithKnownToNotAlreadyExist { .. }
+            | GroveOp::InsertIfNotExists { .. }
+            | GroveOp::InsertOrReplace { .. }
+            | GroveOp::Replace { .. }
+            | GroveOp::Patch { .. }
+            | GroveOp::Delete
+            | GroveOp::DeleteTree(..)
+            | GroveOp::RefreshReference { .. }
+            | GroveOp::ReplaceTreeRootKey { .. }
+            | GroveOp::InsertTreeWithRootHash { .. }
+            | GroveOp::ReplaceNonMerkTreeRoot { .. }
+            | GroveOp::InsertNonMerkTree { .. }
+            | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. }
+            | GroveOp::InsertAggregateIndexedTreeRootKeys { .. }
+            // The four that `can_mutate_child_count` excludes: they
+            // rewrite the entry's non-Merk root, hence its commitment.
+            | GroveOp::CommitmentTreeInsert { .. }
+            | GroveOp::MmrTreeAppend { .. }
+            | GroveOp::BulkAppend { .. }
+            | GroveOp::DenseTreeInsert { .. }
+            // `preprocess_private_document_store_ops` rewrites this into
+            // `ReplaceNonMerkTreeRoot` before the level executor runs, so
+            // this arm is unreachable in the current pipeline. It answers
+            // the same as what the op becomes, which keeps it correct if
+            // that preprocessing is ever reordered or removed.
+            | GroveOp::PrivateDocumentStoreInsert { .. } => true,
         }
     }
 }
@@ -864,6 +943,9 @@ impl fmt::Debug for QualifiedGroveDbOp {
             GroveOp::MmrTreeAppend { .. } => "MMR Tree Append".to_string(),
             GroveOp::BulkAppend { .. } => "Bulk Append".to_string(),
             GroveOp::DenseTreeInsert { .. } => "Dense Tree Insert".to_string(),
+            GroveOp::PrivateDocumentStoreInsert { .. } => {
+                "Private Document Store Insert".to_string()
+            }
             GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. } => {
                 "Replace CountIndexedTree primary+secondary roots".to_string()
             }
@@ -1255,6 +1337,18 @@ impl QualifiedGroveDbOp {
         }
     }
 
+    /// A private document store insert op. `path` includes the store key as
+    /// its last segment. The entry must be exactly the store's committed
+    /// `entry_size` bytes; the batch preprocessor rejects any other length.
+    pub fn private_document_store_insert_op(path: Vec<Vec<u8>>, entry: Vec<u8>) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: None,
+            op: GroveOp::PrivateDocumentStoreInsert { entry },
+        }
+    }
+
     /// Verify consistency of operations
     pub fn verify_consistency_of_operations(
         ops: &[QualifiedGroveDbOp],
@@ -1452,11 +1546,107 @@ struct TreeCacheMerkByPath<S, F, F2> {
     /// ambiguous. See the cidx-overwrite handling in
     /// `execute_ops_on_path`.
     cidx_overwrite_cleanup_paths: Vec<Vec<Vec<u8>>>,
+    /// Qualified path → ACTUAL stored tree type of every `DeleteTree` target
+    /// this apply deleted, captured (V4+ only) from the old element bytes the
+    /// merk delete surfaces through the old-value observer. Consumed by
+    /// `apply_batch`'s post-apply phase to select cleanup namespaces from
+    /// what was really stored rather than what the op declared.
+    deleted_tree_actual_types: Vec<(Vec<Vec<u8>>, TreeType)>,
 }
 
 impl<S, F, F2> fmt::Debug for TreeCacheMerkByPath<S, F, F2> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TreeCacheMerkByPath").finish()
+    }
+}
+
+/// V4 cleanup data collected while the batch body applied, handed from
+/// `apply_batch_structure` back to the outer `apply_batch*` functions, which
+/// run the corresponding post-apply storage cleanup passes. Both vecs are
+/// empty on V1..V3.
+#[derive(Default)]
+struct BatchApplyCaptures {
+    /// Cidx primary paths displaced by a safe-subset overwrite; their old
+    /// primary subtree storage + per-axis secondary namespaces get cleared.
+    cidx_overwrite_cleanup_paths: Vec<Vec<Vec<u8>>>,
+    /// `(qualified_path, ACTUAL stored tree type)` of every `DeleteTree`
+    /// target that was really deleted; cleanup namespaces are selected from
+    /// the actual type, not the declared one.
+    deleted_tree_actual_types: Vec<(Vec<Vec<u8>>, TreeType)>,
+}
+
+/// Result of the pre-apply `DeleteTree` scan shared by
+/// `apply_batch_with_element_flags_update` and
+/// `apply_partial_batch_with_element_flags_update`.
+#[derive(Default)]
+struct DeleteTreePreScan {
+    /// Deleted non-merk-tree paths whose data namespace gets cleared
+    /// post-apply. Filled pre-apply from DECLARED types on V1..V3 only; on
+    /// V4+ it starts empty and `classify_captured_delete_trees` fills it
+    /// from the captured ACTUAL types.
+    non_merk_delete_paths: Vec<Vec<Vec<u8>>>,
+    /// Deleted merk-tree paths for the recursive `find_subtrees` clear.
+    /// Same V1..V3 / V4+ split as above.
+    merk_delete_paths: Vec<Vec<Vec<u8>>>,
+    /// Deleted indexed-primary paths for the per-axis secondary sweep.
+    /// Same V1..V3 / V4+ split as above.
+    cidx_primary_delete_paths: Vec<Vec<Vec<u8>>>,
+    /// Paths whose `Skip`-behavior `DeleteTree` found a non-empty tree;
+    /// their ops are filtered out of the batch before `apply_body`.
+    skipped_delete_paths: HashSet<Vec<Vec<u8>>>,
+    /// V4+ only: qualified path → deletion behavior of every `DeleteTree`
+    /// op, so `classify_captured_delete_trees` can honor the behavior when
+    /// folding captured actual types into the cleanup lists.
+    delete_tree_behaviors: HashMap<Vec<Vec<u8>>, SubelementsDeletionBehavior>,
+}
+
+/// V4+ post-apply classification: fold the `(qualified_path, ACTUAL stored
+/// tree type)` pairs captured by the merk old-value observer into the
+/// cleanup lists, honoring each op's deletion behavior. On V1..V3 the
+/// captures are empty and this is a no-op — the lists were already built
+/// pre-apply from the declared types, exactly as released.
+fn classify_captured_delete_trees(
+    captures: Vec<(Vec<Vec<u8>>, TreeType)>,
+    behaviors: &HashMap<Vec<Vec<u8>>, SubelementsDeletionBehavior>,
+    non_merk_delete_paths: &mut Vec<Vec<Vec<u8>>>,
+    merk_delete_paths: &mut Vec<Vec<Vec<u8>>>,
+    cidx_primary_delete_paths: &mut Vec<Vec<Vec<u8>>>,
+) {
+    for (qualified_path, actual_tree_type) in captures {
+        // Ops the pre-scan did not register (e.g. add-on DeleteTree ops
+        // returned by a partial batch's callback) keep their released
+        // no-cleanup behaviour.
+        let Some(behavior) = behaviors.get(&qualified_path) else {
+            continue;
+        };
+        match behavior {
+            SubelementsDeletionBehavior::DontCheckWithNoCleanup => {
+                // No primary storage cleanup — but an indexed primary still
+                // needs its secondary namespaces cleared, because they live
+                // outside the primary's prefix and are invisible to
+                // find_subtrees. is_indexed_primary() (not
+                // is_count_indexed_primary): PSIT and PCPSIT must also queue
+                // for the all-axis sweep, which clears all three axis tags
+                // unconditionally and so is correct for every variant.
+                if actual_tree_type.is_indexed_primary() {
+                    cidx_primary_delete_paths.push(qualified_path);
+                }
+            }
+            SubelementsDeletionBehavior::DeleteChildren
+            | SubelementsDeletionBehavior::Error
+            | SubelementsDeletionBehavior::Skip => {
+                if actual_tree_type.uses_non_merk_data_storage() {
+                    non_merk_delete_paths.push(qualified_path);
+                } else {
+                    // is_indexed_primary(): PSIT/PCPSIT primaries also need
+                    // their path queued for the all-axis secondary sweep.
+                    if actual_tree_type.is_indexed_primary() {
+                        cidx_primary_delete_paths.push(qualified_path.clone());
+                    }
+                    merk_delete_paths.push(qualified_path);
+                }
+            }
+        }
     }
 }
 
@@ -1506,6 +1696,15 @@ trait TreeCache<G, SR> {
     /// because a safe-subset overwrite replaced them with a non-cidx
     /// element or an empty cidx. Default impl returns an empty Vec.
     fn take_cidx_overwrite_cleanup_paths(&mut self) -> Vec<Vec<Vec<u8>>> {
+        Vec::new()
+    }
+
+    /// After all level processing completes, `apply_batch` calls this to
+    /// retrieve the `(qualified_path, actual_tree_type)` pairs captured
+    /// (V4+ only) for the `DeleteTree` targets that were really deleted, so
+    /// the post-apply cleanup can classify namespaces by the ACTUAL stored
+    /// type. Default impl returns an empty Vec.
+    fn take_deleted_tree_actual_types(&mut self) -> Vec<(Vec<Vec<u8>>, TreeType)> {
         Vec::new()
     }
 }
@@ -1601,6 +1800,18 @@ where
         // hash mismatch that `verify_grovedb` later reports. The
         // contract is the user's to uphold; we don't pay the price of
         // an extra dispatch on every well-formed hop=1 ref.
+        //
+        // That contract governs ORDINARY user references only. Indexed
+        // secondary rows are also one-hop, and for them binding the
+        // immediate target's merk-stored hash — whatever its shape — is
+        // the CANONICAL rule, not an ill-formed state: a row is meant to
+        // commit its primary entry's node, so a tree- or
+        // reference-shaped primary is expected, and
+        // `verify_indexed_axis_content` checks rows against that rule
+        // instead of the terminal-reference one. Indexed rows are
+        // written by the mirror through its own path, so they do not
+        // travel through here; the two rules stay separate, and neither
+        // is ever inferred from `max_reference_hop == 1` alone.
         if recursions_allowed == 1 {
             let merk = match self.merks.entry(reference_path.to_vec()) {
                 HashMapEntry::Occupied(o) => o.into_mut(),
@@ -1884,9 +2095,10 @@ where
             | Element::DenseAppendOnlyFixedSizeTree(..)
             | Element::ProvableSumIndexedTree(..)
             | Element::ProvableCountIndexedTree(..)
-            | Element::ProvableCountProvableSumIndexedTree(..) => Err(
-                Error::InvalidBatchOperation("references can not point to trees being updated"),
-            )
+            | Element::ProvableCountProvableSumIndexedTree(..)
+            | Element::PrivateDocumentStore(..) => Err(Error::InvalidBatchOperation(
+                "references can not point to trees being updated",
+            ))
             .wrap_with_cost(cost),
             // underlying() unwraps a single level; the constructor and
             // (de)serializer reject nested wrappers, so these are
@@ -1953,7 +2165,8 @@ where
                 | GroveOp::CommitmentTreeInsert { .. }
                 | GroveOp::MmrTreeAppend { .. }
                 | GroveOp::BulkAppend { .. }
-                | GroveOp::DenseTreeInsert { .. } => Err(Error::InvalidBatchOperation(
+                | GroveOp::DenseTreeInsert { .. }
+                | GroveOp::PrivateDocumentStoreInsert { .. } => Err(Error::InvalidBatchOperation(
                     "references can not point to trees being updated",
                 ))
                 .wrap_with_cost(cost),
@@ -2046,12 +2259,11 @@ where
                         | Element::DenseAppendOnlyFixedSizeTree(..)
                         | Element::ProvableSumIndexedTree(..)
                         | Element::ProvableCountIndexedTree(..)
-                        | Element::ProvableCountProvableSumIndexedTree(..) => {
-                            Err(Error::InvalidBatchOperation(
-                                "references can not point to trees being updated",
-                            ))
-                            .wrap_with_cost(cost)
-                        }
+                        | Element::ProvableCountProvableSumIndexedTree(..)
+                        | Element::PrivateDocumentStore(..) => Err(Error::InvalidBatchOperation(
+                            "references can not point to trees being updated",
+                        ))
+                        .wrap_with_cost(cost),
                         // Wrappers are unwrapped via underlying() above.
                         Element::NonCounted(_)
                         | Element::NotSummed(_)
@@ -2100,12 +2312,11 @@ where
                     | Element::DenseAppendOnlyFixedSizeTree(..)
                     | Element::ProvableSumIndexedTree(..)
                     | Element::ProvableCountIndexedTree(..)
-                    | Element::ProvableCountProvableSumIndexedTree(..) => {
-                        Err(Error::InvalidBatchOperation(
-                            "references can not point to trees being updated",
-                        ))
-                        .wrap_with_cost(cost)
-                    }
+                    | Element::ProvableCountProvableSumIndexedTree(..)
+                    | Element::PrivateDocumentStore(..) => Err(Error::InvalidBatchOperation(
+                        "references can not point to trees being updated",
+                    ))
+                    .wrap_with_cost(cost),
                     // Wrappers are unwrapped via underlying() above.
                     Element::NonCounted(_)
                     | Element::NotSummed(_)
@@ -2216,6 +2427,10 @@ where
         std::mem::take(&mut self.cidx_overwrite_cleanup_paths)
     }
 
+    fn take_deleted_tree_actual_types(&mut self) -> Vec<(Vec<Vec<u8>>, TreeType)> {
+        std::mem::take(&mut self.deleted_tree_actual_types)
+    }
+
     fn update_base_merk_root_key(
         &mut self,
         root_key: Option<Vec<u8>>,
@@ -2276,9 +2491,9 @@ where
         // primary level represent a child subtree's bubble-up — the
         // child's element bytes have a new aggregate count, so its
         // secondary entry needs to move; we capture it here too.
-        let indexed_pre_state: Option<BTreeMap<Vec<u8>, Option<(u64, i64)>>> = if in_tree_type
-            .is_indexed_primary()
-        {
+        let indexed_pre_state: Option<
+            BTreeMap<Vec<u8>, Option<crate::operations::indexed_tree::IndexedEntryState>>,
+        > = if in_tree_type.is_indexed_primary() {
             let merk = self.merks.get(path).expect("the Merk is cached");
             Some(cost_return_on_error!(
                 &mut cost,
@@ -2287,6 +2502,14 @@ where
         } else {
             None
         };
+
+        // V4 gates: keys whose ops need the OLD element they displace. The
+        // merk apply surfaces those bytes for free through the old-value
+        // observer below — the walker fetched the node anyway to rewrite or
+        // delete it — so no dedicated stored-element read (and no extra
+        // tracked cost) is issued. On V1..V3 both maps stay empty.
+        let mut pending_overwrite_inspections: BTreeMap<Vec<u8>, Element> = BTreeMap::new();
+        let mut pending_delete_tree_checks: BTreeMap<Vec<u8>, TreeType> = BTreeMap::new();
 
         let mut batch_operations: Vec<(Vec<u8>, Op)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
@@ -2367,59 +2590,29 @@ where
                                 .wrap_with_cost(cost);
                             }
                         }
-                    // NOTE: bare `Reference` overwrites are deliberately still
-                    // excluded here. Including them (so a reference overwriting an
-                    // indexed tree schedules the per-axis secondary cleanup) costs
-                    // one extra stored-element read on EVERY reference overwrite,
-                    // which measurably changes tracked cost — +1 seek and +79
-                    // storage_loaded_bytes on the repo's own refresh-reference cost
-                    // tests. Cost feeds fees, and references over plain trees are
-                    // shipped functionality on GROVE_V1/V2/V3, so paying that read
-                    // unconditionally is a live-path behaviour change.
-                    //
-                    // The hole it would close requires an indexed tree to be the
-                    // element being overwritten, which cannot occur on any released
-                    // version (indexed trees are introduced by this PR). Closing it
-                    // therefore belongs with the protocol version that activates
-                    // indexed trees, gated so live versions keep today's cost.
                     } else if op_could_overwrite
-                        && !matches!(&element, Element::Reference(..))
                         && grove_version
                             .grovedb_versions
                             .apply_batch
                             .overwrite_indexed_cleanup_inspection
                             >= 1
                     {
-                        // Tree-override protection is OFF; let the
-                        // cidx helper classify the overwrite (safe
-                        // subset → schedule cleanup, ambiguous → err,
-                        // non-cidx → no-op).
+                        // Register the key so the merk old-value observer can
+                        // classify what this op displaces (safe subset →
+                        // schedule cleanup, ambiguous → err, non-indexed →
+                        // no-op). The observer only fires when the key
+                        // actually exists, and the bytes it sees are the node
+                        // the merk walk fetched anyway — so unlike the
+                        // pre-V4 shape of this gate, no dedicated
+                        // stored-element read is issued and V4 charges
+                        // exactly the V1..V3 cost for every
+                        // overwrite-capable op.
                         //
-                        // Gated exactly like `delete_tree_cleanup_type_source`:
-                        // the classification starts with a stored-element read,
-                        // which costs +1 seek and +129 loaded bytes per
-                        // overwrite-capable op. Cost feeds fees, so V1..V3 must
-                        // keep their released cost shape — and the hole this
-                        // closes needs an indexed tree to be the element being
-                        // overwritten, which cannot occur before the version
-                        // that introduces indexed trees. The bare-Reference
-                        // exclusion above is the same principle applied to the
-                        // reference overwrite path.
-                        let merk = self.merks.get(path).expect("the Merk is cached");
-                        let maybe_cleanup_path = cost_return_on_error!(
-                            &mut cost,
-                            indexed_tree::inspect_cidx_overwrite(
-                                merk,
-                                path,
-                                &key_info,
-                                &element,
-                                ops_by_qualified_paths,
-                                grove_version,
-                            )
-                        );
-                        if let Some(cidx_path) = maybe_cleanup_path {
-                            self.cidx_overwrite_cleanup_paths.push(cidx_path);
-                        }
+                        // Bare `Reference` overwrites are included: with the
+                        // read gone there is no cost argument for leaving a
+                        // reference that overwrites an indexed tree unswept.
+                        pending_overwrite_inspections
+                            .insert(key_info.get_key_clone(), element.clone());
                     }
 
                     // Mirror the per-merk insert guard: wrapper children are
@@ -2427,6 +2620,13 @@ where
                     // Without these checks, batch users could persist
                     // wrapped elements into the wrong tree types and silently
                     // violate the wrapper invariant.
+                    if matches!(in_tree_type, TreeType::PrivateDocumentStore(_)) {
+                        return Err(Error::InvalidBatchOperation(
+                            "private document stores cannot hold child elements; entries are \
+                             appended via the PrivateDocumentStoreInsert operation",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
                     if element.is_non_counted() && !in_tree_type.accepts_non_counted_children() {
                         return Err(Error::InvalidBatchOperation(
                             "non-counted elements may only be inserted into non-provable \
@@ -2847,6 +3047,113 @@ where
                                 )
                             );
                         }
+                        Element::PrivateDocumentStore(total_count, entry_size, chunk_power, _) => {
+                            // Fail closed on protocol versions that predate
+                            // the element type.
+                            cost_return_on_error_no_add!(
+                                cost,
+                                crate::operations::private_document_store::check_pds_enabled(
+                                    "batch insert Element::PrivateDocumentStore",
+                                    grove_version
+                                        .grovedb_versions
+                                        .operations
+                                        .private_document_store
+                                        .element_creation,
+                                )
+                            );
+                            // Only empty-creation is allowed: the child hash
+                            // written below is the empty state root for this
+                            // config, and entries can only be added through
+                            // the typed append path.
+                            if *total_count != 0 {
+                                return Err(Error::InvalidBatchOperation(
+                                    "a PrivateDocumentStore must be empty at the moment of batch \
+                                     insertion (total_count = 0); entries are appended via the \
+                                     PrivateDocumentStoreInsert operation",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                            // Same config validation the element constructors
+                            // enforce — a caller-built element must not bypass
+                            // it, since the config is committed into the state
+                            // root.
+                            if *entry_size == 0
+                                || *entry_size > u16::MAX as u32
+                                || !(1..=16).contains(chunk_power)
+                            {
+                                return Err(Error::InvalidBatchOperation(
+                                    "a PrivateDocumentStore requires entry_size in 1..=65535 and \
+                                     chunk_power in 1..=16",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                            // A private document store is write-once, so
+                            // creating one over an existing element is
+                            // ALWAYS rejected — not just under
+                            // `InsertIfNotExists` or
+                            // `validate_insertion_does_not_override`.
+                            //
+                            // Without this, a plain `InsertOrReplace` of a
+                            // fresh (total_count = 0) store over a populated
+                            // one is accepted with default options: the
+                            // element resets to empty and re-binds the empty
+                            // state root while the old chunk blobs, MMR nodes
+                            // and buffer entries stay behind in the subtree's
+                            // data namespace. That both leaks storage and
+                            // breaks the type's central promise, since a
+                            // wholesale overwrite is a delete of every entry.
+                            // Replacing a store means deleting it first,
+                            // which clears the data namespace.
+                            let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                            let existing = cost_return_on_error_into!(
+                                &mut cost,
+                                element.element_at_key_already_exists(
+                                    merk,
+                                    key_info.get_key_clone().as_slice(),
+                                    grove_version,
+                                )
+                            );
+                            if existing {
+                                if is_insert_if_not_exists && !error_if_exists {
+                                    // `InsertIfNotExists` semantics: not an
+                                    // error, just nothing to do.
+                                    continue;
+                                }
+                                return Err(Error::InvalidBatchOperation(
+                                    "a PrivateDocumentStore already exists at this key; it is \
+                                     append-only and cannot be overwritten \u{2014} delete it \
+                                     first, which clears its data namespace",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                            let merk_feature_type = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(in_tree_type)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            // Deriving the empty root performs two blake3
+                            // calls — the committed-config hash and the
+                            // composite `pds_state` hash — neither of which
+                            // the helper can bill, since it returns a bare
+                            // array. Charge them here so creating a store
+                            // through a batch matches the direct path.
+                            cost.hash_node_calls = cost.hash_node_calls.saturating_add(2);
+                            cost_return_on_error_into!(
+                                &mut cost,
+                                element.insert_subtree_into_batch_operations(
+                                    key_info.get_key_clone(),
+                                    grovedb_private_document_store::empty_private_document_store_state_root(
+                                        *entry_size,
+                                        *chunk_power,
+                                    ),
+                                    false,
+                                    &mut batch_operations,
+                                    merk_feature_type,
+                                    grove_version,
+                                )
+                            );
+                        }
                         Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                             let merk_feature_type = cost_return_on_error_into!(
                                 &mut cost,
@@ -3052,6 +3359,13 @@ where
                     // wrapper into a parent that doesn't accept it —
                     // including any `Provable*` count tree where the
                     // count is cryptographically committed.
+                    if matches!(in_tree_type, TreeType::PrivateDocumentStore(_)) {
+                        return Err(Error::InvalidBatchOperation(
+                            "private document stores cannot hold child elements; entries are \
+                             appended via the PrivateDocumentStoreInsert operation",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
                     if element.is_non_counted() && !in_tree_type.accepts_non_counted_children() {
                         return Err(Error::InvalidBatchOperation(
                             "RefreshReference with non_counted=true requires a non-provable \
@@ -3136,7 +3450,7 @@ where
                         )
                     );
                 }
-                GroveOp::DeleteTree(_tree_type, _) => {
+                GroveOp::DeleteTree(tree_type, _) => {
                     // CountIndexedTree owns two child Merks (primary +
                     // secondary). The standard DeleteTree path runs
                     // find_subtrees on the primary's prefix and clears
@@ -3148,6 +3462,21 @@ where
                     // tree_type and clears the secondary prefix there;
                     // here we just emit the merk-level delete the same
                     // way as for any other tree.
+                    //
+                    // On V4+ the declared type is a checked claim, not
+                    // authority: register the key so the old-value observer
+                    // can validate the declaration against the stored
+                    // element the merk delete surfaces, and capture the
+                    // ACTUAL type for the post-apply cleanup-namespace
+                    // classification.
+                    if grove_version
+                        .grovedb_versions
+                        .apply_batch
+                        .delete_tree_cleanup_type_source
+                        >= 1
+                    {
+                        pending_delete_tree_checks.insert(key_info.get_key_clone(), tree_type);
+                    }
                     cost_return_on_error_into!(
                         &mut cost,
                         Element::delete_into_batch_operations(
@@ -3179,15 +3508,46 @@ where
                     );
                 }
                 GroveOp::ReplaceNonMerkTreeRoot { hash, meta } => {
-                    // Read existing element to preserve flags
+                    // Read existing element to preserve flags (and, for a
+                    // PrivateDocumentStore, its NonCounted wrapper).
                     let merk = self.merks.get(path).expect("the Merk is cached");
-                    let existing_flags = cost_return_on_error!(
+                    let existing = cost_return_on_error!(
                         &mut cost,
                         GroveDb::get_element_from_subtree(merk, key_info.as_slice(), grove_version)
-                    )
-                    .get_flags_owned();
+                    );
+                    let existing_non_counted = existing.is_non_counted();
+                    let existing_flags = existing.get_flags_owned();
 
                     let element = meta.to_element(existing_flags);
+                    // `meta.to_element` always builds a BARE element, so a
+                    // stored `NonCounted(tree)` would come back counted and
+                    // change its parent count tree's aggregate — and with it
+                    // the root hash. Restore the wrapper.
+                    //
+                    // Scoped to PrivateDocumentStore deliberately: the same
+                    // latent defect exists for CommitmentTree / MmrTree /
+                    // BulkAppendTree / DenseTree, but those are live on
+                    // GROVE_V1..V3, so repairing them changes a released
+                    // consensus outcome and belongs in its own version-gated
+                    // change. PDS cannot exist before V4, so fixing it here
+                    // alters nothing that has ever been committed. The
+                    // element was already read above, so this costs nothing
+                    // extra.
+                    let element = if existing_non_counted
+                        && matches!(meta, NonMerkTreeMeta::PrivateDocumentStore { .. })
+                    {
+                        cost_return_on_error_no_add!(
+                            cost,
+                            element.into_non_counted().map_err(|_| {
+                                Error::CorruptedCodeExecution(
+                                    "into_non_counted called on a wrapped element during \
+                                     ReplaceNonMerkTreeRoot",
+                                )
+                            })
+                        )
+                    } else {
+                        element
+                    };
                     let merk_feature_type = cost_return_on_error_into_no_add!(
                         cost,
                         element.get_feature_type(in_tree_type)
@@ -3384,6 +3744,13 @@ where
                     ))
                     .wrap_with_cost(cost);
                 }
+                GroveOp::PrivateDocumentStoreInsert { .. } => {
+                    return Err(Error::InvalidBatchOperation(
+                        "PrivateDocumentStoreInsert should have been preprocessed before batch \
+                         execution",
+                    ))
+                    .wrap_with_cost(cost);
+                }
                 GroveOp::ReplaceAggregateIndexedTreeRootKeys {
                     primary_hash,
                     primary_root_key,
@@ -3442,9 +3809,66 @@ where
 
         let merk = self.merks.get_mut(path).expect("the Merk is cached");
 
+        // V4 gate results collected by the old-value observer while the merk
+        // apply runs. The observer is infallible, so rejections are stashed
+        // here and returned right after the apply — nothing has been
+        // committed at that point (the level's writes only live in the
+        // pending storage batch, which the caller discards on error).
+        let mut old_value_gate_error: Option<Error> = None;
+        let mut cidx_overwrite_cleanups: Vec<Vec<Vec<u8>>> = vec![];
+        let mut deleted_tree_captures: Vec<(Vec<u8>, TreeType)> = vec![];
+        let mut old_value_observer =
+            |key: &[u8], old_value: &[u8], disposition: OldValueDisposition| {
+                if old_value_gate_error.is_some() {
+                    return;
+                }
+                match disposition {
+                    OldValueDisposition::Replaced => {
+                        let Some(new_element) = pending_overwrite_inspections.get(key) else {
+                            return;
+                        };
+                        match indexed_tree::classify_cidx_overwrite(
+                            old_value,
+                            path,
+                            key,
+                            new_element,
+                            ops_by_qualified_paths,
+                            grove_version,
+                        ) {
+                            Ok(Some(cidx_path)) => cidx_overwrite_cleanups.push(cidx_path),
+                            Ok(None) => {}
+                            Err(e) => old_value_gate_error = Some(e),
+                        }
+                    }
+                    OldValueDisposition::Deleted => {
+                        let Some(declared_tree_type) = pending_delete_tree_checks.get(key) else {
+                            return;
+                        };
+                        let outcome = Element::deserialize(old_value, grove_version)
+                            .map_err(|_| {
+                                Error::CorruptedData(
+                                    "unable to deserialize deleted element".to_string(),
+                                )
+                            })
+                            .and_then(|stored_element| {
+                                indexed_tree::validate_delete_tree_type(
+                                    &stored_element,
+                                    *declared_tree_type,
+                                )
+                            });
+                        match outcome {
+                            Ok(actual_tree_type) => {
+                                deleted_tree_captures.push((key.to_vec(), actual_tree_type))
+                            }
+                            Err(e) => old_value_gate_error = Some(e),
+                        }
+                    }
+                }
+            };
+
         cost_return_on_error!(
             &mut cost,
-            merk.apply_unchecked::<_, Vec<u8>, _, _, _, _, _>(
+            merk.apply_unchecked_with_old_value_observer::<_, Vec<u8>, _, _, _, _, _, _>(
                 &batch_operations,
                 &[],
                 Some(batch_apply_options.as_merk_options()),
@@ -3528,7 +3952,8 @@ where
                                     | Element::DenseAppendOnlyFixedSizeTree(..)
                                     | Element::ProvableSumIndexedTree(..)
                                     | Element::ProvableCountIndexedTree(..)
-                                    | Element::ProvableCountProvableSumIndexedTree(..) => {
+                                    | Element::ProvableCountProvableSumIndexedTree(..)
+                                    | Element::PrivateDocumentStore(..) => {
                                         let tree_type = new_element
                                             .tree_type()
                                             .expect("tree_type guaranteed by match arm");
@@ -3585,10 +4010,27 @@ where
                         }
                     }
                 },
+                &mut old_value_observer,
                 grove_version,
             )
             .map_err(|e| Error::CorruptedData(e.to_string()))
         );
+
+        // Surface any V4 gate rejection the observer recorded. The apply's
+        // cost has been charged (the batch fails as a whole, and none of its
+        // storage writes commit), which mirrors how every other mid-apply
+        // rejection behaves.
+        if let Some(gate_error) = old_value_gate_error {
+            return Err(gate_error).wrap_with_cost(cost);
+        }
+        self.cidx_overwrite_cleanup_paths
+            .extend(cidx_overwrite_cleanups);
+        for (key, actual_tree_type) in deleted_tree_captures {
+            let mut qualified_path = path.to_vec();
+            qualified_path.push(key);
+            self.deleted_tree_actual_types
+                .push((qualified_path, actual_tree_type));
+        }
 
         // Post-apply: if this level was a cidx primary, mirror each
         // mutation to the secondary and capture the secondary's
@@ -3663,19 +4105,23 @@ impl GroveDb {
     /// are returned
     /// Runs the level-by-level batch propagation.
     ///
-    /// Returns `(leftover_ops, cidx_overwrite_cleanup_paths)`:
+    /// Returns `(leftover_ops, captures)`:
     ///   - `leftover_ops` is `Some(...)` only if a `batch_pause_height`
     ///     was set and pruning paused before reaching the root.
-    ///   - `cidx_overwrite_cleanup_paths` is the list of cidx primary
-    ///     paths whose old storage (primary subtree + secondary
-    ///     namespace) must be cleaned up post-apply because of a safe-
-    ///     subset cidx-overwrite (see `execute_ops_on_path`). Empty when
-    ///     no such overwrites occurred.
+    ///   - `captures` is the [`BatchApplyCaptures`] collected while the
+    ///     body applied, for the caller's post-apply cleanup passes:
+    ///     `cidx_overwrite_cleanup_paths` lists the cidx primary paths
+    ///     whose old storage (primary subtree + secondary namespaces)
+    ///     must be cleared because of a safe-subset cidx-overwrite (see
+    ///     `execute_ops_on_path`), and `deleted_tree_actual_types` maps
+    ///     each really-deleted `DeleteTree` target to its ACTUAL stored
+    ///     tree type so cleanup namespaces follow the truth rather than
+    ///     the op's declaration. Both are empty on V1..V3.
     fn apply_batch_structure<C: TreeCache<F, SR>, F, SR>(
         batch_structure: BatchStructure<C, F, SR>,
         batch_apply_options: Option<BatchApplyOptions>,
         grove_version: &GroveVersion,
-    ) -> CostResult<(Option<OpsByLevelPath>, Vec<Vec<Vec<u8>>>), Error>
+    ) -> CostResult<(Option<OpsByLevelPath>, BatchApplyCaptures), Error>
     where
         F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
         SR: FnMut(
@@ -4013,6 +4459,28 @@ impl GroveDb {
                                                                 meta,
                                                                 non_counted,
                                                             }
+                                                    } else if let Element::PrivateDocumentStore(
+                                                        total_count,
+                                                        entry_size,
+                                                        chunk_power,
+                                                        flags,
+                                                    ) = element
+                                                    {
+                                                        let meta =
+                                                            NonMerkTreeMeta::PrivateDocumentStore {
+                                                                total_count: *total_count,
+                                                                entry_size: *entry_size,
+                                                                chunk_power: *chunk_power,
+                                                            };
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::InsertNonMerkTree {
+                                                                hash: root_hash,
+                                                                root_key: calculated_root_key,
+                                                                flags: flags.clone(),
+                                                                aggregate_data,
+                                                                meta,
+                                                                non_counted,
+                                                            }
                                                     } else if let Element::MmrTree(
                                                         mmr_size,
                                                         flags,
@@ -4163,6 +4631,13 @@ impl GroveDb {
                                                     ))
                                                     .wrap_with_cost(cost);
                                                 }
+                                                GroveOp::PrivateDocumentStoreInsert { .. } => {
+                                                    return Err(Error::InvalidBatchOperation(
+                                                        "PrivateDocumentStoreInsert ops should \
+                                                         have been preprocessed",
+                                                    ))
+                                                    .wrap_with_cost(cost);
+                                                }
                                             }
                                         }
                                     }
@@ -4216,15 +4691,20 @@ impl GroveDb {
             }
             if current_level == stop_level {
                 // we need to pause the batch execution
-                let cidx_overwrite_cleanup_paths =
-                    merk_tree_cache.take_cidx_overwrite_cleanup_paths();
-                return Ok((Some(ops_by_level_paths), cidx_overwrite_cleanup_paths))
-                    .wrap_with_cost(cost);
+                let captures = BatchApplyCaptures {
+                    cidx_overwrite_cleanup_paths: merk_tree_cache
+                        .take_cidx_overwrite_cleanup_paths(),
+                    deleted_tree_actual_types: merk_tree_cache.take_deleted_tree_actual_types(),
+                };
+                return Ok((Some(ops_by_level_paths), captures)).wrap_with_cost(cost);
             }
             current_level = current_level.saturating_sub(1);
         }
-        let cidx_overwrite_cleanup_paths = merk_tree_cache.take_cidx_overwrite_cleanup_paths();
-        Ok((None, cidx_overwrite_cleanup_paths)).wrap_with_cost(cost)
+        let captures = BatchApplyCaptures {
+            cidx_overwrite_cleanup_paths: merk_tree_cache.take_cidx_overwrite_cleanup_paths(),
+            deleted_tree_actual_types: merk_tree_cache.take_deleted_tree_actual_types(),
+        };
+        Ok((None, captures)).wrap_with_cost(cost)
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
@@ -4256,7 +4736,7 @@ impl GroveDb {
             Error,
         >,
         grove_version: &GroveVersion,
-    ) -> CostResult<(Option<OpsByLevelPath>, Vec<Vec<Vec<u8>>>), Error> {
+    ) -> CostResult<(Option<OpsByLevelPath>, BatchApplyCaptures), Error> {
         check_grovedb_v0_with_cost!(
             "apply_body",
             grove_version.grovedb_versions.apply_batch.apply_body
@@ -4274,7 +4754,9 @@ impl GroveDb {
                     get_secondary_merks_fn,
                     indexed_secondary_after_apply: Default::default(),
                     cidx_overwrite_cleanup_paths: Default::default(),
-                }
+                    deleted_tree_actual_types: Default::default(),
+                },
+                grove_version
             )
         );
         Self::apply_batch_structure(batch_structure, batch_apply_options, grove_version)
@@ -4311,7 +4793,7 @@ impl GroveDb {
             Error,
         >,
         grove_version: &GroveVersion,
-    ) -> CostResult<(Option<OpsByLevelPath>, Vec<Vec<Vec<u8>>>), Error> {
+    ) -> CostResult<(Option<OpsByLevelPath>, BatchApplyCaptures), Error> {
         check_grovedb_v0_with_cost!(
             "continue_partial_apply_body",
             grove_version
@@ -4333,7 +4815,9 @@ impl GroveDb {
                     get_secondary_merks_fn,
                     indexed_secondary_after_apply: Default::default(),
                     cidx_overwrite_cleanup_paths: Default::default(),
-                }
+                    deleted_tree_actual_types: Default::default(),
+                },
+                grove_version
             )
         );
         Self::apply_batch_structure(batch_structure, batch_apply_options, grove_version)
@@ -4596,6 +5080,26 @@ impl GroveDb {
                         )
                     );
                 }
+                GroveOp::PrivateDocumentStoreInsert { entry } => {
+                    let mut path_vec: Vec<Vec<u8>> = op.path.to_path();
+                    let key = cost_return_on_error_no_add!(
+                        cost,
+                        path_vec.pop().ok_or(Error::InvalidBatchOperation(
+                            "append op path must include tree key"
+                        ))
+                    );
+                    let path_slices: Vec<&[u8]> = path_vec.iter().map(|p| p.as_slice()).collect();
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.private_document_store_insert(
+                            path_slices.as_slice(),
+                            &key,
+                            entry.clone(),
+                            transaction,
+                            grove_version,
+                        )
+                    );
+                }
                 GroveOp::DenseTreeInsert { value } => {
                     let mut path_vec: Vec<Vec<u8>> = op.path.to_path();
                     let key = cost_return_on_error_no_add!(
@@ -4795,6 +5299,373 @@ impl GroveDb {
         }
     }
 
+    /// Like [`open_batch_transactional_merk_at_path`]
+    /// (Self::open_batch_transactional_merk_at_path) with `new_merk: false`,
+    /// for a caller that has ALREADY read (and paid for) the parent element
+    /// at `path`: the open's own parent fetch is skipped so the read is
+    /// charged exactly once. Only valid for non-root paths.
+    fn open_batch_transactional_merk_with_parent_element<'db, B: AsRef<[u8]>>(
+        &'db self,
+        storage_batch: &'db StorageBatch,
+        path: SubtreePath<B>,
+        tx: &'db Transaction,
+        parent_element: Element,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
+        let mut cost = OperationCost::default();
+        if path.derive_parent().is_none() {
+            return Err(Error::CorruptedCodeExecution(
+                "open_batch_transactional_merk_with_parent_element requires a non-root path",
+            ))
+            .wrap_with_cost(cost);
+        }
+        let storage = self
+            .db
+            .get_transactional_storage_context(path, Some(storage_batch), tx)
+            .unwrap_add_cost(&mut cost);
+        if let Some((root_key, tree_type)) = parent_element.root_key_and_tree_type_owned() {
+            Merk::open_layered_with_root_key(
+                storage,
+                root_key,
+                tree_type,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .map_err(|e| {
+                Error::CorruptedData(format!("cannot open a subtree with given root key: {e}"))
+            })
+            .add_cost(cost)
+        } else {
+            Err(Error::CorruptedPath(
+                "cannot open a subtree as parent exists but is not a tree".to_string(),
+            ))
+            .wrap_with_cost(cost)
+        }
+    }
+
+    /// Pre-apply scan over a batch's `DeleteTree` ops, shared by
+    /// `apply_batch_with_element_flags_update` and
+    /// `apply_partial_batch_with_element_flags_update`.
+    ///
+    /// On V1..V3 this is the released behaviour verbatim: the DECLARED tree
+    /// type is taken at face value, driving both the emptiness checks and
+    /// the pre-apply classification of cleanup paths.
+    ///
+    /// On V4+ (`delete_tree_cleanup_type_source >= 1`) cleanup namespaces
+    /// must follow the ACTUAL stored type instead — but reading the stored
+    /// element here would add a charged read per op, which is exactly what
+    /// this gate used to cost. So classification moves to after
+    /// `apply_body`, driven by the old element bytes the merk delete
+    /// surfaces for free through the old-value observer (which also rejects
+    /// declared/stored mismatches involving an indexed tree). The only work
+    /// left here is what must happen before the apply: the Error/Skip
+    /// emptiness checks. Those already read the stored element on V1..V3 —
+    /// directly for declared non-merk types, or inside the child-merk open
+    /// for merk types — so V4 does that single read up front, derives the
+    /// ACTUAL type from it, and hands the element to the open. Same read
+    /// count, same bytes: V4 charges exactly the released cost.
+    fn scan_delete_tree_ops<'db>(
+        &'db self,
+        ops: &[QualifiedGroveDbOp],
+        storage_batch: &'db StorageBatch,
+        tx: &'db Transaction,
+        grove_version: &GroveVersion,
+    ) -> CostResult<DeleteTreePreScan, Error> {
+        let mut cost = OperationCost::default();
+        let mut scan = DeleteTreePreScan::default();
+        let capture_actual_types = grove_version
+            .grovedb_versions
+            .apply_batch
+            .delete_tree_cleanup_type_source
+            >= 1;
+        for op in ops.iter() {
+            if let GroveOp::DeleteTree(tree_type, subelements_deletion_behavior) = &op.op
+                && let Some(key) = op.key.as_ref()
+            {
+                let mut child_path = op.path.to_path();
+                child_path.push(key.as_slice().to_vec());
+
+                if capture_actual_types {
+                    scan.delete_tree_behaviors
+                        .insert(child_path.clone(), *subelements_deletion_behavior);
+                    match subelements_deletion_behavior {
+                        SubelementsDeletionBehavior::DontCheckWithNoCleanup
+                        | SubelementsDeletionBehavior::DeleteChildren => {
+                            // Nothing to check pre-apply; cleanup paths come
+                            // from the captured actual types after apply.
+                        }
+                        SubelementsDeletionBehavior::Error | SubelementsDeletionBehavior::Skip => {
+                            let parent_path_vec = op.path.to_path();
+                            let parent_path: SubtreePath<Vec<u8>> =
+                                parent_path_vec.as_slice().into();
+                            let parent_storage = self
+                                .db
+                                .get_transactional_storage_context(
+                                    parent_path,
+                                    Some(storage_batch),
+                                    tx,
+                                )
+                                .unwrap_add_cost(&mut cost);
+                            let stored_element = cost_return_on_error!(
+                                &mut cost,
+                                Element::get_from_storage(
+                                    &parent_storage,
+                                    key.as_slice(),
+                                    grove_version,
+                                )
+                                .map_err(|e| {
+                                    Error::CorruptedData(format!(
+                                        "unable to get element for delete tree emptiness \
+                                         check: {e}"
+                                    ))
+                                })
+                            );
+                            let actual_tree_type = cost_return_on_error_no_add!(
+                                cost,
+                                indexed_tree::validate_delete_tree_type(
+                                    &stored_element,
+                                    *tree_type
+                                )
+                            );
+                            let is_empty = if actual_tree_type.uses_non_merk_data_storage() {
+                                // Non-Merk trees: element-level entry count,
+                                // read off the element loaded above.
+                                stored_element.non_merk_entry_count().unwrap_or(0) == 0
+                            } else {
+                                // Standard Merk trees: use is_empty_tree_except
+                                // to account for other delete ops in the same
+                                // batch.
+                                //
+                                // Exclude DeleteTree ops with Skip policy —
+                                // those might not execute if their target is
+                                // non-empty, so we cannot assume they will
+                                // delete their key.
+                                let batch_deleted_keys = ops
+                                    .iter()
+                                    .filter_map(|other_op| match &other_op.op {
+                                        GroveOp::Delete => {
+                                            if other_op.path.to_path() == child_path {
+                                                Some(other_op.key.as_ref()?.as_slice().to_vec())
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        GroveOp::DeleteTree(
+                                            _,
+                                            SubelementsDeletionBehavior::Skip,
+                                        ) => None,
+                                        GroveOp::DeleteTree(..) => {
+                                            if other_op.path.to_path() == child_path {
+                                                Some(other_op.key.as_ref()?.as_slice().to_vec())
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        _ => None,
+                                    })
+                                    .collect::<Vec<Vec<u8>>>();
+                                let batch_deleted_keys_refs: std::collections::BTreeSet<&[u8]> =
+                                    batch_deleted_keys.iter().map(|k| k.as_slice()).collect();
+
+                                let child_merk = cost_return_on_error!(
+                                    &mut cost,
+                                    self.open_batch_transactional_merk_with_parent_element(
+                                        storage_batch,
+                                        child_path.as_slice().into(),
+                                        tx,
+                                        stored_element,
+                                        grove_version,
+                                    )
+                                );
+
+                                child_merk
+                                    .is_empty_tree_except(batch_deleted_keys_refs)
+                                    .unwrap_add_cost(&mut cost)
+                            };
+
+                            if !is_empty {
+                                match subelements_deletion_behavior {
+                                    SubelementsDeletionBehavior::Error => {
+                                        return Err(Error::DeletingNonEmptyTree(
+                                            "trying to do a batch delete operation for a non \
+                                             empty tree, but options not allowing this",
+                                        ))
+                                        .wrap_with_cost(cost);
+                                    }
+                                    SubelementsDeletionBehavior::Skip => {
+                                        scan.skipped_delete_paths.insert(child_path);
+                                    }
+                                    SubelementsDeletionBehavior::DontCheckWithNoCleanup
+                                    | SubelementsDeletionBehavior::DeleteChildren => {
+                                        return Err(Error::CorruptedCodeExecution(
+                                            "batch delete: DontCheckWithNoCleanup / \
+                                             DeleteChildren behaviors are handled before the \
+                                             non-empty-tree check and must not reach this \
+                                             match arm",
+                                        ))
+                                        .wrap_with_cost(cost);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                // V1..V3: released behaviour, byte for byte — the declared
+                // tree type is taken at face value.
+                //
+                // Per-op emptiness check based on the
+                // SubelementsDeletionBehavior policy.
+                match subelements_deletion_behavior {
+                    SubelementsDeletionBehavior::DontCheckWithNoCleanup => {
+                        // No emptiness check and no post-apply storage cleanup.
+                        // The caller guarantees the subtree is already empty.
+                        // Cidx still needs the secondary cleared even when
+                        // primary cleanup is skipped, because the cidx's
+                        // secondary metadata lives in a different
+                        // namespace and is invisible to find_subtrees.
+                        // is_indexed_primary() (not is_count_indexed_primary):
+                        // PSIT and PCPSIT DeleteTree ops must also queue their
+                        // primary path for the all-axis secondary sweep below,
+                        // otherwise their sum/avg secondary namespaces survive
+                        // the DeleteTree. The sweep clears all three axis tags
+                        // unconditionally, so this is correct for every variant.
+                        if tree_type.is_indexed_primary() {
+                            scan.cidx_primary_delete_paths.push(child_path);
+                        }
+                        continue;
+                    }
+                    SubelementsDeletionBehavior::DeleteChildren => {
+                        // No emptiness check, but still perform post-apply
+                        // storage cleanup to remove child subtree storage.
+                    }
+                    SubelementsDeletionBehavior::Error | SubelementsDeletionBehavior::Skip => {
+                        let is_empty = if tree_type.uses_non_merk_data_storage() {
+                            // Non-Merk trees: check element-level entry count.
+                            let parent_path_vec = op.path.to_path();
+                            let parent_path: SubtreePath<Vec<u8>> =
+                                parent_path_vec.as_slice().into();
+                            let parent_storage = self
+                                .db
+                                .get_transactional_storage_context(
+                                    parent_path,
+                                    Some(storage_batch),
+                                    tx,
+                                )
+                                .unwrap_add_cost(&mut cost);
+                            let element = cost_return_on_error!(
+                                &mut cost,
+                                Element::get_from_storage(
+                                    &parent_storage,
+                                    key.as_slice(),
+                                    grove_version,
+                                )
+                                .map_err(|e| {
+                                    Error::CorruptedData(format!(
+                                        "unable to get element for delete tree emptiness \
+                                         check: {e}"
+                                    ))
+                                })
+                            );
+                            element.non_merk_entry_count().unwrap_or(0) == 0
+                        } else {
+                            // Standard Merk trees: use is_empty_tree_except to
+                            // account for other delete ops in the same batch.
+                            //
+                            // Exclude DeleteTree ops with Skip policy — those
+                            // might not execute if their target is non-empty,
+                            // so we cannot assume they will delete their key.
+                            let batch_deleted_keys = ops
+                                .iter()
+                                .filter_map(|other_op| match &other_op.op {
+                                    GroveOp::Delete => {
+                                        if other_op.path.to_path() == child_path {
+                                            Some(other_op.key.as_ref()?.as_slice().to_vec())
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    GroveOp::DeleteTree(_, SubelementsDeletionBehavior::Skip) => {
+                                        None
+                                    }
+                                    GroveOp::DeleteTree(..) => {
+                                        if other_op.path.to_path() == child_path {
+                                            Some(other_op.key.as_ref()?.as_slice().to_vec())
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    _ => None,
+                                })
+                                .collect::<Vec<Vec<u8>>>();
+                            let batch_deleted_keys_refs: std::collections::BTreeSet<&[u8]> =
+                                batch_deleted_keys.iter().map(|k| k.as_slice()).collect();
+
+                            let child_merk = cost_return_on_error!(
+                                &mut cost,
+                                self.open_batch_transactional_merk_at_path(
+                                    storage_batch,
+                                    child_path.as_slice().into(),
+                                    tx,
+                                    false,
+                                    grove_version,
+                                )
+                            );
+
+                            child_merk
+                                .is_empty_tree_except(batch_deleted_keys_refs)
+                                .unwrap_add_cost(&mut cost)
+                        };
+
+                        if !is_empty {
+                            match subelements_deletion_behavior {
+                                SubelementsDeletionBehavior::Error => {
+                                    return Err(Error::DeletingNonEmptyTree(
+                                        "trying to do a batch delete operation for a non \
+                                         empty tree, but options not allowing this",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+                                SubelementsDeletionBehavior::Skip => {
+                                    scan.skipped_delete_paths.insert(child_path);
+                                    continue;
+                                }
+                                // DontCheckWithNoCleanup / DeleteChildren never
+                                // reach the emptiness-check block above (they
+                                // either skip the check or delete children
+                                // unconditionally). Return a graceful error
+                                // rather than panicking if that invariant is
+                                // ever broken.
+                                SubelementsDeletionBehavior::DontCheckWithNoCleanup
+                                | SubelementsDeletionBehavior::DeleteChildren => {
+                                    return Err(Error::CorruptedCodeExecution(
+                                        "batch delete: DontCheckWithNoCleanup / DeleteChildren \
+                                         behaviors are handled before the non-empty-tree check \
+                                         and must not reach this match arm",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if tree_type.uses_non_merk_data_storage() {
+                    scan.non_merk_delete_paths.push(child_path);
+                } else {
+                    // is_indexed_primary(): PSIT/PCPSIT primaries also need
+                    // their path queued for the all-axis secondary sweep.
+                    if tree_type.is_indexed_primary() {
+                        scan.cidx_primary_delete_paths.push(child_path.clone());
+                    }
+                    scan.merk_delete_paths.push(child_path);
+                }
+            }
+        }
+        Ok(scan).wrap_with_cost(cost)
+    }
+
     /// Applies batch of operations on GroveDB
     pub fn apply_batch_with_element_flags_update(
         &self,
@@ -4890,220 +5761,34 @@ impl GroveDb {
             self.preprocess_dense_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
         );
 
-        // Collect paths of subtrees being deleted, separated by type.
-        //
-        // Non-Merk trees (MmrTree, BulkAppendTree, DenseTree, CommitmentTree)
-        // store their data in the data storage namespace of their subtree path
-        // (e.g. MMR nodes, buffer entries, dense tree values). When apply_body
-        // processes a DeleteTree op it removes the Element from the parent Merk
-        // and clears the subtree's Merk metadata, but does NOT clear the raw
-        // data these tree types wrote. Without explicit cleanup, deleting a
-        // non-Merk tree would leave orphaned data that could corrupt a new tree
-        // inserted at the same path.
-        //
-        // Standard Merk trees also need cleanup: when a Merk subtree has child
-        // subtrees, deleting the parent key in the parent Merk does NOT clear
-        // the child subtree's storage. We must recursively find and clear all
-        // nested subtrees.
-        let mut non_merk_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
-        let mut merk_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
-        // CountIndexedTree primary deletes: alongside the primary's
-        // recursive cleanup (via merk_delete_paths), the secondary's
-        // storage namespace at Blake3(primary_prefix ‖ 0x01) must be
-        // cleared explicitly — find_subtrees only walks primary keys.
-        let mut cidx_primary_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
-        // Track paths skipped due to SubelementsDeletionBehavior::Skip so we can
-        // filter the corresponding ops out of the batch before apply_body.
-        let mut skipped_delete_paths: HashSet<Vec<Vec<u8>>> = HashSet::new();
+        // Preprocess PrivateDocumentStoreInsert ops: execute size-validated
+        // appends then convert to ReplaceNonMerkTreeRoot ops
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_private_document_store_ops(
+                ops,
+                tx.as_ref(),
+                &storage_batch,
+                grove_version
+            )
+        );
 
-        for op in ops.iter() {
-            if let GroveOp::DeleteTree(tree_type, subelements_deletion_behavior) = &op.op
-                && let Some(key) = op.key.as_ref()
-            {
-                let mut child_path = op.path.to_path();
-                child_path.push(key.as_slice().to_vec());
-
-                let parent_path_vec = op.path.to_path();
-                let parent_path: SubtreePath<Vec<u8>> = parent_path_vec.as_slice().into();
-                // Gated: reading the stored element to pick cleanup namespaces
-                // costs an extra seek + load per DeleteTree op, so it cannot
-                // apply to the released versions. V1..V3 keep taking the
-                // caller-declared type at face value; V4+ reads the truth.
-                let resolved_tree_type = if grove_version
-                    .grovedb_versions
-                    .apply_batch
-                    .delete_tree_cleanup_type_source
-                    >= 1
-                {
-                    let parent_storage = self
-                        .db
-                        .get_transactional_storage_context(
-                            parent_path,
-                            Some(&storage_batch),
-                            tx.as_ref(),
-                        )
-                        .unwrap_add_cost(&mut cost);
-                    cost_return_on_error!(
-                        &mut cost,
-                        indexed_tree::validate_delete_tree_type(
-                            &parent_storage,
-                            key.as_slice(),
-                            *tree_type,
-                            grove_version,
-                        )
-                    )
-                } else {
-                    *tree_type
-                };
-                let tree_type = &resolved_tree_type;
-
-                // Per-op emptiness check based on the SubelementsDeletionBehavior policy.
-                match subelements_deletion_behavior {
-                    SubelementsDeletionBehavior::DontCheckWithNoCleanup => {
-                        // No emptiness check and no post-apply storage cleanup.
-                        // The caller guarantees the subtree is already empty.
-                        // Cidx still needs the secondary cleared even when
-                        // primary cleanup is skipped, because the cidx's
-                        // secondary metadata lives in a different
-                        // namespace and is invisible to find_subtrees.
-                        // is_indexed_primary() (not is_count_indexed_primary):
-                        // PSIT and PCPSIT DeleteTree ops must also queue their
-                        // primary path for the all-axis secondary sweep below,
-                        // otherwise their sum/avg secondary namespaces survive
-                        // the DeleteTree. The sweep clears all three axis tags
-                        // unconditionally, so this is correct for every variant.
-                        if tree_type.is_indexed_primary() {
-                            cidx_primary_delete_paths.push(child_path);
-                        }
-                        continue;
-                    }
-                    SubelementsDeletionBehavior::DeleteChildren => {
-                        // No emptiness check, but still perform post-apply
-                        // storage cleanup to remove child subtree storage.
-                    }
-                    SubelementsDeletionBehavior::Error | SubelementsDeletionBehavior::Skip => {
-                        let is_empty = if tree_type.uses_non_merk_data_storage() {
-                            // Non-Merk trees: check element-level entry count.
-                            let parent_path_vec = op.path.to_path();
-                            let parent_path: SubtreePath<Vec<u8>> =
-                                parent_path_vec.as_slice().into();
-                            let parent_storage = self
-                                .db
-                                .get_transactional_storage_context(
-                                    parent_path,
-                                    Some(&storage_batch),
-                                    tx.as_ref(),
-                                )
-                                .unwrap_add_cost(&mut cost);
-                            let element = cost_return_on_error!(
-                                &mut cost,
-                                Element::get_from_storage(
-                                    &parent_storage,
-                                    key.as_slice(),
-                                    grove_version,
-                                )
-                                .map_err(|e| {
-                                    Error::CorruptedData(format!(
-                                        "unable to get element for delete tree emptiness \
-                                         check: {e}"
-                                    ))
-                                })
-                            );
-                            element.non_merk_entry_count().unwrap_or(0) == 0
-                        } else {
-                            // Standard Merk trees: use is_empty_tree_except to
-                            // account for other delete ops in the same batch.
-                            //
-                            // Exclude DeleteTree ops with Skip policy — those
-                            // might not execute if their target is non-empty,
-                            // so we cannot assume they will delete their key.
-                            let batch_deleted_keys = ops
-                                .iter()
-                                .filter_map(|other_op| match &other_op.op {
-                                    GroveOp::Delete => {
-                                        if other_op.path.to_path() == child_path {
-                                            Some(other_op.key.as_ref()?.as_slice().to_vec())
-                                        } else {
-                                            None
-                                        }
-                                    }
-                                    GroveOp::DeleteTree(_, SubelementsDeletionBehavior::Skip) => {
-                                        None
-                                    }
-                                    GroveOp::DeleteTree(..) => {
-                                        if other_op.path.to_path() == child_path {
-                                            Some(other_op.key.as_ref()?.as_slice().to_vec())
-                                        } else {
-                                            None
-                                        }
-                                    }
-                                    _ => None,
-                                })
-                                .collect::<Vec<Vec<u8>>>();
-                            let batch_deleted_keys_refs: std::collections::BTreeSet<&[u8]> =
-                                batch_deleted_keys.iter().map(|k| k.as_slice()).collect();
-
-                            let child_merk = cost_return_on_error!(
-                                &mut cost,
-                                self.open_batch_transactional_merk_at_path(
-                                    &storage_batch,
-                                    child_path.as_slice().into(),
-                                    tx.as_ref(),
-                                    false,
-                                    grove_version,
-                                )
-                            );
-
-                            child_merk
-                                .is_empty_tree_except(batch_deleted_keys_refs)
-                                .unwrap_add_cost(&mut cost)
-                        };
-
-                        if !is_empty {
-                            match subelements_deletion_behavior {
-                                SubelementsDeletionBehavior::Error => {
-                                    return Err(Error::DeletingNonEmptyTree(
-                                        "trying to do a batch delete operation for a non \
-                                         empty tree, but options not allowing this",
-                                    ))
-                                    .wrap_with_cost(cost);
-                                }
-                                SubelementsDeletionBehavior::Skip => {
-                                    skipped_delete_paths.insert(child_path);
-                                    continue;
-                                }
-                                // DontCheckWithNoCleanup / DeleteChildren never
-                                // reach the emptiness-check block above (they
-                                // either skip the check or delete children
-                                // unconditionally). Return a graceful error
-                                // rather than panicking if that invariant is
-                                // ever broken.
-                                SubelementsDeletionBehavior::DontCheckWithNoCleanup
-                                | SubelementsDeletionBehavior::DeleteChildren => {
-                                    return Err(Error::CorruptedCodeExecution(
-                                        "batch delete: DontCheckWithNoCleanup / DeleteChildren \
-                                         behaviors are handled before the non-empty-tree check \
-                                         and must not reach this match arm",
-                                    ))
-                                    .wrap_with_cost(cost);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if tree_type.uses_non_merk_data_storage() {
-                    non_merk_delete_paths.push(child_path);
-                } else {
-                    // is_indexed_primary(): PSIT/PCPSIT primaries also need
-                    // their path queued for the all-axis secondary sweep.
-                    if tree_type.is_indexed_primary() {
-                        cidx_primary_delete_paths.push(child_path.clone());
-                    }
-                    merk_delete_paths.push(child_path);
-                }
-            }
-        }
+        // Collect paths of subtrees being deleted (so their storage can be
+        // cleaned up after apply_body) and run the pre-apply emptiness
+        // checks / Skip filtering. On V1..V3 the cleanup lists are filled
+        // here from the DECLARED tree types; on V4+ they stay empty and are
+        // filled after apply_body from the ACTUAL stored types captured by
+        // the merk old-value observer. See `scan_delete_tree_ops`.
+        let DeleteTreePreScan {
+            mut non_merk_delete_paths,
+            mut merk_delete_paths,
+            mut cidx_primary_delete_paths,
+            skipped_delete_paths,
+            delete_tree_behaviors,
+        } = cost_return_on_error!(
+            &mut cost,
+            self.scan_delete_tree_ops(&ops, &storage_batch, tx.as_ref(), grove_version)
+        );
 
         // Filter out DeleteTree ops that were skipped due to
         // SubelementsDeletionBehavior::Skip on non-empty trees.
@@ -5134,7 +5819,7 @@ impl GroveDb {
         // 5. Remove operation from the tree, repeat until there are operations to do;
         // 6. Add root leaves save operation to the batch
         // 7. Apply storage_cost batch
-        let (_leftover, cidx_overwrite_cleanup_paths) = cost_return_on_error!(
+        let (_leftover, batch_apply_captures) = cost_return_on_error!(
             &mut cost,
             self.apply_body(
                 ops,
@@ -5164,6 +5849,23 @@ impl GroveDb {
                 },
                 grove_version
             )
+        );
+
+        let BatchApplyCaptures {
+            cidx_overwrite_cleanup_paths,
+            deleted_tree_actual_types,
+        } = batch_apply_captures;
+
+        // V4+: fold the `(path, ACTUAL stored type)` pairs captured during
+        // the apply into the cleanup lists (no-op on V1..V3, where the
+        // captures are empty and the lists were already built pre-apply from
+        // the declared types).
+        classify_captured_delete_trees(
+            deleted_tree_actual_types,
+            &delete_tree_behaviors,
+            &mut non_merk_delete_paths,
+            &mut merk_delete_paths,
+            &mut cidx_primary_delete_paths,
         );
 
         // Clean up data storage for deleted non-Merk trees.
@@ -5465,194 +6167,36 @@ impl GroveDb {
             self.preprocess_dense_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
         );
 
-        // See comment in apply_batch_with_element_flags_update for why
-        // deleted tree subtrees need explicit storage cleanup, and why
-        // emptiness checks are needed (H2).
-        let mut non_merk_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
-        let mut merk_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
-        let mut cidx_primary_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
+        // Preprocess PrivateDocumentStoreInsert ops: execute size-validated
+        // appends then convert to ReplaceNonMerkTreeRoot ops
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_private_document_store_ops(
+                ops,
+                tx.as_ref(),
+                &storage_batch,
+                grove_version
+            )
+        );
 
         let mut batch_apply_options = batch_apply_options.unwrap_or_default();
-        let mut skipped_delete_paths: HashSet<Vec<Vec<u8>>> = HashSet::new();
 
-        for op in ops.iter() {
-            if let GroveOp::DeleteTree(tree_type, subelements_deletion_behavior) = &op.op
-                && let Some(key) = op.key.as_ref()
-            {
-                let mut child_path = op.path.to_path();
-                child_path.push(key.as_slice().to_vec());
-
-                let parent_path_vec = op.path.to_path();
-                let parent_path: SubtreePath<Vec<u8>> = parent_path_vec.as_slice().into();
-                // Gated: reading the stored element to pick cleanup namespaces
-                // costs an extra seek + load per DeleteTree op, so it cannot
-                // apply to the released versions. V1..V3 keep taking the
-                // caller-declared type at face value; V4+ reads the truth.
-                let resolved_tree_type = if grove_version
-                    .grovedb_versions
-                    .apply_batch
-                    .delete_tree_cleanup_type_source
-                    >= 1
-                {
-                    let parent_storage = self
-                        .db
-                        .get_transactional_storage_context(
-                            parent_path,
-                            Some(&storage_batch),
-                            tx.as_ref(),
-                        )
-                        .unwrap_add_cost(&mut cost);
-                    cost_return_on_error!(
-                        &mut cost,
-                        indexed_tree::validate_delete_tree_type(
-                            &parent_storage,
-                            key.as_slice(),
-                            *tree_type,
-                            grove_version,
-                        )
-                    )
-                } else {
-                    *tree_type
-                };
-                let tree_type = &resolved_tree_type;
-
-                match subelements_deletion_behavior {
-                    SubelementsDeletionBehavior::DontCheckWithNoCleanup => {
-                        // No emptiness check and no post-apply storage cleanup.
-                        // The caller guarantees the subtree is already empty.
-                        // is_indexed_primary() (not is_count_indexed_primary):
-                        // PSIT and PCPSIT DeleteTree ops must also queue their
-                        // primary path for the all-axis secondary sweep below,
-                        // otherwise their sum/avg secondary namespaces survive
-                        // the DeleteTree. The sweep clears all three axis tags
-                        // unconditionally, so this is correct for every variant.
-                        if tree_type.is_indexed_primary() {
-                            cidx_primary_delete_paths.push(child_path);
-                        }
-                        continue;
-                    }
-                    SubelementsDeletionBehavior::DeleteChildren => {
-                        // No emptiness check, but still perform post-apply
-                        // storage cleanup to remove child subtree storage.
-                    }
-                    SubelementsDeletionBehavior::Error | SubelementsDeletionBehavior::Skip => {
-                        let is_empty = if tree_type.uses_non_merk_data_storage() {
-                            let parent_path_vec = op.path.to_path();
-                            let parent_path: SubtreePath<Vec<u8>> =
-                                parent_path_vec.as_slice().into();
-                            let parent_storage = self
-                                .db
-                                .get_transactional_storage_context(
-                                    parent_path,
-                                    Some(&storage_batch),
-                                    tx.as_ref(),
-                                )
-                                .unwrap_add_cost(&mut cost);
-                            let element = cost_return_on_error!(
-                                &mut cost,
-                                Element::get_from_storage(
-                                    &parent_storage,
-                                    key.as_slice(),
-                                    grove_version,
-                                )
-                                .map_err(|e| {
-                                    Error::CorruptedData(format!(
-                                        "unable to get element for delete tree emptiness \
-                                         check: {e}"
-                                    ))
-                                })
-                            );
-                            element.non_merk_entry_count().unwrap_or(0) == 0
-                        } else {
-                            // Exclude DeleteTree ops with Skip policy — those
-                            // might not execute if their target is non-empty.
-                            let batch_deleted_keys = ops
-                                .iter()
-                                .filter_map(|other_op| match &other_op.op {
-                                    GroveOp::Delete => {
-                                        if other_op.path.to_path() == child_path {
-                                            Some(other_op.key.as_ref()?.as_slice().to_vec())
-                                        } else {
-                                            None
-                                        }
-                                    }
-                                    GroveOp::DeleteTree(_, SubelementsDeletionBehavior::Skip) => {
-                                        None
-                                    }
-                                    GroveOp::DeleteTree(..) => {
-                                        if other_op.path.to_path() == child_path {
-                                            Some(other_op.key.as_ref()?.as_slice().to_vec())
-                                        } else {
-                                            None
-                                        }
-                                    }
-                                    _ => None,
-                                })
-                                .collect::<Vec<Vec<u8>>>();
-                            let batch_deleted_keys_refs: std::collections::BTreeSet<&[u8]> =
-                                batch_deleted_keys.iter().map(|k| k.as_slice()).collect();
-
-                            let child_merk = cost_return_on_error!(
-                                &mut cost,
-                                self.open_batch_transactional_merk_at_path(
-                                    &storage_batch,
-                                    child_path.as_slice().into(),
-                                    tx.as_ref(),
-                                    false,
-                                    grove_version,
-                                )
-                            );
-
-                            child_merk
-                                .is_empty_tree_except(batch_deleted_keys_refs)
-                                .unwrap_add_cost(&mut cost)
-                        };
-
-                        if !is_empty {
-                            match subelements_deletion_behavior {
-                                SubelementsDeletionBehavior::Error => {
-                                    return Err(Error::DeletingNonEmptyTree(
-                                        "trying to do a batch delete operation for a non \
-                                         empty tree, but options not allowing this",
-                                    ))
-                                    .wrap_with_cost(cost);
-                                }
-                                SubelementsDeletionBehavior::Skip => {
-                                    skipped_delete_paths.insert(child_path);
-                                    continue;
-                                }
-                                // DontCheckWithNoCleanup / DeleteChildren never
-                                // reach the emptiness-check block above (they
-                                // either skip the check or delete children
-                                // unconditionally). Return a graceful error
-                                // rather than panicking if that invariant is
-                                // ever broken.
-                                SubelementsDeletionBehavior::DontCheckWithNoCleanup
-                                | SubelementsDeletionBehavior::DeleteChildren => {
-                                    return Err(Error::CorruptedCodeExecution(
-                                        "batch delete: DontCheckWithNoCleanup / DeleteChildren \
-                                         behaviors are handled before the non-empty-tree check \
-                                         and must not reach this match arm",
-                                    ))
-                                    .wrap_with_cost(cost);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if tree_type.uses_non_merk_data_storage() {
-                    non_merk_delete_paths.push(child_path);
-                } else {
-                    // is_indexed_primary(): PSIT/PCPSIT primaries also need
-                    // their path queued for the all-axis secondary sweep.
-                    if tree_type.is_indexed_primary() {
-                        cidx_primary_delete_paths.push(child_path.clone());
-                    }
-                    merk_delete_paths.push(child_path);
-                }
-            }
-        }
+        // Collect paths of subtrees being deleted (so their storage can be
+        // cleaned up after apply_body) and run the pre-apply emptiness
+        // checks / Skip filtering. On V1..V3 the cleanup lists are filled
+        // here from the DECLARED tree types; on V4+ they stay empty and are
+        // filled after apply_body from the ACTUAL stored types captured by
+        // the merk old-value observer. See `scan_delete_tree_ops`.
+        let DeleteTreePreScan {
+            mut non_merk_delete_paths,
+            mut merk_delete_paths,
+            mut cidx_primary_delete_paths,
+            skipped_delete_paths,
+            delete_tree_behaviors,
+        } = cost_return_on_error!(
+            &mut cost,
+            self.scan_delete_tree_ops(&ops, &storage_batch, tx.as_ref(), grove_version)
+        );
 
         // Filter out DeleteTree ops that were skipped due to
         // SubelementsDeletionBehavior::Skip on non-empty trees.
@@ -5687,7 +6231,7 @@ impl GroveDb {
         // 5. Remove operation from the tree, repeat until there are operations to do;
         // 6. Add root leaves save operation to the batch
         // 7. Apply storage_cost batch
-        let (left_over_operations, partial_cidx_overwrite_cleanup_paths) = cost_return_on_error!(
+        let (left_over_operations, partial_captures) = cost_return_on_error!(
             &mut cost,
             self.apply_body(
                 ops,
@@ -5772,7 +6316,7 @@ impl GroveDb {
 
         let continue_storage_batch = StorageBatch::new();
 
-        let (_leftover_unused, continue_cidx_overwrite_cleanup_paths) = cost_return_on_error!(
+        let (_leftover_unused, continue_captures) = cost_return_on_error!(
             &mut cost,
             self.continue_partial_apply_body(
                 left_over_operations,
@@ -5803,6 +6347,28 @@ impl GroveDb {
                 },
                 grove_version
             )
+        );
+
+        let BatchApplyCaptures {
+            cidx_overwrite_cleanup_paths: partial_cidx_overwrite_cleanup_paths,
+            deleted_tree_actual_types: partial_deleted_tree_actual_types,
+        } = partial_captures;
+        let BatchApplyCaptures {
+            cidx_overwrite_cleanup_paths: continue_cidx_overwrite_cleanup_paths,
+            deleted_tree_actual_types: continue_deleted_tree_actual_types,
+        } = continue_captures;
+
+        // V4+: fold captures from BOTH applies into the cleanup lists
+        // (no-op on V1..V3). The overwrite-cleanup paths are unioned below.
+        classify_captured_delete_trees(
+            partial_deleted_tree_actual_types
+                .into_iter()
+                .chain(continue_deleted_tree_actual_types)
+                .collect(),
+            &delete_tree_behaviors,
+            &mut non_merk_delete_paths,
+            &mut merk_delete_paths,
+            &mut cidx_primary_delete_paths,
         );
 
         // Clean up data storage for deleted non-Merk trees.
@@ -6040,7 +6606,8 @@ impl GroveDb {
                         split_removal_bytes_function,
                         AverageCaseTreeCacheKnownPaths::new_with_estimated_layer_information(
                             estimated_layer_information
-                        )
+                        ),
+                        grove_version
                     )
                 );
                 cost_return_on_error!(
@@ -6062,7 +6629,8 @@ impl GroveDb {
                         split_removal_bytes_function,
                         WorstCaseTreeCacheKnownPaths::new_with_worst_case_layer_information(
                             worst_case_layer_information
-                        )
+                        ),
+                        grove_version
                     )
                 );
                 cost_return_on_error!(

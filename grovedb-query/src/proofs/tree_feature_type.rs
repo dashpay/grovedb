@@ -594,7 +594,7 @@ mod tests {
     /// existing variant.
     #[test]
     fn decode_rejects_tag_byte_9() {
-        let buf = vec![9u8, 0];
+        let buf = [9u8, 0];
         let res = TreeFeatureType::decode(&buf[..]);
         assert!(res.is_err(), "decode must reject unknown tag byte");
     }

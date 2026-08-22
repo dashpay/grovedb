@@ -14,7 +14,7 @@ use grovedb_merk::{element::insert::ElementInsertToStorageExtensions, Merk};
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
-use super::{read_entry_aggregates, AggregatePair};
+use super::{read_entry_aggregates, MaybeEntryState};
 use crate::{
     batch::{GroveOp, KeyInfo},
     operations::indexed_tree::MAX_CIDX_ITEM_KEY_LEN,
@@ -97,7 +97,8 @@ fn validate_indexed_child_ops(
             | GroveOp::CommitmentTreeInsert { .. }
             | GroveOp::MmrTreeAppend { .. }
             | GroveOp::BulkAppend { .. }
-            | GroveOp::DenseTreeInsert { .. } => continue,
+            | GroveOp::DenseTreeInsert { .. }
+            | GroveOp::PrivateDocumentStoreInsert { .. } => continue,
         };
         // Child-type acceptance, delegated to merk's own rule rather than a
         // second copy of it: `get_feature_type` is what decides whether an
@@ -150,13 +151,16 @@ fn validate_indexed_child_ops(
 /// the avg axis derives its sort key from the pair, and a PCPSIT can index
 /// count, sum and avg simultaneously.
 ///
-/// Only ops whose `can_mutate_child_count()` is true are captured —
-/// non-count-mutating ops (e.g., `CommitmentTreeInsert`) are skipped.
+/// Every op that can rewrite the entry is captured — see
+/// `GroveOp::can_mutate_indexed_secondary_row`. That is wider than
+/// count-mutation: a canonical row binds the primary node's commitment,
+/// so a non-Merk append (which leaves `(count, sum)` alone but writes a
+/// new root into the entry) must be mirrored too.
 pub(crate) fn capture_indexed_pre_state<'db, S: StorageContext<'db>>(
     primary_merk: &Merk<S>,
     ops_at_path_by_key: &BTreeMap<KeyInfo, GroveOp>,
     grove_version: &GroveVersion,
-) -> CostResult<BTreeMap<Vec<u8>, AggregatePair>, Error> {
+) -> CostResult<BTreeMap<Vec<u8>, MaybeEntryState>, Error> {
     let mut cost = OperationCost::default();
 
     cost_return_on_error_no_add!(cost, enforce_indexed_item_key_ceiling(ops_at_path_by_key));
@@ -165,15 +169,16 @@ pub(crate) fn capture_indexed_pre_state<'db, S: StorageContext<'db>>(
         validate_indexed_child_ops(ops_at_path_by_key, primary_merk.tree_type)
     );
 
-    let mut pre: BTreeMap<Vec<u8>, AggregatePair> = BTreeMap::new();
+    let mut pre: BTreeMap<Vec<u8>, MaybeEntryState> = BTreeMap::new();
     for (key_info, op) in ops_at_path_by_key.iter() {
         let key_bytes = key_info.get_key_clone();
-        // Single source of truth: `GroveOp::can_mutate_child_count`
-        // uses an exhaustive match so adding a new variant forces
-        // explicit classification at the type-system level. This is
-        // the structural guard against the nested-cidx bug class
-        // (commit a8bb34fb).
-        if op.can_mutate_child_count() && !pre.contains_key(&key_bytes) {
+        // Single source of truth:
+        // `GroveOp::can_mutate_indexed_secondary_row` uses an exhaustive
+        // match so adding a new variant forces explicit classification at
+        // the type-system level. This is the structural guard against the
+        // nested-cidx bug class (commit a8bb34fb) and, since rows became
+        // references, against the unmirrored-commitment class too.
+        if op.can_mutate_indexed_secondary_row() && !pre.contains_key(&key_bytes) {
             let old_aggregates = cost_return_on_error!(
                 &mut cost,
                 read_entry_aggregates(primary_merk, &key_bytes, "pre", grove_version)

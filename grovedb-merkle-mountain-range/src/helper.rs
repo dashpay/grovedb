@@ -107,6 +107,24 @@ pub fn get_peak_map(mmr_size: u64) -> u64 {
 ///   2
 ///  / \
 /// 0   1 3
+/// Blake3 merges [`MMR::get_root`](crate::MMR::get_root) performs for an MMR
+/// of this size.
+///
+/// Bagging folds the peaks right-to-left with one merge per additional peak,
+/// so `n` peaks cost `n - 1`. Sizes 0 and 1 take the empty and single-element
+/// paths, which fold nothing.
+///
+/// Exposed so callers that report a hash count for an operation containing a
+/// root computation can account for the bagging WITHOUT depending on whether
+/// `get_root`'s own charge is enabled for their grove version — the two are
+/// separately gated.
+pub fn hash_count_for_root_bagging(mmr_size: u64) -> u32 {
+    if mmr_size <= 1 {
+        return 0;
+    }
+    get_peaks(mmr_size).len().saturating_sub(1) as u32
+}
+
 pub fn get_peaks(mmr_size: u64) -> Vec<u64> {
     if mmr_size == 0 {
         return vec![];

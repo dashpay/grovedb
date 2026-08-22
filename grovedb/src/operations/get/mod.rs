@@ -3,9 +3,12 @@
 #[cfg(feature = "estimated_costs")]
 mod average_case;
 
+mod aggregate_per_key;
 mod query;
+mod run_path_query;
 use grovedb_storage::Storage;
 pub use query::QueryItemOrSumReturnType;
+pub use run_path_query::{AxisAggregateValue, PathQueryRun};
 #[cfg(feature = "estimated_costs")]
 mod worst_case;
 
@@ -417,7 +420,8 @@ impl GroveDb {
                 | Ok(Element::CommitmentTree(..))
                 | Ok(Element::MmrTree(..))
                 | Ok(Element::BulkAppendTree(..))
-                | Ok(Element::DenseAppendOnlyFixedSizeTree(..)) => Ok(()).wrap_with_cost(cost),
+                | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
+                | Ok(Element::PrivateDocumentStore(..)) => Ok(()).wrap_with_cost(cost),
                 Ok(_) | Err(Error::PathKeyNotFound(_)) => Err(error_fn()).wrap_with_cost(cost),
                 Err(e) => Err(e).wrap_with_cost(cost),
             }

@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fmt, ops::RangeFull};
+use std::{fmt, ops::RangeFull};
 
 use bincode::{
     enc::write::Writer,
@@ -7,7 +7,7 @@ use bincode::{
 };
 use indexmap::IndexMap;
 
-use crate::{error::Error, query_item::QueryItem, Key, Path, SubqueryBranch};
+use crate::{query_item::QueryItem, Key, Path, ReadMode, SubqueryBranch};
 
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all the requested values.
@@ -37,15 +37,50 @@ pub struct Query {
     ///
     /// When verifying with `verify_query_with_absence_proof` or
     /// `verify_subset_query_with_absence_proof`, results are reconstructed
-    /// from `terminal_keys()` which does not emit parent-tree entries.
+    /// from the terminal-keys walk (see the `terminal_keys` module),
+    /// which does not emit parent-tree entries.
     /// Parent tree elements will therefore not appear in the verified
     /// result set in those modes.
     pub add_parent_tree_on_subquery: bool,
+    /// How this node reads the tree its (sub)path names. `None` is
+    /// plain key selection — all pre-existing behavior, byte-identical
+    /// on the wire (the encoding version byte stays `1`). `Some(_)`
+    /// switches the node to an axis-ordered or sum-budget read and
+    /// bumps the node's encoding version byte to `2`, which decoders
+    /// that predate read modes reject — fail-closed by construction.
+    ///
+    /// Placement rules (which items/branches may accompany a read mode,
+    /// where in a `PathQuery` it may appear) are enforced by
+    /// `PathQuery::classify` in the `grovedb` crate.
+    ///
+    /// **Boxed deliberately.** A read mode is absent from virtually
+    /// every query, but `AxisQuery`'s `i128` bounds make it 64 bytes
+    /// inline — which would fatten every `Query` (and through
+    /// `PathQuery`, the `Error::InvalidProof` variant and so every
+    /// `CostResult` in the crate) whether or not a read mode is
+    /// present. The indirection costs one allocation on the rare
+    /// read-mode path and keeps `Query` cheap to clone, which the
+    /// engine does constantly. It is invisible on the wire and in
+    /// serde: `Box<T>` encodes exactly as `T`.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub read_mode: Option<Box<ReadMode>>,
 }
 
 impl Encode for Query {
     fn encode<E: bincode::enc::Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
-        1u8.encode(encoder)?;
+        // Version byte. Queries without a read mode — everything that
+        // was expressible before read modes existed — keep encoding as
+        // version 1, byte-for-byte. Only a node that actually carries a
+        // read mode bumps to 2, so old decoders fail closed on exactly
+        // the queries they cannot execute and on nothing else.
+        if self.read_mode.is_some() {
+            2u8.encode(encoder)?;
+        } else {
+            1u8.encode(encoder)?;
+        }
 
         // Encode the items vector
         self.items.encode(encoder)?;
@@ -76,6 +111,12 @@ impl Encode for Query {
 
         self.add_parent_tree_on_subquery.encode(encoder)?;
 
+        // Version 2 appends the read mode. No presence flag: the
+        // version byte already says it's there.
+        if let Some(read_mode) = &self.read_mode {
+            read_mode.encode(encoder)?;
+        }
+
         Ok(())
     }
 }
@@ -104,7 +145,7 @@ impl Query {
             ));
         }
         let version = u8::decode(decoder)?;
-        if version != 1 {
+        if version != 1 && version != 2 {
             return Err(DecodeError::Other("unsupported Query encoding version"));
         }
         let items_len = u64::decode(decoder)? as usize;
@@ -139,12 +180,21 @@ impl Query {
         let left_to_right = bool::decode(decoder)?;
         let add_parent_tree_on_subquery = bool::decode(decoder)?;
 
+        // Version 2 carries a read mode; version 1 never does. No
+        // presence flag — the version byte is the flag.
+        let read_mode = if version == 2 {
+            Some(Box::new(ReadMode::decode(decoder)?))
+        } else {
+            None
+        };
+
         Ok(Query {
             items,
             default_subquery_branch,
             conditional_subquery_branches,
             left_to_right,
             add_parent_tree_on_subquery,
+            read_mode,
         })
     }
 
@@ -158,7 +208,7 @@ impl Query {
             ));
         }
         let version = u8::borrow_decode(decoder)?;
-        if version != 1 {
+        if version != 1 && version != 2 {
             return Err(DecodeError::Other("unsupported Query encoding version"));
         }
         let items_len = u64::borrow_decode(decoder)? as usize;
@@ -193,12 +243,20 @@ impl Query {
         let left_to_right = bool::borrow_decode(decoder)?;
         let add_parent_tree_on_subquery = bool::borrow_decode(decoder)?;
 
+        // Version 2 carries a read mode; version 1 never does.
+        let read_mode = if version == 2 {
+            Some(Box::new(ReadMode::borrow_decode(decoder)?))
+        } else {
+            None
+        };
+
         Ok(Query {
             items,
             default_subquery_branch,
             conditional_subquery_branches,
             left_to_right,
             add_parent_tree_on_subquery,
+            read_mode,
         })
     }
 }
@@ -245,6 +303,9 @@ impl fmt::Display for Query {
             "  add_parent_tree_on_subquery: {},",
             self.add_parent_tree_on_subquery
         )?;
+        if let Some(read_mode) = &self.read_mode {
+            writeln!(f, "  read_mode: {read_mode},")?;
+        }
         write!(f, "}}")
     }
 }
@@ -336,193 +397,6 @@ impl Query {
             }
         }
         false
-    }
-
-    /// Maximum subquery nesting depth for `terminal_keys`. GroveDB paths
-    /// rarely exceed a handful of levels; 64 is generous and prevents stack
-    /// overflow from adversarial queries.
-    const MAX_TERMINAL_KEYS_DEPTH: usize = 64;
-
-    /// Pushes terminal key paths and keys to `result`, no more than
-    /// `max_results`. Returns the number of terminal keys added.
-    ///
-    /// Terminal keys are the keys of a path query below which there are no more
-    /// subqueries. In other words they're the keys of the terminal queries
-    /// of a path query.
-    pub fn terminal_keys(
-        &self,
-        current_path: Vec<Vec<u8>>,
-        max_results: usize,
-        result: &mut Vec<(Vec<Vec<u8>>, Vec<u8>)>,
-    ) -> Result<usize, Error> {
-        self.terminal_keys_inner(current_path, max_results, result, 0)
-    }
-
-    fn terminal_keys_inner(
-        &self,
-        current_path: Vec<Vec<u8>>,
-        max_results: usize,
-        result: &mut Vec<(Vec<Vec<u8>>, Vec<u8>)>,
-        depth: usize,
-    ) -> Result<usize, Error> {
-        if depth >= Self::MAX_TERMINAL_KEYS_DEPTH {
-            return Err(Error::NotSupported(
-                "terminal_keys subquery nesting depth exceeded".to_string(),
-            ));
-        }
-        let mut current_len = result.len();
-        let mut added = 0;
-        let mut already_added_keys = HashSet::new();
-        if let Some(conditional_subquery_branches) = &self.conditional_subquery_branches {
-            for (conditional_query_item, subquery_branch) in conditional_subquery_branches {
-                // unbounded ranges can not be supported
-                if conditional_query_item.is_unbounded_range() {
-                    return Err(Error::NotSupported(
-                        "terminal keys are not supported with conditional unbounded ranges"
-                            .to_string(),
-                    ));
-                }
-                let conditional_keys = conditional_query_item.keys()?;
-                for key in conditional_keys.into_iter() {
-                    if current_len > max_results {
-                        return Err(Error::RequestAmountExceeded(format!(
-                            "terminal keys limit exceeded for conditional subqueries, set max is \
-                             {max_results}, current length is {current_len}",
-                        )));
-                    }
-                    already_added_keys.insert(key.clone());
-                    let mut path = current_path.clone();
-                    if let Some(subquery_path) = &subquery_branch.subquery_path {
-                        if let Some(subquery) = &subquery_branch.subquery {
-                            // a subquery path with a subquery
-                            // push the key to the path
-                            path.push(key);
-                            // push the subquery path to the path
-                            path.extend(subquery_path.iter().cloned());
-                            // recurse onto the lower level
-                            let added_here = subquery.terminal_keys_inner(
-                                path,
-                                max_results,
-                                result,
-                                depth + 1,
-                            )?;
-                            added += added_here;
-                            current_len += added_here;
-                        } else {
-                            if current_len == max_results {
-                                return Err(Error::RequestAmountExceeded(format!(
-                                    "terminal keys limit exceeded when subquery path but no \
-                                     subquery, set max is {max_results}, current length is \
-                                     {current_len}",
-                                )));
-                            }
-                            // a subquery path but no subquery
-                            // split the subquery path and remove the last element
-                            // push the key to the path with the front elements,
-                            // and set the tail of the subquery path as the terminal key
-                            path.push(key);
-                            if let Some((last_key, front_keys)) = subquery_path.split_last() {
-                                path.extend(front_keys.iter().cloned());
-                                result.push((path, last_key.clone()));
-                            } else {
-                                return Err(Error::CorruptedCodeExecution(
-                                    "subquery_path set but doesn't contain any values",
-                                ));
-                            }
-
-                            added += 1;
-                            current_len += 1;
-                        }
-                    } else if let Some(subquery) = &subquery_branch.subquery {
-                        // a subquery without a subquery path
-                        // push the key to the path
-                        path.push(key);
-                        // recurse onto the lower level
-                        let added_here =
-                            subquery.terminal_keys_inner(path, max_results, result, depth + 1)?;
-                        added += added_here;
-                        current_len += added_here;
-                    }
-                }
-            }
-        }
-        for item in self.items.iter() {
-            if item.is_unbounded_range() {
-                return Err(Error::NotSupported(
-                    "terminal keys are not supported with unbounded ranges".to_string(),
-                ));
-            }
-            let keys = item.keys()?;
-            for key in keys.into_iter() {
-                if already_added_keys.contains(&key) {
-                    // we already had this key in the conditional subqueries
-                    continue; // skip this key
-                }
-                if current_len > max_results {
-                    return Err(Error::RequestAmountExceeded(format!(
-                        "terminal keys limit exceeded for items, set max is {max_results}, \
-                         current len is {current_len}",
-                    )));
-                }
-                let mut path = current_path.clone();
-                if let Some(subquery_path) = &self.default_subquery_branch.subquery_path {
-                    if let Some(subquery) = &self.default_subquery_branch.subquery {
-                        // a subquery path with a subquery
-                        // push the key to the path
-                        path.push(key);
-                        // push the subquery path to the path
-                        path.extend(subquery_path.iter().cloned());
-                        // recurse onto the lower level
-                        let added_here =
-                            subquery.terminal_keys_inner(path, max_results, result, depth + 1)?;
-                        added += added_here;
-                        current_len += added_here;
-                    } else {
-                        if current_len == max_results {
-                            return Err(Error::RequestAmountExceeded(format!(
-                                "terminal keys limit exceeded when subquery path but no subquery, \
-                                 set max is {max_results}, current len is {current_len}",
-                            )));
-                        }
-                        // a subquery path but no subquery
-                        // split the subquery path and remove the last element
-                        // push the key to the path with the front elements,
-                        // and set the tail of the subquery path as the terminal key
-                        path.push(key);
-                        if let Some((last_key, front_keys)) = subquery_path.split_last() {
-                            path.extend(front_keys.iter().cloned());
-                            result.push((path, last_key.clone()));
-                        } else {
-                            return Err(Error::CorruptedCodeExecution(
-                                "subquery_path set but doesn't contain any values",
-                            ));
-                        }
-                        added += 1;
-                        current_len += 1;
-                    }
-                } else if let Some(subquery) = &self.default_subquery_branch.subquery {
-                    // a subquery without a subquery path
-                    // push the key to the path
-                    path.push(key);
-                    // recurse onto the lower level
-                    let added_here =
-                        subquery.terminal_keys_inner(path, max_results, result, depth + 1)?;
-                    added += added_here;
-                    current_len += added_here;
-                } else {
-                    if current_len == max_results {
-                        return Err(Error::RequestAmountExceeded(format!(
-                            "terminal keys limit exceeded without subquery or subquery path, set \
-                             max is {max_results}, current len is {current_len}",
-                        )));
-                    }
-                    result.push((path, key));
-                    added += 1;
-                    current_len += 1;
-                }
-            }
-        }
-        Ok(added)
     }
 
     /// Get number of query items
@@ -667,6 +541,7 @@ impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
             conditional_subquery_branches: None,
             left_to_right: true,
             add_parent_tree_on_subquery: false,
+            read_mode: None,
         }
     }
 }
@@ -778,7 +653,7 @@ mod tests {
     fn query_decode_rejects_invalid_version() {
         // Craft a payload with an invalid version byte
         let mut payload = Vec::new();
-        payload.push(2u8); // invalid version (only version 1 is supported)
+        payload.push(3u8); // invalid version (only versions 1 and 2 are supported)
                            // Add some dummy data after
         payload.extend_from_slice(&[0; 20]);
 

@@ -20,7 +20,7 @@ use crate::{
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     reference_path::ReferencePathType,
     util::TxRef,
-    Element, Error, GroveDb, PathQuery, SizedQuery, TransactionArg,
+    Element, Error, GroveDb, PathQuery, TransactionArg,
 };
 use grovedb_costs::cost_return_on_error_default;
 #[cfg(feature = "minimal")]
@@ -280,6 +280,7 @@ where {
             | Element::MmrTree(..)
             | Element::BulkAppendTree(..)
             | Element::DenseAppendOnlyFixedSizeTree(..)
+            | Element::PrivateDocumentStore(..)
             | Element::ProvableSumIndexedTree(..)
             | Element::ProvableCountProvableSumIndexedTree(..)
             | Element::ProvableCountIndexedTree(..) => {
@@ -426,6 +427,7 @@ where {
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
                         | Element::DenseAppendOnlyFixedSizeTree(..)
+                        | Element::PrivateDocumentStore(..)
                         | Element::ProvableSumIndexedTree(..)
                         | Element::ProvableCountProvableSumIndexedTree(..)
                         | Element::ProvableCountIndexedTree(..) => Err(Error::InvalidQuery(
@@ -639,7 +641,8 @@ where {
                         | Element::CommitmentTree(..)
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
-                        | Element::DenseAppendOnlyFixedSizeTree(..) => Err(Error::InvalidQuery(
+                        | Element::DenseAppendOnlyFixedSizeTree(..)
+                        | Element::PrivateDocumentStore(..) => Err(Error::InvalidQuery(
                             "path_queries can only refer to items, sum items, references and sum \
                              trees",
                         )),
@@ -1018,175 +1021,6 @@ where {
         Ok(count_and_sum).wrap_with_cost(cost)
     }
 
-    /// Executes an `AggregateCountOnRange` query in either the **leaf** or
-    /// **carrier** shape without generating a proof, returning one
-    /// `(outer_key, count)` pair per matched outer key.
-    ///
-    /// This is the no-proof counterpart of
-    /// [`GroveDb::verify_aggregate_count_query_per_key`]: it performs the
-    /// same merk-level boundary walks the per-key verifier reconstructs
-    /// from a proof but skips proof generation, encoding, decoding, and
-    /// chain verification entirely.
-    ///
-    /// For a **leaf** query the returned vector contains exactly one
-    /// entry whose key is an empty byte string and whose count is the
-    /// same `u64` [`Self::query_aggregate_count`] would have returned.
-    /// This matches the per-key verifier's leaf behavior, so callers
-    /// that always handle `Vec<(Vec<u8>, u64)>` don't need to branch on
-    /// the shape.
-    ///
-    /// For a **carrier** query the outer items must be `Key(_)` /
-    /// `Range*(_)` and the `default_subquery_branch.subquery` must
-    /// validate as a leaf `AggregateCountOnRange`. The optional
-    /// `subquery_path` is followed exactly (single-key step per element)
-    /// before the count walk. The returned vector has one entry per
-    /// matched outer key in query-direction order (ascending lex when
-    /// `left_to_right = true`, descending otherwise). Outer-key
-    /// candidates that don't exist contribute no entry; outer-key
-    /// candidates whose leaf subtree is empty contribute `(key, 0)`.
-    ///
-    /// `path_query` must satisfy
-    /// [`PathQuery::validate_aggregate_count_on_range`] in either
-    /// shape. Pagination rules differ by shape: for **leaf** queries
-    /// both `SizedQuery::limit` and `SizedQuery::offset` are rejected
-    /// (a leaf returns a single `u64` and pagination would silently
-    /// change the answer); for **carrier** queries `SizedQuery::limit`
-    /// is accepted and caps the number of outer-key matches the walk
-    /// returns (each matched outer key still produces a complete
-    /// leaf-ACOR `u64`, the inner range is not capped), while
-    /// `SizedQuery::offset` is still rejected. Each leaf subtree the
-    /// walk terminates in must be a `ProvableCountTree` or
-    /// `ProvableCountSumTree` — the merk-level walk rejects any other
-    /// tree type.
-    ///
-    /// The returned counts are **not** independently verifiable —
-    /// callers are trusting their own merk read path. For verifiable
-    /// counts, use [`Self::prove_query`] +
-    /// [`GroveDb::verify_aggregate_count_query_per_key`].
-    pub fn query_aggregate_count_per_key(
-        &self,
-        path_query: &PathQuery,
-        transaction: TransactionArg,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(Vec<u8>, u64)>, Error> {
-        check_grovedb_v0_with_cost!(
-            "query_aggregate_count_per_key",
-            grove_version
-                .grovedb_versions
-                .operations
-                .query
-                .query_aggregate_count_on_range
-        );
-
-        let mut cost = OperationCost::default();
-
-        // Up-front shape validation: accept both leaf and carrier shapes.
-        // We classify by what the top-level query owns: a direct
-        // `AggregateCountOnRange` item means leaf; otherwise the
-        // dispatcher already confirmed a valid carrier subquery exists.
-        let inner_range = cost_return_on_error_no_add!(
-            cost,
-            path_query.validate_aggregate_count_on_range().cloned()
-        );
-
-        if path_query.query.query.aggregate_count_on_range().is_some() {
-            // Leaf shape: delegate to the existing single-`u64` entry
-            // point and wrap as a one-entry vector with an empty key.
-            let count = cost_return_on_error!(
-                &mut cost,
-                self.query_aggregate_count(path_query, transaction, grove_version)
-            );
-            return Ok(vec![(Vec::new(), count)]).wrap_with_cost(cost);
-        }
-
-        // Carrier shape: enumerate matched outer keys at the carrier
-        // subtree, then per match navigate `subquery_path` and run the
-        // merk-level count walk on the leaf.
-        let q = &path_query.query.query;
-        let outer_items = q.items.clone();
-        let subquery_path = q
-            .default_subquery_branch
-            .subquery_path
-            .clone()
-            .unwrap_or_default();
-        let left_to_right = q.left_to_right;
-
-        // Build a "shallow" path query that enumerates the carrier's
-        // outer items at `path_query.path` without descending into the
-        // subquery — we want just the matched outer keys, not the
-        // (unproven) results of the leaf aggregate-count.
-        //
-        // Propagate `SizedQuery::limit` (validated as carrier-only
-        // above): it caps the number of outer-key matches the walk
-        // returns. Each matched outer key still produces a complete
-        // leaf-ACOR `u64` below. `offset` is rejected at validation, so
-        // we don't propagate it here.
-        let mut shallow_query = grovedb_query::Query::new_with_direction(left_to_right);
-        shallow_query.items = outer_items;
-        let shallow_pq = PathQuery::new(
-            path_query.path.clone(),
-            SizedQuery::new(shallow_query, path_query.query.limit, None),
-        );
-
-        let (matched, _skipped) = cost_return_on_error!(
-            &mut cost,
-            self.query_raw(
-                &shallow_pq,
-                true,  // allow_cache
-                false, // decrease_limit_on_range_with_no_sub_elements
-                true,  // error_if_intermediate_path_tree_not_present
-                QueryResultType::QueryKeyElementPairResultType,
-                transaction,
-                grove_version,
-            )
-        );
-
-        let key_elements = matched.to_key_elements();
-        let mut results: Vec<(Vec<u8>, u64)> = Vec::with_capacity(key_elements.len());
-        let tx = TxRef::new(&self.db, transaction);
-
-        for (key, element) in key_elements {
-            // Refuse non-tree matches: aggregate-count requires
-            // descending into the matched element to find the leaf
-            // count subtree.
-            if !element.is_any_tree() {
-                return Err(Error::InvalidQuery(
-                    "carrier aggregate-count matched a non-tree element; outer items must \
-                     resolve to tree elements",
-                ))
-                .wrap_with_cost(cost);
-            }
-
-            // Build the path to the leaf count subtree:
-            // `path_query.path / outer_key / subquery_path...`.
-            let mut leaf_path_owned: Vec<Vec<u8>> = path_query.path.clone();
-            leaf_path_owned.push(key.clone());
-            leaf_path_owned.extend(subquery_path.iter().cloned());
-            let leaf_path: Vec<&[u8]> = leaf_path_owned.iter().map(|p| p.as_slice()).collect();
-
-            let leaf_subtree = cost_return_on_error!(
-                &mut cost,
-                self.open_transactional_merk_at_path(
-                    SubtreePath::from(leaf_path.as_slice()),
-                    tx.as_ref(),
-                    None,
-                    grove_version,
-                )
-            );
-
-            let count = cost_return_on_error!(
-                &mut cost,
-                leaf_subtree
-                    .count_aggregate_on_range(&inner_range, grove_version)
-                    .map_err(Error::MerkError)
-            );
-
-            results.push((key, count));
-        }
-
-        Ok(results).wrap_with_cost(cost)
-    }
-
     /// Retrieves SumItem values that match a regular [`PathQuery`], returning
     /// a `Vec<i64>` of the raw sum values and the number of skipped elements.
     ///
@@ -1285,6 +1119,7 @@ where {
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
                         | Element::DenseAppendOnlyFixedSizeTree(..)
+                        | Element::PrivateDocumentStore(..)
                         | Element::ProvableSumIndexedTree(..)
                         | Element::ProvableCountProvableSumIndexedTree(..)
                         | Element::ProvableCountIndexedTree(..)
@@ -1325,6 +1160,14 @@ where {
             "query_raw",
             grove_version.grovedb_versions.operations.query.query_raw
         );
+        // Read-mode gate: axis / sum-budget reads are not served by the
+        // key-selection read path. Fail closed rather than walking an
+        // axis query's (empty) items and returning an empty result that
+        // looks like real absence. `query_raw` is the funnel every
+        // key-selection read entry point flows through.
+        if let Err(e) = path_query.reject_unserved_read_mode() {
+            return Err(e).wrap_with_cost(OperationCost::default());
+        }
         Element::get_path_query(
             &self.db,
             path_query,

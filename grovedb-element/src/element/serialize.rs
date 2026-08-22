@@ -79,6 +79,16 @@ impl Element {
                 }
             }
         }
+        // A PrivateDocumentStore's committed config is bound into its state
+        // root; an unusable config must never reach disk. The checked
+        // constructors and insert paths already enforce this — the codec
+        // check closes the caller-built-element gap.
+        if let Err(e) = self.validate_private_document_store_config() {
+            return Err(ElementError::CorruptedData(format!(
+                "invalid private document store config: {}",
+                e
+            )));
+        }
         let config = config::standard().with_big_endian().with_no_limit();
         bincode::encode_to_vec(self, config)
             .map_err(|e| ElementError::CorruptedData(format!("unable to serialize element {}", e)))
@@ -187,6 +197,18 @@ impl Element {
                     ));
                 }
             }
+        }
+        // Reject a PrivateDocumentStore with an unusable committed config
+        // (entry_size 0 or chunk_power outside 1..=16). No such bytes can
+        // legitimately exist — serialization and every insert path enforce
+        // the same bound — so this cannot reject previously-valid data;
+        // it makes the invalid configuration unrepresentable, mirroring
+        // the wrapper-invariant checks above.
+        if let Err(e) = elem.validate_private_document_store_config() {
+            return Err(ElementError::CorruptedData(format!(
+                "deserialized private document store with invalid config: {}",
+                e
+            )));
         }
         Ok(elem)
     }
