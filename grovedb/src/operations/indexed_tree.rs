@@ -2424,15 +2424,6 @@ impl GroveDb {
         .add_cost(cost)
     }
 
-    /// Shared scaffolding for the per-axis direct query APIs: validate
-    /// that the indexed-tree at `path` carries the requested `axis`,
-    /// read that axis's secondary root key, and open the secondary
-    /// merk at the derived prefix.
-    ///
-    /// Used by every `indexed_count_*`, `indexed_sum_*`, and
-    /// `indexed_avg_*` function. Returns `Error::InvalidPath` if the
-    /// axis is not indexed at this path (e.g. an avg query against a
-    /// PCIT, or a sum query against a PCPSIT without the sum axis).
     // -----------------------------------------------------------------
     // Keys-only reads.
     //
@@ -2722,6 +2713,15 @@ impl GroveDb {
         .add_cost(cost)
     }
 
+    /// Shared scaffolding for the per-axis direct query APIs: validate
+    /// that the indexed-tree at `path` carries the requested `axis`,
+    /// read that axis's secondary root key, and open the secondary
+    /// merk at the derived prefix.
+    ///
+    /// Used by every `indexed_count_*`, `indexed_sum_*`, and
+    /// `indexed_avg_*` function. Returns `Error::InvalidPath` if the
+    /// axis is not indexed at this path (e.g. an avg query against a
+    /// PCIT, or a sum query against a PCPSIT without the sum axis).
     fn open_validated_axis_secondary<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
