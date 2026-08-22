@@ -46,10 +46,14 @@ impl<'db> StorageContext<'db> for MemStorageContext {
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
         self.gets.borrow_mut().push(key.as_ref().to_vec());
         if self.fail_record_gets.get() && key.as_ref().len() == 3 {
+            // The lookup was attempted: charge its seek like a real store.
             return Err(grovedb_storage::Error::StorageError(
                 "injected hash record read failure".to_string(),
             ))
-            .wrap_with_cost(OperationCost::default());
+            .wrap_with_cost(OperationCost {
+                seek_count: 1,
+                ..Default::default()
+            });
         }
         let value = self.data.borrow().get(key.as_ref()).cloned();
         let cost = OperationCost {
