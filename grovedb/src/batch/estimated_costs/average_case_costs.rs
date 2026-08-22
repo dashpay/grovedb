@@ -281,8 +281,14 @@ impl GroveOp {
                 item_cost.add_cost(OperationCost {
                     seek_count: 1, // 1 buffer entry write
                     storage_cost: StorageCost {
-                        added_bytes: entry_size,
-                        replaced_bytes: 0,
+                        // The value's chunk-blob share, charged at every
+                        // append (issue #822), plus its buffer slot when
+                        // written for the first time.
+                        added_bytes: entry_size.saturating_mul(2),
+                        // The slot rewrite from epoch 2 on, plus the
+                        // compaction blob — a replacement of the epoch's
+                        // prepaid entry bytes — amortized per append.
+                        replaced_bytes: entry_size.saturating_mul(2),
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
                     storage_loaded_bytes: 0,
@@ -323,7 +329,10 @@ impl GroveOp {
                 let epoch_entries: u32 = 1u32 << chunk_power.min(16) as u32;
                 // Amortized over one epoch: every entry is written once to
                 // the buffer, and once more into the chunk blob when the
-                // epoch compacts.
+                // epoch compacts. Under the GROVE_V4 accounting (issue
+                // #822) the blob share is exactly what each append is
+                // charged as added storage, and the blob itself lands as a
+                // replacement of those prepaid bytes.
                 let amortized_compaction_bytes = entry_size;
                 // The dense-buffer root walk costs two hashes per filled
                 // position and runs on every append, so across an epoch it
@@ -349,16 +358,25 @@ impl GroveOp {
                 // append to a non-counted store.
                 const NON_COUNTED_WRAPPER_BYTE: u32 = 1;
                 item_cost.add_cost(OperationCost {
-                    // 1 buffer entry write + the root walk's reads.
-                    seek_count: 1u32.saturating_add(avg_dense_reads),
+                    // 1 buffer entry write + the read of the slot's committed
+                    // value that sizes the rewrite + the root walk's reads.
+                    seek_count: 2u32.saturating_add(avg_dense_reads),
                     storage_cost: StorageCost {
+                        // The buffer slot (charged as new — it is in epoch
+                        // 1; later it is a rewrite, replaced below) and the
+                        // entry's chunk-blob share.
                         added_bytes: entry_size
                             .saturating_add(amortized_compaction_bytes)
                             .saturating_add(NON_COUNTED_WRAPPER_BYTE),
-                        replaced_bytes: 0,
+                        // The slot rewrite from epoch 2 on, and the
+                        // compaction blob — a replacement of the epoch's
+                        // prepaid entry bytes — amortized per append.
+                        replaced_bytes: entry_size.saturating_add(amortized_compaction_bytes),
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
-                    storage_loaded_bytes: (avg_dense_reads as u64)
+                    // The slot's committed value (one entry) + the root
+                    // walk's reads.
+                    storage_loaded_bytes: (avg_dense_reads as u64 + 1)
                         .saturating_mul(entry_size as u64),
                     hash_node_calls: avg_dense_hashes
                         .saturating_add(ROOT_AND_CONFIG_HASHES)

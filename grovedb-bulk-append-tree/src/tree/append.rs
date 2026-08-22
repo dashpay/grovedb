@@ -9,7 +9,11 @@ use super::{
     capacity_for_height, hash::compute_state_root, AppendNoStateRootResult, AppendResult,
     BulkAppendTree,
 };
-use crate::{chunk::serialize_chunk_blob, cost::compaction_hash_count, BulkAppendError};
+use crate::{
+    chunk::serialize_chunk_blob,
+    cost::{append_storage_accounting, compaction_hash_count},
+    BulkAppendError,
+};
 
 impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// Create a new empty tree.
@@ -74,6 +78,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             // +1 for the blake3 state-root computation we just did.
             hash_count: r.hash_count.saturating_add(1),
             compacted: r.compacted,
+            prepaid_chunk_bytes: r.prepaid_chunk_bytes,
         })
     }
 
@@ -89,8 +94,10 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// [`CommitmentTree::append_many_raw`]: ../../grovedb_commitment_tree/struct.CommitmentTree.html#method.append_many_raw
     ///
     /// Stored bytes, chunks and roots are identical under every grove
-    /// version; only the reported `hash_count` differs, and only for an append
-    /// that compacts.
+    /// version; what the version selects is the reported `hash_count` (for an
+    /// append that compacts) and the storage accounting of the data writes —
+    /// the cost information attached to the slot put, and the
+    /// `prepaid_chunk_bytes` the caller bills as added storage.
     pub fn append_no_state_root(
         &mut self,
         value: &[u8],
@@ -98,11 +105,16 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     ) -> Result<AppendNoStateRootResult, BulkAppendError> {
         let mut hash_count: u32 = 0;
         let global_position = self.total_count;
+        let accounting = append_storage_accounting(grove_version)?;
 
         // 1. Try to insert into the dense tree buffer.
-        let try_result = self.dense_tree.try_insert(value).unwrap().map_err(|e| {
-            BulkAppendError::StorageError(format!("dense tree insert failed: {}", e))
-        })?;
+        let try_result = self
+            .dense_tree
+            .try_insert_with_accounting(value, accounting.slot_write)
+            .unwrap()
+            .map_err(|e| {
+                BulkAppendError::StorageError(format!("dense tree insert failed: {}", e))
+            })?;
 
         let compacted = match try_result {
             Some((_dense_root, _position)) => {
@@ -134,6 +146,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             global_position,
             hash_count,
             compacted,
+            prepaid_chunk_bytes: accounting.prepaid_chunk_bytes(value.len()),
         })
     }
 
@@ -161,10 +174,14 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     ) -> CostResult<AppendNoStateRootResult, BulkAppendError> {
         let mut cost = OperationCost::default();
         let global_position = self.total_count;
+        let accounting = match append_storage_accounting(grove_version) {
+            Ok(a) => a,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
 
         let try_result = match self
             .dense_tree
-            .try_insert_no_root(value)
+            .try_insert_no_root_with_accounting(value, accounting.slot_write)
             .unwrap_add_cost(&mut cost)
         {
             Ok(r) => r,
@@ -214,10 +231,19 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         // `hash_node_calls` and changing it would move a released cost.
         let hash_count = cost.hash_node_calls;
 
+        // The entry's chunk-blob share is billed here, in the returned cost;
+        // the mirror field is informational for this path (see its doc).
+        let prepaid_chunk_bytes = accounting.prepaid_chunk_bytes(value.len());
+        cost.storage_cost.added_bytes = cost
+            .storage_cost
+            .added_bytes
+            .saturating_add(prepaid_chunk_bytes);
+
         Ok(AppendNoStateRootResult {
             global_position,
             hash_count,
             compacted,
+            prepaid_chunk_bytes,
         })
         .wrap_with_cost(cost)
     }
@@ -454,12 +480,18 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     ///
     /// Cost tracking is intentionally omitted at this boundary:
     /// BulkAppendTree returns plain `Result`, not `CostResult`. Storage
-    /// I/O costs are captured by the caller's `commit_multi_context_batch`.
-    pub fn commit_mmr(&mut self) -> Result<(), BulkAppendError> {
+    /// I/O costs are captured by the caller's `commit_multi_context_batch`,
+    /// from the cost information attached to each node's put — which is what
+    /// `grove_version` selects: under the shipped accounting every node is
+    /// new storage; from GROVE_V4 the chunk blob is reported as a
+    /// replacement of the entry bytes the appends already charged.
+    pub fn commit_mmr(&mut self, grove_version: &GroveVersion) -> Result<(), BulkAppendError> {
         if self.mmr_overlay.is_empty() {
             return Ok(());
         }
-        let mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32);
+        let accounting = append_storage_accounting(grove_version)?;
+        let mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32)
+            .with_leaf_value_storage_cost(accounting.chunk_leaf);
         let mut mmr = MMR::new_with_overlay(
             self.mmr_size(),
             &mmr_store,

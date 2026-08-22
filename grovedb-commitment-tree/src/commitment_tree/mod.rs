@@ -23,6 +23,7 @@ use orchard::{
 
 use crate::{compute_commitment_tree_state_root, CommitmentFrontier, CommitmentTreeError};
 
+mod cost;
 mod tests;
 
 /// Key used to store the serialized commitment frontier in data storage.
@@ -146,6 +147,14 @@ pub fn deserialize_ciphertext<M: MemoSize>(data: &[u8]) -> Option<TransmittedNot
 pub struct CommitmentTree<S, M: MemoSize = DashMemo> {
     frontier: CommitmentFrontier,
     pub(crate) bulk_tree: BulkAppendTree<S>,
+    /// Serialized size of the frontier as loaded from storage at
+    /// [`open`](Self::open) — `None` when no frontier was stored (or the tree
+    /// was built with [`new`](Self::new)). [`save`](Self::save) sizes the
+    /// rewrite against it. Deliberately NOT updated by `save`: a
+    /// `StorageBatch` keeps one put per key, so a session that saves twice is
+    /// charged for the last put only, which must describe the transition
+    /// from the committed frontier, not from the intermediate one.
+    persisted_frontier_len: Option<u32>,
     _memo: PhantomData<M>,
 }
 
@@ -170,6 +179,7 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         Ok(Self {
             frontier: CommitmentFrontier::new(),
             bulk_tree,
+            persisted_frontier_len: None,
             _memo: PhantomData,
         })
     }
@@ -204,12 +214,12 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
             .get(COMMITMENT_TREE_DATA_KEY)
             .unwrap_add_cost(&mut cost);
 
-        let frontier = match data {
+        let (frontier, persisted_frontier_len) = match data {
             Ok(Some(bytes)) => match CommitmentFrontier::deserialize(&bytes) {
-                Ok(f) => f,
+                Ok(f) => (f, Some(bytes.len() as u32)),
                 Err(e) => return Err(e).wrap_with_cost(cost),
             },
-            Ok(None) => CommitmentFrontier::new(),
+            Ok(None) => (CommitmentFrontier::new(), None),
             Err(e) => {
                 return Err(CommitmentTreeError::InvalidData(format!(
                     "storage error loading frontier: {}",
@@ -235,6 +245,7 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         Ok(Self {
             frontier,
             bulk_tree,
+            persisted_frontier_len,
             _memo: PhantomData,
         })
         .wrap_with_cost(cost)
@@ -335,6 +346,14 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
             }
         };
         cost.hash_node_calls += bulk_result.hash_count;
+        // The note's chunk-blob share — its permanent bytes — charged as
+        // added storage now, so the compaction blob is later reported as a
+        // replacement of bytes already paid for. Zero under the shipped
+        // accounting (GROVE_V1..V3). See `BulkAppendTree` issue #822.
+        cost.storage_cost.added_bytes = cost
+            .storage_cost
+            .added_bytes
+            .saturating_add(bulk_result.prepaid_chunk_bytes);
 
         // 2. Append cmx to Sinsemilla frontier (tracks sinsemilla_hash_calls)
         let sinsemilla_root = match self.frontier.append(cmx) {
@@ -487,6 +506,11 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
                 }
             };
             hash_count = hash_count.saturating_add(r.hash_count);
+            // The note's chunk-blob share, billed per entry as in `append_raw`.
+            cost.storage_cost.added_bytes = cost
+                .storage_cost
+                .added_bytes
+                .saturating_add(r.prepaid_chunk_bytes);
             if r.compacted {
                 any_compacted = true;
             }
@@ -553,14 +577,28 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     }
 
     /// Persist the current frontier state to storage.
-    pub fn save(&self) -> CostResult<(), CommitmentTreeError> {
+    ///
+    /// The bytes written are identical under every grove version; what the
+    /// version selects is how the rewrite is reported to the storage cost
+    /// layer — under the shipped accounting the key and the whole frontier
+    /// are new storage on every save; from GROVE_V4 the rewrite replaces the
+    /// frontier loaded at [`open`](Self::open) and only growth is added.
+    pub fn save(&self, grove_version: &GroveVersion) -> CostResult<(), CommitmentTreeError> {
         let mut cost = OperationCost::default();
         let serialized = self.frontier.serialize();
+        let cost_info = match cost::frontier_save_cost_info(
+            self.persisted_frontier_len,
+            serialized.len() as u32,
+            grove_version,
+        ) {
+            Ok(c) => c,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
         let result = self
             .bulk_tree
             .dense_tree
             .storage
-            .put(COMMITMENT_TREE_DATA_KEY, &serialized, None, None)
+            .put(COMMITMENT_TREE_DATA_KEY, &serialized, None, cost_info)
             .unwrap_add_cost(&mut cost);
         match result {
             Ok(()) => Ok(()).wrap_with_cost(cost),
@@ -600,9 +638,9 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     ///
     /// Delegates to [`BulkAppendTree::commit_mmr`]. Call this at the end of a
     /// session to persist MMR nodes buffered during compaction cycles.
-    pub fn commit_mmr(&mut self) -> Result<(), CommitmentTreeError> {
+    pub fn commit_mmr(&mut self, grove_version: &GroveVersion) -> Result<(), CommitmentTreeError> {
         self.bulk_tree
-            .commit_mmr()
+            .commit_mmr(grove_version)
             .map_err(|e| CommitmentTreeError::InvalidData(format!("MMR commit: {}", e)))
     }
 

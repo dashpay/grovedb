@@ -90,12 +90,19 @@ impl GroveDb {
         );
 
         cost.hash_node_calls += result.hash_count;
+        // The value's chunk-blob share — its permanent bytes — is billed at
+        // its own append (zero under the shipped accounting); the compaction
+        // blob is then a replacement of bytes already paid for (issue #822).
+        cost.storage_cost.added_bytes = cost
+            .storage_cost
+            .added_bytes
+            .saturating_add(result.prepaid_chunk_bytes);
 
         let new_state_root = result.state_root;
         let new_total_count = tree.total_count;
 
         // Flush MMR overlay to storage (through the batch)
-        cost_return_on_error_no_add!(cost, tree.commit_mmr().map_err(map_bulk_err));
+        cost_return_on_error_no_add!(cost, tree.commit_mmr(grove_version).map_err(map_bulk_err));
 
         // Drop tree (and its embedded storage context) before opening merk
         drop(tree);
@@ -543,6 +550,12 @@ impl GroveDb {
                     tree.append(value, grove_version).map_err(map_bulk_err)
                 );
                 cost.hash_node_calls += result.hash_count;
+                // The value's chunk-blob share, billed per append as in the
+                // direct path (issue #822).
+                cost.storage_cost.added_bytes = cost
+                    .storage_cost
+                    .added_bytes
+                    .saturating_add(result.prepaid_chunk_bytes);
             }
 
             // Compute final state root
@@ -555,7 +568,10 @@ impl GroveDb {
             let current_total_count = tree.total_count;
 
             // Flush MMR overlay to storage (through the batch)
-            cost_return_on_error_no_add!(cost, tree.commit_mmr().map_err(map_bulk_err));
+            cost_return_on_error_no_add!(
+                cost,
+                tree.commit_mmr(grove_version).map_err(map_bulk_err)
+            );
 
             // Drop tree (and its embedded storage context)
             drop(tree);

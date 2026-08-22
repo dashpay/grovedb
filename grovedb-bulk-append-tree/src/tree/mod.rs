@@ -18,6 +18,8 @@ mod fetch;
 pub use fetch::{BufferQueryResult, ChunkQueryResult};
 
 #[cfg(all(test, feature = "storage"))]
+mod storage_accounting_tests;
+#[cfg(all(test, feature = "storage"))]
 mod tests;
 
 use grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree;
@@ -38,6 +40,10 @@ pub struct AppendResult {
     pub hash_count: u32,
     /// Whether compaction (epoch flush) occurred.
     pub compacted: bool,
+    /// The entry's chunk-blob share, which the caller bills as
+    /// `storage_cost.added_bytes`. See
+    /// [`AppendNoStateRootResult::prepaid_chunk_bytes`].
+    pub prepaid_chunk_bytes: u32,
 }
 
 /// Result returned by [`BulkAppendTree::append_no_state_root`].
@@ -55,6 +61,22 @@ pub struct AppendNoStateRootResult {
     pub hash_count: u32,
     /// Whether compaction (epoch flush) occurred.
     pub compacted: bool,
+    /// The entry's share of the chunk blob it will eventually be compacted
+    /// into — its own bytes — to be charged as `storage_cost.added_bytes` at
+    /// this append, so that the blob written at compaction can be reported as
+    /// a replacement of bytes already paid for (issue #822). `0` under the
+    /// shipped accounting (GROVE_V1..V3), where the blob is charged in full
+    /// at compaction instead.
+    ///
+    /// Like `hash_count`, this follows the "caller bills" convention of the
+    /// `Result`-returning appends ([`append`](BulkAppendTree::append),
+    /// [`append_no_state_root`](BulkAppendTree::append_no_state_root)):
+    /// add it to the operation's `storage_cost.added_bytes`. The
+    /// `CostResult`-returning
+    /// [`append_deferred_roots`](BulkAppendTree::append_deferred_roots)
+    /// already includes it in the returned cost; there the field is a
+    /// mirror for information only — do not bill it twice.
+    pub prepaid_chunk_bytes: u32,
 }
 
 /// Compute MMR size from leaf count: `2 * n - popcount(n)`.

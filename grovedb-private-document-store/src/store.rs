@@ -530,9 +530,12 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
     ///
     /// Delegates to [`BulkAppendTree::commit_mmr`]. Call this at the end of
     /// a session to persist MMR nodes buffered during compaction cycles.
-    pub fn commit_mmr(&mut self) -> Result<(), PrivateDocumentStoreError> {
+    pub fn commit_mmr(
+        &mut self,
+        grove_version: &GroveVersion,
+    ) -> Result<(), PrivateDocumentStoreError> {
         self.bulk_tree
-            .commit_mmr()
+            .commit_mmr(grove_version)
             .map_err(|e| PrivateDocumentStoreError::InvalidData(format!("MMR commit: {}", e)))
     }
 
@@ -687,7 +690,9 @@ mod atomicity_tests {
                 .unwrap()
                 .expect("append");
         }
-        store.commit_mmr().expect("commit mmr");
+        store
+            .commit_mmr(GroveVersion::latest())
+            .expect("commit mmr");
         let storage = PrivateDocumentStore::into_storage_for_test(store);
 
         // `from_state` leaves the MMR root cache empty, so this computation
@@ -965,7 +970,9 @@ mod error_path_tests {
                 .unwrap()
                 .expect("append");
         }
-        store.commit_mmr().expect("commit mmr");
+        store
+            .commit_mmr(GroveVersion::latest())
+            .expect("commit mmr");
         let storage = PrivateDocumentStore::into_storage_for_test(store);
         storage.data.borrow_mut().clear();
 
@@ -999,7 +1006,9 @@ mod error_path_tests {
                 .unwrap()
                 .expect("append");
         }
-        store.commit_mmr().expect("commit mmr");
+        store
+            .commit_mmr(GroveVersion::latest())
+            .expect("commit mmr");
         let storage = PrivateDocumentStore::into_storage_for_test(store);
 
         // Wrong chunk_power: epoch is now 4, so the stored 8-entry chunk no
@@ -1059,7 +1068,9 @@ mod error_path_tests {
                 .unwrap()
                 .expect("append");
         }
-        store.commit_mmr().expect("commit mmr");
+        store
+            .commit_mmr(GroveVersion::latest())
+            .expect("commit mmr");
         let storage = PrivateDocumentStore::into_storage_for_test(store);
 
         // Claim 20 entries: chunks 1..=3 and their buffer slots do not exist.
@@ -1116,7 +1127,9 @@ mod error_path_tests {
                 .unwrap()
                 .expect("append");
         }
-        store.commit_mmr().expect("commit mmr");
+        store
+            .commit_mmr(GroveVersion::latest())
+            .expect("commit mmr");
         let storage = PrivateDocumentStore::into_storage_for_test(store);
         storage.data.borrow_mut().clear();
 
@@ -1153,7 +1166,9 @@ mod error_path_tests {
                 .unwrap()
                 .expect("append");
         }
-        store.commit_mmr().expect("commit mmr");
+        store
+            .commit_mmr(GroveVersion::latest())
+            .expect("commit mmr");
 
         // Reopen before injecting the fault. The dense tree keeps a
         // write-through cache, so on the original handle a live buffer read is
@@ -1385,7 +1400,9 @@ mod tests {
                 .unwrap()
                 .expect("append");
         }
-        store.commit_mmr().expect("commit mmr");
+        store
+            .commit_mmr(GroveVersion::latest())
+            .expect("commit mmr");
         let root_before = store.compute_current_state_root().expect("root");
         let storage = PrivateDocumentStore::into_storage_for_test(store);
 
@@ -1419,7 +1436,9 @@ mod tests {
                 .unwrap()
                 .expect("append");
         }
-        store.commit_mmr().expect("commit mmr");
+        store
+            .commit_mmr(GroveVersion::latest())
+            .expect("commit mmr");
         let storage = PrivateDocumentStore::into_storage_for_test(store);
 
         let reopened = PrivateDocumentStore::from_state(6, 16, 2, storage)
