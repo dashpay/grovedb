@@ -617,6 +617,30 @@ mod storage_tests {
         );
     }
 
+    /// An unknown frontier-save accounting version is rejected before any
+    /// write.
+    #[test]
+    fn test_save_rejects_unknown_accounting_version() {
+        let bulk_tree = BulkAppendTree::new(TEST_CHUNK_POWER, FailingDataStorageContext)
+            .expect("bulk tree new should succeed");
+        let ct: CommitmentTree<_, DashMemo> = CommitmentTree {
+            frontier: CommitmentFrontier::new(),
+            bulk_tree,
+            persisted_frontier_len: Some(74),
+            _memo: PhantomData,
+        };
+        let mut bad = GroveVersion::latest().clone();
+        bad.commitment_tree_versions
+            .cost
+            .frontier_save_storage_accounting = 99;
+        let result = ct.save(&bad);
+        assert!(
+            matches!(result.value, Err(CommitmentTreeError::VersionError(_))),
+            "unknown version must be rejected, not written: {:?}",
+            result.value
+        );
+    }
+
     #[test]
     fn test_save_storage_error_surfaces() {
         // FailingDataStorageContext.get fails, so open() would fail.

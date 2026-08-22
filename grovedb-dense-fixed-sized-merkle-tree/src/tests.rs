@@ -1163,4 +1163,22 @@ mod slot_write_accounting {
         assert_eq!(c.value_storage_cost.added_bytes, 0);
         assert_eq!(c.value_storage_cost.removed_bytes, NoStorageRemoval);
     }
+
+    /// A storage fault on the read that sizes the rewrite surfaces as an
+    /// error, and nothing is written.
+    #[test]
+    fn against_committed_surfaces_a_failing_read() {
+        let mut tree = DenseFixedSizedMerkleTree::new(2, MemStorageContext::new()).unwrap();
+        tree.storage.fail_get.set(true);
+        let err = tree
+            .try_insert_no_root_with_accounting(&[1u8; 8], SlotWriteAccounting::AgainstCommitted)
+            .unwrap()
+            .expect_err("the read before the overwrite failed");
+        assert!(
+            err.to_string().contains("before overwrite"),
+            "error should name the read: {err}"
+        );
+        assert!(tree.storage.puts.borrow().is_empty(), "nothing written");
+        assert_eq!(tree.count(), 0);
+    }
 }

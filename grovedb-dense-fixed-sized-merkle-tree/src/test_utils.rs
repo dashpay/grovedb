@@ -1,6 +1,9 @@
 //! Test utilities: in-memory StorageContext implementations.
 
-use std::{cell::RefCell, collections::HashMap};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+};
 
 use grovedb_costs::{
     storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostContext,
@@ -18,6 +21,8 @@ pub(crate) struct MemStorageContext {
     pub data: RefCell<HashMap<Vec<u8>, Vec<u8>>>,
     /// Every data `put` in order, with the cost information it carried.
     pub puts: RefCell<Vec<(Vec<u8>, Option<KeyValueStorageCost>)>>,
+    /// When set, every `get` returns a storage error (fault injection).
+    pub fail_get: Cell<bool>,
 }
 
 impl MemStorageContext {
@@ -31,6 +36,12 @@ impl<'db> StorageContext<'db> for MemStorageContext {
     type RawIterator = MemRawIterator;
 
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
+        if self.fail_get.get() {
+            return Err(grovedb_storage::Error::StorageError(
+                "injected read failure".to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        }
         Ok(self.data.borrow().get(key.as_ref()).cloned()).wrap_with_cost(OperationCost::default())
     }
 
