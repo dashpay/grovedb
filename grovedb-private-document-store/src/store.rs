@@ -112,8 +112,10 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
             ))
             .wrap_with_cost(cost);
         }
+        // The store enforces one entry size; told the size, the bulk tree
+        // charges no per-entry blob framing under the fixed cost model.
         let bulk_tree = match BulkAppendTree::from_state(total_count, chunk_power, storage) {
-            Ok(t) => t,
+            Ok(t) => t.with_fixed_entry_size(entry_size),
             Err(e) => {
                 return Err(PrivateDocumentStoreError::InvalidData(format!(
                     "bulk tree: {}",
@@ -782,19 +784,20 @@ mod atomicity_tests {
 
         // Under GROVE_V4 every append is charged the dense buffer's fixed
         // model for its height — at `chunk_power = 4`: two leaf hashes plus
-        // the rounded-up average ancestor depth (3) = 5 — plus one amortized
-        // compaction blake3, the bulk state root (1; read from the record,
-        // no hash) and the composite pds_state root (1), whatever the
-        // position.
+        // the rounded-up average ancestor depth (3) = 5 — plus the amortized
+        // compaction bound (5 at chunk_power 4), the bulk state root (1;
+        // read from the record, no hash) and the composite pds_state root
+        // (1), whatever the position.
         let model = grovedb_bulk_append_tree::V1InsertModel::for_height(4);
         assert_eq!(model.hash_node_calls, 5);
+        let amortized = grovedb_bulk_append_tree::amortized_compaction_hashes(4);
         for entry in [[1u8; 8], [2u8; 8], [3u8; 8]] {
             let ctx = store.append(&entry, GroveVersion::latest());
             ctx.value.expect("append");
             assert_eq!(
                 ctx.cost.hash_node_calls,
-                model.hash_node_calls + 1 + 2,
-                "model dense + 1 amortized compaction + 1 bulk root + 1 composite, got {:?}",
+                model.hash_node_calls + amortized + 2,
+                "model dense + amortized compaction + 1 bulk root + 1 composite, got {:?}",
                 ctx.cost
             );
         }
@@ -850,7 +853,7 @@ mod atomicity_tests {
         }
         assert_eq!(
             compacting_cost.hash_node_calls,
-            model.hash_node_calls + 1 + 2,
+            model.hash_node_calls + grovedb_bulk_append_tree::amortized_compaction_hashes(2) + 2,
             "model + amortized compaction + bulk root + composite, got {:?}",
             compacting_cost
         );

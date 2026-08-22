@@ -811,6 +811,68 @@ mod storage_tests {
         assert_eq!(ct.total_count(), 0);
     }
 
+    /// Every version gate an append consults is resolved before its first
+    /// write: an unknown frontier cost model rejects the append with the
+    /// tree untouched — bulk count, anchor and frontier all as before — so a
+    /// retry under a known version does not append a duplicate.
+    #[test]
+    fn test_append_rejects_unknown_frontier_cost_model_before_mutating() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest())
+                .value
+                .expect("open should succeed");
+        ct.append(
+            test_leaf(0),
+            test_rho(0),
+            test_cv_net(0),
+            &test_ciphertext(0),
+            GroveVersion::latest(),
+        )
+        .value
+        .expect("append should succeed");
+        let anchor_before = ct.anchor();
+        let count_before = ct.total_count();
+        let bulk_root_before = ct
+            .bulk_tree
+            .compute_current_state_root(GroveVersion::latest())
+            .expect("root");
+
+        let mut bad = GroveVersion::latest().clone();
+        bad.commitment_tree_versions.cost.frontier_cost_model = 99;
+        let result = ct.append(
+            test_leaf(1),
+            test_rho(1),
+            test_cv_net(1),
+            &test_ciphertext(1),
+            &bad,
+        );
+        assert!(
+            matches!(result.value, Err(CommitmentTreeError::VersionError(_))),
+            "unknown version must be rejected: {:?}",
+            result.value
+        );
+        assert_eq!(ct.total_count(), count_before, "bulk tree untouched");
+        assert_eq!(ct.anchor(), anchor_before, "frontier untouched");
+        assert_eq!(
+            ct.bulk_tree
+                .compute_current_state_root(GroveVersion::latest())
+                .expect("root"),
+            bulk_root_before
+        );
+        // And a retry under a known version appends exactly once.
+        ct.append(
+            test_leaf(1),
+            test_rho(1),
+            test_cv_net(1),
+            &test_ciphertext(1),
+            GroveVersion::latest(),
+        )
+        .value
+        .expect("retry should succeed");
+        assert_eq!(ct.total_count(), count_before + 1);
+    }
+
     #[test]
     fn test_append_raw_rejects_wrong_payload_size() {
         let ctx = MockDataStorageContext::new();

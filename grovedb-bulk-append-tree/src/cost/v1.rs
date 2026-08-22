@@ -1,7 +1,7 @@
 //! Fixed-model accounting. Used from GROVE_V4.
 //!
 //! The compaction's hashes are amortized into every append
-//! (`AMORTIZED_COMPACTION_HASHES`), so a compacting append reports nothing
+//! (`amortized_compaction_hashes`), so a compacting append reports nothing
 //! extra here; and each append's storage writes are charged as its long-term
 //! footprint plus churn (issue #822).
 
@@ -13,7 +13,7 @@ use super::{AppendStorageAccounting, SlotRewriteAccounting};
 
 /// A compacting append reports no hashes of its own: the chunk-leaf hash, the
 /// MMR merges and the root bagging are amortized over the epoch as one blake3
-/// per append (`AMORTIZED_COMPACTION_HASHES`), charged on every append.
+/// per append (`amortized_compaction_hashes`), charged on every append.
 pub(super) fn compaction_hash_count(_leaf_count: u64, _mmr_size_after_push: u64) -> u32 {
     0
 }

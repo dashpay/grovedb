@@ -133,7 +133,7 @@ records exist only under `dense_tree_versions.root_maintenance = 1`):
 | write | GROVE_V1..V3 (v0) | GROVE_V4 (v1, issue #822) |
 |---|---|---|
 | buffer slot, any epoch | key + value `added` | value `replaced` (its own paid size); nothing added, key not charged, nothing read |
-| entry's chunk-blob share | — (blob charged at compaction) | entry bytes `added` at the entry's own append, plus the epoch's share of the blob framing and MMR nodes (`amortized_compaction_added_bytes`, 1 byte at `chunk_power` 11) |
+| entry's chunk-blob share | — (blob charged at compaction) | entry bytes `added` at the entry's own append (plus the variable format's 4-byte per-entry prefix unless the owner declared a fixed entry size — the commitment tree and the private document store do), plus the epoch's share of the blob framing and MMR nodes (`amortized_compaction_added_bytes`, 1 byte at `chunk_power` 11) |
 | entry's part of the blob rewrite | — | entry bytes `replaced` at the entry's own append |
 | compaction blob, MMR internal nodes, persisted MMR root (`r`) | key + whole blob `added`; nodes `added`; no persisted root | prepaid: zero-byte cost information |
 | frontier rewrite | key + value `added` every save | 556 bytes `replaced` every save — the model's 554-byte frontier plus its two-byte length varint (`frontier_cost_model`), first save included |
@@ -146,8 +146,9 @@ its permanent bytes charged once, at its own append, plus the epoch's share
 of the blob framing and MMR nodes — and everything else (the rolling
 buffer's slots and records, its part of the blob rewrite, the frontier) is
 replacement; the compacting append is charged the same as any other (its
-hashes are amortized as one blake3 per append, its writes are prepaid, and
-it is charged the slot / record churn it does not write); the dense buffer's
+hashes — at most 65 per chunk — are amortized as a bound over the epoch,
+`⌈65 / 2^chunk_power⌉` blake3 per append, its writes are prepaid, and it
+is charged the slot / record churn it does not write); the dense buffer's
 physical bytes, a bounded per-tree overhead rewritten every epoch, are
 deliberately charged to nobody as growth. `removed_bytes` stays
 `NoStorageRemoval` in both — a rolling buffer refunds nobody. Stored bytes,

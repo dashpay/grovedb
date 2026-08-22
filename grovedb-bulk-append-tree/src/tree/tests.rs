@@ -655,12 +655,12 @@ fn buffered_append_hash_count_follows_the_root_maintenance_version() {
         assert_eq!(r3.state_root, r4.state_root, "position {i}: state root");
         assert_eq!(r3.compacted, r4.compacted);
         let buffer_position = (i % 16) as u32;
-        // v4: the height-4 model + the amortized compaction blake3 + the
-        // state root — the same on every append, the compacting one
-        // included.
+        // v4: the height-4 model + the amortized compaction bound (5 at
+        // height 4) + the state root — the same on every append, the
+        // compacting one included.
         assert_eq!(
             r4.hash_count,
-            model.hash_node_calls + 1 + 1,
+            model.hash_node_calls + crate::amortized_compaction_hashes(4) + 1,
             "position {i}: v4 charges the fixed model whatever the position"
         );
         if r3.compacted {

@@ -15,7 +15,7 @@ use crate::{
     chunk::serialize_chunk_blob,
     cost::{
         append_storage_accounting, compaction_hash_count, AppendStorageAccounting,
-        SlotRewriteAccounting, AMORTIZED_COMPACTION_HASHES,
+        SlotRewriteAccounting, VARIABLE_ENTRY_FRAMING_BYTES,
     },
     BulkAppendError,
 };
@@ -43,7 +43,48 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             mmr_overlay: Vec::new(),
             // Empty tree → empty MMR → zero root.
             last_mmr_root: Some([0u8; 32]),
+            fixed_entry_size: None,
         })
+    }
+
+    /// Declare that every entry of this tree is exactly `entry_size` bytes:
+    /// an append of any other length is rejected with `InvalidInput` before
+    /// anything is written, every chunk blob therefore takes the fixed
+    /// format, and the fixed cost model (GROVE_V4) charges no per-entry
+    /// blob framing. Owners that enforce one entry size anyway
+    /// (`CommitmentTree`, `PrivateDocumentStore`) declare it so their
+    /// appends are charged exactly their long-term bytes; a tree without the
+    /// declaration is charged the variable format's four-byte prefix per
+    /// entry as a bound.
+    pub fn with_fixed_entry_size(mut self, entry_size: u32) -> Self {
+        self.fixed_entry_size = Some(entry_size);
+        self
+    }
+
+    /// The per-entry chunk-blob framing this tree's entries are charged:
+    /// none under a declared fixed entry size, the variable format's prefix
+    /// otherwise.
+    fn entry_framing_bytes(&self) -> u32 {
+        if self.fixed_entry_size.is_some() {
+            0
+        } else {
+            VARIABLE_ENTRY_FRAMING_BYTES
+        }
+    }
+
+    /// Reject a value that breaks the declared fixed entry size — before any
+    /// write, so a rejected append leaves the tree untouched.
+    fn check_entry_size(&self, value: &[u8]) -> Result<(), BulkAppendError> {
+        if let Some(expected) = self.fixed_entry_size
+            && value.len() != expected as usize
+        {
+            return Err(BulkAppendError::InvalidInput(format!(
+                "entry has {} bytes, the tree's fixed entry size is {}",
+                value.len(),
+                expected
+            )));
+        }
+        Ok(())
     }
 
     /// Restore from persisted state.
@@ -76,6 +117,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             // Lazy: the restored MMR may not be readable until an append occurs,
             // so don't compute the root here. The first append fills the cache.
             last_mmr_root: None,
+            fixed_entry_size: None,
         })
     }
 
@@ -138,6 +180,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     ) -> Result<AppendNoStateRootResult, BulkAppendError> {
         let mut hash_count: u32 = 0;
         let global_position = self.total_count;
+        self.check_entry_size(value)?;
         let accounting = append_storage_accounting(grove_version)?;
         let mut storage_accounting_cost = OperationCost::default();
         let slot_write = self.slot_write_accounting(&accounting);
@@ -165,7 +208,8 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         })?;
         if accounting.fixed_model {
             let model = v1_insert_model_cost(self.dense_tree.height());
-            hash_count += model.hash_node_calls + AMORTIZED_COMPACTION_HASHES;
+            hash_count += model.hash_node_calls
+                + crate::cost::amortized_compaction_hashes(self.dense_tree.height());
             storage_accounting_cost.seek_count = storage_accounting_cost
                 .seek_count
                 .saturating_add(model.seek_count);
@@ -225,7 +269,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         storage_accounting_cost.storage_cost.added_bytes = storage_accounting_cost
             .storage_cost
             .added_bytes
-            .saturating_add(accounting.prepaid_chunk_bytes(value.len()))
+            .saturating_add(accounting.prepaid_chunk_bytes(value.len(), self.entry_framing_bytes()))
             .saturating_add(accounting.amortized_compaction_added_bytes(epoch_size));
 
         Ok(AppendNoStateRootResult {
@@ -263,6 +307,9 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     ) -> CostResult<AppendNoStateRootResult, BulkAppendError> {
         let mut cost = OperationCost::default();
         let global_position = self.total_count;
+        if let Err(e) = self.check_entry_size(value) {
+            return Err(e).wrap_with_cost(cost);
+        }
         let accounting = match append_storage_accounting(grove_version) {
             Ok(a) => a,
             Err(e) => return Err(e).wrap_with_cost(cost),
@@ -295,7 +342,8 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             // on a compacting append, which writes no slot and no record —
             // their churn all the same.
             let mut model = v1_insert_model_cost(self.dense_tree.height());
-            model.hash_node_calls += AMORTIZED_COMPACTION_HASHES;
+            model.hash_node_calls +=
+                crate::cost::amortized_compaction_hashes(self.dense_tree.height());
             model.storage_cost.replaced_bytes = u32::try_from(value.len()).unwrap_or(u32::MAX);
             if try_result.is_none() {
                 model.storage_cost.replaced_bytes = model
@@ -347,7 +395,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         // of the compaction overhead) is billed here, in the returned cost;
         // the mirror field is informational for this path (see its doc).
         let prepaid_chunk_bytes = accounting
-            .prepaid_chunk_bytes(value.len())
+            .prepaid_chunk_bytes(value.len(), self.entry_framing_bytes())
             .saturating_add(accounting.amortized_compaction_added_bytes(epoch_size));
         cost.storage_cost.added_bytes = cost
             .storage_cost

@@ -939,7 +939,7 @@ and ZK circuit cost.
 | Frontier I/O seeks | 2 (get + put) | 2 |
 | Frontier bytes loaded | GROVE_V4+: fixed 554 (the average frontier); GROVE_V1..V3: the actual 42 + 32·popcount(position) | GROVE_V4+: 554; GROVE_V1..V3: 1,066 |
 | Frontier bytes written | GROVE_V4+: 554 `replaced`; GROVE_V1..V3: actual | same |
-| BulkAppendTree hashes | GROVE_V4+: fixed model (12 + 1 amortized compaction + 1 state root at chunk_power 11, every append, compacting included); GROVE_V1..V3: 2·(buffer fill) + 1 | GROVE_V4+: the same; GROVE_V1..V3: ≈ 2·chunk_size on the last buffered append |
+| BulkAppendTree hashes | GROVE_V4+: fixed model (12 + ⌈65 / 2^chunk_power⌉ = 1 amortized compaction + 1 state root at chunk_power 11, every append, compacting included); GROVE_V1..V3: 2·(buffer fill) + 1 | GROVE_V4+: the same; GROVE_V1..V3: ≈ 2·chunk_size on the last buffered append |
 | BulkAppendTree I/O | GROVE_V4+: the model's record reads (18 at chunk_power 11), slot + record puts (churn: `replaced`, never `added`), blob share + 1 B amortized framing `added` | GROVE_V4+: the same, the compacting append's commit-time puts aside; GROVE_V1..V3: + epoch read-back and MMR writes on chunk compaction |
 
 **Cost estimation constants** (from `average_case_costs.rs` and

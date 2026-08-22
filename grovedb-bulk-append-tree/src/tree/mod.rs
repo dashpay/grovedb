@@ -168,6 +168,13 @@ pub struct BulkAppendTree<S> {
     ///
     /// [`from_state`]: BulkAppendTree::from_state
     pub(crate) last_mmr_root: Option<[u8; 32]>,
+    /// The one byte length every entry must have, when the owner declares it
+    /// (`with_fixed_entry_size`): appends of any other length are rejected
+    /// before anything is written, so every chunk blob takes the fixed
+    /// format and the fixed cost model charges no per-entry framing. `None`
+    /// — the default — admits any length and charges the variable format's
+    /// four-byte prefix on every entry (`VARIABLE_ENTRY_FRAMING_BYTES`).
+    pub(crate) fixed_entry_size: Option<u32>,
 }
 
 impl<S> BulkAppendTree<S> {

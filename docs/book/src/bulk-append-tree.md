@@ -477,7 +477,7 @@ Each operation's hash cost is tracked explicitly:
 |---|---|---|
 | Single append (no compaction), GROVE_V1..V3 | 2·k + 1 | Full buffer walk over the k filled positions + 1 for state root |
 | Single append (no compaction), GROVE_V4+ | model(chunk_power) + 1 | The height's fixed model (`2 + ⌈avg depth⌉` blake3: 12 at chunk_power 11) + state root — the same at every position |
-| Single append (with compaction), GROVE_V4+ | model(chunk_power) + 1 | Charged exactly like a buffered append: the compaction's chunk-leaf hash and MMR merges are amortized as one blake3 on every append; physically it hashes the blob once and merges the MMR, reading the buffer back |
+| Single append (with compaction), GROVE_V4+ | model(chunk_power) + ⌈65 / 2^chunk_power⌉ | Charged exactly like a buffered append: the compaction's chunk-leaf hash, MMR merges and bagging (≤ 65 per chunk) are amortized over the epoch as a bound on every append (1 blake3 from chunk_power 7); physically it hashes the blob once and merges the MMR, reading the buffer back |
 | Single append (with compaction), GROVE_V1..V3 | 1 + MMR merges + 1 | Chunk-leaf hash + MMR push/bagging + state root, billed where they happen |
 | `get_value` from chunk | 0 | Pure deserialization, no hashing |
 | `get_value` from buffer | 0 | Direct key lookup |
@@ -489,9 +489,12 @@ positions, so the amortized cost is ~chunk_size hashes per append (≈ 2k at
 chunk_power 11, peaking at ≈ 4k), and the compacting append pays the blob and MMR
 work where it happens. From GROVE_V4 **every append is charged the same fixed
 model**, whatever its position: the buffer's root-maintenance model for its height
-(12 blake3 calls and 18 record reads at chunk_power 11), one amortized compaction
-blake3, its long-term footprint as `added` (the chunk-blob share plus the epoch's
-share of the blob framing and MMR nodes — 1 byte at chunk_power 11) and its churn as
+(12 blake3 calls and 18 record reads at chunk_power 11), the amortized compaction
+bound (⌈65 / 2^chunk_power⌉ blake3 — 1 at chunk_power 11), its long-term footprint as
+`added` (the chunk-blob share, plus the variable format's 4-byte per-entry prefix
+unless the owner declared a fixed entry size with `with_fixed_entry_size` — the
+commitment tree and the private document store do — plus the epoch's share of the
+blob framing and MMR nodes — 1 byte at chunk_power 11) and its churn as
 `replaced` (slot, path record, its part of the blob rewrite). The compacting append
 writes the blob, the MMR nodes and the persisted MMR root prepaid and is charged the
 same; physically it still reads the epoch back and hashes the blob once. The only

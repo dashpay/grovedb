@@ -175,13 +175,23 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     /// `BulkAppendTree` (height parameter).
     pub fn new(chunk_power: u8, storage: S) -> Result<Self, CommitmentTreeError> {
         let bulk_tree = BulkAppendTree::new(chunk_power, storage)
-            .map_err(|e| CommitmentTreeError::InvalidData(format!("bulk tree new: {}", e)))?;
+            .map_err(|e| CommitmentTreeError::InvalidData(format!("bulk tree new: {}", e)))?
+            .with_fixed_entry_size(Self::entry_size());
         Ok(Self {
             frontier: CommitmentFrontier::new(),
             bulk_tree,
             persisted_frontier_len: None,
             _memo: PhantomData,
         })
+    }
+
+    /// The one size every bulk-tree entry of this memo type has:
+    /// `cmx || rho || cv_net || payload` — 96 bytes plus the fixed
+    /// ciphertext payload. `append_raw` / `append_many_raw` reject any other
+    /// payload length, so the bulk tree is told the size and charges no
+    /// per-entry blob framing under the fixed cost model.
+    pub fn entry_size() -> u32 {
+        (96 + ciphertext_payload_size::<M>()) as u32
     }
 
     /// Load a commitment tree from storage, or start with an empty frontier if
@@ -198,7 +208,7 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         let mut cost = OperationCost::default();
 
         let bulk_tree = match BulkAppendTree::from_state(total_count, chunk_power, storage) {
-            Ok(t) => t,
+            Ok(t) => t.with_fixed_entry_size(Self::entry_size()),
             Err(e) => {
                 return Err(CommitmentTreeError::InvalidData(format!(
                     "bulk tree from_state: {}",
@@ -334,6 +344,14 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
             .wrap_with_cost(cost);
         }
 
+        // Every version gate this append consults is resolved BEFORE the
+        // first write, so an unknown version rejects a pristine tree rather
+        // than one whose bulk tree has moved while its frontier has not.
+        let fixed_model = match cost::frontier_cost_model(grove_version) {
+            Ok(f) => f,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
+
         // 1. Build cmx||rho||cv_net||payload and append to BulkAppendTree
         let mut item_value = Vec::with_capacity(96 + payload.len());
         item_value.extend_from_slice(&cmx);
@@ -367,10 +385,6 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         //    charged as performed (`32 + trailing_ones(position)`) or, under
         //    the fixed frontier cost model, at the depth-derived model so the
         //    charge does not depend on the position.
-        let fixed_model = match cost::frontier_cost_model(grove_version) {
-            Ok(f) => f,
-            Err(e) => return Err(e).wrap_with_cost(cost),
-        };
         let sinsemilla_root = match self.frontier.append(cmx) {
             grovedb_costs::CostContext {
                 value: Ok(root),

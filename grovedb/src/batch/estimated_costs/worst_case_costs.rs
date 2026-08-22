@@ -269,7 +269,11 @@ impl GroveOp {
                         .saturating_add(buffer.cost.seek_count)
                         .saturating_add(MAX_COMPACTION_PUTS),
                     storage_cost: StorageCost {
-                        added_bytes: value_size.saturating_add(amortized_compaction_added),
+                        // Value + the variable format's per-entry prefix +
+                        // the compaction share.
+                        added_bytes: value_size
+                            .saturating_add(grovedb_bulk_append_tree::VARIABLE_ENTRY_FRAMING_BYTES)
+                            .saturating_add(amortized_compaction_added),
                         // Slot (key included as a bound), record, and the
                         // value's part of the blob rewrite.
                         replaced_bytes: paid_value
@@ -285,7 +289,7 @@ impl GroveOp {
                         as u64
                         + buffer.cost.storage_loaded_bytes,
                     hash_node_calls: buffer.cost.hash_node_calls
-                        + grovedb_bulk_append_tree::AMORTIZED_COMPACTION_HASHES
+                        + grovedb_bulk_append_tree::max_amortized_compaction_hashes()
                         + 1,
                     sinsemilla_hash_calls: 0,
                 })

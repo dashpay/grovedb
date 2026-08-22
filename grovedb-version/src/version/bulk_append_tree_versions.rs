@@ -25,11 +25,14 @@ pub struct BulkAppendTreeCostVersions {
     /// multi-peak MMR under-reports by `peaks - 1`.
     ///
     /// Version 1 reports nothing for the compaction itself: its hashes (the
-    /// chunk-leaf hash, the push merges, the root bagging) are amortized
-    /// over the epoch as one blake3 on every append
-    /// (`AMORTIZED_COMPACTION_HASHES`), so a compacting append is charged
-    /// what any other append is. Shipped chunk bytes and roots are
-    /// unaffected; what moves is where the fee lands.
+    /// chunk-leaf hash, the push merges, the root bagging — at most 65 per
+    /// chunk with 32-bit MMR keys) are amortized over the epoch and charged
+    /// on every append as the per-chunk bound over `2^chunk_power`, rounded
+    /// up (`amortized_compaction_hashes`: one blake3 per append from
+    /// `chunk_power` 7, 33 at `chunk_power` 1), so a compacting append is
+    /// charged what any other append is and no prefix of the tree's life is
+    /// ever under-prepaid. Shipped chunk bytes and roots are unaffected;
+    /// what moves is where the fee lands.
     pub compaction_hash_count: FeatureVersion,
     /// How an append's data-storage writes are reported to the storage cost
     /// layer (issue #822).
@@ -42,8 +45,11 @@ pub struct BulkAppendTreeCostVersions {
     ///
     /// Version 1 charges every append the FIXED per-append model, whatever
     /// its position: the entry's long-term footprint as added storage — its
-    /// chunk-blob share (`value.len()`) plus the epoch's share of the blob
-    /// framing and MMR nodes (`amortized_compaction_added_bytes`) — and
+    /// chunk-blob share (`value.len()`, plus the variable format's four-byte
+    /// per-entry prefix unless the owner declared a fixed entry size with
+    /// `BulkAppendTree::with_fixed_entry_size`, as `CommitmentTree` and
+    /// `PrivateDocumentStore` do) plus the epoch's share of the blob framing
+    /// and MMR nodes (`amortized_compaction_added_bytes`) — and
     /// churn as replaced storage — its buffer slot and path record (epoch 1
     /// included, nothing read to size them; the buffer is a fixed-size
     /// per-tree scratch area rewritten every epoch) and its own bytes again

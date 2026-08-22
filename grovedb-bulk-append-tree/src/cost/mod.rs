@@ -71,10 +71,39 @@ pub(crate) struct AppendStorageAccounting {
     pub fixed_model: bool,
 }
 
+/// The most blake3 calls one compaction can perform: the chunk-leaf hash,
+/// the MMR push's merges (one per trailing one bit of the chunk index) and
+/// the root bagging (one per peak beyond the first). MMR positions are
+/// 32-bit keys, so the chunk MMR never exceeds 2^31 leaves: at most 31
+/// merges and 31 bagging folds — bounded by 32 each here.
+pub const MAX_COMPACTION_HASHES_PER_CHUNK: u32 = 1 + 32 + 32;
+
 /// The blake3 calls a compaction performs, amortized over the epoch it
-/// serves: the chunk-leaf hash and the MMR merges and bagging are at most a
-/// few dozen per `2^chunk_power` appends, so one per append covers them.
-pub const AMORTIZED_COMPACTION_HASHES: u32 = 1;
+/// serves and charged on every append under the fixed model: the per-chunk
+/// bound spread over `2^chunk_power` appends, rounded up — one per append
+/// from `chunk_power` 7 (so at the shielded pool's 11), and 33 at the
+/// smallest `chunk_power`. Charging the bound rather than the average keeps
+/// every prefix of the tree's life prepaid: a chunk's charge
+/// (`2^chunk_power` × this) is never below its actual work, so no run of
+/// small or late epochs can fall behind.
+pub fn amortized_compaction_hashes(chunk_power: u8) -> u32 {
+    MAX_COMPACTION_HASHES_PER_CHUNK.div_ceil(1u32 << chunk_power.min(16) as u32)
+}
+
+/// The largest per-append compaction hash share the type permits — the
+/// smallest epoch, `chunk_power` 1.
+pub fn max_amortized_compaction_hashes() -> u32 {
+    amortized_compaction_hashes(1)
+}
+
+/// The per-entry framing a variable-format chunk blob carries: a four-byte
+/// length prefix before every entry (`serialize_variable`). A tree whose
+/// entries are all one size serializes the fixed format (no per-entry
+/// framing); the bulk-append tree cannot know which format an epoch will
+/// take until it compacts, so an owner that does not declare a fixed entry
+/// size (`BulkAppendTree::with_fixed_entry_size`) is charged this bound on
+/// every entry.
+pub const VARIABLE_ENTRY_FRAMING_BYTES: u32 = 4;
 
 /// Bytes a compaction adds beyond the epoch's entry bytes, amortized over
 /// the epoch: the chunk blob's framing (its MMR leaf key with the 32-byte
@@ -93,11 +122,15 @@ pub fn amortized_compaction_added_bytes(epoch_size: u64) -> u32 {
 #[cfg(feature = "storage")]
 impl AppendStorageAccounting {
     /// The entry's chunk-blob share to charge as added storage at its append:
-    /// its own bytes, or nothing when the blob is charged in full at
-    /// compaction instead.
-    pub fn prepaid_chunk_bytes(&self, value_len: usize) -> u32 {
+    /// its own bytes plus the per-entry blob framing the owner has not ruled
+    /// out (`entry_framing`: [`VARIABLE_ENTRY_FRAMING_BYTES`] unless the tree
+    /// declares a fixed entry size), or nothing when the blob is charged in
+    /// full at compaction instead.
+    pub fn prepaid_chunk_bytes(&self, value_len: usize, entry_framing: u32) -> u32 {
         if self.prepay_chunk_share {
-            u32::try_from(value_len).unwrap_or(u32::MAX)
+            u32::try_from(value_len)
+                .unwrap_or(u32::MAX)
+                .saturating_add(entry_framing)
         } else {
             0
         }
@@ -146,7 +179,7 @@ pub(crate) fn append_storage_accounting(
 /// `hash_count_for_push` expects); `mmr_size_after_push` is the size the MMR
 /// reached, which determines how many peaks the compaction's `get_root` had
 /// to fold. Version 1 reports nothing here: the compaction is amortized into
-/// every append ([`AMORTIZED_COMPACTION_HASHES`]).
+/// every append ([`amortized_compaction_hashes`]).
 pub(crate) fn compaction_hash_count(
     leaf_count: u64,
     mmr_size_after_push: u64,

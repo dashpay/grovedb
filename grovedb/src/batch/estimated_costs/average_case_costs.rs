@@ -288,14 +288,19 @@ impl GroveOp {
                 // The compaction share shrinks with the epoch, so an
                 // undeclared layer takes the largest share (epoch 2), not the
                 // ceiling epoch's.
-                let amortized_compaction_added = match append_tree_chunk_power {
-                    Some(chunk_power) => {
-                        grovedb_bulk_append_tree::amortized_compaction_added_bytes(
-                            1u64 << chunk_power.min(16) as u32,
-                        )
-                    }
-                    None => super::max_amortized_compaction_added_bytes(),
-                };
+                let (amortized_compaction_added, amortized_compaction_hashes) =
+                    match append_tree_chunk_power {
+                        Some(chunk_power) => (
+                            grovedb_bulk_append_tree::amortized_compaction_added_bytes(
+                                1u64 << chunk_power.min(16) as u32,
+                            ),
+                            grovedb_bulk_append_tree::amortized_compaction_hashes(chunk_power),
+                        ),
+                        None => (
+                            super::max_amortized_compaction_added_bytes(),
+                            grovedb_bulk_append_tree::max_amortized_compaction_hashes(),
+                        ),
+                    };
                 // The puts a compacting append issues at commit instead of
                 // its slot and record: the chunk blob and up to the MMR
                 // merge bound of internal nodes — bounded, once per epoch.
@@ -326,8 +331,12 @@ impl GroveOp {
                         .saturating_add(buffer.cost.seek_count)
                         .saturating_add(MAX_COMPACTION_PUTS),
                     storage_cost: StorageCost {
-                        // Chunk-blob share + amortized framing and MMR node.
-                        added_bytes: entry_size.saturating_add(amortized_compaction_added),
+                        // Chunk-blob share + the variable format's per-entry
+                        // prefix (a generic bulk tree declares no entry
+                        // size) + amortized framing and MMR node.
+                        added_bytes: entry_size
+                            .saturating_add(grovedb_bulk_append_tree::VARIABLE_ENTRY_FRAMING_BYTES)
+                            .saturating_add(amortized_compaction_added),
                         // Slot and record (churn) + the value's part of the
                         // blob rewrite.
                         replaced_bytes: paid_entry
@@ -346,7 +355,7 @@ impl GroveOp {
                     hash_node_calls: buffer
                         .cost
                         .hash_node_calls
-                        .saturating_add(grovedb_bulk_append_tree::AMORTIZED_COMPACTION_HASHES)
+                        .saturating_add(amortized_compaction_hashes)
                         .saturating_add(1),
                     sinsemilla_hash_calls: 0,
                 })
@@ -2170,7 +2179,9 @@ mod tests {
         );
 
         // The estimate tracks the declared chunk power: a larger epoch means
-        // a deeper dense-buffer walk.
+        // a deeper dense-buffer model (more record reads and hashes) and a
+        // smaller amortized compaction share — the hash figure is exactly
+        // the model's plus the compaction bound plus the three roots.
         let small = op
             .average_case_cost(&key, &layer_info, Some(2), false, grove_version)
             .cost_as_result()
@@ -2179,11 +2190,25 @@ mod tests {
             .average_case_cost(&key, &layer_info, Some(10), false, grove_version)
             .cost_as_result()
             .expect("cost at chunk_power 10");
+        let own_hashes = |chunk_power: u8| {
+            super::super::dense_buffer_model(chunk_power)
+                .cost
+                .hash_node_calls
+                + grovedb_bulk_append_tree::amortized_compaction_hashes(chunk_power)
+                + 3
+        };
+        // What remains is the parent Merk's own hashing, the same at both.
+        assert!(small.hash_node_calls >= own_hashes(2));
+        assert_eq!(
+            small.hash_node_calls - own_hashes(2),
+            big.hash_node_calls - own_hashes(10),
+            "the append's own hashes are the model's plus the compaction bound plus the roots"
+        );
         assert!(
-            big.hash_node_calls > small.hash_node_calls,
-            "a larger declared epoch must cost more hashing ({} vs {})",
-            big.hash_node_calls,
-            small.hash_node_calls
+            big.storage_loaded_bytes > small.storage_loaded_bytes,
+            "a larger declared epoch reads more records ({} vs {})",
+            big.storage_loaded_bytes,
+            small.storage_loaded_bytes
         );
         // An entry's ADDED storage is its long-term footprint — its share
         // of the chunk blob; the buffer slot it passes through is churn

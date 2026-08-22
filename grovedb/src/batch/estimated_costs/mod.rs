@@ -230,7 +230,7 @@ pub(in crate::batch) fn commitment_tree_insert_op_cost(
         // state root and the ct_state binding hash — the same at every
         // position.
         hash_node_calls: buffer.cost.hash_node_calls
-            + grovedb_bulk_append_tree::AMORTIZED_COMPACTION_HASHES
+            + grovedb_bulk_append_tree::amortized_compaction_hashes(chunk_power)
             + 2,
         sinsemilla_hash_calls: grovedb_commitment_tree::MODEL_FRONTIER_APPEND_SINSEMILLA_HASHES,
     }
@@ -320,7 +320,7 @@ pub(in crate::batch) fn private_document_store_insert_op_cost(
         // The buffer model, the amortized compaction, and the roots — the
         // same at every position.
         hash_node_calls: buffer.cost.hash_node_calls
-            + grovedb_bulk_append_tree::AMORTIZED_COMPACTION_HASHES
+            + grovedb_bulk_append_tree::amortized_compaction_hashes(chunk_power)
             + ROOT_AND_CONFIG_HASHES,
         sinsemilla_hash_calls: 0,
     }

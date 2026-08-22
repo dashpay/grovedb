@@ -104,11 +104,15 @@
 //!   the append-only family (`BulkAppendTree`, `CommitmentTree`,
 //!   `PrivateDocumentStore`) charges every append the FIXED per-append model
 //!   (issue #822): the entry's long-term footprint as `added_bytes` — its
-//!   share of the eventual chunk blob plus the epoch's share of the blob
-//!   framing and MMR nodes — and churn as `replaced_bytes` — its buffer
-//!   slot and path record (epoch 1 included, nothing read to size them) and
-//!   its own bytes again as its part of the blob rewrite — plus the buffer's
-//!   fixed root-maintenance model and one amortized compaction blake3. The
+//!   share of the eventual chunk blob (plus the variable format's four-byte
+//!   per-entry prefix unless the owner declared a fixed entry size, as the
+//!   commitment tree and the private document store do) plus the epoch's
+//!   share of the blob framing and MMR nodes — and churn as `replaced_bytes`
+//!   — its buffer slot and path record (epoch 1 included, nothing read to
+//!   size them) and its own bytes again as its part of the blob rewrite —
+//!   plus the buffer's fixed root-maintenance model and the compaction's
+//!   hashes amortized as a per-chunk bound over the epoch (one blake3 per
+//!   append at `chunk_power` ≥ 7). The
 //!   compacting append writes the blob, the MMR nodes and the persisted MMR
 //!   root (new key `r`) prepaid and is charged the same as any other
 //!   append; a reopened tree reads the persisted root instead of bagging
