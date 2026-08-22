@@ -252,7 +252,7 @@ pub use operations::get::{AxisAggregateValue, PathQueryRun};
 // never name this type, so widening the gate here to `any(minimal, verify)`
 // only breaks that cut on an unresolved import.
 #[cfg(feature = "minimal")]
-pub use operations::indexed_tree::IndexedTopKPage;
+pub use operations::indexed_tree::{IndexedTopKKeysPage, IndexedTopKPage};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use query::{
     aggregate_sum_path_query::AggregateSumPathQuery, AggregateKind, GroveBranchQueryResult,
