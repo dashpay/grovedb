@@ -3,6 +3,7 @@
 //! version. The version-dependent insert / root paths live in
 //! [`root_maintenance`].
 
+#[cfg(feature = "storage")]
 pub(crate) mod root_maintenance;
 
 #[cfg(feature = "storage")]

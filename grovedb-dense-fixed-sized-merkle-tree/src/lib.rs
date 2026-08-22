@@ -13,7 +13,7 @@
 //! hashes are stored and the root is recomputed from every filled position;
 //! under version 1 a per-position hash record is kept beside each value and
 //! an insert updates only its ancestor path. The root value is identical
-//! under both — see [`tree::root_maintenance`].
+//! under both — see `tree::root_maintenance` (storage feature).
 
 #![deny(missing_docs)]
 
