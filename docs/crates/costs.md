@@ -135,7 +135,7 @@ records exist only under `dense_tree_versions.root_maintenance = 1`):
 | buffer slot, any epoch | key + value `added` | value `replaced` (its own paid size); nothing added, key not charged, nothing read |
 | entry's chunk-blob share | — (blob charged at compaction) | entry bytes `added` at the entry's own append (plus the variable format's 4-byte per-entry prefix unless the owner declared a fixed entry size — the commitment tree and the private document store do), plus the epoch's share of the blob framing and MMR nodes (`amortized_compaction_added_bytes`, 1 byte at `chunk_power` 11) |
 | entry's part of the blob rewrite | — | entry bytes `replaced` at the entry's own append |
-| compaction blob, MMR internal nodes, persisted MMR root (`r`) | key + whole blob `added`; nodes `added`; no persisted root | prepaid: zero-byte cost information |
+| compaction blob, MMR internal nodes, persisted MMR root (`r`) | key + whole blob `added`; nodes `added`; no persisted root; one seek per put | prepaid (`KeyValueStorageCost::prepaid()`): no bytes, no key, no seek at commit — their seeks are amortized into every append (`amortized_compaction_seeks`, 1 at `chunk_power` 11) |
 | frontier rewrite | key + value `added` every save | 556 bytes `replaced` every save — the model's 554-byte frontier plus its two-byte length varint (`frontier_cost_model`), first save included |
 | buffer path record (one per append, `42 + 32·chunk_power` bytes) | — (no records) | `replaced` (its own paid size); nothing added, key not charged |
 

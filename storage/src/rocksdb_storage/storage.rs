@@ -316,7 +316,13 @@ impl RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put(&key, &value);
-                    cost.seek_count += 1;
+                    // A fully prepaid put (`KeyValueStorageCost::prepaid`)
+                    // was billed by its owner in advance, the write
+                    // included: no seek here. Only the append-only family's
+                    // GROVE_V4 accounting issues such puts.
+                    if !cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
+                        cost.seek_count += 1;
+                    }
                     cost_return_on_error_no_add!(
                         cost,
                         pending_costs

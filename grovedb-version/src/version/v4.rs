@@ -111,12 +111,13 @@
 //!   — its buffer slot and path record (epoch 1 included, nothing read to
 //!   size them) and its own bytes again as its part of the blob rewrite —
 //!   plus the buffer's fixed root-maintenance model and the compaction's
-//!   hashes amortized as a per-chunk bound over the epoch (one blake3 per
-//!   append at `chunk_power` ≥ 7). The
+//!   hashes and commit-time puts amortized as per-chunk bounds over the
+//!   epoch (one blake3 and one seek per append at `chunk_power` ≥ 7). The
 //!   compacting append writes the blob, the MMR nodes and the persisted MMR
-//!   root (new key `r`) prepaid and is charged the same as any other
-//!   append; a reopened tree reads the persisted root instead of bagging
-//!   the peaks' blobs. V1..V3 keep issuing every data put with no cost
+//!   root (new key `r`) prepaid — `KeyValueStorageCost::prepaid()`, which
+//!   the commit path bills no bytes and no seek — and is charged the same
+//!   as any other append, seek count included; a reopened tree reads the
+//!   persisted root instead of bagging the peaks' blobs. V1..V3 keep issuing every data put with no cost
 //!   information, which bills key + value as new storage every time — ≈ 2×
 //!   the bytes that persist, with the whole ≈ 630 KB blob landing on one
 //!   append per epoch at `chunk_power` 11. Stored chunks, roots and proofs

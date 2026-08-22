@@ -203,16 +203,14 @@ pub(in crate::batch) fn commitment_tree_insert_op_cost(
         + entry_size
         + (frontier_len as u64 + PER_PUT_OVERHEAD as u64);
 
-    // The puts a compacting append issues at commit instead of its slot and
-    // record: the chunk blob and up to the MMR merge bound of internal nodes
-    // — the one position-dependent residual (bounded, once per epoch).
-    const MAX_COMPACTION_PUTS: u32 = 1 + 65;
-
     OperationCost {
         // 2 reads (CommitmentTree element, frontier) + the buffer model's
-        // record reads, and 3 writes (note entry, path record, frontier);
-        // plus the compaction's puts as a bound.
-        seek_count: 5 + buffer.cost.seek_count + MAX_COMPACTION_PUTS,
+        // record reads, 3 writes (note entry, path record, frontier), and
+        // the compaction's commit-time puts amortized over the epoch (its
+        // puts are prepaid, so this is the whole of their charge).
+        seek_count: 5
+            + buffer.cost.seek_count
+            + grovedb_bulk_append_tree::amortized_compaction_seeks(chunk_power),
         storage_cost: StorageCost {
             added_bytes: u32::try_from(added_bytes_u64).unwrap_or(u32::MAX),
             // The parent-Merk node replacement is charged by the
@@ -278,24 +276,23 @@ pub(in crate::batch) fn private_document_store_insert_op_cost(
     /// Bulk state root + composite pds_state root + the committed-config
     /// hash paid when the store is opened.
     const ROOT_AND_CONFIG_HASHES: u32 = 3;
-    /// The puts a compacting append issues at commit instead of its slot and
-    /// record: the chunk blob and up to the MMR merge bound of internal
-    /// nodes — the one position-dependent residual (bounded, once per
-    /// epoch).
-    const MAX_COMPACTION_PUTS: u32 = 1 + 65;
     // A NonCounted-wrapped store serializes one byte wider, and the apply
     // path preserves that wrapper. Neither the op nor the declared layer
     // records whether this store is wrapped, so charge the byte
     // unconditionally.
     const NON_COUNTED_WRAPPER_BYTE: u32 = 1;
     OperationCost {
-        // Reads: the stored element, the last insert's record for the state
-        // root, the buffer model's record reads; writes: the buffer entry
-        // and its path record; plus the compaction's puts as a bound.
-        seek_count: 2u32
+        // Reads: the stored element, the state root's two fixed reads (the
+        // persisted MMR root and the last insert's record), the buffer
+        // model's record reads; writes: the buffer entry and its path
+        // record; plus the compaction's commit-time puts amortized over the
+        // epoch.
+        seek_count: 3u32
             .saturating_add(buffer.cost.seek_count)
             .saturating_add(2)
-            .saturating_add(MAX_COMPACTION_PUTS),
+            .saturating_add(grovedb_bulk_append_tree::amortized_compaction_seeks(
+                chunk_power,
+            )),
         storage_cost: StorageCost {
             // The entry's chunk-blob share plus its share of the blob
             // framing and MMR nodes (GROVE_V4 accounting, issue #822), and
@@ -313,9 +310,11 @@ pub(in crate::batch) fn private_document_store_insert_op_cost(
             removed_bytes: StorageRemovedBytes::NoStorageRemoval,
         },
         // The stored element (fixed fields + Merk framing, with the flags
-        // bound), the buffer model's records and the root record.
+        // bound), the buffer model's records, the persisted MMR root and
+        // the root record.
         storage_loaded_bytes: (CT_ELEMENT_LOAD_BASE + element_flags_load_bound) as u64
             + buffer.cost.storage_loaded_bytes
+            + 32
             + buffer.record_len as u64,
         // The buffer model, the amortized compaction, and the roots — the
         // same at every position.
@@ -365,7 +364,9 @@ pub(in crate::batch) fn dense_tree_insert_op_cost(value_size: u32, height: u8) -
 /// The largest per-append share of the compaction overhead the type
 /// permits — the smallest epoch (`chunk_power` 1) — for the worst-case
 /// estimators, which have no declaration channel. The share shrinks as the
-/// epoch grows, so the ceiling epoch is NOT the bound here.
+/// epoch grows, so the ceiling epoch is NOT the bound here. (The hash and
+/// seek shares have the same property; see
+/// `grovedb_bulk_append_tree::max_amortized_compaction_{hashes,seeks}`.)
 #[cfg(feature = "minimal")]
 pub(in crate::batch) fn max_amortized_compaction_added_bytes() -> u32 {
     grovedb_bulk_append_tree::amortized_compaction_added_bytes(2)

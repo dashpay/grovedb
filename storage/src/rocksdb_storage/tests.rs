@@ -989,6 +989,58 @@ mod batch_transaction {
     /// context — the caller cannot know the prefix — exactly as the `Batch`
     /// implementations do. An update (`new_node: false`) is passed through
     /// unchanged. Both must then survive the commit-time verification.
+    /// A fully prepaid put (`KeyValueStorageCost::prepaid`) is billed
+    /// nothing at commit — no bytes, no key, no value verification and no
+    /// seek — while an ordinary put beside it is still charged its seek.
+    #[test]
+    fn test_prepaid_put_is_charged_no_seek_at_commit() {
+        use grovedb_costs::storage_cost::key_value_cost::KeyValueStorageCost;
+
+        let storage = TempStorage::new();
+        let transaction = storage.start_transaction();
+        let batch = StorageBatch::new();
+        let context = storage
+            .get_transactional_storage_context(
+                [b"ayya"].as_ref().into(),
+                Some(&batch),
+                &transaction,
+            )
+            .unwrap();
+        context
+            .put(
+                b"prepaid",
+                &[1u8; 100],
+                None,
+                Some(KeyValueStorageCost::prepaid()),
+            )
+            .unwrap()
+            .expect("put prepaid");
+        context
+            .put(b"ordinary", &[2u8; 100], None, None)
+            .unwrap()
+            .expect("put ordinary");
+        let commit = storage.commit_multi_context_batch(batch, Some(&transaction));
+        commit.value.expect("commit");
+        let cost = commit.cost;
+        assert_eq!(cost.seek_count, 1, "only the ordinary put seeks: {cost:?}");
+        // The ordinary put's bytes (prefixed key + value, each with its
+        // length varint) are the whole storage figure.
+        assert_eq!(
+            cost.storage_cost.added_bytes,
+            (32 + 8 + 1) + (100 + 1),
+            "{cost:?}"
+        );
+        assert_eq!(cost.storage_cost.replaced_bytes, 0);
+        let tx_ctx = storage
+            .get_transactional_storage_context([b"ayya"].as_ref().into(), None, &transaction)
+            .unwrap();
+        assert_eq!(
+            tx_ctx.get(b"prepaid").unwrap().expect("get"),
+            Some(vec![1u8; 100]),
+            "the prepaid put is written all the same"
+        );
+    }
+
     #[test]
     fn test_transactional_put_completes_new_node_key_cost() {
         use grovedb_costs::storage_cost::{

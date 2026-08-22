@@ -171,10 +171,18 @@ fn v1_buffer_writes_are_churn_and_every_append_is_charged_the_fixed_model() {
             cost.hash_node_calls, 0,
             "append {i}: hashes go through hash_count"
         );
-        // The model, compacting appends included.
+        // The model's reads plus the compaction's commit-time puts amortized
+        // over the epoch; the compacting append, whose own puts are all
+        // prepaid, is charged the slot and record puts it does not issue.
+        let churn_seeks = if i % 4 == 3 {
+            crate::BUFFER_CHURN_PUTS
+        } else {
+            0
+        };
         assert_eq!(
-            cost.seek_count, model.record_reads,
-            "append {i}: model reads"
+            cost.seek_count,
+            model.record_reads + crate::amortized_compaction_seeks(2) + churn_seeks,
+            "append {i}: model reads + amortized compaction seeks (+ churn seeks)"
         );
         assert_eq!(
             cost.storage_loaded_bytes,
@@ -256,19 +264,16 @@ fn v1_never_reads_to_size_a_buffer_write() {
 }
 
 /// v1: the compaction blob and the MMR internal nodes are prepaid — every
-/// append charged its share over the epoch — so their puts carry zero-byte
-/// cost information: nothing added, nothing replaced, no key.
+/// append charged its share over the epoch — so their puts carry
+/// `KeyValueStorageCost::prepaid()`: nothing added, nothing replaced, no
+/// key, and no seek at commit.
 #[test]
 fn v1_commit_mmr_writes_are_prepaid() {
     let run = run(&GROVE_V4);
     let nodes = mmr_puts(&run.ctx);
     assert_eq!(nodes.len(), 4, "{nodes:?}");
-    let prepaid = KeyValueStorageCost {
-        key_storage_cost: Default::default(),
-        value_storage_cost: StorageCost::default(),
-        new_node: false,
-        needs_value_verification: false,
-    };
+    let prepaid = KeyValueStorageCost::prepaid();
+    assert!(prepaid.is_prepaid());
     assert!(
         nodes.iter().all(|n| *n == Some(prepaid.clone())),
         "every MMR put — three chunk leaves and one merge — is prepaid: {nodes:?}"
@@ -392,12 +397,8 @@ fn unknown_storage_accounting_version_is_rejected() {
 /// then on every reopen reads the key instead of the peaks' blobs.
 #[test]
 fn legacy_mmr_root_is_backfilled_once_on_the_first_v4_append() {
-    let prepaid = KeyValueStorageCost {
-        key_storage_cost: Default::default(),
-        value_storage_cost: StorageCost::default(),
-        new_node: false,
-        needs_value_verification: false,
-    };
+    let prepaid = KeyValueStorageCost::prepaid();
+    assert!(prepaid.is_prepaid());
     // Epoch 1 under the shipped accounting: chunk committed, no root key.
     let mut tree = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
     for v in &VALUES[..4] {
@@ -670,4 +671,70 @@ fn entry_framing_is_charged_unless_a_fixed_entry_size_is_declared() {
         added >= persisted,
         "mixed-size epoch: added {added} < persisted {persisted}"
     );
+}
+
+/// The per-chunk put bound holds at every chunk index the 32-bit MMR keys
+/// admit, and the amortized seek share keeps every prefix of the tree's
+/// life prepaid at every height.
+#[test]
+fn amortized_compaction_seeks_prepay_every_prefix_at_every_height() {
+    // The puts chunk `i` (0-based) issues at commit: the blob, one MMR
+    // internal node per trailing one bit of `i`, and the persisted root.
+    fn actual(i: u64) -> u32 {
+        1 + i.trailing_ones() + 1
+    }
+    for k in 0..31u32 {
+        let p = 1u64 << k;
+        for i in [p - 1, p, p + 1, 2 * p - 2, 2 * p - 1] {
+            assert!(
+                actual(i) <= crate::MAX_COMPACTION_PUTS_PER_CHUNK,
+                "chunk {i}"
+            );
+        }
+    }
+    for chunk_power in 1..=4u8 {
+        let epoch = 1u64 << chunk_power;
+        let per_chunk_charge = epoch * crate::amortized_compaction_seeks(chunk_power) as u64;
+        let (mut charged, mut performed) = (0u64, 0u64);
+        for i in 0..(1u64 << 16) {
+            charged += per_chunk_charge;
+            performed += actual(i) as u64;
+            assert!(charged >= performed, "chunk_power {chunk_power}, chunk {i}");
+        }
+    }
+    assert_eq!(crate::amortized_compaction_seeks(1), 17);
+    assert_eq!(crate::amortized_compaction_seeks(2), 9);
+    assert_eq!(crate::amortized_compaction_seeks(4), 3);
+    assert_eq!(crate::amortized_compaction_seeks(5), 2);
+    assert_eq!(crate::amortized_compaction_seeks(6), 1);
+    assert_eq!(crate::amortized_compaction_seeks(11), 1);
+    assert_eq!(crate::amortized_compaction_seeks(16), 1);
+    assert_eq!(
+        crate::max_amortized_compaction_seeks(),
+        crate::amortized_compaction_seeks(1)
+    );
+}
+
+/// Every put a compaction issues — the blob, the MMR nodes, the persisted
+/// root, and a legacy tree's backfilled root — is prepaid, so the commit
+/// path charges it no seek; the slot and record puts of a buffered append
+/// are not.
+#[test]
+fn compaction_puts_are_prepaid_and_buffer_puts_are_not() {
+    let run = run(&GROVE_V4);
+    let puts = run.ctx.puts.borrow();
+    let (prepaid, billed): (Vec<_>, Vec<_>) = puts
+        .iter()
+        .partition(|(_, c)| c.as_ref().is_some_and(|c| c.is_prepaid()));
+    assert!(
+        prepaid
+            .iter()
+            .all(|(k, _)| k.len() == 4 || k.as_slice() == crate::MMR_ROOT_KEY),
+        "prepaid puts are the MMR nodes and the persisted root: {prepaid:?}"
+    );
+    assert!(
+        billed.iter().all(|(k, _)| k.len() == 2 || k.len() == 3),
+        "billed puts are the slots and records: {billed:?}"
+    );
+    assert!(!prepaid.is_empty() && !billed.is_empty());
 }

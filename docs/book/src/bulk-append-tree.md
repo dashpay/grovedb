@@ -496,11 +496,13 @@ unless the owner declared a fixed entry size with `with_fixed_entry_size` — th
 commitment tree and the private document store do — plus the epoch's share of the
 blob framing and MMR nodes — 1 byte at chunk_power 11) and its churn as
 `replaced` (slot, path record, its part of the blob rewrite). The compacting append
-writes the blob, the MMR nodes and the persisted MMR root prepaid and is charged the
-same; physically it still reads the epoch back and hashes the blob once. The only
-residual is its commit-time seek count (blob + MMR nodes instead of slot + record),
-bounded and once per epoch. A buffer filled under GROVE_V1..V3 is caught up from its
-values by the V4 appends that need it, read-only and billed the same model.
+writes the blob, the MMR nodes and the persisted MMR root prepaid
+(`KeyValueStorageCost::prepaid()` — no bytes and no seek at commit; their seeks are
+amortized into every append as ⌈34 / 2^chunk_power⌉, 1 at chunk_power 11, and the
+compacting append is charged the slot + record seeks it does not issue) and is charged
+the same; physically it still reads the epoch back and hashes the blob once. Nothing
+about the charge depends on the position. A buffer filled under GROVE_V1..V3 is caught
+up from its values by the V4 appends that need it, read-only and billed the same model.
 
 ## Comparison with MmrTree
 

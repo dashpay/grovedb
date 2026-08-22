@@ -137,6 +137,34 @@ impl KeyValueStorageCost {
         }
     }
 
+    /// The cost information of a put whose owner has already charged
+    /// everything about it — its key and value bytes AND the write itself —
+    /// in advance (the bulk-append tree prepays each append's share of the
+    /// chunk blob, the MMR nodes and the commit-time puts that compaction
+    /// issues, amortized over the epoch). The commit path bills such a put
+    /// nothing: no added or replaced bytes, no key, no value verification,
+    /// and no seek.
+    pub fn prepaid() -> Self {
+        KeyValueStorageCost {
+            key_storage_cost: StorageCost::default(),
+            value_storage_cost: StorageCost::default(),
+            new_node: false,
+            needs_value_verification: false,
+        }
+    }
+
+    /// Whether this is the cost information of a fully prepaid put (see
+    /// [`prepaid`](Self::prepaid)): nothing to bill at commit, the seek
+    /// included. Only an owner that billed the write in advance produces
+    /// this shape — every other constructor charges bytes, a key, or asks
+    /// for value verification.
+    pub fn is_prepaid(&self) -> bool {
+        self.key_storage_cost == StorageCost::default()
+            && self.value_storage_cost == StorageCost::default()
+            && !self.new_node
+            && !self.needs_value_verification
+    }
+
     /// Returns the total removed bytes between the key removed bytes and the
     /// value removed bytes
     pub fn combined_removed_bytes(self) -> StorageRemovedBytes {
@@ -163,6 +191,29 @@ impl AddAssign for KeyValueStorageCost {
         self.value_storage_cost += rhs.value_storage_cost;
         self.new_node &= rhs.new_node;
         self.needs_value_verification &= rhs.needs_value_verification;
+    }
+}
+
+#[cfg(test)]
+mod prepaid_tests {
+    use super::*;
+
+    #[test]
+    fn prepaid_is_the_only_shape_that_bills_nothing() {
+        assert!(KeyValueStorageCost::prepaid().is_prepaid());
+        assert!(!KeyValueStorageCost::for_in_place_value_rewrite(0, 0).is_prepaid());
+        assert!(!KeyValueStorageCost::for_in_place_value_rewrite(8, 8).is_prepaid());
+        assert!(!KeyValueStorageCost::for_updated_root_cost(None, 1).is_prepaid());
+        assert!(!KeyValueStorageCost::for_updated_root_cost(Some(1), 1).is_prepaid());
+        let mut new_node = KeyValueStorageCost::prepaid();
+        new_node.new_node = true;
+        assert!(!new_node.is_prepaid());
+        let mut verified = KeyValueStorageCost::prepaid();
+        verified.needs_value_verification = true;
+        assert!(!verified.is_prepaid());
+        let mut replaced = KeyValueStorageCost::prepaid();
+        replaced.value_storage_cost.replaced_bytes = 1;
+        assert!(!replaced.is_prepaid());
     }
 }
 

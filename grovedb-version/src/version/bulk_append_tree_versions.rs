@@ -54,11 +54,14 @@ pub struct BulkAppendTreeCostVersions {
     /// included, nothing read to size them; the buffer is a fixed-size
     /// per-tree scratch area rewritten every epoch) and its own bytes again
     /// as its part of the blob rewrite; plus the buffer's fixed
-    /// root-maintenance model (`dense_tree_versions.root_maintenance`) and
-    /// one amortized compaction blake3. The compacting append writes the
-    /// blob and the MMR nodes prepaid (zero-byte cost information) and is
-    /// charged the slot / record churn it does not write, so its figure is
-    /// the same; it also persists the MMR root (key `r`, 32 bytes, prepaid)
+    /// root-maintenance model (`dense_tree_versions.root_maintenance`), the
+    /// amortized compaction blake3 and the compaction's commit-time puts
+    /// amortized as seeks (`amortized_compaction_seeks`). The compacting
+    /// append writes the blob and the MMR nodes prepaid
+    /// (`KeyValueStorageCost::prepaid()`: no bytes, no seek at commit) and
+    /// is charged the slot / record churn — bytes and seeks — it does not
+    /// write, so its figure is the same, seek count included; it also
+    /// persists the MMR root (key `r`, 32 bytes, prepaid)
     /// so a reopened tree reads it instead of bagging the peaks' blobs, and
     /// the state root's two root reads are charged as the model. A tree
     /// whose last compaction predates version 1 has no such key: its first

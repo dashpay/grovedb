@@ -53,7 +53,11 @@ impl Batch for PrefixedRocksDbBatch<'_> {
             key_value_storage_cost
         });
 
-        self.cost_acc.seek_count += 1;
+        // A fully prepaid put (`KeyValueStorageCost::prepaid`) was billed by
+        // its owner in advance, the write included: no seek.
+        if !updated_cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
+            self.cost_acc.seek_count += 1;
+        }
         self.cost_acc.add_key_value_storage_costs(
             prefixed_key.len() as u32,
             value.len() as u32,

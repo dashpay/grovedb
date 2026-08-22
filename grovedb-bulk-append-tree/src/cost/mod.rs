@@ -96,6 +96,35 @@ pub fn max_amortized_compaction_hashes() -> u32 {
     amortized_compaction_hashes(1)
 }
 
+/// The most puts one compaction can issue at commit: the chunk blob, the
+/// MMR internal nodes its push creates (one per trailing one bit of the
+/// chunk index — at most 31 with 32-bit MMR keys, bounded by 32 here) and
+/// the persisted MMR root. Under the fixed model every one of them is
+/// prepaid (`KeyValueStorageCost::prepaid()`, no seek at commit) and their
+/// seeks are charged on every append as this bound over the epoch.
+pub const MAX_COMPACTION_PUTS_PER_CHUNK: u32 = 1 + 32 + 1;
+
+/// The seeks a compaction's commit-time puts cost, amortized over the epoch
+/// and charged on every append under the fixed model: the per-chunk bound
+/// over `2^chunk_power` appends, rounded up — one per append from
+/// `chunk_power` 6 (so at the shielded pool's 11), 17 at the smallest.
+/// Charged as a bound so every prefix of the tree's life stays prepaid.
+pub fn amortized_compaction_seeks(chunk_power: u8) -> u32 {
+    MAX_COMPACTION_PUTS_PER_CHUNK.div_ceil(1u32 << chunk_power.min(16) as u32)
+}
+
+/// The largest per-append compaction seek share the type permits — the
+/// smallest epoch, `chunk_power` 1.
+pub fn max_amortized_compaction_seeks() -> u32 {
+    amortized_compaction_seeks(1)
+}
+
+/// The puts a buffered append issues at commit — its slot and its path
+/// record — which a compacting append, writing neither (its puts are all
+/// prepaid), is charged all the same under the fixed model, so its seek
+/// figure is every other append's.
+pub const BUFFER_CHURN_PUTS: u32 = 2;
+
 /// The per-entry framing a variable-format chunk blob carries: a four-byte
 /// length prefix before every entry (`serialize_variable`). A tree whose
 /// entries are all one size serializes the fixed format (no per-entry

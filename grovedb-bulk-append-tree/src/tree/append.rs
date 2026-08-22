@@ -210,9 +210,15 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             let model = v1_insert_model_cost(self.dense_tree.height());
             hash_count += model.hash_node_calls
                 + crate::cost::amortized_compaction_hashes(self.dense_tree.height());
+            // The model's record reads plus the compaction's commit-time
+            // puts amortized over the epoch (the puts themselves are
+            // prepaid: no seek at commit).
             storage_accounting_cost.seek_count = storage_accounting_cost
                 .seek_count
-                .saturating_add(model.seek_count);
+                .saturating_add(model.seek_count)
+                .saturating_add(crate::cost::amortized_compaction_seeks(
+                    self.dense_tree.height(),
+                ));
             storage_accounting_cost.storage_loaded_bytes = storage_accounting_cost
                 .storage_loaded_bytes
                 .saturating_add(model.storage_loaded_bytes);
@@ -225,12 +231,15 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                 .saturating_add(u32::try_from(value.len()).unwrap_or(u32::MAX));
             if try_result.is_none() {
                 // A compacting append writes no slot and no record; it is
-                // charged their churn all the same, so its storage figure is
-                // the fixed model's.
+                // charged their churn — bytes and seeks — all the same, so
+                // its figure is the fixed model's.
                 storage_accounting_cost.storage_cost.replaced_bytes = storage_accounting_cost
                     .storage_cost
                     .replaced_bytes
                     .saturating_add(self.buffer_churn_replaced_bytes(value.len()));
+                storage_accounting_cost.seek_count = storage_accounting_cost
+                    .seek_count
+                    .saturating_add(crate::cost::BUFFER_CHURN_PUTS);
             }
         } else {
             // The hashes the insert reports: two per filled position (the
@@ -344,12 +353,21 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             let mut model = v1_insert_model_cost(self.dense_tree.height());
             model.hash_node_calls +=
                 crate::cost::amortized_compaction_hashes(self.dense_tree.height());
+            model.seek_count =
+                model
+                    .seek_count
+                    .saturating_add(crate::cost::amortized_compaction_seeks(
+                        self.dense_tree.height(),
+                    ));
             model.storage_cost.replaced_bytes = u32::try_from(value.len()).unwrap_or(u32::MAX);
             if try_result.is_none() {
                 model.storage_cost.replaced_bytes = model
                     .storage_cost
                     .replaced_bytes
                     .saturating_add(self.buffer_churn_replaced_bytes(value.len()));
+                model.seek_count = model
+                    .seek_count
+                    .saturating_add(crate::cost::BUFFER_CHURN_PUTS);
             }
             cost += model.clone();
             storage_accounting_cost += model;
@@ -755,17 +773,11 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     }
 
     /// Persist the chunk-MMR root under [`MMR_ROOT_KEY`] — prepaid like the
-    /// MMR nodes (zero-byte cost information), so the append that issues it
-    /// keeps the fixed model's storage figure.
+    /// MMR nodes (`KeyValueStorageCost::prepaid()`: no bytes, no seek), so
+    /// the append that issues it keeps the fixed model's figure.
     fn persist_mmr_root(&self, root: &[u8; 32]) -> Result<(), BulkAppendError> {
-        let cost_info = Some(
-            grovedb_costs::storage_cost::key_value_cost::KeyValueStorageCost {
-                key_storage_cost: Default::default(),
-                value_storage_cost: Default::default(),
-                new_node: false,
-                needs_value_verification: false,
-            },
-        );
+        let cost_info =
+            Some(grovedb_costs::storage_cost::key_value_cost::KeyValueStorageCost::prepaid());
         self.dense_tree
             .storage
             .put(MMR_ROOT_KEY, root, None, cost_info)
