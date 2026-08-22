@@ -2485,7 +2485,10 @@ impl GroveDb {
                     // altered behind it, or records written for other
                     // values — would pass it while every V4 read returned
                     // the other root. Audit them explicitly.
-                    if let Some((recorded, walked)) =
+                    if let Some(grovedb_bulk_append_tree::BufferRecordMismatch {
+                        recorded,
+                        walked,
+                    }) =
                         self.dense_buffer_record_issue(&element, new_path_ref.clone(), transaction)
                     {
                         let mut issue_path = new_path.to_vec();
@@ -2930,7 +2933,7 @@ impl GroveDb {
     }
 
     /// Audit a non-Merk tree's dense-buffer hash records (GROVE_V4 root
-    /// maintenance) against its values: `Some((recorded, walked))` when a
+    /// maintenance) against its values: `Some` when a
     /// current position-0 record exists and disagrees with the root walked
     /// from the values. `None` for other elements, empty trees, trees whose
     /// buffer has no current record (filled under GROVE_V1..V3 — caught up by
@@ -2941,7 +2944,7 @@ impl GroveDb {
         element: &Element,
         subtree_path: SubtreePath<'b, B>,
         transaction: &Transaction,
-    ) -> Option<([u8; 32], [u8; 32])> {
+    ) -> Option<grovedb_bulk_append_tree::BufferRecordMismatch> {
         match element.underlying() {
             Element::CommitmentTree(total_count, chunk_power, _) => {
                 if *total_count == 0 {
@@ -2997,7 +3000,8 @@ impl GroveDb {
                     .ok()?;
                 let recorded = tree.recorded_root().unwrap().ok()??;
                 let walked = tree.root_hash_from_values().unwrap().ok()?;
-                (recorded != walked).then_some((recorded, walked))
+                (recorded != walked)
+                    .then_some(grovedb_bulk_append_tree::BufferRecordMismatch { recorded, walked })
             }
             Element::PrivateDocumentStore(total_count, entry_size, chunk_power, _) => {
                 if *total_count == 0 {
