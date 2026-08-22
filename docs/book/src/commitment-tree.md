@@ -306,7 +306,7 @@ sub-merk recursion for these types.
 
 ## GroveDB Operations
 
-CommitmentTree provides four operations. The insert operation is generic over
+CommitmentTree provides five operations. The insert operation is generic over
 `M: MemoSize` (from the `orchard` crate), which controls ciphertext payload
 size validation. The default `M = DashMemo` gives a 216-byte payload
 (32 epk + 104 enc + 80 out).
@@ -324,6 +324,9 @@ db.commitment_tree_anchor(path, key, tx, version)
 
 // Retrieve a value by global position
 db.commitment_tree_get_value(path, key, position, tx, version)
+
+// Retrieve a page of values: positions [start, start + limit), plus total_count
+db.commitment_tree_get_range(path, key, start, limit, tx, version)
 
 // Get the current item count
 db.commitment_tree_count(path, key, tx, version)
@@ -903,6 +906,10 @@ Individual items (cmx || rho || cv_net || payload) can be queried by position an
 V1 proofs (§9.6), the same mechanism used by standalone BulkAppendTree. The
 V1 proof includes the BulkAppendTree authentication path for the requested
 position, chained to the parent Merk proof for the CommitmentTree element.
+Paginated scans use `GroveDb::prove_bulk_position_range` /
+`GroveDb::verify_bulk_position_range_proof`, which dispatch on the element type
+and so serve CommitmentTree pages through the same `ProofBytes::CommitmentTree`
+envelope (see the BulkAppendTree chapter).
 
 ## Cost Tracking
 

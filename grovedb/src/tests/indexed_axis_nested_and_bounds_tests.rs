@@ -19,6 +19,10 @@ mod tests {
     use grovedb_merk::proofs::query::AggregateFold;
     use grovedb_version::version::GroveVersion;
 
+    use crate::IndexedAxisEntrySliceExt;
+
+    use crate::IndexedAxisEntry;
+
     use crate::{
         operations::proof::indexed_axis::{
             AncestorAttestation, AxisEntries, IndexedAxisAggregateProof, IndexedAxisRangeProof,
@@ -39,7 +43,7 @@ mod tests {
         assert!(issues.is_empty(), "verify_grovedb issues: {issues:?}");
     }
 
-    fn count_entries(entries: &AxisEntries) -> &Vec<(u64, Vec<u8>)> {
+    fn count_entries(entries: &AxisEntries) -> &Vec<IndexedAxisEntry<u64>> {
         match entries {
             AxisEntries::Count(v) => v,
             other => panic!("expected count entries, got {other:?}"),
@@ -145,8 +149,8 @@ mod tests {
             "the reconstructed root must equal the live GroveDB root"
         );
         assert_eq!(
-            count_entries(&result.entries),
-            &vec![(1u64, b"y".to_vec()), (1u64, b"x".to_vec())],
+            count_entries(&result.entries).key_pairs(),
+            vec![(1u64, b"y".to_vec()), (1u64, b"x".to_vec())],
             "descending count order, ties broken by descending key"
         );
     }
@@ -241,8 +245,20 @@ mod tests {
         );
         assert_eq!(
             result.entries,
-            AxisEntries::Sum(vec![(9i64, b"y".to_vec()), (-4i64, b"x".to_vec())]),
-            "descending sum order, negatives sorting below positives"
+            AxisEntries::Sum(vec![
+                IndexedAxisEntry {
+                    ordering_value: 9i64,
+                    primary_key: b"y".to_vec(),
+                    value: Element::new_sum_item(9),
+                },
+                IndexedAxisEntry {
+                    ordering_value: -4i64,
+                    primary_key: b"x".to_vec(),
+                    value: Element::new_sum_item(-4),
+                },
+            ]),
+            "descending sum order, negatives sorting below positives; each row \
+             carries its resolved primary value"
         );
     }
 
@@ -340,8 +356,8 @@ mod tests {
             "the reconstructed root must equal the live GroveDB root"
         );
         assert_eq!(
-            count_entries(&result.entries),
-            &vec![(1u64, b"y".to_vec()), (1u64, b"x".to_vec())],
+            count_entries(&result.entries).key_pairs(),
+            vec![(1u64, b"y".to_vec()), (1u64, b"x".to_vec())],
         );
     }
 

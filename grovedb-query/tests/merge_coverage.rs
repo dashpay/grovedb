@@ -285,7 +285,8 @@ fn merge_default_branch_both_none_paths_both_have_subqueries() {
     q.merge_default_subquery_branch(SubqueryBranch {
         subquery_path: None,
         subquery: Some(Box::new(Query::new_single_key(k(20)))),
-    });
+    })
+    .expect("merge should succeed");
     let sq = q.default_subquery_branch.subquery.unwrap();
     assert!(sq.items.contains(&QueryItem::Key(k(10))));
     assert!(sq.items.contains(&QueryItem::Key(k(20))));
@@ -298,7 +299,8 @@ fn merge_default_branch_both_none_paths_self_has_no_subquery() {
     q.merge_default_subquery_branch(SubqueryBranch {
         subquery_path: None,
         subquery: Some(Box::new(Query::new_single_key(k(20)))),
-    });
+    })
+    .expect("merge should succeed");
     let sq = q.default_subquery_branch.subquery.unwrap();
     assert!(sq.items.contains(&QueryItem::Key(k(20))));
 }
@@ -317,7 +319,8 @@ fn merge_default_branch_same_paths() {
     q.merge_default_subquery_branch(SubqueryBranch {
         subquery_path: Some(vec![k(5), k(6)]),
         subquery: Some(Box::new(Query::new_single_key(k(20)))),
-    });
+    })
+    .expect("merge should succeed");
     assert_eq!(
         q.default_subquery_branch.subquery_path,
         Some(vec![k(5), k(6)])
@@ -341,7 +344,8 @@ fn merge_default_branch_no_common_prefix() {
     q.merge_default_subquery_branch(SubqueryBranch {
         subquery_path: Some(vec![k(2)]),
         subquery: Some(Box::new(Query::new_single_key(k(20)))),
-    });
+    })
+    .expect("merge should succeed");
     // No common prefix => subquery_path set to None
     assert_eq!(q.default_subquery_branch.subquery_path, None);
     let conds = q.conditional_subquery_branches.as_ref().unwrap();
@@ -363,7 +367,8 @@ fn merge_default_branch_left_path_longer() {
     q.merge_default_subquery_branch(SubqueryBranch {
         subquery_path: Some(vec![k(10), k(20)]),
         subquery: Some(Box::new(Query::new_single_key(k(2)))),
-    });
+    })
+    .expect("merge should succeed");
     // Common path is [10, 20]
     assert_eq!(
         q.default_subquery_branch.subquery_path,
@@ -391,7 +396,8 @@ fn merge_default_branch_right_path_longer() {
     q.merge_default_subquery_branch(SubqueryBranch {
         subquery_path: Some(vec![k(10), k(20), k(40)]),
         subquery: Some(Box::new(Query::new_single_key(k(2)))),
-    });
+    })
+    .expect("merge should succeed");
     assert_eq!(
         q.default_subquery_branch.subquery_path,
         Some(vec![k(10), k(20)])
@@ -417,7 +423,8 @@ fn merge_default_branch_ours_has_path_theirs_none() {
     q.merge_default_subquery_branch(SubqueryBranch {
         subquery_path: None,
         subquery: Some(Box::new(Query::new_single_key(k(20)))),
-    });
+    })
+    .expect("merge should succeed");
     // Path drops to None
     assert_eq!(q.default_subquery_branch.subquery_path, None);
     // Default subquery becomes the other's
@@ -436,7 +443,8 @@ fn merge_default_branch_ours_none_theirs_has_path() {
     q.merge_default_subquery_branch(SubqueryBranch {
         subquery_path: Some(vec![k(7), k(8)]),
         subquery: Some(Box::new(Query::new_single_key(k(20)))),
-    });
+    })
+    .expect("merge should succeed");
     // Path stays None
     assert_eq!(q.default_subquery_branch.subquery_path, None);
     let conds = q.conditional_subquery_branches.as_ref().unwrap();
@@ -506,7 +514,8 @@ fn merge_conditional_boxed_subquery_noop_on_empty_branch() {
             subquery_path: None,
             subquery: None,
         },
-    );
+    )
+    .expect("merge should succeed");
     assert!(q.conditional_subquery_branches.is_none());
 }
 

@@ -5,6 +5,8 @@ use grovedb_merk::tree_type::TreeType;
 use grovedb_version::version::GroveVersion;
 use tempfile::TempDir;
 
+use crate::IndexedAxisEntrySliceExt;
+
 use crate::{
     batch::{QualifiedGroveDbOp, SubelementsDeletionBehavior},
     tests::{common::EMPTY_PATH, make_test_grovedb, TEST_LEAF},
@@ -108,7 +110,8 @@ fn psit_rejects_big_sum_tree_at_i64_boundary() {
     assert_eq!(
         db.indexed_sum_top_k([b"psit".as_slice()].as_ref(), 10, true, None, grove_version,)
             .unwrap()
-            .unwrap(),
+            .unwrap()
+            .key_pairs(),
         vec![(42, b"sum".to_vec())]
     );
 }
@@ -154,7 +157,8 @@ fn delete_tree_rejects_declared_type_mismatch() {
     assert_eq!(
         db.indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version,)
             .unwrap()
-            .unwrap(),
+            .unwrap()
+            .key_pairs(),
         vec![(1, b"row".to_vec())]
     );
     assert_verify_passes(&db, grove_version);
@@ -418,7 +422,8 @@ fn batch_count_changes_remove_all_old_secondary_rows_first() {
             grove_version,
         )
         .unwrap()
-        .unwrap(),
+        .unwrap()
+        .key_pairs(),
         vec![(2, b"a".to_vec()), (2, b"b".to_vec())]
     );
     assert_verify_passes(&db, grove_version);
@@ -488,7 +493,7 @@ fn derived_counts_order_the_secondary_index() {
         )
         .unwrap()
         .expect("top_k");
-    let order: Vec<Vec<u8>> = top.iter().map(|(_, k)| k.clone()).collect();
+    let order: Vec<Vec<u8>> = top.iter().map(|e| e.primary_key.clone()).collect();
     assert_eq!(
         order,
         vec![b"b".to_vec(), b"c".to_vec(), b"a".to_vec()],
@@ -575,7 +580,7 @@ fn batch_rejects_rootless_aggregate_child_under_indexed_primary() {
         .unwrap()
         .expect("top_k");
     assert_eq!(
-        top,
+        top.key_pairs(),
         vec![(9, b"b".to_vec())],
         "the derived count must reach the secondary index"
     );

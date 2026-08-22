@@ -1544,10 +1544,8 @@ mod test {
         // bound — exactly the stack-exhaustion case the depth guard
         // prevents.
         let depth_to_try = MAX_QUERY_ITEM_DECODE_DEPTH + 2;
-        let mut payload: Vec<u8> = Vec::new();
-        for _ in 0..depth_to_try {
-            payload.push(10u8); // AggregateCountOnRange variant tag
-        }
+        // AggregateCountOnRange variant tag, repeated to exceed the depth cap
+        let mut payload: Vec<u8> = vec![10u8; depth_to_try];
         // Innermost: Range(b"a", b"z"). Variant tag 1, then encoded start +
         // end Vec<u8>s in big-endian fixed-int config.
         payload.push(1u8);
@@ -1745,10 +1743,8 @@ mod test {
         // (AggregateSumOnRange) tag. Hits the depth guard inside
         // decode_with_depth on the sum branch.
         let depth_to_try = MAX_QUERY_ITEM_DECODE_DEPTH + 2;
-        let mut payload: Vec<u8> = Vec::new();
-        for _ in 0..depth_to_try {
-            payload.push(11u8); // AggregateSumOnRange variant tag
-        }
+        // AggregateSumOnRange variant tag, repeated to exceed the depth cap
+        let mut payload: Vec<u8> = vec![11u8; depth_to_try];
         // Innermost: Range. Variant tag 1, then start/end Vec<u8> bytes.
         payload.push(1u8);
         let inner = QueryItem::Range(b"a".to_vec()..b"z".to_vec());

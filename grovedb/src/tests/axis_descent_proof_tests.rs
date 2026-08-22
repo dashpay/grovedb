@@ -9,6 +9,8 @@ mod tests {
     use grovedb_merk::proofs::query::{AggregateFold, AxisQuery, IndexAxis};
     use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 
+    use crate::IndexedAxisEntry;
+
     use crate::{
         operations::proof::{
             indexed_axis::AxisEntries, AxisDescentProof, GroveDBProof, LayerProof, ProofBytes,
@@ -137,7 +139,7 @@ mod tests {
             .expect("prove axis path query")
     }
 
-    fn entries_as_sum(entries: &AxisEntries) -> &[(i64, Vec<u8>)] {
+    fn entries_as_sum(entries: &AxisEntries) -> &[IndexedAxisEntry<i64>] {
         match entries {
             AxisEntries::Sum(entries) => entries,
             other => panic!("expected sum entries, got {other:?}"),

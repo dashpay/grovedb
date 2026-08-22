@@ -94,7 +94,7 @@ fn main() {
     // Flush the MMR overlay into the storage batch now that we're done
     // appending. Must come before dropping `ct` (which would lose the overlay)
     // and before committing the storage batch (which writes to disk).
-    ct.commit_mmr().expect("commit_mmr");
+    ct.commit_mmr(GroveVersion::latest()).expect("commit_mmr");
 
     let seed_elapsed = t_seed.elapsed();
 

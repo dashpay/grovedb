@@ -10,6 +10,100 @@
 
 #[cfg(test)]
 mod tests {
+
+    /// An ordinary (non-count-offset) proof over a `ProvableCountSumTree`
+    /// that contains a Reference.
+    ///
+    /// This host hashes via `node_hash_with_count` — only
+    /// `ProvableCountProvableSumTree` binds the sum in — so its references
+    /// need the COUNT exactly as a `ProvableCountTree`'s do. The V1
+    /// reference dispatch matched only `ProvableCountedMerkNode`, so a
+    /// reference here downgraded to the aggregateless `KVRefValueHash` and
+    /// the host's node hash could not be reconstructed: the proof verified
+    /// nowhere.
+    ///
+    /// Pre-existing on develop, not introduced by the indexed-tree work;
+    /// found while fixing the same defect in the count-offset dispatch.
+    ///
+    /// **V0 has the identical defect and is deliberately left alone.** It
+    /// is shipped, consensus-frozen wire format, so changing what it emits
+    /// is a separate decision from a bug fix. The case is unreachable
+    /// through a verifying client either way — no valid proof exists for
+    /// this shape under V0 today.
+    #[test]
+    fn v1_proof_over_a_provable_count_sum_tree_resolves_references() {
+        use grovedb_version::version::GroveVersion;
+
+        use crate::{
+            reference_path::ReferencePathType,
+            tests::{make_test_grovedb, TEST_LEAF},
+            Element, GroveDb, PathQuery, Query, SizedQuery,
+        };
+
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcs",
+            Element::empty_provable_count_sum_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("provable count-sum tree");
+        db.insert(
+            [TEST_LEAF, b"pcs"].as_ref(),
+            b"a",
+            Element::new_sum_item(5),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("target");
+        db.insert(
+            [TEST_LEAF, b"pcs"].as_ref(),
+            b"b",
+            Element::new_reference(ReferencePathType::SiblingReference(b"a".to_vec())),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("reference");
+
+        let mut q = Query::new();
+        q.insert_all();
+        let path_query = PathQuery::new(
+            vec![TEST_LEAF.to_vec(), b"pcs".to_vec()],
+            SizedQuery::new(q, None, None),
+        );
+        let proof = db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove");
+        let (root_hash, result) = GroveDb::verify_query(&proof, &path_query, v).expect(
+            "a reference in a \
+                 ProvableCountSumTree must produce a verifiable proof",
+        );
+        assert_eq!(
+            root_hash,
+            db.root_hash(None, v).unwrap().unwrap(),
+            "the verified root must equal the live grove root"
+        );
+        assert_eq!(result.len(), 2, "both entries must come back");
+
+        let reference_row = result
+            .iter()
+            .find(|(_, key, _)| key == b"b")
+            .expect("reference row");
+        assert_eq!(
+            reference_row.2.as_ref().expect("value present"),
+            &Element::new_sum_item(5),
+            "the reference must surface its dereferenced target"
+        );
+    }
     use grovedb_merk::{
         proofs::{encoding::Decoder, tree::execute, Node, Op, Query},
         tree::{kv::ValueDefinedCostType, AggregateData},

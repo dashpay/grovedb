@@ -1,4 +1,5 @@
 pub mod bulk_append_tree_versions;
+pub mod commitment_tree_versions;
 pub mod grovedb_versions;
 pub mod merk_versions;
 pub mod mmr_versions;
@@ -12,7 +13,8 @@ pub use versioned_feature_core::*;
 use crate::version::v3::GROVE_V3;
 use crate::version::v4::GROVE_V4;
 use crate::version::{
-    bulk_append_tree_versions::BulkAppendTreeVersions, grovedb_versions::GroveDBVersions,
+    bulk_append_tree_versions::BulkAppendTreeVersions,
+    commitment_tree_versions::CommitmentTreeVersions, grovedb_versions::GroveDBVersions,
     merk_versions::MerkVersions, mmr_versions::MmrVersions, v1::GROVE_V1, v2::GROVE_V2,
 };
 
@@ -23,6 +25,7 @@ pub struct GroveVersion {
     pub merk_versions: MerkVersions,
     pub mmr_versions: MmrVersions,
     pub bulk_append_tree_versions: BulkAppendTreeVersions,
+    pub commitment_tree_versions: CommitmentTreeVersions,
 }
 
 impl GroveVersion {

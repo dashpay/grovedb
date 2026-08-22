@@ -532,6 +532,49 @@ impl PathQuery {
         Self { path, query }
     }
 
+    /// Canonical `PathQuery` for a paginated position-range read of an
+    /// append-only, BulkAppendTree-backed element (`BulkAppendTree` or
+    /// `CommitmentTree`) at `path`/`key`.
+    ///
+    /// Selects the element at `key` and subqueries positions
+    /// `[start, start + limit)`, encoded as 8-byte big-endian keys
+    /// (`start + limit` saturates at `u64::MAX`). Prover and verifier both
+    /// derive this query from `(start, limit)`, so a scanning client only
+    /// needs its cursor and page size — see
+    /// [`GroveDb::prove_bulk_position_range`] and
+    /// [`GroveDb::verify_bulk_position_range_proof`].
+    ///
+    /// [`GroveDb::prove_bulk_position_range`]:
+    ///     crate::GroveDb::prove_bulk_position_range
+    /// [`GroveDb::verify_bulk_position_range_proof`]:
+    ///     crate::GroveDb::verify_bulk_position_range_proof
+    pub fn new_bulk_position_range(
+        path: Vec<Vec<u8>>,
+        key: Vec<u8>,
+        start: u64,
+        limit: u16,
+    ) -> Self {
+        let position_query = grovedb_bulk_append_tree::position_range_query(start, limit);
+        Self {
+            path,
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::Key(key)],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: None,
+                        subquery: Some(position_query.into()),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
+                    read_mode: None,
+                },
+                limit: None,
+                offset: None,
+            },
+        }
+    }
+
     /// Construct a `PathQuery` for an aggregate-count-on-range query against
     /// the subtree at `path`. `range` is the inner `QueryItem` describing the
     /// keys to count over; see [`Query::new_aggregate_count_on_range`] for the
@@ -566,6 +609,14 @@ impl PathQuery {
             read_mode: Some(Box::new(ReadMode::Axis(axis_query))),
             ..Query::new()
         }
+    }
+
+    /// An axis-ordered read of the indexed tree at `path`, from an
+    /// already-built [`AxisQuery`] — use it to set a non-default
+    /// projection (`AxisQuery::keys_only`); the typed constructors below
+    /// cover the default cases.
+    pub fn new_axis(path: Vec<Vec<u8>>, axis_query: AxisQuery) -> Self {
+        Self::new_unsized(path, Self::axis_read_node(axis_query))
     }
 
     /// An axis-ordered read of the indexed tree at `path`: a page of
@@ -916,23 +967,41 @@ impl PathQuery {
     }
 
     /// Gets the path of all terminal keys
+    ///
+    /// Version dispatch — see the `terminal_keys` module in `grovedb-query`:
+    /// v0 is the legacy walk frozen for `GROVE_V1`..`GROVE_V3`; v1
+    /// (`GROVE_V4`+) resolves conditional subquery branches per queried item
+    /// (issue #689).
     pub fn terminal_keys(
         &self,
         max_results: usize,
         grove_version: &GroveVersion,
     ) -> Result<Vec<PathKey>, Error> {
-        check_grovedb_v0!(
-            "merge",
-            grove_version
-                .grovedb_versions
-                .path_query_methods
-                .terminal_keys
-        );
         let mut result: Vec<(Vec<Vec<u8>>, Vec<u8>)> = vec![];
-        self.query
-            .query
-            .terminal_keys(self.path.clone(), max_results, &mut result)
-            .map_err(Error::QueryError)?;
+        match grove_version
+            .grovedb_versions
+            .path_query_methods
+            .terminal_keys
+        {
+            0 => self
+                .query
+                .query
+                .terminal_keys_v0(self.path.clone(), max_results, &mut result),
+            1 => self
+                .query
+                .query
+                .terminal_keys_v1(self.path.clone(), max_results, &mut result),
+            version => {
+                return Err(Error::VersionError(
+                    grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                        method: "terminal_keys".to_string(),
+                        known_versions: vec![0, 1],
+                        received: version,
+                    },
+                ))
+            }
+        }
+        .map_err(Error::QueryError)?;
         Ok(result)
     }
 
@@ -1577,6 +1646,28 @@ pub struct SinglePathSubquery<'a> {
     pub left_to_right: bool,
     /// In the path of the path_query, or in a subquery path
     pub in_path: Option<Cow<'a, Key>>,
+    /// True when this level was *synthesized* from a path component
+    /// instead of resolved to a real query node — the `Ordering::Less`
+    /// arm of [`PathQuery::query_items_at_path`] plus every
+    /// mid-`subquery_path` arm, all of which go through
+    /// [`SinglePathSubquery::from_key_when_in_path`].
+    ///
+    /// A synthesized level's `items` is exactly one `QueryItem::Key`,
+    /// so its `left_to_right` carries no query semantics at all: the
+    /// answer is that one key or nothing, and there is no ordering or
+    /// limit interaction to observe. The field is a placeholder, fixed
+    /// at `true`, because the direction the *generating* query used at
+    /// this path — which is what decided the op family the prover
+    /// emitted — is not recoverable from a subset query.
+    ///
+    /// Proof verifiers must therefore not take the stream's
+    /// orientation from `left_to_right` on a synthesized level; they
+    /// read it off the proof's own op family via
+    /// `grovedb_merk::proofs::query::proof_stream_direction`, which
+    /// `execute` independently pins to the stream's key ordering. Proof
+    /// *generation* keeps using `left_to_right` verbatim, so proof
+    /// bytes are unaffected.
+    pub synthesized_path_component: bool,
 }
 
 impl fmt::Display for SinglePathSubquery<'_> {
@@ -1593,6 +1684,11 @@ impl fmt::Display for SinglePathSubquery<'_> {
             Some(path) => writeln!(f, "  in_path: Some({})", hex_to_ascii(path)),
             None => writeln!(f, "  in_path: None"),
         }?;
+        writeln!(
+            f,
+            "  synthesized_path_component: {}",
+            self.synthesized_path_component
+        )?;
         write!(f, "}}")
     }
 }
@@ -1624,8 +1720,14 @@ impl<'a> SinglePathSubquery<'a> {
         SinglePathSubquery {
             items: Cow::Owned(vec![QueryItem::Key(key.clone())]),
             has_subquery: HasSubquery::NoSubquery,
+            // Placeholder — see `synthesized_path_component`. Nothing
+            // here knows which direction the generating query walked
+            // this level in, and for a one-key level nothing needs to:
+            // the direction is an encoding detail of the proof, which
+            // is where verifiers read it from.
             left_to_right: true,
             in_path,
+            synthesized_path_component: true,
         }
     }
 
@@ -1648,6 +1750,7 @@ impl<'a> SinglePathSubquery<'a> {
             has_subquery,
             left_to_right: query.left_to_right,
             in_path: None,
+            synthesized_path_component: false,
         }
     }
 }
@@ -2400,6 +2503,7 @@ mod tests {
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
                     in_path: Some(Cow::Borrowed(&root_path_key_2)),
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2420,6 +2524,7 @@ mod tests {
                                                         * subquery for one item */
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: false,
                 }
             );
         }
@@ -2442,7 +2547,8 @@ mod tests {
                     items: Cow::Owned(vec![QueryItem::Key(subquery_path_key_1.clone())]),
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
-                    in_path: Some(Cow::Borrowed(&subquery_path_key_1))
+                    in_path: Some(Cow::Borrowed(&subquery_path_key_1)),
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2466,7 +2572,8 @@ mod tests {
                     items: Cow::Owned(vec![QueryItem::Key(subquery_path_key_2.clone())]),
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
-                    in_path: Some(Cow::Borrowed(&subquery_path_key_2))
+                    in_path: Some(Cow::Borrowed(&subquery_path_key_2)),
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2493,6 +2600,7 @@ mod tests {
                                                         * add items underneath */
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: false,
                 }
             );
         }
@@ -2519,6 +2627,7 @@ mod tests {
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2567,6 +2676,7 @@ mod tests {
                     has_subquery: HasSubquery::Always,
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: false,
                 }
             );
         }
@@ -2585,7 +2695,9 @@ mod tests {
                     items: Cow::Owned(vec![QueryItem::Key(quantum_key.clone())]),
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
-                    in_path: None, // There should be no path because we are at the end of the path
+                    // There should be no path: we are at the end of the path
+                    in_path: None,
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2640,6 +2752,7 @@ mod tests {
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
                     in_path: Some(Cow::Borrowed(&zero_vec)),
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2750,6 +2863,7 @@ mod tests {
                     )),
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: false,
                 }
             );
         }
@@ -2768,6 +2882,7 @@ mod tests {
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
                     in_path: Some(Cow::Borrowed(&identity_id)),
+                    synthesized_path_component: true,
                 }
             );
         }
@@ -2788,6 +2903,7 @@ mod tests {
                     )),
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: false,
                 }
             );
         }
@@ -2806,6 +2922,7 @@ mod tests {
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
                     in_path: None,
+                    synthesized_path_component: false,
                 }
             );
         }
@@ -3365,6 +3482,73 @@ mod tests {
         let result = path_query.should_add_parent_tree_at_path(&[], grove_version);
         assert!(result.is_ok());
         assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn path_query_terminal_keys_uses_versioned_terminal_keys() {
+        let grove_version = GroveVersion::latest();
+        let path_query = PathQuery::new_unsized(
+            vec![b"root".to_vec()],
+            Query::new_single_key(b"leaf".to_vec()),
+        );
+
+        let keys = path_query
+            .terminal_keys(10, grove_version)
+            .expect("terminal keys");
+
+        assert_eq!(keys, vec![(vec![b"root".to_vec()], b"leaf".to_vec())]);
+    }
+
+    #[test]
+    fn path_query_terminal_keys_conditionals_gate_at_v4() {
+        use grovedb_version::version::{v3::GROVE_V3, v4::GROVE_V4};
+
+        // Query selects only "queried"; a conditional branch exists for the
+        // unqueried key "other". The legacy walk (v1-v3) emits a terminal key
+        // for the unqueried conditional branch; the v4 walk only resolves
+        // conditionals against keys the query actually selects (issue #689).
+        let mut query = Query::new_single_key(b"queried".to_vec());
+        query.add_conditional_subquery(
+            QueryItem::Key(b"other".to_vec()),
+            None,
+            Some(Query::new_single_key(b"inner".to_vec())),
+        );
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let legacy_keys = path_query
+            .terminal_keys(10, &GROVE_V3)
+            .expect("terminal keys under v3");
+        assert_eq!(
+            legacy_keys,
+            vec![
+                (vec![b"root".to_vec(), b"other".to_vec()], b"inner".to_vec()),
+                (vec![b"root".to_vec()], b"queried".to_vec()),
+            ]
+        );
+
+        let fixed_keys = path_query
+            .terminal_keys(10, &GROVE_V4)
+            .expect("terminal keys under v4");
+        assert_eq!(
+            fixed_keys,
+            vec![(vec![b"root".to_vec()], b"queried".to_vec())]
+        );
+    }
+
+    #[test]
+    fn path_query_terminal_keys_unknown_version_errors() {
+        let mut version = GroveVersion::latest().clone();
+        version.grovedb_versions.path_query_methods.terminal_keys = 2;
+
+        let path_query = PathQuery::new_unsized(
+            vec![b"root".to_vec()],
+            Query::new_single_key(b"leaf".to_vec()),
+        );
+
+        let err = path_query
+            .terminal_keys(10, &version)
+            .expect_err("unknown terminal_keys version must error");
+        assert!(matches!(err, Error::VersionError(_)));
     }
 
     // ---------- SizedQuery / PathQuery AggregateCountOnRange validation ----------

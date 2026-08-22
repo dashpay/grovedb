@@ -14,6 +14,8 @@ mod tests {
     use grovedb_merk::proofs::Query as MerkQuery;
     use grovedb_version::version::GroveVersion;
 
+    use crate::IndexedAxisEntrySliceExt;
+
     use crate::{
         batch::QualifiedGroveDbOp,
         operations::proof::indexed_axis::{
@@ -798,6 +800,7 @@ mod tests {
             other_axes_root_hashes: vec![],
             target_is_pcpsit: false,
             secondary_proof: vec![],
+            target_chains: Vec::new(),
             requested_limit: Some(1),
             descending: true,
         };
@@ -823,6 +826,7 @@ mod tests {
             other_axes_root_hashes: vec![],
             target_is_pcpsit: false,
             secondary_proof: vec![],
+            target_chains: Vec::new(),
             requested_k: 1,
             requested_offset: 0,
             descending: true,
@@ -1696,7 +1700,10 @@ mod tests {
         assert_eq!(top.len(), 2);
         // The partial batch must have mirrored the DERIVED count of the
         // new child into the secondary, ahead of the existing "a" (3).
-        assert_eq!(top, vec![(9, b"b".to_vec()), (3, b"a".to_vec())]);
+        assert_eq!(
+            top.key_pairs(),
+            vec![(9, b"b".to_vec()), (3, b"a".to_vec())]
+        );
         assert_verify_passes(&db, grove_version);
     }
 
@@ -1765,7 +1772,7 @@ mod tests {
             .unwrap()
             .expect("top-k");
         assert_eq!(top.len(), 1);
-        assert_eq!(top[0].1, b"x".to_vec());
+        assert_eq!(top[0].primary_key, b"x".to_vec());
         assert_verify_passes(&db, grove_version);
     }
 
@@ -2206,8 +2213,8 @@ mod tests {
         };
         // Descending starting at offset 1: skip "e"(9), then take "d"(7), "c"(5).
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].0, 7);
-        assert_eq!(entries[1].0, 5);
+        assert_eq!(entries[0].ordering_value, 7);
+        assert_eq!(entries[1].ordering_value, 5);
     }
 
     /// PSIT arbitrary query round trip.
@@ -2236,8 +2243,8 @@ mod tests {
             _ => panic!("expected sum"),
         };
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].0, 10);
-        assert_eq!(entries[1].0, 5);
+        assert_eq!(entries[0].ordering_value, 10);
+        assert_eq!(entries[1].ordering_value, 5);
     }
 
     /// L4019-4028: ops_at_level_above (level above) exists but the

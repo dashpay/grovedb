@@ -18,10 +18,17 @@
 //! subtrees collapse to a single `HashWithCount` op (same as
 //! AggregateCountOnRange) so the offset region pays O(log n) proof size
 //! per skipped subtree rather than O(skipped). Returned items inside
-//! the limit window emit as normal count-bearing value nodes (the same
-//! `KVCount` / `KVRefValueHashCount` / etc. used by regular count-tree
-//! proofs), so the result shape is byte-identical to what a regular
-//! merk verifier would produce for the same range without offset.
+//! the limit window emit as normal count-bearing value nodes (`KVCount`
+//! / `KVCountSum` for directly-valued entries, `KVValueHashFeatureType`
+//! for tree- and reference-shaped ones), so the result shape is
+//! byte-identical to what a regular merk verifier would produce for the
+//! same range without offset.
+//!
+//! Reference rows arrive here as `KVValueHashFeatureType` carrying the
+//! REFERENCE's bytes. The layer above rewrites those into the
+//! `KVRefValueHash{Count,CountSum}` family carrying the resolved target
+//! — the same post-pass the regular count-tree flow runs — and this
+//! verifier accepts and authenticates the rewritten variants.
 //!
 //! ## Why `ProvableCountSumTree` only commits the count (not the sum)
 //!

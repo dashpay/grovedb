@@ -283,6 +283,70 @@ impl GroveDb {
         }
     }
 
+    /// Prove the paginated position range `[start, start + limit)` of the
+    /// append-only, BulkAppendTree-backed element at `path`/`key`
+    /// (`Element::BulkAppendTree` or `Element::CommitmentTree`).
+    ///
+    /// This is the scanning hot path: clients walking "all entries since my
+    /// cursor" prove one page per call, passing their cursor as `start`. The
+    /// proof reuses the existing V1 layering (`ProofBytes::BulkAppendTree` /
+    /// `ProofBytes::CommitmentTree`) over the canonical
+    /// [`PathQuery::new_bulk_position_range`] query, so it is chunk-aligned:
+    /// it carries each completed chunk blob overlapping the range plus the
+    /// in-range buffer entries — O(chunks touched), not O(entries). It also
+    /// binds the element itself, whose authenticated `total_count` makes
+    /// absence beyond the end provable (`position >= total_count`), so
+    /// ranges past the end need no per-position absence proofs.
+    ///
+    /// Verify with [`GroveDb::verify_bulk_position_range_proof`], which
+    /// derives the same canonical query from `(path, key, start, limit)`.
+    pub fn prove_bulk_position_range(
+        &self,
+        path: Vec<Vec<u8>>,
+        key: &[u8],
+        start: u64,
+        limit: u16,
+        prove_options: Option<ProveOptions>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<u8>, Error> {
+        check_grovedb_v0_with_cost!(
+            "prove_bulk_position_range",
+            grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .prove_bulk_position_range
+        );
+        let mut cost = OperationCost::default();
+
+        // Fail fast with a clear error when the target is not an append-only
+        // store — a generic proof for some other element type would only be
+        // rejected later, at verification time.
+        let path_refs: Vec<&[u8]> = path.iter().map(|p| p.as_slice()).collect();
+        let subtree_path = grovedb_path::SubtreePath::from(path_refs.as_slice());
+        let element = cost_return_on_error!(
+            &mut cost,
+            self.get_raw_caching_optional(subtree_path, key, true, None, grove_version)
+        );
+        match element.underlying() {
+            Element::BulkAppendTree(..) | Element::CommitmentTree(..) => {}
+            _ => {
+                return Err(Error::InvalidInput(
+                    "prove_bulk_position_range requires a BulkAppendTree or CommitmentTree \
+                     element",
+                ))
+                .wrap_with_cost(cost);
+            }
+        }
+
+        let path_query = PathQuery::new_bulk_position_range(path, key.to_vec(), start, limit);
+        let proof = cost_return_on_error!(
+            &mut cost,
+            self.prove_query(&path_query, prove_options, grove_version)
+        );
+        Ok(proof).wrap_with_cost(cost)
+    }
+
     /// Helper for the top-level count-offset gate in
     /// `prove_query_non_serialized_v{0,1}`. Opens the merk at
     /// `path_query.path` and confirms its `tree_type` is one of the
@@ -1843,7 +1907,7 @@ impl GroveDb {
             // multi-layer accounting (if any) reflects the consumed
             // slots.
             let limit_u64 = path_query.query.limit.map(|l| l as u64);
-            let prove_result = cost_return_on_error!(
+            let mut prove_result = cost_return_on_error!(
                 &mut cost,
                 subtree
                     .prove_count_offset_on_range(
@@ -1865,6 +1929,98 @@ impl GroveDb {
                         e
                     )))
             );
+            // Dereference reference rows before encoding.
+            //
+            // This short-circuit returns without reaching the main
+            // ref-rewriting loop below, which is why the count-offset flow
+            // used to reject reference entries outright. Running the same
+            // rewrite here closes that gap rather than bypassing it.
+            //
+            // These are ORDINARY user references, so they follow ordinary
+            // terminal-reference semantics — unlike an indexed secondary
+            // row, which binds its immediate primary node and is resolved
+            // by `indexed_axis::reference_resolution`. The two rules are
+            // deliberately separate code paths.
+            for op in prove_result.ops.iter_mut() {
+                let node = match op {
+                    Op::Push(node) | Op::PushInverted(node) => node,
+                    _ => continue,
+                };
+                let Node::KVValueHashFeatureType(key, value, _, feature_type) = node else {
+                    continue;
+                };
+                let elem = match Element::deserialize(value, grove_version) {
+                    Ok(e) => e.into_underlying(),
+                    Err(_) => continue,
+                };
+                let (Element::Reference(reference_path, ..)
+                | Element::ReferenceWithSumItem(reference_path, ..)) = elem
+                else {
+                    continue;
+                };
+                let absolute_path = match path_from_reference_path_type(
+                    reference_path,
+                    &path.to_vec(),
+                    Some(key.as_slice()),
+                ) {
+                    Ok(p) => p,
+                    Err(e) => return Err(Error::from(e)).wrap_with_cost(cost),
+                };
+                let referenced_elem = cost_return_on_error!(
+                    &mut cost,
+                    self.follow_reference(
+                        absolute_path.as_slice().into(),
+                        true,
+                        None,
+                        grove_version
+                    )
+                );
+                let serialized_referenced_elem = match referenced_elem.serialize(grove_version) {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        return Err(Error::CorruptedData(String::from(
+                            "unable to serialize element",
+                        )))
+                        .wrap_with_cost(cost);
+                    }
+                };
+                let reference_element_hash = value_hash(value).unwrap_add_cost(&mut cost);
+                *node = match feature_type {
+                    TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => {
+                        Node::KVRefValueHashCountSum(
+                            key.to_owned(),
+                            serialized_referenced_elem,
+                            reference_element_hash,
+                            *count,
+                            *sum,
+                        )
+                    }
+                    // `ProvableCountSumTree` is an eligible count-offset
+                    // host but commits only the COUNT into its node hash
+                    // (`binds_sum_into_hash` is true for PCPS alone), so
+                    // its reference rows take the count-only node — the
+                    // same variant `emit_returned_node` picks for its
+                    // directly-valued rows. Without this arm a reference in
+                    // such a tree hard-errored.
+                    TreeFeatureType::ProvableCountedMerkNode(count)
+                    | TreeFeatureType::ProvableCountedSummedMerkNode(count, _) => {
+                        Node::KVRefValueHashCount(
+                            key.to_owned(),
+                            serialized_referenced_elem,
+                            reference_element_hash,
+                            *count,
+                        )
+                    }
+                    other => {
+                        return Err(Error::CorruptedData(format!(
+                            "count-offset proof: reference row {} carries non-count feature type \
+                             {other:?}",
+                            hex::encode(key)
+                        )))
+                        .wrap_with_cost(cost);
+                    }
+                };
+            }
             let mut serialized = Vec::with_capacity(128);
             encode_into(prove_result.ops.iter(), &mut serialized);
             // Apply consumed limit slots to the outer accounting.
@@ -1905,6 +2061,13 @@ impl GroveDb {
             .query
             .has_aggregate_count_and_sum_on_range_anywhere();
 
+        // `query.left_to_right` is used verbatim, synthesized levels
+        // included: this is the definition of the layer's op family, and
+        // changing it would change proof bytes. The verifier is the side
+        // that cannot reproduce this value — a subset query does not know
+        // what the generating query was — so for a synthesized one-key
+        // level it reads the orientation back off the op family instead.
+        // See `SinglePathSubquery::synthesized_path_component`.
         let mut merk_proof = cost_return_on_error!(
             &mut cost,
             self.generate_merk_proof(
@@ -1942,7 +2105,14 @@ impl GroveDb {
             let count_for_ref = match op {
                 Op::Push(Node::KVValueHashFeatureType(_, _, _, ft))
                 | Op::PushInverted(Node::KVValueHashFeatureType(_, _, _, ft)) => match ft {
-                    TreeFeatureType::ProvableCountedMerkNode(count) => Some(*count),
+                    // `ProvableCountSumTree` hashes via `node_hash_with_count`
+                    // (only PCPS binds the sum in), so its references need the
+                    // COUNT just as a `ProvableCountTree`'s do. Without this
+                    // arm they downgraded to the aggregateless
+                    // `KVRefValueHash` and the host's node hash could not be
+                    // reconstructed — the proof verified nowhere.
+                    TreeFeatureType::ProvableCountedMerkNode(count)
+                    | TreeFeatureType::ProvableCountedSummedMerkNode(count, _) => Some(*count),
                     _ => None,
                 },
                 _ => None,

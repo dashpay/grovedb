@@ -35,6 +35,8 @@ mod tests {
     use grovedb_element::indexed::IndexAxis;
     use grovedb_version::version::GroveVersion;
 
+    use crate::IndexedAxisEntrySliceExt;
+
     use crate::{
         batch::{BatchApplyOptions, QualifiedGroveDbOp},
         tests::{make_test_grovedb, TempGroveDb, TEST_LEAF},
@@ -149,7 +151,8 @@ mod tests {
         assert_eq!(
             db.indexed_count_top_k([TEST_LEAF, b"pcit"].as_ref(), 5, true, None, gv)
                 .unwrap()
-                .expect("top_k"),
+                .expect("top_k")
+                .key_pairs(),
             vec![(0u64, b"child".to_vec())],
             "the child must still be indexed at its derived count of 0, not the claimed 9"
         );
@@ -223,7 +226,8 @@ mod tests {
         assert_eq!(
             db.indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 5, true, None, gv)
                 .unwrap()
-                .expect("top_k"),
+                .expect("top_k")
+                .key_pairs(),
             vec![(42i64, b"entry".to_vec())],
             "baseline: the entry is indexed at sum 42"
         );

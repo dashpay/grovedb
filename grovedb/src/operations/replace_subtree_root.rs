@@ -32,7 +32,8 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into, CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::element::{
-    insert::ElementInsertToStorageExtensions, tree_type::ElementTreeTypeExtensions,
+    get::ElementFetchFromStorageExtensions, insert::ElementInsertToStorageExtensions,
+    tree_type::ElementTreeTypeExtensions,
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{Storage, StorageBatch};
@@ -83,6 +84,22 @@ impl GroveDb {
             )
         );
 
+        // If the parent is an indexed primary, snapshot this entry BEFORE
+        // the rewrite. A canonical secondary row binds the entry's committed
+        // value hash, which this replaces outright — and unlike the non-Merk
+        // appends, `new_element` is caller-supplied, so its aggregates (and
+        // therefore the row's sort key) can differ from what is there. The
+        // old state is what lets the refresh move the row rather than strand
+        // it at the old key.
+        let old_element = cost_return_on_error!(
+            &mut cost,
+            Element::get(&parent_merk, key, true, grove_version).map_err(Error::MerkError)
+        );
+        let old_indexed_state = cost_return_on_error!(
+            &mut cost,
+            GroveDb::capture_indexed_entry_state(&parent_merk, key, &old_element, grove_version)
+        );
+
         cost_return_on_error_into!(
             &mut cost,
             new_element.insert_subtree(
@@ -99,9 +116,11 @@ impl GroveDb {
 
         cost_return_on_error!(
             &mut cost,
-            self.propagate_changes_with_transaction(
+            self.propagate_changes_with_transaction_refreshing_indexed_row(
                 merk_cache,
                 path,
+                key,
+                old_indexed_state,
                 tx.as_ref(),
                 &batch,
                 grove_version,

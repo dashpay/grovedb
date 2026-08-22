@@ -47,6 +47,22 @@
 //!   proved elements. V1..V3 refuse the shape on both sides. Gated because
 //!   it adds an acceptance rule to the live V1 envelope.
 //!
+//! - `path_query_methods.terminal_keys: 1` — `PathQuery::terminal_keys`
+//!   resolves conditional subquery branches per queried item (first matching
+//!   conditional wins, default branch as fallback), so keys never selected by
+//!   the query no longer contribute terminal keys (issue #689). V1..V3 keep
+//!   the legacy walk that expands every conditional branch before the items.
+//!   Gated because terminal keys shape the absence-proof result set assembled
+//!   by verifiers and the `query_keys_optional` result set.
+//!
+//! - `element.path_query_push: 1` — the trusted (non-proof) query walk no
+//!   longer charges the outer limit for a subquery whose matches were
+//!   entirely consumed by `offset` (issue #690): an empty inner result eats
+//!   a limit slot only when nothing was skipped. V1..V3 keep the legacy
+//!   accounting, where e.g. `limit=2, offset=1` can return a single element.
+//!   Proof generation rejects non-zero offsets and never runs this path, so
+//!   only trusted-read result sets are gated.
+//!
 //! - `path_query_methods.merge: 1` — `PathQuery::merge` requires every input
 //!   to agree on `left_to_right` (typed error on conflict) and propagates the
 //!   shared direction to the merged root. V1..V3 keep the long-standing
@@ -83,6 +99,23 @@
 //!   admission bound: raising it ungated would make already-committed
 //!   shield transitions re-validate as under-funded and brick sync.
 //!
+//! - `bulk_append_tree_versions.cost.append_storage_accounting: 1` and
+//!   `commitment_tree_versions.cost.frontier_save_storage_accounting: 1` —
+//!   the append-only family (`BulkAppendTree`, `CommitmentTree`,
+//!   `PrivateDocumentStore`) reports write churn as replacement instead of
+//!   as new storage (issue #822). Each entry's permanent bytes — its share
+//!   of the eventual chunk blob — are charged as `added_bytes` once, at its
+//!   own append; a dense-buffer slot that already holds a committed value
+//!   (epoch 2 onward) is reported as `replaced_bytes` (growth added, shrink
+//!   not credited); the compaction blob is reported as a replacement of the
+//!   entry bytes it supersedes, so only its framing and the MMR internal
+//!   nodes are added; and the in-place frontier rewrite is a replacement of
+//!   the bytes loaded at open. V1..V3 keep issuing every data put with no
+//!   cost information, which bills key + value as new storage every time —
+//!   ≈ 2× the bytes that persist, with the whole ≈ 630 KB blob landing on
+//!   one append per epoch at `chunk_power` 11. Stored bytes, roots and
+//!   proofs are identical under both; gated because the figures are fees.
+//!
 //! Note that `GroveVersion::latest()` resolves to this version, so anything
 //! defaulting to "latest" — tests, benchmarks, tools — exercises every gate
 //! listed above rather than V3 behaviour.
@@ -102,6 +135,7 @@
 use crate::version::grovedb_versions::GroveDBAggregateSumPathQueryMethodVersions;
 use crate::version::{
     bulk_append_tree_versions::{BulkAppendTreeCostVersions, BulkAppendTreeVersions},
+    commitment_tree_versions::{CommitmentTreeCostVersions, CommitmentTreeVersions},
     grovedb_versions::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
@@ -173,7 +207,11 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             get_path_query: 0,
             get_sized_query: 0,
             get_aggregate_sum_query_apply_function: 0,
-            path_query_push: 0,
+            // Bumped from 0 → 1: v1 no longer decrements the outer limit when
+            // a subquery's emptiness was caused by offset skips rather than a
+            // true no-match (issue #690). v0 keeps the legacy accounting for
+            // shipped grove versions.
+            path_query_push: 1,
             aggregate_sum_path_query_push: 0,
             query_item: 0,
             basic_push: 0,
@@ -228,7 +266,12 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 delete_if_empty_tree: 0,
                 delete_if_empty_tree_with_sectional_storage_function: 0,
                 delete_operation_for_delete_internal: 0,
-                delete_internal_on_transaction: 0,
+                // v1: reuse the already-open parent Merk when deleting a
+                // non-empty child tree instead of reopening the parent layer
+                // with the child's tree type (issue #686). v0 (GROVE_V1..V3)
+                // keeps the legacy reopen byte-for-byte for replay
+                // compatibility.
+                delete_internal_on_transaction: 1,
                 delete_internal_without_transaction: 0,
                 average_case_delete_operation_for_delete: 0,
                 worst_case_delete_operation_for_delete: 0,
@@ -272,6 +315,8 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 prove_trunk_chunk_non_serialized: 1,
                 prove_branch_chunk: 0,
                 prove_branch_chunk_non_serialized: 0,
+                prove_bulk_position_range: 0,
+                verify_bulk_position_range_proof: 0,
                 verify_query_with_options: 0,
                 verify_query_raw: 0,
                 verify_layer_proof: 0,
@@ -326,8 +371,8 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
         },
         aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions { merge: 0 },
         path_query_methods: GroveDBPathQueryMethodVersions {
-            terminal_keys: 0,
-            merge: 1, // direction-aware merge: agreement required and propagated (V4+)
+            terminal_keys: 1, // per-item conditional resolution (V4+), see issue #689
+            merge: 1,         // direction-aware merge: agreement required and propagated (V4+)
             query_items_at_path: 0,
             should_add_parent_tree_at_path: 0,
             unified_read_mode: 1,
@@ -388,6 +433,20 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
     bulk_append_tree_versions: BulkAppendTreeVersions {
         cost: BulkAppendTreeCostVersions {
             compaction_hash_count: 1,
+            // Append storage accounting: each entry's permanent bytes are
+            // charged once (its chunk-blob share, at its own append); buffer
+            // slot rewrites and the compaction blob are reported as
+            // replacements of the bytes they supersede instead of as new
+            // storage (issue #822). Stored bytes and roots are unchanged.
+            append_storage_accounting: 1,
+        },
+    },
+    // Frontier save: the in-place rewrite of `__ct_data__` is reported as a
+    // replacement of the bytes loaded at open, with only growth added
+    // (issue #822). Frontier bytes and anchors are unchanged.
+    commitment_tree_versions: CommitmentTreeVersions {
+        cost: CommitmentTreeCostVersions {
+            frontier_save_storage_accounting: 1,
         },
     },
 };

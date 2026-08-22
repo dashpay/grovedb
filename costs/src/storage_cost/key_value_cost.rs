@@ -39,7 +39,7 @@ use crate::{
 };
 
 /// Storage only operation costs separated by key and value
-#[derive(PartialEq, Clone, Eq, Default)]
+#[derive(Debug, PartialEq, Clone, Eq, Default)]
 pub struct KeyValueStorageCost {
     /// Key storage_cost costs
     pub key_storage_cost: StorageCost,
@@ -110,6 +110,33 @@ impl KeyValueStorageCost {
         }
     }
 
+    /// Cost of rewriting an existing value in place — `previous_len` bytes
+    /// stored under a key that already exists, overwritten with `new_len`
+    /// bytes — with no refund semantics.
+    ///
+    /// The paid size of a value is its length plus the varint encoding that
+    /// length, which is what the commit path verifies `added + replaced`
+    /// against. The key is not charged (it exists); `replaced_bytes` is the
+    /// smaller of the previous and the new paid size; `added_bytes` is the
+    /// growth beyond the previous size, if any; a shrink is NOT credited as
+    /// removed bytes — used for rolling data (a reused buffer slot, a
+    /// frontier rewritten on every append) where a refund would mean paying
+    /// someone back for bytes nobody owns.
+    pub fn for_in_place_value_rewrite(previous_len: u32, new_len: u32) -> Self {
+        let paid_previous = previous_len + previous_len.required_space() as u32;
+        let paid_new = new_len + new_len.required_space() as u32;
+        KeyValueStorageCost {
+            key_storage_cost: StorageCost::default(),
+            value_storage_cost: StorageCost {
+                added_bytes: paid_new.saturating_sub(paid_previous),
+                replaced_bytes: paid_new.min(paid_previous),
+                removed_bytes: NoStorageRemoval,
+            },
+            new_node: false,
+            needs_value_verification: true,
+        }
+    }
+
     /// Returns the total removed bytes between the key removed bytes and the
     /// value removed bytes
     pub fn combined_removed_bytes(self) -> StorageRemovedBytes {
@@ -136,5 +163,49 @@ impl AddAssign for KeyValueStorageCost {
         self.value_storage_cost += rhs.value_storage_cost;
         self.new_node &= rhs.new_node;
         self.needs_value_verification &= rhs.needs_value_verification;
+    }
+}
+
+#[cfg(test)]
+mod in_place_rewrite_tests {
+    use super::*;
+
+    #[test]
+    fn same_size_is_fully_replaced() {
+        let c = KeyValueStorageCost::for_in_place_value_rewrite(312, 312);
+        assert_eq!(c.value_storage_cost.replaced_bytes, 314);
+        assert_eq!(c.value_storage_cost.added_bytes, 0);
+        assert_eq!(c.value_storage_cost.removed_bytes, NoStorageRemoval);
+        assert_eq!(c.key_storage_cost, StorageCost::default());
+        assert!(!c.new_node);
+        assert!(c.needs_value_verification);
+        // Verifies against the paid size of the new value.
+        assert!(c.value_storage_cost.verify(314).is_ok());
+    }
+
+    #[test]
+    fn growth_is_added_on_top_of_the_previous_size() {
+        // 74 -> 106 bytes (a frontier gaining one ommer).
+        let c = KeyValueStorageCost::for_in_place_value_rewrite(74, 106);
+        assert_eq!(c.value_storage_cost.replaced_bytes, 75);
+        assert_eq!(c.value_storage_cost.added_bytes, 32);
+        assert!(c.value_storage_cost.verify(107).is_ok());
+    }
+
+    #[test]
+    fn shrink_is_replaced_at_the_new_size_and_not_credited() {
+        let c = KeyValueStorageCost::for_in_place_value_rewrite(1066, 74);
+        assert_eq!(c.value_storage_cost.replaced_bytes, 75);
+        assert_eq!(c.value_storage_cost.added_bytes, 0);
+        assert_eq!(c.value_storage_cost.removed_bytes, NoStorageRemoval);
+        assert!(c.value_storage_cost.verify(75).is_ok());
+    }
+
+    #[test]
+    fn varint_width_change_counts_as_growth() {
+        // 127 -> 128 bytes crosses a varint boundary: paid 128 -> 130.
+        let c = KeyValueStorageCost::for_in_place_value_rewrite(127, 128);
+        assert_eq!(c.value_storage_cost.replaced_bytes, 128);
+        assert_eq!(c.value_storage_cost.added_bytes, 2);
     }
 }

@@ -26,6 +26,9 @@ pub struct MemStorageContext {
     pub data: RefCell<HashMap<Vec<u8>, Vec<u8>>>,
     pub fail_get: Cell<bool>,
     pub fail_put: Cell<bool>,
+    /// Every data `put` in order, with the cost information it carried —
+    /// what a real storage context would hand the commit path to bill.
+    pub puts: RefCell<Vec<(Vec<u8>, Option<KeyValueStorageCost>)>>,
 }
 
 impl MemStorageContext {
@@ -69,7 +72,7 @@ impl<'db> StorageContext<'db> for MemStorageContext {
         key: K,
         value: &[u8],
         _children_sizes: ChildrenSizesWithIsSumTree,
-        _cost_info: Option<KeyValueStorageCost>,
+        cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), grovedb_storage::Error> {
         if self.fail_put.get() {
             return Err(grovedb_storage::Error::StorageError(
@@ -77,6 +80,9 @@ impl<'db> StorageContext<'db> for MemStorageContext {
             ))
             .wrap_with_cost(OperationCost::default());
         }
+        self.puts
+            .borrow_mut()
+            .push((key.as_ref().to_vec(), cost_info));
         self.data
             .borrow_mut()
             .insert(key.as_ref().to_vec(), value.to_vec());

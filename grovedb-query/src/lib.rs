@@ -54,9 +54,12 @@ pub mod proofs;
 mod query;
 
 mod subquery_branch;
+mod terminal_keys;
 
 pub use aggregate_sum_query::AggregateSumQuery;
-pub use axis_query::{AggregateFold, AxisQuery, AxisTraversal, IndexAxis, UnknownAxisTag};
+pub use axis_query::{
+    AggregateFold, AxisProjection, AxisQuery, AxisTraversal, IndexAxis, UnknownAxisTag,
+};
 pub use proof_items::ProofItems;
 pub use proof_status::ProofStatus;
 pub use query::Query;

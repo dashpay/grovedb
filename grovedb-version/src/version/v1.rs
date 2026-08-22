@@ -1,6 +1,7 @@
 use crate::version::grovedb_versions::GroveDBAggregateSumPathQueryMethodVersions;
 use crate::version::{
     bulk_append_tree_versions::{BulkAppendTreeCostVersions, BulkAppendTreeVersions},
+    commitment_tree_versions::{CommitmentTreeCostVersions, CommitmentTreeVersions},
     grovedb_versions::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
@@ -167,6 +168,8 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 prove_trunk_chunk_non_serialized: 0,
                 prove_branch_chunk: 0,
                 prove_branch_chunk_non_serialized: 0,
+                prove_bulk_position_range: 0,
+                verify_bulk_position_range_proof: 0,
                 verify_query_with_options: 0,
                 verify_query_raw: 0,
                 verify_layer_proof: 0,
@@ -273,6 +276,19 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
     bulk_append_tree_versions: BulkAppendTreeVersions {
         cost: BulkAppendTreeCostVersions {
             compaction_hash_count: 0,
+            // Append storage accounting: the shipped figure, which bills
+            // every data put (buffer slot, chunk blob, MMR node) as new
+            // storage. Locked — released versions replay what they were
+            // admitted under.
+            append_storage_accounting: 0,
+        },
+    },
+    // Frontier save: the shipped figure, which bills the rewritten frontier
+    // (key and value) as new storage on every append. Locked for the same
+    // reason.
+    commitment_tree_versions: CommitmentTreeVersions {
+        cost: CommitmentTreeCostVersions {
+            frontier_save_storage_accounting: 0,
         },
     },
 };

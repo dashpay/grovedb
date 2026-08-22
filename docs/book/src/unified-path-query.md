@@ -49,6 +49,7 @@ pub struct AxisQuery {
     pub axis: IndexAxis,          // Count = 0 | Sum = 1 | Avg = 2
     pub traversal: AxisTraversal,
     pub descending: bool,
+    pub projection: AxisProjection, // Entries = 0 (default) | Keys = 1
 }
 
 pub enum AxisTraversal {
@@ -65,6 +66,19 @@ pub enum AxisTraversal {
 
 `RankedPage` is directional: `descending: true` reads it as top-k,
 `false` as bottom-k — one wire shape, both leaderboard ends.
+
+`projection` is an **unproved-read** choice for the two entry-listing
+traversals. `Entries` (the default) returns each entry with its
+resolved primary value; `Keys` returns the `(ordering_value,
+original_key)` pairs straight from the pinned secondary view and never
+opens the primary — no primary point reads after the page was
+collected (which, through a caller-supplied `None` transaction, would
+sit outside the iterator's view), and no reads for values a caller
+that only ranks would discard. A proof always carries the values, and
+verification yields entries; keys are a strict projection of them, so
+the prover and verifier treat a `Keys` query exactly as `Entries`.
+`run_path_query` returns `AxisKeys` / `BranchedAxisKeys` for a `Keys`
+read.
 
 `AggregateOverValueRange` makes the caller SAY which scalar they mean,
 because both readings are meaningful on both axes and the "obvious"

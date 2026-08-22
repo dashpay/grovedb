@@ -16,6 +16,8 @@ mod tests {
     use grovedb_storage::{Storage, StorageBatch};
     use grovedb_version::version::GroveVersion;
 
+    use crate::IndexedAxisEntrySliceExt;
+
     use crate::{
         operations::insert::InsertOptions,
         tests::{make_test_grovedb, TEST_LEAF},
@@ -1782,7 +1784,7 @@ mod tests {
             .unwrap()
             .expect("top-k over distinct derived counts");
         assert_eq!(
-            top,
+            top.key_pairs(),
             (0..15u64)
                 .rev()
                 .map(|i| (i, format!("k{:02}", i).into_bytes()))
@@ -1850,7 +1852,7 @@ mod tests {
             .unwrap()
             .expect("ascending top-k over tied derived counts");
         assert_eq!(
-            asc,
+            asc.key_pairs(),
             (0..10)
                 .map(|i| (SHARED_COUNT, format!("k{:02}", i).into_bytes()))
                 .collect::<Vec<_>>()
