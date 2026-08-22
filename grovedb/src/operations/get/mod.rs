@@ -399,29 +399,14 @@ impl GroveDb {
                     .map_err(|e| e.into())
             }
             .unwrap_add_cost(&mut cost);
-            // Look through `NonCounted` so a parent stored as
-            // `NonCounted(Tree)` (or any wrapped tree variant) still
-            // validates as a subtree. Without this, APIs that gate on
-            // check_subtree_exists would reject paths through wrapped
-            // parents — breaking the wrapper-transparency contract.
-            match element.map(|e| e.into_underlying()) {
-                Ok(Element::Tree(..))
-                | Ok(Element::SumTree(..))
-                | Ok(Element::BigSumTree(..))
-                | Ok(Element::CountTree(..))
-                | Ok(Element::CountSumTree(..))
-                | Ok(Element::ProvableCountTree(..))
-                | Ok(Element::ProvableCountSumTree(..))
-                | Ok(Element::ProvableSumTree(..))
-                | Ok(Element::ProvableCountProvableSumTree(..))
-                | Ok(Element::ProvableCountIndexedTree(..))
-                | Ok(Element::ProvableSumIndexedTree(..))
-                | Ok(Element::ProvableCountProvableSumIndexedTree(..))
-                | Ok(Element::CommitmentTree(..))
-                | Ok(Element::MmrTree(..))
-                | Ok(Element::BulkAppendTree(..))
-                | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
-                | Ok(Element::PrivateDocumentStore(..)) => Ok(()).wrap_with_cost(cost),
+            // `is_any_tree()` is the single source of truth for "this
+            // element is a subtree" (every Merk and non-Merk tree variant),
+            // and it looks through `NonCounted` itself, so a parent stored
+            // as `NonCounted(Tree)` (or any wrapped tree variant) still
+            // validates. Enumerating variants here instead has repeatedly
+            // drifted behind new tree types (#710, #657, #787).
+            match element {
+                Ok(ref e) if e.is_any_tree() => Ok(()).wrap_with_cost(cost),
                 Ok(_) | Err(Error::PathKeyNotFound(_)) => Err(error_fn()).wrap_with_cost(cost),
                 Err(e) => Err(e).wrap_with_cost(cost),
             }
