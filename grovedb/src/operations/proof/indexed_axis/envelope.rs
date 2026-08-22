@@ -275,7 +275,6 @@ impl AxisEntries {
         }
     }
 
-    /// Whether the result list is empty.
     /// An empty entry list of the right variant for `axis`.
     pub fn empty_for_axis(axis: grovedb_element::indexed::IndexAxis) -> Self {
         match axis {
@@ -298,6 +297,17 @@ impl AxisEntries {
     /// Whether there are no entries.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// The keys-only projection of these entries — what an
+    /// `AxisProjection::Keys` read of the same page returns.
+    pub fn to_keys(&self) -> crate::query_result_type::AxisKeys {
+        use crate::query_result_type::{AxisKeys, IndexedAxisEntrySliceExt};
+        match self {
+            AxisEntries::Count(v) => AxisKeys::Count(v.key_pairs()),
+            AxisEntries::Sum(v) => AxisKeys::Sum(v.key_pairs()),
+            AxisEntries::Avg(v) => AxisKeys::Avg(v.key_pairs()),
+        }
     }
 }
 
