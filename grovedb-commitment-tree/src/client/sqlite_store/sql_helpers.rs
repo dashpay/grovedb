@@ -18,10 +18,26 @@ use super::{
     SqliteShardStoreError, SHARD_HEIGHT,
 };
 
+fn non_negative_i64_to_u64(value_name: &str, value: i64) -> Result<u64, SqliteShardStoreError> {
+    u64::try_from(value).map_err(|_| {
+        SqliteShardStoreError::Serialization(format!(
+            "invalid negative {value_name} in sqlite row: {value}"
+        ))
+    })
+}
+
+fn u64_to_i64(value_name: &str, value: u64) -> Result<i64, SqliteShardStoreError> {
+    i64::try_from(value).map_err(|_| {
+        SqliteShardStoreError::Serialization(format!(
+            "{value_name} value {value} exceeds sqlite i64 range"
+        ))
+    })
+}
+
 pub(crate) fn create_tables(conn: &Connection) -> Result<(), SqliteShardStoreError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS commitment_tree_shards (
-            shard_index INTEGER PRIMARY KEY,
+            shard_index INTEGER PRIMARY KEY CHECK (shard_index >= 0),
             shard_data  BLOB NOT NULL
         );
         CREATE TABLE IF NOT EXISTS commitment_tree_cap (
@@ -30,11 +46,11 @@ pub(crate) fn create_tables(conn: &Connection) -> Result<(), SqliteShardStoreErr
         );
         CREATE TABLE IF NOT EXISTS commitment_tree_checkpoints (
             checkpoint_id INTEGER PRIMARY KEY,
-            position      INTEGER
+            position      INTEGER CHECK (position IS NULL OR position >= 0)
         );
         CREATE TABLE IF NOT EXISTS commitment_tree_checkpoint_marks_removed (
             checkpoint_id INTEGER NOT NULL,
-            position      INTEGER NOT NULL,
+            position      INTEGER NOT NULL CHECK (position >= 0),
             PRIMARY KEY (checkpoint_id, position),
             FOREIGN KEY (checkpoint_id) REFERENCES commitment_tree_checkpoints(checkpoint_id)
         );",
@@ -46,7 +62,7 @@ pub(crate) fn sql_get_shard(
     conn: &Connection,
     shard_root: Address,
 ) -> Result<Option<LocatedPrunableTree<MerkleHashOrchard>>, SqliteShardStoreError> {
-    let index = shard_root.index() as i64;
+    let index = u64_to_i64("shard_index", shard_root.index())?;
     let row: Option<Vec<u8>> = conn
         .query_row(
             "SELECT shard_data FROM commitment_tree_shards WHERE shard_index = ?1",
@@ -85,7 +101,8 @@ pub(crate) fn sql_last_shard(
     match row {
         None => Ok(None),
         Some((index, data)) => {
-            let addr = Address::from_parts(Level::from(SHARD_HEIGHT), index as u64);
+            let index = non_negative_i64_to_u64("shard_index", index)?;
+            let addr = Address::from_parts(Level::from(SHARD_HEIGHT), index);
             let mut pos = 0;
             let tree = deserialize_tree(&data, &mut pos)?;
             let located = LocatedTree::from_parts(addr, tree).map_err(|addr| {
@@ -102,7 +119,7 @@ pub(crate) fn sql_put_shard(
     conn: &Connection,
     subtree: &LocatedPrunableTree<MerkleHashOrchard>,
 ) -> Result<(), SqliteShardStoreError> {
-    let index = subtree.root_addr().index() as i64;
+    let index = u64_to_i64("shard_index", subtree.root_addr().index())?;
     let data = serialize_tree(subtree.root());
     conn.execute(
         "INSERT OR REPLACE INTO commitment_tree_shards (shard_index, shard_data) VALUES (?1, ?2)",
@@ -116,13 +133,14 @@ pub(crate) fn sql_get_shard_roots(
 ) -> Result<Vec<Address>, SqliteShardStoreError> {
     let mut stmt =
         conn.prepare("SELECT shard_index FROM commitment_tree_shards ORDER BY shard_index")?;
-    let rows = stmt.query_map([], |row| {
-        let index: i64 = row.get(0)?;
-        Ok(Address::from_parts(Level::from(SHARD_HEIGHT), index as u64))
-    })?;
+    let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
     let mut result = Vec::new();
-    for addr in rows {
-        result.push(addr?);
+    for index in rows {
+        let index = index?;
+        result.push(Address::from_parts(
+            Level::from(SHARD_HEIGHT),
+            non_negative_i64_to_u64("shard_index", index)?,
+        ));
     }
     Ok(result)
 }
@@ -131,9 +149,10 @@ pub(crate) fn sql_truncate_shards(
     conn: &Connection,
     shard_index: u64,
 ) -> Result<(), SqliteShardStoreError> {
+    let shard_index = u64_to_i64("shard_index", shard_index)?;
     conn.execute(
         "DELETE FROM commitment_tree_shards WHERE shard_index >= ?1",
-        params![shard_index as i64],
+        params![shard_index],
     )?;
     Ok(())
 }
@@ -197,21 +216,27 @@ pub(crate) fn sql_add_checkpoint(
     checkpoint_id: u32,
     checkpoint: &Checkpoint,
 ) -> Result<(), SqliteShardStoreError> {
-    let tx = conn.unchecked_transaction()?;
     let position: Option<i64> = match checkpoint.tree_state() {
         TreeState::Empty => None,
-        TreeState::AtPosition(pos) => Some(u64::from(pos) as i64),
+        TreeState::AtPosition(pos) => Some(u64_to_i64("position", u64::from(pos))?),
     };
+    let mark_positions: Vec<i64> = checkpoint
+        .marks_removed()
+        .iter()
+        .map(|mark_pos| u64_to_i64("mark position", u64::from(*mark_pos)))
+        .collect::<Result<_, _>>()?;
+
+    let tx = conn.unchecked_transaction()?;
     tx.execute(
         "INSERT INTO commitment_tree_checkpoints (checkpoint_id, position) VALUES (?1, ?2)",
         params![checkpoint_id, position],
     )?;
 
-    for mark_pos in checkpoint.marks_removed() {
+    for mark_pos in mark_positions {
         tx.execute(
             "INSERT INTO commitment_tree_checkpoint_marks_removed (checkpoint_id, position) \
              VALUES (?1, ?2)",
-            params![checkpoint_id, u64::from(*mark_pos) as i64],
+            params![checkpoint_id, mark_pos],
         )?;
     }
     tx.commit()?;
@@ -312,24 +337,30 @@ where
         None => Ok(false),
         Some(mut cp) => {
             update(&mut cp)?;
+            let position: Option<i64> = match cp.tree_state() {
+                TreeState::Empty => None,
+                TreeState::AtPosition(pos) => Some(u64_to_i64("position", u64::from(pos))?),
+            };
+            let mark_positions: Vec<i64> = cp
+                .marks_removed()
+                .iter()
+                .map(|mark_pos| u64_to_i64("mark position", u64::from(*mark_pos)))
+                .collect::<Result<_, _>>()?;
+
             let tx = conn.unchecked_transaction()?;
             tx.execute(
                 "DELETE FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id = ?1",
                 params![checkpoint_id],
             )?;
-            let position: Option<i64> = match cp.tree_state() {
-                TreeState::Empty => None,
-                TreeState::AtPosition(pos) => Some(u64::from(pos) as i64),
-            };
             tx.execute(
                 "UPDATE commitment_tree_checkpoints SET position = ?1 WHERE checkpoint_id = ?2",
                 params![position, checkpoint_id],
             )?;
-            for mark_pos in cp.marks_removed() {
+            for mark_pos in mark_positions {
                 tx.execute(
                     "INSERT INTO commitment_tree_checkpoint_marks_removed (checkpoint_id, \
                      position) VALUES (?1, ?2)",
-                    params![checkpoint_id, u64::from(*mark_pos) as i64],
+                    params![checkpoint_id, mark_pos],
                 )?;
             }
             tx.commit()?;
@@ -384,18 +415,20 @@ fn sql_load_checkpoint(
 ) -> Result<Checkpoint, SqliteShardStoreError> {
     let tree_state = match position {
         None => TreeState::Empty,
-        Some(p) => TreeState::AtPosition(Position::from(p as u64)),
+        Some(p) => TreeState::AtPosition(Position::from(non_negative_i64_to_u64("position", p)?)),
     };
 
     let mut stmt = conn.prepare(
         "SELECT position FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id = ?1",
     )?;
-    let marks: BTreeSet<Position> = stmt
-        .query_map(params![checkpoint_id], |row| {
-            let p: i64 = row.get(0)?;
-            Ok(Position::from(p as u64))
-        })?
-        .collect::<Result<BTreeSet<_>, _>>()?;
+    let rows = stmt.query_map(params![checkpoint_id], |row| row.get::<_, i64>(0))?;
+    let mut marks = BTreeSet::new();
+    for position in rows {
+        let position = position?;
+        marks.insert(Position::from(non_negative_i64_to_u64(
+            "position", position,
+        )?));
+    }
 
     Ok(Checkpoint::from_parts(tree_state, marks))
 }
