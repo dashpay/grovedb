@@ -27,4 +27,19 @@ pub struct CommitmentTreeCostVersions {
     /// paid size, `added_bytes` = growth only, shrink not credited); the very
     /// first save of a tree, which creates the key, stays fully added.
     pub frontier_save_storage_accounting: FeatureVersion,
+    /// How the Sinsemilla frontier's per-append cost is charged.
+    ///
+    /// Version 0 charges the actual work of the position: `32 +
+    /// trailing_ones(position)` Sinsemilla hashes on an append, the frontier's
+    /// actual serialized size (`42 + 32 · popcount(position)` bytes) when it
+    /// is loaded at open and rewritten at save. Version 1 charges a fixed
+    /// model derived from the tree's depth instead — `depth + 1` Sinsemilla
+    /// hashes (the root walk plus the average ommer merge) and a
+    /// `42 + 32 · depth/2`-byte frontier (the average over the position
+    /// space) loaded and replaced — so every append to a commitment tree
+    /// costs the same whatever its position. When set, it also decides the
+    /// save's storage accounting (a replacement of the model size), taking
+    /// precedence over `frontier_save_storage_accounting`. Frontier bytes
+    /// and anchors are identical under both.
+    pub frontier_cost_model: FeatureVersion,
 }

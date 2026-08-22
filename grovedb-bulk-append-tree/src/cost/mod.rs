@@ -18,8 +18,10 @@
 //!   permanent bytes once — its chunk-blob share, at its own append — and
 //!   reports every buffer write (slot and path record, which are churn: the
 //!   buffer is rewritten each epoch and is not the entry's long-term
-//!   storage) and the compaction blob as replacements, never as growth; it
-//!   also bills the buffer's fixed root-maintenance model.
+//!   storage) as replacements, never as growth; it charges every append the
+//!   fixed model — the buffer's root-maintenance model plus the compaction
+//!   amortized over the epoch — and bills the compacting append nothing
+//!   extra (the blob and MMR nodes it writes are prepaid).
 
 mod v0;
 mod v1;
@@ -56,12 +58,36 @@ pub(crate) struct AppendStorageAccounting {
     /// Whether the entry's chunk-blob share is charged as added storage at
     /// its own append (so the later blob write can be a replacement).
     prepay_chunk_share: bool,
-    /// Whether the dense buffer's own reads (its root-maintenance model,
-    /// from GROVE_V4 a fixed figure per insert) are billed by the
-    /// `Result`-returning appends through `storage_accounting_cost`, on top
-    /// of the hash count they have always forwarded. The shipped accounting
-    /// dropped them.
-    pub bill_dense_io: bool,
+    /// Whether an append is charged the FIXED per-append model instead of
+    /// the work of its particular position: the dense buffer's
+    /// root-maintenance model (`v1_insert_model_cost`, reads and hashes) on
+    /// every append — buffered or compacting — plus the compaction amortized
+    /// over the epoch (one blake3 per append, the entry's own bytes as the
+    /// blob rewrite it will be part of, and a share of the blob framing and
+    /// MMR nodes as added storage), with the compacting append's own work
+    /// (the read-back, the chunk-leaf hash, the MMR merges) billed nothing
+    /// extra. The shipped accounting bills the dense walk's hashes and the
+    /// compaction's hashes where they happen and drops the reads.
+    pub fixed_model: bool,
+}
+
+/// The blake3 calls a compaction performs, amortized over the epoch it
+/// serves: the chunk-leaf hash and the MMR merges and bagging are at most a
+/// few dozen per `2^chunk_power` appends, so one per append covers them.
+pub const AMORTIZED_COMPACTION_HASHES: u32 = 1;
+
+/// Bytes a compaction adds beyond the epoch's entry bytes, amortized over
+/// the epoch: the chunk blob's framing (its MMR leaf key with the 32-byte
+/// path prefix, the leaf envelope, the blob header and length varints —
+/// ≈ 88 bytes) and the MMR internal node the push creates on average (one
+/// per chunk: key, 33-byte node, length — 71 bytes).
+pub const COMPACTION_OVERHEAD_BYTES_PER_EPOCH: u32 = 88 + 71;
+
+/// The compaction overhead an append is charged as added storage under the
+/// fixed model: the epoch's share of [`COMPACTION_OVERHEAD_BYTES_PER_EPOCH`],
+/// rounded up.
+pub fn amortized_compaction_added_bytes(epoch_size: u64) -> u32 {
+    (COMPACTION_OVERHEAD_BYTES_PER_EPOCH as u64).div_ceil(epoch_size.max(1)) as u32
 }
 
 #[cfg(feature = "storage")]
@@ -72,6 +98,18 @@ impl AppendStorageAccounting {
     pub fn prepaid_chunk_bytes(&self, value_len: usize) -> u32 {
         if self.prepay_chunk_share {
             u32::try_from(value_len).unwrap_or(u32::MAX)
+        } else {
+            0
+        }
+    }
+
+    /// The compaction overhead — blob framing and MMR node — an append is
+    /// charged as added storage under the fixed model: the epoch's share,
+    /// rounded up (one byte at `chunk_power` 11). Nothing when the
+    /// compaction is charged where it happens.
+    pub fn amortized_compaction_added_bytes(&self, epoch_size: u64) -> u32 {
+        if self.fixed_model {
+            amortized_compaction_added_bytes(epoch_size)
         } else {
             0
         }
@@ -101,12 +139,14 @@ pub(crate) fn append_storage_accounting(
     }
 }
 
-/// Hashes to report for a compacting append.
+/// Hashes to report for a compacting append, on top of what every append
+/// reports.
 ///
 /// `leaf_count` is the MMR leaf count BEFORE the push (what
 /// `hash_count_for_push` expects); `mmr_size_after_push` is the size the MMR
 /// reached, which determines how many peaks the compaction's `get_root` had
-/// to fold.
+/// to fold. Version 1 reports nothing here: the compaction is amortized into
+/// every append ([`AMORTIZED_COMPACTION_HASHES`]).
 pub(crate) fn compaction_hash_count(
     leaf_count: u64,
     mmr_size_after_push: u64,

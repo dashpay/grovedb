@@ -193,6 +193,7 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         total_count: u64,
         chunk_power: u8,
         storage: S,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, CommitmentTreeError> {
         let mut cost = OperationCost::default();
 
@@ -207,12 +208,21 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
             }
         };
 
-        // Read frontier from the bulk tree's storage
-        let data = bulk_tree
-            .dense_tree
-            .storage
-            .get(COMMITMENT_TREE_DATA_KEY)
-            .unwrap_add_cost(&mut cost);
+        // Read frontier from the bulk tree's storage. Under the fixed
+        // frontier cost model the read is charged at the model size
+        // whatever the position's actual serialized size.
+        let fixed_model = match cost::frontier_cost_model(grove_version) {
+            Ok(f) => f,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
+        let read = bulk_tree.dense_tree.storage.get(COMMITMENT_TREE_DATA_KEY);
+        if fixed_model {
+            cost.seek_count += 1;
+            cost.storage_loaded_bytes += crate::MODEL_FRONTIER_SERIALIZED_LEN as u64;
+        } else {
+            cost += read.cost;
+        }
+        let data = read.value;
 
         let (frontier, persisted_frontier_len) = match data {
             Ok(Some(bytes)) => match CommitmentFrontier::deserialize(&bytes) {
@@ -353,13 +363,24 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         // accounting (GROVE_V1..V3). See `BulkAppendTree` issue #822.
         cost += bulk_result.storage_accounting_cost;
 
-        // 2. Append cmx to Sinsemilla frontier (tracks sinsemilla_hash_calls)
+        // 2. Append cmx to Sinsemilla frontier. The Sinsemilla hashes are
+        //    charged as performed (`32 + trailing_ones(position)`) or, under
+        //    the fixed frontier cost model, at the depth-derived model so the
+        //    charge does not depend on the position.
+        let fixed_model = match cost::frontier_cost_model(grove_version) {
+            Ok(f) => f,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
         let sinsemilla_root = match self.frontier.append(cmx) {
             grovedb_costs::CostContext {
                 value: Ok(root),
                 cost: frontier_cost,
             } => {
-                cost += frontier_cost;
+                if fixed_model {
+                    cost.sinsemilla_hash_calls += crate::MODEL_FRONTIER_APPEND_SINSEMILLA_HASHES;
+                } else {
+                    cost += frontier_cost;
+                }
                 root
             }
             // codecov:ignore — CommitmentFrontier::append can only fail with InvalidFieldElement
@@ -448,6 +469,10 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     {
         let mut cost = OperationCost::default();
         let expected_payload = ciphertext_payload_size::<M>();
+        let fixed_model = match cost::frontier_cost_model(grove_version) {
+            Ok(f) => f,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
 
         let mut appended: u64 = 0;
         let mut hash_count: u32 = 0;
@@ -514,8 +539,16 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
 
             // 2. Append cmx to the Sinsemilla frontier, deferring the depth-32
             //    root walk. Validation here is now redundant with the pre-check
-            //    above but is cheap and keeps the cost accounting correct.
-            if let Err(e) = self.frontier.append_no_root(cmx).unwrap_add_cost(&mut cost) {
+            //    above but is cheap and keeps the cost accounting correct. The
+            //    carry-chain hashes are charged as performed, or — under the
+            //    fixed frontier cost model — at their average (one per leaf).
+            let no_root = self.frontier.append_no_root(cmx);
+            if fixed_model {
+                cost.sinsemilla_hash_calls += 1;
+            } else {
+                cost += no_root.cost;
+            }
+            if let Err(e) = no_root.value {
                 // codecov:ignore — `append_no_root` can only error on
                 // `InvalidFieldElement` (already filtered by the pre-validation
                 // above) or `TreeFull` (2^32 leaves, unreachable).
@@ -690,9 +723,10 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     /// `BulkAppendTree::buffer_record_mismatch`.
     pub fn buffer_record_mismatch(
         &self,
+        grove_version: &GroveVersion,
     ) -> Result<Option<grovedb_bulk_append_tree::BufferRecordMismatch>, CommitmentTreeError> {
         self.bulk_tree
-            .buffer_record_mismatch()
+            .buffer_record_mismatch(grove_version)
             .map_err(|e| CommitmentTreeError::InvalidData(format!("record audit: {}", e)))
     }
 

@@ -169,67 +169,50 @@ pub(in crate::batch) fn commitment_tree_insert_op_cost(
     payload_len: u32,
     chunk_power: u8,
     element_flags_load_bound: u32,
+    amortized_compaction_added: u32,
 ) -> OperationCost {
     // A stored note entry: cmx (32) || rho (32) || cv_net (32) || payload.
     let entry_size = 96u64 + payload_len as u64;
 
-    // Epoch size for the compaction bound. Clamped to the physical ceiling
-    // so hand-built layer information cannot overflow the shift.
-    let epoch_size: u32 = 1u32 << chunk_power.min(PHYSICAL_MAX_CHUNK_POWER);
-
     // The dense buffer's fixed root-maintenance charge, billed by the
     // commitment tree's append through `storage_accounting_cost`.
     let buffer = dense_buffer_model(chunk_power);
+    // The compaction, amortized over the epoch (bulk-append tree fixed
+    // model): one blake3 per append, and — `amortized_compaction_added`,
+    // supplied by the caller: the declared epoch's share, or the largest
+    // share the type permits for a bound — the blob framing and MMR nodes
+    // as added storage.
+    // The frontier's fixed model: the depth-deep root walk plus the average
+    // ommer merge, and the average serialized frontier loaded and replaced.
+    let frontier_len = grovedb_commitment_tree::MODEL_FRONTIER_SERIALIZED_LEN;
 
-    // Chunk-blob framing per blob: the fixed-format header (format byte,
-    // entry count, entry size) inside the MMR leaf envelope (flag, hash,
-    // length) — 9 + 37 — with margin. Every note in a commitment tree has
-    // the same size, so its blobs always take the fixed format, which
-    // carries no per-entry framing.
-    const CHUNK_BLOB_OVERHEAD: u64 = 64;
-    // An MMR internal node: 1 (flag) + 32 (hash).
-    const MMR_INTERNAL_NODE_SIZE: u64 = 33;
-
-    // The epoch term multiplies the entry size by up to 2^16, which
-    // overflows u32 for hand-built ops with oversized payloads (the op
-    // is public; the apply path only rejects wrong-sized payloads
-    // later). Sum in u64 and saturate at u32::MAX — a wrapped figure
-    // would silently UNDER-estimate, the exact failure this model exists
-    // to prevent, while a saturated one merely over-reserves for an op
-    // the apply would reject anyway.
-    //
-    // Added storage — what this append makes the database permanently
-    // larger by:
-    // - the note's share of the eventual chunk blob (its own bytes),
-    //   charged at every append so the blob is a replacement when it lands,
-    // - the frontier's very first save (key + value); later saves only
-    //   add growth (at most one ommer), which this term dominates,
-    // - on compaction: the blob's framing beyond the prepaid entry bytes,
-    //   and the MMR merge cascade's internal nodes.
-    // The buffer slot and the path record are churn: never added.
-    let added_bytes_u64: u64 = entry_size
-        + (MAX_FRONTIER_SIZE as u64 + PER_PUT_OVERHEAD as u64)
-        + (CHUNK_BLOB_OVERHEAD + PER_PUT_OVERHEAD as u64)
-        + FRONTIER_DEPTH as u64 * (MMR_INTERNAL_NODE_SIZE + PER_PUT_OVERHEAD as u64);
-    // Replaced storage — bytes rewritten over bytes that were already
-    // paid for, or churn:
+    // Added storage — the note's long-term footprint: its share of the
+    // eventual chunk blob (its own bytes), charged at every append so the
+    // blob is prepaid when it lands, plus its share of the blob framing and
+    // the MMR nodes. The buffer slot, the path record and the frontier are
+    // churn: never added.
+    let added_bytes_u64: u64 = entry_size + amortized_compaction_added as u64;
+    // Replaced storage — churn:
     // - the note's buffer slot (every epoch, epoch 1 included),
     // - the path record the insert writes (fixed size for the height),
-    // - the re-serialized frontier (up to MAX_FRONTIER_SIZE),
-    // - on compaction: the whole epoch's entry bytes, which the chunk blob
-    //   supersedes and every append already charged as added.
+    // - the note's own bytes again, as its part of the blob rewrite the
+    //   epoch's compaction performs,
+    // - the re-serialized frontier, at the model size.
     let replaced_bytes_u64: u64 = (entry_size + PER_PUT_OVERHEAD as u64)
         + (buffer.record_len as u64 + PER_PUT_OVERHEAD as u64)
-        + (MAX_FRONTIER_SIZE as u64 + PER_PUT_OVERHEAD as u64)
-        + epoch_size as u64 * entry_size;
+        + entry_size
+        + (frontier_len as u64 + PER_PUT_OVERHEAD as u64);
+
+    // The puts a compacting append issues at commit instead of its slot and
+    // record: the chunk blob and up to the MMR merge bound of internal nodes
+    // — the one position-dependent residual (bounded, once per epoch).
+    const MAX_COMPACTION_PUTS: u32 = 1 + 65;
 
     OperationCost {
         // 2 reads (CommitmentTree element, frontier) + the buffer model's
-        // record reads, and up to 4 + FRONTIER_DEPTH writes (note entry,
-        // path record, frontier, chunk blob, MMR internal nodes; a
-        // compacting append writes no slot or record and a buffered one no
-        // MMR node, summed as a bound).
-        seek_count: 6 + FRONTIER_DEPTH + buffer.cost.seek_count,
+        // record reads, and 3 writes (note entry, path record, frontier);
+        // plus the compaction's puts as a bound.
+        seek_count: 5 + buffer.cost.seek_count + MAX_COMPACTION_PUTS,
         storage_cost: StorageCost {
             added_bytes: u32::try_from(added_bytes_u64).unwrap_or(u32::MAX),
             // The parent-Merk node replacement is charged by the
@@ -239,17 +222,17 @@ pub(in crate::batch) fn commitment_tree_insert_op_cost(
         },
         // Reads: the stored CommitmentTree element (fixed serialized
         // fields + Merk node framing, plus the caller-supplied flags
-        // bound) + the serialized frontier + the buffer model's records.
-        storage_loaded_bytes: (CT_ELEMENT_LOAD_BASE
-            + element_flags_load_bound
-            + MAX_FRONTIER_SIZE
-            + PER_PUT_OVERHEAD) as u64
+        // bound) + the model-sized frontier + the buffer model's records.
+        storage_loaded_bytes: (CT_ELEMENT_LOAD_BASE + element_flags_load_bound + frontier_len)
+            as u64
             + buffer.cost.storage_loaded_bytes,
-        // Blake3: the buffer model (fixed per insert), plus on compaction
-        // the chunk-leaf hash and MMR merge cascade, plus the bulk state
-        // root and the ct_state binding hash.
-        hash_node_calls: buffer.cost.hash_node_calls + FRONTIER_DEPTH + 4,
-        sinsemilla_hash_calls: MAX_SINSEMILLA_HASHES_PER_APPEND,
+        // Blake3: the buffer model, the amortized compaction, the bulk
+        // state root and the ct_state binding hash — the same at every
+        // position.
+        hash_node_calls: buffer.cost.hash_node_calls
+            + grovedb_bulk_append_tree::AMORTIZED_COMPACTION_HASHES
+            + 2,
+        sinsemilla_hash_calls: grovedb_commitment_tree::MODEL_FRONTIER_APPEND_SINSEMILLA_HASHES,
     }
 }
 
@@ -288,77 +271,57 @@ pub(in crate::batch) fn private_document_store_insert_op_cost(
     entry_size: u32,
     chunk_power: u8,
     element_flags_load_bound: u32,
+    amortized_compaction_added: u32,
 ) -> OperationCost {
     let chunk_power = chunk_power.clamp(1, PHYSICAL_MAX_CHUNK_POWER);
-    let epoch_entries: u32 = 1u32 << chunk_power;
-    // The buffer holds `2^chunk_power - 1` positions; a compacting append
-    // reads every one of them back to build the chunk blob.
-    let compaction_reads: u32 = epoch_entries - 1;
     let buffer = dense_buffer_model(chunk_power);
-    /// MMR push merges plus root bagging (bounded by the 64-bit position
-    /// space).
-    const MAX_MMR_MERGES: u32 = 65;
-    const MAX_MMR_READS: u32 = 64;
     /// Bulk state root + composite pds_state root + the committed-config
     /// hash paid when the store is opened.
     const ROOT_AND_CONFIG_HASHES: u32 = 3;
-    // A compacted epoch is not stored as a bare payload: the chunk blob
-    // carries a 9-byte header, sits inside a 37-byte MMR leaf envelope, and
-    // every internal MMR node the push creates costs a further 33 bytes.
-    const CHUNK_HEADER_BYTES: u32 = 9;
-    const MMR_LEAF_ENVELOPE_BYTES: u32 = 37;
-    const MMR_INTERNAL_NODE_BYTES: u32 = 33;
-    const MMR_SERIALIZATION_OVERHEAD: u32 =
-        CHUNK_HEADER_BYTES + MMR_LEAF_ENVELOPE_BYTES + MMR_INTERNAL_NODE_BYTES * MAX_MMR_MERGES;
-    // `entry_size` is capped at `u16::MAX` at every creation site precisely
-    // so this product stays representable in the u32 `added_bytes` field.
-    let max_compaction_blob = epoch_entries
-        .saturating_mul(entry_size)
-        .saturating_add(MMR_SERIALIZATION_OVERHEAD);
+    /// The puts a compacting append issues at commit instead of its slot and
+    /// record: the chunk blob and up to the MMR merge bound of internal
+    /// nodes — the one position-dependent residual (bounded, once per
+    /// epoch).
+    const MAX_COMPACTION_PUTS: u32 = 1 + 65;
     // A NonCounted-wrapped store serializes one byte wider, and the apply
     // path preserves that wrapper. Neither the op nor the declared layer
     // records whether this store is wrapped, so charge the byte
     // unconditionally.
     const NON_COUNTED_WRAPPER_BYTE: u32 = 1;
     OperationCost {
-        // Writes: the buffer entry, its path record, the chunk blob and the
-        // MMR nodes; reads: the stored element, the last insert's record
-        // for the state root, the MMR siblings, the epoch read back on
-        // compaction, and the buffer model's record reads.
-        seek_count: (1 + 1 + 1 + MAX_MMR_MERGES)
+        // Reads: the stored element, the last insert's record for the state
+        // root, the buffer model's record reads; writes: the buffer entry
+        // and its path record; plus the compaction's puts as a bound.
+        seek_count: 2u32
+            .saturating_add(buffer.cost.seek_count)
             .saturating_add(2)
-            .saturating_add(MAX_MMR_READS)
-            .saturating_add(compaction_reads)
-            .saturating_add(buffer.cost.seek_count),
+            .saturating_add(MAX_COMPACTION_PUTS),
         storage_cost: StorageCost {
-            // The entry's chunk-blob share (GROVE_V4 accounting, issue
-            // #822), the blob's framing and MMR nodes, the wrapper byte.
+            // The entry's chunk-blob share plus its share of the blob
+            // framing and MMR nodes (GROVE_V4 accounting, issue #822), and
+            // the wrapper byte.
             added_bytes: entry_size
-                .saturating_add(MMR_SERIALIZATION_OVERHEAD)
+                .saturating_add(amortized_compaction_added)
                 .saturating_add(NON_COUNTED_WRAPPER_BYTE),
             // The buffer slot and the path record (churn, every epoch), and
-            // the compaction blob (a replacement of the epoch's prepaid
-            // entry bytes).
+            // the entry's own bytes as its part of the blob rewrite.
             replaced_bytes: entry_size
                 .saturating_add(PER_PUT_OVERHEAD)
                 .saturating_add(buffer.record_len)
                 .saturating_add(PER_PUT_OVERHEAD)
-                .saturating_add(max_compaction_blob),
+                .saturating_add(entry_size),
             removed_bytes: StorageRemovedBytes::NoStorageRemoval,
         },
         // The stored element (fixed fields + Merk framing, with the flags
-        // bound), the epoch read back on compaction, the blob read back as
-        // an MMR peak, the MMR siblings, the buffer model's records and the
-        // root record.
+        // bound), the buffer model's records and the root record.
         storage_loaded_bytes: (CT_ELEMENT_LOAD_BASE + element_flags_load_bound) as u64
-            + compaction_reads as u64 * entry_size as u64
-            + max_compaction_blob as u64
-            + (MMR_INTERNAL_NODE_BYTES * MAX_MMR_READS) as u64
             + buffer.cost.storage_loaded_bytes
             + buffer.record_len as u64,
-        // The buffer model, a compacting append's chunk leaf hash and MMR
-        // cascade, and the roots.
-        hash_node_calls: buffer.cost.hash_node_calls + 1 + MAX_MMR_MERGES + ROOT_AND_CONFIG_HASHES,
+        // The buffer model, the amortized compaction, and the roots — the
+        // same at every position.
+        hash_node_calls: buffer.cost.hash_node_calls
+            + grovedb_bulk_append_tree::AMORTIZED_COMPACTION_HASHES
+            + ROOT_AND_CONFIG_HASHES,
         sinsemilla_hash_calls: 0,
     }
 }
@@ -397,6 +360,15 @@ pub(in crate::batch) fn dense_tree_insert_op_cost(value_size: u32, height: u8) -
         hash_node_calls: buffer.cost.hash_node_calls,
         sinsemilla_hash_calls: 0,
     }
+}
+
+/// The largest per-append share of the compaction overhead the type
+/// permits — the smallest epoch (`chunk_power` 1) — for the worst-case
+/// estimators, which have no declaration channel. The share shrinks as the
+/// epoch grows, so the ceiling epoch is NOT the bound here.
+#[cfg(feature = "minimal")]
+pub(in crate::batch) fn max_amortized_compaction_added_bytes() -> u32 {
+    grovedb_bulk_append_tree::amortized_compaction_added_bytes(2)
 }
 
 /// Estimated costs types

@@ -214,6 +214,7 @@ All BulkAppendTree data lives in the **data** namespace, keyed with single-chara
 | `e` + `{index}` | `e` + u64 BE | 9B | Chunk blob at index |
 | `m` + `{pos}` | `m` + u64 BE | 9B | MMR node at position |
 | `h` + `{index}` | `h` + u16 BE | 3B | Path record of the insert at index (GROVE_V4+, see Chapter 16) |
+| `r` | 1 byte | 1B | Persisted chunk-MMR root, written at each compaction (GROVE_V4+) so a reopened tree does not bag the peaks' blobs |
 
 **Metadata** stores `mmr_size` (8 bytes BE). The `total_count` and `chunk_power` are
 stored in the Element itself (in the parent Merk), not in data namespace metadata.
@@ -476,7 +477,8 @@ Each operation's hash cost is tracked explicitly:
 |---|---|---|
 | Single append (no compaction), GROVE_V1..V3 | 2·k + 1 | Full buffer walk over the k filled positions + 1 for state root |
 | Single append (no compaction), GROVE_V4+ | model(chunk_power) + 1 | The height's fixed model (`2 + ⌈avg depth⌉` blake3: 12 at chunk_power 11) + state root — the same at every position |
-| Single append (with compaction) | 1 + MMR merges + 1 | Chunk-leaf hash + MMR push/bagging + state root (no buffer work: the buffer is full and the overflow value goes into the blob) |
+| Single append (with compaction), GROVE_V4+ | model(chunk_power) + 1 | Charged exactly like a buffered append: the compaction's chunk-leaf hash and MMR merges are amortized as one blake3 on every append; physically it hashes the blob once and merges the MMR, reading the buffer back |
+| Single append (with compaction), GROVE_V1..V3 | 1 + MMR merges + 1 | Chunk-leaf hash + MMR push/bagging + state root, billed where they happen |
 | `get_value` from chunk | 0 | Pure deserialization, no hashing |
 | `get_value` from buffer | 0 | Direct key lookup |
 | Proof generation | Depends on chunk count | Dense Merkle root per chunk + MMR proof |
@@ -484,14 +486,18 @@ Each operation's hash cost is tracked explicitly:
 
 **Per-append cost**: under GROVE_V1..V3 the k-th append of an epoch re-walks k
 positions, so the amortized cost is ~chunk_size hashes per append (≈ 2k at
-chunk_power 11, peaking at ≈ 4k). From GROVE_V4 every buffered append is charged the
-buffer's fixed model for its height (12 blake3 calls and 18 record reads at
-chunk_power 11) plus one slot put and one record put, whatever the position; its
-storage charge is its long-term footprint — the chunk-blob share (`added`) — while
-the slot and record are churn (`replaced`). The compacting append reads the epoch
-back (C reads) and hashes the blob once. A buffer filled under GROVE_V1..V3 is
-caught up from its values by the V4 appends that need it, read-only and billed the
-same model.
+chunk_power 11, peaking at ≈ 4k), and the compacting append pays the blob and MMR
+work where it happens. From GROVE_V4 **every append is charged the same fixed
+model**, whatever its position: the buffer's root-maintenance model for its height
+(12 blake3 calls and 18 record reads at chunk_power 11), one amortized compaction
+blake3, its long-term footprint as `added` (the chunk-blob share plus the epoch's
+share of the blob framing and MMR nodes — 1 byte at chunk_power 11) and its churn as
+`replaced` (slot, path record, its part of the blob rewrite). The compacting append
+writes the blob, the MMR nodes and the persisted MMR root prepaid and is charged the
+same; physically it still reads the epoch back and hashes the blob once. The only
+residual is its commit-time seek count (blob + MMR nodes instead of slot + record),
+bounded and once per epoch. A buffer filled under GROVE_V1..V3 is caught up from its
+values by the V4 appends that need it, read-only and billed the same model.
 
 ## Comparison with MmrTree
 

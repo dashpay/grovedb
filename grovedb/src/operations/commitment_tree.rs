@@ -150,8 +150,13 @@ impl GroveDb {
         //    payload validation in append_raw)
         let mut ct = cost_return_on_error!(
             &mut cost,
-            CommitmentTree::<_, DashMemo>::open(total_count, chunk_power, storage_ctx)
-                .map(|r| r.map_err(map_ct_err))
+            CommitmentTree::<_, DashMemo>::open(
+                total_count,
+                chunk_power,
+                storage_ctx,
+                grove_version
+            )
+            .map(|r| r.map_err(map_ct_err))
         );
 
         let append_result = cost_return_on_error!(
@@ -309,8 +314,13 @@ impl GroveDb {
 
         let ct = cost_return_on_error!(
             &mut cost,
-            CommitmentTree::<_, DashMemo>::open(total_count, chunk_power, storage_ctx)
-                .map(|r| r.map_err(map_ct_err))
+            CommitmentTree::<_, DashMemo>::open(
+                total_count,
+                chunk_power,
+                storage_ctx,
+                grove_version
+            )
+            .map(|r| r.map_err(map_ct_err))
         );
 
         Ok(ct.anchor()).wrap_with_cost(cost)
@@ -365,8 +375,13 @@ impl GroveDb {
 
         let ct = cost_return_on_error!(
             &mut cost,
-            CommitmentTree::<_, DashMemo>::open(total_count, chunk_power, storage_ctx)
-                .map(|r| r.map_err(map_ct_err))
+            CommitmentTree::<_, DashMemo>::open(
+                total_count,
+                chunk_power,
+                storage_ctx,
+                grove_version
+            )
+            .map(|r| r.map_err(map_ct_err))
         );
 
         let epoch_size = ct.epoch_size();
@@ -457,8 +472,13 @@ impl GroveDb {
 
         let ct = cost_return_on_error!(
             &mut cost,
-            CommitmentTree::<_, DashMemo>::open(total_count, chunk_power, storage_ctx)
-                .map(|r| r.map_err(map_ct_err))
+            CommitmentTree::<_, DashMemo>::open(
+                total_count,
+                chunk_power,
+                storage_ctx,
+                grove_version
+            )
+            .map(|r| r.map_err(map_ct_err))
         );
 
         let page = cost_return_on_error!(
@@ -607,8 +627,13 @@ impl GroveDb {
             // Open composite CommitmentTree
             let mut ct = cost_return_on_error!(
                 &mut cost,
-                CommitmentTree::<_, DashMemo>::open(total_count, chunk_power, storage_ctx)
-                    .map(|r| r.map_err(map_ct_err))
+                CommitmentTree::<_, DashMemo>::open(
+                    total_count,
+                    chunk_power,
+                    storage_ctx,
+                    grove_version
+                )
+                .map(|r| r.map_err(map_ct_err))
             );
 
             // Execute all inserts in order

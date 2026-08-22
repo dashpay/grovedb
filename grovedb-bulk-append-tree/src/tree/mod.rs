@@ -10,6 +10,8 @@
 
 #[cfg(feature = "storage")]
 mod append;
+#[cfg(feature = "storage")]
+pub use append::MMR_ROOT_KEY;
 pub mod hash;
 
 #[cfg(feature = "storage")]
@@ -66,12 +68,16 @@ pub struct AppendNoStateRootResult {
     /// `Result`-returning appends cannot otherwise surface:
     ///
     /// - `storage_cost.added_bytes`: the entry's share of the chunk blob it
-    ///   will eventually be compacted into — its own bytes — charged at this
-    ///   append so that the blob written at compaction can be reported as a
-    ///   replacement of bytes already paid for (issue #822);
+    ///   will eventually be compacted into — its own bytes — plus its share
+    ///   of the blob framing and MMR nodes, charged at this append so that
+    ///   the compaction writes nothing that is not already paid for (issue
+    ///   #822);
+    /// - `storage_cost.replaced_bytes`: the entry's own bytes again, as its
+    ///   part of the blob rewrite the epoch's compaction performs;
     /// - `seek_count` / `storage_loaded_bytes`: the dense buffer's
     ///   root-maintenance reads — from GROVE_V4 the fixed model for the
-    ///   buffer's height (`v1_insert_model_cost`), whatever the position.
+    ///   buffer's height (`v1_insert_model_cost`), whatever the position,
+    ///   compacting appends included.
     ///
     /// Zero under the shipped accounting (GROVE_V1..V3), where the blob is
     /// charged in full at compaction and the buffer's reads are dropped.

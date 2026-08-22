@@ -31,6 +31,18 @@ pub(crate) mod test_utils;
 pub use client::ClientPersistentCommitmentTree;
 #[cfg(feature = "sqlite")]
 pub use client::{SqliteShardStore, SqliteShardStoreError};
+/// The fixed per-append Sinsemilla charge of the frontier under the
+/// `frontier_cost_model` gate (GROVE_V4): the depth-deep root walk plus the
+/// average ommer merge — `trailing_ones(position)` averages to one over the
+/// position space.
+pub const MODEL_FRONTIER_APPEND_SINSEMILLA_HASHES: u32 = NOTE_COMMITMENT_TREE_DEPTH as u32 + 1;
+
+/// The fixed serialized frontier size charged under the `frontier_cost_model`
+/// gate (GROVE_V4), loaded at open and replaced at save: the 42-byte fixed
+/// part plus 32 bytes per ommer at the average ommer count over the position
+/// space (`depth / 2`).
+pub const MODEL_FRONTIER_SERIALIZED_LEN: u32 = 42 + 32 * (NOTE_COMMITMENT_TREE_DEPTH as u32 / 2);
+
 pub use commitment_frontier::*;
 
 /// Pre-computed state root for an empty CommitmentTree.

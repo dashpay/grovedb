@@ -655,10 +655,17 @@ fn buffered_append_hash_count_follows_the_root_maintenance_version() {
         assert_eq!(r3.state_root, r4.state_root, "position {i}: state root");
         assert_eq!(r3.compacted, r4.compacted);
         let buffer_position = (i % 16) as u32;
+        // v4: the height-4 model + the amortized compaction blake3 + the
+        // state root — the same on every append, the compacting one
+        // included.
+        assert_eq!(
+            r4.hash_count,
+            model.hash_node_calls + 1 + 1,
+            "position {i}: v4 charges the fixed model whatever the position"
+        );
         if r3.compacted {
-            // No buffer work on a compacting append: the chunk-leaf hash, the
-            // MMR push, and the state root — and v4 adds the root bagging
-            // the v3 figure omits (`compaction_hash_count`), here nothing.
+            // v3: no buffer work on a compacting append — the chunk-leaf
+            // hash, the MMR push, and the state root.
             assert!(r3.hash_count >= 2, "v3 compaction: {}", r3.hash_count);
         } else {
             let filled = buffer_position + 1;
@@ -666,11 +673,6 @@ fn buffered_append_hash_count_follows_the_root_maintenance_version() {
                 r3.hash_count,
                 2 * filled + 1,
                 "position {i}: v3 walks the {filled} filled positions (+1 state root)"
-            );
-            assert_eq!(
-                r4.hash_count,
-                model.hash_node_calls + 1,
-                "position {i}: v4 charges the height-4 model (+1 state root), whatever the position"
             );
         }
     }

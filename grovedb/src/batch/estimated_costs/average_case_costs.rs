@@ -273,49 +273,25 @@ impl GroveOp {
                 );
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 let entry_size = value.len() as u32;
-                // Every append writes its buffer slot and its path record —
-                // churn under the GROVE_V4 accounting (issue #822): replaced,
-                // never added — and charges its chunk-blob share as added
-                // storage. The compaction — the blob replacing the epoch's
-                // entry bytes, plus its framing — is charged at the tree's
-                // epoch scale when its own layer is declared with
-                // `TreeType::BulkAppendTree(chunk_power)`, and amortized to
-                // one entry otherwise. The buffer's fixed root-maintenance
-                // model is charged at the declared scale, or the physical
-                // ceiling when undeclared.
-                //
-                // A BulkAppendTree accepts variable-size values, so the epoch
-                // is modelled as values the size of this one: exact for
-                // same-size values, an average otherwise — the bound-seeking
-                // worst-case arm saturates that dimension instead.
-                let epoch_entries: u32 = append_tree_chunk_power
-                    .map(|chunk_power| 1u32 << chunk_power.min(16) as u32)
-                    .unwrap_or(1);
+                // The fixed per-append model (GROVE_V4 accounting, issue
+                // #822): the value's chunk-blob share plus its share of the
+                // blob framing and MMR nodes as added storage; its buffer
+                // slot, path record and blob-rewrite part as churn; the
+                // buffer's root-maintenance model and one amortized
+                // compaction blake3 — at the tree's epoch scale when its own
+                // layer is declared with `TreeType::BulkAppendTree(chunk_power)`,
+                // at the physical ceiling otherwise.
+                let chunk_power =
+                    append_tree_chunk_power.unwrap_or(super::PHYSICAL_MAX_CHUNK_POWER);
+                let epoch_entries: u64 = 1u64 << chunk_power.min(16) as u32;
                 let paid_entry = entry_size.saturating_add(entry_size.required_space() as u32);
-                // Hashes: the buffer model, the state root and the running
-                // hash, and a compaction's chunk-leaf hash plus the MMR push
-                // merges and root bagging (each bounded by the 64-bit
-                // position space).
-                const MAX_MMR_MERGES: u32 = 65;
-                // MMR leaf key + envelope, variable-format header and
-                // per-entry length prefixes, and the internal nodes the push
-                // creates (key + 33-byte node + length each) — one per peak
-                // the push collapses, which the appender chooses by when it
-                // appends, so bounded by the position space rather than
-                // amortized to one.
-                let blob_framing = 37u32
-                    .saturating_add(37)
-                    .saturating_add(1)
-                    .saturating_add(epoch_entries.saturating_mul(4))
-                    .saturating_add(71 * MAX_MMR_MERGES);
-                let buffer = super::dense_buffer_model(
-                    append_tree_chunk_power.unwrap_or(super::PHYSICAL_MAX_CHUNK_POWER),
-                );
-                let hash_calls = buffer
-                    .cost
-                    .hash_node_calls
-                    .saturating_add(2)
-                    .saturating_add(2 * MAX_MMR_MERGES);
+                let buffer = super::dense_buffer_model(chunk_power);
+                let amortized_compaction_added =
+                    grovedb_bulk_append_tree::amortized_compaction_added_bytes(epoch_entries);
+                // The puts a compacting append issues at commit instead of
+                // its slot and record: the chunk blob and up to the MMR
+                // merge bound of internal nodes — bounded, once per epoch.
+                const MAX_COMPACTION_PUTS: u32 = 1 + 65;
                 // The preprocessing read of the stored element loads its
                 // caller-supplied flags too; bound them with the parent
                 // layer's declared flags size — the same metadata the
@@ -337,16 +313,18 @@ impl GroveOp {
                 item_cost.add_cost(OperationCost {
                     // The stored element read by preprocessing + 1 buffer
                     // entry write + 1 path record write + the buffer model's
-                    // record reads.
-                    seek_count: 3u32.saturating_add(buffer.cost.seek_count),
+                    // record reads + the compaction's puts as a bound.
+                    seek_count: 3u32
+                        .saturating_add(buffer.cost.seek_count)
+                        .saturating_add(MAX_COMPACTION_PUTS),
                     storage_cost: StorageCost {
-                        // Chunk-blob share + framing.
-                        added_bytes: entry_size.saturating_add(blob_framing),
-                        // Slot and record (churn) + the blob replacing the
-                        // epoch's entry bytes.
+                        // Chunk-blob share + amortized framing and MMR node.
+                        added_bytes: entry_size.saturating_add(amortized_compaction_added),
+                        // Slot and record (churn) + the value's part of the
+                        // blob rewrite.
                         replaced_bytes: paid_entry
                             .saturating_add(record_put)
-                            .saturating_add(epoch_entries.saturating_mul(entry_size)),
+                            .saturating_add(entry_size),
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
                     // The stored element (fixed fields + Merk framing, with
@@ -355,7 +333,13 @@ impl GroveOp {
                     storage_loaded_bytes: (super::CT_ELEMENT_LOAD_BASE + element_flags_load_bound)
                         as u64
                         + buffer.cost.storage_loaded_bytes,
-                    hash_node_calls: hash_calls,
+                    // The buffer model, the amortized compaction, and the
+                    // state root.
+                    hash_node_calls: buffer
+                        .cost
+                        .hash_node_calls
+                        .saturating_add(grovedb_bulk_append_tree::AMORTIZED_COMPACTION_HASHES)
+                        .saturating_add(1),
                     sinsemilla_hash_calls: 0,
                 })
             }
@@ -407,6 +391,7 @@ impl GroveOp {
                     entry.len() as u32,
                     chunk_power,
                     element_flags_load_bound,
+                    grovedb_bulk_append_tree::amortized_compaction_added_bytes(1u64 << chunk_power),
                 ))
             }
 
@@ -645,6 +630,7 @@ impl GroveOp {
             payload.len() as u32,
             chunk_power,
             element_flags_load_bound,
+            grovedb_bulk_append_tree::amortized_compaction_added_bytes(1u64 << chunk_power),
         ))
     }
 }

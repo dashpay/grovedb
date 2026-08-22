@@ -2629,9 +2629,14 @@ fn unsafe_dump_load_subtree_roundtrip_preserves_root_hash() {
         .raw_storage()
         .get_transactional_storage_context(subtree_path.clone(), None, &tx_a)
         .unwrap();
-    let ct_a = CommitmentTree::<_, DashMemo>::open(u64::from(N), TEST_CHUNK_POWER, ctx_open)
-        .value
-        .expect("CommitmentTree::open on A");
+    let ct_a = CommitmentTree::<_, DashMemo>::open(
+        u64::from(N),
+        TEST_CHUNK_POWER,
+        ctx_open,
+        grove_version,
+    )
+    .value
+    .expect("CommitmentTree::open on A");
     let combined_root = ct_a
         .compute_current_state_root(grove_version)
         .expect("compute_current_state_root on A");

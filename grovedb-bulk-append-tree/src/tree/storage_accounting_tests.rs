@@ -131,46 +131,54 @@ fn v0_issues_every_put_without_cost_info_and_bills_no_accounting() {
     }
 }
 
-/// v1 (GROVE_V4): the buffer is churn. Every slot write — epoch 1 included,
-/// growth and shrink alike — and every path record write is reported as an
-/// in-place replacement of its own size, nothing added and no key charged;
-/// nothing is read to size it. Every append prepays its own bytes (its
-/// chunk-blob share) as added storage, and bills the buffer's fixed
-/// root-maintenance model.
+/// v1 (GROVE_V4): the buffer is churn and the charge is fixed. Every slot
+/// write — epoch 1 included, growth and shrink alike — and every path record
+/// write is reported as an in-place replacement of its own size, nothing
+/// added and no key charged; nothing is read to size it. Every append —
+/// buffered or compacting — prepays its own bytes plus the epoch's share of
+/// the compaction overhead as added storage, its own bytes again as its part
+/// of the blob rewrite, and the buffer's fixed root-maintenance model.
 #[test]
-fn v1_buffer_writes_are_churn_and_every_append_prepays_its_bytes() {
+fn v1_buffer_writes_are_churn_and_every_append_is_charged_the_fixed_model() {
     use grovedb_dense_fixed_sized_merkle_tree::{path_record_len, V1InsertModel};
 
     let run = run(&GROVE_V4);
     let model = V1InsertModel::for_height(2);
+    // 159 bytes of compaction overhead over an epoch of 4.
+    let amortized: u32 = (159u32).div_ceil(4);
     for (i, (cost, value)) in run.accounting.iter().zip(VALUES.iter()).enumerate() {
         assert_eq!(
             cost.storage_cost.added_bytes,
-            value.len() as u32,
-            "append {i}: prepaid share"
+            value.len() as u32 + amortized,
+            "append {i}: prepaid share + amortized compaction overhead"
         );
-        assert_eq!(cost.storage_cost.replaced_bytes, 0, "append {i}");
+        // Its part of the blob rewrite — and, for a compacting append,
+        // which writes no slot and no record, their churn billed here
+        // instead of through the puts.
+        let churn = if i % 4 == 3 {
+            paid(value.len() as u32) + paid(path_record_len(2) as u32)
+        } else {
+            0
+        };
+        assert_eq!(
+            cost.storage_cost.replaced_bytes,
+            value.len() as u32 + churn,
+            "append {i}: its part of the blob rewrite (+ the compacting append's churn)"
+        );
         assert_eq!(
             cost.hash_node_calls, 0,
             "append {i}: hashes go through hash_count"
         );
-        let compacting = i % 4 == 3;
-        if compacting {
-            // The overflow value goes straight into the blob: no buffer
-            // work, no model.
-            assert_eq!(cost.seek_count, 0, "append {i}");
-            assert_eq!(cost.storage_loaded_bytes, 0, "append {i}");
-        } else {
-            assert_eq!(
-                cost.seek_count, model.record_reads,
-                "append {i}: model reads"
-            );
-            assert_eq!(
-                cost.storage_loaded_bytes,
-                model.record_reads as u64 * model.record_len as u64,
-                "append {i}: model bytes"
-            );
-        }
+        // The model, compacting appends included.
+        assert_eq!(
+            cost.seek_count, model.record_reads,
+            "append {i}: model reads"
+        );
+        assert_eq!(
+            cost.storage_loaded_bytes,
+            model.record_reads as u64 * model.record_len as u64,
+            "append {i}: model bytes"
+        );
     }
 
     let churn = |len: u32| KeyValueStorageCost {
@@ -185,9 +193,8 @@ fn v1_buffer_writes_are_churn_and_every_append_prepays_its_bytes() {
     };
     let slots = slot_puts(&run.ctx);
     assert_eq!(slots.len(), 9, "three slots per epoch, three epochs");
-    let buffered: Vec<&&[u8]> = VALUES.iter().filter(|v| v.len() != 0).collect();
     let mut expected = Vec::new();
-    for (i, v) in buffered.iter().enumerate() {
+    for (i, v) in VALUES.iter().enumerate() {
         if i % 4 != 3 {
             expected.push(Some(churn(v.len() as u32)));
         }
@@ -236,37 +243,24 @@ fn v1_never_reads_to_size_a_buffer_write() {
     );
 }
 
-/// v1: the compaction blob is reported as a replacement of the entry bytes
-/// it supersedes — all prepaid — with only its framing added; internal MMR
-/// nodes are new storage.
+/// v1: the compaction blob and the MMR internal nodes are prepaid — every
+/// append charged its share over the epoch — so their puts carry zero-byte
+/// cost information: nothing added, nothing replaced, no key.
 #[test]
-fn v1_commit_mmr_reports_blob_as_replacement_of_prepaid_entry_bytes() {
+fn v1_commit_mmr_writes_are_prepaid() {
     let run = run(&GROVE_V4);
     let nodes = mmr_puts(&run.ctx);
     assert_eq!(nodes.len(), 4, "{nodes:?}");
-
-    let leaf = |entry_bytes: u32, blob_len: u32| {
-        // MmrNode leaf envelope: flag (1) + hash (32) + length (4) + blob.
-        let node_len = 37 + blob_len;
-        KeyValueStorageCost {
-            key_storage_cost: Default::default(),
-            value_storage_cost: StorageCost {
-                added_bytes: paid(node_len) - entry_bytes,
-                replaced_bytes: entry_bytes,
-                removed_bytes: NoStorageRemoval,
-            },
-            new_node: true,
-            needs_value_verification: true,
-        }
+    let prepaid = KeyValueStorageCost {
+        key_storage_cost: Default::default(),
+        value_storage_cost: StorageCost::default(),
+        new_node: false,
+        needs_value_verification: false,
     };
-    // Blob 1: four 8-byte entries, fixed format: 9-byte header + 32.
-    assert_eq!(nodes[0], Some(leaf(32, 9 + 32)));
-    // Blob 2: 8, 16, 4, 8 -> variable format: 1 + sum(4 + len) = 53, 36 entry bytes.
-    assert_eq!(nodes[1], Some(leaf(36, 53)));
-    // The merge of leaves 1 and 2 is an internal node: new storage.
-    assert_eq!(nodes[2], None);
-    // Blob 3: fixed again.
-    assert_eq!(nodes[3], Some(leaf(32, 9 + 32)));
+    assert!(
+        nodes.iter().all(|n| *n == Some(prepaid.clone())),
+        "every MMR put — three chunk leaves and one merge — is prepaid: {nodes:?}"
+    );
 }
 
 /// The tree itself must not depend on the accounting version: the values,
@@ -278,26 +272,50 @@ fn stored_state_and_roots_are_identical_across_accounting_versions() {
     let r3 = run(&GROVE_V3);
     let r4 = run(&GROVE_V4);
     assert_eq!(r3.root, r4.root);
-    let without_records = |ctx: &MemStorageContext| -> std::collections::HashMap<Vec<u8>, Vec<u8>> {
+    // GROVE_V4 adds the path records (3-byte keys) and the persisted MMR
+    // root (the 1-byte key `r`); everything else is byte-identical.
+    let without_derived = |ctx: &MemStorageContext| -> std::collections::HashMap<Vec<u8>, Vec<u8>> {
         ctx.data
             .borrow()
             .iter()
-            .filter(|(k, _)| k.len() != 3)
+            .filter(|(k, _)| k.len() != 3 && k.len() != 1)
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
     };
     assert!(
-        r3.ctx.data.borrow().keys().all(|k| k.len() != 3),
-        "GROVE_V3 writes no hash records"
+        r3.ctx
+            .data
+            .borrow()
+            .keys()
+            .all(|k| k.len() != 3 && k.len() != 1),
+        "GROVE_V3 writes no records and no persisted MMR root"
     );
     assert!(
         r4.ctx.data.borrow().keys().any(|k| k.len() == 3),
-        "GROVE_V4 writes hash records"
+        "GROVE_V4 writes path records"
     );
+    let persisted_root = r4
+        .ctx
+        .data
+        .borrow()
+        .get(crate::MMR_ROOT_KEY)
+        .cloned()
+        .expect("GROVE_V4 persists the MMR root at commit");
+    let reopened = BulkAppendTree::from_state(12, 2, r4.ctx).expect("reopen");
     assert_eq!(
-        without_records(&r3.ctx),
-        without_records(&r4.ctx),
-        "byte-identical storage apart from the hash records"
+        persisted_root.as_slice(),
+        reopened
+            .bag_mmr_root_with_cost(&GROVE_V4)
+            .unwrap()
+            .expect("bag")
+            .as_slice(),
+        "the persisted MMR root is the bagged root"
+    );
+    let r4_ctx = reopened.dense_tree.storage;
+    assert_eq!(
+        without_derived(&r3.ctx),
+        without_derived(&r4_ctx),
+        "byte-identical storage apart from the records and the persisted MMR root"
     );
 }
 
@@ -309,9 +327,12 @@ fn append_deferred_roots_bills_accounting_cost() {
     let mut tree = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
     let ctx = tree.append_deferred_roots(&[7u8; 20], &GROVE_V4);
     let r = ctx.value.expect("append");
-    assert_eq!(r.storage_accounting_cost.storage_cost.added_bytes, 20);
-    assert_eq!(ctx.cost.storage_cost.added_bytes, 20);
-    assert_eq!(ctx.cost.storage_cost.replaced_bytes, 0);
+    // The share (20) plus the epoch's amortized compaction overhead
+    // (159 bytes over an epoch of 4 → 40), and the 20 bytes of blob rewrite.
+    assert_eq!(r.storage_accounting_cost.storage_cost.added_bytes, 60);
+    assert_eq!(ctx.cost.storage_cost.added_bytes, 60);
+    assert_eq!(ctx.cost.storage_cost.replaced_bytes, 20);
+    assert_eq!(r.storage_accounting_cost.storage_cost.replaced_bytes, 20);
 
     let mut legacy = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
     let ctx = legacy.append_deferred_roots(&[7u8; 20], &GROVE_V3);

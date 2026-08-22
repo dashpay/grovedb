@@ -31,6 +31,6 @@ pub(super) fn append_storage_accounting() -> AppendStorageAccounting {
         slot_rewrite: SlotRewriteAccounting::AsNew,
         chunk_leaf: LeafValueStorageCost::New,
         prepay_chunk_share: false,
-        bill_dense_io: false,
+        fixed_model: false,
     }
 }

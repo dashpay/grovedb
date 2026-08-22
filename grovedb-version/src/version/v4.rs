@@ -102,21 +102,32 @@
 //! - `bulk_append_tree_versions.cost.append_storage_accounting: 1` and
 //!   `commitment_tree_versions.cost.frontier_save_storage_accounting: 1` —
 //!   the append-only family (`BulkAppendTree`, `CommitmentTree`,
-//!   `PrivateDocumentStore`) charges an entry's long-term bytes and reports
-//!   everything else as churn (issue #822). Each entry's permanent bytes —
-//!   its share of the eventual chunk blob — are charged as `added_bytes`
-//!   once, at its own append; the dense buffer (slot and path record, a
-//!   fixed per-tree scratch area rewritten every epoch) is `replaced_bytes`
-//!   only, epoch 1 included, with nothing read to size it; the compaction
-//!   blob is reported as a replacement of the entry bytes it supersedes, so
-//!   only its framing and the MMR internal nodes are added; the in-place
-//!   frontier rewrite is a replacement of the bytes loaded at open; and the
-//!   buffer's fixed root-maintenance model is billed alongside the hash
-//!   count. V1..V3 keep issuing every data put with no cost information,
-//!   which bills key + value as new storage every time — ≈ 2× the bytes
-//!   that persist, with the whole ≈ 630 KB blob landing on one append per
-//!   epoch at `chunk_power` 11. Stored bytes, roots and proofs are identical
-//!   under both; gated because the figures are fees.
+//!   `PrivateDocumentStore`) charges every append the FIXED per-append model
+//!   (issue #822): the entry's long-term footprint as `added_bytes` — its
+//!   share of the eventual chunk blob plus the epoch's share of the blob
+//!   framing and MMR nodes — and churn as `replaced_bytes` — its buffer
+//!   slot and path record (epoch 1 included, nothing read to size them) and
+//!   its own bytes again as its part of the blob rewrite — plus the buffer's
+//!   fixed root-maintenance model and one amortized compaction blake3. The
+//!   compacting append writes the blob, the MMR nodes and the persisted MMR
+//!   root (new key `r`) prepaid and is charged the same as any other
+//!   append; a reopened tree reads the persisted root instead of bagging
+//!   the peaks' blobs. V1..V3 keep issuing every data put with no cost
+//!   information, which bills key + value as new storage every time — ≈ 2×
+//!   the bytes that persist, with the whole ≈ 630 KB blob landing on one
+//!   append per epoch at `chunk_power` 11. Stored chunks, roots and proofs
+//!   are identical under both; gated because the figures are fees.
+//!
+//! - `commitment_tree_versions.cost.frontier_cost_model: 1` — the Sinsemilla
+//!   frontier is charged a fixed, depth-derived model on every append: 33
+//!   Sinsemilla hashes (the 32-deep root walk plus the average ommer merge)
+//!   and a 554-byte frontier (the average over the position space) loaded
+//!   at open and replaced at save — instead of `32 + trailing_ones(position)`
+//!   hashes and the position's actual serialized size. With the gates above,
+//!   a `CommitmentTreeInsert` costs the same at every position; the only
+//!   residual is the commit-time seek count of a compacting append's MMR
+//!   puts (bounded, once per epoch). V1..V3 keep the actual figures; gated
+//!   because the figures are fees.
 //!
 //! - `dense_tree_versions.root_maintenance: 1` — the dense fixed-sized Merkle
 //!   tree (the buffer of `BulkAppendTree`, `CommitmentTree` and
@@ -469,9 +480,13 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
     // Frontier save: the in-place rewrite of `__ct_data__` is reported as a
     // replacement of the bytes loaded at open, with only growth added
     // (issue #822). Frontier bytes and anchors are unchanged.
+    // Frontier: the in-place rewrite is a replacement, and — with the cost
+    // model — every append is charged the fixed, depth-derived figure (33
+    // Sinsemilla hashes, a 554-byte frontier) whatever its position.
     commitment_tree_versions: CommitmentTreeVersions {
         cost: CommitmentTreeCostVersions {
             frontier_save_storage_accounting: 1,
+            frontier_cost_model: 1,
         },
     },
     // Dense-buffer root maintenance: per-position hash records, so an insert
