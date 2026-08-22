@@ -663,3 +663,21 @@ fn bulk_append_cost_versions_are_pinned_per_protocol_version() {
          shipped figure"
     );
 }
+
+#[test]
+fn bulk_append_storage_accounting_is_pinned_per_protocol_version() {
+    for (name, version) in [
+        ("GROVE_V1", &GROVE_V1),
+        ("GROVE_V2", &GROVE_V2),
+        ("GROVE_V3", &GROVE_V3),
+    ] {
+        assert_eq!(
+            version.bulk_append_tree_versions.cost.storage_accounting, 0,
+            "{name} must keep the shipped all-added storage report"
+        );
+    }
+    assert_eq!(
+        GROVE_V4.bulk_append_tree_versions.cost.storage_accounting, 1,
+        "GROVE_V4 reports the append-only family's churn as replaced bytes"
+    );
+}

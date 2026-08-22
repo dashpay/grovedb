@@ -1,5 +1,7 @@
 #[cfg(feature = "storage")]
-use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use grovedb_costs::{
+    storage_cost::key_value_cost::KeyValueStorageCost, CostResult, CostsExt, OperationCost,
+};
 #[cfg(feature = "storage")]
 use grovedb_storage::StorageContext;
 
@@ -136,7 +138,7 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
         }
 
         let position = self.count;
-        cost_return_on_error!(cost, self.put_value(position, value));
+        cost_return_on_error!(cost, self.put_value(position, value, None));
         self.count += 1;
 
         match self.compute_root_hash().unwrap_add_cost(&mut cost) {
@@ -165,6 +167,19 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
         &mut self,
         value: &[u8],
     ) -> CostResult<Option<([u8; 32], u16)>, DenseMerkleError> {
+        self.try_insert_with_cost_info(value, None)
+    }
+
+    /// [`try_insert`](Self::try_insert) with caller-supplied storage cost
+    /// info for the entry write. `None` keeps the storage layer's default
+    /// report (key + value as added bytes); the bulk-append tree passes
+    /// `Some` under its versioned storage accounting to describe the write
+    /// as what it is (a new entry, or an overwrite of a stale slot).
+    pub fn try_insert_with_cost_info(
+        &mut self,
+        value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostResult<Option<([u8; 32], u16)>, DenseMerkleError> {
         let mut cost = OperationCost::default();
 
         if self.count >= self.capacity() {
@@ -172,7 +187,7 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
         }
 
         let position = self.count;
-        cost_return_on_error!(cost, self.put_value(position, value));
+        cost_return_on_error!(cost, self.put_value(position, value, cost_info));
         self.count += 1;
 
         match self.compute_root_hash().unwrap_add_cost(&mut cost) {
@@ -203,6 +218,17 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
         &mut self,
         value: &[u8],
     ) -> CostResult<Option<u16>, DenseMerkleError> {
+        self.try_insert_no_root_with_cost_info(value, None)
+    }
+
+    /// [`try_insert_no_root`](Self::try_insert_no_root) with caller-supplied
+    /// storage cost info for the entry write — see
+    /// [`try_insert_with_cost_info`](Self::try_insert_with_cost_info).
+    pub fn try_insert_no_root_with_cost_info(
+        &mut self,
+        value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostResult<Option<u16>, DenseMerkleError> {
         let mut cost = OperationCost::default();
 
         if self.count >= self.capacity() {
@@ -210,7 +236,7 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
         }
 
         let position = self.count;
-        cost_return_on_error!(cost, self.put_value(position, value));
+        cost_return_on_error!(cost, self.put_value(position, value, cost_info));
         self.count += 1;
 
         Ok(Some(position)).wrap_with_cost(cost)
@@ -300,7 +326,12 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
     /// On success, the value is stored in the write-through cache so that
     /// subsequent reads (e.g., during root hash computation) can be served
     /// from memory even when the storage context defers writes.
-    fn put_value(&mut self, position: u16, value: &[u8]) -> CostResult<(), DenseMerkleError> {
+    fn put_value(
+        &mut self,
+        position: u16,
+        value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostResult<(), DenseMerkleError> {
         debug_assert!(
             (position as usize) < self.cache.len(),
             "put_value called with position {} >= cache capacity {}",
@@ -311,7 +342,7 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
         let key = position_key(position);
         let result = self
             .storage
-            .put(key, value, None, None)
+            .put(key, value, None, cost_info)
             .unwrap_add_cost(&mut cost);
         match result {
             Ok(()) => {

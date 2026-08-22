@@ -1860,9 +1860,11 @@ mod tests {
     /// Boundary test for the saturating epoch arithmetic: a hand-built op
     /// with an oversized payload (the op type is public; the apply path only
     /// rejects wrong-sized payloads later) drives the physical-ceiling epoch
-    /// term past u32. The estimate must saturate at u32::MAX — never panic
-    /// in debug builds nor wrap in release builds, since a wrapped
-    /// added_bytes would silently UNDER-estimate.
+    /// term — the compaction's replaced bytes — past u32. The estimate must
+    /// saturate at u32::MAX — never panic in debug builds nor wrap in
+    /// release builds, since a wrapped figure would silently
+    /// UNDER-estimate. The per-append added term does not scale with the
+    /// epoch and stays far below the ceiling.
     #[test]
     fn test_commitment_tree_insert_worst_case_cost_oversized_payload_saturates() {
         let grove_version = GroveVersion::latest();
@@ -1885,9 +1887,14 @@ mod tests {
             .cost_as_result()
             .expect("expected worst case cost for oversized payload");
         assert_eq!(
-            cost.storage_cost.added_bytes,
+            cost.storage_cost.replaced_bytes,
             u32::MAX,
             "oversized-payload estimate must saturate, not wrap",
+        );
+        assert!(
+            cost.storage_cost.added_bytes < u32::MAX,
+            "the added term is per-append and must not reach the ceiling: {}",
+            cost.storage_cost.added_bytes
         );
     }
 }

@@ -413,6 +413,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
     bulk_append_tree_versions: BulkAppendTreeVersions {
         cost: BulkAppendTreeCostVersions {
             compaction_hash_count: 1,
+            storage_accounting: 1,
         },
     },
 };

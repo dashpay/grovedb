@@ -3,7 +3,11 @@
 //! Provides `MmrStore`, which implements `MMRStoreReadOps` and
 //! `MMRStoreWriteOps` backed by a GroveDB storage context.
 
-use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use std::{cell::RefCell, collections::BTreeMap};
+
+use grovedb_costs::{
+    storage_cost::key_value_cost::KeyValueStorageCost, CostResult, CostsExt, OperationCost,
+};
 use grovedb_storage::StorageContext;
 
 use crate::{
@@ -26,6 +30,14 @@ use crate::{
 pub struct MmrStore<'a, C> {
     ctx: &'a C,
     key_size: MmrKeySize,
+    /// Storage cost info to attach to specific node positions when they are
+    /// written (consumed on use). Lets a caller that knows what a leaf
+    /// replaces — the bulk-append tree's chunk blob supersedes the buffer
+    /// entries it was built from — report it as such instead of as new
+    /// bytes, even though MMR nodes are staged in an overlay and written
+    /// later. Positions without an entry get the storage layer's default
+    /// report (new bytes).
+    put_cost_infos: RefCell<BTreeMap<u64, KeyValueStorageCost>>,
 }
 
 impl<'a, C> MmrStore<'a, C> {
@@ -36,6 +48,7 @@ impl<'a, C> MmrStore<'a, C> {
         Self {
             ctx,
             key_size: MmrKeySize::U64,
+            put_cost_infos: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -44,7 +57,24 @@ impl<'a, C> MmrStore<'a, C> {
     /// Use [`MmrKeySize::U32`] for compact 4-byte keys when positions
     /// are guaranteed to fit in a `u32`.
     pub fn with_key_size(ctx: &'a C, key_size: MmrKeySize) -> Self {
-        Self { ctx, key_size }
+        Self {
+            ctx,
+            key_size,
+            put_cost_infos: RefCell::new(BTreeMap::new()),
+        }
+    }
+
+    /// Attach storage cost info to the writes of specific node positions;
+    /// each entry is consumed by the write of its position.
+    pub fn with_put_cost_infos(self, cost_infos: BTreeMap<u64, KeyValueStorageCost>) -> Self {
+        *self.put_cost_infos.borrow_mut() = cost_infos;
+        self
+    }
+
+    /// Take back any cost infos whose positions were not written (so a
+    /// caller can re-stage them after a failed commit).
+    pub fn take_put_cost_infos(&self) -> BTreeMap<u64, KeyValueStorageCost> {
+        std::mem::take(&mut *self.put_cost_infos.borrow_mut())
     }
 }
 
@@ -81,6 +111,7 @@ impl<'db, C: StorageContext<'db>> MMRStoreWriteOps for &MmrStore<'_, C> {
         let mut cost = OperationCost::default();
         for (i, elem) in elems.into_iter().enumerate() {
             let node_pos = pos + i as u64;
+            let cost_info = self.put_cost_infos.borrow_mut().remove(&node_pos);
             let key = match mmr_node_key_sized(node_pos, self.key_size) {
                 Ok(k) => k,
                 Err(e) => return Err(e).wrap_with_cost(cost),
@@ -95,7 +126,7 @@ impl<'db, C: StorageContext<'db>> MMRStoreWriteOps for &MmrStore<'_, C> {
                     .wrap_with_cost(cost);
                 }
             };
-            let result = self.ctx.put(key, &serialized, None, None);
+            let result = self.ctx.put(key, &serialized, None, cost_info);
             cost += result.cost;
             if let Err(e) = result.value {
                 return Err(crate::Error::StoreError(format!(

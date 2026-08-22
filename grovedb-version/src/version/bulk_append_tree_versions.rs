@@ -27,4 +27,28 @@ pub struct BulkAppendTreeCostVersions {
     /// Version 1 adds that bagging term. Shipped chunk bytes and roots are
     /// unaffected; what moves is the fee a compacting append is charged.
     pub compaction_hash_count: FeatureVersion,
+    /// How the append-only family's data-storage writes are reported to the
+    /// fee layer (the dense-buffer entry write, the compaction chunk blob,
+    /// and — for `CommitmentTree` — the frontier rewrite).
+    ///
+    /// Version 0 (shipped, V1..V3) issues every data put with no cost info,
+    /// so the commit path charges key + value as `added_bytes`: the chunk
+    /// blob is billed as ~`epoch_size × entry` of NEW storage on the one
+    /// append that compacts (although it supersedes the buffer entries it
+    /// was built from), buffer writes from the second epoch on are billed
+    /// as new (although they overwrite last epoch's stale value at the same
+    /// position key), and the frontier is billed in full on every append
+    /// (although it is one value rewritten in place). Metered storage ends
+    /// up ~2× the bytes that persist, concentrated on one arbitrary tx per
+    /// epoch.
+    ///
+    /// Version 1 (V4+) charges each entry's permanent bytes once, at the
+    /// append that creates it (entry + its amortized share of the chunk
+    /// blob's framing, as `added_bytes`), and reports the churn as
+    /// `replaced_bytes`: the chunk blob as replacement of the buffer bytes
+    /// it supersedes, the frontier rewrite as replacement of its previous
+    /// serialization (growth only is added). Stored bytes, chunks, roots and
+    /// proofs are identical under both versions; only the cost report
+    /// moves.
+    pub storage_accounting: FeatureVersion,
 }

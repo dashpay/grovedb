@@ -104,6 +104,16 @@ const CT_ELEMENT_LOAD_BASE: u32 = 256;
 /// root recompute), and a full epoch compaction (chunk-blob write plus
 /// MMR merge cascade).
 ///
+/// Storage bytes follow the append-only family's storage accounting v1
+/// (`bulk_append_tree_versions.cost.storage_accounting`, the only report
+/// GROVE_V4 — where this arm is selected — uses): an append **adds** its
+/// entry plus its amortized share of the chunk blob's framing, and any
+/// growth of the frontier; the compaction's blob and the frontier rewrite
+/// are **replaced** bytes (the blob supersedes the pre-paid buffer entries,
+/// the frontier overwrites its previous serialization), so the bound
+/// carries a replaced-bytes term sized for a full epoch and the frontier at
+/// its maximum, and its added-bytes term no longer scales with the epoch.
+///
 /// `chunk_power` is the tree's epoch scale: the average-case estimator
 /// requires it declared in the tree's own layer in the estimation paths
 /// (`TreeType::CommitmentTree(chunk_power)`) and errors when it is
@@ -143,20 +153,32 @@ pub(in crate::batch) fn commitment_tree_insert_op_cost(
     const CHUNK_BLOB_OVERHEAD: u64 = 64;
     // An MMR internal node: 1 (flag) + 32 (hash).
     const MMR_INTERNAL_NODE_SIZE: u64 = 33;
+    // The frontier's serialization grows by at most one 32-byte ommer per
+    // append (popcount rises by at most one), and its first-ever save of
+    // a one-leaf frontier is 42 bytes; 64 bounds both, with the varint.
+    const FRONTIER_ADDED_PER_APPEND: u64 = 64;
 
-    // The epoch term multiplies the entry size by up to 2^16, which
-    // overflows u32 for hand-built ops with oversized payloads (the op
-    // is public; the apply path only rejects wrong-sized payloads
-    // later). Sum in u64 and saturate at u32::MAX — a wrapped
-    // added_bytes would silently UNDER-estimate, the exact failure this
-    // model exists to prevent, while a saturated one merely
-    // over-reserves for an op the apply would reject anyway.
-    let added_bytes_u64: u64 = (entry_size + PER_PUT_OVERHEAD as u64)
-        + (MAX_FRONTIER_SIZE as u64 + PER_PUT_OVERHEAD as u64)
-        + (epoch_size as u64 * (entry_size + CHUNK_ENTRY_OVERHEAD)
-            + CHUNK_BLOB_OVERHEAD
-            + PER_PUT_OVERHEAD as u64)
+    // Added bytes: the entry with its amortized blob-framing share, any
+    // frontier growth, the blob's own residual (header beyond what the
+    // entries pre-paid), and the MMR merge cascade's internal nodes. None
+    // of these scale with the epoch: the epoch-sized blob copy is a
+    // replacement (below), not new storage.
+    let added_bytes_u64: u64 = (entry_size + CHUNK_ENTRY_OVERHEAD + PER_PUT_OVERHEAD as u64)
+        + (FRONTIER_ADDED_PER_APPEND + PER_PUT_OVERHEAD as u64)
+        + (CHUNK_BLOB_OVERHEAD + PER_PUT_OVERHEAD as u64)
         + FRONTIER_DEPTH as u64 * (MMR_INTERNAL_NODE_SIZE + PER_PUT_OVERHEAD as u64);
+    // Replaced bytes: on the compacting append, the whole epoch's entries
+    // (each with its framing share) are superseded by the blob; on every
+    // append the previous frontier serialization is overwritten. The
+    // epoch term multiplies the entry size by up to 2^16, which overflows
+    // u32 for hand-built ops with oversized payloads (the op is public;
+    // the apply path only rejects wrong-sized payloads later). Sum in u64
+    // and saturate at u32::MAX — a wrapped figure would silently
+    // UNDER-estimate, the exact failure this model exists to prevent,
+    // while a saturated one merely over-reserves for an op the apply
+    // would reject anyway.
+    let replaced_bytes_u64: u64 = epoch_size as u64 * (entry_size + CHUNK_ENTRY_OVERHEAD)
+        + (MAX_FRONTIER_SIZE as u64 + PER_PUT_OVERHEAD as u64);
 
     OperationCost {
         // 2 reads (CommitmentTree element + frontier) and up to
@@ -175,9 +197,9 @@ pub(in crate::batch) fn commitment_tree_insert_op_cost(
             //   re-written once into the blob) and the MMR merge
             //   cascade's internal nodes.
             added_bytes: u32::try_from(added_bytes_u64).unwrap_or(u32::MAX),
-            // The parent-Merk node replacement is charged by the
-            // replace_tree part; the append itself replaces nothing.
-            replaced_bytes: 0,
+            // The blob copy and the frontier rewrite; the parent-Merk node
+            // replacement is charged by the replace_tree part.
+            replaced_bytes: u32::try_from(replaced_bytes_u64).unwrap_or(u32::MAX),
             removed_bytes: StorageRemovedBytes::NoStorageRemoval,
         },
         // Reads: the stored CommitmentTree element (fixed serialized

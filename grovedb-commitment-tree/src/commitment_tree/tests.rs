@@ -527,7 +527,7 @@ mod storage_tests {
         let expected_total_count = ct.total_count();
 
         // Save
-        let save_result = ct.save();
+        let save_result = ct.save(GroveVersion::latest());
         save_result.value.expect("save should succeed");
         assert!(
             save_result.cost.seek_count > 0,
@@ -561,7 +561,9 @@ mod storage_tests {
             .expect("open should succeed");
 
         // Save empty
-        ct.save().value.expect("save empty should succeed");
+        ct.save(GroveVersion::latest())
+            .value
+            .expect("save empty should succeed");
 
         // Append and save again (overwrites)
         ct.append(
@@ -575,7 +577,9 @@ mod storage_tests {
         .expect("append should succeed");
         let expected_root = ct.root_hash();
         let total_count = ct.total_count();
-        ct.save().value.expect("save non-empty should succeed");
+        ct.save(GroveVersion::latest())
+            .value
+            .expect("save non-empty should succeed");
 
         // Re-open should return the latest (non-empty) frontier
         let storage = ct.bulk_tree.dense_tree.storage;
@@ -619,12 +623,13 @@ mod storage_tests {
         // Construct directly to test save() error path.
         let bulk_tree = BulkAppendTree::new(TEST_CHUNK_POWER, FailingDataStorageContext)
             .expect("bulk tree new should succeed");
-        let ct: CommitmentTree<_, DashMemo> = CommitmentTree {
+        let mut ct: CommitmentTree<_, DashMemo> = CommitmentTree {
             frontier: CommitmentFrontier::new(),
             bulk_tree,
+            stored_frontier_len: None,
             _memo: PhantomData,
         };
-        let result = ct.save();
+        let result = ct.save(GroveVersion::latest());
         assert!(result.value.is_err(), "should surface storage put error");
         let err_msg = format!("{}", result.value.expect_err("should be storage error"));
         assert!(
@@ -637,11 +642,13 @@ mod storage_tests {
     #[test]
     fn test_save_empty_and_reopen() {
         let ctx = MockDataStorageContext::new();
-        let ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
+        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
             .value
             .expect("open should succeed");
 
-        ct.save().value.expect("save empty should succeed");
+        ct.save(GroveVersion::latest())
+            .value
+            .expect("save empty should succeed");
 
         let storage = ct.bulk_tree.dense_tree.storage;
         let loaded = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, storage)
@@ -679,7 +686,9 @@ mod storage_tests {
         }
 
         let total_count = ct.total_count();
-        ct.save().value.expect("save should succeed");
+        ct.save(GroveVersion::latest())
+            .value
+            .expect("save should succeed");
 
         let storage = ct.bulk_tree.dense_tree.storage;
         let loaded = CommitmentTree::<_, DashMemo>::open(total_count, TEST_CHUNK_POWER, storage)
@@ -1138,7 +1147,9 @@ mod storage_tests {
         )
         .value
         .expect("append should succeed");
-        ct.save().value.expect("save should succeed");
+        ct.save(GroveVersion::latest())
+            .value
+            .expect("save should succeed");
 
         // 2. Re-open with total_count=0 but the frontier has tree_size=1
         let storage = ct.bulk_tree.dense_tree.storage;

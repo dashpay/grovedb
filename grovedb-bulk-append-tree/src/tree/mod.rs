@@ -20,6 +20,7 @@ pub use fetch::{BufferQueryResult, ChunkQueryResult};
 #[cfg(all(test, feature = "storage"))]
 mod tests;
 
+use grovedb_costs::storage_cost::key_value_cost::KeyValueStorageCost;
 use grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree;
 use grovedb_merkle_mountain_range::MmrNode;
 
@@ -92,6 +93,12 @@ pub struct BulkAppendTree<S> {
     /// lifetimes (compaction cycles) so that reads can find recently-pushed
     /// nodes without a storage round-trip.
     pub(crate) mmr_overlay: Vec<(u64, Vec<MmrNode>)>,
+    /// Storage cost info for chunk-blob leaves staged in `mmr_overlay` but
+    /// not yet committed, keyed by MMR position. Under storage accounting
+    /// v1 a compaction's blob is reported as replacement of the buffer
+    /// bytes it supersedes; since MMR nodes are written at `commit_mmr`,
+    /// the report travels with the staged node until then.
+    pub(crate) pending_blob_cost_infos: std::collections::BTreeMap<u64, KeyValueStorageCost>,
     /// Cached MMR root, refreshed only when a compaction mutates the MMR.
     ///
     /// The MMR is only touched on compaction (every `epoch_size` appends), so

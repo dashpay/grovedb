@@ -38,6 +38,7 @@ mod private_document_store_tests;
 // and `provable_count_provable_sum_indexed_tree_tests`; the generic-write
 // rejection cases it uniquely held are ported to
 // `generic_writes_against_pcit_primary_are_rejected`.
+mod append_only_storage_accounting_tests;
 mod axis_descent_proof_tests;
 mod count_offset_paginated_tests;
 mod count_sum_tree_tests;

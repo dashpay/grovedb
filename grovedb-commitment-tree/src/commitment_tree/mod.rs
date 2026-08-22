@@ -12,9 +12,13 @@
 use std::marker::PhantomData;
 
 use grovedb_bulk_append_tree::BulkAppendTree;
-use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use grovedb_costs::{
+    storage_cost::{key_value_cost::KeyValueStorageCost, StorageCost},
+    CostResult, CostsExt, OperationCost,
+};
 use grovedb_storage::StorageContext;
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{error::GroveVersionError, version::GroveVersion};
+use integer_encoding::VarInt;
 use orchard::{
     memo::{DashMemo, MemoSize},
     note::TransmittedNoteCiphertext,
@@ -27,6 +31,27 @@ mod tests;
 
 /// Key used to store the serialized commitment frontier in data storage.
 pub const COMMITMENT_TREE_DATA_KEY: &[u8] = b"__ct_data__";
+
+/// Cost info for persisting the frontier under storage accounting v1: the
+/// previous serialization's bytes are replaced, only growth is added; the
+/// first save of a tree that never stored a frontier is a new key.
+fn frontier_save_cost_info(new_len: u32, previous_len: Option<u32>) -> KeyValueStorageCost {
+    let total = new_len.saturating_add(new_len.required_space() as u32);
+    let previous_total = previous_len
+        .map(|l| l.saturating_add(l.required_space() as u32))
+        .unwrap_or(0);
+    let replaced = total.min(previous_total);
+    KeyValueStorageCost {
+        key_storage_cost: StorageCost::default(),
+        value_storage_cost: StorageCost {
+            added_bytes: total - replaced,
+            replaced_bytes: replaced,
+            removed_bytes: Default::default(),
+        },
+        new_node: previous_len.is_none(),
+        needs_value_verification: false,
+    }
+}
 
 /// Result of appending to a [`CommitmentTree`].
 #[derive(Debug, Clone)]
@@ -146,6 +171,11 @@ pub fn deserialize_ciphertext<M: MemoSize>(data: &[u8]) -> Option<TransmittedNot
 pub struct CommitmentTree<S, M: MemoSize = DashMemo> {
     frontier: CommitmentFrontier,
     pub(crate) bulk_tree: BulkAppendTree<S>,
+    /// Serialized length of the frontier as last persisted (loaded at open,
+    /// refreshed by `save`), or `None` when no frontier has been stored
+    /// yet. Lets `save` report the rewrite as replacement of the previous
+    /// serialization under storage accounting v1.
+    stored_frontier_len: Option<u32>,
     _memo: PhantomData<M>,
 }
 
@@ -170,6 +200,7 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         Ok(Self {
             frontier: CommitmentFrontier::new(),
             bulk_tree,
+            stored_frontier_len: None,
             _memo: PhantomData,
         })
     }
@@ -204,12 +235,12 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
             .get(COMMITMENT_TREE_DATA_KEY)
             .unwrap_add_cost(&mut cost);
 
-        let frontier = match data {
+        let (frontier, stored_frontier_len) = match data {
             Ok(Some(bytes)) => match CommitmentFrontier::deserialize(&bytes) {
-                Ok(f) => f,
+                Ok(f) => (f, Some(bytes.len() as u32)),
                 Err(e) => return Err(e).wrap_with_cost(cost),
             },
-            Ok(None) => CommitmentFrontier::new(),
+            Ok(None) => (CommitmentFrontier::new(), None),
             Err(e) => {
                 return Err(CommitmentTreeError::InvalidData(format!(
                     "storage error loading frontier: {}",
@@ -235,6 +266,7 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         Ok(Self {
             frontier,
             bulk_tree,
+            stored_frontier_len,
             _memo: PhantomData,
         })
         .wrap_with_cost(cost)
@@ -553,17 +585,48 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     }
 
     /// Persist the current frontier state to storage.
-    pub fn save(&self) -> CostResult<(), CommitmentTreeError> {
+    ///
+    /// The frontier is one value rewritten in place on every append. Under
+    /// storage accounting v1 (`bulk_append_tree_versions.cost
+    /// .storage_accounting`) the write is reported as replacement of its
+    /// previous serialization, with only growth as added bytes; v0 lets the
+    /// storage layer report the whole value as added every time.
+    pub fn save(&mut self, grove_version: &GroveVersion) -> CostResult<(), CommitmentTreeError> {
         let mut cost = OperationCost::default();
         let serialized = self.frontier.serialize();
+        let cost_info = match grove_version
+            .bulk_append_tree_versions
+            .cost
+            .storage_accounting
+        {
+            0 => None,
+            1 => Some(frontier_save_cost_info(
+                serialized.len() as u32,
+                self.stored_frontier_len,
+            )),
+            version => {
+                return Err(CommitmentTreeError::VersionError(
+                    GroveVersionError::UnknownVersionMismatch {
+                        method: "CommitmentTree frontier storage accounting".to_string(),
+                        known_versions: vec![0, 1],
+                        received: version,
+                    }
+                    .to_string(),
+                ))
+                .wrap_with_cost(cost)
+            }
+        };
         let result = self
             .bulk_tree
             .dense_tree
             .storage
-            .put(COMMITMENT_TREE_DATA_KEY, &serialized, None, None)
+            .put(COMMITMENT_TREE_DATA_KEY, &serialized, None, cost_info)
             .unwrap_add_cost(&mut cost);
         match result {
-            Ok(()) => Ok(()).wrap_with_cost(cost),
+            Ok(()) => {
+                self.stored_frontier_len = Some(serialized.len() as u32);
+                Ok(()).wrap_with_cost(cost)
+            }
             Err(e) => Err(CommitmentTreeError::InvalidData(format!(
                 "storage error saving frontier: {}",
                 e

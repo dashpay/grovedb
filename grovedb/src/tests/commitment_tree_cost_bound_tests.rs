@@ -330,9 +330,11 @@ fn test_commitment_tree_insert_declared_chunk_power_tightens_estimate() {
     value.expect("compaction append should succeed");
 
     // Far tighter than the worst-case physical-ceiling assumption
-    // (2^4 vs 2^16 epoch)...
+    // (2^4 vs 2^16 epoch). The epoch scale lives in the replaced-bytes
+    // term (the compaction's blob supersedes the epoch's entries); the
+    // added-bytes term is per-append and does not scale with the epoch.
     assert!(
-        declared.storage_cost.added_bytes < worst.storage_cost.added_bytes / 100,
+        declared.storage_cost.replaced_bytes < worst.storage_cost.replaced_bytes / 100,
         "declared estimate should be far tighter than the physical-ceiling worst case; declared \
          {declared:?}\nworst {worst:?}",
     );

@@ -22,6 +22,7 @@ incrementalmerkletree = "0.8"
 shardtree = { version = "0.6", optional = true }
 rusqlite = { version = "0.38", features = ["bundled"], optional = true }
 grovedb-costs = { version = "5.0.1", path = "../costs" }
+integer-encoding = { workspace = true }
 grovedb-version = { version = "5.0.1", path = "../grovedb-version" }
 grovedb-storage = { version = "5.0.1", path = "../storage", optional = true }
 grovedb-bulk-append-tree = { version = "5.0.1", path = "../grovedb-bulk-append-tree", default-features = false }

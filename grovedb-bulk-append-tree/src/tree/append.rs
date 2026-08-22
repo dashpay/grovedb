@@ -1,5 +1,6 @@
 //! Append and compaction logic for BulkAppendTree.
 
+use grovedb_costs::storage_cost::key_value_cost::KeyValueStorageCost;
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_merkle_mountain_range::{mmr_size_to_leaf_count, MmrKeySize, MmrNode, MmrStore, MMR};
 use grovedb_storage::StorageContext;
@@ -9,7 +10,14 @@ use super::{
     capacity_for_height, hash::compute_state_root, AppendNoStateRootResult, AppendResult,
     BulkAppendTree,
 };
-use crate::{chunk::serialize_chunk_blob, cost::compaction_hash_count, BulkAppendError};
+use crate::{
+    chunk::serialize_chunk_blob,
+    cost::{
+        buffer_entry_cost_info, chunk_blob_cost_info, compaction_hash_count, entry_charge_bytes,
+        storage_accounting_version,
+    },
+    BulkAppendError,
+};
 
 impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// Create a new empty tree.
@@ -23,6 +31,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             total_count: 0,
             dense_tree,
             mmr_overlay: Vec::new(),
+            pending_blob_cost_infos: std::collections::BTreeMap::new(),
             // Empty tree → empty MMR → zero root.
             last_mmr_root: Some([0u8; 32]),
         })
@@ -49,6 +58,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             total_count,
             dense_tree,
             mmr_overlay: Vec::new(),
+            pending_blob_cost_infos: std::collections::BTreeMap::new(),
             // Lazy: the restored MMR may not be readable until an append occurs,
             // so don't compute the root here. The first append fills the cache.
             last_mmr_root: None,
@@ -100,9 +110,14 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         let global_position = self.total_count;
 
         // 1. Try to insert into the dense tree buffer.
-        let try_result = self.dense_tree.try_insert(value).unwrap().map_err(|e| {
-            BulkAppendError::StorageError(format!("dense tree insert failed: {}", e))
-        })?;
+        let cost_info = self.buffer_entry_cost_info(value, grove_version)?;
+        let try_result = self
+            .dense_tree
+            .try_insert_with_cost_info(value, cost_info)
+            .unwrap()
+            .map_err(|e| {
+                BulkAppendError::StorageError(format!("dense tree insert failed: {}", e))
+            })?;
 
         let compacted = match try_result {
             Some((_dense_root, _position)) => {
@@ -162,9 +177,13 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         let mut cost = OperationCost::default();
         let global_position = self.total_count;
 
+        let cost_info = match self.buffer_entry_cost_info(value, grove_version) {
+            Ok(c) => c,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
         let try_result = match self
             .dense_tree
-            .try_insert_no_root(value)
+            .try_insert_no_root_with_cost_info(value, cost_info)
             .unwrap_add_cost(&mut cost)
         {
             Ok(r) => r,
@@ -282,6 +301,29 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         Ok(compute_state_root(&mmr_root, &dense_root)).wrap_with_cost(cost)
     }
 
+    /// Storage cost info for the next buffer entry write, per the
+    /// version's storage accounting: `None` (v0) lets the storage layer
+    /// report key + value as added; v1 reports the entry's permanent bytes
+    /// plus its amortized blob-framing share as added, marking the
+    /// position key new only in the first epoch (later epochs overwrite a
+    /// stale slot at an existing key).
+    fn buffer_entry_cost_info(
+        &self,
+        value: &[u8],
+        grove_version: &GroveVersion,
+    ) -> Result<Option<KeyValueStorageCost>, BulkAppendError> {
+        match storage_accounting_version(grove_version)? {
+            0 => Ok(None),
+            _ => {
+                let first_epoch = self.total_count < self.epoch_size();
+                Ok(Some(buffer_entry_cost_info(
+                    value.len() as u32,
+                    first_epoch,
+                )))
+            }
+        }
+    }
+
     /// Compact all dense tree entries plus a new value into a chunk blob
     /// and append to the chunk MMR. Resets the dense tree.
     /// Returns `(hash_count, mmr_root)`.
@@ -341,12 +383,34 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             entries.push(value);
         }
 
+        // Under storage accounting v1 the blob is reported as replacement of
+        // the buffer bytes it supersedes: every BUFFERED entry's bytes plus
+        // its amortized framing share were charged as added by the append
+        // that wrote it. The value that triggers the compaction never enters
+        // the buffer — it goes straight into the blob — so it is not
+        // pre-paid and stays in the blob's added residual, which is how this
+        // append pays for its own entry.
+        let pre_paid_bytes: u32 = entries
+            .iter()
+            .map(|e| entry_charge_bytes(e.len() as u32))
+            .fold(0u32, u32::saturating_add);
+        let compacting_entry_bytes = entry_charge_bytes(new_value.len() as u32);
+
         // Add the new value that didn't fit
         entries.push(new_value.to_vec());
 
         // Serialize chunk blob as a standard MMR leaf — hash = blake3(0x00 || blob)
         let blob = match serialize_chunk_blob(&entries) {
             Ok(b) => b,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
+        let blob_cost_info = match storage_accounting_version(grove_version) {
+            Ok(0) => None,
+            Ok(_) => Some(chunk_blob_cost_info(
+                blob.len() as u32,
+                pre_paid_bytes,
+                compacting_entry_bytes,
+            )),
             Err(e) => return Err(e).wrap_with_cost(cost),
         };
         // `MmrNode::leaf` hashes the blob eagerly.
@@ -370,11 +434,19 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                 MMR::new_with_overlay(mmr_size, &mmr_store, std::mem::take(&mut self.mmr_overlay));
 
             let push_result = mmr.push(leaf, grove_version).unwrap_add_cost(&mut cost);
-            if let Err(e) = push_result {
-                // Restore overlay before returning error
-                self.mmr_overlay = mmr.batch.take_overlay();
-                return Err(BulkAppendError::MmrError(format!("MMR push failed: {}", e)))
-                    .wrap_with_cost(cost);
+            let leaf_pos = match push_result {
+                Ok(pos) => pos,
+                Err(e) => {
+                    // Restore overlay before returning error
+                    self.mmr_overlay = mmr.batch.take_overlay();
+                    return Err(BulkAppendError::MmrError(format!("MMR push failed: {}", e)))
+                        .wrap_with_cost(cost);
+                }
+            };
+            // The leaf is only staged here; it is written at `commit_mmr`,
+            // so its storage report travels with it until then.
+            if let Some(cost_info) = blob_cost_info {
+                self.pending_blob_cost_infos.insert(leaf_pos, cost_info);
             }
 
             let root_result = mmr.get_root(grove_version).unwrap_add_cost(&mut cost);
@@ -459,16 +531,19 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         if self.mmr_overlay.is_empty() {
             return Ok(());
         }
-        let mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32);
+        let mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32)
+            .with_put_cost_infos(std::mem::take(&mut self.pending_blob_cost_infos));
         let mut mmr = MMR::new_with_overlay(
             self.mmr_size(),
             &mmr_store,
             std::mem::take(&mut self.mmr_overlay),
         );
         if let Err(e) = mmr.commit().unwrap() {
-            // Restore overlay before returning error so retries/get_mmr_root
-            // still see the staged nodes.
+            // Restore overlay (and the unconsumed storage reports) before
+            // returning error so retries/get_mmr_root still see the staged
+            // nodes.
             self.mmr_overlay = mmr.batch.take_overlay();
+            self.pending_blob_cost_infos = mmr_store.take_put_cost_infos();
             return Err(BulkAppendError::MmrError(format!(
                 "MMR commit failed: {}",
                 e

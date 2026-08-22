@@ -161,7 +161,10 @@ impl GroveDb {
         );
 
         // 4. Save frontier to storage
-        cost_return_on_error!(&mut cost, ct.save().map(|r| r.map_err(map_ct_err)));
+        cost_return_on_error!(
+            &mut cost,
+            ct.save(grove_version).map(|r| r.map_err(map_ct_err))
+        );
 
         let new_sinsemilla_root = append_result.sinsemilla_root;
         let bulk_state_root = append_result.bulk_state_root;
@@ -551,7 +554,10 @@ impl GroveDb {
             }
 
             // Save frontier to storage
-            cost_return_on_error!(&mut cost, ct.save().map(|r| r.map_err(map_ct_err)));
+            cost_return_on_error!(
+                &mut cost,
+                ct.save(grove_version).map(|r| r.map_err(map_ct_err))
+            );
 
             // Read state for the replacement op
             let bulk_state_root = cost_return_on_error_no_add!(

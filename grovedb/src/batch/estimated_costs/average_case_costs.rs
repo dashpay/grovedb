@@ -321,10 +321,17 @@ impl GroveOp {
                 // need no separate declaration.
                 let entry_size = entry.len() as u32;
                 let epoch_entries: u32 = 1u32 << chunk_power.min(16) as u32;
-                // Amortized over one epoch: every entry is written once to
-                // the buffer, and once more into the chunk blob when the
-                // epoch compacts.
-                let amortized_compaction_bytes = entry_size;
+                // Storage accounting v1 (the only report at GROVE_V4, where
+                // the store exists): an append ADDS its entry plus an
+                // amortized share of the chunk blob's framing; when the
+                // epoch compacts, the blob is REPLACEMENT of the pre-paid
+                // entries, and only its residual header is added.
+                let amortized_compaction_bytes: u32 = 16;
+                const CHUNK_BLOB_RESIDUAL: u32 = 64 + 50;
+                // The compacting append's replaced bytes: the whole epoch's
+                // entries with their framing share.
+                let compaction_replaced_bytes: u32 =
+                    epoch_entries.saturating_mul(entry_size.saturating_add(16));
                 // The dense-buffer root walk costs two hashes per filled
                 // position and runs on every append, so across an epoch it
                 // averages half the buffer.
@@ -354,8 +361,9 @@ impl GroveOp {
                     storage_cost: StorageCost {
                         added_bytes: entry_size
                             .saturating_add(amortized_compaction_bytes)
+                            .saturating_add(CHUNK_BLOB_RESIDUAL)
                             .saturating_add(NON_COUNTED_WRAPPER_BYTE),
-                        replaced_bytes: 0,
+                        replaced_bytes: compaction_replaced_bytes,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
                     storage_loaded_bytes: (avg_dense_reads as u64)
@@ -2146,13 +2154,18 @@ mod tests {
             big.hash_node_calls,
             small.hash_node_calls
         );
-        // Each entry is written TWICE across its lifetime: once into the
-        // dense buffer and once more into the chunk blob when the epoch
-        // compacts. The amortized per-append charge is therefore 2x the
-        // entry size, so doubling the entry grows added_bytes by 2 x 64.
+        // Each entry's permanent bytes are charged once, as added, by the
+        // append that writes it (plus a fixed amortized framing share); the
+        // chunk blob the epoch compacts into is replacement of those
+        // pre-paid bytes. Doubling the entry therefore grows added_bytes by
+        // exactly 64, and the compaction's replaced bound by 2^4 x 64.
         assert_eq!(
             cost_large.storage_cost.added_bytes - cost.storage_cost.added_bytes,
-            128
+            64
+        );
+        assert_eq!(
+            cost_large.storage_cost.replaced_bytes - cost.storage_cost.replaced_bytes,
+            16 * 64
         );
     }
 

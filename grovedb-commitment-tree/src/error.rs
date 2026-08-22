@@ -10,6 +10,10 @@ pub enum CommitmentTreeError {
     /// Data read from storage is invalid or corrupt.
     #[error("invalid frontier data: {0}")]
     InvalidData(String),
+
+    /// A grove version selected an unknown accounting variant.
+    #[error("version error: {0}")]
+    VersionError(String),
     /// A 32-byte value is not a valid Pallas field element.
     #[error("invalid Pallas field element")]
     InvalidFieldElement,
