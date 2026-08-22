@@ -141,6 +141,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         let accounting = append_storage_accounting(grove_version)?;
         let mut storage_accounting_cost = OperationCost::default();
         let slot_write = self.slot_write_accounting(&accounting);
+        self.ensure_mmr_root_resolved(&accounting, grove_version)?;
 
         // 1. Try to insert into the dense tree buffer.
         //
@@ -268,6 +269,9 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         };
         let mut storage_accounting_cost = OperationCost::default();
         let slot_write = self.slot_write_accounting(&accounting);
+        if let Err(e) = self.ensure_mmr_root_resolved(&accounting, grove_version) {
+            return Err(e).wrap_with_cost(cost);
+        }
 
         let insert_ctx =
             self.dense_tree
@@ -678,7 +682,18 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                     root.copy_from_slice(&bytes);
                     return Ok(root).wrap_with_cost(cost);
                 }
-                Ok(_) => {}
+                // A present value of any other length is not a state this
+                // tree ever writes: corruption at the key, not a legacy tree.
+                Ok(Some(bytes)) => {
+                    return Err(BulkAppendError::CorruptedData(format!(
+                        "persisted MMR root has {} bytes, expected 32",
+                        bytes.len()
+                    )))
+                    .wrap_with_cost(cost);
+                }
+                // Absent: a tree whose last compaction predates the fixed
+                // model. Bag the peaks; the append path backfills the key.
+                Ok(None) => {}
                 Err(e) => {
                     return Err(BulkAppendError::StorageError(format!(
                         "MMR root read failed: {}",
@@ -689,6 +704,71 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             }
         }
         self.bag_mmr_root_with_cost(grove_version).add_cost(cost)
+    }
+
+    /// Persist the chunk-MMR root under [`MMR_ROOT_KEY`] — prepaid like the
+    /// MMR nodes (zero-byte cost information), so the append that issues it
+    /// keeps the fixed model's storage figure.
+    fn persist_mmr_root(&self, root: &[u8; 32]) -> Result<(), BulkAppendError> {
+        let cost_info = Some(
+            grovedb_costs::storage_cost::key_value_cost::KeyValueStorageCost {
+                key_storage_cost: Default::default(),
+                value_storage_cost: Default::default(),
+                new_node: false,
+                needs_value_verification: false,
+            },
+        );
+        self.dense_tree
+            .storage
+            .put(MMR_ROOT_KEY, root, None, cost_info)
+            .unwrap()
+            .map_err(|e| BulkAppendError::StorageError(format!("MMR root put failed: {}", e)))
+    }
+
+    /// Under the fixed-model accounting, make sure a reopened tree's MMR root
+    /// is known before an append: read the persisted root (one of the two
+    /// root reads the model charges on every state-root derivation), or —
+    /// for a tree whose last compaction predates the fixed model and so has
+    /// none — bag the peaks once and BACKFILL the key, prepaid, so the
+    /// bagging (which loads a leaf peak's whole chunk blob when the chunk
+    /// count is odd) happens at most once per tree and the reads that follow
+    /// are the modelled ones. The one-time catch-up is not billed, like the
+    /// dense buffer's read-only catch-up; it is bounded by the peak count and
+    /// over for good once the key exists. Cached for the session either way.
+    fn ensure_mmr_root_resolved(
+        &mut self,
+        accounting: &AppendStorageAccounting,
+        grove_version: &GroveVersion,
+    ) -> Result<(), BulkAppendError> {
+        if !accounting.fixed_model || self.last_mmr_root.is_some() || self.mmr_size() == 0 {
+            return Ok(());
+        }
+        let persisted = self
+            .dense_tree
+            .storage
+            .get(MMR_ROOT_KEY)
+            .unwrap()
+            .map_err(|e| BulkAppendError::StorageError(format!("MMR root read failed: {}", e)))?;
+        let root = match persisted {
+            Some(bytes) if bytes.len() == 32 => {
+                let mut root = [0u8; 32];
+                root.copy_from_slice(&bytes);
+                root
+            }
+            Some(bytes) => {
+                return Err(BulkAppendError::CorruptedData(format!(
+                    "persisted MMR root has {} bytes, expected 32",
+                    bytes.len()
+                )))
+            }
+            None => {
+                let root = self.bag_mmr_root_with_cost(grove_version).unwrap()?;
+                self.persist_mmr_root(&root)?;
+                root
+            }
+        };
+        self.last_mmr_root = Some(root);
+        Ok(())
     }
 
     /// The MMR root bagged from the peaks — the independent derivation, which
@@ -756,21 +836,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         if accounting.fixed_model
             && let Some(root) = self.last_mmr_root
         {
-            let cost_info = Some(
-                grovedb_costs::storage_cost::key_value_cost::KeyValueStorageCost {
-                    key_storage_cost: Default::default(),
-                    value_storage_cost: Default::default(),
-                    new_node: false,
-                    needs_value_verification: false,
-                },
-            );
-            self.dense_tree
-                .storage
-                .put(MMR_ROOT_KEY, &root, None, cost_info)
-                .unwrap()
-                .map_err(|e| {
-                    BulkAppendError::StorageError(format!("MMR root put failed: {}", e))
-                })?;
+            self.persist_mmr_root(&root)?;
         }
         Ok(())
     }

@@ -415,6 +415,50 @@ fn added_bytes_over_an_epoch_are_the_long_term_footprint() {
     );
 }
 
+/// A commitment tree that compacted under GROVE_V3 has no persisted MMR
+/// root. Its first V4 append backfills the key (one extra commit-time put,
+/// prepaid) and is otherwise charged the fixed model; every V4 append after
+/// it is charged exactly the model, reading the key and never the peaks.
+#[test]
+fn legacy_commitment_tree_is_charged_the_fixed_model_after_one_backfill_put() {
+    const CHUNK_POWER: u8 = 4;
+    const EPOCH: u32 = 1 << CHUNK_POWER as u32;
+    let db = ct_db(CHUNK_POWER, &GROVE_V3);
+    for position in 0..EPOCH {
+        ct_insert(&db, position, &GROVE_V3);
+    }
+    let first = ct_insert(&db, EPOCH, &GROVE_V4);
+    let base = ct_insert(&db, EPOCH + 1, &GROVE_V4);
+    assert_fixed("first V4 append (backfill put)", &base, &first, 1);
+    for position in EPOCH + 2..2 * EPOCH + 2 {
+        let cost = ct_insert(&db, position, &GROVE_V4);
+        let residual = if position % EPOCH == EPOCH - 1 {
+            compaction_seek_residual((position / EPOCH) as u64)
+        } else {
+            0
+        };
+        assert_fixed(&format!("position {position}"), &base, &cost, residual);
+    }
+    // The same figure as a tree that ran under V4 from the start.
+    let v4_db = ct_db(CHUNK_POWER, &GROVE_V4);
+    for position in 0..EPOCH + 2 {
+        ct_insert(&v4_db, position, &GROVE_V4);
+    }
+    assert_fixed(
+        "V4-only tree",
+        &base,
+        &ct_insert(&v4_db, EPOCH + 2, &GROVE_V4),
+        0,
+    );
+    assert_eq!(root_hash(&db, &GROVE_V4), {
+        for position in EPOCH + 3..2 * EPOCH + 2 {
+            ct_insert(&v4_db, position, &GROVE_V4);
+        }
+        root_hash(&v4_db, &GROVE_V4)
+    });
+    assert_verifies(&db, &GROVE_V4);
+}
+
 /// An epoch boundary inside ONE batch on a fresh tree: the batch's cost is
 /// the sum of the per-append fixed charges (slot and record keys written
 /// twice in the batch are charged once — a `StorageBatch` keeps one put per

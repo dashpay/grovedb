@@ -214,7 +214,7 @@ All BulkAppendTree data lives in the **data** namespace, keyed with single-chara
 | `e` + `{index}` | `e` + u64 BE | 9B | Chunk blob at index |
 | `m` + `{pos}` | `m` + u64 BE | 9B | MMR node at position |
 | `h` + `{index}` | `h` + u16 BE | 3B | Path record of the insert at index (GROVE_V4+, see Chapter 16) |
-| `r` | 1 byte | 1B | Persisted chunk-MMR root, written at each compaction (GROVE_V4+) so a reopened tree does not bag the peaks' blobs |
+| `r` | 1 byte | 1B | Persisted chunk-MMR root, written at each compaction (GROVE_V4+) so a reopened tree does not bag the peaks' blobs; a tree that last compacted before V4 gets it backfilled by its first V4 append |
 
 **Metadata** stores `mmr_size` (8 bytes BE). The `total_count` and `chunk_power` are
 stored in the Element itself (in the parent Merk), not in data namespace metadata.

@@ -283,11 +283,19 @@ impl GroveOp {
                 // at the physical ceiling otherwise.
                 let chunk_power =
                     append_tree_chunk_power.unwrap_or(super::PHYSICAL_MAX_CHUNK_POWER);
-                let epoch_entries: u64 = 1u64 << chunk_power.min(16) as u32;
                 let paid_entry = entry_size.saturating_add(entry_size.required_space() as u32);
                 let buffer = super::dense_buffer_model(chunk_power);
-                let amortized_compaction_added =
-                    grovedb_bulk_append_tree::amortized_compaction_added_bytes(epoch_entries);
+                // The compaction share shrinks with the epoch, so an
+                // undeclared layer takes the largest share (epoch 2), not the
+                // ceiling epoch's.
+                let amortized_compaction_added = match append_tree_chunk_power {
+                    Some(chunk_power) => {
+                        grovedb_bulk_append_tree::amortized_compaction_added_bytes(
+                            1u64 << chunk_power.min(16) as u32,
+                        )
+                    }
+                    None => super::max_amortized_compaction_added_bytes(),
+                };
                 // The puts a compacting append issues at commit instead of
                 // its slot and record: the chunk blob and up to the MMR
                 // merge bound of internal nodes — bounded, once per epoch.

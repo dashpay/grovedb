@@ -477,12 +477,11 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             append_storage_accounting: 1,
         },
     },
-    // Frontier save: the in-place rewrite of `__ct_data__` is reported as a
-    // replacement of the bytes loaded at open, with only growth added
-    // (issue #822). Frontier bytes and anchors are unchanged.
-    // Frontier: the in-place rewrite is a replacement, and — with the cost
-    // model — every append is charged the fixed, depth-derived figure (33
-    // Sinsemilla hashes, a 554-byte frontier) whatever its position.
+    // Frontier: the in-place rewrite of `__ct_data__` is reported as a
+    // replacement, not new storage (issue #822), and — with the cost model —
+    // every append is charged the fixed, depth-derived figure (33 Sinsemilla
+    // hashes, a 554-byte frontier loaded and replaced) whatever its
+    // position. Frontier bytes and anchors are unchanged.
     commitment_tree_versions: CommitmentTreeVersions {
         cost: CommitmentTreeCostVersions {
             frontier_save_storage_accounting: 1,

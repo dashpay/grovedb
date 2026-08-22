@@ -215,15 +215,25 @@ fn v1_buffer_writes_are_churn_and_every_append_is_charged_the_fixed_model() {
 /// twice in one session is churn both times.
 #[test]
 fn v1_never_reads_to_size_a_buffer_write() {
-    let ctx = MemStorageContext::new();
-    ctx.fail_reads();
     // Opened after a completed chunk: under the old accounting every slot
     // counted as committed and was read first.
-    let mut tree = BulkAppendTree::from_state(4, 2, ctx).expect("open");
+    let mut tree = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
+    for v in &VALUES[..4] {
+        tree.append_no_state_root(v, &GROVE_V4).expect("append");
+    }
+    tree.commit_mmr(&GROVE_V4).expect("commit");
+    let mut tree = BulkAppendTree::from_state(4, 2, tree.dense_tree.storage).expect("open");
+    tree.dense_tree.storage.gets.borrow_mut().clear();
+    tree.dense_tree.storage.puts.borrow_mut().clear();
     tree.append_no_state_root(&[1; 8], &GROVE_V4)
-        .expect("no read under the churn accounting");
-    // (The dense tree's own reads go to records the broken reader also
-    // fails; at buffer position 0 there are none.)
+        .expect("append");
+    // The only read is the persisted MMR root — one of the two root reads
+    // the model charges on every state-root derivation; no slot, and at
+    // buffer position 0 no record either.
+    assert_eq!(
+        tree.dense_tree.storage.gets.borrow().clone(),
+        vec![crate::MMR_ROOT_KEY.to_vec()]
+    );
     assert_eq!(slot_puts(&tree.dense_tree.storage).len(), 1);
     assert!(slot_puts(&tree.dense_tree.storage)[0]
         .as_ref()
@@ -371,4 +381,138 @@ fn unknown_storage_accounting_version_is_rejected() {
     tree.commit_mmr(&GROVE_V4)
         .expect("flush with a known version");
     assert_eq!(mmr_puts(&tree.dense_tree.storage).len(), 1);
+}
+
+/// A tree whose last compaction predates the fixed model has no persisted
+/// MMR root. Its first GROVE_V4 append bags the peaks ONCE, backfills the
+/// key — prepaid, so the append's figure is the fixed model's — and from
+/// then on every reopen reads the key instead of the peaks' blobs.
+#[test]
+fn legacy_mmr_root_is_backfilled_once_on_the_first_v4_append() {
+    let prepaid = KeyValueStorageCost {
+        key_storage_cost: Default::default(),
+        value_storage_cost: StorageCost::default(),
+        new_node: false,
+        needs_value_verification: false,
+    };
+    // Epoch 1 under the shipped accounting: chunk committed, no root key.
+    let mut tree = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
+    for v in &VALUES[..4] {
+        tree.append_no_state_root(v, &GROVE_V3).expect("append");
+    }
+    tree.commit_mmr(&GROVE_V3).expect("commit");
+    assert!(!tree
+        .dense_tree
+        .storage
+        .data
+        .borrow()
+        .contains_key(crate::MMR_ROOT_KEY));
+    let bagged = tree
+        .bag_mmr_root_with_cost(&GROVE_V4)
+        .unwrap()
+        .expect("bag");
+
+    // First V4 append on the reopened tree: backfill.
+    let mut tree = BulkAppendTree::from_state(4, 2, tree.dense_tree.storage).expect("open");
+    tree.dense_tree.storage.puts.borrow_mut().clear();
+    let first = tree
+        .append_no_state_root(VALUES[4], &GROVE_V4)
+        .expect("append");
+    let root_puts: Vec<_> = tree
+        .dense_tree
+        .storage
+        .puts
+        .borrow()
+        .iter()
+        .filter(|(k, _)| k == crate::MMR_ROOT_KEY)
+        .map(|(_, c)| c.clone())
+        .collect();
+    assert_eq!(root_puts, vec![Some(prepaid)], "one prepaid backfill put");
+    assert_eq!(
+        tree.dense_tree.storage.data.borrow()[crate::MMR_ROOT_KEY],
+        bagged.to_vec()
+    );
+    // Charged the fixed model, exactly like the same append on a tree that
+    // ran under V4 from the start.
+    let v4 = run(&GROVE_V4);
+    assert_eq!(first.storage_accounting_cost, v4.accounting[4]);
+    assert_eq!(first.hash_count, {
+        let mut t = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
+        for v in &VALUES[..4] {
+            t.append_no_state_root(v, &GROVE_V4).expect("append");
+        }
+        t.append_no_state_root(VALUES[4], &GROVE_V4)
+            .expect("append")
+            .hash_count
+    });
+    tree.commit_mmr(&GROVE_V4).expect("commit");
+
+    // Every later reopen reads the key and never the peaks.
+    let mut tree = BulkAppendTree::from_state(5, 2, tree.dense_tree.storage).expect("open");
+    tree.dense_tree.storage.gets.borrow_mut().clear();
+    tree.dense_tree.storage.puts.borrow_mut().clear();
+    tree.append_no_state_root(VALUES[5], &GROVE_V4)
+        .expect("append");
+    let state_root = tree.compute_current_state_root(&GROVE_V4).expect("root");
+    let gets = tree.dense_tree.storage.gets.borrow().clone();
+    assert!(gets.contains(&crate::MMR_ROOT_KEY.to_vec()), "{gets:?}");
+    assert!(
+        gets.iter().all(|k| k.len() != 4),
+        "no MMR node read after the backfill: {gets:?}"
+    );
+    assert!(
+        !tree
+            .dense_tree
+            .storage
+            .puts
+            .borrow()
+            .iter()
+            .any(|(k, _)| k == crate::MMR_ROOT_KEY),
+        "no second backfill"
+    );
+    // And the state is the one a V4-only tree reaches.
+    let mut v4_tree = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
+    for v in &VALUES[..6] {
+        v4_tree.append_no_state_root(v, &GROVE_V4).expect("append");
+    }
+    assert_eq!(
+        state_root,
+        v4_tree.compute_current_state_root(&GROVE_V4).expect("root")
+    );
+    assert_eq!(
+        state_root,
+        tree.compute_current_state_root_from_values().expect("root")
+    );
+}
+
+/// A persisted MMR root of any length but 32 is corruption (or the key
+/// collision the layout rules out), never a legacy tree: reported, not
+/// silently bagged over.
+#[test]
+fn wrong_length_persisted_mmr_root_is_corrupted_data() {
+    let mut tree = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
+    for v in &VALUES[..4] {
+        tree.append_no_state_root(v, &GROVE_V4).expect("append");
+    }
+    tree.commit_mmr(&GROVE_V4).expect("commit");
+    tree.dense_tree
+        .storage
+        .data
+        .borrow_mut()
+        .insert(crate::MMR_ROOT_KEY.to_vec(), vec![7u8; 5]);
+    let mut tree = BulkAppendTree::from_state(4, 2, tree.dense_tree.storage).expect("open");
+    assert!(matches!(
+        tree.get_mmr_root_with_cost(&GROVE_V4).unwrap(),
+        Err(BulkAppendError::CorruptedData(_))
+    ));
+    assert!(matches!(
+        tree.append_no_state_root(VALUES[4], &GROVE_V4),
+        Err(BulkAppendError::CorruptedData(_))
+    ));
+    assert!(matches!(
+        tree.append_deferred_roots(VALUES[4], &GROVE_V4).unwrap(),
+        Err(BulkAppendError::CorruptedData(_))
+    ));
+    // The shipped accounting never consults the key.
+    assert!(tree.get_mmr_root_with_cost(&GROVE_V3).unwrap().is_ok());
 }

@@ -136,7 +136,7 @@ records exist only under `dense_tree_versions.root_maintenance = 1`):
 | entry's chunk-blob share | — (blob charged at compaction) | entry bytes `added` at the entry's own append, plus the epoch's share of the blob framing and MMR nodes (`amortized_compaction_added_bytes`, 1 byte at `chunk_power` 11) |
 | entry's part of the blob rewrite | — | entry bytes `replaced` at the entry's own append |
 | compaction blob, MMR internal nodes, persisted MMR root (`r`) | key + whole blob `added`; nodes `added`; no persisted root | prepaid: zero-byte cost information |
-| frontier rewrite | key + value `added` every save | the model's 554 bytes `replaced` every save (`frontier_cost_model`), first save included |
+| frontier rewrite | key + value `added` every save | 556 bytes `replaced` every save — the model's 554-byte frontier plus its two-byte length varint (`frontier_cost_model`), first save included |
 | buffer path record (one per append, `42 + 32·chunk_power` bytes) | — (no records) | `replaced` (its own paid size); nothing added, key not charged |
 
 Under v0 every note is billed roughly twice over its life (slot + blob) and

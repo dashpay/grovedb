@@ -54,8 +54,11 @@ pub struct BulkAppendTreeCostVersions {
     /// charged the slot / record churn it does not write, so its figure is
     /// the same; it also persists the MMR root (key `r`, 32 bytes, prepaid)
     /// so a reopened tree reads it instead of bagging the peaks' blobs, and
-    /// the state root's two root reads are charged as the model. Stored
-    /// chunks and roots are identical under both versions; version 1 adds
-    /// the persisted root key.
+    /// the state root's two root reads are charged as the model. A tree
+    /// whose last compaction predates version 1 has no such key: its first
+    /// version-1 append bags the peaks once and backfills the key (one
+    /// prepaid put, not billed — like the dense buffer's read-only
+    /// catch-up). Stored chunks and roots are identical under both
+    /// versions; version 1 adds the persisted root key.
     pub append_storage_accounting: FeatureVersion,
 }
