@@ -102,37 +102,43 @@
 //! - `bulk_append_tree_versions.cost.append_storage_accounting: 1` and
 //!   `commitment_tree_versions.cost.frontier_save_storage_accounting: 1` —
 //!   the append-only family (`BulkAppendTree`, `CommitmentTree`,
-//!   `PrivateDocumentStore`) reports write churn as replacement instead of
-//!   as new storage (issue #822). Each entry's permanent bytes — its share
-//!   of the eventual chunk blob — are charged as `added_bytes` once, at its
-//!   own append; a dense-buffer slot that already holds a committed value
-//!   (epoch 2 onward) is reported as `replaced_bytes` (growth added, shrink
-//!   not credited); the compaction blob is reported as a replacement of the
-//!   entry bytes it supersedes, so only its framing and the MMR internal
-//!   nodes are added; and the in-place frontier rewrite is a replacement of
-//!   the bytes loaded at open. V1..V3 keep issuing every data put with no
-//!   cost information, which bills key + value as new storage every time —
-//!   ≈ 2× the bytes that persist, with the whole ≈ 630 KB blob landing on
-//!   one append per epoch at `chunk_power` 11. Stored bytes, roots and
-//!   proofs are identical under both; gated because the figures are fees.
+//!   `PrivateDocumentStore`) charges an entry's long-term bytes and reports
+//!   everything else as churn (issue #822). Each entry's permanent bytes —
+//!   its share of the eventual chunk blob — are charged as `added_bytes`
+//!   once, at its own append; the dense buffer (slot and path record, a
+//!   fixed per-tree scratch area rewritten every epoch) is `replaced_bytes`
+//!   only, epoch 1 included, with nothing read to size it; the compaction
+//!   blob is reported as a replacement of the entry bytes it supersedes, so
+//!   only its framing and the MMR internal nodes are added; the in-place
+//!   frontier rewrite is a replacement of the bytes loaded at open; and the
+//!   buffer's fixed root-maintenance model is billed alongside the hash
+//!   count. V1..V3 keep issuing every data put with no cost information,
+//!   which bills key + value as new storage every time — ≈ 2× the bytes
+//!   that persist, with the whole ≈ 630 KB blob landing on one append per
+//!   epoch at `chunk_power` 11. Stored bytes, roots and proofs are identical
+//!   under both; gated because the figures are fees.
 //!
 //! - `dense_tree_versions.root_maintenance: 1` — the dense fixed-sized Merkle
 //!   tree (the buffer of `BulkAppendTree`, `CommitmentTree` and
 //!   `PrivateDocumentStore`, and the `DenseAppendOnlyFixedSizeTree` element)
-//!   keeps a per-position hash record (`generation || value_hash ||
-//!   node_hash`, key `b'h' || position`) and updates only the inserted
-//!   position's ancestor path: O(height) reads, hashes and record writes per
-//!   insert, and a one-record read for the root. V1..V3 keep no intermediate
-//!   hashes and re-derive the root from every filled position on every insert
-//!   — O(count) per insert, O(2^chunk_power) at the end of each epoch, which
-//!   is the dominant per-append cost of the shielded pool at `chunk_power`
-//!   11 (≈ 2k reads and ≈ 4k blake3 calls on the last insert of every epoch).
-//!   Stored values, positions, proofs and roots are identical under both; a
-//!   buffer filled under V1..V3 is caught up from its values the first time a
-//!   V4 insert needs a record it lacks (at most one V1..V3-sized walk per
-//!   tree), so the V4 estimators keep the full-walk hash bound and add the
-//!   records' storage. Gated because the work — and so the fee — moves, and
-//!   because V4 writes keys V1..V3 never read.
+//!   writes one fixed-size path record per insert (key `b'h' || position`:
+//!   the position's value hash and the node hash of every position on its
+//!   ancestor path) and derives an insert's ancestor hashes from earlier
+//!   inserts' records: O(height) reads and hashes, ONE record write, and a
+//!   one-record read for the root. Every insert is charged a fixed,
+//!   height-derived model (`v1_insert_model_cost`: the reads and hashes
+//!   averaged over a full buffer, rounded up) plus its two
+//!   position-independent puts, so the cost of an append no longer depends
+//!   on the buffer position. V1..V3 keep no intermediate hashes and
+//!   re-derive the root from every filled position on every insert —
+//!   O(count) per insert, O(2^chunk_power) at the end of each epoch, which
+//!   was the dominant per-append cost of the shielded pool at `chunk_power`
+//!   11 (≈ 2k reads and ≈ 4k blake3 calls on the last insert of every
+//!   epoch). Stored values, positions, proofs and roots are identical under
+//!   both; a buffer filled under V1..V3 is caught up from its values by the
+//!   V4 inserts that need it (read-only, billed the same model, over with
+//!   the epoch the switch happened in). Gated because the work — and so the
+//!   fee — moves, and because V4 writes keys V1..V3 never read.
 //!
 //! Note that `GroveVersion::latest()` resolves to this version, so anything
 //! defaulting to "latest" — tests, benchmarks, tools — exercises every gate

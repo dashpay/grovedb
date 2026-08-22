@@ -16,8 +16,10 @@
 //!   slot rewritten in epoch 2+, and the chunk blob that supersedes the
 //!   buffer, are both billed as permanent growth. v1 charges each entry's
 //!   permanent bytes once — its chunk-blob share, at its own append — and
-//!   reports the slot rewrite and the compaction blob as replacements of
-//!   the bytes they supersede.
+//!   reports every buffer write (slot and path record, which are churn: the
+//!   buffer is rewritten each epoch and is not the entry's long-term
+//!   storage) and the compaction blob as replacements, never as growth; it
+//!   also bills the buffer's fixed root-maintenance model.
 
 mod v0;
 mod v1;
@@ -28,16 +30,18 @@ use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
 use crate::BulkAppendError;
 
-/// How the dense-buffer slot write is sized for the storage cost layer.
+/// How the dense-buffer slot write — and the path record written beside it
+/// — is sized for the storage cost layer.
 #[cfg(feature = "storage")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SlotRewriteAccounting {
     /// Every slot write is new storage (no cost information on the put).
     AsNew,
-    /// A slot that holds a committed value is read first (the read is
-    /// billed) and the write is reported as its replacement; a slot written
-    /// for the first time stays new storage.
-    AgainstCommitted,
+    /// The buffer is churn: every slot and record write is reported as an
+    /// in-place replacement of its own size — nothing added, no key charged,
+    /// nothing read to size it. The entry's long-term bytes are its chunk-blob
+    /// share, prepaid at its append.
+    Churn,
 }
 
 /// How an append's data-storage writes are reported to the storage cost
@@ -45,13 +49,19 @@ pub(crate) enum SlotRewriteAccounting {
 #[cfg(feature = "storage")]
 #[derive(Clone, Copy)]
 pub(crate) struct AppendStorageAccounting {
-    /// How the dense-buffer slot write is sized.
+    /// How the dense-buffer slot (and record) write is sized.
     pub slot_rewrite: SlotRewriteAccounting,
     /// How the chunk-blob leaf is reported when the MMR overlay is flushed.
     pub chunk_leaf: LeafValueStorageCost,
     /// Whether the entry's chunk-blob share is charged as added storage at
     /// its own append (so the later blob write can be a replacement).
     prepay_chunk_share: bool,
+    /// Whether the dense buffer's own reads (its root-maintenance model,
+    /// from GROVE_V4 a fixed figure per insert) are billed by the
+    /// `Result`-returning appends through `storage_accounting_cost`, on top
+    /// of the hash count they have always forwarded. The shipped accounting
+    /// dropped them.
+    pub bill_dense_io: bool,
 }
 
 #[cfg(feature = "storage")]

@@ -20,6 +20,8 @@ pub mod test_utils;
 // Re-export main types
 pub use chunk::{chunk_blob_entry_bytes, deserialize_chunk_blob, serialize_chunk_blob};
 pub use error::BulkAppendError;
+#[cfg(feature = "storage")]
+pub use grovedb_dense_fixed_sized_merkle_tree::{v1_insert_model_cost, V1InsertModel};
 pub use grovedb_dense_fixed_sized_merkle_tree::{DenseFixedSizedMerkleTree, DenseTreeProof};
 #[cfg(feature = "storage")]
 pub use grovedb_merkle_mountain_range::{MmrKeySize, MmrStore};

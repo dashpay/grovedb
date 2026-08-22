@@ -779,39 +779,23 @@ mod atomicity_tests {
             .unwrap()
             .expect("new");
 
-        // First append (position 0, the root of the buffer): the leaf is
-        // hashed twice (value hash + node hash) and has no ancestors; the
-        // bulk state root reads the position-0 record (no hash); then the
-        // bulk state root (1) and the composite pds_state root (1).
-        let ctx = store.append(&[1u8; 8], GroveVersion::latest());
-        ctx.value.expect("append");
-        assert_eq!(
-            ctx.cost.hash_node_calls, 4,
-            "2 dense + 1 bulk root + 1 composite, got {:?}",
-            ctx.cost
-        );
-
-        // Second append (position 1, depth 1): leaf (2) + its one ancestor
-        // (1) = 3 dense hashes, plus the two roots. Under GROVE_V1..V3 this
-        // would re-walk both filled positions (4).
-        let ctx = store.append(&[2u8; 8], GroveVersion::latest());
-        ctx.value.expect("append");
-        assert_eq!(
-            ctx.cost.hash_node_calls, 5,
-            "3 dense + 1 bulk root + 1 composite, got {:?}",
-            ctx.cost
-        );
-
-        // Third (position 2, depth 1 again): 3 dense + 2 roots — the same
-        // as the second append, not 2 more: the work follows the depth of
-        // the inserted position, not how full the buffer is.
-        let ctx = store.append(&[3u8; 8], GroveVersion::latest());
-        ctx.value.expect("append");
-        assert_eq!(
-            ctx.cost.hash_node_calls, 5,
-            "3 dense + 1 bulk root + 1 composite, got {:?}",
-            ctx.cost
-        );
+        // Under GROVE_V4 every buffered append is charged the dense
+        // buffer's fixed model for its height — at `chunk_power = 4`: two
+        // leaf hashes plus the rounded-up average ancestor depth (3) = 5 —
+        // plus the bulk state root (1; read from the record, no hash) and
+        // the composite pds_state root (1), whatever the position.
+        let model = grovedb_bulk_append_tree::V1InsertModel::for_height(4);
+        assert_eq!(model.hash_node_calls, 5);
+        for entry in [[1u8; 8], [2u8; 8], [3u8; 8]] {
+            let ctx = store.append(&entry, GroveVersion::latest());
+            ctx.value.expect("append");
+            assert_eq!(
+                ctx.cost.hash_node_calls,
+                model.hash_node_calls + 2,
+                "model dense + 1 bulk root + 1 composite, got {:?}",
+                ctx.cost
+            );
+        }
     }
 
     /// Compaction is the expensive branch of an append — it reads every
@@ -856,15 +840,17 @@ mod atomicity_tests {
             compacting_cost
         );
 
-        // A plain buffered append afterwards reads nothing back.
+        // A plain buffered append afterwards is charged the buffer's fixed
+        // model (its hashes and record reads) plus the two roots — not the
+        // compaction's read-back.
+        let model = grovedb_bulk_append_tree::V1InsertModel::for_height(2);
         let plain = store.append(&[4u8; 8], GroveVersion::latest());
         plain.value.expect("buffered append");
-        assert!(
-            plain.cost.storage_loaded_bytes < compacting_cost.storage_loaded_bytes,
-            "a buffered append must be cheaper in loaded bytes than a \
-             compacting one (buffered {:?} vs compacting {:?})",
-            plain.cost,
-            compacting_cost
+        assert_eq!(
+            plain.cost.hash_node_calls,
+            model.hash_node_calls + 2,
+            "buffered: model dense + 1 bulk root + 1 composite, got {:?}",
+            plain.cost
         );
     }
 

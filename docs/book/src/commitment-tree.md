@@ -261,7 +261,7 @@ the same column using distinct key prefixes. No aux namespace is used.
 │    b"m" || pos (u64 BE)  → MMR node blobs                        │
 │    b"b" || index (u64 BE)→ buffer entries (cmx||rho||cv_net||ciphertext) │
 │    b"e" || chunk (u64 BE)→ chunk blobs (compacted buffer)         │
-│    b"h" || index (u16 BE)→ buffer hash records (GROVE_V4+, §16)   │
+│    b"h" || index (u16 BE)→ buffer path records (GROVE_V4+, §16)   │
 │    b"M"                  → BulkAppendTree metadata                │
 │                                                                   │
 │  Sinsemilla frontier:                                             │
@@ -938,8 +938,8 @@ and ZK circuit cost.
 | Frontier I/O seeks | 2 (get + put) | 2 |
 | Frontier bytes loaded | 554 (~16 ommers) | 1,066 (32 ommers) |
 | Frontier bytes written | 554 | 1,066 |
-| BulkAppendTree hashes | GROVE_V4+: 3 + depth (≤ chunk_power + 2); GROVE_V1..V3: 2·(buffer fill) + 1 | GROVE_V4+: chunk_power + 2 buffered, 1 + MMR merges compacting; GROVE_V1..V3: ≈ 2·chunk_size on the last buffered append |
-| BulkAppendTree I/O | 2-3 seeks (metadata + buffer) + O(chunk_power) hash-record writes (GROVE_V4+) | + epoch read-back and MMR writes on chunk compaction |
+| BulkAppendTree hashes | GROVE_V4+: fixed model (13 at chunk_power 11, every buffered append); GROVE_V1..V3: 2·(buffer fill) + 1 | GROVE_V4+: the same model buffered, 1 + MMR merges compacting; GROVE_V1..V3: ≈ 2·chunk_size on the last buffered append |
+| BulkAppendTree I/O | GROVE_V4+: the model's record reads (18 at chunk_power 11) + slot put + record put (churn: `replaced`, never `added`) | + epoch read-back and MMR writes on chunk compaction |
 
 **Cost estimation constants** (from `average_case_costs.rs` and
 `worst_case_costs.rs`):

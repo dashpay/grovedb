@@ -2,11 +2,9 @@
 //! the level of the cost information each put carries.
 //!
 //! The in-memory context records every `put` with its `cost_info`, which is
-//! exactly what a real storage context hands the commit path to bill. A
-//! buffer slot counts as holding a committed value by the `total_count` the
-//! tree was opened with, so each epoch here is run on a tree re-opened with
-//! `from_state` over the previous epoch's storage — the way every GroveDB
-//! operation opens it.
+//! exactly what a real storage context hands the commit path to bill. Each
+//! epoch here is run on a tree re-opened with `from_state` over the previous
+//! epoch's storage — the way every GroveDB operation opens it.
 
 use grovedb_costs::{
     storage_cost::{
@@ -41,6 +39,16 @@ fn slot_puts(ctx: &MemStorageContext) -> Vec<Option<KeyValueStorageCost>> {
         .borrow()
         .iter()
         .filter(|(k, _)| k.len() == 2)
+        .map(|(_, c)| c.clone())
+        .collect()
+}
+
+/// Path record puts (3-byte keys), in order.
+fn record_puts(ctx: &MemStorageContext) -> Vec<Option<KeyValueStorageCost>> {
+    ctx.puts
+        .borrow()
+        .iter()
+        .filter(|(k, _)| k.len() == 3)
         .map(|(_, c)| c.clone())
         .collect()
 }
@@ -123,102 +131,109 @@ fn v0_issues_every_put_without_cost_info_and_bills_no_accounting() {
     }
 }
 
-/// v1 (GROVE_V4): a slot written for the first time is new storage; a slot
-/// that already holds a committed value is a replacement — growth added,
-/// shrink not credited, key not charged; every append prepays its own bytes.
+/// v1 (GROVE_V4): the buffer is churn. Every slot write — epoch 1 included,
+/// growth and shrink alike — and every path record write is reported as an
+/// in-place replacement of its own size, nothing added and no key charged;
+/// nothing is read to size it. Every append prepays its own bytes (its
+/// chunk-blob share) as added storage, and bills the buffer's fixed
+/// root-maintenance model.
 #[test]
-fn v1_slot_rewrites_are_replacements_and_every_append_prepays_its_bytes() {
+fn v1_buffer_writes_are_churn_and_every_append_prepays_its_bytes() {
+    use grovedb_dense_fixed_sized_merkle_tree::{path_record_len, V1InsertModel};
+
     let run = run(&GROVE_V4);
-    // The in-memory context reports no cost for its reads, so the
-    // accounting cost carries the prepaid share only; the read's seek and
-    // bytes are pinned against RocksDB by the GroveDB-level tests.
-    let prepaid: Vec<u32> = run
-        .accounting
-        .iter()
-        .map(|c| c.storage_cost.added_bytes)
-        .collect();
-    let expected_prepaid: Vec<u32> = VALUES.iter().map(|v| v.len() as u32).collect();
-    assert_eq!(prepaid, expected_prepaid);
-    assert!(run
-        .accounting
-        .iter()
-        .all(|c| c.storage_cost.replaced_bytes == 0 && c.hash_node_calls == 0));
+    let model = V1InsertModel::for_height(2);
+    for (i, (cost, value)) in run.accounting.iter().zip(VALUES.iter()).enumerate() {
+        assert_eq!(
+            cost.storage_cost.added_bytes,
+            value.len() as u32,
+            "append {i}: prepaid share"
+        );
+        assert_eq!(cost.storage_cost.replaced_bytes, 0, "append {i}");
+        assert_eq!(
+            cost.hash_node_calls, 0,
+            "append {i}: hashes go through hash_count"
+        );
+        let compacting = i % 4 == 3;
+        if compacting {
+            // The overflow value goes straight into the blob: no buffer
+            // work, no model.
+            assert_eq!(cost.seek_count, 0, "append {i}");
+            assert_eq!(cost.storage_loaded_bytes, 0, "append {i}");
+        } else {
+            assert_eq!(
+                cost.seek_count, model.record_reads,
+                "append {i}: model reads"
+            );
+            assert_eq!(
+                cost.storage_loaded_bytes,
+                model.record_reads as u64 * model.record_len as u64,
+                "append {i}: model bytes"
+            );
+        }
+    }
 
-    let slots = slot_puts(&run.ctx);
-    assert_eq!(slots.len(), 9);
-    // Epoch 1: fresh slots.
-    assert!(slots[..3].iter().all(Option::is_none), "{slots:?}");
-
-    let rewrite = |previous: u32, new: u32| KeyValueStorageCost {
+    let churn = |len: u32| KeyValueStorageCost {
         key_storage_cost: Default::default(),
         value_storage_cost: StorageCost {
-            added_bytes: paid(new).saturating_sub(paid(previous)),
-            replaced_bytes: paid(new).min(paid(previous)),
+            added_bytes: 0,
+            replaced_bytes: paid(len),
             removed_bytes: NoStorageRemoval,
         },
         new_node: false,
         needs_value_verification: true,
     };
-    // Epoch 2 over epoch 1's 8-byte values.
-    assert_eq!(slots[3], Some(rewrite(8, 8)), "same size: fully replaced");
-    assert_eq!(
-        slots[4],
-        Some(rewrite(8, 16)),
-        "growth: 9 replaced, 8 added"
+    let slots = slot_puts(&run.ctx);
+    assert_eq!(slots.len(), 9, "three slots per epoch, three epochs");
+    let buffered: Vec<&&[u8]> = VALUES.iter().filter(|v| v.len() != 0).collect();
+    let mut expected = Vec::new();
+    for (i, v) in buffered.iter().enumerate() {
+        if i % 4 != 3 {
+            expected.push(Some(churn(v.len() as u32)));
+        }
+    }
+    assert_eq!(slots, expected, "every slot write is churn of its own size");
+
+    let records = record_puts(&run.ctx);
+    assert_eq!(records.len(), 9, "one path record per buffered append");
+    let record_len = path_record_len(2) as u32;
+    assert!(
+        records.iter().all(|c| *c == Some(churn(record_len))),
+        "every record write is churn of the fixed record size: {records:?}"
     );
-    assert_eq!(
-        slots[5],
-        Some(rewrite(8, 4)),
-        "shrink: 5 replaced, nothing credited"
-    );
-    assert_eq!(slots[4].as_ref().unwrap().value_storage_cost.added_bytes, 8);
-    assert_eq!(slots[5].as_ref().unwrap().value_storage_cost.added_bytes, 0);
-    // Epoch 3 over epoch 2's values.
-    assert_eq!(slots[6], Some(rewrite(8, 8)));
-    assert_eq!(slots[7], Some(rewrite(16, 8)));
-    assert_eq!(slots[8], Some(rewrite(4, 8)));
 }
 
-/// Whether a slot is rewritten is judged against the state at open: inside
-/// one session a slot written for the first time and rewritten after an
-/// in-session compaction is still new storage (nothing is committed), so
-/// it is never read and never reported as a replacement — a `StorageBatch`
-/// will charge its last put, which must describe the transition from
-/// committed storage. A slot the open count says is committed but storage
-/// does not hold is charged as new, the safe direction.
+/// The churn accounting never reads a slot to size a rewrite — a broken
+/// reader for slot keys does not stop an append — and the same slot written
+/// twice in one session is churn both times.
 #[test]
-fn v1_judges_committed_slots_by_the_count_at_open() {
-    // Two epochs on a tree created in this session: no slot is committed.
+fn v1_never_reads_to_size_a_buffer_write() {
+    let ctx = MemStorageContext::new();
+    ctx.fail_reads();
+    // Opened after a completed chunk: under the old accounting every slot
+    // counted as committed and was read first.
+    let mut tree = BulkAppendTree::from_state(4, 2, ctx).expect("open");
+    tree.append_no_state_root(&[1; 8], &GROVE_V4)
+        .expect("no read under the churn accounting");
+    // (The dense tree's own reads go to records the broken reader also
+    // fails; at buffer position 0 there are none.)
+    assert_eq!(slot_puts(&tree.dense_tree.storage).len(), 1);
+    assert!(slot_puts(&tree.dense_tree.storage)[0]
+        .as_ref()
+        .is_some_and(|c| !c.new_node && c.value_storage_cost.added_bytes == 0));
+
     let mut tree = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
     for v in &VALUES[..8] {
         tree.append_no_state_root(v, &GROVE_V4).expect("append");
     }
     let slots = slot_puts(&tree.dense_tree.storage);
     assert_eq!(slots.len(), 6);
-    assert!(slots.iter().all(Option::is_none), "{slots:?}");
-
-    // Opened with two committed buffer entries and no chunk: slots 0 and 1
-    // are committed, slot 2 is not and is written without a read.
-    let mut seeded = BulkAppendTree::new(2, MemStorageContext::new()).expect("new");
-    for v in &VALUES[..2] {
-        seeded.append_no_state_root(v, &GROVE_V4).expect("seed");
-    }
-    let mut tree = BulkAppendTree::from_state(2, 2, seeded.dense_tree.storage).expect("open");
-    assert!(tree.slot_is_committed(0) && tree.slot_is_committed(1));
-    assert!(!tree.slot_is_committed(2));
-    tree.append_no_state_root(&[1; 8], &GROVE_V4)
-        .expect("slot 2");
-    let slots = slot_puts(&tree.dense_tree.storage);
-    assert_eq!(slots, vec![None, None, None]);
-
-    // Opened after a completed chunk: every slot is committed — and one
-    // that storage does not hold (corruption, not a state this code
-    // produces) is charged as new rather than as a rewrite of nothing.
-    let mut tree = BulkAppendTree::from_state(4, 2, MemStorageContext::new()).expect("open");
-    assert!((0..3).all(|p| tree.slot_is_committed(p)));
-    tree.append_no_state_root(&[1; 8], &GROVE_V4)
-        .expect("slot 0");
-    assert_eq!(slot_puts(&tree.dense_tree.storage), vec![None]);
+    assert!(
+        slots.iter().all(|c| c
+            .as_ref()
+            .is_some_and(|c| c.value_storage_cost.added_bytes == 0)),
+        "{slots:?}"
+    );
 }
 
 /// v1: the compaction blob is reported as a replacement of the entry bytes
@@ -305,32 +320,6 @@ fn append_deferred_roots_bills_accounting_cost() {
         OperationCost::default()
     );
     assert_eq!(ctx.cost.storage_cost.added_bytes, 0);
-}
-
-/// A storage fault on the committed-slot read surfaces as an error and
-/// nothing is written; the shipped accounting never performs that read.
-#[test]
-fn committed_slot_read_failure_surfaces() {
-    let ctx = MemStorageContext::new();
-    ctx.fail_reads();
-    let mut tree = BulkAppendTree::from_state(4, 2, ctx).expect("open");
-    let err = tree
-        .append_no_state_root(&[1; 8], &GROVE_V4)
-        .expect_err("read failed");
-    assert!(
-        matches!(&err, BulkAppendError::StorageError(m) if m.contains("committed slot")),
-        "{err:?}"
-    );
-    let err = tree
-        .append_deferred_roots(&[1; 8], &GROVE_V4)
-        .value
-        .expect_err("read failed");
-    assert!(matches!(err, BulkAppendError::StorageError(_)));
-    assert!(tree.dense_tree.storage.puts.borrow().is_empty());
-
-    // v0 reads nothing, so it writes straight through the broken reader.
-    tree.append_no_state_root(&[1; 8], &GROVE_V3)
-        .expect("no read under the shipped accounting");
 }
 
 /// An unknown accounting version is rejected at every entry that consults

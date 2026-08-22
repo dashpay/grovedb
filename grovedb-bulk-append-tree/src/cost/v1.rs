@@ -19,23 +19,26 @@ pub(super) fn compaction_hash_count(leaf_count: u64, mmr_size_after_push: u64) -
     hash_count_for_push(leaf_count).saturating_add(hash_count_for_root_bagging(mmr_size_after_push))
 }
 
-/// Churn-as-replacement storage accounting (issue #822). Used from GROVE_V4.
+/// Long-term-bytes storage accounting (issue #822). Used from GROVE_V4.
 ///
 /// - The entry's chunk-blob share (its own bytes) is charged as added
 ///   storage at its append — these are the bytes that persist.
-/// - The buffer slot write is sized against the value the slot already holds
-///   in committed storage, which is read first (and the read billed): a
-///   rewrite (epoch 2 onward) is replaced, growth is added, shrink is not
-///   credited; a slot written for the first time stays fully added and is
-///   not read.
+/// - The dense buffer is churn: every slot write and every path record write
+///   is reported as an in-place replacement of its own size — epoch 1
+///   included, nothing added, no key charged, nothing read to size it. The
+///   buffer is a fixed-size per-tree scratch area rewritten every epoch, not
+///   any entry's long-term storage.
 /// - The compaction blob is reported as a replacement of the entry bytes it
 ///   supersedes (all prepaid), leaving only its framing — and the MMR
 ///   internal nodes — as added storage.
+/// - The buffer's root-maintenance model (a fixed figure per insert for the
+///   tree's height) is billed alongside the hash count.
 #[cfg(feature = "storage")]
 pub(super) fn append_storage_accounting() -> AppendStorageAccounting {
     AppendStorageAccounting {
-        slot_rewrite: SlotRewriteAccounting::AgainstCommitted,
+        slot_rewrite: SlotRewriteAccounting::Churn,
         chunk_leaf: LeafValueStorageCost::PartlyPrepaid(chunk_blob_entry_bytes),
         prepay_chunk_share: true,
+        bill_dense_io: true,
     }
 }

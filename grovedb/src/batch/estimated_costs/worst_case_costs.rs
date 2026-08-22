@@ -249,49 +249,39 @@ impl GroveOp {
                     grove_version,
                 );
                 // Worst case: compaction trigger. Buffer fills → serialize
-                // chunk blob → compute dense Merkle root → push to MMR.
+                // chunk blob → push to MMR. The buffer's own work is the
+                // fixed root-maintenance model at the physical ceiling.
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 let value_size = value.len() as u32;
                 /// Largest epoch the type permits: `2^16` entries.
                 const MAX_EPOCH_ENTRIES: u32 = 1 << 16;
-                // Dense buffer: up to a full-buffer walk, two hashes per
-                // filled position (the GROVE_V1..V3 root recompute, and the
-                // one-time catch-up a buffer filled under those versions
-                // pays at its first GROVE_V4 append; a V4 append otherwise
-                // hashes only its ancestor path). Chunk-leaf hash: 1. MMR
-                // push and root bagging: up to 65 merges.
-                const MAX_HASH_CALLS: u32 = 2 * (MAX_EPOCH_ENTRIES - 1) + 1 + 65;
+                let buffer = super::dense_buffer_model(super::PHYSICAL_MAX_CHUNK_POWER);
+                // Chunk-leaf hash: 1. MMR push and root bagging: up to 65
+                // merges. Plus the buffer model.
                 const MAX_MMR_MERGES: u32 = 65;
-                // Writes: buffer entry + chunk blob + MMR nodes
-                const MAX_WRITES: u32 = 1 + 1 + MAX_MMR_MERGES;
+                let max_hash_calls = buffer.cost.hash_node_calls + 1 + MAX_MMR_MERGES;
+                // Writes: buffer entry + path record + chunk blob + MMR nodes
+                const MAX_WRITES: u32 = 1 + 1 + 1 + MAX_MMR_MERGES;
                 const MAX_READS: u32 = 64; // MMR sibling reads
                                            // Added storage under the GROVE_V4 accounting (issue #822):
-                                           // the value's buffer slot (new, or grown on a rewrite) and
-                                           // its chunk-blob share, plus on compaction the blob's framing
-                                           // — MMR leaf key and envelope, variable-format header and one
-                                           // 4-byte length prefix per entry of the largest epoch, the
-                                           // value-length varint — and every MMR internal node the push
-                                           // creates (key + 33-byte node + length).
+                                           // the value's chunk-blob share, plus on compaction the
+                                           // blob's framing — MMR leaf key and envelope, variable-format
+                                           // header and one 4-byte length prefix per entry of the
+                                           // largest epoch, the value-length varint — and every MMR
+                                           // internal node the push creates (key + 33-byte node +
+                                           // length). The buffer slot and record are churn (replaced).
                 const PER_PUT_KEY_AND_LENGTHS: u32 = 50;
                 const MAX_BLOB_FRAMING: u32 = 37 + 37 + 1 + 4 * MAX_EPOCH_ENTRIES + 5;
                 const MMR_INTERNAL_NODE_PUT: u32 = 37 + 33 + 1;
-                // The buffer's hash records (GROVE_V4 root maintenance) at
-                // the physical ceiling, catch-up included; the bulk append
-                // bills their writes (at commit), not their reads.
-                let records =
-                    super::dense_record_maintenance_bound(super::PHYSICAL_MAX_CHUNK_POWER, true);
                 let max_added = value_size
-                    .saturating_mul(2)
                     .saturating_add(PER_PUT_KEY_AND_LENGTHS)
                     .saturating_add(MAX_BLOB_FRAMING)
-                    .saturating_add(MMR_INTERNAL_NODE_PUT * MAX_MMR_MERGES)
-                    .saturating_add(records.added_bytes);
+                    .saturating_add(MMR_INTERNAL_NODE_PUT * MAX_MMR_MERGES);
                 item_cost.add_cost(OperationCost {
-                    // +1: the read of the committed slot value that sizes a
-                    // rewrite. The record writes and the compaction writes
-                    // never stack (a compacting append writes no records);
-                    // summed as a bound.
-                    seek_count: MAX_WRITES + MAX_READS + 1 + records.record_writes,
+                    // The writes, the MMR sibling reads and the buffer
+                    // model's record reads (a compacting append writes no
+                    // slot or record; summed as a bound).
+                    seek_count: MAX_WRITES + MAX_READS + buffer.cost.seek_count,
                     storage_cost: StorageCost {
                         added_bytes: max_added,
                         // The compaction blob is reported as a replacement
@@ -301,15 +291,18 @@ impl GroveOp {
                         // bound: the type permits values up to u32::MAX
                         // bytes (chunk entry lengths are u32). A smaller
                         // figure would not be an upper bound, so this
-                        // dimension saturates (and so covers the record
-                        // rewrites too).
+                        // dimension saturates (and so covers the slot and
+                        // record churn too).
                         replaced_bytes: u32::MAX,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
-                    // MMR sibling reads + the committed slot value, which is
-                    // bounded only by the u32 entry length.
-                    storage_loaded_bytes: (33 * MAX_READS) as u64 + u32::MAX as u64,
-                    hash_node_calls: MAX_HASH_CALLS,
+                    // MMR sibling reads, the buffer model's records, and the
+                    // epoch read back on compaction, which is bounded only
+                    // by the u32 entry length.
+                    storage_loaded_bytes: (33 * MAX_READS) as u64
+                        + buffer.cost.storage_loaded_bytes
+                        + u32::MAX as u64,
+                    hash_node_calls: max_hash_calls,
                     sinsemilla_hash_calls: 0,
                 })
             }

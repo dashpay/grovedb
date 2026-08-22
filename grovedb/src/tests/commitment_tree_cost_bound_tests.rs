@@ -339,9 +339,12 @@ fn test_commitment_tree_insert_declared_chunk_power_tightens_estimate() {
         "declared estimate should be far tighter than the physical-ceiling worst case; declared \
          {declared:?}\nworst {worst:?}",
     );
+    // Hashes are the buffer's fixed model, which grows with the height —
+    // not with the epoch — so the declared figure is tighter but not by
+    // orders of magnitude.
     assert!(
-        declared.hash_node_calls < worst.hash_node_calls / 100,
-        "declared estimate should be far tighter than the physical-ceiling worst case; declared \
+        declared.hash_node_calls < worst.hash_node_calls,
+        "declared estimate should be tighter than the physical-ceiling worst case; declared \
          {declared:?}\nworst {worst:?}",
     );
     // ...while still an upper bound of the compaction append.

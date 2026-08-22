@@ -80,29 +80,44 @@ small capacities, but as the buffer of the append-only family (Chapter 14, 15) t
 tree reaches 2,047 positions in the shielded pool, where the last insert of every
 epoch cost ≈ 2k reads and ≈ 4k blake3 calls.
 
-### Hash Records (GROVE_V4+)
+### Path Records (GROVE_V4+)
 
-From GROVE_V4 (`dense_tree_versions.root_maintenance = 1`) the tree persists a
-**hash record** for every filled position under the key `b'h' || position`:
+From GROVE_V4 (`dense_tree_versions.root_maintenance = 1`) every insert writes one
+**path record** under its own position's key `b'h' || position`:
 
 ```text
-HashRecord = generation (u64 BE) || value_hash (32) || node_hash (32)     // 72 bytes
+PathRecord = generation (u64 BE) || present (u16 BE) || value_hash (32)
+             || entry[0..height] (32 each)          // 42 + 32·height bytes, fixed per tree
 ```
 
-- `value_hash = blake3(value)`, so re-hashing an ancestor never reads its value back;
-- `node_hash` is the position's subtree hash as of the last insert into it;
+- `value_hash = blake3(value)` of the inserting position — so when it is later an
+  ancestor, re-hashing it never reads its value back;
+- `entry[depth]` is the node hash of the path position at that depth, as of this
+  insert (`present` marks the depths that hold one: `0..=depth(position)`);
 - `generation` is the epoch tag: the bulk-append tree reuses the same position keys
   every epoch (its chunk count is the tag, advanced by `reset`), and a record carrying
   another generation is never trusted.
 
-An insert at position `p` (depth `d`) hashes the new leaf (`blake3(value)`, then
-`blake3(value_hash || 0 || 0)` — both children are beyond `count`), writes `p`'s
-record, and walks up: for each ancestor the on-path child's hash was just computed,
-the off-path sibling's hash is its record's `node_hash` (or `[0; 32]` beyond
-`count`), and the ancestor's own record supplies its `value_hash`; one blake3 and one
-record rewrite per level. That is `2 + d` blake3 calls, at most `2d` record reads and
-`d + 1` record writes — O(height), whatever the fill. The root is the record at
-position 0 (one read).
+Because positions fill in BFS order, the record of the **last insert into a subtree**
+holds that subtree's current hash (no later insert touched it), and every position's
+own record holds its value hash for good — both are located arithmetically from
+`count` (`last_filled_in_subtree`), so no record is ever rewritten. An insert at
+position `p` (depth `d`) hashes the new leaf (`blake3(value)`, then
+`blake3(value_hash || 0 || 0)` — both children are beyond `count`) and walks up: for
+each ancestor the on-path child's hash was just computed, the off-path sibling's hash
+is read from the record of the last insert into its subtree (or `[0; 32]` beyond
+`count`), and the ancestor's own record supplies its `value_hash`; one blake3 per
+level. That is `2 + d` blake3 calls, at most `2d` record reads and **one** record
+write — O(height), whatever the fill. The root is `entry[0]` of the last insert's
+record (one read).
+
+**What an insert is charged** is not the work of its particular position but a
+**fixed model for the tree's height** (`v1_insert_model_cost`): the blake3 calls
+(`2 + avg depth`) and record reads averaged over every position of a full buffer,
+rounded up — at `chunk_power` 11: 12 blake3 calls, 18 record reads of 394 bytes —
+plus the two puts (slot, record), each of a size that does not depend on the
+position. Appending to a tree of a given height therefore costs the same whatever
+the position, and an estimator can charge exactly it.
 
 Records are derived state: `root_hash` trusts them, so integrity audits
 (`verify_grovedb`, the binding check at the end of a state-sync restore) derive the
@@ -113,9 +128,10 @@ report a position-0 record that disagrees with the walked root as its own issue
 
 A record that is absent (a buffer filled under GROVE_V1..V3) or stale (an earlier
 generation) is recomputed from the values — the version-0 walk over that subtree —
-and recorded, so the catch-up costs at most one version-0 walk per buffer, once.
-Stored values, positions, proofs and roots are identical under both versions; only
-the records (and the work an insert is charged) differ.
+read-only and billed the same model; for the append-only family's rolling buffer
+that catch-up ends with the epoch the switch happened in. Stored values, positions,
+proofs and roots are identical under both versions; only the records (and the work
+an insert is charged) differ.
 
 ## The Element Variant
 
@@ -156,7 +172,7 @@ Storage keys:
   ...
 ```
 
-From GROVE_V4 a hash record sits beside each value under a 3-byte key (`b'h' || position`
+From GROVE_V4 a path record sits beside each value under a 3-byte key (`b'h' || position`
 as big-endian `u16`); the 2-byte slot keys and 3-byte record keys cannot collide.
 
 The Element itself (stored in the parent Merk) carries the `count` and `height`.
@@ -164,9 +180,10 @@ The root hash flows as the Merk child hash. This means:
 - **Reading the root hash** is one record read from GROVE_V4 (O(n) recomputation from
   storage under GROVE_V1..V3)
 - **Reading a value by position is O(1)** — single storage lookup
-- **Inserting is O(height)** from GROVE_V4 — one slot write, the ancestor path's
-  record reads/writes and `2 + depth` blake3 calls (O(n) hashing under GROVE_V1..V3:
-  one storage write + full root hash recomputation)
+- **Inserting is O(height)** from GROVE_V4 — one slot write, one record write, the
+  ancestor path's record reads and `2 + depth` blake3 calls, charged as the height's
+  fixed model (O(n) hashing under GROVE_V1..V3: one storage write + full root hash
+  recomputation)
 
 ## Operations
 

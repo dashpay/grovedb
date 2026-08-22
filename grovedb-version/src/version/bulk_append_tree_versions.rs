@@ -38,11 +38,16 @@ pub struct BulkAppendTreeCostVersions {
     ///
     /// Version 1 charges each entry's permanent bytes once, at its own
     /// append: the entry's chunk-blob share (`value.len()`) is reported as
-    /// added storage on every append; a buffer slot that already holds a
-    /// committed value is reported as replaced (growth added, shrink not
-    /// credited) and a slot written for the first time stays fully added; the
-    /// compaction blob is reported as a replacement of the entry bytes it
-    /// supersedes, with only its framing (and the MMR internal nodes) added.
-    /// Stored bytes, chunks and roots are identical under both versions.
+    /// added storage on every append; the dense buffer is churn — every
+    /// slot write and every path record write (epoch 1 included) is reported
+    /// as an in-place replacement of its own size, nothing added, no key
+    /// charged, nothing read to size it — since the buffer is a fixed-size
+    /// per-tree scratch area rewritten every epoch, not any entry's
+    /// long-term storage; the compaction blob is reported as a replacement
+    /// of the entry bytes it supersedes, with only its framing (and the MMR
+    /// internal nodes) added; and the buffer's fixed root-maintenance model
+    /// (`dense_tree_versions.root_maintenance`) is billed alongside the hash
+    /// count. Stored bytes, chunks and roots are identical under both
+    /// versions.
     pub append_storage_accounting: FeatureVersion,
 }

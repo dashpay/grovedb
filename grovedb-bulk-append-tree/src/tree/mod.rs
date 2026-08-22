@@ -69,12 +69,12 @@ pub struct AppendNoStateRootResult {
     ///   will eventually be compacted into — its own bytes — charged at this
     ///   append so that the blob written at compaction can be reported as a
     ///   replacement of bytes already paid for (issue #822);
-    /// - `seek_count` / `storage_loaded_bytes`: the read of the committed
-    ///   value a buffer slot already holds (epoch 2 onward), performed to
-    ///   size the rewrite.
+    /// - `seek_count` / `storage_loaded_bytes`: the dense buffer's
+    ///   root-maintenance reads — from GROVE_V4 the fixed model for the
+    ///   buffer's height (`v1_insert_model_cost`), whatever the position.
     ///
     /// Zero under the shipped accounting (GROVE_V1..V3), where the blob is
-    /// charged in full at compaction and no slot is read.
+    /// charged in full at compaction and the buffer's reads are dropped.
     ///
     /// Like `hash_count`, this follows the "caller bills" convention of the
     /// `Result`-returning appends ([`append`](BulkAppendTree::append),
@@ -162,15 +162,6 @@ pub struct BulkAppendTree<S> {
     ///
     /// [`from_state`]: BulkAppendTree::from_state
     pub(crate) last_mmr_root: Option<[u8; 32]>,
-    /// `total_count` as of the open ([`new`] → 0, [`from_state`] → the
-    /// persisted count): what committed storage holds, which this session's
-    /// appends have not changed. Used to tell a buffer slot that holds a
-    /// committed value — whose rewrite is read and reported as a replacement
-    /// — from one written for the first time.
-    ///
-    /// [`new`]: BulkAppendTree::new
-    /// [`from_state`]: BulkAppendTree::from_state
-    pub(crate) committed_total_count: u64,
 }
 
 impl<S> BulkAppendTree<S> {

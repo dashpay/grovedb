@@ -11,21 +11,26 @@
 //!   calls each), and so does every root read. This is what GROVE_V1..V3
 //!   shipped; it is locked — those versions are live and a replayed block
 //!   must be charged what it was admitted under.
-//! - [`v1`] keeps a per-position [`HashRecord`] beside each value and
-//!   updates only the inserted position's ancestor path: O(height) record
-//!   reads, one blake3 per level (two for the leaf) and one record write per
-//!   level. The root is the record at position 0. Records that are absent
-//!   (a buffer filled under `v0`) or tagged with an earlier generation (an
-//!   earlier epoch over the same slot keys) are never trusted: the subtree
-//!   is recomputed from its values, exactly as `v0` would, and the record is
-//!   written so the next insert is O(height) again.
+//! - [`v1`] writes one [`PathRecord`] per insert (the inserted position's
+//!   value hash and the node hash of every position on its ancestor path)
+//!   and derives an insert's ancestor hashes from the records of earlier
+//!   inserts: O(height) record reads, one blake3 per level (two for the
+//!   leaf) and ONE record write. The root is the last insert's record. Every
+//!   insert is charged a fixed figure for the tree's height
+//!   ([`v1_insert_model_cost`]), not the work of its particular position.
+//!   Records that are absent (a buffer filled under `v0`) or tagged with an
+//!   earlier generation (an earlier epoch over the same slot keys) are never
+//!   trusted: the subtree is recomputed from its values, exactly as `v0`
+//!   would, and recorded so the next insert is O(height) again.
 //!
 //! Selected by `grove_version.dense_tree_versions.root_maintenance`.
 //!
-//! [`HashRecord`]: super::HashRecord
+//! [`PathRecord`]: super::PathRecord
 
 mod v0;
 mod v1;
+
+pub use v1::{v1_insert_model_cost, V1InsertModel};
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_storage::StorageContext;
@@ -148,10 +153,10 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
     ///
     /// Under root-maintenance version 0 this skips the O(count) root walk
     /// [`try_insert`](Self::try_insert) performs, so a run of n inserts is
-    /// O(n) instead of O(n²) in hash calls. Under version 1 the ancestor-path
-    /// records are maintained exactly as [`try_insert`](Self::try_insert)
-    /// does — the records are the tree's state, not a cache that may be
-    /// skipped — so the two cost the same and differ only in what is
+    /// O(n) instead of O(n²) in hash calls. Under version 1 the path record
+    /// is written exactly as [`try_insert`](Self::try_insert) does — the
+    /// records are the tree's state, not a cache that may be skipped — so
+    /// the two cost the same (the fixed model) and differ only in what is
     /// returned.
     pub fn try_insert_no_root(
         &mut self,
@@ -191,8 +196,8 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
     ///
     /// Returns `[0u8; 32]` if the tree is empty. Under root-maintenance
     /// version 0 this walks every filled position; under version 1 it reads
-    /// the record at position 0 (falling back to the walk for a buffer that
-    /// has no current record there).
+    /// the last insert's path record (falling back to the walk for a buffer
+    /// that has no current record there).
     pub fn root_hash(
         &self,
         grove_version: &GroveVersion,

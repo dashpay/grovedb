@@ -273,15 +273,16 @@ impl GroveOp {
                 );
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 let entry_size = value.len() as u32;
-                // Every append writes its buffer slot and, under the GROVE_V4
-                // accounting (issue #822), charges its chunk-blob share as
-                // added storage, reads the slot's committed value to size a
-                // rewrite (epoch 2 on) and reports that rewrite as replaced.
-                // The compaction — the blob replacing the epoch's entry
-                // bytes, plus its framing — is charged at the tree's epoch
-                // scale when its own layer is declared with
+                // Every append writes its buffer slot and its path record —
+                // churn under the GROVE_V4 accounting (issue #822): replaced,
+                // never added — and charges its chunk-blob share as added
+                // storage. The compaction — the blob replacing the epoch's
+                // entry bytes, plus its framing — is charged at the tree's
+                // epoch scale when its own layer is declared with
                 // `TreeType::BulkAppendTree(chunk_power)`, and amortized to
-                // one entry otherwise.
+                // one entry otherwise. The buffer's fixed root-maintenance
+                // model is charged at the declared scale, or the physical
+                // ceiling when undeclared.
                 //
                 // A BulkAppendTree accepts variable-size values, so the epoch
                 // is modelled as values the size of this one: exact for
@@ -291,41 +292,30 @@ impl GroveOp {
                     .map(|chunk_power| 1u32 << chunk_power.min(16) as u32)
                     .unwrap_or(1);
                 let paid_entry = entry_size.saturating_add(entry_size.required_space() as u32);
+                // Hashes: the buffer model, the state root and the running
+                // hash, and a compaction's chunk-leaf hash plus the MMR push
+                // merges and root bagging (each bounded by the 64-bit
+                // position space).
+                const MAX_MMR_MERGES: u32 = 65;
                 // MMR leaf key + envelope, variable-format header and
-                // per-entry length prefixes, and one internal node.
+                // per-entry length prefixes, and the internal nodes the push
+                // creates (key + 33-byte node + length each) — one per peak
+                // the push collapses, which the appender chooses by when it
+                // appends, so bounded by the position space rather than
+                // amortized to one.
                 let blob_framing = 37u32
                     .saturating_add(37)
                     .saturating_add(1)
                     .saturating_add(epoch_entries.saturating_mul(4))
-                    .saturating_add(71);
-                // Hashes. Undeclared: the historical amortized figure (one
-                // running-hash call), an average with no epoch to scale by.
-                // Declared: an upper bound for the epoch — up to a
-                // full-buffer walk (two hashes per filled position: the
-                // GROVE_V1..V3 root recompute, and the one-time catch-up a
-                // buffer filled under those versions pays at its first
-                // GROVE_V4 append; a V4 append otherwise hashes only its
-                // ancestor path), the state root, and a compaction's
-                // chunk-leaf hash plus the MMR push merges and root bagging
-                // (each bounded by the 64-bit position space).
-                const AVG_HASH_CALLS: u32 = 1;
-                const MAX_MMR_MERGES: u32 = 65;
-                let hash_calls = if append_tree_chunk_power.is_some() {
-                    2u32.saturating_mul(epoch_entries.saturating_sub(1))
-                        .saturating_add(2)
-                        .saturating_add(2 * MAX_MMR_MERGES)
-                } else {
-                    AVG_HASH_CALLS
-                };
-                // The buffer's hash records (GROVE_V4 root maintenance):
-                // the ancestor-path rewrites, and the catch-up of a buffer
-                // filled under GROVE_V3. At the declared epoch scale, or the
-                // physical ceiling when undeclared. The bulk append bills
-                // their writes (at commit), not their reads.
-                let records = super::dense_record_maintenance_bound(
+                    .saturating_add(71 * MAX_MMR_MERGES);
+                let buffer = super::dense_buffer_model(
                     append_tree_chunk_power.unwrap_or(super::PHYSICAL_MAX_CHUNK_POWER),
-                    true,
                 );
+                let hash_calls = buffer
+                    .cost
+                    .hash_node_calls
+                    .saturating_add(2)
+                    .saturating_add(2 * MAX_MMR_MERGES);
                 // The preprocessing read of the stored element loads its
                 // caller-supplied flags too; bound them with the parent
                 // layer's declared flags size — the same metadata the
@@ -341,30 +331,30 @@ impl GroveOp {
                         return Err(Error::MerkError(e)).wrap_with_cost(OperationCost::default())
                     }
                 };
+                let record_put = buffer
+                    .record_len
+                    .saturating_add(buffer.record_len.required_space() as u32);
                 item_cost.add_cost(OperationCost {
-                    // 1 buffer entry write + 1 committed-slot read + the
-                    // record writes.
-                    seek_count: 2u32.saturating_add(records.record_writes),
+                    // The stored element read by preprocessing + 1 buffer
+                    // entry write + 1 path record write + the buffer model's
+                    // record reads.
+                    seek_count: 3u32.saturating_add(buffer.cost.seek_count),
                     storage_cost: StorageCost {
-                        // Slot (new in epoch 1) + chunk-blob share + framing
-                        // + records written for the first time.
-                        added_bytes: entry_size
-                            .saturating_mul(2)
-                            .saturating_add(blob_framing)
-                            .saturating_add(records.added_bytes),
-                        // Slot rewrite + the blob replacing the epoch's
-                        // entry bytes + the records rewritten on the path.
+                        // Chunk-blob share + framing.
+                        added_bytes: entry_size.saturating_add(blob_framing),
+                        // Slot and record (churn) + the blob replacing the
+                        // epoch's entry bytes.
                         replaced_bytes: paid_entry
-                            .saturating_add(epoch_entries.saturating_mul(entry_size))
-                            .saturating_add(records.replaced_bytes),
+                            .saturating_add(record_put)
+                            .saturating_add(epoch_entries.saturating_mul(entry_size)),
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
                     // The stored element (fixed fields + Merk framing, with
-                    // the flags bound) read by preprocessing, and the
-                    // committed slot value read to size the rewrite.
+                    // the flags bound) read by preprocessing, and the buffer
+                    // model's records.
                     storage_loaded_bytes: (super::CT_ELEMENT_LOAD_BASE + element_flags_load_bound)
                         as u64
-                        + entry_size as u64,
+                        + buffer.cost.storage_loaded_bytes,
                     hash_node_calls: hash_calls,
                     sinsemilla_hash_calls: 0,
                 })
@@ -2201,14 +2191,15 @@ mod tests {
             big.hash_node_calls,
             small.hash_node_calls
         );
-        // Each entry is written TWICE across its lifetime: once into the
-        // dense buffer and once more into the chunk blob when the epoch
-        // compacts. The amortized per-append charge is therefore 2x the
-        // entry size, so doubling the entry grows added_bytes by 2 x 64.
+        // An entry's ADDED storage is its long-term footprint — its share
+        // of the chunk blob; the buffer slot it passes through is churn
+        // (replaced). So doubling the entry grows added_bytes by 64, and
+        // replaced_bytes by the slot's growth.
         assert_eq!(
             cost_large.storage_cost.added_bytes - cost.storage_cost.added_bytes,
-            128
+            64
         );
+        assert!(cost_large.storage_cost.replaced_bytes > cost.storage_cost.replaced_bytes);
     }
 
     #[test]

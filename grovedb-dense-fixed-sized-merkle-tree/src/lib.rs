@@ -33,5 +33,10 @@ mod tests;
 pub use error::DenseMerkleError;
 pub use proof::DenseTreeProof;
 #[cfg(feature = "storage")]
+pub use tree::root_maintenance::{v1_insert_model_cost, V1InsertModel};
+#[cfg(feature = "storage")]
 pub use tree::SlotWriteAccounting;
-pub use tree::{position_key, record_key, DenseFixedSizedMerkleTree, HashRecord, HASH_RECORD_LEN};
+pub use tree::{
+    depth_of, last_filled_in_subtree, path_record_len, position_key, record_key,
+    DenseFixedSizedMerkleTree, PathRecord, HASH_RECORD_KEY_PREFIX, PATH_RECORD_HEADER_LEN,
+};

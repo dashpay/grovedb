@@ -635,12 +635,15 @@ fn get_range_wrong_chunk_entry_count_is_corruption() {
 
 /// The hash count a buffered append reports is the dense tree's own figure
 /// under every version — the shipped `2 * count` full-buffer walk under
-/// GROVE_V3, the ancestor path (`2 + depth`) under GROVE_V4 — and the state
-/// roots are identical under both: the records change the work, not the
-/// root.
+/// GROVE_V3, the fixed model for the buffer's height under GROVE_V4 — and
+/// the state roots are identical under both: the records change the work
+/// and the charge, not the root.
 #[test]
 fn buffered_append_hash_count_follows_the_root_maintenance_version() {
+    use grovedb_dense_fixed_sized_merkle_tree::V1InsertModel;
     use grovedb_version::version::{v3::GROVE_V3, v4::GROVE_V4};
+
+    let model = V1InsertModel::for_height(4);
 
     // capacity 15, epoch 16: one full epoch of buffered appends plus the
     // compaction, then a few of the next epoch (slot rewrites).
@@ -659,7 +662,6 @@ fn buffered_append_hash_count_follows_the_root_maintenance_version() {
             assert!(r3.hash_count >= 2, "v3 compaction: {}", r3.hash_count);
         } else {
             let filled = buffer_position + 1;
-            let depth = (buffer_position + 1).ilog2();
             assert_eq!(
                 r3.hash_count,
                 2 * filled + 1,
@@ -667,8 +669,8 @@ fn buffered_append_hash_count_follows_the_root_maintenance_version() {
             );
             assert_eq!(
                 r4.hash_count,
-                2 + depth + 1,
-                "position {i}: v4 hashes the leaf and its {depth} ancestors (+1 state root)"
+                model.hash_node_calls + 1,
+                "position {i}: v4 charges the height-4 model (+1 state root), whatever the position"
             );
         }
     }

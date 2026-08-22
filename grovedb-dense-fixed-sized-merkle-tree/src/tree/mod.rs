@@ -47,65 +47,152 @@ pub fn position_key(pos: u16) -> [u8; 2] {
 /// the named keys the owning trees put beside them.
 pub const HASH_RECORD_KEY_PREFIX: u8 = b'h';
 
-/// Encode the key of the hash record for `pos`: `b'h' || position (BE u16)`.
+/// Encode the key of the path record written by the insert at `pos`:
+/// `b'h' || position (BE u16)`.
 pub fn record_key(pos: u16) -> [u8; 3] {
     let [hi, lo] = pos.to_be_bytes();
     [HASH_RECORD_KEY_PREFIX, hi, lo]
 }
 
-/// Serialized length of a [`HashRecord`]: generation (8) + value hash (32) +
-/// node hash (32).
-pub const HASH_RECORD_LEN: usize = 8 + 32 + 32;
+/// Fixed part of a serialized [`PathRecord`]: generation (8) + present mask
+/// (2) + value hash (32). The node-hash entries add 32 bytes per level of
+/// the tree.
+pub const PATH_RECORD_HEADER_LEN: usize = 8 + 2 + 32;
 
-/// The per-position hash record version 1 of `root_maintenance` keeps beside
-/// each value.
+/// Serialized length of a [`PathRecord`] for a tree of `height`: fixed per
+/// tree, whatever the depth of the inserting position, so every insert
+/// writes the same number of bytes.
+pub fn path_record_len(height: u8) -> usize {
+    PATH_RECORD_HEADER_LEN + 32 * height as usize
+}
+
+/// The record root-maintenance version 1 writes for each insert — one per
+/// inserted position, under that position's key, never rewritten by later
+/// inserts (only filled in further by a catch-up, see below).
+///
+/// It carries the inserted position's own `value_hash` (`blake3(value)`) and
+/// the `node_hash` of every position on its ancestor path — `entry[depth]`
+/// for depths `0..=depth(position)` — as of this insert. Because positions
+/// fill in BFS order, the record of the LAST insert into a subtree holds
+/// that subtree's current hash (no later insert touched it), and every
+/// position's own record holds its value hash for good; both are located
+/// arithmetically from `count`, so no record is ever rewritten by normal
+/// inserts.
 ///
 /// `generation` tags the epoch the record belongs to. The bulk-append tree
 /// reuses the same position keys every epoch (see
 /// [`DenseFixedSizedMerkleTree::reset`]); a record left over from an earlier
-/// epoch describes a value that is no longer there, so a reader that finds a
-/// record with a different generation treats it as absent rather than
-/// trusting it. `value_hash` is `blake3(value)` — kept so that re-hashing an
-/// ancestor does not need its (possibly large) value read back —
-/// and `node_hash` is `blake3(value_hash || H(left) || H(right))` over the
-/// subtree as of the last insert into it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HashRecord {
+/// epoch describes values that are no longer there, so a reader that finds
+/// a record with a different generation treats it as absent rather than
+/// trusting it. `present` says which entries hold a hash: every depth up to
+/// the inserting position's for a record written by an insert; a subset for
+/// a record synthesized by a catch-up (a buffer filled without records).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PathRecord {
     /// Epoch tag; see the type doc.
     pub generation: u64,
-    /// `blake3(value)` of the position's own value.
+    /// Bit `d` set when `entries[d]` holds the node hash of the path position
+    /// at depth `d`.
+    pub present: u16,
+    /// `blake3(value)` of the position this record belongs to.
     pub value_hash: [u8; 32],
-    /// The position's subtree hash as of the last insert into it.
-    pub node_hash: [u8; 32],
+    /// Node hashes by depth (index 0 = root); `height` entries, zero when not
+    /// present.
+    pub entries: Vec<[u8; 32]>,
 }
 
-impl HashRecord {
-    /// Serialize as `generation (BE u64) || value_hash || node_hash`.
-    pub fn to_bytes(&self) -> [u8; HASH_RECORD_LEN] {
-        let mut out = [0u8; HASH_RECORD_LEN];
-        out[..8].copy_from_slice(&self.generation.to_be_bytes());
-        out[8..40].copy_from_slice(&self.value_hash);
-        out[40..].copy_from_slice(&self.node_hash);
+impl PathRecord {
+    /// An empty record for a tree of `height`: no entries present.
+    pub fn new(generation: u64, value_hash: [u8; 32], height: u8) -> Self {
+        Self {
+            generation,
+            present: 0,
+            value_hash,
+            entries: vec![[0u8; 32]; height as usize],
+        }
+    }
+
+    /// The node hash recorded for depth `depth`, if present.
+    pub fn entry(&self, depth: u8) -> Option<[u8; 32]> {
+        ((self.present >> depth) & 1 == 1)
+            .then(|| self.entries.get(depth as usize).copied())
+            .flatten()
+    }
+
+    /// Record the node hash for depth `depth`.
+    pub fn set_entry(&mut self, depth: u8, hash: [u8; 32]) {
+        if let Some(slot) = self.entries.get_mut(depth as usize) {
+            *slot = hash;
+            self.present |= 1 << depth;
+        }
+    }
+
+    /// Serialize as `generation (BE u64) || present (BE u16) || value_hash ||
+    /// entries`.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(PATH_RECORD_HEADER_LEN + 32 * self.entries.len());
+        out.extend_from_slice(&self.generation.to_be_bytes());
+        out.extend_from_slice(&self.present.to_be_bytes());
+        out.extend_from_slice(&self.value_hash);
+        for e in &self.entries {
+            out.extend_from_slice(e);
+        }
         out
     }
 
-    /// Parse a record; `None` if the bytes are not a record (wrong length).
-    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != HASH_RECORD_LEN {
+    /// Parse a record for a tree of `height`; `None` if the bytes are not a
+    /// record of that shape.
+    pub fn from_bytes(bytes: &[u8], height: u8) -> Option<Self> {
+        if bytes.len() != path_record_len(height) {
             return None;
         }
         let mut generation = [0u8; 8];
         generation.copy_from_slice(&bytes[..8]);
+        let present = u16::from_be_bytes([bytes[8], bytes[9]]);
         let mut value_hash = [0u8; 32];
-        value_hash.copy_from_slice(&bytes[8..40]);
-        let mut node_hash = [0u8; 32];
-        node_hash.copy_from_slice(&bytes[40..]);
+        value_hash.copy_from_slice(&bytes[10..42]);
+        let entries = bytes[42..]
+            .chunks_exact(32)
+            .map(|c| {
+                let mut h = [0u8; 32];
+                h.copy_from_slice(c);
+                h
+            })
+            .collect();
         Some(Self {
             generation: u64::from_be_bytes(generation),
+            present,
             value_hash,
-            node_hash,
+            entries,
         })
     }
+}
+
+/// Depth of a BFS position (root = 0).
+pub fn depth_of(position: u16) -> u8 {
+    (position as u32 + 1).ilog2() as u8
+}
+
+/// The last filled position inside the subtree rooted at `position`, given
+/// `count` filled positions in BFS order — the insert whose path record holds
+/// that subtree's current hash. `None` when `position >= count`.
+pub fn last_filled_in_subtree(position: u16, count: u16, height: u8) -> Option<u16> {
+    if position >= count {
+        return None;
+    }
+    let depth = depth_of(position);
+    // Descendants at distance k span `(position + 1) * 2^k - 1 ..=
+    // (position + 2) * 2^k - 2`; take the deepest level that has any filled
+    // position — its last filled one is the last insert into the subtree.
+    let max_k = (height - 1).saturating_sub(depth);
+    for k in (0..=max_k as u32).rev() {
+        let lo = ((position as u64 + 1) << k) - 1;
+        if lo < count as u64 {
+            let hi = ((position as u64 + 2) << k) - 2;
+            return Some(hi.min(count as u64 - 1) as u16);
+        }
+    }
+    Some(position)
 }
 
 /// How a slot write is reported to the storage cost layer.
@@ -141,14 +228,23 @@ pub enum SlotWriteAccounting {
         /// Length of the value the slot holds in committed storage.
         previous_value_len: u32,
     },
+    /// The slot is a position of a transient buffer: the bytes it holds are
+    /// churn, not the tree's long-term storage (the bulk-append tree rewrites
+    /// every slot each epoch and the values live on in the chunk blob, whose
+    /// bytes each append prepays). The write — and the path record written
+    /// beside it — is reported as an in-place replacement of its own size,
+    /// whether or not the key exists yet: `replaced_bytes` = the paid size,
+    /// nothing added, no key charged, and nothing is read to size it.
+    Churn,
 }
 
-/// A hash record as this session knows it, together with whether its key
-/// exists in committed storage — what a rewrite of it must be sized against.
+/// A path record as this session knows it, together with whether its key
+/// exists in committed storage — what a rewrite of it must be sized against
+/// for an owner whose records are long-term storage.
 #[cfg(feature = "storage")]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct CachedRecord {
-    pub record: HashRecord,
+    pub record: PathRecord,
     /// Whether the record's key held a value in committed storage (the
     /// underlying context, outside this session's batch) when this session
     /// first looked. A `StorageBatch` keeps one put per key, so the put that
@@ -189,9 +285,10 @@ pub struct DenseFixedSizedMerkleTree<S> {
     /// Only compiled when storage-dependent operations are available.
     #[cfg(feature = "storage")]
     cache: Vec<Option<Vec<u8>>>,
-    /// Write-through cache of hash records touched in this session — written,
-    /// or read from storage and found current. Absent means "not looked at in
-    /// this session" (fall back to storage).
+    /// Write-through cache of path records touched in this session —
+    /// written, or read from storage and found current — keyed by the
+    /// inserting position. Absent means "not looked at in this session" (fall
+    /// back to storage).
     #[cfg(feature = "storage")]
     record_cache: HashMap<u16, CachedRecord>,
 }
@@ -328,11 +425,12 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
         self.compute_root_hash()
     }
 
-    /// The root the hash records claim, if a record with the current
-    /// generation exists at position 0 (this session's, or stored): what a
-    /// root-maintenance-version-1 root read returns. `None` when the tree is
-    /// empty or holds no current record there (a buffer filled under version
-    /// 0, or an earlier epoch's leftover). Does not walk.
+    /// The root the path records claim — what a root-maintenance-version-1
+    /// root read returns: entry 0 of the last insert's record, if that record
+    /// is current and holds it. `None` when the tree is empty or no such
+    /// record exists (a buffer filled under version 0, an earlier epoch's
+    /// leftover, or a catch-up-synthesized record without the root). Does
+    /// not walk.
     ///
     /// Audits compare it with [`root_hash_from_values`](Self::root_hash_from_values):
     /// a difference means the records and the values disagree — a payload
@@ -342,11 +440,12 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
         if self.count == 0 {
             return Ok(None).wrap_with_cost(cost);
         }
-        if let Some(cached) = self.cached_record(0) {
-            return Ok(Some(cached.record.node_hash)).wrap_with_cost(cost);
+        let last = self.count - 1;
+        if let Some(cached) = self.cached_record(last) {
+            return Ok(cached.record.entry(0)).wrap_with_cost(cost);
         }
-        match cost_return_on_error!(cost, self.read_record_from_storage(0)) {
-            Some((Some(record), true)) => Ok(Some(record.node_hash)).wrap_with_cost(cost),
+        match cost_return_on_error!(cost, self.read_record_from_storage(last)) {
+            Some((Some(record), true)) => Ok(record.entry(0)).wrap_with_cost(cost),
             _ => Ok(None).wrap_with_cost(cost),
         }
     }
@@ -425,6 +524,11 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
                     value.len() as u32,
                 ))
             }
+            // Churn: the paid size replaced, nothing added, key not charged.
+            SlotWriteAccounting::Churn => Some(KeyValueStorageCost::for_in_place_value_rewrite(
+                value.len() as u32,
+                value.len() as u32,
+            )),
         };
 
         let result = self
@@ -460,22 +564,22 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
         self.count = count;
     }
 
-    // ── Hash-record storage helpers (root-maintenance version 1) ──────
+    // ── Path-record storage helpers (root-maintenance version 1) ──────
 
-    /// The hash record this session knows for `position`, if it has been
-    /// written or read-and-found-current in this session.
-    pub(crate) fn cached_record(&self, position: u16) -> Option<CachedRecord> {
-        self.record_cache.get(&position).copied()
+    /// The path record this session knows for the insert at `position`, if
+    /// it has been written or read-and-found-current in this session.
+    pub(crate) fn cached_record(&self, position: u16) -> Option<&CachedRecord> {
+        self.record_cache.get(&position)
     }
 
     /// Drop every cached record (after a failed insert left the in-memory
-    /// view of the ancestor path in doubt; storage is re-read next time).
+    /// view in doubt; storage is re-read next time).
     pub(crate) fn clear_record_cache(&mut self) {
         self.record_cache.clear();
     }
 
-    /// Read the hash record for `position` from the underlying storage —
-    /// committed state plus the surrounding transaction, never this
+    /// Read the path record of the insert at `position` from the underlying
+    /// storage — committed state plus the surrounding transaction, never this
     /// session's batch.
     ///
     /// Returns what the key holds: `None` when absent, otherwise the record
@@ -489,7 +593,7 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
     pub(crate) fn read_record_from_storage(
         &self,
         position: u16,
-    ) -> CostResult<Option<(Option<HashRecord>, bool)>, DenseMerkleError> {
+    ) -> CostResult<Option<(Option<PathRecord>, bool)>, DenseMerkleError> {
         let mut cost = OperationCost::default();
         let result = self
             .storage
@@ -498,78 +602,87 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
         match result {
             Ok(None) => Ok(None).wrap_with_cost(cost),
             Ok(Some(bytes)) => {
-                let parsed = HashRecord::from_bytes(&bytes);
-                let current = parsed.is_some_and(|r| r.generation == self.generation);
+                let parsed = PathRecord::from_bytes(&bytes, self.height);
+                let current = parsed
+                    .as_ref()
+                    .is_some_and(|r| r.generation == self.generation);
                 Ok(Some((parsed, current))).wrap_with_cost(cost)
             }
             Err(e) => Err(DenseMerkleError::StoreError(format!(
-                "hash record get at pos {}: {}",
+                "path record get at pos {}: {}",
                 position, e
             )))
             .wrap_with_cost(cost),
         }
     }
 
-    /// Resolve the hash record for `position` for this session: the cached
-    /// one if present, otherwise the stored one, cached when current.
+    /// Resolve the current path record of the insert at `position` for this
+    /// session: the cached one if present, otherwise the stored one, cached
+    /// when current.
     ///
     /// Returns `(record_if_current, key_exists_in_committed_storage)`.
     ///
     /// Cache hits are charged like a storage read (one seek, the record
-    /// bytes) so that the same append costs the same whether it runs in the
-    /// session that wrote the record or a later one.
+    /// bytes) so the same work costs the same in the session that wrote the
+    /// record and in a later one. (Root-maintenance version 1 bills a fixed
+    /// model per insert anyway; this keeps the crate-level figures honest.)
     pub(crate) fn resolve_record(
         &mut self,
         position: u16,
-    ) -> CostResult<(Option<HashRecord>, bool), DenseMerkleError> {
+    ) -> CostResult<(Option<PathRecord>, bool), DenseMerkleError> {
         if let Some(cached) = self.cached_record(position) {
-            return Ok((Some(cached.record), cached.committed)).wrap_with_cost(OperationCost {
-                seek_count: 1,
-                storage_loaded_bytes: HASH_RECORD_LEN as u64,
-                ..Default::default()
-            });
+            return Ok((Some(cached.record.clone()), cached.committed)).wrap_with_cost(
+                OperationCost {
+                    seek_count: 1,
+                    storage_loaded_bytes: path_record_len(self.height) as u64,
+                    ..Default::default()
+                },
+            );
         }
         let mut cost = OperationCost::default();
         let stored = cost_return_on_error!(cost, self.read_record_from_storage(position));
         match stored {
             None => Ok((None, false)).wrap_with_cost(cost),
-            Some((parsed, true)) => {
-                // `current` implies `parsed` is `Some`.
-                if let Some(record) = parsed {
-                    self.record_cache.insert(
-                        position,
-                        CachedRecord {
-                            record,
-                            committed: true,
-                        },
-                    );
-                }
-                Ok((parsed, true)).wrap_with_cost(cost)
+            Some((Some(record), true)) => {
+                self.record_cache.insert(
+                    position,
+                    CachedRecord {
+                        record: record.clone(),
+                        committed: true,
+                    },
+                );
+                Ok((Some(record), true)).wrap_with_cost(cost)
             }
-            Some((_, false)) => Ok((None, true)).wrap_with_cost(cost),
+            Some(_) => Ok((None, true)).wrap_with_cost(cost),
         }
     }
 
-    /// Write the hash record for `position` to storage and cache it.
+    /// Write the path record of the insert at `position` to storage and
+    /// cache it.
     ///
-    /// `committed` says whether the record's key already holds a value in
-    /// committed storage (see [`CachedRecord::committed`]): a rewrite is
-    /// reported as an in-place replacement of the same-size record, a first
-    /// write as new storage.
+    /// How the write is sized follows the owner's slot accounting: under
+    /// [`SlotWriteAccounting::Churn`] it is an in-place replacement of its own
+    /// (fixed) size; otherwise `committed` says whether the key already holds
+    /// a value in committed storage (see [`CachedRecord::committed`]) — a
+    /// rewrite is a replacement, a first write new storage.
     pub(crate) fn put_record(
         &mut self,
         position: u16,
-        record: HashRecord,
+        record: PathRecord,
         committed: bool,
+        accounting: SlotWriteAccounting,
     ) -> CostResult<(), DenseMerkleError> {
         let mut cost = OperationCost::default();
         let bytes = record.to_bytes();
-        let cost_info = committed.then(|| {
-            KeyValueStorageCost::for_in_place_value_rewrite(
-                HASH_RECORD_LEN as u32,
-                HASH_RECORD_LEN as u32,
-            )
-        });
+        let len = bytes.len() as u32;
+        let cost_info = match accounting {
+            SlotWriteAccounting::Churn => {
+                Some(KeyValueStorageCost::for_in_place_value_rewrite(len, len))
+            }
+            SlotWriteAccounting::AsNew | SlotWriteAccounting::Overwrite { .. } => {
+                committed.then(|| KeyValueStorageCost::for_in_place_value_rewrite(len, len))
+            }
+        };
         let result = self
             .storage
             .put(record_key(position), &bytes, None, cost_info)
@@ -581,7 +694,7 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
                 Ok(()).wrap_with_cost(cost)
             }
             Err(e) => Err(DenseMerkleError::StoreError(format!(
-                "hash record put at pos {}: {}",
+                "path record put at pos {}: {}",
                 position, e
             )))
             .wrap_with_cost(cost),
