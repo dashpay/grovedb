@@ -58,6 +58,7 @@ mod estimated_costs_average_case_tests;
 mod estimated_costs_worst_case_tests;
 mod get_cost_estimator_tests;
 mod grove_query_result_tests;
+mod indexed_axis_keys_only_read_tests;
 mod indexed_axis_nested_and_bounds_tests;
 mod indexed_axis_offset_proof_tests;
 mod indexed_axis_paginated_cost_tests;
