@@ -679,6 +679,7 @@ where
                         },
                         new_node: false,
                         needs_value_verification: false,
+                        prepaid: false,
                     };
 
                     let maybe_tree_walker = cost_return_on_error!(

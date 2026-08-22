@@ -94,6 +94,7 @@ pub(crate) fn frontier_save_cost_info(
             },
             new_node: false,
             needs_value_verification: false,
+            prepaid: false,
         }));
     }
     Ok(actual)

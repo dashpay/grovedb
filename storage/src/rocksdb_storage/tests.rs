@@ -1019,10 +1019,24 @@ mod batch_transaction {
             .put(b"ordinary", &[2u8; 100], None, None)
             .unwrap()
             .expect("put ordinary");
+        // A zero-cost DEFAULT is not prepaid: it pays its seek like any put
+        // (Merk passes one for writes it charges no bytes for).
+        context
+            .put(
+                b"default",
+                &[3u8; 100],
+                None,
+                Some(KeyValueStorageCost::default()),
+            )
+            .unwrap()
+            .expect("put default");
         let commit = storage.commit_multi_context_batch(batch, Some(&transaction));
         commit.value.expect("commit");
         let cost = commit.cost;
-        assert_eq!(cost.seek_count, 1, "only the ordinary put seeks: {cost:?}");
+        assert_eq!(
+            cost.seek_count, 2,
+            "the ordinary and the default-cost puts seek, the prepaid one does not: {cost:?}"
+        );
         // The ordinary put's bytes (prefixed key + value, each with its
         // length varint) are the whole storage figure.
         assert_eq!(
@@ -1078,6 +1092,7 @@ mod batch_transaction {
                     },
                     new_node: true,
                     needs_value_verification: true,
+                    prepaid: false,
                 }),
             )
             .unwrap()
@@ -1098,6 +1113,7 @@ mod batch_transaction {
                     },
                     new_node: false,
                     needs_value_verification: true,
+                    prepaid: false,
                 }),
             )
             .unwrap()

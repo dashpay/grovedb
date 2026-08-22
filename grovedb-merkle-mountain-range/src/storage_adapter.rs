@@ -127,6 +127,7 @@ impl<'a, C> MmrStore<'a, C> {
                     },
                     new_node: true,
                     needs_value_verification: true,
+                    prepaid: false,
                 })
             }
         }

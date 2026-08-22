@@ -49,6 +49,11 @@ pub struct KeyValueStorageCost {
     pub new_node: bool,
     /// Should we verify this at storage time
     pub needs_value_verification: bool,
+    /// The put was billed by its owner in advance — bytes, key and the
+    /// write itself — so the commit path charges it nothing, the seek
+    /// included. Set only by [`prepaid`](Self::prepaid); `Default` is NOT
+    /// prepaid (a default cost info still pays its seek).
+    pub prepaid: bool,
 }
 
 impl KeyValueStorageCost {
@@ -91,6 +96,7 @@ impl KeyValueStorageCost {
                 value_storage_cost,
                 new_node: false,
                 needs_value_verification: false,
+                prepaid: false,
             }
         } else {
             KeyValueStorageCost {
@@ -106,6 +112,7 @@ impl KeyValueStorageCost {
                 },
                 new_node: true,
                 needs_value_verification: false,
+                prepaid: false,
             }
         }
     }
@@ -134,6 +141,7 @@ impl KeyValueStorageCost {
             },
             new_node: false,
             needs_value_verification: true,
+            prepaid: false,
         }
     }
 
@@ -150,19 +158,15 @@ impl KeyValueStorageCost {
             value_storage_cost: StorageCost::default(),
             new_node: false,
             needs_value_verification: false,
+            prepaid: true,
         }
     }
 
     /// Whether this is the cost information of a fully prepaid put (see
     /// [`prepaid`](Self::prepaid)): nothing to bill at commit, the seek
-    /// included. Only an owner that billed the write in advance produces
-    /// this shape — every other constructor charges bytes, a key, or asks
-    /// for value verification.
+    /// included. An explicit marker — a zero-cost `Default` is not prepaid.
     pub fn is_prepaid(&self) -> bool {
-        self.key_storage_cost == StorageCost::default()
-            && self.value_storage_cost == StorageCost::default()
-            && !self.new_node
-            && !self.needs_value_verification
+        self.prepaid
     }
 
     /// Returns the total removed bytes between the key removed bytes and the
@@ -181,6 +185,7 @@ impl Add for KeyValueStorageCost {
             value_storage_cost: self.value_storage_cost + rhs.value_storage_cost,
             new_node: self.new_node & rhs.new_node,
             needs_value_verification: self.needs_value_verification & rhs.needs_value_verification,
+            prepaid: self.prepaid & rhs.prepaid,
         }
     }
 }
@@ -191,6 +196,7 @@ impl AddAssign for KeyValueStorageCost {
         self.value_storage_cost += rhs.value_storage_cost;
         self.new_node &= rhs.new_node;
         self.needs_value_verification &= rhs.needs_value_verification;
+        self.prepaid &= rhs.prepaid;
     }
 }
 
@@ -201,19 +207,30 @@ mod prepaid_tests {
     #[test]
     fn prepaid_is_the_only_shape_that_bills_nothing() {
         assert!(KeyValueStorageCost::prepaid().is_prepaid());
+        // The marker is explicit: a zero-cost default still pays its seek.
+        assert!(!KeyValueStorageCost::default().is_prepaid());
+        assert_ne!(
+            KeyValueStorageCost::prepaid(),
+            KeyValueStorageCost::default()
+        );
         assert!(!KeyValueStorageCost::for_in_place_value_rewrite(0, 0).is_prepaid());
         assert!(!KeyValueStorageCost::for_in_place_value_rewrite(8, 8).is_prepaid());
         assert!(!KeyValueStorageCost::for_updated_root_cost(None, 1).is_prepaid());
         assert!(!KeyValueStorageCost::for_updated_root_cost(Some(1), 1).is_prepaid());
-        let mut new_node = KeyValueStorageCost::prepaid();
-        new_node.new_node = true;
-        assert!(!new_node.is_prepaid());
-        let mut verified = KeyValueStorageCost::prepaid();
-        verified.needs_value_verification = true;
-        assert!(!verified.is_prepaid());
+        let mut unmarked = KeyValueStorageCost::prepaid();
+        unmarked.prepaid = false;
+        assert!(!unmarked.is_prepaid());
         let mut replaced = KeyValueStorageCost::prepaid();
         replaced.value_storage_cost.replaced_bytes = 1;
-        assert!(!replaced.is_prepaid());
+        // Bytes on a prepaid put are still added by the commit path; only the
+        // seek is waived. The marker, not the shape, decides.
+        assert!(replaced.is_prepaid());
+        let mut sum = KeyValueStorageCost::prepaid();
+        sum += KeyValueStorageCost::default();
+        assert!(
+            !sum.is_prepaid(),
+            "a sum with an unprepaid part is not prepaid"
+        );
     }
 }
 

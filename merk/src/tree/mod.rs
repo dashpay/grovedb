@@ -215,6 +215,7 @@ impl TreeNode {
             value_storage_cost,
             new_node: self.old_value.is_none(),
             needs_value_verification: self.inner.kv.value_defined_cost.is_none(),
+            prepaid: false,
         };
 
         Ok((current_value_byte_cost, key_value_storage_cost))

@@ -200,6 +200,7 @@ fn v1_buffer_writes_are_churn_and_every_append_is_charged_the_fixed_model() {
         },
         new_node: false,
         needs_value_verification: true,
+        prepaid: false,
     };
     let slots = slot_puts(&run.ctx);
     assert_eq!(slots.len(), 9, "three slots per epoch, three epochs");
