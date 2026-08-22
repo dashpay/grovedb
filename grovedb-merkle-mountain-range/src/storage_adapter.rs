@@ -3,8 +3,15 @@
 //! Provides `MmrStore`, which implements `MMRStoreReadOps` and
 //! `MMRStoreWriteOps` backed by a GroveDB storage context.
 
-use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use grovedb_costs::{
+    storage_cost::{
+        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::NoStorageRemoval,
+        StorageCost,
+    },
+    CostResult, CostsExt, OperationCost,
+};
 use grovedb_storage::StorageContext;
+use integer_encoding::VarInt;
 
 use crate::{
     helper::{mmr_node_key_sized, MmrKeySize},
@@ -26,16 +33,44 @@ use crate::{
 pub struct MmrStore<'a, C> {
     ctx: &'a C,
     key_size: MmrKeySize,
+    leaf_value_storage_cost: LeafValueStorageCost,
+}
+
+/// How the value carried by a leaf node is reported to the storage cost
+/// layer when the node is written by [`MMRStoreWriteOps::append`].
+///
+/// Internal nodes (hash only) are always new storage. Leaf values usually are
+/// too — an `MmrTree` append stores a fresh value — but an owner that has
+/// already charged part of a leaf's bytes as added storage before the flush
+/// can say so, and that part is then reported as replaced rather than added.
+/// The bulk-append tree does exactly this: every entry's chunk-blob share is
+/// charged at its own append, so the blob written at compaction replaces
+/// bytes that were paid for, and only its framing is new.
+#[derive(Clone, Copy)]
+pub enum LeafValueStorageCost {
+    /// Issue the put with no cost information: key and value are charged as
+    /// new storage (what every shipped version reports).
+    New,
+    /// `prepaid(value)` bytes of the leaf value were already charged as added
+    /// storage by the owner. The put reports them as `replaced_bytes` and the
+    /// remainder of the paid value size (value length plus its length varint)
+    /// as `added_bytes`; a `prepaid` figure above the paid size is clamped to
+    /// it. The key is new and charged in full. The callback must be a pure
+    /// function of the value bytes — it runs at flush time, which may be long
+    /// after the leaf was pushed.
+    PartlyPrepaid(fn(&[u8]) -> u32),
 }
 
 impl<'a, C> MmrStore<'a, C> {
     /// Create a new store backed by the given storage context.
     ///
-    /// Uses [`MmrKeySize::U64`] (8-byte keys) by default.
+    /// Uses [`MmrKeySize::U64`] (8-byte keys) by default and reports every
+    /// written node as new storage.
     pub fn new(ctx: &'a C) -> Self {
         Self {
             ctx,
             key_size: MmrKeySize::U64,
+            leaf_value_storage_cost: LeafValueStorageCost::New,
         }
     }
 
@@ -44,7 +79,49 @@ impl<'a, C> MmrStore<'a, C> {
     /// Use [`MmrKeySize::U32`] for compact 4-byte keys when positions
     /// are guaranteed to fit in a `u32`.
     pub fn with_key_size(ctx: &'a C, key_size: MmrKeySize) -> Self {
-        Self { ctx, key_size }
+        Self {
+            ctx,
+            key_size,
+            leaf_value_storage_cost: LeafValueStorageCost::New,
+        }
+    }
+
+    /// Select how leaf values are reported to the storage cost layer on
+    /// write; see [`LeafValueStorageCost`].
+    pub fn with_leaf_value_storage_cost(mut self, policy: LeafValueStorageCost) -> Self {
+        self.leaf_value_storage_cost = policy;
+        self
+    }
+
+    /// Cost information for writing `serialized` — a node whose value part is
+    /// `value` (none for an internal node) — under this store's leaf policy.
+    fn write_cost_info(
+        &self,
+        value: Option<&[u8]>,
+        serialized_len: u32,
+    ) -> Option<KeyValueStorageCost> {
+        match (self.leaf_value_storage_cost, value) {
+            (LeafValueStorageCost::New, _) | (_, None) => None,
+            (LeafValueStorageCost::PartlyPrepaid(prepaid), Some(value)) => {
+                // The paid size of a stored value is its length plus the
+                // varint encoding that length — exactly what the commit path
+                // verifies `added + replaced` against.
+                let paid = serialized_len + serialized_len.required_space() as u32;
+                let replaced = prepaid(value).min(paid);
+                Some(KeyValueStorageCost {
+                    // Supplied without the path prefix; the storage context
+                    // completes it for a new node.
+                    key_storage_cost: StorageCost::default(),
+                    value_storage_cost: StorageCost {
+                        added_bytes: paid - replaced,
+                        replaced_bytes: replaced,
+                        removed_bytes: NoStorageRemoval,
+                    },
+                    new_node: true,
+                    needs_value_verification: true,
+                })
+            }
+        }
     }
 }
 
@@ -95,7 +172,8 @@ impl<'db, C: StorageContext<'db>> MMRStoreWriteOps for &MmrStore<'_, C> {
                     .wrap_with_cost(cost);
                 }
             };
-            let result = self.ctx.put(key, &serialized, None, None);
+            let cost_info = self.write_cost_info(elem.value(), serialized.len() as u32);
+            let result = self.ctx.put(key, &serialized, None, cost_info);
             cost += result.cost;
             if let Err(e) = result.value {
                 return Err(crate::Error::StoreError(format!(

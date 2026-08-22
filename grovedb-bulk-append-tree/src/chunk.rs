@@ -47,6 +47,50 @@ pub fn serialize_chunk_blob(entries: &[Vec<u8>]) -> Result<Vec<u8>, BulkAppendEr
     }
 }
 
+/// The number of entry bytes a chunk blob carries — the sum of the lengths of
+/// its entries, excluding the format byte, the headers and the per-entry
+/// length prefixes.
+///
+/// This is the part of a compaction blob the bulk-append tree has already
+/// charged as added storage, one entry at a time, by the time the blob is
+/// written; the storage adapter reports it as replaced. A blob that does not
+/// parse yields `0`, which charges the whole write as new storage — the safe
+/// direction — rather than failing a flush over a cost figure.
+pub fn chunk_blob_entry_bytes(blob: &[u8]) -> u32 {
+    let Some((&format, data)) = blob.split_first() else {
+        return 0;
+    };
+    match format {
+        FORMAT_FIXED => {
+            // [count: u32 BE] [entry_size: u32 BE] [entries...]
+            if data.len() < 8 {
+                return 0;
+            }
+            let payload = data.len() - 8;
+            u32::try_from(payload).unwrap_or(u32::MAX)
+        }
+        FORMAT_VARIABLE => {
+            // [len: u32 BE] [entry] repeated.
+            let mut entry_bytes: u64 = 0;
+            let mut offset = 0;
+            while offset < data.len() {
+                let Some(len_bytes) = data.get(offset..offset + 4) else {
+                    return 0;
+                };
+                let len = u32::from_be_bytes(len_bytes.try_into().expect("4 bytes")) as usize;
+                offset += 4;
+                if offset + len > data.len() {
+                    return 0;
+                }
+                entry_bytes += len as u64;
+                offset += len;
+            }
+            u32::try_from(entry_bytes).unwrap_or(u32::MAX)
+        }
+        _ => 0,
+    }
+}
+
 /// Deserialize a chunk blob into individual entries.
 ///
 /// Handles both fixed-size and variable-size formats based on the leading
@@ -334,5 +378,49 @@ mod tests {
         blob.extend_from_slice(&u32::MAX.to_be_bytes());
         let err = deserialize_chunk_blob(&blob).expect_err("should reject huge count/entry_size");
         assert!(matches!(err, BulkAppendError::CorruptedData(_)));
+    }
+}
+
+#[cfg(test)]
+mod entry_bytes_tests {
+    use super::*;
+
+    #[test]
+    fn fixed_format_entry_bytes_is_count_times_size() {
+        let blob = serialize_chunk_blob(&[vec![1u8; 8], vec![2u8; 8], vec![3u8; 8]]).unwrap();
+        assert_eq!(blob[0], FORMAT_FIXED);
+        assert_eq!(chunk_blob_entry_bytes(&blob), 24);
+        assert_eq!(blob.len(), 9 + 24);
+    }
+
+    #[test]
+    fn variable_format_entry_bytes_excludes_length_prefixes() {
+        let blob = serialize_chunk_blob(&[vec![1u8; 8], vec![2u8; 16], vec![3u8; 4]]).unwrap();
+        assert_eq!(blob[0], FORMAT_VARIABLE);
+        assert_eq!(chunk_blob_entry_bytes(&blob), 28);
+        assert_eq!(blob.len(), 1 + 3 * 4 + 28);
+    }
+
+    #[test]
+    fn malformed_blobs_prepay_nothing() {
+        assert_eq!(chunk_blob_entry_bytes(&[]), 0);
+        assert_eq!(
+            chunk_blob_entry_bytes(&[0x7f, 1, 2, 3]),
+            0,
+            "unknown format"
+        );
+        assert_eq!(
+            chunk_blob_entry_bytes(&[FORMAT_FIXED, 0, 0, 0]),
+            0,
+            "short header"
+        );
+        let mut truncated = serialize_chunk_blob(&[vec![1u8; 8], vec![2u8; 16]]).unwrap();
+        truncated.truncate(truncated.len() - 3);
+        assert_eq!(chunk_blob_entry_bytes(&truncated), 0, "truncated entry");
+        assert_eq!(
+            chunk_blob_entry_bytes(&[FORMAT_VARIABLE, 0, 0]),
+            0,
+            "truncated prefix"
+        );
     }
 }

@@ -161,7 +161,10 @@ impl GroveDb {
         );
 
         // 4. Save frontier to storage
-        cost_return_on_error!(&mut cost, ct.save().map(|r| r.map_err(map_ct_err)));
+        cost_return_on_error!(
+            &mut cost,
+            ct.save(grove_version).map(|r| r.map_err(map_ct_err))
+        );
 
         let new_sinsemilla_root = append_result.sinsemilla_root;
         let bulk_state_root = append_result.bulk_state_root;
@@ -177,7 +180,7 @@ impl GroveDb {
         );
 
         // Flush MMR overlay to storage (through the batch)
-        cost_return_on_error_no_add!(cost, ct.commit_mmr().map_err(map_ct_err));
+        cost_return_on_error_no_add!(cost, ct.commit_mmr(grove_version).map_err(map_ct_err));
 
         // Drop ct (and its storage context) before opening merk
         drop(ct);
@@ -551,7 +554,10 @@ impl GroveDb {
             }
 
             // Save frontier to storage
-            cost_return_on_error!(&mut cost, ct.save().map(|r| r.map_err(map_ct_err)));
+            cost_return_on_error!(
+                &mut cost,
+                ct.save(grove_version).map(|r| r.map_err(map_ct_err))
+            );
 
             // Read state for the replacement op
             let bulk_state_root = cost_return_on_error_no_add!(
@@ -561,7 +567,7 @@ impl GroveDb {
             let current_total_count = ct.total_count();
 
             // Flush MMR overlay to storage (through the batch)
-            cost_return_on_error_no_add!(cost, ct.commit_mmr().map_err(map_ct_err));
+            cost_return_on_error_no_add!(cost, ct.commit_mmr(grove_version).map_err(map_ct_err));
 
             // Drop ct (and its storage context)
             drop(ct);

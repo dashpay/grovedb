@@ -123,6 +123,10 @@ const CT_ELEMENT_LOAD_BASE: u32 = 256;
 /// bound; making the two estimators differ would make them silently
 /// non-interchangeable, which is a consensus fault for admission
 /// control (see issue #812).
+///
+/// The storage terms follow the GROVE_V4 accounting of the append-only
+/// family (issue #822), which charges each note's permanent bytes once
+/// and reports write churn as replacement — see the field comments.
 #[cfg(feature = "minimal")]
 pub(in crate::batch) fn commitment_tree_insert_op_cost(
     payload_len: u32,
@@ -137,9 +141,11 @@ pub(in crate::batch) fn commitment_tree_insert_op_cost(
     // overflow the shift.
     let epoch_size: u32 = 1u32 << chunk_power.min(PHYSICAL_MAX_CHUNK_POWER);
 
-    // Chunk-blob serialization overhead per entry (length prefix) and
-    // per blob (entry count, MMR leaf node framing).
-    const CHUNK_ENTRY_OVERHEAD: u64 = 16;
+    // Chunk-blob framing per blob: the fixed-format header (format byte,
+    // entry count, entry size) inside the MMR leaf envelope (flag, hash,
+    // length) — 9 + 37 — with margin. Every note in a commitment tree has
+    // the same size, so its blobs always take the fixed format, which
+    // carries no per-entry framing.
     const CHUNK_BLOB_OVERHEAD: u64 = 64;
     // An MMR internal node: 1 (flag) + 32 (hash).
     const MMR_INTERNAL_NODE_SIZE: u64 = 33;
@@ -147,16 +153,35 @@ pub(in crate::batch) fn commitment_tree_insert_op_cost(
     // The epoch term multiplies the entry size by up to 2^16, which
     // overflows u32 for hand-built ops with oversized payloads (the op
     // is public; the apply path only rejects wrong-sized payloads
-    // later). Sum in u64 and saturate at u32::MAX — a wrapped
-    // added_bytes would silently UNDER-estimate, the exact failure this
-    // model exists to prevent, while a saturated one merely
-    // over-reserves for an op the apply would reject anyway.
+    // later). Sum in u64 and saturate at u32::MAX — a wrapped figure
+    // would silently UNDER-estimate, the exact failure this model exists
+    // to prevent, while a saturated one merely over-reserves for an op
+    // the apply would reject anyway.
+    //
+    // Added storage — what this append makes the database permanently
+    // larger by:
+    // - the note's dense-buffer slot when written for the first time
+    //   (epoch 1), key included; later epochs rewrite it (replaced below),
+    // - the note's share of the eventual chunk blob (its own bytes),
+    //   charged at every append so the blob is a replacement when it lands,
+    // - the frontier's very first save (key + value); later saves only
+    //   add growth (at most one ommer), which this term dominates,
+    // - on compaction: the blob's framing beyond the prepaid entry bytes,
+    //   and the MMR merge cascade's internal nodes.
     let added_bytes_u64: u64 = (entry_size + PER_PUT_OVERHEAD as u64)
+        + entry_size
         + (MAX_FRONTIER_SIZE as u64 + PER_PUT_OVERHEAD as u64)
-        + (epoch_size as u64 * (entry_size + CHUNK_ENTRY_OVERHEAD)
-            + CHUNK_BLOB_OVERHEAD
-            + PER_PUT_OVERHEAD as u64)
+        + (CHUNK_BLOB_OVERHEAD + PER_PUT_OVERHEAD as u64)
         + FRONTIER_DEPTH as u64 * (MMR_INTERNAL_NODE_SIZE + PER_PUT_OVERHEAD as u64);
+    // Replaced storage — bytes rewritten over bytes that were already
+    // paid for:
+    // - the note's buffer slot from epoch 2 on,
+    // - the re-serialized frontier (up to MAX_FRONTIER_SIZE),
+    // - on compaction: the whole epoch's entry bytes, which the chunk blob
+    //   supersedes and every append already charged as added.
+    let replaced_bytes_u64: u64 = (entry_size + PER_PUT_OVERHEAD as u64)
+        + (MAX_FRONTIER_SIZE as u64 + PER_PUT_OVERHEAD as u64)
+        + epoch_size as u64 * entry_size;
 
     OperationCost {
         // 2 reads (CommitmentTree element + frontier) and up to
@@ -164,20 +189,10 @@ pub(in crate::batch) fn commitment_tree_insert_op_cost(
         // MMR internal nodes).
         seek_count: 5 + FRONTIER_DEPTH,
         storage_cost: StorageCost {
-            // Data-storage writes are charged as added bytes (the
-            // commit path has no previous-size information for them,
-            // and dense/MMR keys are new within an epoch), so the whole
-            // write volume lands here:
-            // - the note entry into the dense buffer,
-            // - the re-serialized frontier (grows toward
-            //   MAX_FRONTIER_SIZE),
-            // - on compaction: the epoch's chunk blob (every entry is
-            //   re-written once into the blob) and the MMR merge
-            //   cascade's internal nodes.
             added_bytes: u32::try_from(added_bytes_u64).unwrap_or(u32::MAX),
             // The parent-Merk node replacement is charged by the
-            // replace_tree part; the append itself replaces nothing.
-            replaced_bytes: 0,
+            // replace_tree part; this is the append's own churn.
+            replaced_bytes: u32::try_from(replaced_bytes_u64).unwrap_or(u32::MAX),
             removed_bytes: StorageRemovedBytes::NoStorageRemoval,
         },
         // Reads: the stored CommitmentTree element (fixed serialized

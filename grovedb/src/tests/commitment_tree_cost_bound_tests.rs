@@ -330,9 +330,17 @@ fn test_commitment_tree_insert_declared_chunk_power_tightens_estimate() {
     value.expect("compaction append should succeed");
 
     // Far tighter than the worst-case physical-ceiling assumption
-    // (2^4 vs 2^16 epoch)...
+    // (2^4 vs 2^16 epoch). The epoch-scaled storage term is the compaction
+    // blob, which the V4 accounting reports as a replacement of the epoch's
+    // prepaid entry bytes (issue #822) — so it is `replaced_bytes` that
+    // carries the scale; `added_bytes` is per-note and epoch-independent.
     assert!(
-        declared.storage_cost.added_bytes < worst.storage_cost.added_bytes / 100,
+        declared.storage_cost.replaced_bytes < worst.storage_cost.replaced_bytes / 100,
+        "declared estimate should be far tighter than the physical-ceiling worst case; declared \
+         {declared:?}\nworst {worst:?}",
+    );
+    assert!(
+        declared.hash_node_calls < worst.hash_node_calls / 100,
         "declared estimate should be far tighter than the physical-ceiling worst case; declared \
          {declared:?}\nworst {worst:?}",
     );

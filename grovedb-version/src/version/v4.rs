@@ -99,6 +99,23 @@
 //!   admission bound: raising it ungated would make already-committed
 //!   shield transitions re-validate as under-funded and brick sync.
 //!
+//! - `bulk_append_tree_versions.cost.append_storage_accounting: 1` and
+//!   `commitment_tree_versions.cost.frontier_save_storage_accounting: 1` —
+//!   the append-only family (`BulkAppendTree`, `CommitmentTree`,
+//!   `PrivateDocumentStore`) reports write churn as replacement instead of
+//!   as new storage (issue #822). Each entry's permanent bytes — its share
+//!   of the eventual chunk blob — are charged as `added_bytes` once, at its
+//!   own append; a dense-buffer slot that already holds a committed value
+//!   (epoch 2 onward) is reported as `replaced_bytes` (growth added, shrink
+//!   not credited); the compaction blob is reported as a replacement of the
+//!   entry bytes it supersedes, so only its framing and the MMR internal
+//!   nodes are added; and the in-place frontier rewrite is a replacement of
+//!   the bytes loaded at open. V1..V3 keep issuing every data put with no
+//!   cost information, which bills key + value as new storage every time —
+//!   ≈ 2× the bytes that persist, with the whole ≈ 630 KB blob landing on
+//!   one append per epoch at `chunk_power` 11. Stored bytes, roots and
+//!   proofs are identical under both; gated because the figures are fees.
+//!
 //! Note that `GroveVersion::latest()` resolves to this version, so anything
 //! defaulting to "latest" — tests, benchmarks, tools — exercises every gate
 //! listed above rather than V3 behaviour.
@@ -118,6 +135,7 @@
 use crate::version::grovedb_versions::GroveDBAggregateSumPathQueryMethodVersions;
 use crate::version::{
     bulk_append_tree_versions::{BulkAppendTreeCostVersions, BulkAppendTreeVersions},
+    commitment_tree_versions::{CommitmentTreeCostVersions, CommitmentTreeVersions},
     grovedb_versions::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
@@ -413,6 +431,20 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
     bulk_append_tree_versions: BulkAppendTreeVersions {
         cost: BulkAppendTreeCostVersions {
             compaction_hash_count: 1,
+            // Append storage accounting: each entry's permanent bytes are
+            // charged once (its chunk-blob share, at its own append); buffer
+            // slot rewrites and the compaction blob are reported as
+            // replacements of the bytes they supersede instead of as new
+            // storage (issue #822). Stored bytes and roots are unchanged.
+            append_storage_accounting: 1,
+        },
+    },
+    // Frontier save: the in-place rewrite of `__ct_data__` is reported as a
+    // replacement of the bytes loaded at open, with only growth added
+    // (issue #822). Frontier bytes and anchors are unchanged.
+    commitment_tree_versions: CommitmentTreeVersions {
+        cost: CommitmentTreeCostVersions {
+            frontier_save_storage_accounting: 1,
         },
     },
 };

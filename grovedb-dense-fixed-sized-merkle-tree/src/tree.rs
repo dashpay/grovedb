@@ -1,5 +1,7 @@
 #[cfg(feature = "storage")]
-use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use grovedb_costs::{
+    storage_cost::key_value_cost::KeyValueStorageCost, CostResult, CostsExt, OperationCost,
+};
 #[cfg(feature = "storage")]
 use grovedb_storage::StorageContext;
 
@@ -24,6 +26,39 @@ macro_rules! cost_return_on_error {
 /// Encode a position as a big-endian 2-byte key for storage.
 pub fn position_key(pos: u16) -> [u8; 2] {
     pos.to_be_bytes()
+}
+
+/// How a slot write is reported to the storage cost layer.
+///
+/// The tree itself never overwrites a slot: positions fill sequentially and
+/// only [`reset`](DenseFixedSizedMerkleTree::reset) — used by the bulk-append
+/// tree to start a new epoch over the same position keys — makes a later
+/// insert land on a key that already holds a committed value. The owner,
+/// which knows whether that can be the case, chooses the mode.
+#[cfg(feature = "storage")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlotWriteAccounting {
+    /// Issue the put with no cost information: the commit path charges the
+    /// key and the value as new storage. Right for a slot that has never
+    /// been written (and what every shipped version reports for all slots).
+    AsNew,
+    /// The slot may already hold a committed value. Read it first (one
+    /// billed storage read) and, if present, report the write as replacing
+    /// it: `replaced_bytes` is the smaller of the previous and the new paid
+    /// size, `added_bytes` is growth only, and shrink is not credited (no
+    /// refund semantics for a rolling buffer). The key, which already exists,
+    /// is not charged. A slot found empty is reported as [`AsNew`].
+    ///
+    /// The read goes to the underlying storage context — committed state
+    /// plus the surrounding transaction — never to this session's
+    /// write-through cache. That is deliberate: a `StorageBatch` keeps one
+    /// put per key, so when a session writes the same slot twice (an epoch
+    /// boundary inside one batch) only the last put is charged, and it must
+    /// describe the transition from the committed value, not from the
+    /// intermediate one.
+    ///
+    /// [`AsNew`]: SlotWriteAccounting::AsNew
+    AgainstCommitted,
 }
 
 /// A dense fixed-sized Merkle tree with embedded storage.
@@ -136,7 +171,10 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
         }
 
         let position = self.count;
-        cost_return_on_error!(cost, self.put_value(position, value));
+        cost_return_on_error!(
+            cost,
+            self.put_value(position, value, SlotWriteAccounting::AsNew)
+        );
         self.count += 1;
 
         match self.compute_root_hash().unwrap_add_cost(&mut cost) {
@@ -160,10 +198,22 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
     /// Try to insert a value at the next available position.
     ///
     /// Returns `None` if the tree is full, otherwise returns
-    /// `Some((root_hash, position))`.
+    /// `Some((root_hash, position))`. The write is reported as new storage;
+    /// see [`try_insert_with_accounting`](Self::try_insert_with_accounting)
+    /// for a slot that may already hold a committed value.
     pub fn try_insert(
         &mut self,
         value: &[u8],
+    ) -> CostResult<Option<([u8; 32], u16)>, DenseMerkleError> {
+        self.try_insert_with_accounting(value, SlotWriteAccounting::AsNew)
+    }
+
+    /// [`try_insert`](Self::try_insert) with an explicit
+    /// [`SlotWriteAccounting`] for the slot write.
+    pub fn try_insert_with_accounting(
+        &mut self,
+        value: &[u8],
+        accounting: SlotWriteAccounting,
     ) -> CostResult<Option<([u8; 32], u16)>, DenseMerkleError> {
         let mut cost = OperationCost::default();
 
@@ -172,7 +222,7 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
         }
 
         let position = self.count;
-        cost_return_on_error!(cost, self.put_value(position, value));
+        cost_return_on_error!(cost, self.put_value(position, value, accounting));
         self.count += 1;
 
         match self.compute_root_hash().unwrap_add_cost(&mut cost) {
@@ -203,6 +253,16 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
         &mut self,
         value: &[u8],
     ) -> CostResult<Option<u16>, DenseMerkleError> {
+        self.try_insert_no_root_with_accounting(value, SlotWriteAccounting::AsNew)
+    }
+
+    /// [`try_insert_no_root`](Self::try_insert_no_root) with an explicit
+    /// [`SlotWriteAccounting`] for the slot write.
+    pub fn try_insert_no_root_with_accounting(
+        &mut self,
+        value: &[u8],
+        accounting: SlotWriteAccounting,
+    ) -> CostResult<Option<u16>, DenseMerkleError> {
         let mut cost = OperationCost::default();
 
         if self.count >= self.capacity() {
@@ -210,7 +270,7 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
         }
 
         let position = self.count;
-        cost_return_on_error!(cost, self.put_value(position, value));
+        cost_return_on_error!(cost, self.put_value(position, value, accounting));
         self.count += 1;
 
         Ok(Some(position)).wrap_with_cost(cost)
@@ -300,7 +360,15 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
     /// On success, the value is stored in the write-through cache so that
     /// subsequent reads (e.g., during root hash computation) can be served
     /// from memory even when the storage context defers writes.
-    fn put_value(&mut self, position: u16, value: &[u8]) -> CostResult<(), DenseMerkleError> {
+    ///
+    /// `accounting` selects the cost information attached to the put — see
+    /// [`SlotWriteAccounting`].
+    fn put_value(
+        &mut self,
+        position: u16,
+        value: &[u8],
+        accounting: SlotWriteAccounting,
+    ) -> CostResult<(), DenseMerkleError> {
         debug_assert!(
             (position as usize) < self.cache.len(),
             "put_value called with position {} >= cache capacity {}",
@@ -309,9 +377,34 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
         );
         let mut cost = OperationCost::default();
         let key = position_key(position);
+
+        let cost_info = match accounting {
+            SlotWriteAccounting::AsNew => None,
+            SlotWriteAccounting::AgainstCommitted => {
+                // Committed/transaction state only — NOT the session cache;
+                // see `SlotWriteAccounting::AgainstCommitted`.
+                let previous = match self.storage.get(key).unwrap_add_cost(&mut cost) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return Err(DenseMerkleError::StoreError(format!(
+                            "get at pos {} before overwrite: {}",
+                            position, e
+                        )))
+                        .wrap_with_cost(cost);
+                    }
+                };
+                previous.map(|old| {
+                    KeyValueStorageCost::for_in_place_value_rewrite(
+                        old.len() as u32,
+                        value.len() as u32,
+                    )
+                })
+            }
+        };
+
         let result = self
             .storage
-            .put(key, value, None, None)
+            .put(key, value, None, cost_info)
             .unwrap_add_cost(&mut cost);
         match result {
             Ok(()) => {

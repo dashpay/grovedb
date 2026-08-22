@@ -270,7 +270,12 @@ impl GroveOp {
                     seek_count: MAX_WRITES + MAX_READS,
                     storage_cost: StorageCost {
                         added_bytes: value_size + MAX_COMPACTION_BLOB,
-                        replaced_bytes: 0,
+                        // GROVE_V4 accounting (issue #822): a rewritten
+                        // buffer slot and the compaction blob (a replacement
+                        // of the epoch's prepaid entry bytes) are reported
+                        // as replaced, so the bound carries the same volume
+                        // on that side too.
+                        replaced_bytes: value_size + MAX_COMPACTION_BLOB,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
                     storage_loaded_bytes: (33 * MAX_READS) as u64,
@@ -357,9 +362,12 @@ impl GroveOp {
                     .saturating_mul(entry_size)
                     .saturating_add(MMR_SERIALIZATION_OVERHEAD);
                 item_cost.add_cost(OperationCost {
+                    // +1: the read of the slot's committed value that sizes
+                    // the rewrite (GROVE_V4 accounting, issue #822).
                     seek_count: MAX_WRITES
                         .saturating_add(MAX_MMR_READS)
-                        .saturating_add(MAX_DENSE_READS),
+                        .saturating_add(MAX_DENSE_READS)
+                        .saturating_add(1),
                     storage_cost: StorageCost {
                         // +1 for the NonCounted wrapper byte a preserved
                         // wrapper adds to the replaced parent element; the op
@@ -368,15 +376,21 @@ impl GroveOp {
                         added_bytes: entry_size
                             .saturating_add(max_compaction_blob)
                             .saturating_add(1),
-                        replaced_bytes: 0,
+                        // GROVE_V4 accounting: a rewritten buffer slot and
+                        // the compaction blob (a replacement of the epoch's
+                        // prepaid entry bytes) are reported as replaced, so
+                        // the bound carries the same volume on that side.
+                        replaced_bytes: entry_size.saturating_add(max_compaction_blob),
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
                     // Each dense read returns one entry, so the bytes those
                     // reads load scale with the committed entry size. This
-                    // product exceeds u32, hence the u64 arithmetic.
+                    // product exceeds u32, hence the u64 arithmetic. The +1
+                    // entry is the slot's committed value read before the
+                    // rewrite.
                     storage_loaded_bytes: (33 * MAX_MMR_READS) as u64
                         + max_compaction_blob as u64
-                        + (MAX_DENSE_READS as u64).saturating_mul(entry_size as u64),
+                        + (MAX_DENSE_READS as u64 + 1).saturating_mul(entry_size as u64),
                     hash_node_calls: MAX_HASH_CALLS,
                     sinsemilla_hash_calls: 0,
                 })
@@ -1861,8 +1875,9 @@ mod tests {
     /// with an oversized payload (the op type is public; the apply path only
     /// rejects wrong-sized payloads later) drives the physical-ceiling epoch
     /// term past u32. The estimate must saturate at u32::MAX — never panic
-    /// in debug builds nor wrap in release builds, since a wrapped
-    /// added_bytes would silently UNDER-estimate.
+    /// in debug builds nor wrap in release builds, since a wrapped figure
+    /// would silently UNDER-estimate. The epoch term is the compaction
+    /// blob, which the V4 accounting reports as replaced (issue #822).
     #[test]
     fn test_commitment_tree_insert_worst_case_cost_oversized_payload_saturates() {
         let grove_version = GroveVersion::latest();
@@ -1885,9 +1900,16 @@ mod tests {
             .cost_as_result()
             .expect("expected worst case cost for oversized payload");
         assert_eq!(
-            cost.storage_cost.added_bytes,
+            cost.storage_cost.replaced_bytes,
             u32::MAX,
             "oversized-payload estimate must saturate, not wrap",
+        );
+        // The per-note added term (slot + blob share + frontier + framing)
+        // is epoch-independent and stays far from saturation.
+        assert!(
+            cost.storage_cost.added_bytes < 1_000_000,
+            "added_bytes is per-note, not epoch-scaled: {}",
+            cost.storage_cost.added_bytes
         );
     }
 }

@@ -18,7 +18,7 @@ mod tree;
 pub mod test_utils;
 
 // Re-export main types
-pub use chunk::{deserialize_chunk_blob, serialize_chunk_blob};
+pub use chunk::{chunk_blob_entry_bytes, deserialize_chunk_blob, serialize_chunk_blob};
 pub use error::BulkAppendError;
 pub use grovedb_dense_fixed_sized_merkle_tree::{DenseFixedSizedMerkleTree, DenseTreeProof};
 #[cfg(feature = "storage")]
@@ -26,4 +26,4 @@ pub use grovedb_merkle_mountain_range::{MmrKeySize, MmrStore};
 pub use proof::{BulkAppendTreeProof, BulkAppendTreeProofResult};
 pub use tree::{hash::compute_state_root, leaf_count_to_mmr_size, BulkAppendTree};
 #[cfg(feature = "storage")]
-pub use tree::{AppendResult, BufferQueryResult, ChunkQueryResult};
+pub use tree::{AppendNoStateRootResult, AppendResult, BufferQueryResult, ChunkQueryResult};
