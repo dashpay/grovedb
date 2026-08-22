@@ -25,6 +25,9 @@ pub(crate) struct MemStorageContext {
     /// slot puts working: exercises the insert's rollback after a partial
     /// ancestor-path rewrite.
     pub fail_record_puts: std::cell::Cell<bool>,
+    /// When set, every `get` of a hash record (3-byte key) fails, leaving
+    /// value reads working: exercises the record-read fault arms.
+    pub fail_record_gets: std::cell::Cell<bool>,
 }
 
 impl MemStorageContext {
@@ -42,6 +45,12 @@ impl<'db> StorageContext<'db> for MemStorageContext {
     /// cache-hit charge.
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
         self.gets.borrow_mut().push(key.as_ref().to_vec());
+        if self.fail_record_gets.get() && key.as_ref().len() == 3 {
+            return Err(grovedb_storage::Error::StorageError(
+                "injected hash record read failure".to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        }
         let value = self.data.borrow().get(key.as_ref()).cloned();
         let cost = OperationCost {
             seek_count: 1,

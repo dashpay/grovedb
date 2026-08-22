@@ -557,3 +557,57 @@ fn hash_record_encoding_round_trips() {
     assert_eq!(HashRecord::from_bytes(&[0u8; 73]), None);
     assert_eq!(record_key(0x0102), [b'h', 1, 2]);
 }
+
+/// A storage fault on a record READ surfaces as a store error from every
+/// path that reads records — the sibling / parent lookups of an insert, the
+/// sizing read of an `Overwrite` slot, and the root read — and the insert
+/// rolls back exactly as on a write fault.
+#[test]
+fn v1_record_read_faults_surface_and_roll_back() {
+    let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new()).unwrap();
+    for pos in 0..3u16 {
+        tree.insert(&value(pos, 1), v1()).unwrap().unwrap();
+    }
+    // A cold session so the reads go to storage.
+    let mut tree = DenseFixedSizedMerkleTree::from_state(3, 3, tree.storage).unwrap();
+    tree.storage.fail_record_gets.set(true);
+    assert!(matches!(
+        tree.root_hash(v1()).value,
+        Err(DenseMerkleError::StoreError(_))
+    ));
+    let failed = tree.insert(&value(3, 1), v1());
+    assert!(matches!(failed.value, Err(DenseMerkleError::StoreError(_))));
+    assert_eq!(tree.count(), 3);
+    // An `Overwrite` slot reads its own record to size the write.
+    tree.reset();
+    let failed = tree.try_insert_with_accounting(
+        &value(0, 2),
+        SlotWriteAccounting::Overwrite {
+            previous_value_len: 4,
+        },
+        v1(),
+    );
+    assert!(matches!(failed.value, Err(DenseMerkleError::StoreError(_))));
+    assert_eq!(tree.count(), 0);
+    tree.storage.fail_record_gets.set(false);
+    // Healthy again: the session continues from the rolled-back state.
+    let (_, pos) = tree.insert(&value(0, 2), v1()).unwrap().unwrap();
+    assert_eq!(pos, 0);
+}
+
+/// A parent whose record is missing AND whose value is missing is store
+/// corruption, reported as such rather than hashed over nothing.
+#[test]
+fn v1_missing_parent_value_is_a_store_error() {
+    let mut tree = DenseFixedSizedMerkleTree::new(2, MemStorageContext::new()).unwrap();
+    tree.insert(&value(0, 1), v0()).unwrap().unwrap();
+    // Drop the root's value behind the tree's back (no record exists: v0).
+    tree.storage
+        .data
+        .borrow_mut()
+        .remove(position_key(0).as_slice());
+    let mut cold = DenseFixedSizedMerkleTree::from_state(2, 1, tree.storage).unwrap();
+    let failed = cold.insert(&value(1, 1), v1());
+    assert!(matches!(failed.value, Err(DenseMerkleError::StoreError(_))));
+    assert_eq!(cold.count(), 1);
+}
