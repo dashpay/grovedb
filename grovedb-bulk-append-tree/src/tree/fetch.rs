@@ -184,11 +184,16 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             }
         }
 
-        // Buffer tail: positions in [max(start, buffer_start), end). Read
-        // through the dense tree directly so each read's cost is charged.
+        // Buffer tail: positions in [max(start, buffer_start), end). Every
+        // position here is below `total_count`, so the buffer must hold it;
+        // `get_buffer_value_with_cost` charges each read's seek and bytes,
+        // and a `None` from it can only mean the backing store lost a value.
         for pos in start.max(buffer_start)..end {
             let buffer_pos = (pos - buffer_start) as u16;
-            let value = match self.dense_tree.get(buffer_pos).unwrap_add_cost(&mut cost) {
+            let value = match self
+                .get_buffer_value_with_cost(buffer_pos)
+                .unwrap_add_cost(&mut cost)
+            {
                 Ok(Some(value)) => value,
                 Ok(None) => {
                     return Err(BulkAppendError::CorruptedData(format!(
@@ -197,13 +202,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                     )))
                     .wrap_with_cost(cost);
                 }
-                Err(e) => {
-                    return Err(BulkAppendError::StorageError(format!(
-                        "dense tree get at {} failed: {}",
-                        buffer_pos, e
-                    )))
-                    .wrap_with_cost(cost);
-                }
+                Err(e) => return Err(e).wrap_with_cost(cost),
             };
             entries.push((pos, value));
         }

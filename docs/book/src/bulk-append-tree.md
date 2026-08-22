@@ -245,7 +245,7 @@ The buffer IS a `DenseFixedSizedMerkleTree` — its root hash is `dense_tree_roo
 
 ## GroveDB Operations
 
-The BulkAppendTree integrates with GroveDB through six operations defined in
+The BulkAppendTree integrates with GroveDB through seven operations defined in
 `grovedb/src/operations/bulk_append_tree.rs`:
 
 ### bulk_append
@@ -272,6 +272,7 @@ append operation are added to `cost.hash_node_calls`.
 |---|---|---|
 | `bulk_get_value(path, key, position)` | Value at global position | Yes — reads from chunk blob or buffer |
 | `bulk_get_chunk(path, key, chunk_index)` | Raw chunk blob | Yes — reads chunk key |
+| `bulk_get_range(path, key, start, limit)` | `RangePage { entries, total_count }` — positions `[start, start+limit)` clipped to the tree | Yes — each overlapping chunk blob read once, plus one read per buffer entry |
 | `bulk_get_buffer(path, key)` | All current buffer entries | Yes — reads buffer keys |
 | `bulk_count(path, key)` | Total count (u64) | No — reads from element |
 | `bulk_chunk_count(path, key)` | Completed chunks (u64) | No — computed from element |
@@ -426,6 +427,18 @@ Step 4: State root
 After verification succeeds, the `BulkAppendTreeProofResult` provides a
 `values_in_range(start, end)` method that extracts specific values from the verified
 chunk blobs and buffer entries.
+
+### Paginated position-range proofs
+
+`GroveDb::prove_bulk_position_range(path, key, start, limit)` proves one page of
+a cursor scan; `GroveDb::verify_bulk_position_range_proof` verifies it and
+returns the page entries (ascending, contiguous, complete) together with the
+authenticated `total_count` from the same proof bytes. Both sides derive the
+query from `(start, limit)` via `PathQuery::new_bulk_position_range`, so a
+scanning client only needs its cursor and page size. Absence beyond the end
+falls out of the proved count (`position >= total_count` does not exist), so a
+page shorter than `limit` means the scan caught up with the tip. The same entry
+points serve `CommitmentTree` elements.
 
 ## How It Ties to the GroveDB Root Hash
 
