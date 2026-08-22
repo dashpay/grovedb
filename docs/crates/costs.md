@@ -144,13 +144,16 @@ over an epoch matches the database growth. `removed_bytes` stays
 `NoStorageRemoval` in both — a rolling buffer refunds nobody. Stored bytes,
 roots and proofs are identical under both versions.
 
-Mechanically: the dense tree's `SlotWriteAccounting::AgainstCommitted`
-reads the slot's committed value before the write (the read is billed) and
-attaches `KeyValueStorageCost::for_in_place_value_rewrite`; the MMR
+Mechanically: `BulkAppendTree` reads the committed value of a slot that
+already holds one (judged against the count at open; never this session's
+cache) before rewriting it — one billed seek plus the value's bytes — and
+asks the dense tree for `SlotWriteAccounting::Overwrite { previous_value_len }`,
+which attaches `KeyValueStorageCost::for_in_place_value_rewrite`; the MMR
 `MmrStore` takes a `LeafValueStorageCost::PartlyPrepaid` policy that the
-bulk tree feeds `chunk_blob_entry_bytes`; `BulkAppendTree` appends report
-`prepaid_chunk_bytes` for the caller to bill (already included in the cost
-of the `CostResult`-returning `append_deferred_roots`).
+bulk tree feeds `chunk_blob_entry_bytes`; the `Result`-returning appends
+report a `storage_accounting_cost` (the prepaid share plus the slot read)
+for the caller to bill, while the `CostResult`-returning
+`append_deferred_roots` already includes it in its cost.
 
 ## Cost Context
 

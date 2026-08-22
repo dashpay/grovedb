@@ -23,20 +23,30 @@ mod v0;
 mod v1;
 
 #[cfg(feature = "storage")]
-use grovedb_dense_fixed_sized_merkle_tree::SlotWriteAccounting;
-#[cfg(feature = "storage")]
 use grovedb_merkle_mountain_range::LeafValueStorageCost;
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
 use crate::BulkAppendError;
+
+/// How the dense-buffer slot write is sized for the storage cost layer.
+#[cfg(feature = "storage")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SlotRewriteAccounting {
+    /// Every slot write is new storage (no cost information on the put).
+    AsNew,
+    /// A slot that holds a committed value is read first (the read is
+    /// billed) and the write is reported as its replacement; a slot written
+    /// for the first time stays new storage.
+    AgainstCommitted,
+}
 
 /// How an append's data-storage writes are reported to the storage cost
 /// layer. Selected per grove version by [`append_storage_accounting`].
 #[cfg(feature = "storage")]
 #[derive(Clone, Copy)]
 pub(crate) struct AppendStorageAccounting {
-    /// How the dense-buffer slot write is reported.
-    pub slot_write: SlotWriteAccounting,
+    /// How the dense-buffer slot write is sized.
+    pub slot_rewrite: SlotRewriteAccounting,
     /// How the chunk-blob leaf is reported when the MMR overlay is flushed.
     pub chunk_leaf: LeafValueStorageCost,
     /// Whether the entry's chunk-blob share is charged as added storage at

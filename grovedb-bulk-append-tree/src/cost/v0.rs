@@ -7,14 +7,12 @@
 //! Locked: GROVE_V1..V3 are released and CommitmentTree has been billing this
 //! figure on mainnet.
 
-#[cfg(feature = "storage")]
-use grovedb_dense_fixed_sized_merkle_tree::SlotWriteAccounting;
 use grovedb_merkle_mountain_range::hash_count_for_push;
 #[cfg(feature = "storage")]
 use grovedb_merkle_mountain_range::LeafValueStorageCost;
 
 #[cfg(feature = "storage")]
-use super::AppendStorageAccounting;
+use super::{AppendStorageAccounting, SlotRewriteAccounting};
 
 pub(super) fn compaction_hash_count(leaf_count: u64) -> u32 {
     hash_count_for_push(leaf_count)
@@ -30,7 +28,7 @@ pub(super) fn compaction_hash_count(leaf_count: u64) -> u32 {
 #[cfg(feature = "storage")]
 pub(super) fn append_storage_accounting() -> AppendStorageAccounting {
     AppendStorageAccounting {
-        slot_write: SlotWriteAccounting::AsNew,
+        slot_rewrite: SlotRewriteAccounting::AsNew,
         chunk_leaf: LeafValueStorageCost::New,
         prepay_chunk_share: false,
     }

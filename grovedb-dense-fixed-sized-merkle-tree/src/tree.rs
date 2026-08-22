@@ -34,7 +34,8 @@ pub fn position_key(pos: u16) -> [u8; 2] {
 /// only [`reset`](DenseFixedSizedMerkleTree::reset) — used by the bulk-append
 /// tree to start a new epoch over the same position keys — makes a later
 /// insert land on a key that already holds a committed value. The owner,
-/// which knows whether that can be the case, chooses the mode.
+/// which knows whether that is the case and what the committed value is,
+/// chooses the mode; the tree attaches the matching cost information.
 #[cfg(feature = "storage")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SlotWriteAccounting {
@@ -42,23 +43,24 @@ pub enum SlotWriteAccounting {
     /// key and the value as new storage. Right for a slot that has never
     /// been written (and what every shipped version reports for all slots).
     AsNew,
-    /// The slot may already hold a committed value. Read it first (one
-    /// billed storage read) and, if present, report the write as replacing
-    /// it: `replaced_bytes` is the smaller of the previous and the new paid
-    /// size, `added_bytes` is growth only, and shrink is not credited (no
-    /// refund semantics for a rolling buffer). The key, which already exists,
-    /// is not charged. A slot found empty is reported as [`AsNew`].
+    /// The slot holds a committed value of `previous_value_len` bytes: report
+    /// the write as replacing it — `replaced_bytes` is the smaller of the
+    /// previous and the new paid size, `added_bytes` is growth only, and
+    /// shrink is not credited (no refund semantics for a rolling buffer).
+    /// The key, which already exists, is not charged.
     ///
-    /// The read goes to the underlying storage context — committed state
-    /// plus the surrounding transaction — never to this session's
-    /// write-through cache. That is deliberate: a `StorageBatch` keeps one
-    /// put per key, so when a session writes the same slot twice (an epoch
-    /// boundary inside one batch) only the last put is charged, and it must
-    /// describe the transition from the committed value, not from the
-    /// intermediate one.
-    ///
-    /// [`AsNew`]: SlotWriteAccounting::AsNew
-    AgainstCommitted,
+    /// The owner supplies the committed size (the bulk-append tree reads
+    /// the slot from storage — committed state plus the surrounding
+    /// transaction, never this session's write-through cache — and bills
+    /// that read). That is deliberate: a `StorageBatch` keeps one put per
+    /// key, so when a session writes the same slot twice (an epoch boundary
+    /// inside one batch) only the last put is charged, and it must describe
+    /// the transition from the committed value, not from the intermediate
+    /// one.
+    Overwrite {
+        /// Length of the value the slot holds in committed storage.
+        previous_value_len: u32,
+    },
 }
 
 /// A dense fixed-sized Merkle tree with embedded storage.
@@ -200,7 +202,7 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
     /// Returns `None` if the tree is full, otherwise returns
     /// `Some((root_hash, position))`. The write is reported as new storage;
     /// see [`try_insert_with_accounting`](Self::try_insert_with_accounting)
-    /// for a slot that may already hold a committed value.
+    /// for a slot that already holds a committed value.
     pub fn try_insert(
         &mut self,
         value: &[u8],
@@ -380,25 +382,11 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
 
         let cost_info = match accounting {
             SlotWriteAccounting::AsNew => None,
-            SlotWriteAccounting::AgainstCommitted => {
-                // Committed/transaction state only — NOT the session cache;
-                // see `SlotWriteAccounting::AgainstCommitted`.
-                let previous = match self.storage.get(key).unwrap_add_cost(&mut cost) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        return Err(DenseMerkleError::StoreError(format!(
-                            "get at pos {} before overwrite: {}",
-                            position, e
-                        )))
-                        .wrap_with_cost(cost);
-                    }
-                };
-                previous.map(|old| {
-                    KeyValueStorageCost::for_in_place_value_rewrite(
-                        old.len() as u32,
-                        value.len() as u32,
-                    )
-                })
+            SlotWriteAccounting::Overwrite { previous_value_len } => {
+                Some(KeyValueStorageCost::for_in_place_value_rewrite(
+                    previous_value_len,
+                    value.len() as u32,
+                ))
             }
         };
 
