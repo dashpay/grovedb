@@ -151,14 +151,7 @@ impl PathRecord {
         let present = u16::from_be_bytes([bytes[8], bytes[9]]);
         let mut value_hash = [0u8; 32];
         value_hash.copy_from_slice(&bytes[10..42]);
-        let entries = bytes[42..]
-            .chunks_exact(32)
-            .map(|c| {
-                let mut h = [0u8; 32];
-                h.copy_from_slice(c);
-                h
-            })
-            .collect();
+        let entries = bytes[42..].as_chunks::<32>().0.to_vec();
         Some(Self {
             generation: u64::from_be_bytes(generation),
             present,
@@ -318,7 +311,7 @@ impl<S> DenseFixedSizedMerkleTree<S> {
     }
 
     /// The epoch tag hash records are written with and checked against. See
-    /// [`HashRecord::generation`].
+    /// [`PathRecord::generation`].
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -453,9 +446,15 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
     /// Reset the tree to empty state.
     ///
     /// Sets count to 0, clears the write-through caches and advances the
-    /// generation. Old values and hash records remain in the underlying
+    /// generation. Old values and path records remain in the underlying
     /// storage; positions are overwritten on the next cycle, and records
     /// from this cycle are recognised as stale by their generation.
+    ///
+    /// An owner that resets reuses keys that hold committed bytes, so its
+    /// later inserts must size their writes accordingly —
+    /// [`SlotWriteAccounting::Churn`] (the bulk-append tree) or
+    /// [`SlotWriteAccounting::Overwrite`]; the plain `AsNew` inserts would
+    /// report the reused keys as new storage.
     pub fn reset(&mut self) {
         self.count = 0;
         self.generation = self.generation.wrapping_add(1);

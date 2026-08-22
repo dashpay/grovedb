@@ -101,7 +101,9 @@ PathRecord = generation (u64 BE) || present (u16 BE) || value_hash (32)
 Because positions fill in BFS order, the record of the **last insert into a subtree**
 holds that subtree's current hash (no later insert touched it), and every position's
 own record holds its value hash for good — both are located arithmetically from
-`count` (`last_filled_in_subtree`), so no record is ever rewritten. An insert at
+`count` (`last_filled_in_subtree`), so within an epoch no record is ever rewritten
+(the bulk-append tree's next epoch reuses the same keys; its records then carry a
+newer `generation`, which marks the previous epoch's as stale). An insert at
 position `p` (depth `d`) hashes the new leaf (`blake3(value)`, then
 `blake3(value_hash || 0 || 0)` — both children are beyond `count`) and walks up: for
 each ancestor the on-path child's hash was just computed, the off-path sibling's hash
@@ -160,15 +162,15 @@ via `insert_subtree`'s `subtree_root_hash` parameter.
 ## Storage Layout
 
 Like MmrTree and BulkAppendTree, the DenseAppendOnlyFixedSizeTree stores data in the
-**data** namespace (not a child Merk). Values are keyed by their position as a big-endian `u64`:
+**data** namespace (not a child Merk). Values are keyed by their position as a big-endian `u16`:
 
 ```text
 Subtree path: blake3(parent_path || key)
 
 Storage keys:
-  [0, 0, 0, 0, 0, 0, 0, 0] → value at position 0 (root)
-  [0, 0, 0, 0, 0, 0, 0, 1] → value at position 1
-  [0, 0, 0, 0, 0, 0, 0, 2] → value at position 2
+  [0, 0] → value at position 0 (root)
+  [0, 1] → value at position 1
+  [0, 2] → value at position 2
   ...
 ```
 

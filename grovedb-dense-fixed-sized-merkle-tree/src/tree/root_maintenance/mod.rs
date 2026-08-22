@@ -45,8 +45,10 @@ pub(crate) enum RootMaintenance {
     /// Version 0: no intermediate hashes; the root is recomputed from every
     /// filled position on each insert and each root read.
     RecomputeFromValues,
-    /// Version 1: a hash record per position; an insert updates its ancestor
-    /// path and the root is the record at position 0.
+    /// Version 1: one path record per insert, holding the inserted position's
+    /// value hash and the node hashes of its ancestor path; the root is
+    /// `entry[0]` of the last insert's record, and every insert is charged
+    /// the height's fixed model.
     PerPositionRecords,
 }
 

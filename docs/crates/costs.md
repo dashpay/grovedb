@@ -121,10 +121,10 @@ Count trees add overhead for maintaining element counts:
 
 The append-only family writes four kinds of data rows: dense-buffer slots
 (one per position, keys reused every epoch), from GROVE_V4 the buffer's
-hash records (one per position, `b'h' || position`, rewritten along the
-inserted position's ancestor path), the chunk blob an epoch is compacted
-into (plus the MMR internal nodes), and — for the commitment tree — the
-frontier, one value rewritten on every append. How those writes are
+path records (one per append, under the inserting position's key
+`b'h' || position`, never rewritten within an epoch), the chunk blob an
+epoch is compacted into (plus the MMR internal nodes), and — for the
+commitment tree — the frontier, one value rewritten on every append. How those writes are
 reported to the fee layer is version-gated
 (`bulk_append_tree_versions.cost.append_storage_accounting`,
 `commitment_tree_versions.cost.frontier_save_storage_accounting`; the
@@ -142,9 +142,12 @@ records exist only under `dense_tree_versions.root_maintenance = 1`):
 Under v0 every note is billed roughly twice over its life (slot + blob) and
 the whole blob (≈ 630 KB at `chunk_power` 11) lands on one append per
 epoch. Under v1 each entry's `added_bytes` are its long-term footprint —
-its permanent bytes charged once, at its own append, plus the amortized blob
-framing and MMR nodes — and everything else (the rolling buffer's slots and
-records, the blob itself, the frontier) is replacement; the dense buffer's
+its permanent bytes charged once, at its own append, plus, on the compacting
+append, the blob framing and the MMR nodes that compaction creates (the
+estimators reserve those at the merge-count bound on every append, since the
+appender chooses when it compacts) — and everything else (the rolling
+buffer's slots and records, the blob itself, the frontier) is replacement;
+the dense buffer's
 physical bytes, a bounded per-tree overhead rewritten every epoch, are
 deliberately charged to nobody as growth. `removed_bytes` stays
 `NoStorageRemoval` in both — a rolling buffer refunds nobody. Stored bytes,
