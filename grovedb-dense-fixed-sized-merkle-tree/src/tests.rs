@@ -5,6 +5,7 @@ use crate::{
     tree::position_key,
 };
 use grovedb_query::Query;
+use grovedb_version::version::GroveVersion;
 
 // ── DenseFixedSizedMerkleTree tests ──────────────────────────────────
 
@@ -35,7 +36,7 @@ fn test_single_insert() {
     let mut tree = DenseFixedSizedMerkleTree::new(1, MemStorageContext::new()).expect("height 1");
     assert_eq!(tree.capacity(), 1);
 
-    let ctx = tree.insert(b"hello");
+    let ctx = tree.insert(b"hello", GroveVersion::latest());
     // Single node: 1 value hash + 1 node_hash = 2
     assert_eq!(ctx.cost.hash_node_calls, 2);
     let (root_hash, pos) = ctx.value.expect("insert should succeed");
@@ -59,13 +60,22 @@ fn test_sequential_fill_height_2() {
     assert_eq!(tree.capacity(), 3); // 2^2 - 1 = 3
 
     // Insert three values (positions 0, 1, 2)
-    let (_, pos0) = tree.insert(b"root_val").unwrap().expect("insert 0");
+    let (_, pos0) = tree
+        .insert(b"root_val", GroveVersion::latest())
+        .unwrap()
+        .expect("insert 0");
     assert_eq!(pos0, 0);
 
-    let (_, pos1) = tree.insert(b"left_val").unwrap().expect("insert 1");
+    let (_, pos1) = tree
+        .insert(b"left_val", GroveVersion::latest())
+        .unwrap()
+        .expect("insert 1");
     assert_eq!(pos1, 1);
 
-    let (root_hash, pos2) = tree.insert(b"right_val").unwrap().expect("insert 2");
+    let (root_hash, pos2) = tree
+        .insert(b"right_val", GroveVersion::latest())
+        .unwrap()
+        .expect("insert 2");
     assert_eq!(pos2, 2);
     assert_eq!(tree.count(), 3);
 
@@ -102,16 +112,22 @@ fn test_sequential_fill_height_2() {
 #[test]
 fn test_capacity_error() {
     let mut tree = DenseFixedSizedMerkleTree::new(1, MemStorageContext::new()).expect("height 1");
-    tree.insert(b"only").unwrap().expect("first insert");
-    let result = tree.insert(b"overflow");
+    tree.insert(b"only", GroveVersion::latest())
+        .unwrap()
+        .expect("first insert");
+    let result = tree.insert(b"overflow", GroveVersion::latest());
     assert!(result.unwrap().is_err());
 }
 
 #[test]
 fn test_get_by_position() {
     let mut tree = DenseFixedSizedMerkleTree::new(2, MemStorageContext::new()).expect("height 2");
-    tree.insert(b"val0").unwrap().expect("insert 0");
-    tree.insert(b"val1").unwrap().expect("insert 1");
+    tree.insert(b"val0", GroveVersion::latest())
+        .unwrap()
+        .expect("insert 0");
+    tree.insert(b"val1", GroveVersion::latest())
+        .unwrap()
+        .expect("insert 1");
 
     assert_eq!(tree.get(0).unwrap().expect("get 0"), Some(b"val0".to_vec()));
     assert_eq!(tree.get(1).unwrap().expect("get 1"), Some(b"val1".to_vec()));
@@ -124,18 +140,28 @@ fn test_get_by_position() {
 #[test]
 fn test_root_hash_determinism() {
     let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new()).expect("height 3");
-    tree.insert(b"a").unwrap().expect("insert a");
-    tree.insert(b"b").unwrap().expect("insert b");
+    tree.insert(b"a", GroveVersion::latest())
+        .unwrap()
+        .expect("insert a");
+    tree.insert(b"b", GroveVersion::latest())
+        .unwrap()
+        .expect("insert b");
 
-    let h1 = tree.root_hash().unwrap().expect("root hash 1");
-    let h2 = tree.root_hash().unwrap().expect("root hash 2");
+    let h1 = tree
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("root hash 1");
+    let h2 = tree
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("root hash 2");
     assert_eq!(h1, h2);
 }
 
 #[test]
 fn test_empty_tree_root_hash() {
     let tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new()).expect("height 3");
-    let ctx = tree.root_hash();
+    let ctx = tree.root_hash(GroveVersion::latest());
     assert_eq!(ctx.cost.hash_node_calls, 0);
     let hash = ctx.value.expect("empty root hash");
     assert_eq!(hash, [0u8; 32]);
@@ -155,13 +181,25 @@ fn test_from_state_roundtrip() {
         .insert(position_key(1).to_vec(), b"y".to_vec());
     let tree = DenseFixedSizedMerkleTree::from_state(3, 2, store).expect("from_state");
 
-    let h1 = tree.root_hash().unwrap().expect("hash from_state");
+    let h1 = tree
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("hash from_state");
 
     // Build the same tree fresh
     let mut tree2 = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new()).expect("height 3");
-    tree2.insert(b"x").unwrap().expect("insert");
-    tree2.insert(b"y").unwrap().expect("insert");
-    let h2 = tree2.root_hash().unwrap().expect("hash fresh");
+    tree2
+        .insert(b"x", GroveVersion::latest())
+        .unwrap()
+        .expect("insert");
+    tree2
+        .insert(b"y", GroveVersion::latest())
+        .unwrap()
+        .expect("insert");
+    let h2 = tree2
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("hash fresh");
 
     assert_eq!(h1, h2);
     assert_eq!(tree.count(), 2);
@@ -172,11 +210,21 @@ fn test_from_state_roundtrip() {
 fn test_root_hash_changes_on_insert() {
     let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new()).expect("height 3");
 
-    tree.insert(b"first").unwrap().expect("insert 1");
-    let h1 = tree.root_hash().unwrap().expect("hash 1");
+    tree.insert(b"first", GroveVersion::latest())
+        .unwrap()
+        .expect("insert 1");
+    let h1 = tree
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("hash 1");
 
-    tree.insert(b"second").unwrap().expect("insert 2");
-    let h2 = tree.root_hash().unwrap().expect("hash 2");
+    tree.insert(b"second", GroveVersion::latest())
+        .unwrap()
+        .expect("insert 2");
+    let h2 = tree
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("hash 2");
 
     assert_ne!(h1, h2);
 }
@@ -188,7 +236,9 @@ fn make_full_h3_tree() -> DenseFixedSizedMerkleTree<MemStorageContext> {
     let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new())
         .expect("height 3 should be valid");
     for i in 0..7u8 {
-        tree.insert(&[i]).unwrap().expect("insert should succeed");
+        tree.insert(&[i], GroveVersion::latest())
+            .unwrap()
+            .expect("insert should succeed");
     }
     tree
 }
@@ -196,7 +246,10 @@ fn make_full_h3_tree() -> DenseFixedSizedMerkleTree<MemStorageContext> {
 #[test]
 fn test_vuln1_node_hashes_root_bypass_rejected() {
     let tree = make_full_h3_tree();
-    let real_root = tree.root_hash().unwrap().expect("root hash");
+    let real_root = tree
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("root hash");
 
     // Attacker constructs a forged proof with root hash at position 0 in
     // node_hashes to short-circuit verification.
@@ -216,7 +269,10 @@ fn test_vuln1_node_hashes_root_bypass_rejected() {
 #[test]
 fn test_vuln1_node_hashes_ancestor_bypass_rejected() {
     let tree = make_full_h3_tree();
-    let real_root = tree.root_hash().unwrap().expect("root hash");
+    let real_root = tree
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("root hash");
 
     // Position 4's ancestors are: 1 (parent of 4), 0 (root).
     // Placing a node_hash at position 1 would bypass verification of
@@ -239,9 +295,14 @@ fn test_vuln2_out_of_range_entries_rejected() {
     let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new())
         .expect("height 3 should be valid");
     for i in 0..3u8 {
-        tree.insert(&[i]).unwrap().expect("insert should succeed");
+        tree.insert(&[i], GroveVersion::latest())
+            .unwrap()
+            .expect("insert should succeed");
     }
-    let root = tree.root_hash().unwrap().expect("root hash should succeed");
+    let root = tree
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("root hash should succeed");
 
     // Generate a legitimate proof for position 0
     let legit_proof = DenseTreeProof::generate(&tree, &[0])
@@ -263,7 +324,10 @@ fn test_vuln2_out_of_range_entries_rejected() {
 #[test]
 fn test_vuln3_duplicate_entries_rejected() {
     let tree = make_full_h3_tree();
-    let root = tree.root_hash().unwrap().expect("root hash");
+    let root = tree
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("root hash");
 
     let legit_proof = DenseTreeProof::generate(&tree, &[4])
         .unwrap()
@@ -283,7 +347,10 @@ fn test_vuln3_duplicate_entries_rejected() {
 #[test]
 fn test_vuln3_duplicate_node_value_hashes_rejected() {
     let tree = make_full_h3_tree();
-    let root = tree.root_hash().unwrap().expect("root hash");
+    let root = tree
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("root hash");
 
     let mut proof = DenseTreeProof::generate(&tree, &[4])
         .unwrap()
@@ -333,7 +400,10 @@ fn test_vuln4_height_zero_rejected() {
 #[test]
 fn test_vuln6_overlapping_entries_and_node_value_hashes_rejected() {
     let tree = make_full_h3_tree();
-    let root = tree.root_hash().unwrap().expect("root hash");
+    let root = tree
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("root hash");
 
     let mut proof = DenseTreeProof::generate(&tree, &[4])
         .unwrap()
@@ -354,7 +424,10 @@ fn test_vuln6_overlapping_entries_and_node_value_hashes_rejected() {
 #[test]
 fn test_vuln6_overlapping_entries_and_node_hashes_rejected() {
     let tree = make_full_h3_tree();
-    let root = tree.root_hash().unwrap().expect("root hash");
+    let root = tree
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("root hash");
 
     let mut proof = DenseTreeProof::generate(&tree, &[4])
         .unwrap()
@@ -377,7 +450,7 @@ fn test_try_insert_success() {
     let mut tree = DenseFixedSizedMerkleTree::new(2, MemStorageContext::new()).expect("height 2");
 
     let result = tree
-        .try_insert(b"first")
+        .try_insert(b"first", GroveVersion::latest())
         .unwrap()
         .expect("try_insert should not error");
     assert!(result.is_some(), "should return Some when space available");
@@ -392,13 +465,13 @@ fn test_try_insert_success() {
 fn test_try_insert_when_full() {
     let mut tree = DenseFixedSizedMerkleTree::new(1, MemStorageContext::new()).expect("height 1");
 
-    tree.try_insert(b"only")
+    tree.try_insert(b"only", GroveVersion::latest())
         .unwrap()
         .expect("first insert should work")
         .expect("should return Some");
 
     let result = tree
-        .try_insert(b"overflow")
+        .try_insert(b"overflow", GroveVersion::latest())
         .unwrap()
         .expect("try_insert should return Ok(None), not Err");
     assert!(result.is_none(), "should return None when tree is full");
@@ -408,14 +481,21 @@ fn test_try_insert_when_full() {
 #[test]
 fn test_hash_position_root_matches_root_hash() {
     let mut tree = DenseFixedSizedMerkleTree::new(2, MemStorageContext::new()).expect("height 2");
-    tree.insert(b"a").unwrap().expect("insert a");
-    tree.insert(b"b").unwrap().expect("insert b");
+    tree.insert(b"a", GroveVersion::latest())
+        .unwrap()
+        .expect("insert a");
+    tree.insert(b"b", GroveVersion::latest())
+        .unwrap()
+        .expect("insert b");
 
     let root_via_position = tree
         .hash_position(0)
         .unwrap()
         .expect("hash_position(0) should succeed");
-    let root_via_method = tree.root_hash().unwrap().expect("root_hash should succeed");
+    let root_via_method = tree
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("root_hash should succeed");
 
     assert_eq!(
         root_via_position, root_via_method,
@@ -426,7 +506,9 @@ fn test_hash_position_root_matches_root_hash() {
 #[test]
 fn test_hash_position_beyond_count() {
     let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new()).expect("height 3");
-    tree.insert(b"only").unwrap().expect("insert");
+    tree.insert(b"only", GroveVersion::latest())
+        .unwrap()
+        .expect("insert");
 
     let ctx = tree.hash_position(5);
     assert_eq!(ctx.cost.hash_node_calls, 0);
@@ -470,7 +552,10 @@ fn test_proof_decode_empty_bytes() {
 #[test]
 fn test_vuln3_duplicate_node_hashes_rejected() {
     let tree = make_full_h3_tree();
-    let root = tree.root_hash().unwrap().expect("root hash");
+    let root = tree
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("root hash");
     let mut proof = DenseTreeProof::generate(&tree, &[4])
         .unwrap()
         .expect("generate should succeed");
@@ -493,7 +578,10 @@ fn test_vuln3_duplicate_node_hashes_rejected() {
 #[test]
 fn test_vuln6_overlapping_node_value_hashes_and_node_hashes_rejected() {
     let tree = make_full_h3_tree();
-    let root = tree.root_hash().unwrap().expect("root hash");
+    let root = tree
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("root hash");
     let mut proof = DenseTreeProof::generate(&tree, &[4])
         .unwrap()
         .expect("generate should succeed");
@@ -553,7 +641,7 @@ fn test_height_16_capacity_and_insert() {
 
     // Insert and hash
     let (hash, pos) = tree
-        .insert(b"test")
+        .insert(b"test", GroveVersion::latest())
         .unwrap()
         .expect("insert should succeed");
     assert_eq!(pos, 0);
@@ -563,7 +651,10 @@ fn test_height_16_capacity_and_insert() {
 #[test]
 fn test_proof_verify_one_bit_different_root() {
     let tree = make_full_h3_tree();
-    let root = tree.root_hash().unwrap().expect("root hash");
+    let root = tree
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("root hash");
     let proof = DenseTreeProof::generate(&tree, &[4])
         .unwrap()
         .expect("generate should succeed");
@@ -629,7 +720,7 @@ fn test_insert_store_put_failure() {
     let store = FailingStorageContext::new();
     store.fail_on_put_key.replace(Some(position_key(0)));
     let mut tree = DenseFixedSizedMerkleTree::new(2, store).expect("height 2");
-    let result = tree.insert(b"test");
+    let result = tree.insert(b"test", GroveVersion::latest());
     assert!(
         result.unwrap().is_err(),
         "insert should propagate store put error"
@@ -651,7 +742,7 @@ fn test_root_hash_store_get_failure() {
     // Set get failure for position 0
     tree.storage.fail_on_get_key.replace(Some(position_key(0)));
 
-    let result = tree.root_hash();
+    let result = tree.root_hash(GroveVersion::latest());
     assert!(
         result.unwrap().is_err(),
         "root_hash should propagate store get error"
@@ -782,7 +873,7 @@ fn test_large_tree_height_8_proof() {
     let mut root = [0u8; 32];
     for i in 0..255u16 {
         let (h, pos) = tree
-            .insert(&i.to_be_bytes())
+            .insert(&i.to_be_bytes(), GroveVersion::latest())
             .unwrap()
             .expect("insert should succeed");
         assert_eq!(pos, i);
@@ -810,7 +901,10 @@ fn test_large_tree_multiple_positions_proof() {
 
     let mut root = [0u8; 32];
     for i in 0..31u8 {
-        let (h, _) = tree.insert(&[i]).unwrap().expect("insert should succeed");
+        let (h, _) = tree
+            .insert(&[i], GroveVersion::latest())
+            .unwrap()
+            .expect("insert should succeed");
         root = h;
     }
 
@@ -834,7 +928,10 @@ fn test_large_tree_multiple_positions_proof() {
 fn test_proof_complex_with_all_three_fields() {
     // Generate a proof that has entries, node_value_hashes, and node_hashes
     let tree = make_full_h3_tree();
-    let root = tree.root_hash().unwrap().expect("root hash");
+    let root = tree
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("root hash");
 
     // Prove position 4 (leaf): ancestors are 1 and 0
     let proof = DenseTreeProof::generate(&tree, &[4])
@@ -881,7 +978,7 @@ fn test_insert_rollback_on_hash_failure() {
     store.fail_on_put_key.replace(Some(position_key(0)));
     let mut tree = DenseFixedSizedMerkleTree::new(2, store).expect("height 2");
 
-    let result = tree.insert(b"test");
+    let result = tree.insert(b"test", GroveVersion::latest());
     assert!(
         result.unwrap().is_err(),
         "insert should fail when put fails"
@@ -891,7 +988,7 @@ fn test_insert_rollback_on_hash_failure() {
     // Now the tree should still accept inserts (clear the failure)
     tree.storage.fail_on_put_key.replace(None);
     let (_, pos) = tree
-        .insert(b"retry")
+        .insert(b"retry", GroveVersion::latest())
         .unwrap()
         .expect("insert should succeed after clearing failure");
     assert_eq!(pos, 0, "should insert at position 0");
@@ -904,7 +1001,7 @@ fn test_try_insert_put_failure() {
     store.fail_on_put_key.replace(Some(position_key(0)));
     let mut tree = DenseFixedSizedMerkleTree::new(2, store).expect("height 2");
 
-    let result = tree.try_insert(b"test");
+    let result = tree.try_insert(b"test", GroveVersion::latest());
     assert!(
         result.unwrap().is_err(),
         "try_insert should fail when put fails"
@@ -917,7 +1014,7 @@ fn test_try_insert_put_failure() {
 
     tree.storage.fail_on_put_key.replace(None);
     let result = tree
-        .try_insert(b"retry")
+        .try_insert(b"retry", GroveVersion::latest())
         .unwrap()
         .expect("try_insert should succeed after clearing failure");
     assert!(
@@ -930,7 +1027,10 @@ fn test_try_insert_put_failure() {
 #[test]
 fn test_deduplication_with_mixed_duplicates() {
     let tree = make_full_h3_tree();
-    let root = tree.root_hash().unwrap().expect("root hash");
+    let root = tree
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("root hash");
 
     // Pass duplicates of multiple positions
     let proof = DenseTreeProof::generate(&tree, &[4, 5, 4, 6, 5, 4])
@@ -955,19 +1055,31 @@ fn test_deduplication_with_mixed_duplicates() {
 #[test]
 fn test_reset_clears_count() {
     let mut tree = DenseFixedSizedMerkleTree::new(2, MemStorageContext::new()).expect("height 2");
-    tree.insert(b"a").unwrap().expect("insert a");
-    tree.insert(b"b").unwrap().expect("insert b");
+    tree.insert(b"a", GroveVersion::latest())
+        .unwrap()
+        .expect("insert a");
+    tree.insert(b"b", GroveVersion::latest())
+        .unwrap()
+        .expect("insert b");
     assert_eq!(tree.count(), 2);
 
     tree.reset();
     assert_eq!(tree.count(), 0);
-    assert_eq!(tree.root_hash().unwrap().expect("root hash"), [0u8; 32]);
+    assert_eq!(
+        tree.root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash"),
+        [0u8; 32]
+    );
 }
 
 #[test]
 fn test_verify_rejects_out_of_range_node_value_hash_position() {
     let tree = make_full_h3_tree();
-    let root = tree.root_hash().unwrap().expect("root hash");
+    let root = tree
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("root hash");
     let mut proof = DenseTreeProof::generate(&tree, &[4])
         .unwrap()
         .expect("generate should succeed");
@@ -989,7 +1101,10 @@ fn test_verify_rejects_out_of_range_node_value_hash_position() {
 #[test]
 fn test_verify_rejects_out_of_range_node_hash_position() {
     let tree = make_full_h3_tree();
-    let root = tree.root_hash().unwrap().expect("root hash");
+    let root = tree
+        .root_hash(GroveVersion::latest())
+        .unwrap()
+        .expect("root hash");
     let mut proof = DenseTreeProof::generate(&tree, &[4])
         .unwrap()
         .expect("generate should succeed");
@@ -1013,7 +1128,7 @@ fn test_root_hash_store_inconsistency_errors_when_value_missing() {
     // count=1 but no position 0 value in storage.
     let tree = DenseFixedSizedMerkleTree::from_state(2, 1, MemStorageContext::new())
         .expect("from_state should succeed");
-    let result = tree.root_hash();
+    let result = tree.root_hash(GroveVersion::latest());
     assert!(
         result.unwrap().is_err(),
         "root_hash should error when a required value is missing from storage"
@@ -1023,7 +1138,9 @@ fn test_root_hash_store_inconsistency_errors_when_value_missing() {
 #[test]
 fn test_hash_position_beyond_capacity_returns_zero_hash() {
     let mut tree = DenseFixedSizedMerkleTree::new(2, MemStorageContext::new()).expect("height 2");
-    tree.insert(b"root").unwrap().expect("insert");
+    tree.insert(b"root", GroveVersion::latest())
+        .unwrap()
+        .expect("insert");
     // height=2 -> capacity=3, so 10 is beyond capacity.
     let hash = tree
         .hash_position(10)
@@ -1045,7 +1162,7 @@ fn test_try_insert_rollback_on_hash_failure() {
     let mut tree = DenseFixedSizedMerkleTree::from_state(2, 1, store).expect("from_state");
     tree.storage.fail_on_get_key.replace(Some(position_key(0)));
 
-    let result = tree.try_insert(b"new");
+    let result = tree.try_insert(b"new", GroveVersion::latest());
     assert!(
         result.unwrap().is_err(),
         "try_insert should fail on hash read"
@@ -1059,7 +1176,7 @@ fn test_try_insert_rollback_on_hash_failure() {
     // After clearing the failure, next insert should still use position 1.
     tree.storage.fail_on_get_key.replace(None);
     let inserted = tree
-        .try_insert(b"new")
+        .try_insert(b"new", GroveVersion::latest())
         .unwrap()
         .expect("try_insert should succeed")
         .expect("tree has capacity");
@@ -1070,7 +1187,9 @@ fn test_try_insert_rollback_on_hash_failure() {
 #[test]
 fn test_generate_for_query_rejects_subquery() {
     let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new()).expect("height 3");
-    tree.insert(b"v0").unwrap().expect("insert");
+    tree.insert(b"v0", GroveVersion::latest())
+        .unwrap()
+        .expect("insert");
 
     let mut query = Query::new();
     query.insert_key(vec![0]);
@@ -1104,23 +1223,45 @@ fn test_verify_for_query_rejects_subquery() {
 }
 
 mod slot_write_accounting {
-    use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
+    use grovedb_costs::storage_cost::{
+        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::NoStorageRemoval,
+    };
+    use grovedb_version::version::GroveVersion;
 
     use crate::{test_utils::MemStorageContext, DenseFixedSizedMerkleTree, SlotWriteAccounting};
+
+    /// The slot puts (2-byte position keys) in order — the hash-record puts
+    /// root-maintenance version 1 adds (3-byte keys) are a separate concern.
+    fn slot_puts(ctx: &MemStorageContext) -> Vec<Option<KeyValueStorageCost>> {
+        ctx.puts
+            .borrow()
+            .iter()
+            .filter(|(k, _)| k.len() == 2)
+            .map(|(_, c)| c.clone())
+            .collect()
+    }
 
     /// `AsNew` (and the plain inserts) attach no cost information; the
     /// commit path bills key + value as new storage.
     #[test]
     fn as_new_attaches_no_cost_info() {
         let mut tree = DenseFixedSizedMerkleTree::new(2, MemStorageContext::new()).unwrap();
-        tree.insert(&[1u8; 8]).unwrap().unwrap();
-        tree.try_insert(&[2u8; 8]).unwrap().unwrap();
-        tree.try_insert_no_root_with_accounting(&[3u8; 8], SlotWriteAccounting::AsNew)
+        tree.insert(&[1u8; 8], GroveVersion::latest())
             .unwrap()
             .unwrap();
-        let puts = tree.storage.puts.borrow();
+        tree.try_insert(&[2u8; 8], GroveVersion::latest())
+            .unwrap()
+            .unwrap();
+        tree.try_insert_no_root_with_accounting(
+            &[3u8; 8],
+            SlotWriteAccounting::AsNew,
+            GroveVersion::latest(),
+        )
+        .unwrap()
+        .unwrap();
+        let puts = slot_puts(&tree.storage);
         assert_eq!(puts.len(), 3);
-        assert!(puts.iter().all(|(_, c)| c.is_none()));
+        assert!(puts.iter().all(|c| c.is_none()));
     }
 
     /// `Overwrite` reports the write as a replacement of the committed value
@@ -1135,6 +1276,7 @@ mod slot_write_accounting {
                 SlotWriteAccounting::Overwrite {
                     previous_value_len: 8,
                 },
+                GroveVersion::latest(),
             )
             .unwrap()
             .unwrap();
@@ -1145,19 +1287,20 @@ mod slot_write_accounting {
                 SlotWriteAccounting::Overwrite {
                     previous_value_len: 8,
                 },
+                GroveVersion::latest(),
             )
             .unwrap()
             .unwrap();
         assert_eq!(shrink.map(|(_, p)| p), Some(1));
 
-        let puts = tree.storage.puts.borrow();
-        let c = puts[0].1.as_ref().expect("rewrite carries cost info");
+        let puts = slot_puts(&tree.storage);
+        let c = puts[0].as_ref().expect("rewrite carries cost info");
         assert!(!c.new_node);
         assert!(c.needs_value_verification);
         assert_eq!(c.key_storage_cost, Default::default());
         assert_eq!(c.value_storage_cost.replaced_bytes, 9, "paid(8)");
         assert_eq!(c.value_storage_cost.added_bytes, 8, "paid(16) - paid(8)");
-        let c = puts[1].1.as_ref().expect("rewrite carries cost info");
+        let c = puts[1].as_ref().expect("rewrite carries cost info");
         assert_eq!(c.value_storage_cost.replaced_bytes, 5, "paid(4)");
         assert_eq!(c.value_storage_cost.added_bytes, 0);
         assert_eq!(c.value_storage_cost.removed_bytes, NoStorageRemoval);

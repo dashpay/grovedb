@@ -1,5 +1,6 @@
 pub mod bulk_append_tree_versions;
 pub mod commitment_tree_versions;
+pub mod dense_tree_versions;
 pub mod grovedb_versions;
 pub mod merk_versions;
 pub mod mmr_versions;
@@ -14,8 +15,9 @@ use crate::version::v3::GROVE_V3;
 use crate::version::v4::GROVE_V4;
 use crate::version::{
     bulk_append_tree_versions::BulkAppendTreeVersions,
-    commitment_tree_versions::CommitmentTreeVersions, grovedb_versions::GroveDBVersions,
-    merk_versions::MerkVersions, mmr_versions::MmrVersions, v1::GROVE_V1, v2::GROVE_V2,
+    commitment_tree_versions::CommitmentTreeVersions, dense_tree_versions::DenseTreeVersions,
+    grovedb_versions::GroveDBVersions, merk_versions::MerkVersions, mmr_versions::MmrVersions,
+    v1::GROVE_V1, v2::GROVE_V2,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -26,6 +28,7 @@ pub struct GroveVersion {
     pub mmr_versions: MmrVersions,
     pub bulk_append_tree_versions: BulkAppendTreeVersions,
     pub commitment_tree_versions: CommitmentTreeVersions,
+    pub dense_tree_versions: DenseTreeVersions,
 }
 
 impl GroveVersion {

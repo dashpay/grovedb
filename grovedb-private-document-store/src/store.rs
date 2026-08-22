@@ -484,10 +484,13 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
     /// Compute the composite state root
     /// (`blake3("pds_state" || config_hash || bulk_state_root)`) without
     /// modifying the store.
-    pub fn compute_current_state_root(&self) -> Result<[u8; 32], PrivateDocumentStoreError> {
+    pub fn compute_current_state_root(
+        &self,
+        grove_version: &GroveVersion,
+    ) -> Result<[u8; 32], PrivateDocumentStoreError> {
         let bulk_root = self
             .bulk_tree
-            .compute_current_state_root()
+            .compute_current_state_root(grove_version)
             .map_err(|e| PrivateDocumentStoreError::InvalidData(format!("state root: {}", e)))?;
         Ok(compute_private_document_store_state_root(
             &self.config_hash,
@@ -609,8 +612,12 @@ mod append_many_tests {
         assert_eq!(many.appended, 10);
         assert_eq!(batched.total_count(), one_by_one.total_count());
         assert_eq!(
-            batched.compute_current_state_root().expect("root"),
-            one_by_one.compute_current_state_root().expect("root")
+            batched
+                .compute_current_state_root(GroveVersion::latest())
+                .expect("root"),
+            one_by_one
+                .compute_current_state_root(GroveVersion::latest())
+                .expect("root")
         );
         for i in 0..10u64 {
             assert_eq!(
@@ -647,7 +654,9 @@ mod append_many_tests {
         assert_eq!(r.appended, 0);
         assert_eq!(
             r.state_root,
-            store.compute_current_state_root().expect("root")
+            store
+                .compute_current_state_root(GroveVersion::latest())
+                .expect("root")
         );
         assert_eq!(
             empty_cost.hash_node_calls, 2,
@@ -715,13 +724,15 @@ mod atomicity_tests {
         // `chunk_power = 2` the buffer holds 3 and an epoch is 4, so 6 total
         // entries leave one completed chunk (mmr_size 1, which takes the
         // single-element path and bags no peaks) and 2 live buffer
-        // positions. `hash_node` bills a value hash and a node hash per
-        // filled position, so the dense walk is 4; the bulk state root and
-        // the composite `pds_state` root are one each.
+        // positions. Under GROVE_V4 the dense root is the position-0 hash
+        // record the appends maintained — one read, no hashing — so only
+        // the bulk state root and the composite `pds_state` root are
+        // hashed, one each. (Under GROVE_V1..V3 the dense root would be
+        // walked: a value hash and a node hash per filled position, 4.)
         assert_eq!(
-            cost.hash_node_calls, 6,
-            "expected 2*2 dense-walk hashes + 1 bulk state root + 1 composite \
-             pds_state root, got {:?}",
+            cost.hash_node_calls, 2,
+            "expected 1 bulk state root + 1 composite pds_state root (the \
+             dense root is read from its record), got {:?}",
             cost
         );
     }
@@ -740,8 +751,10 @@ mod atomicity_tests {
             .unwrap()
             .expect("new");
 
-        // First append: the dense walk visits 1 filled position (2 hashes),
-        // then the bulk state root (1) and the composite pds_state root (1).
+        // First append (position 0, the root of the buffer): the leaf is
+        // hashed twice (value hash + node hash) and has no ancestors; the
+        // bulk state root reads the position-0 record (no hash); then the
+        // bulk state root (1) and the composite pds_state root (1).
         let ctx = store.append(&[1u8; 8], GroveVersion::latest());
         ctx.value.expect("append");
         assert_eq!(
@@ -750,21 +763,25 @@ mod atomicity_tests {
             ctx.cost
         );
 
-        // Second append: 2 filled positions now, so the walk costs 4.
+        // Second append (position 1, depth 1): leaf (2) + its one ancestor
+        // (1) = 3 dense hashes, plus the two roots. Under GROVE_V1..V3 this
+        // would re-walk both filled positions (4).
         let ctx = store.append(&[2u8; 8], GroveVersion::latest());
         ctx.value.expect("append");
         assert_eq!(
-            ctx.cost.hash_node_calls, 6,
-            "4 dense + 1 bulk root + 1 composite, got {:?}",
+            ctx.cost.hash_node_calls, 5,
+            "3 dense + 1 bulk root + 1 composite, got {:?}",
             ctx.cost
         );
 
-        // Third: 6 dense + 2 roots.
+        // Third (position 2, depth 1 again): 3 dense + 2 roots — the same
+        // as the second append, not 2 more: the work follows the depth of
+        // the inserted position, not how full the buffer is.
         let ctx = store.append(&[3u8; 8], GroveVersion::latest());
         ctx.value.expect("append");
         assert_eq!(
-            ctx.cost.hash_node_calls, 8,
-            "6 dense + 1 bulk root + 1 composite, got {:?}",
+            ctx.cost.hash_node_calls, 5,
+            "3 dense + 1 bulk root + 1 composite, got {:?}",
             ctx.cost
         );
     }
@@ -887,7 +904,9 @@ mod atomicity_tests {
             .expect("seed");
 
         let count_before = store.total_count();
-        let root_before = store.compute_current_state_root().expect("root");
+        let root_before = store
+            .compute_current_state_root(GroveVersion::latest())
+            .expect("root");
         let value_before = store.get_value(0).unwrap().expect("get");
 
         // First entry is valid, second is the wrong size.
@@ -904,7 +923,9 @@ mod atomicity_tests {
 
         assert_eq!(store.total_count(), count_before, "count must be unchanged");
         assert_eq!(
-            store.compute_current_state_root().expect("root"),
+            store
+                .compute_current_state_root(GroveVersion::latest())
+                .expect("root"),
             root_before,
             "state root must be unchanged"
         );
@@ -986,7 +1007,10 @@ mod error_path_tests {
         // Buffer positions read as missing entries in the walk; direct
         // get_value returns the underlying error or None consistently.
         assert!(
-            broken.compute_current_state_root().is_err() || broken.get_value(5).unwrap().is_err()
+            broken
+                .compute_current_state_root(GroveVersion::latest())
+                .is_err()
+                || broken.get_value(5).unwrap().is_err()
         );
     }
 
@@ -1268,12 +1292,17 @@ mod tests {
             .unwrap()
             .expect("new store");
         assert_eq!(
-            store.compute_current_state_root().expect("state root"),
+            store
+                .compute_current_state_root(GroveVersion::latest())
+                .expect("state root"),
             empty_private_document_store_state_root(64, 4),
         );
         // And the inner bulk root of an empty store matches the constant.
         assert_eq!(
-            store.bulk_tree.compute_current_state_root().expect("bulk"),
+            store
+                .bulk_tree
+                .compute_current_state_root(GroveVersion::latest())
+                .expect("bulk"),
             EMPTY_BULK_APPEND_TREE_STATE_ROOT,
         );
     }
@@ -1357,7 +1386,9 @@ mod tests {
 
         // The append-path state root matches a fresh computation.
         assert_eq!(
-            store.compute_current_state_root().expect("state root"),
+            store
+                .compute_current_state_root(GroveVersion::latest())
+                .expect("state root"),
             *roots.last().unwrap()
         );
 
@@ -1403,14 +1434,18 @@ mod tests {
         store
             .commit_mmr(GroveVersion::latest())
             .expect("commit mmr");
-        let root_before = store.compute_current_state_root().expect("root");
+        let root_before = store
+            .compute_current_state_root(GroveVersion::latest())
+            .expect("root");
         let storage = PrivateDocumentStore::into_storage_for_test(store);
 
         let reopened = PrivateDocumentStore::from_state(6, 8, 2, storage)
             .unwrap()
             .expect("reopen");
         assert_eq!(
-            reopened.compute_current_state_root().expect("root"),
+            reopened
+                .compute_current_state_root(GroveVersion::latest())
+                .expect("root"),
             root_before
         );
         for i in 0..6u8 {

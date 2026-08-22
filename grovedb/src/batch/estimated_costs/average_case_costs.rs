@@ -300,11 +300,14 @@ impl GroveOp {
                     .saturating_add(71);
                 // Hashes. Undeclared: the historical amortized figure (one
                 // running-hash call), an average with no epoch to scale by.
-                // Declared: an upper bound for the epoch — the dense-root
-                // walk over a full buffer (two hashes per filled position),
-                // the state root, and a compaction's chunk-leaf hash plus the
-                // MMR push merges and root bagging (each bounded by the
-                // 64-bit position space).
+                // Declared: an upper bound for the epoch — up to a
+                // full-buffer walk (two hashes per filled position: the
+                // GROVE_V1..V3 root recompute, and the one-time catch-up a
+                // buffer filled under those versions pays at its first
+                // GROVE_V4 append; a V4 append otherwise hashes only its
+                // ancestor path), the state root, and a compaction's
+                // chunk-leaf hash plus the MMR push merges and root bagging
+                // (each bounded by the 64-bit position space).
                 const AVG_HASH_CALLS: u32 = 1;
                 const MAX_MMR_MERGES: u32 = 65;
                 let hash_calls = if append_tree_chunk_power.is_some() {
@@ -314,26 +317,60 @@ impl GroveOp {
                 } else {
                     AVG_HASH_CALLS
                 };
+                // The buffer's hash records (GROVE_V4 root maintenance):
+                // the ancestor-path rewrites, and the catch-up of a buffer
+                // filled under GROVE_V3. At the declared epoch scale, or the
+                // physical ceiling when undeclared. The bulk append bills
+                // their writes (at commit), not their reads.
+                let records = super::dense_record_maintenance_bound(
+                    append_tree_chunk_power.unwrap_or(super::PHYSICAL_MAX_CHUNK_POWER),
+                    true,
+                );
+                // The preprocessing read of the stored element loads its
+                // caller-supplied flags too; bound them with the parent
+                // layer's declared flags size — the same metadata the
+                // parent-node replace above uses.
+                let element_flags_load_bound = match layer_element_estimates
+                    .estimated_layer_sizes
+                    .layered_flags_size()
+                {
+                    Ok(flags_size) => flags_size
+                        .map(|f| f + f.required_space() as u32)
+                        .unwrap_or_default(),
+                    Err(e) => {
+                        return Err(Error::MerkError(e)).wrap_with_cost(OperationCost::default())
+                    }
+                };
                 item_cost.add_cost(OperationCost {
-                    // 1 buffer entry write + 1 committed-slot read.
-                    seek_count: 2,
+                    // 1 buffer entry write + 1 committed-slot read + the
+                    // record writes.
+                    seek_count: 2u32.saturating_add(records.record_writes),
                     storage_cost: StorageCost {
-                        // Slot (new in epoch 1) + chunk-blob share + framing.
-                        added_bytes: entry_size.saturating_mul(2).saturating_add(blob_framing),
+                        // Slot (new in epoch 1) + chunk-blob share + framing
+                        // + records written for the first time.
+                        added_bytes: entry_size
+                            .saturating_mul(2)
+                            .saturating_add(blob_framing)
+                            .saturating_add(records.added_bytes),
                         // Slot rewrite + the blob replacing the epoch's
-                        // entry bytes.
+                        // entry bytes + the records rewritten on the path.
                         replaced_bytes: paid_entry
-                            .saturating_add(epoch_entries.saturating_mul(entry_size)),
+                            .saturating_add(epoch_entries.saturating_mul(entry_size))
+                            .saturating_add(records.replaced_bytes),
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
-                    // The committed slot value read to size the rewrite.
-                    storage_loaded_bytes: entry_size as u64,
+                    // The stored element (fixed fields + Merk framing, with
+                    // the flags bound) read by preprocessing, and the
+                    // committed slot value read to size the rewrite.
+                    storage_loaded_bytes: (super::CT_ELEMENT_LOAD_BASE + element_flags_load_bound)
+                        as u64
+                        + entry_size as u64,
                     hash_node_calls: hash_calls,
                     sinsemilla_hash_calls: 0,
                 })
             }
             GroveOp::PrivateDocumentStoreInsert { entry } => {
-                // The dense-recompute and compaction terms scale with
+                // The record-maintenance and compaction terms scale with
                 // `2^chunk_power`, which the op does not carry, so the
                 // store's own layer MUST be declared with
                 // `TreeType::PrivateDocumentStore(chunk_power)` — the same
@@ -350,6 +387,21 @@ impl GroveOp {
                     ))
                     .wrap_with_cost(OperationCost::default());
                 };
+                // The preprocessing read of the stored element loads its
+                // caller-supplied flags too; bound them with the parent
+                // layer's declared flags size — the same metadata the
+                // parent-node replace below uses.
+                let element_flags_load_bound = match layer_element_estimates
+                    .estimated_layer_sizes
+                    .layered_flags_size()
+                {
+                    Ok(flags_size) => flags_size
+                        .map(|f| f + f.required_space() as u32)
+                        .unwrap_or_default(),
+                    Err(e) => {
+                        return Err(Error::MerkError(e)).wrap_with_cost(OperationCost::default())
+                    }
+                };
                 let item_cost = GroveDb::average_case_merk_replace_tree(
                     key,
                     layer_element_estimates,
@@ -357,68 +409,15 @@ impl GroveOp {
                     propagate,
                     grove_version,
                 );
-                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 // `entry.len()` IS the store's committed entry size — the
                 // append path rejects any other length — so the byte terms
-                // need no separate declaration.
-                let entry_size = entry.len() as u32;
-                let epoch_entries: u32 = 1u32 << chunk_power.min(16) as u32;
-                // Amortized over one epoch: every entry is written once to
-                // the buffer, and once more into the chunk blob when the
-                // epoch compacts. Under the GROVE_V4 accounting (issue
-                // #822) the blob share is exactly what each append is
-                // charged as added storage, and the blob itself lands as a
-                // replacement of those prepaid bytes.
-                let amortized_compaction_bytes = entry_size;
-                // The dense-buffer root walk costs two hashes per filled
-                // position and runs on every append, so across an epoch it
-                // averages half the buffer.
-                let avg_dense_hashes = epoch_entries.saturating_sub(1);
-                // Bulk state root + composite pds_state root + the
-                // committed-config hash paid when the store is opened.
-                const ROOT_AND_CONFIG_HASHES: u32 = 3;
-                // MMR push work, amortized across the epoch it serves.
-                const AMORTIZED_MMR_HASHES: u32 = 1;
-                // The dense-root walk does not just hash: it READS every
-                // filled position. Averaged across an epoch that is about
-                // half a buffer per append, and compaction adds one more
-                // pass, so the I/O terms have to scale with the epoch too —
-                // charging one seek and zero loaded bytes understated this by
-                // O(epoch size).
-                let avg_dense_reads = epoch_entries / 2;
-                // A NonCounted-wrapped store serializes one byte wider, and
-                // the apply path now preserves that wrapper. Neither the op
-                // nor the declared layer records whether this store is
-                // wrapped, so charge the byte unconditionally: over-charging
-                // one byte is harmless, whereas omitting it understates every
-                // append to a non-counted store.
-                const NON_COUNTED_WRAPPER_BYTE: u32 = 1;
-                item_cost.add_cost(OperationCost {
-                    // 1 buffer entry write + the read of the slot's committed
-                    // value that sizes the rewrite + the root walk's reads.
-                    seek_count: 2u32.saturating_add(avg_dense_reads),
-                    storage_cost: StorageCost {
-                        // The buffer slot (charged as new — it is in epoch
-                        // 1; later it is a rewrite, replaced below) and the
-                        // entry's chunk-blob share.
-                        added_bytes: entry_size
-                            .saturating_add(amortized_compaction_bytes)
-                            .saturating_add(NON_COUNTED_WRAPPER_BYTE),
-                        // The slot rewrite from epoch 2 on, and the
-                        // compaction blob — a replacement of the epoch's
-                        // prepaid entry bytes — amortized per append.
-                        replaced_bytes: entry_size.saturating_add(amortized_compaction_bytes),
-                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
-                    },
-                    // The slot's committed value (one entry) + the root
-                    // walk's reads.
-                    storage_loaded_bytes: (avg_dense_reads as u64 + 1)
-                        .saturating_mul(entry_size as u64),
-                    hash_node_calls: avg_dense_hashes
-                        .saturating_add(ROOT_AND_CONFIG_HASHES)
-                        .saturating_add(AMORTIZED_MMR_HASHES),
-                    sinsemilla_hash_calls: 0,
-                })
+                // need no separate declaration. An upper bound at the
+                // declared epoch scale, shared with the worst-case arm.
+                item_cost.add_cost(super::private_document_store_insert_op_cost(
+                    entry.len() as u32,
+                    chunk_power,
+                    element_flags_load_bound,
+                ))
             }
 
             GroveOp::DenseTreeInsert { value } => {
@@ -430,24 +429,33 @@ impl GroveOp {
                     propagate,
                     grove_version,
                 );
-                // Additional cost: 1 value write + full root recomputation.
-                // compute_root_hash visits all filled positions: each does
-                // 1 storage read + 2 hash calls (value_hash + node_hash).
-                // Average count ≈ 8 (half-full tree, height 4).
+                // Additional cost: 1 value write + the root derivation.
+                // GROVE_V1..V3: compute_root_hash visits all filled
+                // positions, each 1 storage read + 2 hash calls (value_hash
+                // + node_hash); average count ≈ 8 (half-full tree, height
+                // 4). GROVE_V4: the insert hashes its ancestor path and
+                // reads/writes the path's hash records, bounded here at the
+                // physical ceiling (height 16) since the op does not carry
+                // the tree's height.
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 let value_size = value.len() as u32;
                 const AVG_COUNT: u32 = 8;
                 // 2 hash calls per filled node (value_hash + node_hash)
                 const AVG_HASH_CALLS: u32 = AVG_COUNT * 2;
+                let records =
+                    super::dense_record_maintenance_bound(super::PHYSICAL_MAX_CHUNK_POWER, true);
                 item_cost.add_cost(OperationCost {
-                    seek_count: 1 + AVG_COUNT, // 1 write + AVG_COUNT reads for root hash
+                    // 1 write + AVG_COUNT reads for root hash + the record
+                    // reads and writes
+                    seek_count: 1 + AVG_COUNT + records.record_reads + records.record_writes,
                     storage_cost: StorageCost {
-                        added_bytes: value_size,
-                        replaced_bytes: 0,
+                        added_bytes: value_size.saturating_add(records.added_bytes),
+                        replaced_bytes: records.replaced_bytes,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
-                    storage_loaded_bytes: (value_size as u64) * (AVG_COUNT as u64),
-                    hash_node_calls: AVG_HASH_CALLS,
+                    storage_loaded_bytes: (value_size as u64) * (AVG_COUNT as u64)
+                        + records.loaded_bytes,
+                    hash_node_calls: AVG_HASH_CALLS.max(records.hash_calls),
                     sinsemilla_hash_calls: 0,
                 })
             }

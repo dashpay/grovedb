@@ -87,7 +87,7 @@ fn run(version: &GroveVersion) -> Run {
             let r = tree.append_no_state_root(v, version).expect("append");
             accounting.push(r.storage_accounting_cost);
         }
-        root = tree.compute_current_state_root().expect("root");
+        root = tree.compute_current_state_root(version).expect("root");
         tree.commit_mmr(version).expect("commit");
         ctx = tree.dense_tree.storage;
     }
@@ -254,16 +254,35 @@ fn v1_commit_mmr_reports_blob_as_replacement_of_prepaid_entry_bytes() {
     assert_eq!(nodes[3], Some(leaf(32, 9 + 32)));
 }
 
-/// The tree itself must not depend on the accounting version.
+/// The tree itself must not depend on the accounting version: the values,
+/// the chunk blobs, the MMR nodes and the roots are byte-identical. The only
+/// keys GROVE_V4 adds are the dense buffer's hash records (3-byte keys,
+/// root-maintenance version 1), which GROVE_V3 never writes or reads.
 #[test]
 fn stored_state_and_roots_are_identical_across_accounting_versions() {
     let r3 = run(&GROVE_V3);
     let r4 = run(&GROVE_V4);
     assert_eq!(r3.root, r4.root);
+    let without_records = |ctx: &MemStorageContext| -> std::collections::HashMap<Vec<u8>, Vec<u8>> {
+        ctx.data
+            .borrow()
+            .iter()
+            .filter(|(k, _)| k.len() != 3)
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    };
+    assert!(
+        r3.ctx.data.borrow().keys().all(|k| k.len() != 3),
+        "GROVE_V3 writes no hash records"
+    );
+    assert!(
+        r4.ctx.data.borrow().keys().any(|k| k.len() == 3),
+        "GROVE_V4 writes hash records"
+    );
     assert_eq!(
-        *r3.ctx.data.borrow(),
-        *r4.ctx.data.borrow(),
-        "byte-identical storage"
+        without_records(&r3.ctx),
+        without_records(&r4.ctx),
+        "byte-identical storage apart from the hash records"
     );
 }
 

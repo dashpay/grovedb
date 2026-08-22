@@ -18,6 +18,13 @@ pub(crate) struct MemStorageContext {
     pub data: RefCell<HashMap<Vec<u8>, Vec<u8>>>,
     /// Every data `put` in order, with the cost information it carried.
     pub puts: RefCell<Vec<(Vec<u8>, Option<KeyValueStorageCost>)>>,
+    /// Every data `get` in order (the keys asked for) — what the tree read
+    /// back out of storage, as opposed to served from its caches.
+    pub gets: RefCell<Vec<Vec<u8>>>,
+    /// When set, every `put` of a hash record (3-byte key) fails, leaving
+    /// slot puts working: exercises the insert's rollback after a partial
+    /// ancestor-path rewrite.
+    pub fail_record_puts: std::cell::Cell<bool>,
 }
 
 impl MemStorageContext {
@@ -30,8 +37,18 @@ impl<'db> StorageContext<'db> for MemStorageContext {
     type Batch = MemBatch;
     type RawIterator = MemRawIterator;
 
+    /// Charged like a real storage read — one seek, the bytes loaded — so
+    /// tests can compare a cold read against the tree's deterministic
+    /// cache-hit charge.
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
-        Ok(self.data.borrow().get(key.as_ref()).cloned()).wrap_with_cost(OperationCost::default())
+        self.gets.borrow_mut().push(key.as_ref().to_vec());
+        let value = self.data.borrow().get(key.as_ref()).cloned();
+        let cost = OperationCost {
+            seek_count: 1,
+            storage_loaded_bytes: value.as_ref().map_or(0, |v| v.len() as u64),
+            ..Default::default()
+        };
+        Ok(value).wrap_with_cost(cost)
     }
 
     fn put<K: AsRef<[u8]>>(
@@ -41,6 +58,12 @@ impl<'db> StorageContext<'db> for MemStorageContext {
         _children_sizes: ChildrenSizesWithIsSumTree,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), grovedb_storage::Error> {
+        if self.fail_record_puts.get() && key.as_ref().len() == 3 {
+            return Err(grovedb_storage::Error::StorageError(
+                "injected hash record write failure".to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        }
         self.puts
             .borrow_mut()
             .push((key.as_ref().to_vec(), cost_info));

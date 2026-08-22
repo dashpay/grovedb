@@ -45,7 +45,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         let capacity = capacity_for_height(height)?;
         let epoch_size = capacity as u64 + 1; // capacity + 1 = 2^height
         let dense_count = (total_count % epoch_size) as u16;
-        let dense_tree =
+        let mut dense_tree =
             grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree::from_state(
                 height,
                 dense_count,
@@ -54,6 +54,12 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             .map_err(|e| {
                 BulkAppendError::InvalidInput(format!("invalid dense tree state: {}", e))
             })?;
+        // The buffer's hash records (root-maintenance version 1) are tagged
+        // with the epoch they belong to. Epochs reuse the same slot keys, so
+        // the tag is the chunk count: a record left by an earlier epoch then
+        // carries a smaller tag and is never trusted. `reset` advances it in
+        // step with each compaction.
+        dense_tree.set_generation(total_count / epoch_size);
         Ok(Self {
             total_count,
             dense_tree,
@@ -128,7 +134,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         grove_version: &GroveVersion,
     ) -> Result<AppendResult, BulkAppendError> {
         let r = self.append_no_state_root(value, grove_version)?;
-        let state_root = self.compute_current_state_root()?;
+        let state_root = self.compute_current_state_root(grove_version)?;
         Ok(AppendResult {
             state_root,
             global_position: r.global_position,
@@ -167,13 +173,22 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         let slot_write = self.slot_write_accounting(&accounting, &mut storage_accounting_cost)?;
 
         // 1. Try to insert into the dense tree buffer.
-        let try_result = self
-            .dense_tree
-            .try_insert_with_accounting(value, slot_write)
-            .unwrap()
-            .map_err(|e| {
-                BulkAppendError::StorageError(format!("dense tree insert failed: {}", e))
-            })?;
+        //
+        // The dense tree's own cost is dropped here except for its hash
+        // count: this path returns a plain `Result` and reports its work
+        // through `hash_count` (the figure CommitmentTree bills) and
+        // `storage_accounting_cost`. The reads the root maintenance performs
+        // — the full-buffer walk under GROVE_V1..V3, the ancestor-path record
+        // reads from GROVE_V4 — are not billed by it, as they never were; the
+        // record writes from GROVE_V4 are charged at commit like every other
+        // put. Callers that bill everything use `append_deferred_roots`.
+        let insert_ctx =
+            self.dense_tree
+                .try_insert_with_accounting(value, slot_write, grove_version);
+        let dense_hash_calls = insert_ctx.cost.hash_node_calls;
+        let try_result = insert_ctx.value.map_err(|e| {
+            BulkAppendError::StorageError(format!("dense tree insert failed: {}", e))
+        })?;
 
         let compacted = match try_result {
             Some((_dense_root, _position)) => {
@@ -184,7 +199,12 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                 // the caller will recover the state root via
                 // `compute_current_state_root` at the end of the batch, which
                 // populates the cache then.)
-                hash_count += self.dense_tree.count() as u32 * 2;
+                //
+                // The hashes the insert performed: two per filled position
+                // (the whole buffer re-walked) under root-maintenance version
+                // 0 — the shipped `count * 2` — and two for the leaf plus one
+                // per ancestor level under version 1.
+                hash_count += dense_hash_calls;
                 false
             }
             None => {
@@ -217,17 +237,20 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// Append a value deferring **both** the dense-tree root and the
     /// state root.
     ///
-    /// Storage effect is identical to [`append`](Self::append), but the
-    /// per-insert `compute_root_hash` walk over the dense buffer is skipped.
-    /// [`append_no_state_root`](Self::append_no_state_root) still pays that
-    /// walk on every call (via `try_insert`), which makes a run of N appends
-    /// O(N^2) in hash calls — 65,535 entries at `height = 16` costs ~4.3
-    /// billion. This variant is O(N) plus one final root computation.
+    /// Storage effect is identical to [`append`](Self::append). Under
+    /// root-maintenance version 0 (GROVE_V1..V3) the per-insert
+    /// `compute_root_hash` walk over the dense buffer is skipped:
+    /// [`append_no_state_root`](Self::append_no_state_root) pays that walk on
+    /// every call (via `try_insert`), which makes a run of N appends O(N^2)
+    /// in hash calls — 65,535 entries at `height = 16` costs ~4.3 billion —
+    /// whereas this variant is O(N) plus one final root computation. Under
+    /// version 1 (GROVE_V4+) both paths maintain the buffer's per-position
+    /// hash records and cost O(height) per append; this variant then differs
+    /// only in returning a `CostResult` that bills everything the append did
+    /// (the record reads included) rather than the hash count alone.
     ///
     /// The caller MUST recover the state root once at the end via
-    /// [`compute_current_state_root`](Self::compute_current_state_root);
-    /// until then the dense root is stale in-memory only (it is always
-    /// recomputed from stored values, never cached).
+    /// [`compute_current_state_root`](Self::compute_current_state_root).
     ///
     /// Compaction still happens inline when the buffer fills, because the
     /// chunk blob is built from the stored values, not from the root.
@@ -254,7 +277,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
 
         let try_result = match self
             .dense_tree
-            .try_insert_no_root_with_accounting(value, slot_write)
+            .try_insert_no_root_with_accounting(value, slot_write, grove_version)
             .unwrap_add_cost(&mut cost)
         {
             Ok(r) => r,
@@ -331,14 +354,26 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// post-first-append fast path (no overlay clone). Falls back to a one-shot
     /// `get_mmr_root` only when the cache is empty (e.g. immediately after a
     /// lazy `from_state` with no appends yet).
-    pub fn compute_current_state_root(&self) -> Result<[u8; 32], BulkAppendError> {
+    ///
+    /// `grove_version` selects how the dense buffer's root is derived (the
+    /// value is the same under every version): walked from every filled
+    /// position under GROVE_V1..V3, read from the position-0 hash record
+    /// from GROVE_V4.
+    pub fn compute_current_state_root(
+        &self,
+        grove_version: &GroveVersion,
+    ) -> Result<[u8; 32], BulkAppendError> {
         let mmr_root = match self.last_mmr_root {
             Some(r) => r,
             None => self.get_mmr_root()?,
         };
-        let dense_root = self.dense_tree.root_hash().unwrap().map_err(|e| {
-            BulkAppendError::StorageError(format!("dense tree root_hash failed: {}", e))
-        })?;
+        let dense_root = self
+            .dense_tree
+            .root_hash(grove_version)
+            .unwrap()
+            .map_err(|e| {
+                BulkAppendError::StorageError(format!("dense tree root_hash failed: {}", e))
+            })?;
         Ok(compute_state_root(&mmr_root, &dense_root))
     }
 
@@ -367,7 +402,11 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                 Err(e) => return Err(e).wrap_with_cost(cost),
             },
         };
-        let dense_root = match self.dense_tree.root_hash().unwrap_add_cost(&mut cost) {
+        let dense_root = match self
+            .dense_tree
+            .root_hash(grove_version)
+            .unwrap_add_cost(&mut cost)
+        {
             Ok(r) => r,
             Err(e) => {
                 return Err(BulkAppendError::StorageError(format!(
@@ -377,10 +416,12 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                 .wrap_with_cost(cost);
             }
         };
-        // `root_hash` already charged the walk itself: `hash_node` bills a
-        // value hash and a node hash for every filled position it visits, and
-        // those reached us through `unwrap_add_cost` above. Only the final
-        // blake3 combining the MMR and dense roots is still unbilled.
+        // `root_hash` already charged its own work — the walk over every
+        // filled position (a value hash and a node hash each) under
+        // root-maintenance version 0, the position-0 record read under
+        // version 1 — and that reached us through `unwrap_add_cost` above.
+        // Only the final blake3 combining the MMR and dense roots is still
+        // unbilled.
         cost.hash_node_calls = cost.hash_node_calls.saturating_add(1);
         Ok(compute_state_root(&mmr_root, &dense_root)).wrap_with_cost(cost)
     }
@@ -612,7 +653,7 @@ mod compaction_hash_count_gate_tests {
                     counts.push(r.hash_count);
                 }
             }
-            roots.push(t.compute_current_state_root().expect("root"));
+            roots.push(t.compute_current_state_root(version).expect("root"));
             (counts, roots)
         };
 

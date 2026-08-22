@@ -64,6 +64,11 @@ const NOTE_ENTRY: u32 = 312;
 const SLOT_KEY_PAID: u32 = 35;
 /// Paid key bytes of the frontier: prefix + `__ct_data__` (11) + 1.
 const FRONTIER_KEY_PAID: u32 = 44;
+/// Paid key bytes of a dense-buffer hash record: 32-byte prefix + `b'h'` +
+/// 2-byte position + 1 length byte.
+const RECORD_KEY_PAID: u32 = 36;
+/// A hash record: generation (8) + value hash (32) + node hash (32).
+const RECORD_LEN: u32 = grovedb_dense_fixed_sized_merkle_tree::HASH_RECORD_LEN as u32;
 
 fn varint_len(mut n: u32) -> u32 {
     let mut len = 1;
@@ -131,6 +136,15 @@ fn expected_delta(
         // value (same size: nothing added) and does not charge the key.
         added -= (SLOT_KEY_PAID + paid(entry_len)) as i64;
         replaced += paid(entry_len) as i64;
+        // The slot's hash record (GROVE_V4 root maintenance) follows the
+        // slot: legacy's `AsNew` slot accounting tells the dense tree the
+        // slot cannot pre-exist, so the record is written as new (key +
+        // record); V4's `Overwrite` has it read the record left by the
+        // earlier epoch and report the rewrite as a replacement. The
+        // ancestors' records are sized from the reads both sides perform
+        // identically.
+        added -= (RECORD_KEY_PAID + paid(RECORD_LEN)) as i64;
+        replaced += paid(RECORD_LEN) as i64;
     }
     // else: a fresh slot is new storage on both sides.
 
@@ -150,11 +164,22 @@ fn expected_delta(
 /// Expected `(seek_count, storage_loaded_bytes)` difference, V4 minus
 /// legacy: the read of the committed value a buffer slot holds, which sizes
 /// its rewrite — one seek and `committed_len` bytes, only for a buffered
-/// (non-compacting) append onto a slot committed in an earlier epoch.
-fn expected_read_delta(position: u64, chunk_power: u8, committed_len: u32) -> (u32, u64) {
+/// (non-compacting) append onto a slot committed in an earlier epoch — and,
+/// for the `CostResult`-returning store append that bills the dense tree's
+/// reads (`bills_record_reads`), the read of the slot's hash record that
+/// sizes ITS rewrite (one seek, the record bytes). The bulk / commitment
+/// appends drop the dense tree's reads and bill the hash count alone.
+fn expected_read_delta(
+    position: u64,
+    chunk_power: u8,
+    committed_len: u32,
+    bills_record_reads: bool,
+) -> (u32, u64) {
     let epoch = 1u64 << chunk_power;
     if position % epoch == epoch - 1 || position < epoch {
         (0, 0)
+    } else if bills_record_reads {
+        (2, committed_len as u64 + RECORD_LEN as u64)
     } else {
         (1, committed_len as u64)
     }
@@ -167,9 +192,9 @@ fn delta(v4: &OperationCost, legacy: &OperationCost) -> (i64, i64) {
     )
 }
 
-/// Everything except the storage figures and the committed-slot read must
-/// agree: the accounting gates move bytes between `added` and `replaced`
-/// and add that one read, nothing else.
+/// Everything except the storage figures and the committed-slot (and, where
+/// billed, committed-record) read must agree: the accounting gates move
+/// bytes between `added` and `replaced` and add those reads, nothing else.
 fn assert_only_accounting_differs(
     v4: &OperationCost,
     legacy: &OperationCost,
@@ -365,7 +390,7 @@ fn commitment_tree_append_storage_accounting_matches_model_across_epochs() {
             &v4_cost,
             &legacy_cost,
             &format!("position {position}"),
-            expected_read_delta(position, CHUNK_POWER, NOTE_ENTRY),
+            expected_read_delta(position, CHUNK_POWER, NOTE_ENTRY, false),
         );
         assert_eq!(
             root_hash(&v4_db, &GROVE_V4),
@@ -624,7 +649,12 @@ fn bulk_append_tree_accounting_with_variable_size_values() {
                 added += paid(len).saturating_sub(paid(previous)) as i64
                     - (SLOT_KEY_PAID + paid(len)) as i64;
                 replaced += paid(len).min(paid(previous)) as i64;
-                // The committed value is read to size the rewrite.
+                // The slot's hash record follows the slot (see
+                // `expected_delta`).
+                added -= (RECORD_KEY_PAID + paid(RECORD_LEN)) as i64;
+                replaced += paid(RECORD_LEN) as i64;
+                // The committed value is read to size the rewrite (the
+                // record read is not billed by the bulk append).
                 read = (1, previous as u64);
             }
             slots[slot] = Some(len);
@@ -696,7 +726,7 @@ fn private_document_store_accounting_matches_model() {
             &v4_ctx.cost,
             &legacy_ctx.cost,
             &format!("position {position}"),
-            expected_read_delta(position, CHUNK_POWER, ENTRY),
+            expected_read_delta(position, CHUNK_POWER, ENTRY, true),
         );
     }
     assert_eq!(root_hash(&v4_db, &GROVE_V4), root_hash(&legacy_db, &legacy));

@@ -116,6 +116,24 @@
 //!   one append per epoch at `chunk_power` 11. Stored bytes, roots and
 //!   proofs are identical under both; gated because the figures are fees.
 //!
+//! - `dense_tree_versions.root_maintenance: 1` — the dense fixed-sized Merkle
+//!   tree (the buffer of `BulkAppendTree`, `CommitmentTree` and
+//!   `PrivateDocumentStore`, and the `DenseAppendOnlyFixedSizeTree` element)
+//!   keeps a per-position hash record (`generation || value_hash ||
+//!   node_hash`, key `b'h' || position`) and updates only the inserted
+//!   position's ancestor path: O(height) reads, hashes and record writes per
+//!   insert, and a one-record read for the root. V1..V3 keep no intermediate
+//!   hashes and re-derive the root from every filled position on every insert
+//!   — O(count) per insert, O(2^chunk_power) at the end of each epoch, which
+//!   is the dominant per-append cost of the shielded pool at `chunk_power`
+//!   11 (≈ 2k reads and ≈ 4k blake3 calls on the last insert of every epoch).
+//!   Stored values, positions, proofs and roots are identical under both; a
+//!   buffer filled under V1..V3 is caught up from its values the first time a
+//!   V4 insert needs a record it lacks (at most one V1..V3-sized walk per
+//!   tree), so the V4 estimators keep the full-walk hash bound and add the
+//!   records' storage. Gated because the work — and so the fee — moves, and
+//!   because V4 writes keys V1..V3 never read.
+//!
 //! Note that `GroveVersion::latest()` resolves to this version, so anything
 //! defaulting to "latest" — tests, benchmarks, tools — exercises every gate
 //! listed above rather than V3 behaviour.
@@ -136,6 +154,7 @@ use crate::version::grovedb_versions::GroveDBAggregateSumPathQueryMethodVersions
 use crate::version::{
     bulk_append_tree_versions::{BulkAppendTreeCostVersions, BulkAppendTreeVersions},
     commitment_tree_versions::{CommitmentTreeCostVersions, CommitmentTreeVersions},
+    dense_tree_versions::DenseTreeVersions,
     grovedb_versions::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
@@ -448,5 +467,12 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
         cost: CommitmentTreeCostVersions {
             frontier_save_storage_accounting: 1,
         },
+    },
+    // Dense-buffer root maintenance: per-position hash records, so an insert
+    // reads, hashes and writes O(height) instead of walking every filled
+    // position. Root hashes are unchanged; what moves is the work an append
+    // performs and is charged, and the records written beside the values.
+    dense_tree_versions: DenseTreeVersions {
+        root_maintenance: 1,
     },
 };

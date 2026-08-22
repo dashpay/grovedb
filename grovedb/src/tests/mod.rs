@@ -11,6 +11,7 @@ mod aggregate_count_and_sum_query_tests;
 mod aggregate_count_query_tests;
 mod aggregate_sum_carrier_query_tests;
 mod aggregate_sum_query_tests;
+mod append_family_cost_bound_tests;
 mod append_storage_accounting_tests;
 mod batch_coverage_tests;
 mod batch_delete_tree_tests;

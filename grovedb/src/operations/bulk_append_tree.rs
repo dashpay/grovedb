@@ -623,7 +623,8 @@ impl GroveDb {
             // Compute final state root
             let new_state_root = cost_return_on_error_no_add!(
                 cost,
-                tree.compute_current_state_root().map_err(map_bulk_err)
+                tree.compute_current_state_root(grove_version)
+                    .map_err(map_bulk_err)
             );
             cost.hash_node_calls += 1;
 

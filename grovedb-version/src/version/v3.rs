@@ -2,6 +2,7 @@ use crate::version::grovedb_versions::GroveDBAggregateSumPathQueryMethodVersions
 use crate::version::{
     bulk_append_tree_versions::{BulkAppendTreeCostVersions, BulkAppendTreeVersions},
     commitment_tree_versions::{CommitmentTreeCostVersions, CommitmentTreeVersions},
+    dense_tree_versions::DenseTreeVersions,
     grovedb_versions::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
@@ -304,5 +305,12 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
         cost: CommitmentTreeCostVersions {
             frontier_save_storage_accounting: 0,
         },
+    },
+    // Dense-buffer root maintenance: the shipped behaviour, which keeps no
+    // intermediate hashes and re-derives the root from every filled position
+    // on each insert. Locked — released versions replay what they were
+    // admitted under.
+    dense_tree_versions: DenseTreeVersions {
+        root_maintenance: 0,
     },
 };

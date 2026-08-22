@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod proof_tests {
     use grovedb_query::Query;
+    use grovedb_version::version::GroveVersion;
 
     use crate::{proof::*, test_utils::MemStorageContext, tree::DenseFixedSizedMerkleTree};
 
@@ -9,7 +10,9 @@ mod proof_tests {
         let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new())
             .expect("height 3 should be valid");
         for i in 0..7u8 {
-            tree.insert(&[i]).unwrap().expect("insert should succeed");
+            tree.insert(&[i], GroveVersion::latest())
+                .unwrap()
+                .expect("insert should succeed");
         }
         tree
     }
@@ -19,7 +22,7 @@ mod proof_tests {
         let mut tree = DenseFixedSizedMerkleTree::new(4, MemStorageContext::new())
             .expect("height 4 should be valid");
         for i in 0u16..15 {
-            tree.insert(&i.to_be_bytes())
+            tree.insert(&i.to_be_bytes(), GroveVersion::latest())
                 .unwrap()
                 .expect("insert should succeed");
         }
@@ -31,7 +34,9 @@ mod proof_tests {
         let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new())
             .expect("height 3 should be valid");
         for i in 0..5u8 {
-            tree.insert(&[i]).unwrap().expect("insert should succeed");
+            tree.insert(&[i], GroveVersion::latest())
+                .unwrap()
+                .expect("insert should succeed");
         }
         tree
     }
@@ -88,7 +93,10 @@ mod proof_tests {
     #[test]
     fn test_proof_single_leaf() {
         let tree = make_tree_h3_full();
-        let root = tree.root_hash().unwrap().expect("root hash");
+        let root = tree
+            .root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash");
         let proof = DenseTreeProof::generate(&tree, &[4])
             .unwrap()
             .expect("generate should succeed");
@@ -105,7 +113,10 @@ mod proof_tests {
     #[test]
     fn test_proof_internal_node() {
         let tree = make_tree_h3_full();
-        let root = tree.root_hash().unwrap().expect("root hash");
+        let root = tree
+            .root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash");
         let proof = DenseTreeProof::generate(&tree, &[1])
             .unwrap()
             .expect("generate should succeed");
@@ -119,7 +130,10 @@ mod proof_tests {
     #[test]
     fn test_proof_root_node() {
         let tree = make_tree_h3_full();
-        let root = tree.root_hash().unwrap().expect("root hash");
+        let root = tree
+            .root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash");
         let proof = DenseTreeProof::generate(&tree, &[0])
             .unwrap()
             .expect("generate should succeed");
@@ -133,7 +147,10 @@ mod proof_tests {
     #[test]
     fn test_proof_multiple_positions() {
         let tree = make_tree_h3_full();
-        let root = tree.root_hash().unwrap().expect("root hash");
+        let root = tree
+            .root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash");
         let proof = DenseTreeProof::generate(&tree, &[3, 5, 6])
             .unwrap()
             .expect("generate should succeed");
@@ -149,7 +166,10 @@ mod proof_tests {
     #[test]
     fn test_proof_all_positions() {
         let tree = make_tree_h3_full();
-        let root = tree.root_hash().unwrap().expect("root hash");
+        let root = tree
+            .root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash");
         let proof = DenseTreeProof::generate(&tree, &[0, 1, 2, 3, 4, 5, 6])
             .unwrap()
             .expect("generate should succeed");
@@ -176,7 +196,10 @@ mod proof_tests {
     #[test]
     fn test_proof_encode_decode_roundtrip() {
         let tree = make_tree_h3_full();
-        let root = tree.root_hash().unwrap().expect("root hash");
+        let root = tree
+            .root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash");
         let proof = DenseTreeProof::generate(&tree, &[2, 4])
             .unwrap()
             .expect("generate should succeed");
@@ -209,9 +232,14 @@ mod proof_tests {
         let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new())
             .expect("height 3 should be valid");
         for i in 0..3u8 {
-            tree.insert(&[i]).unwrap().expect("insert should succeed");
+            tree.insert(&[i], GroveVersion::latest())
+                .unwrap()
+                .expect("insert should succeed");
         }
-        let root = tree.root_hash().unwrap().expect("root hash should succeed");
+        let root = tree
+            .root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash should succeed");
 
         let proof = DenseTreeProof::generate(&tree, &[0, 1, 2])
             .unwrap()
@@ -226,10 +254,13 @@ mod proof_tests {
     fn test_proof_height_1_tree() {
         let mut tree = DenseFixedSizedMerkleTree::new(1, MemStorageContext::new())
             .expect("height 1 should be valid");
-        tree.insert(b"hello")
+        tree.insert(b"hello", GroveVersion::latest())
             .unwrap()
             .expect("insert should succeed");
-        let root = tree.root_hash().unwrap().expect("root hash should succeed");
+        let root = tree
+            .root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash should succeed");
 
         let proof = DenseTreeProof::generate(&tree, &[0])
             .unwrap()
@@ -245,16 +276,19 @@ mod proof_tests {
     fn test_proof_height_2_tree() {
         let mut tree = DenseFixedSizedMerkleTree::new(2, MemStorageContext::new())
             .expect("height 2 should be valid");
-        tree.insert(b"root_val")
+        tree.insert(b"root_val", GroveVersion::latest())
             .unwrap()
             .expect("insert should succeed");
-        tree.insert(b"left_val")
+        tree.insert(b"left_val", GroveVersion::latest())
             .unwrap()
             .expect("insert should succeed");
-        tree.insert(b"right_val")
+        tree.insert(b"right_val", GroveVersion::latest())
             .unwrap()
             .expect("insert should succeed");
-        let root = tree.root_hash().unwrap().expect("root hash should succeed");
+        let root = tree
+            .root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash should succeed");
 
         let proof = DenseTreeProof::generate(&tree, &[2])
             .unwrap()
@@ -276,7 +310,10 @@ mod proof_tests {
     #[test]
     fn test_proof_deduplicates_positions() {
         let tree = make_tree_h3_full();
-        let root = tree.root_hash().unwrap().expect("root hash");
+        let root = tree
+            .root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash");
         let proof = DenseTreeProof::generate(&tree, &[4, 4, 4])
             .unwrap()
             .expect("generate should succeed");
@@ -1618,7 +1655,10 @@ mod proof_tests {
         #[test]
         fn root_hash_consistency() {
             let tree = make_tree_h3_full();
-            let expected_root = tree.root_hash().unwrap().expect("root hash");
+            let expected_root = tree
+                .root_hash(GroveVersion::latest())
+                .unwrap()
+                .expect("root hash");
             let mut query = Query::new();
             query.insert_range(vec![2]..vec![5]);
             let proof = DenseTreeProof::generate_for_query(&tree, &query)
@@ -1676,7 +1716,10 @@ mod proof_tests {
         #[test]
         fn wrong_count_changes_root_hash() {
             let tree = make_tree_h3_full();
-            let expected_root = tree.root_hash().unwrap().expect("root hash");
+            let expected_root = tree
+                .root_hash(GroveVersion::latest())
+                .unwrap()
+                .expect("root hash");
             let query = Query::new_range_full();
             let proof = DenseTreeProof::generate_for_query(&tree, &query)
                 .unwrap()
@@ -1691,7 +1734,9 @@ mod proof_tests {
             let mut tree = DenseFixedSizedMerkleTree::new(4, MemStorageContext::new())
                 .expect("height 4 should be valid");
             for i in 0..11u8 {
-                tree.insert(&[i]).unwrap().expect("insert should succeed");
+                tree.insert(&[i], GroveVersion::latest())
+                    .unwrap()
+                    .expect("insert should succeed");
             }
             let mut query = Query::new();
             query.insert_range_from(vec![5]..);

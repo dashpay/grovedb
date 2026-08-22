@@ -2941,7 +2941,9 @@ impl GroveDb {
                 )
                 .value
                 {
-                    Ok(ct) => ct.compute_current_state_root().unwrap_or(merk_root_hash),
+                    Ok(ct) => ct
+                        .compute_current_state_root(grove_version)
+                        .unwrap_or(merk_root_hash),
                     Err(_) => merk_root_hash,
                 }
             }
@@ -2958,7 +2960,9 @@ impl GroveDb {
                     *chunk_power,
                     storage_ctx,
                 ) {
-                    Ok(tree) => tree.compute_current_state_root().unwrap_or(merk_root_hash),
+                    Ok(tree) => tree
+                        .compute_current_state_root(grove_version)
+                        .unwrap_or(merk_root_hash),
                     Err(_) => merk_root_hash,
                 }
             }
@@ -2987,7 +2991,7 @@ impl GroveDb {
                     .unwrap();
                 use grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree;
                 match DenseFixedSizedMerkleTree::from_state(*height, *count, storage_ctx) {
-                    Ok(t) => match t.root_hash().unwrap() {
+                    Ok(t) => match t.root_hash(grove_version).unwrap() {
                         Ok(hash) => hash,
                         Err(_) => merk_root_hash,
                     },
@@ -3024,7 +3028,9 @@ impl GroveDb {
                     // instead of being laundered into an opaque hash
                     // mismatch — and a transient storage error during that
                     // walk no longer masquerades as corruption.
-                    Ok(store) => store.compute_current_state_root().unwrap_or(merk_root_hash),
+                    Ok(store) => store
+                        .compute_current_state_root(grove_version)
+                        .unwrap_or(merk_root_hash),
                     Err(_) => merk_root_hash,
                 }
             }
@@ -3082,7 +3088,7 @@ impl GroveDb {
                         "cannot open commitment tree of {total_count} entries from payload: {e}"
                     ))
                 })?;
-                ct.compute_current_state_root().map_err(|e| {
+                ct.compute_current_state_root(grove_version).map_err(|e| {
                     Error::CorruptedData(format!(
                         "cannot compute commitment tree state root from payload: {e}"
                     ))
@@ -3106,7 +3112,7 @@ impl GroveDb {
                         "cannot open bulk append tree of {total_count} entries from payload: {e}"
                     ))
                 })?;
-                tree.compute_current_state_root().map_err(|e| {
+                tree.compute_current_state_root(grove_version).map_err(|e| {
                     Error::CorruptedData(format!(
                         "cannot compute bulk append tree state root from payload: {e}"
                     ))
@@ -3146,7 +3152,7 @@ impl GroveDb {
                             "cannot open dense tree of {count} entries from payload: {e}"
                         ))
                     })?
-                    .root_hash()
+                    .root_hash(grove_version)
                     .unwrap()
                     .map_err(|e| {
                         Error::CorruptedData(format!(

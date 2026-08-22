@@ -2633,7 +2633,7 @@ fn unsafe_dump_load_subtree_roundtrip_preserves_root_hash() {
         .value
         .expect("CommitmentTree::open on A");
     let combined_root = ct_a
-        .compute_current_state_root()
+        .compute_current_state_root(grove_version)
         .expect("compute_current_state_root on A");
     drop(ct_a);
 

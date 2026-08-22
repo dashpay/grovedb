@@ -984,7 +984,7 @@ mod storage_tests {
             .expect("open should succeed");
 
         let root = ct
-            .compute_current_state_root()
+            .compute_current_state_root(GroveVersion::latest())
             .expect("state root should succeed");
         // Empty tree still has a deterministic root
         assert_ne!(root, [0u8; 32], "empty state root should be non-zero");
@@ -1009,7 +1009,7 @@ mod storage_tests {
             .expect("append 0");
 
         let computed = ct
-            .compute_current_state_root()
+            .compute_current_state_root(GroveVersion::latest())
             .expect("state root should succeed");
         let expected =
             crate::compute_commitment_tree_state_root(&r.sinsemilla_root, &r.bulk_state_root);
@@ -1302,8 +1302,12 @@ mod storage_tests {
                 "frontier serialization mismatch at N={}: per-leaf vs append_many_raw",
                 n
             );
-            let a_state = a.compute_current_state_root().expect("state root A");
-            let b_state = b.compute_current_state_root().expect("state root B");
+            let a_state = a
+                .compute_current_state_root(GroveVersion::latest())
+                .expect("state root A");
+            let b_state = b
+                .compute_current_state_root(GroveVersion::latest())
+                .expect("state root B");
             assert_eq!(
                 a_state, b_state,
                 "bulk tree state_root mismatch at N={}: per-leaf vs append_many_raw",
