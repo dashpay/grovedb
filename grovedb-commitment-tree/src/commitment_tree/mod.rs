@@ -690,7 +690,7 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     /// `BulkAppendTree::buffer_record_mismatch`.
     pub fn buffer_record_mismatch(
         &self,
-    ) -> Result<Option<([u8; 32], [u8; 32])>, CommitmentTreeError> {
+    ) -> Result<Option<grovedb_bulk_append_tree::BufferRecordMismatch>, CommitmentTreeError> {
         self.bulk_tree
             .buffer_record_mismatch()
             .map_err(|e| CommitmentTreeError::InvalidData(format!("record audit: {}", e)))

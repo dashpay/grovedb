@@ -519,7 +519,8 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
     /// `BulkAppendTree::buffer_record_mismatch`.
     pub fn buffer_record_mismatch(
         &self,
-    ) -> Result<Option<([u8; 32], [u8; 32])>, PrivateDocumentStoreError> {
+    ) -> Result<Option<grovedb_bulk_append_tree::BufferRecordMismatch>, PrivateDocumentStoreError>
+    {
         self.bulk_tree
             .buffer_record_mismatch()
             .map_err(|e| PrivateDocumentStoreError::InvalidData(format!("record audit: {}", e)))

@@ -8,7 +8,7 @@ use grovedb_version::version::GroveVersion;
 
 use super::{
     capacity_for_height, hash::compute_state_root, AppendNoStateRootResult, AppendResult,
-    BulkAppendTree,
+    BufferRecordMismatch, BulkAppendTree,
 };
 use crate::{
     chunk::serialize_chunk_blob,
@@ -398,11 +398,11 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     }
 
     /// Audit the buffer's hash records (GROVE_V4 root maintenance) against
-    /// its values: `Some((recorded, walked))` when a current position-0 record
+    /// its values: `Some` when a current position-0 record
     /// exists and disagrees with the root walked from the values, `None`
     /// when they agree or no current record exists (a buffer filled under
     /// GROVE_V1..V3 is caught up by its next append and is not an error).
-    pub fn buffer_record_mismatch(&self) -> Result<Option<([u8; 32], [u8; 32])>, BulkAppendError> {
+    pub fn buffer_record_mismatch(&self) -> Result<Option<BufferRecordMismatch>, BulkAppendError> {
         let recorded = self.dense_tree.recorded_root().unwrap().map_err(|e| {
             BulkAppendError::StorageError(format!("dense tree recorded root failed: {}", e))
         })?;
@@ -416,7 +416,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             .map_err(|e| {
                 BulkAppendError::StorageError(format!("dense tree root_hash failed: {}", e))
             })?;
-        Ok((recorded != walked).then_some((recorded, walked)))
+        Ok((recorded != walked).then_some(BufferRecordMismatch { recorded, walked }))
     }
 
     /// Cost-propagating variant of
