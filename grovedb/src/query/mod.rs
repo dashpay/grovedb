@@ -568,6 +568,14 @@ impl PathQuery {
         }
     }
 
+    /// An axis-ordered read of the indexed tree at `path`, from an
+    /// already-built [`AxisQuery`] — use it to set a non-default
+    /// projection (`AxisQuery::keys_only`); the typed constructors below
+    /// cover the default cases.
+    pub fn new_axis(path: Vec<Vec<u8>>, axis_query: AxisQuery) -> Self {
+        Self::new_unsized(path, Self::axis_read_node(axis_query))
+    }
+
     /// An axis-ordered read of the indexed tree at `path`: a page of
     /// `k` entries on `axis`, starting at rank `offset` (0 = first
     /// page).

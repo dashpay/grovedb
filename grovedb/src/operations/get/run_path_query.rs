@@ -27,7 +27,7 @@
 //! unified proof dispatch arrives separately.
 
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt};
-use grovedb_merk::proofs::query::{AggregateFold, AxisTraversal, IndexAxis};
+use grovedb_merk::proofs::query::{AggregateFold, AxisProjection, AxisTraversal, IndexAxis};
 use grovedb_path::SubtreePath;
 use grovedb_version::{
     check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
@@ -37,6 +37,7 @@ use crate::{
     element::aggregate_sum_query::AggregateSumQueryResult,
     operations::proof::indexed_axis::AxisEntries,
     query::{AggregateKind, PathQueryShape},
+    query_result_type::AxisKeys,
     query_result_type::{QueryResultElements, QueryResultType},
     AggregateSumPathQuery, Error, GroveDb, PathQuery, TransactionArg,
 };
@@ -91,6 +92,14 @@ pub enum PathQueryRun {
     /// level (mirroring the branched proof's authenticated-absence
     /// slots, minus the authentication).
     BranchedAxisEntries(Vec<(Vec<u8>, Option<AxisEntries>)>),
+    /// Single-path axis read with `AxisProjection::Keys`: the ranking
+    /// pairs in walk order, read straight from the pinned secondary
+    /// view; no primary value resolved.
+    AxisKeys(AxisKeys),
+    /// Branched axis read with `AxisProjection::Keys`: per branch key,
+    /// in query order, the ranking pairs — or `None` for an absent
+    /// branch, exactly as [`Self::BranchedAxisEntries`].
+    BranchedAxisKeys(Vec<(Vec<u8>, Option<AxisKeys>)>),
     /// `RankOfKey` traversal: the item's 0-based rank in the walk.
     AxisRank(u64),
     /// `AggregateOverValueRange` traversal: one scalar over the value range.
@@ -252,7 +261,9 @@ impl GroveDb {
                     .iter()
                     .map(|segment| segment.as_slice())
                     .collect();
+                let keys_projection = axis.projection == AxisProjection::Keys;
                 let mut branches = Vec::with_capacity(branch_items.len());
+                let mut key_branches = Vec::with_capacity(branch_items.len());
                 for item in branch_items {
                     let grovedb_merk::proofs::query::query_item::QueryItem::Key(branch_key) = item
                     else {
@@ -293,7 +304,11 @@ impl GroveDb {
                         resolved.push(segment);
                     }
                     if chain_broken {
-                        branches.push((branch_key.clone(), None));
+                        if keys_projection {
+                            key_branches.push((branch_key.clone(), None));
+                        } else {
+                            branches.push((branch_key.clone(), None));
+                        }
                         continue;
                     }
                     let full_path = resolved;
@@ -301,15 +316,26 @@ impl GroveDb {
                         &mut cost,
                         self.run_axis_read(full_path.as_slice(), axis, transaction, grove_version)
                     );
-                    let PathQueryRun::AxisEntries(entries) = run else {
-                        return Err(Error::CorruptedCodeExecution(
-                            "branched axis read requires an entry-listing traversal",
-                        ))
-                        .wrap_with_cost(cost);
-                    };
-                    branches.push((branch_key.clone(), Some(entries)));
+                    match run {
+                        PathQueryRun::AxisEntries(entries) if !keys_projection => {
+                            branches.push((branch_key.clone(), Some(entries)));
+                        }
+                        PathQueryRun::AxisKeys(keys) if keys_projection => {
+                            key_branches.push((branch_key.clone(), Some(keys)));
+                        }
+                        _ => {
+                            return Err(Error::CorruptedCodeExecution(
+                                "branched axis read requires an entry-listing traversal",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                    }
                 }
-                Ok(PathQueryRun::BranchedAxisEntries(branches)).wrap_with_cost(cost)
+                if keys_projection {
+                    Ok(PathQueryRun::BranchedAxisKeys(key_branches)).wrap_with_cost(cost)
+                } else {
+                    Ok(PathQueryRun::BranchedAxisEntries(branches)).wrap_with_cost(cost)
+                }
             }
             PathQueryShape::SumBudget { budget, items } => {
                 use grovedb_merk::proofs::query::AggregateSumQuery;
@@ -359,9 +385,25 @@ impl GroveDb {
         let mut cost = Default::default();
         let axis = axis_query.axis;
         let descending = axis_query.descending;
+        let keys_only = axis_query.projection == AxisProjection::Keys;
 
         match &axis_query.traversal {
             AxisTraversal::RankedPage { k, offset } => {
+                if keys_only {
+                    let keys = cost_return_on_error!(
+                        &mut cost,
+                        self.axis_top_k_paginated_keys(
+                            path,
+                            axis,
+                            *k,
+                            *offset,
+                            descending,
+                            transaction,
+                            grove_version
+                        )
+                    );
+                    return Ok(PathQueryRun::AxisKeys(keys)).wrap_with_cost(cost);
+                }
                 let entries = cost_return_on_error!(
                     &mut cost,
                     self.axis_top_k_paginated_entries(
@@ -377,6 +419,22 @@ impl GroveDb {
                 Ok(PathQueryRun::AxisEntries(entries)).wrap_with_cost(cost)
             }
             AxisTraversal::Bounded { lo, hi, limit } => {
+                if keys_only {
+                    let keys = cost_return_on_error!(
+                        &mut cost,
+                        self.axis_bounded_keys(
+                            path,
+                            axis,
+                            *lo,
+                            *hi,
+                            *limit,
+                            descending,
+                            transaction,
+                            grove_version
+                        )
+                    );
+                    return Ok(PathQueryRun::AxisKeys(keys)).wrap_with_cost(cost);
+                }
                 let entries = cost_return_on_error!(
                     &mut cost,
                     self.axis_bounded_entries(
@@ -592,6 +650,124 @@ impl GroveDb {
             )),
         };
         Ok(entries).wrap_with_cost(cost)
+    }
+}
+
+impl GroveDb {
+    /// TopK dispatch across the three axes for the keys projection —
+    /// the `_keys` reads, which never open the primary.
+    #[allow(clippy::too_many_arguments)]
+    fn axis_top_k_paginated_keys(
+        &self,
+        path: &[&[u8]],
+        axis: IndexAxis,
+        k: u16,
+        offset: u64,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<AxisKeys, Error> {
+        let mut cost = Default::default();
+        let keys = match axis {
+            IndexAxis::Count => AxisKeys::Count(cost_return_on_error!(
+                &mut cost,
+                self.indexed_count_top_k_paginated_keys(
+                    path,
+                    k,
+                    offset,
+                    descending,
+                    transaction,
+                    grove_version
+                )
+                .map_ok(|page| page.entries)
+            )),
+            IndexAxis::Sum => AxisKeys::Sum(cost_return_on_error!(
+                &mut cost,
+                self.indexed_sum_top_k_paginated_keys(
+                    path,
+                    k,
+                    offset,
+                    descending,
+                    transaction,
+                    grove_version
+                )
+                .map_ok(|page| page.entries)
+            )),
+            IndexAxis::Avg => AxisKeys::Avg(cost_return_on_error!(
+                &mut cost,
+                self.indexed_avg_top_k_paginated_keys(
+                    path,
+                    k,
+                    offset,
+                    descending,
+                    transaction,
+                    grove_version
+                )
+                .map_ok(|page| page.entries)
+            )),
+        };
+        Ok(keys).wrap_with_cost(cost)
+    }
+
+    /// Bounded dispatch across the three axes for the keys projection.
+    #[allow(clippy::too_many_arguments)]
+    fn axis_bounded_keys(
+        &self,
+        path: &[&[u8]],
+        axis: IndexAxis,
+        lo: i128,
+        hi: i128,
+        limit: u16,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<AxisKeys, Error> {
+        let mut cost = Default::default();
+        let keys = match axis {
+            IndexAxis::Count => {
+                let (lo_count, hi_count) = clamp_count_bounds(lo, hi);
+                AxisKeys::Count(cost_return_on_error!(
+                    &mut cost,
+                    self.indexed_count_range_keys(
+                        path,
+                        lo_count,
+                        hi_count,
+                        descending,
+                        limit,
+                        transaction,
+                        grove_version
+                    )
+                ))
+            }
+            IndexAxis::Sum => {
+                let (lo_sum, hi_sum) = clamp_sum_bounds(lo, hi);
+                AxisKeys::Sum(cost_return_on_error!(
+                    &mut cost,
+                    self.indexed_sum_range_keys(
+                        path,
+                        lo_sum,
+                        hi_sum,
+                        descending,
+                        limit,
+                        transaction,
+                        grove_version
+                    )
+                ))
+            }
+            IndexAxis::Avg => AxisKeys::Avg(cost_return_on_error!(
+                &mut cost,
+                self.indexed_avg_range_keys(
+                    path,
+                    lo,
+                    hi,
+                    descending,
+                    limit,
+                    transaction,
+                    grove_version
+                )
+            )),
+        };
+        Ok(keys).wrap_with_cost(cost)
     }
 }
 

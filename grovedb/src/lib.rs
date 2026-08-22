@@ -260,7 +260,7 @@ pub use query::{
     PathTrunkChunkQuery, SizedQuery,
 };
 #[cfg(any(feature = "minimal", feature = "verify"))]
-pub use query_result_type::{IndexedAxisEntry, IndexedAxisEntrySliceExt};
+pub use query_result_type::{AxisKeys, IndexedAxisEntry, IndexedAxisEntrySliceExt};
 #[cfg(feature = "minimal")]
 use reference_path::path_from_reference_path_type;
 #[cfg(feature = "grovedbg")]
