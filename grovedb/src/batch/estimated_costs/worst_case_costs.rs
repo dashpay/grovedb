@@ -354,35 +354,17 @@ impl GroveOp {
                     propagate,
                     grove_version,
                 );
-                // Worst-case: 1 value write + the root derivation.
-                // GROVE_V1..V3: compute_root_hash visits ALL filled
-                // positions, each 1 read + 2 hashes (value_hash +
-                // node_hash); using practical max: height 8 → 255
-                // positions. GROVE_V4: the insert hashes its ancestor path
-                // and reads/writes the path's hash records — bounded at the
-                // physical ceiling (height 16) — which the legacy figures
-                // dominate on hashes and value reads; the record terms are
-                // added.
-                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
-                let value_size = value.len() as u32;
-                const MAX_COUNT: u32 = 255; // practical worst case (height 8)
-                                            // 2 hash calls per node (value_hash + node_hash)
-                const MAX_HASH_CALLS: u32 = MAX_COUNT * 2;
-                let records =
-                    super::dense_record_maintenance_bound(super::PHYSICAL_MAX_CHUNK_POWER, true);
-                item_cost.add_cost(OperationCost {
-                    // 1 write + MAX_COUNT reads + the record reads and writes
-                    seek_count: 1 + MAX_COUNT + records.record_reads + records.record_writes,
-                    storage_cost: StorageCost {
-                        added_bytes: value_size.saturating_add(records.added_bytes),
-                        replaced_bytes: records.replaced_bytes,
-                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
-                    },
-                    storage_loaded_bytes: (value_size as u64) * (MAX_COUNT as u64)
-                        + records.loaded_bytes,
-                    hash_node_calls: MAX_HASH_CALLS.max(records.hash_calls),
-                    sinsemilla_hash_calls: 0,
-                })
+                // The op carries only the value, not the tree's height, so
+                // the bound is taken at the physical ceiling: a full-buffer
+                // walk (the GROVE_V1..V3 root recompute, and the one-time
+                // catch-up a buffer filled under those versions pays at its
+                // first GROVE_V4 insert) plus the GROVE_V4 hash-record
+                // maintenance. Over-estimating smaller trees is the safe
+                // direction for an admission bound.
+                item_cost.add_cost(super::dense_tree_insert_op_cost(
+                    value.len() as u32,
+                    super::PHYSICAL_MAX_CHUNK_POWER,
+                ))
             }
             GroveOp::ReplaceNonMerkTreeRoot { meta, .. } => GroveDb::worst_case_merk_replace_tree(
                 key,

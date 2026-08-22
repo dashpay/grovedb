@@ -315,6 +315,42 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
         self.hash_node(position)
     }
 
+    /// The root derived from the stored VALUES alone — every filled position
+    /// read back and hashed, never a hash record — under every grove version.
+    ///
+    /// This is the independent audit derivation: integrity walks
+    /// (`verify_grovedb`, a state-sync restore's final binding check) must
+    /// use it, because the record fast path of [`root_hash`](Self::root_hash)
+    /// (root-maintenance version 1) returns what the records say and would
+    /// not notice a payload value altered underneath them. `[0u8; 32]` for an
+    /// empty tree.
+    pub fn root_hash_from_values(&self) -> CostResult<[u8; 32], DenseMerkleError> {
+        self.compute_root_hash()
+    }
+
+    /// The root the hash records claim, if a record with the current
+    /// generation exists at position 0 (this session's, or stored): what a
+    /// root-maintenance-version-1 root read returns. `None` when the tree is
+    /// empty or holds no current record there (a buffer filled under version
+    /// 0, or an earlier epoch's leftover). Does not walk.
+    ///
+    /// Audits compare it with [`root_hash_from_values`](Self::root_hash_from_values):
+    /// a difference means the records and the values disagree — a payload
+    /// altered behind the records, or records written for other values.
+    pub fn recorded_root(&self) -> CostResult<Option<[u8; 32]>, DenseMerkleError> {
+        let mut cost = OperationCost::default();
+        if self.count == 0 {
+            return Ok(None).wrap_with_cost(cost);
+        }
+        if let Some(cached) = self.cached_record(0) {
+            return Ok(Some(cached.record.node_hash)).wrap_with_cost(cost);
+        }
+        match cost_return_on_error!(cost, self.read_record_from_storage(0)) {
+            Some((Some(record), true)) => Ok(Some(record.node_hash)).wrap_with_cost(cost),
+            _ => Ok(None).wrap_with_cost(cost),
+        }
+    }
+
     /// Reset the tree to empty state.
     ///
     /// Sets count to 0, clears the write-through caches and advances the

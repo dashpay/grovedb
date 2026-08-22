@@ -407,6 +407,51 @@ pub(in crate::batch) fn private_document_store_insert_op_cost(
     }
 }
 
+/// Upper-bound cost of the work a single `DenseTreeInsert` performs outside
+/// the parent Merk (charged separately via `average/worst_case_merk_replace_tree`)
+/// on a `DenseAppendOnlyFixedSizeTree` of `height`: the value write and the
+/// root derivation the insert bills in full (its append returns the whole
+/// cost).
+///
+/// Under GROVE_V1..V3 root maintenance every insert walked every filled
+/// position (one read and two blake3 calls each). Under GROVE_V4 an insert
+/// maintains its ancestor path's hash records — O(height) — but a tree
+/// filled under V1..V3 pays the walk once more when its first V4 insert
+/// derives the records it lacks, and that insert is admitted under this
+/// bound, so the full-buffer walk stays: `2^height - 1` value reads (the
+/// loaded bytes scale with the value size — the op's value is the only size
+/// the estimator sees, so it stands in for the buffered values) and two
+/// hashes each, plus the record reads, writes and storage (catch-up
+/// included).
+///
+/// `height` is the tree's declared height (`TreeType::DenseAppendOnlyFixedSizeTree(height)`
+/// on the tree's own layer, average case) or [`PHYSICAL_MAX_CHUNK_POWER`]
+/// (worst case, and when undeclared); clamped to the constructor's range.
+#[cfg(feature = "minimal")]
+pub(in crate::batch) fn dense_tree_insert_op_cost(value_size: u32, height: u8) -> OperationCost {
+    let height = height.clamp(1, PHYSICAL_MAX_CHUNK_POWER);
+    let capacity: u32 = (1u32 << height) - 1;
+    let records = dense_record_maintenance_bound(height, true);
+    OperationCost {
+        // The value write, the walk's value reads, the record reads and
+        // writes.
+        seek_count: 1u32
+            .saturating_add(capacity)
+            .saturating_add(records.record_reads)
+            .saturating_add(records.record_writes),
+        storage_cost: StorageCost {
+            added_bytes: value_size.saturating_add(records.added_bytes),
+            replaced_bytes: records.replaced_bytes,
+            removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+        },
+        storage_loaded_bytes: (value_size as u64).saturating_mul(capacity as u64)
+            + records.loaded_bytes,
+        // The walk (two per filled position) dominates the ancestor path.
+        hash_node_calls: (2 * capacity).max(records.hash_calls),
+        sinsemilla_hash_calls: 0,
+    }
+}
+
 /// Estimated costs types
 #[cfg(feature = "minimal")]
 pub enum EstimatedCostsType {

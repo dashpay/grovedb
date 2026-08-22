@@ -670,6 +670,32 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         ))
     }
 
+    /// [`compute_current_state_root`](Self::compute_current_state_root) with
+    /// the buffer root derived from the stored values alone (never the
+    /// GROVE_V4 hash records): the independent audit derivation for integrity
+    /// walks and a restore's binding check.
+    pub fn compute_current_state_root_from_values(&self) -> Result<[u8; 32], CommitmentTreeError> {
+        let bulk_root = self
+            .bulk_tree
+            .compute_current_state_root_from_values()
+            .map_err(|e| CommitmentTreeError::InvalidData(format!("state root: {}", e)))?;
+        let sinsemilla_root = self.frontier.root_hash();
+        Ok(compute_commitment_tree_state_root(
+            &sinsemilla_root,
+            &bulk_root,
+        ))
+    }
+
+    /// Audit the buffer's hash records against its values; see
+    /// `BulkAppendTree::buffer_record_mismatch`.
+    pub fn buffer_record_mismatch(
+        &self,
+    ) -> Result<Option<([u8; 32], [u8; 32])>, CommitmentTreeError> {
+        self.bulk_tree
+            .buffer_record_mismatch()
+            .map_err(|e| CommitmentTreeError::InvalidData(format!("record audit: {}", e)))
+    }
+
     /// Get a single value from the dense tree buffer by buffer-local position.
     pub fn get_buffer_value(&self, position: u16) -> Result<Option<Vec<u8>>, CommitmentTreeError> {
         self.bulk_tree

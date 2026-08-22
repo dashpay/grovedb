@@ -531,6 +531,77 @@ mod dense_tree {
         QualifiedGroveDbOp::dense_tree_insert_op(vec![b"dense".to_vec()], value)
     }
 
+    /// A standalone dense tree filled under GROVE_V3 (no records): its first
+    /// V4 insert walks and hashes the whole existing buffer to derive the
+    /// records — far more than the ancestor path — and both estimates
+    /// (average at the declared height, worst at the ceiling) must dominate
+    /// it, as well as the O(height) inserts that follow.
+    #[test]
+    fn test_dense_tree_v4_estimates_cover_the_catch_up_insert() {
+        const HEIGHT: u8 = 10;
+        const LEGACY_FILL: u64 = 600;
+        let v4 = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        db.insert(
+            EMPTY_PATH,
+            b"dense",
+            Element::empty_dense_tree(HEIGHT),
+            None,
+            None,
+            &GROVE_V3,
+        )
+        .unwrap()
+        .expect("insert dense tree");
+        let seed_ops: Vec<_> = (0..LEGACY_FILL).map(dense_op).collect();
+        db.apply_batch(seed_ops, None, None, &GROVE_V3)
+            .unwrap()
+            .expect("seed under V3");
+
+        let mut first = None;
+        for position in LEGACY_FILL..LEGACY_FILL + 4 {
+            let op = dense_op(position);
+            let average = average_case_estimate(
+                vec![op.clone()],
+                b"dense",
+                TreeType::DenseAppendOnlyFixedSizeTree(HEIGHT),
+                VALUE_SIZE,
+                v4,
+            );
+            let worst = worst_case_estimate(vec![op.clone()], v4);
+            let CostContext {
+                value,
+                cost: actual,
+            } = db.apply_batch(vec![op], None, None, v4);
+            value.expect("insert should succeed");
+            assert_estimates_dominate(
+                "DenseTreeInsert after a V3 fill (height 10)",
+                position,
+                &average,
+                &worst,
+                &actual,
+            );
+            first.get_or_insert(actual.clone());
+        }
+        // The catch-up really walked the buffer; the average-case estimate
+        // at the declared height bounds it without the ceiling's 2^16.
+        let first = first.expect("first insert ran");
+        assert!(
+            first.hash_node_calls >= 2 * LEGACY_FILL as u32,
+            "catch-up should walk the buffer: {first:?}"
+        );
+        let average = average_case_estimate(
+            vec![dense_op(LEGACY_FILL + 4)],
+            b"dense",
+            TreeType::DenseAppendOnlyFixedSizeTree(HEIGHT),
+            VALUE_SIZE,
+            v4,
+        );
+        assert!(
+            average.hash_node_calls < 2 * (1 << 16),
+            "the declared height bounds below the physical ceiling: {average:?}"
+        );
+    }
+
     /// Every position of a height-5 tree (31 inserts): the estimates'
     /// record terms at the physical ceiling dominate the record maintenance
     /// at every depth.

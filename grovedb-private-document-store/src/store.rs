@@ -498,6 +498,33 @@ impl<'db, S: StorageContext<'db>> PrivateDocumentStore<S> {
         ))
     }
 
+    /// [`compute_current_state_root`](Self::compute_current_state_root) with
+    /// the buffer root derived from the stored values alone (never the
+    /// GROVE_V4 hash records): the independent audit derivation for integrity
+    /// walks and a restore's binding check.
+    pub fn compute_current_state_root_from_values(
+        &self,
+    ) -> Result<[u8; 32], PrivateDocumentStoreError> {
+        let bulk_root = self
+            .bulk_tree
+            .compute_current_state_root_from_values()
+            .map_err(|e| PrivateDocumentStoreError::InvalidData(format!("state root: {}", e)))?;
+        Ok(compute_private_document_store_state_root(
+            &self.config_hash,
+            &bulk_root,
+        ))
+    }
+
+    /// Audit the buffer's hash records against its values; see
+    /// `BulkAppendTree::buffer_record_mismatch`.
+    pub fn buffer_record_mismatch(
+        &self,
+    ) -> Result<Option<([u8; 32], [u8; 32])>, PrivateDocumentStoreError> {
+        self.bulk_tree
+            .buffer_record_mismatch()
+            .map_err(|e| PrivateDocumentStoreError::InvalidData(format!("record audit: {}", e)))
+    }
+
     /// Cost-propagating variant of
     /// [`compute_current_state_root`](Self::compute_current_state_root):
     /// charges the underlying dense-root walk (reads and hashes) plus the

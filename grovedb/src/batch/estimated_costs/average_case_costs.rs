@@ -429,35 +429,17 @@ impl GroveOp {
                     propagate,
                     grove_version,
                 );
-                // Additional cost: 1 value write + the root derivation.
-                // GROVE_V1..V3: compute_root_hash visits all filled
-                // positions, each 1 storage read + 2 hash calls (value_hash
-                // + node_hash); average count ≈ 8 (half-full tree, height
-                // 4). GROVE_V4: the insert hashes its ancestor path and
-                // reads/writes the path's hash records, bounded here at the
-                // physical ceiling (height 16) since the op does not carry
-                // the tree's height.
-                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
-                let value_size = value.len() as u32;
-                const AVG_COUNT: u32 = 8;
-                // 2 hash calls per filled node (value_hash + node_hash)
-                const AVG_HASH_CALLS: u32 = AVG_COUNT * 2;
-                let records =
-                    super::dense_record_maintenance_bound(super::PHYSICAL_MAX_CHUNK_POWER, true);
-                item_cost.add_cost(OperationCost {
-                    // 1 write + AVG_COUNT reads for root hash + the record
-                    // reads and writes
-                    seek_count: 1 + AVG_COUNT + records.record_reads + records.record_writes,
-                    storage_cost: StorageCost {
-                        added_bytes: value_size.saturating_add(records.added_bytes),
-                        replaced_bytes: records.replaced_bytes,
-                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
-                    },
-                    storage_loaded_bytes: (value_size as u64) * (AVG_COUNT as u64)
-                        + records.loaded_bytes,
-                    hash_node_calls: AVG_HASH_CALLS.max(records.hash_calls),
-                    sinsemilla_hash_calls: 0,
-                })
+                // A bound at the tree's declared height
+                // (`TreeType::DenseAppendOnlyFixedSizeTree(height)` on its
+                // own layer) — a full-buffer walk (the GROVE_V1..V3 root
+                // recompute, and the one-time catch-up a buffer filled under
+                // those versions pays at its first GROVE_V4 insert) plus the
+                // GROVE_V4 hash-record maintenance; at the physical ceiling
+                // when the layer is not declared.
+                item_cost.add_cost(super::dense_tree_insert_op_cost(
+                    value.len() as u32,
+                    append_tree_chunk_power.unwrap_or(super::PHYSICAL_MAX_CHUNK_POWER),
+                ))
             }
             GroveOp::ReplaceNonMerkTreeRoot { meta, .. } => {
                 GroveDb::average_case_merk_replace_tree(
@@ -862,6 +844,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                 GroveOp::CommitmentTreeInsert { .. }
                     | GroveOp::PrivateDocumentStoreInsert { .. }
                     | GroveOp::BulkAppend { .. }
+                    | GroveOp::DenseTreeInsert { .. }
             ) {
                 crate::batch::batch_structure::keyless_op_tree_key(&key).and_then(|tree_key| {
                     // Match the declared layer by KEY BYTES, not by
@@ -911,6 +894,13 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                                     TreeType::PrivateDocumentStore(cp),
                                 )
                                 | (GroveOp::BulkAppend { .. }, TreeType::BulkAppendTree(cp)) => cp,
+                                // The dense tree's height plays the same
+                                // role as an epoch scale: its buffer holds
+                                // `2^height - 1` positions.
+                                (
+                                    GroveOp::DenseTreeInsert { .. },
+                                    TreeType::DenseAppendOnlyFixedSizeTree(cp),
+                                ) => cp,
                                 _ => return None,
                             };
                             // A declared chunk power outside the range the

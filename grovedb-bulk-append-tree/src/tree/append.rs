@@ -377,6 +377,48 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         Ok(compute_state_root(&mmr_root, &dense_root))
     }
 
+    /// The state root with the dense buffer's root derived from the stored
+    /// VALUES alone (never from the GROVE_V4 hash records) — the independent
+    /// audit derivation for integrity walks and a restore's binding check.
+    /// Identical to [`compute_current_state_root`](Self::compute_current_state_root)
+    /// on a consistent tree; see `DenseFixedSizedMerkleTree::root_hash_from_values`.
+    pub fn compute_current_state_root_from_values(&self) -> Result<[u8; 32], BulkAppendError> {
+        let mmr_root = match self.last_mmr_root {
+            Some(r) => r,
+            None => self.get_mmr_root()?,
+        };
+        let dense_root = self
+            .dense_tree
+            .root_hash_from_values()
+            .unwrap()
+            .map_err(|e| {
+                BulkAppendError::StorageError(format!("dense tree root_hash failed: {}", e))
+            })?;
+        Ok(compute_state_root(&mmr_root, &dense_root))
+    }
+
+    /// Audit the buffer's hash records (GROVE_V4 root maintenance) against
+    /// its values: `Some((recorded, walked))` when a current position-0 record
+    /// exists and disagrees with the root walked from the values, `None`
+    /// when they agree or no current record exists (a buffer filled under
+    /// GROVE_V1..V3 is caught up by its next append and is not an error).
+    pub fn buffer_record_mismatch(&self) -> Result<Option<([u8; 32], [u8; 32])>, BulkAppendError> {
+        let recorded = self.dense_tree.recorded_root().unwrap().map_err(|e| {
+            BulkAppendError::StorageError(format!("dense tree recorded root failed: {}", e))
+        })?;
+        let Some(recorded) = recorded else {
+            return Ok(None);
+        };
+        let walked = self
+            .dense_tree
+            .root_hash_from_values()
+            .unwrap()
+            .map_err(|e| {
+                BulkAppendError::StorageError(format!("dense tree root_hash failed: {}", e))
+            })?;
+        Ok((recorded != walked).then_some((recorded, walked)))
+    }
+
     /// Cost-propagating variant of
     /// [`compute_current_state_root`](Self::compute_current_state_root).
     ///

@@ -104,6 +104,13 @@ record rewrite per level. That is `2 + d` blake3 calls, at most `2d` record read
 `d + 1` record writes — O(height), whatever the fill. The root is the record at
 position 0 (one read).
 
+Records are derived state: `root_hash` trusts them, so integrity audits
+(`verify_grovedb`, the binding check at the end of a state-sync restore) derive the
+root from the values instead (`root_hash_from_values`, and the
+`compute_current_state_root_from_values` of the trees built on the buffer) and
+report a position-0 record that disagrees with the walked root as its own issue
+(`__dense_hash_records__`).
+
 A record that is absent (a buffer filled under GROVE_V1..V3) or stale (an earlier
 generation) is recomputed from the values — the version-0 walk over that subtree —
 and recorded, so the catch-up costs at most one version-0 walk per buffer, once.
