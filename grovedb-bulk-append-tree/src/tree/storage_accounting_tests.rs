@@ -15,7 +15,9 @@ use grovedb_costs::{
     },
     OperationCost,
 };
-use grovedb_version::version::{v1::GROVE_V1, v3::GROVE_V3, v4::GROVE_V4, GroveVersion};
+use grovedb_version::version::{
+    v1::GROVE_V1, v2::GROVE_V2, v3::GROVE_V3, v4::GROVE_V4, GroveVersion,
+};
 
 use crate::{test_utils::MemStorageContext, BulkAppendError, BulkAppendTree};
 
@@ -101,7 +103,7 @@ fn run(version: &GroveVersion) -> Run {
 /// nothing is prepaid at append time and no slot is read.
 #[test]
 fn v0_issues_every_put_without_cost_info_and_bills_no_accounting() {
-    for version in [&GROVE_V1, &GROVE_V3] {
+    for version in [&GROVE_V1, &GROVE_V2, &GROVE_V3] {
         let run = run(version);
         assert!(
             run.accounting
