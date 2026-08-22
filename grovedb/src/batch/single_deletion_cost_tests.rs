@@ -4,7 +4,7 @@
 mod tests {
 
     use grovedb_costs::storage_cost::removal::{
-        Identifier, StorageRemovalPerEpochByIdentifier,
+        Identifier, StorageRemovalPerEpochByIdentifier, StorageRemovedBytes,
         StorageRemovedBytes::{BasicStorageRemoval, SectionedStorageRemoval},
         UNKNOWN_EPOCH,
     };
@@ -18,9 +18,22 @@ mod tests {
         Element,
     };
 
-    #[test]
-    fn latest_delete_preserves_basic_plus_default_sectioned_removal_cost() {
-        let grove_version = GroveVersion::latest();
+    /// Inserts one flagged item at the root and deletes it through
+    /// `delete_with_sectional_storage_function`, reporting the removed key
+    /// bytes as a `BasicStorageRemoval` and the removed value bytes as a
+    /// `SectionedStorageRemoval` under the default identifier's
+    /// `UNKNOWN_EPOCH`. That is exactly the shape Drive's sectional removal
+    /// callback produces, and it is what drives the `Basic += Sectioned`
+    /// arm in `StorageRemovedBytes` when Merk folds the key and value
+    /// removals together.
+    ///
+    /// Returns `(added_bytes, removed_bytes, removed_key_bytes,
+    /// removed_value_bytes)` — the insertion's added bytes, the deletion's
+    /// combined `StorageRemovedBytes`, and the two raw figures the callback
+    /// observed (so the test can state what the legacy arithmetic loses).
+    fn insert_then_delete_with_basic_key_and_default_sectioned_value(
+        grove_version: &GroveVersion,
+    ) -> (u32, StorageRemovedBytes, u32, u32) {
         let db = make_empty_grovedb();
 
         let insertion_cost = db
@@ -35,6 +48,7 @@ mod tests {
             .cost_as_result()
             .expect("expected to insert successfully");
 
+        let mut observed_removed = (0u32, 0u32);
         let deletion_cost = db
             .delete_with_sectional_storage_function(
                 EMPTY_PATH,
@@ -42,6 +56,7 @@ mod tests {
                 None,
                 None,
                 &mut |_element_flags, removed_key_bytes, removed_value_bytes| {
+                    observed_removed = (removed_key_bytes, removed_value_bytes);
                     let mut removed_bytes = StorageRemovalPerEpochByIdentifier::default();
                     let mut removed_bytes_for_identity = IntMap::new();
                     removed_bytes_for_identity.insert(UNKNOWN_EPOCH, removed_value_bytes);
@@ -56,12 +71,43 @@ mod tests {
             .cost_as_result()
             .expect("expected to delete successfully");
 
+        (
+            insertion_cost.storage_cost.added_bytes,
+            deletion_cost.storage_cost.removed_bytes,
+            observed_removed.0,
+            observed_removed.1,
+        )
+    }
+
+    /// Bytes added by inserting `key1 -> Item("cat", flags "apple")` at the
+    /// root, and therefore the bytes a full-refund deletion must report.
+    const BASIC_PLUS_DEFAULT_SECTIONED_ADDED_BYTES: u32 = 155;
+
+    #[test]
+    fn latest_delete_preserves_basic_plus_default_sectioned_removal_cost() {
+        // GROVE_V4+ (issue #683): folding the basic key removal into the
+        // sectioned value removal keeps the default section, so the deletion
+        // refunds every byte the insertion added.
+        let (added_bytes, removed_bytes, removed_key_bytes, removed_value_bytes) =
+            insert_then_delete_with_basic_key_and_default_sectioned_value(GroveVersion::latest());
+
+        assert_eq!(added_bytes, BASIC_PLUS_DEFAULT_SECTIONED_ADDED_BYTES);
         assert_eq!(
-            deletion_cost
-                .storage_cost
-                .removed_bytes
-                .total_removed_bytes(),
-            insertion_cost.storage_cost.added_bytes
+            removed_key_bytes + removed_value_bytes,
+            BASIC_PLUS_DEFAULT_SECTIONED_ADDED_BYTES,
+            "the sectional callback must see every added byte split across key and value"
+        );
+
+        // Both the basic key bytes and the sectioned value bytes land in the
+        // default identifier's UNKNOWN_EPOCH entry.
+        let mut expected_epochs = IntMap::new();
+        expected_epochs.insert(UNKNOWN_EPOCH, BASIC_PLUS_DEFAULT_SECTIONED_ADDED_BYTES);
+        let mut expected_sections = StorageRemovalPerEpochByIdentifier::default();
+        expected_sections.insert(Identifier::default(), expected_epochs);
+        assert_eq!(removed_bytes, SectionedStorageRemoval(expected_sections));
+        assert_eq!(
+            removed_bytes.total_removed_bytes(),
+            BASIC_PLUS_DEFAULT_SECTIONED_ADDED_BYTES
         );
     }
 
@@ -70,59 +116,35 @@ mod tests {
         // GROVE_V3 is live on mainnet with the legacy removal arithmetic that
         // drops the mutated default section when a basic removal is combined
         // with a sectioned one (issue #683). Replay of v3 blocks depends on
-        // reproducing that undercount exactly, so v3 must NOT pick up the v4
-        // fix exercised by
+        // reproducing that undercount EXACTLY, so this pins the legacy figure
+        // rather than merely asserting "less than added": v3 must report an
+        // empty sectioned removal — zero bytes — for a deletion whose callback
+        // observed all 155 added bytes. The v4 fix is exercised by
         // `latest_delete_preserves_basic_plus_default_sectioned_removal_cost`.
-        let grove_version = &grovedb_version::version::v3::GROVE_V3;
-        let db = make_empty_grovedb();
+        let (added_bytes, removed_bytes, removed_key_bytes, removed_value_bytes) =
+            insert_then_delete_with_basic_key_and_default_sectioned_value(
+                &grovedb_version::version::v3::GROVE_V3,
+            );
 
-        let insertion_cost = db
-            .insert(
-                EMPTY_PATH,
-                b"key1",
-                Element::new_item_with_flags(b"cat".to_vec(), Some(b"apple".to_vec())),
-                None,
-                None,
-                grove_version,
-            )
-            .cost_as_result()
-            .expect("expected to insert successfully");
+        assert_eq!(added_bytes, BASIC_PLUS_DEFAULT_SECTIONED_ADDED_BYTES);
+        assert_eq!(
+            removed_key_bytes + removed_value_bytes,
+            BASIC_PLUS_DEFAULT_SECTIONED_ADDED_BYTES,
+            "the sectional callback sees the same bytes under every version"
+        );
 
-        let deletion_cost = db
-            .delete_with_sectional_storage_function(
-                EMPTY_PATH,
-                b"key1",
-                None,
-                None,
-                &mut |_element_flags, removed_key_bytes, removed_value_bytes| {
-                    let mut removed_bytes = StorageRemovalPerEpochByIdentifier::default();
-                    let mut removed_bytes_for_identity = IntMap::new();
-                    removed_bytes_for_identity.insert(UNKNOWN_EPOCH, removed_value_bytes);
-                    removed_bytes.insert(Identifier::default(), removed_bytes_for_identity);
-                    Ok((
-                        BasicStorageRemoval(removed_key_bytes),
-                        SectionedStorageRemoval(removed_bytes),
-                    ))
-                },
-                grove_version,
-            )
-            .cost_as_result()
-            .expect("expected to delete successfully");
-
-        // Legacy behavior undercounts: the combined removal loses bytes
-        // relative to what was actually inserted.
-        assert!(
-            deletion_cost
-                .storage_cost
-                .removed_bytes
-                .total_removed_bytes()
-                < insertion_cost.storage_cost.added_bytes,
-            "v3 must keep the legacy undercounting removal arithmetic; got {} of {} added bytes",
-            deletion_cost
-                .storage_cost
-                .removed_bytes
-                .total_removed_bytes(),
-            insertion_cost.storage_cost.added_bytes
+        // Legacy `Basic += Sectioned`: the default section is removed from the
+        // map, mutated, and never reinserted — the whole removal is lost.
+        assert_eq!(
+            removed_bytes,
+            SectionedStorageRemoval(StorageRemovalPerEpochByIdentifier::default()),
+            "v3 must keep the legacy default-section-dropping removal arithmetic"
+        );
+        assert_eq!(
+            removed_bytes.total_removed_bytes(),
+            0,
+            "v3 legacy total must stay pinned at the shipped value (0 of {} added bytes)",
+            BASIC_PLUS_DEFAULT_SECTIONED_ADDED_BYTES
         );
     }
 
