@@ -22,7 +22,9 @@
 mod v0;
 mod v1;
 
+#[cfg(feature = "storage")]
 use grovedb_dense_fixed_sized_merkle_tree::SlotWriteAccounting;
+#[cfg(feature = "storage")]
 use grovedb_merkle_mountain_range::LeafValueStorageCost;
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
@@ -30,6 +32,7 @@ use crate::BulkAppendError;
 
 /// How an append's data-storage writes are reported to the storage cost
 /// layer. Selected per grove version by [`append_storage_accounting`].
+#[cfg(feature = "storage")]
 #[derive(Clone, Copy)]
 pub(crate) struct AppendStorageAccounting {
     /// How the dense-buffer slot write is reported.
@@ -41,6 +44,7 @@ pub(crate) struct AppendStorageAccounting {
     prepay_chunk_share: bool,
 }
 
+#[cfg(feature = "storage")]
 impl AppendStorageAccounting {
     /// The entry's chunk-blob share to charge as added storage at its append:
     /// its own bytes, or nothing when the blob is charged in full at
@@ -55,6 +59,7 @@ impl AppendStorageAccounting {
 }
 
 /// The storage accounting an append uses under `grove_version`.
+#[cfg(feature = "storage")]
 pub(crate) fn append_storage_accounting(
     grove_version: &GroveVersion,
 ) -> Result<AppendStorageAccounting, BulkAppendError> {

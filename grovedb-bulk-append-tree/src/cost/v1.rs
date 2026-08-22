@@ -2,12 +2,15 @@
 //!
 //! Adds the peak-bagging merges [`v0`](super::v0) omitted. Used from GROVE_V4.
 
+#[cfg(feature = "storage")]
 use grovedb_dense_fixed_sized_merkle_tree::SlotWriteAccounting;
-use grovedb_merkle_mountain_range::{
-    hash_count_for_push, hash_count_for_root_bagging, LeafValueStorageCost,
-};
+#[cfg(feature = "storage")]
+use grovedb_merkle_mountain_range::LeafValueStorageCost;
+use grovedb_merkle_mountain_range::{hash_count_for_push, hash_count_for_root_bagging};
 
+#[cfg(feature = "storage")]
 use super::AppendStorageAccounting;
+#[cfg(feature = "storage")]
 use crate::chunk::chunk_blob_entry_bytes;
 
 pub(super) fn compaction_hash_count(leaf_count: u64, mmr_size_after_push: u64) -> u32 {
@@ -29,6 +32,7 @@ pub(super) fn compaction_hash_count(leaf_count: u64, mmr_size_after_push: u64) -
 /// - The compaction blob is reported as a replacement of the entry bytes it
 ///   supersedes (all prepaid), leaving only its framing — and the MMR
 ///   internal nodes — as added storage.
+#[cfg(feature = "storage")]
 pub(super) fn append_storage_accounting() -> AppendStorageAccounting {
     AppendStorageAccounting {
         slot_write: SlotWriteAccounting::AgainstCommitted,
