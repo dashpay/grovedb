@@ -288,23 +288,21 @@ impl GroveOp {
                 // The compaction share shrinks with the epoch, so an
                 // undeclared layer takes the largest share (epoch 2), not the
                 // ceiling epoch's.
-                let (amortized_compaction_added, amortized_compaction_hashes) =
+                let (amortized_compaction_added, amortized_compaction_hashes, amortized_seeks) =
                     match append_tree_chunk_power {
                         Some(chunk_power) => (
                             grovedb_bulk_append_tree::amortized_compaction_added_bytes(
                                 1u64 << chunk_power.min(16) as u32,
                             ),
                             grovedb_bulk_append_tree::amortized_compaction_hashes(chunk_power),
+                            grovedb_bulk_append_tree::amortized_compaction_seeks(chunk_power),
                         ),
                         None => (
                             super::max_amortized_compaction_added_bytes(),
                             grovedb_bulk_append_tree::max_amortized_compaction_hashes(),
+                            grovedb_bulk_append_tree::max_amortized_compaction_seeks(),
                         ),
                     };
-                // The puts a compacting append issues at commit instead of
-                // its slot and record: the chunk blob and up to the MMR
-                // merge bound of internal nodes — bounded, once per epoch.
-                const MAX_COMPACTION_PUTS: u32 = 1 + 65;
                 // The preprocessing read of the stored element loads its
                 // caller-supplied flags too; bound them with the parent
                 // layer's declared flags size — the same metadata the
@@ -326,10 +324,11 @@ impl GroveOp {
                 item_cost.add_cost(OperationCost {
                     // The stored element read by preprocessing + 1 buffer
                     // entry write + 1 path record write + the buffer model's
-                    // record reads + the compaction's puts as a bound.
+                    // record reads + the compaction's commit-time puts
+                    // amortized over the epoch.
                     seek_count: 3u32
                         .saturating_add(buffer.cost.seek_count)
-                        .saturating_add(MAX_COMPACTION_PUTS),
+                        .saturating_add(amortized_seeks),
                     storage_cost: StorageCost {
                         // Chunk-blob share + the variable format's per-entry
                         // prefix (a generic bulk tree declares no entry

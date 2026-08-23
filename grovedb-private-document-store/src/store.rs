@@ -857,11 +857,19 @@ mod atomicity_tests {
             "model + amortized compaction + bulk root + composite, got {:?}",
             compacting_cost
         );
-        // The read-back and the MMR work are not billed: the reads are the
-        // model's plus the two fixed root reads of the state root (the
-        // persisted MMR root and the last insert's record), whether or not
-        // this particular state needs them.
-        assert_eq!(compacting_cost.seek_count, model.record_reads + 2);
+        // The read-back and the MMR work are not billed: the seeks are the
+        // model's reads, the compaction's commit-time puts amortized over
+        // the epoch, the slot and record puts this append does not issue
+        // (a buffered append's are charged at commit, not here), and the
+        // two fixed root reads of the state root (the persisted MMR root and
+        // the last insert's record), whether or not this state needs them.
+        assert_eq!(
+            compacting_cost.seek_count,
+            model.record_reads
+                + grovedb_bulk_append_tree::amortized_compaction_seeks(2)
+                + grovedb_bulk_append_tree::BUFFER_CHURN_PUTS
+                + 2
+        );
         assert_eq!(
             compacting_cost.storage_loaded_bytes,
             model.record_reads as u64 * model.record_len as u64 + 32 + model.record_len as u64

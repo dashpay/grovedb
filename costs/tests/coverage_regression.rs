@@ -149,6 +149,7 @@ fn add_key_value_storage_costs_respects_verification_flags_and_errors() {
         },
         new_node: true,
         needs_value_verification: false,
+        prepaid: false,
     };
 
     let err = with_mismatch
@@ -178,6 +179,7 @@ fn add_key_value_storage_costs_respects_verification_flags_and_errors() {
         },
         new_node: false,
         needs_value_verification: false,
+        prepaid: false,
     };
 
     update_node
@@ -200,6 +202,7 @@ fn add_key_value_storage_costs_respects_verification_flags_and_errors() {
         },
         new_node: true,
         needs_value_verification: true,
+        prepaid: false,
     };
 
     let err = needs_value_verification
@@ -533,6 +536,7 @@ fn key_value_storage_cost_paths_are_exercised() {
         },
         new_node: true,
         needs_value_verification: true,
+        prepaid: false,
     }
     .combined_removed_bytes();
     assert_eq!(combined, BasicStorageRemoval(12));
@@ -550,6 +554,7 @@ fn key_value_storage_cost_paths_are_exercised() {
         },
         new_node: true,
         needs_value_verification: true,
+        prepaid: false,
     };
     let b = KeyValueStorageCost {
         key_storage_cost: StorageCost {
@@ -564,6 +569,7 @@ fn key_value_storage_cost_paths_are_exercised() {
         },
         new_node: false,
         needs_value_verification: false,
+        prepaid: false,
     };
 
     let sum = a.clone() + b.clone();

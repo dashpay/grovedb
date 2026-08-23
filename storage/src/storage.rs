@@ -678,6 +678,7 @@ mod tests {
             value_storage_cost: StorageCost::default(),
             new_node: false,
             needs_value_verification: false,
+            prepaid: false,
         }
     }
 

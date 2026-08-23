@@ -259,15 +259,15 @@ impl GroveOp {
                 // The compaction share shrinks with the epoch: the smallest
                 // epoch is the bound.
                 let amortized_compaction_added = super::max_amortized_compaction_added_bytes();
-                const MAX_COMPACTION_PUTS: u32 = 1 + 65;
                 const PER_PUT_KEY_AND_LENGTHS: u32 = 50;
                 let paid_value = value_size.saturating_add(5); // + the value-length varint
                 item_cost.add_cost(OperationCost {
                     // The stored element read, the slot and record writes, the
-                    // model's record reads, the compaction's puts.
+                    // model's record reads, the compaction's commit-time puts
+                    // amortized at the smallest epoch.
                     seek_count: 3u32
                         .saturating_add(buffer.cost.seek_count)
-                        .saturating_add(MAX_COMPACTION_PUTS),
+                        .saturating_add(grovedb_bulk_append_tree::max_amortized_compaction_seeks()),
                     storage_cost: StorageCost {
                         // Value + the variable format's per-entry prefix +
                         // the compaction share.

@@ -61,10 +61,10 @@ pub enum LeafValueStorageCost {
     PartlyPrepaid(fn(&[u8]) -> u32),
     /// Every node written — leaf and internal — is already paid for by the
     /// owner (the bulk-append tree charges each append its share of the
-    /// chunk blob, its framing and the MMR nodes, amortized over the epoch),
-    /// so the put carries zero-byte cost information: nothing added, nothing
-    /// replaced, no key charged. The owner bills the amortized figures
-    /// itself.
+    /// chunk blob, its framing, the MMR nodes and the commit-time puts,
+    /// amortized over the epoch), so the put carries
+    /// `KeyValueStorageCost::prepaid()`: nothing added, nothing replaced, no
+    /// key charged, no seek. The owner bills the amortized figures itself.
     Prepaid,
 }
 
@@ -108,12 +108,7 @@ impl<'a, C> MmrStore<'a, C> {
         serialized_len: u32,
     ) -> Option<KeyValueStorageCost> {
         match (self.leaf_value_storage_cost, value) {
-            (LeafValueStorageCost::Prepaid, _) => Some(KeyValueStorageCost {
-                key_storage_cost: StorageCost::default(),
-                value_storage_cost: StorageCost::default(),
-                new_node: false,
-                needs_value_verification: false,
-            }),
+            (LeafValueStorageCost::Prepaid, _) => Some(KeyValueStorageCost::prepaid()),
             (LeafValueStorageCost::New, _) | (_, None) => None,
             (LeafValueStorageCost::PartlyPrepaid(prepaid), Some(value)) => {
                 // The paid size of a stored value is its length plus the
@@ -132,6 +127,7 @@ impl<'a, C> MmrStore<'a, C> {
                     },
                     new_node: true,
                     needs_value_verification: true,
+                    prepaid: false,
                 })
             }
         }

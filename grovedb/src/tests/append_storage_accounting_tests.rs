@@ -85,41 +85,14 @@ fn paid(len: u32) -> u32 {
 fn frontier_len(position: u64) -> u32 {
     42 + 32 * position.count_ones()
 }
-/// Seek-count residual of the one thing the fixed model cannot flatten: a
-/// compacting append writes the chunk blob and the MMR nodes its push
-/// creates at commit (`1 + trailing_ones(leaf_count_before)`), instead of
-/// the slot and record a buffered append writes (2) — once per epoch,
-/// bounded by the merge count. `leaf_count_before` is the chunk count before
-/// the push.
-fn compaction_seek_residual(leaf_count_before: u64) -> i64 {
-    // + the 32-byte MMR root it persists.
-    1 + leaf_count_before.trailing_ones() as i64 + 1 - 2
-}
-
-/// Everything but `seek_count` must be identical; `seek_count` may differ by
-/// exactly `seek_residual`.
-fn assert_fixed(what: &str, base: &OperationCost, cost: &OperationCost, seek_residual: i64) {
+/// Every figure — storage, loaded bytes, seeks, hashes, Sinsemilla — must be
+/// identical: the fixed model, whatever the position (the compacting
+/// append's commit-time puts are prepaid and their seeks amortized into
+/// every append, so not even the seek count moves).
+fn assert_fixed(what: &str, base: &OperationCost, cost: &OperationCost) {
     assert_eq!(
-        (
-            cost.storage_cost.clone(),
-            cost.storage_loaded_bytes,
-            cost.hash_node_calls,
-            cost.sinsemilla_hash_calls
-        ),
-        (
-            base.storage_cost.clone(),
-            base.storage_loaded_bytes,
-            base.hash_node_calls,
-            base.sinsemilla_hash_calls
-        ),
-        "{what}: storage, loaded bytes, hashes and Sinsemilla must be the fixed model;\nbase \
-         {base:?}\ncost {cost:?}"
-    );
-    assert_eq!(
-        cost.seek_count as i64,
-        base.seek_count as i64 + seek_residual,
-        "{what}: seeks must be the fixed model plus the compaction residual {seek_residual};\nbase \
-         {base:?}\ncost {cost:?}"
+        cost, base,
+        "{what}: every figure must be the fixed model;\nbase {base:?}\ncost {cost:?}"
     );
 }
 
@@ -276,8 +249,8 @@ fn accounting_gates_are_locked_before_v4() {
 /// long-term footprint as added storage, the buffer slot / path record /
 /// blob-rewrite part / frontier as replaced, the buffer's fixed model and
 /// the frontier's fixed model in hashes and bytes — at every position,
-/// including the compactions at 15, 31 and 47, whose only trace is the
-/// commit-time seek residual of the blob and MMR node puts.
+/// including the compactions at 15, 31 and 47 (their blob and MMR node puts
+/// are prepaid, their seeks amortized into every append).
 #[test]
 fn commitment_tree_append_cost_is_fixed_across_positions() {
     const CHUNK_POWER: u8 = 4;
@@ -285,12 +258,7 @@ fn commitment_tree_append_cost_is_fixed_across_positions() {
     let base = ct_insert(&db, 0, &GROVE_V4);
     for position in 1..48u64 {
         let cost = ct_insert(&db, position as u32, &GROVE_V4);
-        let residual = if position % 16 == 15 {
-            compaction_seek_residual(position / 16)
-        } else {
-            0
-        };
-        assert_fixed(&format!("position {position}"), &base, &cost, residual);
+        assert_fixed(&format!("position {position}"), &base, &cost);
     }
     // What the fixed charge is made of.
     let model = buffer_model(CHUNK_POWER);
@@ -321,8 +289,7 @@ fn commitment_tree_append_cost_is_fixed_across_positions() {
 
 /// The same at chunk_power 11 — the shielded pool's scale — around the
 /// epoch boundary: the last buffered append, the compacting one and the
-/// first of the next epoch cost the same, the compaction's seek residual
-/// aside.
+/// first of the next epoch cost the same.
 #[test]
 fn commitment_tree_epoch_boundary_at_chunk_power_11_is_charged_the_fixed_model() {
     const CHUNK_POWER: u8 = 11;
@@ -335,13 +302,8 @@ fn commitment_tree_epoch_boundary_at_chunk_power_11_is_charged_the_fixed_model()
     let before = ct_insert(&db, EPOCH - 2, &GROVE_V4);
     let compacting = ct_insert(&db, EPOCH - 1, &GROVE_V4);
     let after = ct_insert(&db, EPOCH, &GROVE_V4);
-    assert_fixed(
-        "compacting append",
-        &before,
-        &compacting,
-        compaction_seek_residual(0),
-    );
-    assert_fixed("first of the next epoch", &before, &after, 0);
+    assert_fixed("compacting append", &before, &compacting);
+    assert_fixed("first of the next epoch", &before, &after);
     // No 640 KB anywhere: the blob is prepaid a share at a time.
     assert!(
         compacting.storage_cost.replaced_bytes < 4_000
@@ -360,7 +322,7 @@ fn frontier_is_charged_the_fixed_model_at_every_position() {
     let base = ct_insert(&db, 0, &GROVE_V4);
     for position in 1..34u32 {
         let cost = ct_insert(&db, position, &GROVE_V4);
-        assert_fixed(&format!("position {position}"), &base, &cost, 0);
+        assert_fixed(&format!("position {position}"), &base, &cost);
     }
     assert_eq!(base.sinsemilla_hash_calls, 33);
     // The actual frontier at position 33 is 42 + 32·2 = 106 bytes; the
@@ -429,15 +391,11 @@ fn legacy_commitment_tree_is_charged_the_fixed_model_after_one_backfill_put() {
     }
     let first = ct_insert(&db, EPOCH, &GROVE_V4);
     let base = ct_insert(&db, EPOCH + 1, &GROVE_V4);
-    assert_fixed("first V4 append (backfill put)", &base, &first, 1);
+    // The backfill put is prepaid (no seek), so even this append is the model.
+    assert_fixed("first V4 append (backfill put)", &base, &first);
     for position in EPOCH + 2..2 * EPOCH + 2 {
         let cost = ct_insert(&db, position, &GROVE_V4);
-        let residual = if position % EPOCH == EPOCH - 1 {
-            compaction_seek_residual((position / EPOCH) as u64)
-        } else {
-            0
-        };
-        assert_fixed(&format!("position {position}"), &base, &cost, residual);
+        assert_fixed(&format!("position {position}"), &base, &cost);
     }
     // The same figure as a tree that ran under V4 from the start.
     let v4_db = ct_db(CHUNK_POWER, &GROVE_V4);
@@ -448,7 +406,6 @@ fn legacy_commitment_tree_is_charged_the_fixed_model_after_one_backfill_put() {
         "V4-only tree",
         &base,
         &ct_insert(&v4_db, EPOCH + 2, &GROVE_V4),
-        0,
     );
     assert_eq!(root_hash(&db, &GROVE_V4), {
         for position in EPOCH + 3..2 * EPOCH + 2 {
@@ -525,24 +482,17 @@ fn bulk_append_tree_cost_differs_only_by_the_value_bytes() {
         normalized.storage_cost.added_bytes = normalized.storage_cost.added_bytes + 8 - len;
         normalized.storage_cost.replaced_bytes =
             normalized.storage_cost.replaced_bytes + paid(8) + 8 - paid(len) - len;
-        let residual = if position % 4 == 3 {
-            compaction_seek_residual(position as u64 / 4)
-        } else {
-            0
-        };
         assert_fixed(
             &format!("position {position} (len {len})"),
             base,
             &normalized,
-            residual,
         );
     }
     assert_verifies(&db, &GROVE_V4);
 }
 
 /// `PrivateDocumentStore` (fixed entry size): the same fixed charge on every
-/// append; the compacting append differs by the seek residual and by the
-/// bulk state root's record read (the buffer is empty right after it).
+/// append, the compacting one included.
 #[test]
 fn private_document_store_append_cost_is_fixed() {
     const CHUNK_POWER: u8 = 2; // epoch 4
@@ -565,12 +515,7 @@ fn private_document_store_append_cost_is_fixed() {
         ctx.value.expect("v4 append");
         let cost = ctx.cost;
         let base = base.get_or_insert(cost.clone());
-        let residual = if position % 4 == 3 {
-            compaction_seek_residual(position / 4)
-        } else {
-            0
-        };
-        assert_fixed(&format!("position {position}"), base, &cost, residual);
+        assert_fixed(&format!("position {position}"), base, &cost);
     }
     assert_verifies(&db, &GROVE_V4);
 }
