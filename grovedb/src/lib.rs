@@ -1874,6 +1874,29 @@ impl GroveDb {
         self.db.start_transaction()
     }
 
+    /// Begin a transaction whose reads are **pinned to the committed
+    /// state as of this call**: every get and iterator routed through it
+    /// reads the same RocksDB snapshot, however many operations the
+    /// caller spreads over the transaction.
+    ///
+    /// This is the read-consistency primitive a multi-operation read
+    /// needs. A plain [`GroveDb::start_transaction`] transaction — and a
+    /// `None` transaction argument — reads the *latest* committed state
+    /// on every operation, so a concurrent commit landing between two
+    /// operations can make one logical read observe two different
+    /// committed states. Under this transaction it cannot: the branched
+    /// axis read's per-branch probes and walks, for example, all see one
+    /// state.
+    ///
+    /// Read-only by intent. `set_snapshot` also arms commit-time
+    /// conflict detection against the snapshot, so committing writes
+    /// made through this transaction can fail with `Busy` where a plain
+    /// transaction's commit would not; take a plain transaction to
+    /// write.
+    pub fn start_snapshot_read_transaction(&self) -> Transaction<'_> {
+        self.db.start_snapshot_read_transaction()
+    }
+
     /// Consumes and commits a previously started transaction.
     ///
     /// On success the transaction's writes become visible to subsequent

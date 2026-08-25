@@ -484,6 +484,110 @@ mod tests {
         }
     }
 
+    /// A snapshot read transaction pins the ENTIRE branched read — every
+    /// per-branch absence probe and every axis walk — to the committed
+    /// state at the transaction's creation: commits landing afterwards
+    /// are invisible through it, while a plain transaction and a `None`
+    /// read see them. This is the primitive a caller uses to make a
+    /// multi-operation read observe exactly one committed state.
+    #[test]
+    fn snapshot_read_transaction_pins_a_branched_read_to_one_committed_state() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_branched_psits(
+            &db,
+            grove_version,
+            &[
+                (b"alice", &[(b"m1", 10), (b"m2", 30)]),
+                (b"carol", &[(b"m1", 7)]),
+            ],
+        );
+        let alice_path = [TEST_LEAF, b"alice".as_slice(), b"scores".as_slice()];
+        let alice_before = db
+            .indexed_sum_top_k_paginated(alice_path.as_ref(), 2, 0, true, None, grove_version)
+            .unwrap()
+            .expect("alice pre-commit page")
+            .entries;
+
+        let snapshot_transaction = db.start_snapshot_read_transaction();
+        let plain_transaction = db.start_transaction();
+
+        // A "concurrent block commit" lands after both transactions
+        // began: bob's branch springs into existence and alice gains a
+        // row that changes her top-k.
+        build_branched_psits(&db, grove_version, &[(b"bob", &[(b"m1", 99)])]);
+        db.insert_into_provable_sum_indexed_tree(
+            alice_path.as_ref(),
+            b"m3",
+            Element::new_sum_item(100),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert post-snapshot alice entry");
+        let alice_after = db
+            .indexed_sum_top_k_paginated(alice_path.as_ref(), 2, 0, true, None, grove_version)
+            .unwrap()
+            .expect("alice post-commit page")
+            .entries;
+        assert_ne!(alice_before, alice_after, "the commit changed alice's page");
+
+        let axis_query = AxisQuery::top_k(IndexAxis::Sum, 2, 0, true);
+        let path_query = PathQuery::new_branched_axis(
+            vec![TEST_LEAF.to_vec()],
+            vec![b"alice".to_vec(), b"bob".to_vec(), b"carol".to_vec()],
+            vec![b"scores".to_vec()],
+            axis_query,
+        );
+        let read = |transaction| {
+            let run = db
+                .run_path_query(
+                    &path_query,
+                    true,
+                    true,
+                    true,
+                    QueryResultType::QueryKeyElementPairResultType,
+                    transaction,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("branched read");
+            let PathQueryRun::BranchedAxisEntries(branches) = run else {
+                panic!("expected BranchedAxisEntries");
+            };
+            branches
+        };
+
+        // Under the snapshot: bob is still absent and alice's page is
+        // her pre-commit top-k — the whole union, absence probes
+        // included, reads the snapshot's state.
+        let pinned = read(Some(&snapshot_transaction));
+        assert!(
+            pinned[1].1.is_none(),
+            "bob must stay absent under the snapshot"
+        );
+        assert_eq!(
+            pinned[0].1.as_ref().expect("alice present"),
+            &AxisEntries::Sum(alice_before),
+            "alice's page under the snapshot is her pre-commit top-k"
+        );
+
+        // A plain transaction started at the same moment reads LATEST
+        // committed state on each operation — the exact gap the
+        // snapshot transaction closes.
+        let unpinned = read(Some(&plain_transaction));
+        assert!(unpinned[1].1.is_some(), "a plain transaction sees bob");
+
+        // A `None` read sees the new state too.
+        let fresh = read(None);
+        assert!(fresh[1].1.is_some(), "a committed read sees bob");
+        assert_eq!(
+            fresh[0].1.as_ref().expect("alice present"),
+            &AxisEntries::Sum(alice_after),
+            "the committed read reflects the new row"
+        );
+    }
+
     // -----------------------------------------------------------------
     // Sum budget
     // -----------------------------------------------------------------

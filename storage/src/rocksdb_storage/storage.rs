@@ -43,7 +43,8 @@ use lazy_static::lazy_static;
 use rocksdb::IngestExternalFileOptions;
 use rocksdb::{
     checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, FlushOptions,
-    OptimisticTransactionDB, Transaction, WriteBatchWithTransaction, DEFAULT_COLUMN_FAMILY_NAME,
+    OptimisticTransactionDB, OptimisticTransactionOptions, Transaction, WriteBatchWithTransaction,
+    WriteOptions, DEFAULT_COLUMN_FAMILY_NAME,
 };
 
 use super::{PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbTransactionContext};
@@ -586,6 +587,32 @@ impl RocksDbStorage {
                     sst_path.display()
                 ))
             })
+    }
+
+    /// Start a transaction whose reads are **pinned to the committed
+    /// state as of this call** when routed through the transactional
+    /// storage contexts.
+    ///
+    /// A plain [`Storage::start_transaction`] transaction reads the
+    /// latest committed state on every operation: RocksDB transactions
+    /// do not read from a snapshot unless one is requested at creation
+    /// and injected into each read's options. This constructor requests
+    /// the snapshot; the contexts inject it (`read_options` on the
+    /// prefixed transaction contexts), so every get and iterator through
+    /// this transaction observes one consistent committed state, however
+    /// many operations the caller spreads over it.
+    ///
+    /// Intended for multi-operation READS that must not tear across a
+    /// concurrent commit — e.g. a branched axis read probing and walking
+    /// several subtrees. Writing through it is not the intended use:
+    /// `set_snapshot` also arms commit-time conflict detection against
+    /// the snapshot, so commits of such a transaction can fail with
+    /// `Busy` where a plain transaction's would not.
+    pub fn start_snapshot_read_transaction(&self) -> Tx<'_> {
+        let mut transaction_options = OptimisticTransactionOptions::default();
+        transaction_options.set_snapshot(true);
+        self.db
+            .transaction_opt(&WriteOptions::default(), &transaction_options)
     }
 
     /// Clears all data from the database using range deletion on each
