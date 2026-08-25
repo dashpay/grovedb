@@ -488,17 +488,17 @@ impl GroveDb {
 
     fn check_count_offset_target_tree_type(
         &self,
+        transaction: &Transaction,
         path_query: &PathQuery,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         use grovedb_merk::TreeType as MerkTreeType;
         let mut cost = OperationCost::default();
-        let tx = self.start_transaction();
         let path_slices: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
         let open_result = self
             .open_transactional_merk_at_path(
                 path_slices.as_slice().into(),
-                &tx,
+                transaction,
                 None,
                 grove_version,
             )
@@ -560,6 +560,9 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         let prove_options = prove_options.unwrap_or_default();
+        // ONE snapshot for the entire recursive generation — see the V1
+        // entry for the rationale.
+        let snapshot_transaction = self.start_snapshot_read_transaction();
 
         if path_query.query.offset.is_some() && path_query.query.offset != Some(0) {
             return Err(Error::InvalidQuery(
@@ -625,6 +628,7 @@ impl GroveDb {
         let root_layer = cost_return_on_error!(
             &mut cost,
             self.prove_subqueries(
+                &snapshot_transaction,
                 vec![],
                 path_query,
                 &mut limit,
@@ -657,6 +661,7 @@ impl GroveDb {
     /// ╚══════════════════════════════════════════════════════════════════╝
     pub(crate) fn prove_subqueries(
         &self,
+        transaction: &Transaction,
         path: Vec<&[u8]>,
         path_query: &PathQuery,
         overall_limit: &mut Option<u16>,
@@ -672,8 +677,6 @@ impl GroveDb {
             ))
             .wrap_with_cost(cost);
         }
-
-        let tx = self.start_transaction();
 
         let query = cost_return_on_error_no_add!(
             cost,
@@ -693,7 +696,12 @@ impl GroveDb {
 
         let subtree = cost_return_on_error!(
             &mut cost,
-            self.open_transactional_merk_at_path(path.as_slice().into(), &tx, None, grove_version)
+            self.open_transactional_merk_at_path(
+                path.as_slice().into(),
+                transaction,
+                None,
+                grove_version
+            )
         );
 
         // V0 proofs are LOCKED to the wire format shipped with grove
@@ -1044,6 +1052,7 @@ impl GroveDb {
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
                                     self.prove_subqueries(
+                                        transaction,
                                         lower_path,
                                         path_query,
                                         overall_limit,
@@ -1555,6 +1564,11 @@ impl GroveDb {
     ) -> CostResult<GroveDBProof, Error> {
         let mut cost = OperationCost::default();
         let prove_options = prove_options.unwrap_or_default();
+        // ONE snapshot for the entire recursive generation: every layer
+        // (and the count-offset target check) reads the same committed
+        // state, so a concurrent commit cannot yield a proof whose
+        // layers do not hash-chain.
+        let snapshot_transaction = self.start_snapshot_read_transaction();
 
         if path_query.query.offset.is_some() && path_query.query.offset != Some(0) {
             // A non-zero offset is honored *only* if the surrounding
@@ -1581,7 +1595,11 @@ impl GroveDb {
             }
             cost_return_on_error!(
                 &mut cost,
-                self.check_count_offset_target_tree_type(path_query, grove_version)
+                self.check_count_offset_target_tree_type(
+                    &snapshot_transaction,
+                    path_query,
+                    grove_version
+                )
             );
         }
         if path_query.query.limit == Some(0) {
@@ -1596,6 +1614,7 @@ impl GroveDb {
         let root_layer = cost_return_on_error!(
             &mut cost,
             self.prove_subqueries_v1(
+                &snapshot_transaction,
                 vec![],
                 path_query,
                 &mut limit,
@@ -1740,6 +1759,7 @@ impl GroveDb {
     /// MmrTree/BulkAppendTree elements with type-specific proofs.
     pub(crate) fn prove_subqueries_v1(
         &self,
+        transaction: &Transaction,
         path: Vec<&[u8]>,
         path_query: &PathQuery,
         overall_limit: &mut Option<u16>,
@@ -1755,8 +1775,6 @@ impl GroveDb {
             ))
             .wrap_with_cost(cost);
         }
-
-        let tx = self.start_transaction();
 
         let query = cost_return_on_error_no_add!(
             cost,
@@ -1776,7 +1794,12 @@ impl GroveDb {
 
         let subtree = cost_return_on_error!(
             &mut cost,
-            self.open_transactional_merk_at_path(path.as_slice().into(), &tx, None, grove_version)
+            self.open_transactional_merk_at_path(
+                path.as_slice().into(),
+                transaction,
+                None,
+                grove_version
+            )
         );
 
         let limit = if path.len() < path_query.path.len() {
@@ -2299,7 +2322,7 @@ impl GroveDb {
                                     self.build_sum_budget_window_payload(
                                         &lower_path,
                                         path_query,
-                                        &tx,
+                                        transaction,
                                         grove_version,
                                     )
                                 );
@@ -2334,7 +2357,7 @@ impl GroveDb {
                                         path_query,
                                         mmr_size,
                                         overall_limit,
-                                        &tx,
+                                        transaction,
                                         grove_version,
                                     )
                                 );
@@ -2361,7 +2384,7 @@ impl GroveDb {
                                         total_count,
                                         chunk_power,
                                         overall_limit,
-                                        &tx,
+                                        transaction,
                                         grove_version,
                                     )
                                 );
@@ -2390,7 +2413,7 @@ impl GroveDb {
                                         dense_count,
                                         dense_height,
                                         overall_limit,
-                                        &tx,
+                                        transaction,
                                         grove_version,
                                     )
                                 );
@@ -2416,7 +2439,7 @@ impl GroveDb {
                                         total_count,
                                         chunk_power,
                                         overall_limit,
-                                        &tx,
+                                        transaction,
                                         grove_version,
                                     )
                                 );
@@ -2499,7 +2522,7 @@ impl GroveDb {
                                     self.build_axis_descent_payload(
                                         lower_subtree_path,
                                         axis_query,
-                                        &tx,
+                                        transaction,
                                         &payload_batch,
                                         grove_version,
                                     )
@@ -2575,7 +2598,7 @@ impl GroveDb {
 
                                 let mut layer_proof = cost_return_on_error!(
                                     &mut cost,
-                                    self.prove_subqueries_v1(
+                                    self.prove_subqueries_v1(transaction,
                                         lower_path.clone(),
                                         path_query,
                                         overall_limit,
@@ -2604,7 +2627,7 @@ impl GroveDb {
                                         cidx_subtree_path,
                                         grovedb_element::indexed::IndexAxis::Count,
                                         secondary_root_key,
-                                        &tx,
+                                        transaction,
                                         None,
                                         grove_version,
                                     )
@@ -2687,7 +2710,7 @@ impl GroveDb {
 
                                 let mut layer_proof = cost_return_on_error!(
                                     &mut cost,
-                                    self.prove_subqueries_v1(
+                                    self.prove_subqueries_v1(transaction,
                                         lower_path.clone(),
                                         path_query,
                                         overall_limit,
@@ -2716,7 +2739,7 @@ impl GroveDb {
                                         sidx_subtree_path,
                                         grovedb_element::indexed::IndexAxis::Sum,
                                         secondary_root_key,
-                                        &tx,
+                                        transaction,
                                         None,
                                         grove_version,
                                     )
@@ -2791,7 +2814,7 @@ impl GroveDb {
 
                                 let mut layer_proof = cost_return_on_error!(
                                     &mut cost,
-                                    self.prove_subqueries_v1(
+                                    self.prove_subqueries_v1(transaction,
                                         lower_path.clone(),
                                         path_query,
                                         overall_limit,
@@ -2832,7 +2855,7 @@ impl GroveDb {
                                             pcpsit_subtree_path,
                                             axis,
                                             sec_root_key.clone(),
-                                            &tx,
+                                            transaction,
                                             None,
                                             grove_version,
                                         )
@@ -2890,7 +2913,7 @@ impl GroveDb {
 
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
-                                    self.prove_subqueries_v1(
+                                    self.prove_subqueries_v1(transaction,
                                         lower_path,
                                         path_query,
                                         overall_limit,
@@ -2943,7 +2966,7 @@ impl GroveDb {
                                         node,
                                         non_merk_elem,
                                         &path,
-                                        &tx,
+                                        transaction,
                                         grove_version,
                                     )
                                 );
@@ -2973,7 +2996,7 @@ impl GroveDb {
                                     &mut cost,
                                     self.open_transactional_merk_at_path(
                                         child_path.as_slice().into(),
-                                        &tx,
+                                        transaction,
                                         None,
                                         grove_version
                                     )
@@ -3038,7 +3061,7 @@ impl GroveDb {
                                     &mut cost,
                                     self.open_transactional_merk_at_path(
                                         indexed_path.as_slice().into(),
-                                        &tx,
+                                        transaction,
                                         None,
                                         grove_version
                                     )
@@ -3051,7 +3074,7 @@ impl GroveDb {
                                     self.indexed_secondary_attestation(
                                         indexed_elem,
                                         indexed_path.as_slice(),
-                                        &tx,
+                                        transaction,
                                         grove_version,
                                     )
                                 );
@@ -3097,7 +3120,7 @@ impl GroveDb {
 
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
-                                    self.prove_subqueries_v1(
+                                    self.prove_subqueries_v1(transaction,
                                         lower_path,
                                         path_query,
                                         overall_limit,
@@ -3134,7 +3157,7 @@ impl GroveDb {
 
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
-                                    self.prove_subqueries_v1(
+                                    self.prove_subqueries_v1(transaction,
                                         lower_path,
                                         path_query,
                                         overall_limit,
@@ -3166,7 +3189,7 @@ impl GroveDb {
 
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
-                                    self.prove_subqueries_v1(
+                                    self.prove_subqueries_v1(transaction,
                                         lower_path,
                                         path_query,
                                         overall_limit,
