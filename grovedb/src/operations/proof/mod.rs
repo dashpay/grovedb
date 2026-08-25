@@ -1223,3 +1223,17 @@ fn decode_dense_proof(bytes: &[u8]) -> String {
         Err(e) => format!("Error decoding DenseTree proof: {}", e),
     }
 }
+
+/// Test-only seam: fired by both `prove_query` entry points (V0 and V1)
+/// right after the generation snapshot is taken and before any layer is
+/// generated, so a test can land a commit deterministically inside the
+/// generation window and prove the whole recursive generation reads that
+/// snapshot.
+#[cfg(test)]
+pub(crate) mod prove_test_hooks {
+    use std::cell::RefCell;
+    thread_local! {
+        pub(crate) static AFTER_PROOF_SNAPSHOT: RefCell<Option<Box<dyn FnMut()>>> =
+            const { RefCell::new(None) };
+    }
+}

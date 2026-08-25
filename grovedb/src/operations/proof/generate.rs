@@ -563,6 +563,15 @@ impl GroveDb {
         // ONE snapshot for the entire recursive generation — see the V1
         // entry for the rationale.
         let snapshot_transaction = self.start_snapshot_read_transaction();
+        // Test-only seam: lets a regression test land a commit
+        // deterministically inside the generation window — after the
+        // snapshot, before any layer is generated.
+        #[cfg(test)]
+        super::prove_test_hooks::AFTER_PROOF_SNAPSHOT.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook();
+            }
+        });
 
         if path_query.query.offset.is_some() && path_query.query.offset != Some(0) {
             return Err(Error::InvalidQuery(
@@ -1569,6 +1578,15 @@ impl GroveDb {
         // state, so a concurrent commit cannot yield a proof whose
         // layers do not hash-chain.
         let snapshot_transaction = self.start_snapshot_read_transaction();
+        // Test-only seam: lets a regression test land a commit
+        // deterministically inside the generation window — after the
+        // snapshot, before any layer is generated.
+        #[cfg(test)]
+        super::prove_test_hooks::AFTER_PROOF_SNAPSHOT.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook();
+            }
+        });
 
         if path_query.query.offset.is_some() && path_query.query.offset != Some(0) {
             // A non-zero offset is honored *only* if the surrounding
