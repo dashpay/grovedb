@@ -222,7 +222,7 @@ impl GroveDb {
         // Offset gate centralized in `apply_count_offset_envelope_gate`:
         // V0 envelopes reject any non-zero offset (V0 is a shipped
         // wire format that never supported `SizedQuery::offset`);
-        // V1 envelopes honor a non-zero offset iff the query
+        // V1 envelopes honor a non-zero offset if and only if the query
         // validates as offset-paginated. The tree-type check
         // (ProvableCountTree / ProvableCountSumTree) happens at
         // leaf-dispatch time inside `run_count_offset_layer_dispatch`.

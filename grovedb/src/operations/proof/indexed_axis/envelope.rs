@@ -158,7 +158,7 @@ pub struct IndexedAxisRangeProof {
     /// Encoded canonically per the PCPSIT TLV rules (sorted by tag,
     /// no duplicates, 0..=2 entries — the queried axis is removed).
     pub other_axes_root_hashes: Vec<(u8, [u8; 32])>,
-    /// Discriminator: `true` iff the queried target is a PCPSIT (the
+    /// Discriminator: `true` if and only if the queried target is a PCPSIT (the
     /// deepest-layer composition uses `axes_digest(...)` even when only
     /// the queried axis is in the TLV). For PCIT and PSIT this is
     /// `false` and the composition uses the single-secondary root hash

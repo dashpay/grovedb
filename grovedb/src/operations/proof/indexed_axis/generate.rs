@@ -455,10 +455,10 @@ impl GroveDb {
     /// the requested axis:
     /// - [`IndexAxis::Count`] supports
     ///   [`Element::ProvableCountIndexedTree`] (PCIT) or
-    ///   [`Element::ProvableCountProvableSumIndexedTree`] (PCPSIT) iff
+    ///   [`Element::ProvableCountProvableSumIndexedTree`] (PCPSIT) if and only if
     ///   the count axis is in the PCPSIT's TLV.
     /// - [`IndexAxis::Sum`] supports
-    ///   [`Element::ProvableSumIndexedTree`] (PSIT) or PCPSIT iff the
+    ///   [`Element::ProvableSumIndexedTree`] (PSIT) or PCPSIT if and only if the
     ///   sum axis is in the TLV.
     /// - [`IndexAxis::Avg`] supports PCPSIT only, and only if the avg
     ///   axis is in the TLV.

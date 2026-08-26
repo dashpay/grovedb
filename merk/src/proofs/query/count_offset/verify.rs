@@ -14,7 +14,7 @@
 //!    independently re-derive:
 //!    - `skipped` — number of in-range items the prover claims to have
 //!      skipped via offset. Must equal the requested offset (or be ≤
-//!      it iff the in-range population was smaller, see "Truncated
+//!      it if and only if the in-range population was smaller, see "Truncated
 //!      offset" below).
 //!    - `returned_items` — the actual values the verifier reconstructs
 //!      from value-bearing nodes inside the limit window.

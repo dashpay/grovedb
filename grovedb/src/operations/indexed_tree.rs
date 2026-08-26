@@ -2761,11 +2761,11 @@ impl GroveDb {
     /// Axis-compatibility rules:
     /// - [`IndexAxis::Count`] accepts
     ///   [`Element::ProvableCountIndexedTree`] (single-axis, always count)
-    ///   or [`Element::ProvableCountProvableSumIndexedTree`] (PCPSIT) iff
+    ///   or [`Element::ProvableCountProvableSumIndexedTree`] (PCPSIT) if and only if
     ///   its TLV contains the count axis.
     /// - [`IndexAxis::Sum`] accepts
     ///   [`Element::ProvableSumIndexedTree`] (single-axis, always sum) or
-    ///   PCPSIT iff its TLV contains the sum axis.
+    ///   PCPSIT if and only if its TLV contains the sum axis.
     /// - [`IndexAxis::Avg`] only accepts PCPSIT, and only if its TLV
     ///   contains the avg axis.
     ///
