@@ -2211,6 +2211,48 @@ mod snapshot_read_transactions {
         assert!(second >= first, "age must not run backwards");
     }
 
+    /// The savepoint family is part of the wrapper's public surface —
+    /// platform sets a savepoint per state transition and rewinds one
+    /// failed group without discarding the transaction. Pin the
+    /// pass-through: writes since `set_savepoint` are undone by
+    /// `rollback_to_savepoint`, writes before it survive, and the
+    /// rollback family stays callable on a snapshot read transaction.
+    #[test]
+    fn savepoints_unwind_writes_since_the_savepoint() {
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let ctx = storage
+            .get_immediate_storage_context(PATH.into(), &tx)
+            .unwrap();
+
+        ctx.put(b"kept", b"kept_value", None, None)
+            .unwrap()
+            .expect("pre-savepoint put");
+        tx.set_savepoint();
+        ctx.put(b"unwound", b"gone", None, None)
+            .unwrap()
+            .expect("post-savepoint put");
+        assert_eq!(get(&ctx, b"unwound"), Some(b"gone".to_vec()));
+
+        tx.rollback_to_savepoint().expect("rollback to savepoint");
+        assert_eq!(get(&ctx, b"kept"), Some(b"kept_value".to_vec()));
+        assert_eq!(get(&ctx, b"unwound"), None);
+
+        storage
+            .commit_transaction(tx)
+            .unwrap()
+            .expect("commit after savepoint rewind");
+
+        // The rollback family is allowed on a snapshot read
+        // transaction — it can only unwind writes, which such a
+        // transaction cannot accumulate.
+        let snapshot_tx = storage.start_snapshot_read_transaction();
+        snapshot_tx.set_savepoint();
+        snapshot_tx
+            .rollback_to_savepoint()
+            .expect("savepoint family is a harmless no-op on a snapshot read transaction");
+    }
+
     /// Holding the snapshot past the debug warning threshold and then
     /// reading exercises the loud-log path (fires once per
     /// transaction); reads keep returning pinned data regardless.

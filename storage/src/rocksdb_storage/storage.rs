@@ -324,6 +324,27 @@ impl<'db> Tx<'db> {
     pub fn rollback(&self) -> Result<(), Error> {
         self.tx.rollback().map_err(RocksDBError)
     }
+
+    /// Set a savepoint: a later [`Tx::rollback_to_savepoint`] undoes
+    /// every operation in this transaction since this call. Used by
+    /// callers that interleave many independent write groups in one
+    /// transaction (e.g. per-state-transition savepoints in block
+    /// processing) to unwind one failed group without discarding the
+    /// transaction. Allowed on a snapshot read transaction — like
+    /// [`Tx::rollback`], the savepoint family only ever *unwinds*
+    /// writes (which a snapshot read transaction cannot accumulate),
+    /// so there is nothing to refuse.
+    pub fn set_savepoint(&self) {
+        self.tx.set_savepoint()
+    }
+
+    /// Undo all operations in this transaction since the most recent
+    /// [`Tx::set_savepoint`], popping that savepoint. See
+    /// [`Tx::set_savepoint`] for the intended use and the
+    /// snapshot-read policy.
+    pub fn rollback_to_savepoint(&self) -> Result<(), Error> {
+        self.tx.rollback_to_savepoint().map_err(RocksDBError)
+    }
 }
 
 /// Storage which uses RocksDB as its backend.
