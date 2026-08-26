@@ -21,9 +21,7 @@ impl<'a, 'db> TxRef<'a, 'db> {
     /// Commit the transaction if it wasn't received from outside
     pub(crate) fn commit_local(self) -> Result<(), Error> {
         match self {
-            TxRef::Owned(tx) => tx
-                .commit()
-                .map_err(|e| grovedb_storage::Error::from(e).into()),
+            TxRef::Owned(tx) => tx.commit().map_err(Into::into),
             TxRef::Borrowed(_) => Ok(()),
         }
     }

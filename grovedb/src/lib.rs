@@ -1888,11 +1888,23 @@ impl GroveDb {
     /// axis read's per-branch probes and walks, for example, all see one
     /// state.
     ///
-    /// Read-only by intent. `set_snapshot` also arms commit-time
-    /// conflict detection against the snapshot, so committing writes
-    /// made through this transaction can fail with `Busy` where a plain
-    /// transaction's commit would not; take a plain transaction to
-    /// write.
+    /// Read-only **enforced**: `set_snapshot` also arms commit-time
+    /// conflict detection against the snapshot, so writes through this
+    /// transaction could fail with `Busy` where a plain transaction's
+    /// commit would not — instead of leaving that timing-dependent trap
+    /// open, every write entry point and [`GroveDb::commit_transaction`]
+    /// refuse a snapshot read transaction with a typed
+    /// `SnapshotReadOnlyTransaction` storage error. Take a plain
+    /// transaction to write.
+    ///
+    /// The snapshot is O(1) to take but pins every post-snapshot
+    /// RocksDB version while held — a transaction kept across a client
+    /// session, or leaked on an error path, silently becomes compaction
+    /// debt and write amplification. Scope it to a single
+    /// multi-operation read and drop it promptly. `snapshot_age()` on
+    /// the returned transaction exposes the hold time, and debug builds
+    /// log loudly when a read executes on a snapshot held longer than a
+    /// second.
     pub fn start_snapshot_read_transaction(&self) -> Transaction<'_> {
         self.db.start_snapshot_read_transaction()
     }

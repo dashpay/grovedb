@@ -33,7 +33,7 @@ use rocksdb::DBRawIteratorWithThreadMode;
 
 use super::make_prefixed_key;
 use crate::{
-    rocksdb_storage::storage::{Db, SubtreePrefix, Tx},
+    rocksdb_storage::storage::{Db, RawTx, SubtreePrefix},
     RawIterator,
 };
 
@@ -187,7 +187,7 @@ impl RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'_, 
     }
 }
 
-impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'a, Tx<'a>>> {
+impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'a, RawTx<'a>>> {
     fn seek_to_first(&mut self) -> CostContext<()> {
         self.raw_iterator.seek(self.prefix);
         ().wrap_with_cost(OperationCost::with_seek_count(1))

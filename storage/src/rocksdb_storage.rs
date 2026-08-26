@@ -39,4 +39,4 @@ pub use storage_context::{
     PrefixedRocksDbTransactionContext,
 };
 
-pub use self::storage::RocksDbStorage;
+pub use self::storage::{RocksDbStorage, Tx};

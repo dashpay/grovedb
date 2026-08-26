@@ -28,7 +28,11 @@
 
 //! Implementation for a storage abstraction over RocksDB.
 
-use std::path::Path;
+use std::{
+    path::Path,
+    sync::atomic::AtomicBool,
+    time::{Duration, Instant},
+};
 
 use error::Error;
 use grovedb_costs::{
@@ -42,9 +46,9 @@ use lazy_static::lazy_static;
 #[cfg(feature = "unsafe-dump-load")]
 use rocksdb::IngestExternalFileOptions;
 use rocksdb::{
-    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, FlushOptions,
-    OptimisticTransactionDB, OptimisticTransactionOptions, Transaction, WriteBatchWithTransaction,
-    WriteOptions, DEFAULT_COLUMN_FAMILY_NAME,
+    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, DBRawIteratorWithThreadMode,
+    FlushOptions, OptimisticTransactionDB, OptimisticTransactionOptions, ReadOptions, Transaction,
+    WriteBatchWithTransaction, WriteOptions, DEFAULT_COLUMN_FAMILY_NAME,
 };
 
 use super::{PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbTransactionContext};
@@ -112,8 +116,215 @@ lazy_static! {
 /// Type alias for a database
 pub(crate) type Db = OptimisticTransactionDB;
 
-/// Type alias for a transaction
-pub(crate) type Tx<'db> = Transaction<'db, Db>;
+/// Type alias for the raw RocksDB transaction. Private to this module:
+/// every read and write the storage layer performs through a transaction
+/// must go through the [`Tx`] wrapper's methods, never the raw handle.
+pub(crate) type RawTx<'db> = Transaction<'db, Db>;
+
+/// Reads executing on a snapshot held longer than this trip a loud
+/// debug-build warning. A snapshot is O(1) to take but pins every
+/// post-snapshot version while held, so a leaked or session-scoped
+/// snapshot transaction silently turns into compaction debt and write
+/// amplification. The intended holders are millisecond-scoped
+/// multi-operation reads; one second is three orders of magnitude above
+/// that, so a trip is a bug in the caller, not load jitter.
+#[cfg(debug_assertions)]
+const SNAPSHOT_AGE_WARN_THRESHOLD: Duration = Duration::from_secs(1);
+
+/// A started storage transaction.
+///
+/// Wraps the raw RocksDB optimistic transaction together with the
+/// snapshot-read marker set by
+/// [`RocksDbStorage::start_snapshot_read_transaction`]. The wrapper is
+/// the single funnel for everything the storage layer does through a
+/// transaction:
+///
+/// - **Reads** ([`Tx::get`], [`Tx::get_cf`], [`Tx::raw_iterator`])
+///   inject the transaction's snapshot into every read's options.
+///   RocksDB transactions do NOT read from their snapshot by default,
+///   so a read added later that bypassed this funnel would silently
+///   revert to latest-committed reads; keeping the raw un-optioned
+///   accessors private makes that bypass impossible outside this
+///   module.
+/// - **Writes and commit** ([`Tx::put`], [`Tx::delete`],
+///   [`Tx::rebuild_from_writebatch`], [`Tx::commit`], and their `_cf`
+///   variants) refuse a snapshot read transaction with
+///   [`Error::SnapshotReadOnlyTransaction`]: `set_snapshot` arms
+///   commit-time conflict detection, so writes through one may fail
+///   with `Busy`/`TryAgain` where a plain transaction's would have
+///   committed. Refusing up front turns that timing-dependent trap
+///   into a deterministic typed error.
+pub struct Tx<'db> {
+    tx: RawTx<'db>,
+    /// `Some(creation time)` iff this transaction was created via
+    /// `start_snapshot_read_transaction`. Doubles as the read-only
+    /// marker and the age baseline for [`Tx::snapshot_age`].
+    snapshot_read_since: Option<Instant>,
+    /// Debug builds warn once per transaction on a long-held snapshot;
+    /// this remembers that the warning already fired.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    age_warned: AtomicBool,
+}
+
+impl<'db> Tx<'db> {
+    /// Wrap a plain transaction (reads latest committed state).
+    pub(crate) fn new_plain(tx: RawTx<'db>) -> Self {
+        Tx {
+            tx,
+            snapshot_read_since: None,
+            age_warned: AtomicBool::new(false),
+        }
+    }
+
+    /// Wrap a snapshot read transaction (reads pinned to creation-time
+    /// committed state; writes and commit refused).
+    pub(crate) fn new_snapshot_read(tx: RawTx<'db>) -> Self {
+        Tx {
+            tx,
+            snapshot_read_since: Some(Instant::now()),
+            age_warned: AtomicBool::new(false),
+        }
+    }
+
+    /// Whether this transaction was created via
+    /// `start_snapshot_read_transaction`: reads are pinned to its
+    /// creation-time committed state and writes/commit are refused.
+    pub fn is_snapshot_read(&self) -> bool {
+        self.snapshot_read_since.is_some()
+    }
+
+    /// How long this transaction's snapshot has been held, or `None`
+    /// for a plain transaction. While held, the snapshot pins every
+    /// post-snapshot version in RocksDB — intended holds are
+    /// millisecond-scoped, and debug builds log loudly when a read
+    /// executes on a snapshot older than one second.
+    pub fn snapshot_age(&self) -> Option<Duration> {
+        self.snapshot_read_since.map(|since| since.elapsed())
+    }
+
+    /// The typed refusal for write operations on a snapshot read
+    /// transaction, `Ok(())` on a plain transaction.
+    fn refuse_snapshot_write(&self, operation: &'static str) -> Result<(), Error> {
+        if self.is_snapshot_read() {
+            Err(Error::SnapshotReadOnlyTransaction(operation))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Read options honoring the transaction's snapshot, when one was
+    /// requested at creation.
+    ///
+    /// A plain transaction's snapshot handle is null, which RocksDB
+    /// documents as leaving reads on the latest committed state, so
+    /// this is a no-op for every non-snapshot transaction. The handle
+    /// stored into the options is owned by the transaction (which
+    /// outlives every context borrowing it); the temporary wrapper
+    /// only frees its C shell on drop.
+    fn read_options(&self) -> ReadOptions {
+        #[cfg(debug_assertions)]
+        if let Some(age) = self.snapshot_age()
+            && age > SNAPSHOT_AGE_WARN_THRESHOLD
+            && !self
+                .age_warned
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            eprintln!(
+                "WARNING (grovedb-storage): read on a snapshot read transaction whose \
+                 snapshot has been held for {age:?} (threshold {SNAPSHOT_AGE_WARN_THRESHOLD:?}). \
+                 A held snapshot pins every post-snapshot RocksDB version — a leaked or \
+                 session-scoped snapshot transaction becomes compaction debt and write \
+                 amplification under load. Scope snapshot transactions to a single \
+                 multi-operation read. (Warning fires once per transaction.)"
+            );
+        }
+        let mut read_options = ReadOptions::default();
+        read_options.set_snapshot(&self.tx.snapshot());
+        read_options
+    }
+
+    /// Snapshot-honoring point read from the default column family.
+    pub(crate) fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, rocksdb::Error> {
+        self.tx.get_opt(key, &self.read_options())
+    }
+
+    /// Snapshot-honoring point read from a named column family.
+    pub(crate) fn get_cf<K: AsRef<[u8]>>(
+        &self,
+        cf: &ColumnFamily,
+        key: K,
+    ) -> Result<Option<Vec<u8>>, rocksdb::Error> {
+        self.tx.get_cf_opt(cf, key, &self.read_options())
+    }
+
+    /// Snapshot-honoring raw iterator over the default column family.
+    pub(crate) fn raw_iterator(&self) -> DBRawIteratorWithThreadMode<'_, RawTx<'db>> {
+        self.tx.raw_iterator_opt(self.read_options())
+    }
+
+    /// Write into the default column family. Refused on a snapshot
+    /// read transaction.
+    pub(crate) fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(
+        &self,
+        key: K,
+        value: V,
+    ) -> Result<(), Error> {
+        self.refuse_snapshot_write("put")?;
+        self.tx.put(key, value).map_err(RocksDBError)
+    }
+
+    /// Write into a named column family. Refused on a snapshot read
+    /// transaction.
+    pub(crate) fn put_cf<K: AsRef<[u8]>, V: AsRef<[u8]>>(
+        &self,
+        cf: &ColumnFamily,
+        key: K,
+        value: V,
+    ) -> Result<(), Error> {
+        self.refuse_snapshot_write("put")?;
+        self.tx.put_cf(cf, key, value).map_err(RocksDBError)
+    }
+
+    /// Delete from the default column family. Refused on a snapshot
+    /// read transaction.
+    pub(crate) fn delete<K: AsRef<[u8]>>(&self, key: K) -> Result<(), Error> {
+        self.refuse_snapshot_write("delete")?;
+        self.tx.delete(key).map_err(RocksDBError)
+    }
+
+    /// Delete from a named column family. Refused on a snapshot read
+    /// transaction.
+    pub(crate) fn delete_cf<K: AsRef<[u8]>>(&self, cf: &ColumnFamily, key: K) -> Result<(), Error> {
+        self.refuse_snapshot_write("delete")?;
+        self.tx.delete_cf(cf, key).map_err(RocksDBError)
+    }
+
+    /// Replay a write batch into this transaction. Refused on a
+    /// snapshot read transaction — this is the batch-apply write entry
+    /// point.
+    pub(crate) fn rebuild_from_writebatch(
+        &self,
+        batch: &WriteBatchWithTransaction<true>,
+    ) -> Result<(), Error> {
+        self.refuse_snapshot_write("batch apply")?;
+        self.tx.rebuild_from_writebatch(batch).map_err(RocksDBError)
+    }
+
+    /// Consume and commit the transaction. Refused on a snapshot read
+    /// transaction (which by construction has nothing to commit — its
+    /// writes were already refused).
+    pub fn commit(self) -> Result<(), Error> {
+        self.refuse_snapshot_write("commit")?;
+        self.tx.commit().map_err(RocksDBError)
+    }
+
+    /// Roll back the transaction's pending writes. Allowed on a
+    /// snapshot read transaction: it is a harmless no-op there and an
+    /// error would only complicate callers' cleanup paths.
+    pub fn rollback(&self) -> Result<(), Error> {
+        self.tx.rollback().map_err(RocksDBError)
+    }
+}
 
 /// Storage which uses RocksDB as its backend.
 ///
@@ -532,16 +743,15 @@ impl RocksDbStorage {
         transaction: Option<&<RocksDbStorage as Storage>::Transaction>,
     ) -> CostResult<(), Error> {
         let result = match transaction {
-            None => self.db.write(db_batch),
+            None => self.db.write(db_batch).map_err(RocksDBError),
+            // Refused with a typed error on a snapshot read transaction.
             Some(transaction) => transaction.rebuild_from_writebatch(&db_batch),
         };
 
         if result.is_ok() {
-            result.map_err(RocksDBError).wrap_with_cost(pending_costs)
+            result.wrap_with_cost(pending_costs)
         } else {
-            result
-                .map_err(RocksDBError)
-                .wrap_with_cost(OperationCost::default())
+            result.wrap_with_cost(OperationCost::default())
         }
     }
 
@@ -604,15 +814,26 @@ impl RocksDbStorage {
     ///
     /// Intended for multi-operation READS that must not tear across a
     /// concurrent commit — e.g. a branched axis read probing and walking
-    /// several subtrees. Writing through it is not the intended use:
-    /// `set_snapshot` also arms commit-time conflict detection against
-    /// the snapshot, so commits of such a transaction can fail with
-    /// `Busy` where a plain transaction's would not.
+    /// several subtrees. Read-only **enforced**: `set_snapshot` also arms
+    /// commit-time conflict detection against the snapshot, so writes
+    /// through such a transaction could fail with `Busy` where a plain
+    /// transaction's would have committed — instead of leaving that
+    /// timing-dependent trap open, every write entry point and `commit`
+    /// refuse the transaction with
+    /// [`Error::SnapshotReadOnlyTransaction`].
+    ///
+    /// A snapshot is O(1) to take but pins every post-snapshot RocksDB
+    /// version while held: scope the transaction to a single
+    /// multi-operation read and drop it promptly. [`Tx::snapshot_age`]
+    /// exposes the hold time, and debug builds log loudly when a read
+    /// executes on a snapshot held longer than a second.
     pub fn start_snapshot_read_transaction(&self) -> Tx<'_> {
         let mut transaction_options = OptimisticTransactionOptions::default();
         transaction_options.set_snapshot(true);
-        self.db
-            .transaction_opt(&WriteOptions::default(), &transaction_options)
+        Tx::new_snapshot_read(
+            self.db
+                .transaction_opt(&WriteOptions::default(), &transaction_options),
+        )
     }
 
     /// Clears all data from the database using range deletion on each
@@ -667,22 +888,20 @@ impl<'db> Storage<'db> for RocksDbStorage {
     type Transaction = Tx<'db>;
 
     fn start_transaction(&'db self) -> Self::Transaction {
-        self.db.transaction()
+        Tx::new_plain(self.db.transaction())
     }
 
     fn commit_transaction(&self, transaction: Self::Transaction) -> CostResult<(), Error> {
         // All transaction costs were provided on method calls.
         // Note: for OptimisticTransactionDB, commit() performs conflict
         // validation and may return a Busy or TryAgain error if another
-        // transaction modified the same keys concurrently.
-        transaction
-            .commit()
-            .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
+        // transaction modified the same keys concurrently. A snapshot
+        // read transaction is refused with a typed error.
+        transaction.commit().wrap_with_cost(Default::default())
     }
 
     fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Error> {
-        transaction.rollback().map_err(RocksDBError)
+        transaction.rollback()
     }
 
     fn flush(&self) -> Result<(), Error> {

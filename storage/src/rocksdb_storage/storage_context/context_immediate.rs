@@ -33,13 +33,15 @@ use grovedb_costs::{
     storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostResult,
     CostsExt,
 };
-use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, ReadOptions, WriteBatchWithTransaction};
+use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, WriteBatchWithTransaction};
 
 use super::{make_prefixed_key, PrefixedRocksDbBatch, PrefixedRocksDbRawIterator};
 use crate::{
     error,
     error::Error::RocksDBError,
-    rocksdb_storage::storage::{Db, SubtreePrefix, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
+    rocksdb_storage::storage::{
+        Db, RawTx, SubtreePrefix, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME,
+    },
     StorageContext,
 };
 
@@ -63,18 +65,6 @@ impl<'db> PrefixedRocksDbImmediateStorageContext<'db> {
 }
 
 impl<'db> PrefixedRocksDbImmediateStorageContext<'db> {
-    /// Read options honoring the transaction's snapshot, when one was
-    /// requested at creation — see the twin helper on
-    /// `PrefixedRocksDbTransactionContext` for the full contract. A
-    /// plain transaction's snapshot handle is null and leaves reads on
-    /// the latest committed state, so this is a no-op for every
-    /// non-snapshot caller.
-    fn read_options(&self) -> ReadOptions {
-        let mut read_options = ReadOptions::default();
-        read_options.set_snapshot(&self.transaction.snapshot());
-        read_options
-    }
-
     /// Get auxiliary data column family
     fn cf_aux(&self) -> &'db ColumnFamily {
         self.storage
@@ -99,7 +89,7 @@ impl<'db> PrefixedRocksDbImmediateStorageContext<'db> {
 
 impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     type Batch = PrefixedRocksDbBatch<'db>;
-    type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, Tx<'db>>>;
+    type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, RawTx<'db>>>;
 
     fn put<K: AsRef<[u8]>>(
         &self,
@@ -108,9 +98,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
         _children_sizes: ChildrenSizesWithIsSumTree,
         _cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
+        // Writes go through the transaction wrapper, which refuses a
+        // snapshot read transaction with a typed error — same for every
+        // put/delete below.
         self.transaction
             .put(make_prefixed_key(&self.prefix, &key), value)
-            .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
@@ -122,7 +114,6 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     ) -> CostResult<(), Error> {
         self.transaction
             .put_cf(self.cf_aux(), make_prefixed_key(&self.prefix, &key), value)
-            .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
@@ -138,7 +129,6 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
                 make_prefixed_key(&self.prefix, &key),
                 value,
             )
-            .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
@@ -150,7 +140,6 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     ) -> CostResult<(), Error> {
         self.transaction
             .put_cf(self.cf_meta(), make_prefixed_key(&self.prefix, &key), value)
-            .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
@@ -161,7 +150,6 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     ) -> CostResult<(), Error> {
         self.transaction
             .delete(make_prefixed_key(&self.prefix, key))
-            .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
@@ -172,7 +160,6 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     ) -> CostResult<(), Error> {
         self.transaction
             .delete_cf(self.cf_aux(), make_prefixed_key(&self.prefix, key))
-            .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
@@ -183,7 +170,6 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     ) -> CostResult<(), Error> {
         self.transaction
             .delete_cf(self.cf_roots(), make_prefixed_key(&self.prefix, key))
-            .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
@@ -194,46 +180,36 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     ) -> CostResult<(), Error> {
         self.transaction
             .delete_cf(self.cf_meta(), make_prefixed_key(&self.prefix, key))
-            .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
+        // Reads go through the transaction wrapper, which injects the
+        // transaction's snapshot (when one was requested at creation)
+        // into every read's options — same for every read below.
         self.transaction
-            .get_opt(make_prefixed_key(&self.prefix, key), &self.read_options())
+            .get(make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
     fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
-            .get_cf_opt(
-                self.cf_aux(),
-                make_prefixed_key(&self.prefix, key),
-                &self.read_options(),
-            )
+            .get_cf(self.cf_aux(), make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
     fn get_root<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
-            .get_cf_opt(
-                self.cf_roots(),
-                make_prefixed_key(&self.prefix, key),
-                &self.read_options(),
-            )
+            .get_cf(self.cf_roots(), make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
     fn get_meta<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
-            .get_cf_opt(
-                self.cf_meta(),
-                make_prefixed_key(&self.prefix, key),
-                &self.read_options(),
-            )
+            .get_cf(self.cf_meta(), make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
@@ -251,14 +227,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     fn commit_batch(&self, batch: Self::Batch) -> CostResult<(), Error> {
         self.transaction
             .rebuild_from_writebatch(&batch.batch)
-            .map_err(RocksDBError)
             .wrap_with_cost(batch.cost_acc)
     }
 
     fn raw_iter(&self) -> Self::RawIterator {
         PrefixedRocksDbRawIterator {
             prefix: self.prefix,
-            raw_iterator: self.transaction.raw_iterator_opt(self.read_options()),
+            raw_iterator: self.transaction.raw_iterator(),
         }
     }
 }
