@@ -186,11 +186,12 @@ equal to the dedicated entry point's answer (pinned by differential
 tests).
 
 Single-path paginated axis reads (`RankedPage`) carry the
-count-commitment-attested skip alongside the page —
-`AxisEntries { entries, skipped: Some(n) }` — exactly as the direct
+count-commitment-attested skip alongside the page — on both
+projections, `AxisEntries { entries, skipped: Some(n) }` and
+`AxisKeys { keys, skipped: Some(n) }` — exactly as the direct
 `indexed_*_top_k_paginated*` primitives report it: `n` equals the
-requested offset on a full page and the population when the offset ran
-past the end (the empty page attests the population). `Bounded`
+requested offset on a full page and the population when the offset is
+at or past the end (the empty page attests the population). `Bounded`
 traversals carry `skipped: None` (no skip concept). This mirrors the
 proved side's `VerifiedPathQuery::AxisEntries` contract; the branched
 variants carry no skip, since a per-branch skip has no meaning for the
