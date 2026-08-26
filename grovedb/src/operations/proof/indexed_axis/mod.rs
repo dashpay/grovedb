@@ -2,6 +2,24 @@
 //! (PCIT), `ProvableSumIndexedTree` (PSIT) and
 //! `ProvableCountProvableSumIndexedTree` (PCPSIT).
 //!
+//! ## RETIRED from the public API — `PathQuery` is the only proof surface
+//!
+//! The standalone prove/verify entry points in this module
+//! (`prove_indexed_axis_*`, `verify_indexed_axis_*`, and the per-axis
+//! `axis_api` wrappers) are **`#[cfg(test)]` test oracles**: they exist so
+//! the in-crate suites can cross-check the unified V1-envelope axis proofs
+//! against an independent implementation of the same engines (see
+//! `tests/envelope_byte_equality_tests.rs` for the byte-level relationship).
+//! External callers must use [`crate::PathQuery`]'s axis constructors with
+//! `GroveDb::prove_query` / `GroveDb::verify_path_query`. The standalone
+//! envelope wire format has never been emitted by a released version, and
+//! retiring it before GROVE_V4 activates means it never becomes
+//! consensus-frozen.
+//!
+//! The engine code both surfaces share (descent payload builders, the
+//! secondary-proof builders, target-chain resolution, `axis_lowering`)
+//! remains live — the unified surface is a thin envelope over it.
+//!
 //! This is the Phase-4 generalization of the Phase-2 `count_indexed`
 //! envelope: instead of three per-axis families of types each shaped
 //! identically, the wire format here carries an explicit
@@ -61,6 +79,7 @@
 //! range is provably empty, and the verifier uses it to accept the empty
 //! shape only when the range really is out of the axis's domain.
 
+#[cfg(test)]
 mod axis_api;
 pub(crate) mod canonical_row;
 mod envelope;

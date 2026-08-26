@@ -8,30 +8,47 @@
 
 use grovedb_element::indexed::{encode_count_sort_key, encode_sum_sort_key, IndexAxis};
 use grovedb_merk::{
+    proofs::query::QueryItem as MerkQueryItemForRange,
+    tree::{axes_digest, CryptoHash},
+};
+use grovedb_version::version::GroveVersion;
+
+use crate::{query_result_type::IndexedAxisEntry, Element, Error};
+
+use super::{aggregate_range_out_of_domain, AxisEntries, IndexedTargetChain};
+
+// Test-oracle-only imports (see the module doc): the standalone
+// verifiers and their inner cores are `#[cfg(test)]`.
+#[cfg(test)]
+use grovedb_merk::{
     proofs::{
         query::{
             verify_aggregate_count_on_range_proof, verify_aggregate_sum_on_range_proof,
-            verify_count_offset_on_range_proof, QueryItem as MerkQueryItemForRange,
-            QueryProofVerify,
+            verify_count_offset_on_range_proof, QueryProofVerify,
         },
         Query as MerkQuery,
     },
-    tree::{axes_digest, combine_hash, combine_hash_three, value_hash, CryptoHash},
+    tree::{combine_hash, combine_hash_three, value_hash},
 };
+#[cfg(test)]
 use grovedb_query::{AggregateFold, QueryItem as MerkQueryItem};
-use grovedb_version::{check_grovedb_v0, version::GroveVersion};
+#[cfg(test)]
+use grovedb_version::check_grovedb_v0;
 
-use crate::{query_result_type::IndexedAxisEntry, Element, Error, GroveDb};
+#[cfg(test)]
+use crate::GroveDb;
 
+#[cfg(test)]
 use super::{
-    aggregate_range_out_of_domain, AncestorAttestation, AxisEntries, IndexedAxisAggregateProof,
-    IndexedAxisAggregateResult, IndexedAxisPaginatedProof, IndexedAxisPaginatedResult,
-    IndexedAxisQueryResult, IndexedAxisRangeProof, IndexedTargetChain,
+    AncestorAttestation, IndexedAxisAggregateProof, IndexedAxisAggregateResult,
+    IndexedAxisPaginatedProof, IndexedAxisPaginatedResult, IndexedAxisQueryResult,
+    IndexedAxisRangeProof,
 };
 
 /// Walk the verifier-side ancestor chain (depths `last_idx - 1` down to
 /// `0`) and return the final reconstructed root hash. Returns the
 /// outer GroveDB root hash on success.
+#[cfg(test)]
 fn walk_ancestor_chain(
     layer_proofs: &[Vec<u8>],
     ancestor_attestations: &[AncestorAttestation],
@@ -108,6 +125,7 @@ fn walk_ancestor_chain(
 /// Returns `(initial_layer_root, cidx_value_bytes)`. The
 /// `initial_layer_root` is then passed to `walk_ancestor_chain` as the
 /// starting `current_layer_root` for the ancestor walk.
+#[cfg(test)]
 fn verify_deepest_layer(
     layer_proofs: &[Vec<u8>],
     path: &[&[u8]],
@@ -258,6 +276,7 @@ pub(crate) fn recompute_axis_binding_digest(
 
 /// Verify a single-key Merk proof: returns
 /// `(value_bytes, layer_root_hash, parent_recorded_value_hash)`.
+#[cfg(test)]
 fn execute_single_key_proof(
     proof_bytes: &[u8],
     target_key: &[u8],
@@ -293,10 +312,11 @@ fn execute_single_key_proof(
     Ok((value, root_hash, proved.proof))
 }
 
+#[cfg(test)]
 impl GroveDb {
     /// Verify an `IndexedAxisRangeProof`-shaped top-k proof (full range,
     /// limit = `expected_k`, direction = `expected_descending`).
-    pub fn verify_indexed_axis_top_k(
+    pub(crate) fn verify_indexed_axis_top_k(
         proof_bytes: &[u8],
         path: &[&[u8]],
         expected_axis: IndexAxis,
@@ -346,7 +366,7 @@ impl GroveDb {
     ///
     /// `secondary_query` MUST match the query supplied at proof time.
     /// `expected_limit` MUST match the limit supplied at proof time.
-    pub fn verify_indexed_axis_query(
+    pub(crate) fn verify_indexed_axis_query(
         proof_bytes: &[u8],
         path: &[&[u8]],
         expected_axis: IndexAxis,
@@ -396,7 +416,7 @@ impl GroveDb {
     }
 
     /// Verify an `IndexedAxisPaginatedProof`-shaped paginated proof.
-    pub fn verify_indexed_axis_top_k_paginated(
+    pub(crate) fn verify_indexed_axis_top_k_paginated(
         proof_bytes: &[u8],
         path: &[&[u8]],
         expected_axis: IndexAxis,
@@ -468,7 +488,7 @@ impl GroveDb {
     /// Returns the paginated result whose single entry carries the
     /// item's axis value; `root_hash` must be compared against the
     /// trusted GroveDB root as usual.
-    pub fn verify_indexed_axis_rank_of_key(
+    pub(crate) fn verify_indexed_axis_rank_of_key(
         proof_bytes: &[u8],
         path: &[&[u8]],
         expected_axis: IndexAxis,
@@ -517,7 +537,7 @@ impl GroveDb {
     }
 
     /// Verify an `IndexedAxisAggregateProof`-shaped aggregate proof.
-    pub fn verify_indexed_axis_aggregate_over_value_range(
+    pub(crate) fn verify_indexed_axis_aggregate_over_value_range(
         proof_bytes: &[u8],
         path: &[&[u8]],
         expected_axis: IndexAxis,
@@ -579,6 +599,7 @@ impl GroveDb {
     }
 }
 
+#[cfg(test)]
 fn decode_range_envelope(proof_bytes: &[u8]) -> Result<IndexedAxisRangeProof, Error> {
     let config = bincode::config::standard().with_limit::<{ 16 * 1024 * 1024 }>();
     let (envelope, consumed): (IndexedAxisRangeProof, _) =
@@ -593,6 +614,7 @@ fn decode_range_envelope(proof_bytes: &[u8]) -> Result<IndexedAxisRangeProof, Er
 /// them makes the proof byte-malleable — two distinct byte strings
 /// would verify as the same proof, which breaks any caller that
 /// dedups, caches, or consensus-compares proofs by their bytes.
+#[cfg(test)]
 fn reject_trailing_envelope_bytes(
     consumed: usize,
     total: usize,
@@ -607,6 +629,7 @@ fn reject_trailing_envelope_bytes(
     Ok(())
 }
 
+#[cfg(test)]
 fn verify_indexed_axis_range_inner(
     envelope: IndexedAxisRangeProof,
     secondary_query: MerkQuery,
@@ -676,6 +699,7 @@ fn verify_indexed_axis_range_inner(
     Ok(IndexedAxisQueryResult { root_hash, entries })
 }
 
+#[cfg(test)]
 fn verify_indexed_axis_paginated_inner(
     envelope: IndexedAxisPaginatedProof,
     axis: IndexAxis,
@@ -754,6 +778,7 @@ fn verify_indexed_axis_paginated_inner(
     })
 }
 
+#[cfg(test)]
 fn verify_indexed_axis_aggregate_inner(
     envelope: IndexedAxisAggregateProof,
     axis: IndexAxis,
