@@ -34,7 +34,7 @@ use grovedb_costs::{
     ChildrenSizesWithIsSumTree, CostResult, CostsExt, OperationCost,
 };
 use integer_encoding::VarInt;
-use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode};
+use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, ReadOptions};
 
 use super::{batch::PrefixedMultiContextBatchPart, make_prefixed_key, PrefixedRocksDbRawIterator};
 use crate::{
@@ -95,6 +95,23 @@ impl<'db> PrefixedRocksDbTransactionContext<'db> {
 }
 
 impl<'db> PrefixedRocksDbTransactionContext<'db> {
+    /// Read options honoring the transaction's snapshot, when one was
+    /// requested at creation
+    /// ([`RocksDbStorage::start_snapshot_read_transaction`](crate::rocksdb_storage::RocksDbStorage::start_snapshot_read_transaction)).
+    ///
+    /// RocksDB transactions do NOT read from their snapshot by default —
+    /// the snapshot must be injected into every read's options. A plain
+    /// transaction's snapshot handle is null, which leaves these options
+    /// reading the latest committed state, so this is a no-op for every
+    /// non-snapshot caller. The handle stored into the options is owned
+    /// by the transaction (which outlives this context); the temporary
+    /// wrapper only frees its C shell on drop.
+    fn read_options(&self) -> ReadOptions {
+        let mut read_options = ReadOptions::default();
+        read_options.set_snapshot(&self.transaction.snapshot());
+        read_options
+    }
+
     /// Get auxiliary data column family
     fn cf_aux(&self) -> &'db ColumnFamily {
         self.storage
@@ -307,7 +324,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
 
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
-            .get(make_prefixed_key(&self.prefix, key))
+            .get_opt(make_prefixed_key(&self.prefix, key), &self.read_options())
             .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
@@ -323,7 +340,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
 
     fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
-            .get_cf(self.cf_aux(), make_prefixed_key(&self.prefix, key))
+            .get_cf_opt(
+                self.cf_aux(),
+                make_prefixed_key(&self.prefix, key),
+                &self.read_options(),
+            )
             .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
@@ -339,7 +360,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
 
     fn get_root<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
-            .get_cf(self.cf_roots(), make_prefixed_key(&self.prefix, key))
+            .get_cf_opt(
+                self.cf_roots(),
+                make_prefixed_key(&self.prefix, key),
+                &self.read_options(),
+            )
             .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
@@ -355,7 +380,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
 
     fn get_meta<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
-            .get_cf(self.cf_meta(), make_prefixed_key(&self.prefix, key))
+            .get_cf_opt(
+                self.cf_meta(),
+                make_prefixed_key(&self.prefix, key),
+                &self.read_options(),
+            )
             .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
@@ -394,7 +423,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
     fn raw_iter(&self) -> Self::RawIterator {
         PrefixedRocksDbRawIterator {
             prefix: self.prefix,
-            raw_iterator: self.transaction.raw_iterator(),
+            raw_iterator: self.transaction.raw_iterator_opt(self.read_options()),
         }
     }
 }

@@ -423,6 +423,127 @@ mod tests {
         }
     }
 
+    /// Proof generation reads ONE snapshot across every recursive
+    /// layer. The test-only seam
+    /// (`operations::proof::prove_test_hooks::AFTER_PROOF_SNAPSHOT`)
+    /// fires after `prove_query` takes its generation snapshot; a scoped
+    /// writer thread lands a commit deterministically inside that window
+    /// (a new branch springs into existence and an existing page
+    /// changes), and the resulting envelope must still verify — against
+    /// the PRE-commit root, with the pre-commit content, absence
+    /// included. If generation regressed to opening an independent view
+    /// per layer, the proof would be built from post-commit state and
+    /// the root assertion fails. The branched shape exercised here is
+    /// the common primitive both of Drive's `IN`-pinned surfaces prove
+    /// through.
+    #[test]
+    fn proof_generation_is_pinned_to_one_snapshot_across_a_concurrent_commit() {
+        use std::time::Duration;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_branched_psits(
+            &db,
+            grove_version,
+            &[
+                (b"alice", &[(b"m1", 10), (b"m2", 30)]),
+                (b"carol", &[(b"m1", 7)]),
+            ],
+        );
+        let root_before = root_hash(&db, grove_version);
+        let alice_before = db
+            .indexed_sum_top_k_paginated(
+                [TEST_LEAF, b"alice".as_slice(), b"scores".as_slice()].as_ref(),
+                2,
+                0,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("alice pre-commit page")
+            .entries;
+
+        // Rendezvous: when the generation snapshot exists, wake the
+        // writer, wait for its commit to land, then let the layers
+        // generate.
+        let (enter_window_tx, enter_window_rx) = std::sync::mpsc::channel::<()>();
+        let (commit_done_tx, commit_done_rx) = std::sync::mpsc::channel::<()>();
+        crate::operations::proof::prove_test_hooks::AFTER_PROOF_SNAPSHOT.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                let _ = enter_window_tx.send(());
+                let _ = commit_done_rx.recv_timeout(Duration::from_secs(20));
+            }));
+        });
+
+        let pq = PathQuery::new_branched_axis(
+            vec![TEST_LEAF.to_vec()],
+            vec![b"alice".to_vec(), b"bob".to_vec(), b"carol".to_vec()],
+            vec![b"scores".to_vec()],
+            AxisQuery::top_k(IndexAxis::Sum, 2, 0, true),
+        );
+        let proof = std::thread::scope(|scope| {
+            let db = &db;
+            scope.spawn(move || {
+                if enter_window_rx
+                    .recv_timeout(Duration::from_secs(20))
+                    .is_ok()
+                {
+                    build_branched_psits(db, grove_version, &[(b"bob", &[(b"m1", 99)])]);
+                    db.insert_into_provable_sum_indexed_tree(
+                        [TEST_LEAF, b"alice".as_slice(), b"scores".as_slice()].as_ref(),
+                        b"m3",
+                        Element::new_sum_item(100),
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("insert mid-window alice entry");
+                    let _ = commit_done_tx.send(());
+                }
+            });
+            prove(db, &pq, grove_version)
+        });
+        crate::operations::proof::prove_test_hooks::AFTER_PROOF_SNAPSHOT.with(|hook| {
+            *hook.borrow_mut() = None;
+        });
+        assert_ne!(
+            root_hash(&db, grove_version),
+            root_before,
+            "the mid-window commit landed"
+        );
+
+        match GroveDb::verify_path_query(&proof, &pq, grove_version)
+            .expect("the snapshot-pinned proof verifies despite the mid-window commit")
+        {
+            VerifiedPathQuery::BranchedAxisEntries {
+                root_hash,
+                branches,
+            } => {
+                assert_eq!(
+                    root_hash, root_before,
+                    "every layer was generated from the pre-commit snapshot"
+                );
+                assert_eq!(branches.len(), 3);
+                for (branch_key, entries) in &branches {
+                    match branch_key.as_slice() {
+                        b"bob" => assert!(
+                            entries.is_none(),
+                            "bob stays proven absent under the snapshot"
+                        ),
+                        b"alice" => assert_eq!(
+                            entries_as_sum(entries.as_ref().expect("alice present")),
+                            alice_before.as_slice(),
+                            "alice's page is her pre-commit top-k"
+                        ),
+                        _ => assert!(entries.is_some(), "carol stays present"),
+                    }
+                }
+            }
+            other => panic!("expected BranchedAxisEntries, got {other:?}"),
+        }
+    }
+
     // -----------------------------------------------------------------
     // Forgeries
     // -----------------------------------------------------------------

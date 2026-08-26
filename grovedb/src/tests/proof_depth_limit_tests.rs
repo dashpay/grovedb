@@ -194,6 +194,7 @@ mod tests {
         // Call with depth already past the limit
         let result = db
             .prove_subqueries(
+                &db.start_transaction(),
                 vec![b"deep".as_slice()],
                 &path_query,
                 &mut limit,
@@ -229,6 +230,7 @@ mod tests {
         // Call with depth already past the limit
         let result = db
             .prove_subqueries_v1(
+                &db.start_transaction(),
                 vec![b"deep".as_slice()],
                 &path_query,
                 &mut limit,
