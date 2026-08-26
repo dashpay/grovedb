@@ -109,14 +109,14 @@ mod tests {
 
     fn entries_of(run: PathQueryRun) -> AxisEntries {
         match run {
-            PathQueryRun::AxisEntries(e) => e,
+            PathQueryRun::AxisEntries { entries, .. } => entries,
             other => panic!("expected AxisEntries, got {other:?}"),
         }
     }
 
     fn keys_of(run: PathQueryRun) -> AxisKeys {
         match run {
-            PathQueryRun::AxisKeys(k) => k,
+            PathQueryRun::AxisKeys { keys, .. } => keys,
             other => panic!("expected AxisKeys, got {other:?}"),
         }
     }
@@ -139,23 +139,49 @@ mod tests {
                 for offset in [0u64, 2] {
                     let entries_q = AxisQuery::top_k(axis, 2, offset, descending);
                     let keys_q = entries_q.clone().keys_only();
-                    let entries = entries_of(run(&db, &PathQuery::new_axis(path(), entries_q), gv));
-                    let keys = keys_of(run(&db, &PathQuery::new_axis(path(), keys_q), gv));
+                    let PathQueryRun::AxisEntries {
+                        entries,
+                        skipped: entries_skipped,
+                    } = run(&db, &PathQuery::new_axis(path(), entries_q), gv)
+                    else {
+                        panic!("expected AxisEntries");
+                    };
+                    let PathQueryRun::AxisKeys {
+                        keys,
+                        skipped: keys_skipped,
+                    } = run(&db, &PathQuery::new_axis(path(), keys_q), gv)
+                    else {
+                        panic!("expected AxisKeys");
+                    };
                     assert_eq!(
                         keys,
                         entries.to_keys(),
                         "{axis:?} descending={descending} offset={offset}"
                     );
                     assert_eq!(keys.len(), entries.len());
+                    // The keys projection carries the same attested
+                    // skip as the entries read of the same page.
+                    assert_eq!(entries_skipped, Some(offset));
+                    assert_eq!(keys_skipped, Some(offset));
                 }
                 let entries_q = AxisQuery::bounded(axis, i128::MIN, i128::MAX, 3, descending);
                 let keys_q = entries_q.clone().keys_only();
                 let entries = entries_of(run(&db, &PathQuery::new_axis(path(), entries_q), gv));
-                let keys = keys_of(run(&db, &PathQuery::new_axis(path(), keys_q), gv));
+                let PathQueryRun::AxisKeys {
+                    keys,
+                    skipped: bounded_skipped,
+                } = run(&db, &PathQuery::new_axis(path(), keys_q), gv)
+                else {
+                    panic!("expected AxisKeys");
+                };
                 assert_eq!(
                     keys,
                     entries.to_keys(),
                     "{axis:?} bounded descending={descending}"
+                );
+                assert_eq!(
+                    bounded_skipped, None,
+                    "bounded traversals have no skip concept"
                 );
             }
         }
