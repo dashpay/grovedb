@@ -185,6 +185,17 @@ primitives, the budgeted sum reader — so the unified answer is always
 equal to the dedicated entry point's answer (pinned by differential
 tests).
 
+Single-path paginated axis reads (`RankedPage`) carry the
+count-commitment-attested skip alongside the page —
+`AxisEntries { entries, skipped: Some(n) }` — exactly as the direct
+`indexed_*_top_k_paginated*` primitives report it: `n` equals the
+requested offset on a full page and the population when the offset ran
+past the end (the empty page attests the population). `Bounded`
+traversals carry `skipped: None` (no skip concept). This mirrors the
+proved side's `VerifiedPathQuery::AxisEntries` contract; the branched
+variants carry no skip, since a per-branch skip has no meaning for the
+merged union.
+
 Branched reads mirror the proof's absence semantics: a branch key — or
 any suffix segment under it — that does not exist yields `None` for
 that branch rather than failing the whole read.

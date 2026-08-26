@@ -206,8 +206,8 @@ mod tests {
                 .unwrap()
                 .expect("unified top-k");
             assert_eq!(
-                run_entries(run),
-                AxisEntries::Sum(direct.entries),
+                run_entries_and_skip(run),
+                (AxisEntries::Sum(direct.entries), Some(direct.skipped)),
                 "top-k k={k} offset={offset} descending={descending}"
             );
         }
@@ -246,7 +246,140 @@ mod tests {
             )
             .unwrap()
             .expect("unified bounded");
-        assert_eq!(run_entries(run), AxisEntries::Sum(direct));
+        assert_eq!(
+            run_entries_and_skip(run),
+            (AxisEntries::Sum(direct), None),
+            "bounded traversals have no skip concept"
+        );
+    }
+
+    /// The attested skip across the offset spectrum: at offset 0 the
+    /// skip is 0, at a mid-population offset it equals the offset, and
+    /// at or past the end the page is empty and `skipped` attests the
+    /// population. In every case the unified read returns exactly the
+    /// `(entries, skipped)` pair the direct primitive returns — for
+    /// both the entries and the keys projections — and the unproved
+    /// skip equals the proof-attested one.
+    #[test]
+    fn axis_top_k_skip_matches_direct_primitive_across_the_offset_spectrum() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_psit(&db, grove_version, PSIT_ENTRIES);
+        let population = PSIT_ENTRIES.len() as u64;
+
+        for descending in [true, false] {
+            // offset 0 (full page), mid-population, exactly the end,
+            // and past the end (both end cases: empty page, skipped =
+            // population).
+            for offset in [0u64, 3, population, population + 3] {
+                let k = 3u16;
+
+                // Entries projection against the direct primitive.
+                let direct = db
+                    .indexed_sum_top_k_paginated(
+                        [TEST_LEAF, b"psit"].as_ref(),
+                        k,
+                        offset,
+                        descending,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("direct top-k");
+                if offset >= population {
+                    assert!(direct.entries.is_empty(), "offset {offset} is past the end");
+                    assert_eq!(
+                        direct.skipped, population,
+                        "the empty page's skip attests the population"
+                    );
+                } else {
+                    assert_eq!(direct.skipped, offset);
+                }
+                let entries_pq =
+                    PathQuery::new_axis_top_k(psit_path(), IndexAxis::Sum, k, offset, descending);
+                let run = db
+                    .run_path_query(
+                        &entries_pq,
+                        true,
+                        true,
+                        true,
+                        QueryResultType::QueryKeyElementPairResultType,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("unified top-k");
+                assert_eq!(
+                    run_entries_and_skip(run),
+                    (
+                        AxisEntries::Sum(direct.entries.clone()),
+                        Some(direct.skipped)
+                    ),
+                    "entries: offset={offset} descending={descending}"
+                );
+
+                // Keys projection against its direct primitive.
+                let direct_keys = db
+                    .indexed_sum_top_k_paginated_keys(
+                        [TEST_LEAF, b"psit"].as_ref(),
+                        k,
+                        offset,
+                        descending,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("direct top-k keys");
+                assert_eq!(direct_keys.skipped, direct.skipped);
+                let keys_pq = PathQuery::new_axis(
+                    psit_path(),
+                    AxisQuery::top_k(IndexAxis::Sum, k, offset, descending).keys_only(),
+                );
+                let run = db
+                    .run_path_query(
+                        &keys_pq,
+                        true,
+                        true,
+                        true,
+                        QueryResultType::QueryKeyElementPairResultType,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("unified top-k keys");
+                match run {
+                    PathQueryRun::AxisKeys { keys, skipped } => {
+                        assert_eq!(
+                            (keys, skipped),
+                            (
+                                crate::query_result_type::AxisKeys::Sum(direct_keys.entries),
+                                Some(direct_keys.skipped)
+                            ),
+                            "keys: offset={offset} descending={descending}"
+                        );
+                    }
+                    other => panic!("expected AxisKeys, got {other:?}"),
+                }
+
+                // The unproved skip mirrors the proof-attested one.
+                let proof = db
+                    .prove_query(&entries_pq, None, grove_version)
+                    .unwrap()
+                    .expect("prove top-k");
+                let crate::operations::proof::VerifiedPathQuery::AxisEntries {
+                    skipped: verified_skipped,
+                    ..
+                } = GroveDb::verify_path_query(&proof, &entries_pq, grove_version).expect("verify")
+                else {
+                    panic!("expected verified AxisEntries");
+                };
+                assert_eq!(
+                    verified_skipped,
+                    Some(direct.skipped),
+                    "verified skip: offset={offset} descending={descending}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -839,7 +972,10 @@ mod tests {
             )
             .unwrap()
             .expect("unified count top-k");
-        assert_eq!(run_entries(run), AxisEntries::Count(direct.entries));
+        assert_eq!(
+            run_entries_and_skip(run),
+            (AxisEntries::Count(direct.entries), Some(direct.skipped))
+        );
 
         // Bounded on the count axis, with bounds deliberately below and
         // above the u64 domain so the count clamp is exercised (the sum
@@ -867,7 +1003,10 @@ mod tests {
             )
             .unwrap()
             .expect("unified count bounded");
-        assert_eq!(run_entries(run), AxisEntries::Count(direct));
+        assert_eq!(
+            run_entries_and_skip(run),
+            (AxisEntries::Count(direct), None)
+        );
 
         // Aggregate over the value range on the count axis.
         let direct = db
@@ -946,7 +1085,10 @@ mod tests {
             )
             .unwrap()
             .expect("unified avg top-k");
-        assert_eq!(run_entries(run), AxisEntries::Avg(direct.entries));
+        assert_eq!(
+            run_entries_and_skip(run),
+            (AxisEntries::Avg(direct.entries), Some(direct.skipped))
+        );
 
         // Bounded on the avg axis takes the i128 bounds unclamped — the
         // avg domain is the whole i128 range.
@@ -981,7 +1123,7 @@ mod tests {
             )
             .unwrap()
             .expect("unified avg bounded");
-        assert_eq!(run_entries(run), AxisEntries::Avg(direct));
+        assert_eq!(run_entries_and_skip(run), (AxisEntries::Avg(direct), None));
     }
 
     // -----------------------------------------------------------------
@@ -1582,8 +1724,12 @@ mod tests {
     // -----------------------------------------------------------------
 
     fn run_entries(run: PathQueryRun) -> AxisEntries {
+        run_entries_and_skip(run).0
+    }
+
+    fn run_entries_and_skip(run: PathQueryRun) -> (AxisEntries, Option<u64>) {
         match run {
-            PathQueryRun::AxisEntries(entries) => entries,
+            PathQueryRun::AxisEntries { entries, skipped } => (entries, skipped),
             other => panic!("expected AxisEntries, got {other:?}"),
         }
     }
