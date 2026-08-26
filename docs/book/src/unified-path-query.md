@@ -332,6 +332,13 @@ format ships. The byte-level relationship between the two families
 rejection between verifiers) is pinned in
 `grovedb/src/tests/envelope_byte_equality_tests.rs`.
 
+The per-axis **trusted-read** wrappers (`indexed_*_top_k*`,
+`indexed_*_range*`, the aggregate reads and the `_keys` projections)
+are likewise crate-internal: they are the engine `run_path_query`
+routes axis shapes to. External callers build the same axis
+`PathQuery` for reads and proofs alike — one request shape, three
+consumers (`run_path_query`, `prove_query`, `verify_path_query`).
+
 Other pre-existing surfaces remain first-class:
 `AggregateSumPathQuery` and its budgeted reader, and the per-shape
 `verify_aggregate_*` entry points. The unified entry points route to

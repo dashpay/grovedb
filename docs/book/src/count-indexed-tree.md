@@ -478,13 +478,32 @@ Merk is not touched. The verifier receives the primary's root hash plus a
 ### Top-k by count
 
 ```rust
-// Shipped API on `GroveDb`:
-let entries: Vec<IndexedAxisEntry<u64>> = db
-    .indexed_count_top_k(path, k, /* descending: */ true, transaction, grove_version)?
-    .expect("top-k");
+// Trusted read — the axis read through the unified PathQuery surface
+// (the only public read surface for indexed-axis queries):
+let path_query = PathQuery::new_axis_top_k(
+    path_vec.clone(),
+    IndexAxis::Count,
+    k,
+    /* offset: */ 0,
+    /* descending: */ true,
+);
+let PathQueryRun::AxisEntries { entries, skipped } = db
+    .run_path_query(
+        &path_query,
+        true,  // allow_cache
+        true,  // decrease_limit_on_range_with_no_sub_elements
+        true,  // error_if_intermediate_path_tree_not_present
+        QueryResultType::QueryPathKeyElementTrioResultType,
+        transaction,
+        grove_version,
+    )?
+    .expect("top-k")
+else {
+    unreachable!("an axis read runs to AxisEntries")
+};
+// entries: AxisEntries::Count(Vec<IndexedAxisEntry<u64>>)
 
-// Verifiable variant — the axis read through the unified PathQuery
-// surface (the only public proof surface for indexed-axis reads):
+// Verifiable variant — the same PathQuery, proved:
 let path_query = PathQuery::new_axis_top_k(
     path_vec,
     IndexAxis::Count,
@@ -543,17 +562,19 @@ one key whose reference points at another cannot verify.
 ### Range by count
 
 ```rust
-let entries: Vec<IndexedAxisEntry<u64>> = db
-    .indexed_count_range(
-        path,
-        min,                       // u64, inclusive
-        max,                       // u64, inclusive
-        /* descending: */ false,
-        /* limit:      */ 100,
-        transaction,
-        grove_version,
-    )?
+let path_query = PathQuery::new_axis_bounded(
+    path_vec,
+    IndexAxis::Count,
+    min as i128,               // inclusive
+    max as i128,               // inclusive
+    /* limit: */ 100,
+    /* descending: */ false,
+);
+let run = db
+    .run_path_query(/* same arguments as above */)?
     .expect("count range");
+// PathQueryRun::AxisEntries { entries, skipped: None } — bounded reads
+// attest no skip count.
 ```
 
 Internally builds a bounded `Query::insert_range(lo_be..upper)` against
@@ -623,21 +644,23 @@ the size.
 ### Direction
 
 The indexed read APIs support both ascending and descending iteration
-through `left_to_right: bool`, mirroring the existing `Query` API. The
-common case for top-k is `left_to_right: false` (highest counts first),
-which is what `indexed_count_top_k(path, k, descending = true, ..)` produces.
-Ascending traversal is also supported for "smallest counts first" /
-"items with the lowest counts in [a, b]" patterns.
+through the axis constructors' `descending: bool`. The common case for
+top-k is `descending = true` (highest counts first). Ascending
+traversal is also supported for "smallest counts first" / "items with
+the lowest counts in [a, b]" patterns.
 
 ### How many entries fall in a count band
 
-`indexed_count_aggregate_over_value_range(path, lo, hi, ..)` answers **how many
-entries have a `count_value` in `[lo, hi]`** — a bucket population, in
-which each matching entry contributes 1. It is *not* the total of those
-entries' counts: over counts `[3, 1, 5]`, the band `[2, 10]` selects the
-`3` and the `5` and answers `2`, not `8`. If you want the total, use
-`indexed_count_range(path, lo, hi, ..)` to list the selected entries
-with their counts and sum them caller-side.
+The trusted-read form of the aggregate above —
+`PathQuery::new_axis_aggregate_over_value_range(path, IndexAxis::Count,
+lo, hi, AggregateFold::Population)` run through `run_path_query` —
+answers **how many entries have a `count_value` in `[lo, hi]`** — a
+bucket population, in which each matching entry contributes 1
+(`PathQueryRun::AxisAggregate(AxisAggregateValue::Population(_))`). It
+is *not* the total of those entries' counts: over counts `[3, 1, 5]`,
+the band `[2, 10]` selects the `3` and the `5` and answers `2`, not
+`8`. If you want the total, use `AggregateFold::Total`, or a bounded
+axis read to list the selected entries with their counts.
 
 The walk folds each fully-contained subtree's stored aggregate in one
 step and descends only along the two range boundaries, so the cost is
