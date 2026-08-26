@@ -156,9 +156,9 @@ const SNAPSHOT_AGE_WARN_THRESHOLD: Duration = Duration::from_secs(1);
 ///   into a deterministic typed error.
 pub struct Tx<'db> {
     tx: RawTx<'db>,
-    /// `Some(creation time)` iff this transaction was created via
-    /// `start_snapshot_read_transaction`. Doubles as the read-only
-    /// marker and the age baseline for [`Tx::snapshot_age`].
+    /// `Some(creation time)` if and only if this transaction was
+    /// created via `start_snapshot_read_transaction`. Doubles as the
+    /// read-only marker and the age baseline for [`Tx::snapshot_age`].
     snapshot_read_since: Option<Instant>,
     /// Debug builds warn once per transaction on a long-held snapshot;
     /// this remembers that the warning already fired.
