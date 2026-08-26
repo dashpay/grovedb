@@ -25,13 +25,22 @@
 //! cross-fed accidentally. Platform must switch prover and verifier together
 //! — which it owns on both sides, and which the issue anticipates.
 //!
+//! There is also one CAPABILITY divergence (divergence 2): a **bounded read
+//! over a completely empty secondary**. The unified prover carries the empty
+//! secondary as empty proof bytes, which the verifier resolves to a
+//! NULL_HASH secondary root — the parent binding then attests the emptiness.
+//! The standalone range prover has no empty-tree shape and refuses with the
+//! merk-level "Cannot create proof for empty tree" (both pinned below). The
+//! paginated shape has no such gap: both surfaces prove empty secondaries.
+//!
 //! ## What IS byte-identical: the semantic core
 //!
 //! Both surfaces are built over the same engines, and these tests pin that
 //! the security-relevant payload is byte-for-byte shared, for the same state
 //! and arguments, across all three axes, both traversal shapes, both
-//! directions, empty and populated secondaries, and offset 0 / mid /
-//! past-the-end:
+//! directions, empty and populated secondaries (except the bounded-over-empty
+//! case, where only the unified surface can prove at all — divergence 2
+//! above), and offset 0 / mid / past-the-end:
 //!
 //! - `secondary_proof` — the encoded Merk proof over the per-axis secondary
 //!   (count-offset paginated for top-k, plain range for bounded),
@@ -65,7 +74,7 @@ mod tests {
         },
         query::axis_lowering::axis_bounded_merk_query,
         tests::{make_test_grovedb, TEST_LEAF},
-        Element, GroveDb, PathQuery,
+        Element, Error, GroveDb, PathQuery,
     };
 
     // -----------------------------------------------------------------
@@ -229,15 +238,16 @@ mod tests {
         }
     }
 
-    /// Per-axis direct bounded prover, as platform calls it today.
-    fn prove_direct_bounded(
+    /// Per-axis direct bounded prover, fallible — the empty-secondary
+    /// test pins its refusal.
+    fn prove_direct_bounded_result(
         db: &GroveDb,
         path: &[&[u8]],
         axis: IndexAxis,
         secondary_query: MerkQuery,
         limit: u16,
         grove_version: &GroveVersion,
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, Error> {
         match axis {
             IndexAxis::Count => db.prove_indexed_count_query(
                 path,
@@ -254,7 +264,19 @@ mod tests {
             }
         }
         .unwrap()
-        .expect("direct bounded prove")
+    }
+
+    /// Per-axis direct bounded prover, as platform calls it today.
+    fn prove_direct_bounded(
+        db: &GroveDb,
+        path: &[&[u8]],
+        axis: IndexAxis,
+        secondary_query: MerkQuery,
+        limit: u16,
+        grove_version: &GroveVersion,
+    ) -> Vec<u8> {
+        prove_direct_bounded_result(db, path, axis, secondary_query, limit, grove_version)
+            .expect("direct bounded prove")
     }
 
     /// Per-axis direct bounded verifier, as platform calls it today.
@@ -657,7 +679,15 @@ mod tests {
                 assert_eq!(unified_skipped, Some(0), "{label}");
             }
 
-            // Bounded over the empty secondary.
+            // Bounded over the empty secondary: THE capability
+            // divergence between the surfaces (module doc, divergence
+            // 2). The unified prover carries the empty secondary as
+            // empty proof bytes, which the verifier resolves to a
+            // NULL_HASH secondary root — the parent binding then
+            // attests the emptiness. The standalone range prover has no
+            // empty-tree shape and refuses outright; this refusal is
+            // exactly what platform's drive-abci maps onto its
+            // "retry unproved" InvalidArgument for the having surface.
             let (lo, hi) = bounds_for(axis);
             let label = format!("empty ({axis:?}, bounded)");
             let path_query = PathQuery::new_axis_bounded(pcpsit_path(), axis, lo, hi, 10, false);
@@ -665,36 +695,28 @@ mod tests {
                 .prove_query(&path_query, None, grove_version)
                 .unwrap()
                 .unwrap_or_else(|e| panic!("{label}: unified prove: {e}"));
-            let axis_query = AxisQuery::bounded(axis, lo, hi, 10, false);
-            let lowered = axis_bounded_merk_query(&axis_query).expect("lowers");
-            let direct = prove_direct_bounded(&db, path, axis, lowered.clone(), 10, grove_version);
-
             let payload = extract_descent_payload(&unified);
-            let envelope = decode_range_envelope(&direct);
-            assert_semantic_core_eq(
-                &label,
-                &payload,
-                axis.tag(),
-                true,
-                &envelope.other_axes_root_hashes,
-                &envelope.primary_root_hash,
-                &envelope.secondary_proof,
-                &envelope.target_chains,
-            );
             assert!(
                 payload.secondary_proof.is_empty(),
-                "{label}: both surfaces use the empty-proof-bytes convention for an empty \
-                 secondary"
+                "{label}: the unified envelope uses the empty-proof-bytes convention"
             );
-
             let (unified_root, unified_entries, _) =
                 verify_unified(&unified, &path_query, grove_version);
-            let direct_result =
-                verify_direct_bounded(&direct, path, axis, lowered, 10, grove_version);
             assert_eq!(unified_root, root, "{label}");
-            assert_eq!(direct_result.root_hash, root, "{label}");
             assert!(unified_entries.is_empty(), "{label}");
-            assert_eq!(unified_entries, direct_result.entries, "{label}");
+
+            let axis_query = AxisQuery::bounded(axis, lo, hi, 10, false);
+            let lowered = axis_bounded_merk_query(&axis_query).expect("lowers");
+            let err = prove_direct_bounded_result(&db, path, axis, lowered, 10, grove_version)
+                .expect_err(
+                    "the standalone range prover refuses an empty secondary; if this starts \
+                     succeeding, the module-doc divergence enumeration is stale",
+                );
+            assert!(
+                matches!(&err, Error::CorruptedData(msg)
+                    if msg.contains("Cannot create proof for empty tree")),
+                "{label}: expected the empty-tree refusal class, got {err:?}"
+            );
         }
     }
 
