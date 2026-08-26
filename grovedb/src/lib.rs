@@ -209,6 +209,11 @@ pub use grovedb_merk::proofs::query::query_item::QueryItem;
 pub use grovedb_merk::proofs::query::SubqueryBranch;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::proofs::query::VerifyOptions;
+/// The axis-read vocabulary: callers build an [`AxisQuery`] (or use
+/// `PathQuery`'s typed axis constructors) and run/prove/verify it
+/// through the unified surface.
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grovedb_merk::proofs::query::{AxisProjection, AxisQuery, AxisTraversal};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::proofs::Query;
 #[cfg(any(feature = "minimal", feature = "verify"))]
