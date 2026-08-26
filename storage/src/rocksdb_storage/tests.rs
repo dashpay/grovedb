@@ -2210,4 +2210,29 @@ mod snapshot_read_transactions {
         let second = snapshot_tx.snapshot_age().expect("snapshot age");
         assert!(second >= first, "age must not run backwards");
     }
+
+    /// Holding the snapshot past the debug warning threshold and then
+    /// reading exercises the loud-log path (fires once per
+    /// transaction); reads keep returning pinned data regardless.
+    #[test]
+    fn long_held_snapshot_still_reads_pinned_data() {
+        let storage = TempStorage::new();
+        seed(&storage);
+        let snapshot_tx = storage.start_snapshot_read_transaction();
+        commit_concurrent_change(&storage);
+
+        // Cross the debug-build warning threshold (1s) before reading.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        assert!(
+            snapshot_tx.snapshot_age().expect("snapshot age") > std::time::Duration::from_secs(1)
+        );
+
+        let ctx = storage
+            .get_transactional_storage_context(PATH.into(), None, &snapshot_tx)
+            .unwrap();
+        // Two reads: the first trips the once-per-transaction warning,
+        // the second takes the already-warned path.
+        assert_eq!(get(&ctx, b"updated"), Some(b"before".to_vec()));
+        assert_eq!(get(&ctx, b"removed"), Some(b"doomed".to_vec()));
+    }
 }
