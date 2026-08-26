@@ -253,8 +253,8 @@ pub enum ProofBytes {
     /// `merk_proof` is a standard Merk proof against the cidx **primary**
     /// covering the subquery result set; subqueries into cidx via the
     /// generic V1 envelope use the primary as the descent target. Callers
-    /// who want secondary-ordered output should use the dedicated
-    /// `prove_indexed_count_top_k` proof shape instead.
+    /// who want secondary-ordered output should use an axis read
+    /// (`PathQuery::new_axis_top_k` and friends) instead.
     CountIndexedTree(Vec<u8>),
     /// Terminal attestation for an indexed tree that is itself a query
     /// result with nothing queried below it:

@@ -317,16 +317,32 @@ the same contract the aggregate-on-range shapes use.
 
 ## Relationship to the specialized surfaces
 
-Every pre-existing surface remains first-class: the
-`prove/verify_indexed_*` methods and their standalone echo-based
-envelopes, `AggregateSumPathQuery` and its budgeted reader, and the
-per-shape `verify_aggregate_*` entry points. The unified entry points
-route to the same engines, and where both a standalone envelope and an
-embedded V1 proof exist for the same read, tests pin that they yield
-identical entries and reconstruct the same root hash. New callers
-should prefer `PathQuery` + `run_path_query` + `verify_path_query`; the
-specialized surfaces are the engines underneath and the compatibility
-surface for existing integrations.
+For indexed-axis proofs, `PathQuery` + `prove_query` +
+`verify_path_query` is the **only public surface**. The standalone
+`prove/verify_indexed_*` methods and their echo-based envelopes
+(`IndexedAxisRangeProof` / `IndexedAxisPaginatedProof` /
+`IndexedAxisAggregateProof`) are retired from the public API: they are
+compiled `#[cfg(test)]` and kept solely as in-crate oracles that
+cross-check the unified V1-envelope axis proofs against an independent
+implementation of the same engines. Their wire format was never emitted
+by a released version, so retiring them before GROVE_V4 activates means
+it never becomes consensus-frozen — only the V1 envelope's axis-descent
+format ships. The byte-level relationship between the two families
+(shared semantic core, deliberately different outer envelopes, mutual
+rejection between verifiers) is pinned in
+`grovedb/src/tests/envelope_byte_equality_tests.rs`.
+
+The per-axis **trusted-read** wrappers (`indexed_*_top_k*`,
+`indexed_*_range*`, the aggregate reads and the `_keys` projections)
+are likewise crate-internal: they are the engine `run_path_query`
+routes axis shapes to. External callers build the same axis
+`PathQuery` for reads and proofs alike — one request shape, three
+consumers (`run_path_query`, `prove_query`, `verify_path_query`).
+
+Other pre-existing surfaces remain first-class:
+`AggregateSumPathQuery` and its budgeted reader, and the per-shape
+`verify_aggregate_*` entry points. The unified entry points route to
+the same engines underneath.
 
 Two things deliberately do **not** merge:
 

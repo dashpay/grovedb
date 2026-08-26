@@ -15,14 +15,19 @@ use grovedb_merk::{
     proofs::{encode_into, query::QueryItem as MerkQueryItemForRange, Query as MerkQuery},
 };
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
-use grovedb_query::{AggregateFold, QueryItem as MerkQueryItem};
+use grovedb_query::AggregateFold;
+#[cfg(test)]
+use grovedb_query::QueryItem as MerkQueryItem;
 use grovedb_storage::StorageBatch;
 use grovedb_version::version::GroveVersion;
 
 use crate::{util::TxRef, Element, Error, GroveDb, Transaction, TransactionArg};
 
+use super::verify::{count_aggregate_inner_range, sum_aggregate_inner_range};
+// Test-oracle-only (see the module doc): the standalone envelope
+// builders and their entry points are `#[cfg(test)]`.
+#[cfg(test)]
 use super::{
-    verify::{count_aggregate_inner_range, sum_aggregate_inner_range},
     AncestorAttestation, IndexedAxisAggregateProof, IndexedAxisPaginatedProof,
     IndexedAxisRangeProof,
 };
@@ -169,6 +174,7 @@ fn build_chains_for_keys<'db>(
 /// list has length N-1 (one entry per intermediate layer). For each
 /// intermediate layer, open the parent merk and inspect the element
 /// at the depth's key to determine the chain composition.
+#[cfg(test)]
 fn build_ancestor_attestations<'db>(
     grovedb: &'db GroveDb,
     path_keys: &[Vec<u8>],
@@ -298,6 +304,7 @@ fn build_ancestor_attestations<'db>(
 /// Build single-key Merk proofs per layer, top-down. `layer_proofs[i]`
 /// proves the existence of `path_keys[i]` in the Merk at
 /// `path_keys[..i]`.
+#[cfg(test)]
 fn build_layer_proofs<'db>(
     grovedb: &'db GroveDb,
     path_keys: &[Vec<u8>],
@@ -465,7 +472,8 @@ impl GroveDb {
     ///
     /// Any other variant — or a PCPSIT whose TLV does not carry the
     /// requested axis — is rejected with [`Error::InvalidPath`].
-    pub fn prove_indexed_axis_top_k<'b, B, P>(
+    #[cfg(test)]
+    pub(crate) fn prove_indexed_axis_top_k<'b, B, P>(
         &self,
         path: P,
         axis: IndexAxis,
@@ -496,7 +504,8 @@ impl GroveDb {
     /// secondary of an indexed-tree at `path`. The query is over the
     /// secondary's keyspace, which is `(sort_key_be ‖ original_key)`
     /// per axis (8 + N bytes for count/sum, 16 + N bytes for avg).
-    pub fn prove_indexed_axis_query<'b, B, P>(
+    #[cfg(test)]
+    pub(crate) fn prove_indexed_axis_query<'b, B, P>(
         &self,
         path: P,
         axis: IndexAxis,
@@ -568,7 +577,8 @@ impl GroveDb {
     /// attested `skipped < offset`, which together with the root-bound
     /// count commitments is a proof that the total population is
     /// exactly `skipped`.
-    pub fn prove_indexed_axis_top_k_paginated<'b, B, P>(
+    #[cfg(test)]
+    pub(crate) fn prove_indexed_axis_top_k_paginated<'b, B, P>(
         &self,
         path: P,
         axis: IndexAxis,
@@ -751,7 +761,8 @@ impl GroveDb {
     ///
     /// Errors if `item_key` is not present in the indexed tree's
     /// primary, or if the axis is not indexed at this path.
-    pub fn prove_indexed_axis_rank_of_key<'b, B, P>(
+    #[cfg(test)]
+    pub(crate) fn prove_indexed_axis_rank_of_key<'b, B, P>(
         &self,
         path: P,
         axis: IndexAxis,
@@ -832,7 +843,8 @@ impl GroveDb {
     /// against the same path).
     ///
     /// `lo > hi` is a degenerate range; the proof commits `0`.
-    pub fn prove_indexed_axis_aggregate_over_value_range<'b, B, P>(
+    #[cfg(test)]
+    pub(crate) fn prove_indexed_axis_aggregate_over_value_range<'b, B, P>(
         &self,
         path: P,
         axis: IndexAxis,
@@ -893,6 +905,7 @@ impl GroveDb {
         Ok(bytes).wrap_with_cost(cost)
     }
 
+    #[cfg(test)]
     fn build_indexed_axis_range_proof<'db, 'b, B: AsRef<[u8]>>(
         &'db self,
         path: SubtreePath<'b, B>,
@@ -1041,6 +1054,7 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
+    #[cfg(test)]
     fn build_indexed_axis_paginated_proof<'db, 'b, B: AsRef<[u8]>>(
         &'db self,
         path: SubtreePath<'b, B>,
@@ -1203,6 +1217,7 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
+    #[cfg(test)]
     fn build_indexed_axis_aggregate_proof<'db, 'b, B: AsRef<[u8]>>(
         &'db self,
         path: SubtreePath<'b, B>,

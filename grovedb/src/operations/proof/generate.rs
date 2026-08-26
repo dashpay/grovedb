@@ -1014,8 +1014,9 @@ impl GroveDb {
                             // V0 is a frozen wire format. Adding cidx
                             // descent to it would change the proof bytes,
                             // so V0 will not learn cidx subqueries. Use
-                            // V1 (or the dedicated `prove_indexed_count_*`
-                            // entry points) for cidx queries.
+                            // the V1 envelope (axis reads go through
+                            // `PathQuery`'s axis constructors) for cidx
+                            // queries.
                             Ok(Element::ProvableCountIndexedTree(..))
                             | Ok(Element::ProvableSumIndexedTree(..))
                             | Ok(Element::ProvableCountProvableSumIndexedTree(..))
@@ -1025,7 +1026,8 @@ impl GroveDb {
                                 return Err(Error::NotSupported(
                                     "V0 proofs do not support subqueries into \
                                      CountIndexedTree / ProvableCountIndexedTree; \
-                                     use prove_query_v1 or prove_indexed_count_top_k"
+                                     use a V1 proof (axis-ordered reads go through \
+                                     PathQuery::new_axis_top_k)"
                                         .to_string(),
                                 ))
                                 .wrap_with_cost(cost);
@@ -2568,8 +2570,8 @@ impl GroveDb {
                             // ProofBytes::CountIndexedTree(secondary ‖
                             // primary_proof) and chains via
                             // combine_hash_three at this layer. Callers who
-                            // want secondary-ordered output should use
-                            // prove_indexed_count_top_k.
+                            // want secondary-ordered output should use an
+                            // axis read (`PathQuery::new_axis_top_k`).
                             // Cidx descent only for NON-EMPTY primary
                             // (Some(_)): mirrors the regular-tree
                             // pattern above. An empty cidx primary

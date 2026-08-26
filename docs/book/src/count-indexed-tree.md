@@ -478,24 +478,52 @@ Merk is not touched. The verifier receives the primary's root hash plus a
 ### Top-k by count
 
 ```rust
-// Shipped API on `GroveDb`:
-let entries: Vec<IndexedAxisEntry<u64>> = db
-    .indexed_count_top_k(path, k, /* descending: */ true, transaction, grove_version)?
-    .expect("top-k");
-
-// Verifiable variant — proof + verification:
-let proof_bytes = db
-    .prove_indexed_count_top_k(path, k, /* descending: */ true, transaction, grove_version)?
-    .expect("prove");
-let result = GroveDb::verify_indexed_count_top_k(
-    &proof_bytes,
-    path,
+// Trusted read — the axis read through the unified PathQuery surface
+// (the only public read surface for indexed-axis queries):
+let path_query = PathQuery::new_axis_top_k(
+    path_vec.clone(),
+    IndexAxis::Count,
     k,
+    /* offset: */ 0,
     /* descending: */ true,
-    grove_version,
-)?;
-// result.entries: AxisEntries::Count(Vec<IndexedAxisEntry<u64>>)
-// result.root_hash: [u8; 32]
+);
+let PathQueryRun::AxisEntries { entries, skipped } = db
+    .run_path_query(
+        &path_query,
+        true,  // allow_cache
+        true,  // decrease_limit_on_range_with_no_sub_elements
+        true,  // error_if_intermediate_path_tree_not_present
+        QueryResultType::QueryPathKeyElementTrioResultType,
+        transaction,
+        grove_version,
+    )?
+    .expect("top-k")
+else {
+    unreachable!("an axis read runs to AxisEntries")
+};
+// entries: AxisEntries::Count(Vec<IndexedAxisEntry<u64>>)
+
+// Verifiable variant — the same PathQuery, proved:
+let path_query = PathQuery::new_axis_top_k(
+    path_vec,
+    IndexAxis::Count,
+    k,
+    /* offset: */ 0,
+    /* descending: */ true,
+);
+let proof_bytes = db
+    .prove_query(&path_query, None, grove_version)?
+    .expect("prove");
+let VerifiedPathQuery::AxisEntries {
+    root_hash,
+    entries,
+    skipped,
+} = GroveDb::verify_path_query(&proof_bytes, &path_query, grove_version)?
+else {
+    unreachable!("an axis read verifies to AxisEntries")
+};
+// entries: AxisEntries::Count(Vec<IndexedAxisEntry<u64>>)
+// root_hash: [u8; 32]; skipped: Some(0) for offset 0
 ```
 
 The query returns `IndexedAxisEntry` rows — the count, the primary key,
@@ -534,70 +562,80 @@ one key whose reference points at another cannot verify.
 ### Range by count
 
 ```rust
-let entries: Vec<IndexedAxisEntry<u64>> = db
-    .indexed_count_range(
-        path,
-        min,                       // u64, inclusive
-        max,                       // u64, inclusive
-        /* descending: */ false,
-        /* limit:      */ 100,
-        transaction,
-        grove_version,
-    )?
+let path_query = PathQuery::new_axis_bounded(
+    path_vec,
+    IndexAxis::Count,
+    min as i128,               // inclusive
+    max as i128,               // inclusive
+    /* limit: */ 100,
+    /* descending: */ false,
+);
+let run = db
+    .run_path_query(/* same arguments as above */)?
     .expect("count range");
+// PathQueryRun::AxisEntries { entries, skipped: None } — bounded reads
+// attest no skip count.
 ```
 
 Internally builds a bounded `Query::insert_range(lo_be..upper)` against
 the secondary (with `RangeFrom` for `max == u64::MAX`), so iteration
 seeks directly to the encoded count bounds — no full secondary scan.
 
-### Arbitrary count-indexed query
+### Bounded count-indexed query
 
-For predicates beyond top-k / count-range — e.g. "exact count = X",
-"count >= X", multiple disjoint count windows — pass an arbitrary
-`MerkQuery` over the secondary's keyspace (keys are
-`count_value_be ‖ original_key`):
+For predicates beyond top-k — "exact count = X" (`lo = hi = X`),
+"count >= X" (`hi = u64::MAX`), any inclusive count band — use the
+bounded axis read. Both proof sides lower the bounds into the
+secondary's keyspace (keys are `count_value_be ‖ original_key`)
+through the same shared lowering, so they cannot drift:
 
 ```rust
-let mut q = MerkQuery::new();
-q.insert_range(3u64.to_be_bytes().to_vec()..6u64.to_be_bytes().to_vec());
-q.left_to_right = true;
-
+let path_query = PathQuery::new_axis_bounded(
+    path_vec,
+    IndexAxis::Count,
+    /* lo: */ 3,
+    /* hi: */ 5, // inclusive
+    limit,
+    /* descending: */ false,
+);
 let proof_bytes = db
-    .prove_indexed_count_query(path, q.clone(), Some(limit), tx, grove_version)?
+    .prove_query(&path_query, None, grove_version)?
     .expect("prove");
 
-// Verify with the SAME query (positional binding):
-let result =
-    GroveDb::verify_indexed_count_query(&proof_bytes, path, q, Some(limit), grove_version)?;
+// Verify with the SAME query (query-as-input binding):
+let verified = GroveDb::verify_path_query(&proof_bytes, &path_query, grove_version)?;
 ```
 
-`prove_indexed_count_top_k` is just a thin wrapper around
-`prove_indexed_count_query` with a full-range query and the requested
-`descending` flag.
+Multiple disjoint count windows are one bounded read per window. (The
+old standalone entry points that accepted an arbitrary `MerkQuery`
+over the secondary keyspace are retired from the public API; they
+survive only as `#[cfg(test)]` cross-check oracles.)
 
 ### How many entries have count in `[a, b]`?
 
-Because the secondary is a `ProvableCountTree`, this is answered in
-`O(log n + k)` via the existing range query against the secondary,
-using the same `prove_indexed_count_query` /
-`verify_indexed_count_query` shape as count-range reads — the
-returned entry list's length is the count, and the proof binds it to
-the GroveDB root hash. No per-entry enumeration is needed beyond
-what the secondary Merk's range proof already encodes.
+Because the secondary's node hashes commit count aggregates, this is
+answered in `O(log n)` — without enumerating the matching entries —
+via the aggregate axis read with the `Population` fold:
 
 ```rust
-let mut q = MerkQuery::new();
-q.insert_range(a.to_be_bytes().to_vec()..=b.to_be_bytes().to_vec());
-
-let proof = db.prove_indexed_count_query(path, q.clone(), None, tx, grove_version)?;
-let result = GroveDb::verify_indexed_count_query(&proof, path, q, None, grove_version)?;
-
-let count = result.entries.len();
-let root_hash = result.root_hash;
+let path_query = PathQuery::new_axis_aggregate_over_value_range(
+    path_vec,
+    IndexAxis::Count,
+    a as i128, // inclusive
+    b as i128, // inclusive
+    AggregateFold::Population,
+);
+let proof = db.prove_query(&path_query, None, grove_version)?.expect("prove");
+let VerifiedPathQuery::AxisAggregate { root_hash, value } =
+    GroveDb::verify_path_query(&proof, &path_query, grove_version)?
+else {
+    unreachable!("an aggregate axis read verifies to AxisAggregate")
+};
+let count = value; // how many entries have count_value in [a, b]
 ```
 
-The verifier returns the matched entries (size = count) and the
+(Listing the matching entries instead — size = count — is the bounded
+read above.) The verifier returns the attested population and the
 GroveDB root hash. The trivial "total entries" query (`a = 0`,
 `b = u64::MAX`) is also answered in `O(1)` via the parent's
 `Element::CountIndexedTree` `count_value` field, which already commits
@@ -606,21 +644,23 @@ the size.
 ### Direction
 
 The indexed read APIs support both ascending and descending iteration
-through `left_to_right: bool`, mirroring the existing `Query` API. The
-common case for top-k is `left_to_right: false` (highest counts first),
-which is what `indexed_count_top_k(path, k, descending = true, ..)` produces.
-Ascending traversal is also supported for "smallest counts first" /
-"items with the lowest counts in [a, b]" patterns.
+through the axis constructors' `descending: bool`. The common case for
+top-k is `descending = true` (highest counts first). Ascending
+traversal is also supported for "smallest counts first" / "items with
+the lowest counts in [a, b]" patterns.
 
 ### How many entries fall in a count band
 
-`indexed_count_aggregate_over_value_range(path, lo, hi, ..)` answers **how many
-entries have a `count_value` in `[lo, hi]`** — a bucket population, in
-which each matching entry contributes 1. It is *not* the total of those
-entries' counts: over counts `[3, 1, 5]`, the band `[2, 10]` selects the
-`3` and the `5` and answers `2`, not `8`. If you want the total, use
-`indexed_count_range(path, lo, hi, ..)` to list the selected entries
-with their counts and sum them caller-side.
+The trusted-read form of the aggregate above —
+`PathQuery::new_axis_aggregate_over_value_range(path, IndexAxis::Count,
+lo, hi, AggregateFold::Population)` run through `run_path_query` —
+answers **how many entries have a `count_value` in `[lo, hi]`** — a
+bucket population, in which each matching entry contributes 1
+(`PathQueryRun::AxisAggregate(AxisAggregateValue::Population(_))`). It
+is *not* the total of those entries' counts: over counts `[3, 1, 5]`,
+the band `[2, 10]` selects the `3` and the `5` and answers `2`, not
+`8`. If you want the total, use `AggregateFold::Total`, or a bounded
+axis read to list the selected entries with their counts.
 
 The walk folds each fully-contained subtree's stored aggregate in one
 step and descends only along the two range boundaries, so the cost is
@@ -642,12 +682,12 @@ secondary keys are `(count_be ‖ key)`, an internal index. Use this
 route when the cidx is just one of several layers in a larger query
 shape and you don't need count-ordered output.
 
-**2. Dedicated `prove_indexed_count_query` → arbitrary `MerkQuery`
-over the secondary keyspace.** Use this when you do want
-count-ordered output (top-k, count ranges, count-equality predicates).
-Subquery composition with the dedicated proof shape is not exposed —
-if you need a hybrid, compose the dedicated proof with a follow-up
-`PathQuery`.
+**2. Axis reads (`ReadMode::Axis`) → count-ordered output.** Use
+`PathQuery::new_axis_top_k` / `new_axis_bounded` /
+`new_axis_aggregate_over_value_range` when you do want count-ordered
+output (top-k, count bands, count-equality predicates). Subquery
+composition below an axis read is not exposed — if you need a hybrid,
+compose the axis read with a follow-up `PathQuery`.
 
 ```rust
 // Inside a PathQuery — any standard subquery shape works:
@@ -658,9 +698,8 @@ let (root_hash, results) = GroveDb::verify_query(&proof, &path_query, grove_vers
 ```
 
 V0 generic prove/verify do **not** support cidx descent — V0 is a
-frozen wire format. Callers on V0 paths must use the dedicated
-`prove_indexed_count_top_k` / `prove_indexed_count_query` entry
-points.
+frozen wire format. Cidx queries require a grove version that emits
+V1 proof envelopes.
 
 ### Proof shape
 
@@ -787,8 +826,8 @@ ordering. Top-k descending iteration encounters them last.
   [overwrite workaround](#cidx-overwrite-workaround) (delete via
   batch, recreate in a follow-up batch).
 - **V0 generic prove/verify do not support cidx descents.** V0 is a
-  frozen wire format. Use V1 generic proofs or the dedicated
-  `prove_indexed_count_*` entry points.
+  frozen wire format. Use V1 generic proofs (axis reads go through
+  `PathQuery`'s axis constructors).
 
 ## Implementation-detail items
 

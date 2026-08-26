@@ -24,6 +24,21 @@
 //! Deep ops *under* a sub-tree of an indexed primary need none of this —
 //! they propagate through the ordinary
 //! `propagate_changes_with_transaction_with_initial_deferred` machinery.
+//!
+//! ## Reads: `PathQuery` is the only public surface
+//!
+//! The per-axis trusted-read wrappers here (`indexed_*_top_k*`,
+//! `indexed_*_range*`, the aggregate reads and the `_keys` projections)
+//! are `pub(crate)`: they are the engine [`GroveDb::run_path_query`]
+//! routes axis shapes to, not a public API. External callers build a
+//! [`crate::PathQuery`] with the axis constructors (`new_axis_top_k`,
+//! `new_axis_bounded`, `new_axis_rank_of_key`,
+//! `new_axis_aggregate_over_value_range`, or `new_axis` with a keys-only
+//! projection) and call `run_path_query` — the same query then proves
+//! through `prove_query` / `verify_path_query` without restating the
+//! request. The non-paginated top-k family is `#[cfg(test)]`: nothing
+//! routes to it (the paginated walk with `offset = 0` serves that case),
+//! and it survives only as a test oracle.
 
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
@@ -1308,6 +1323,7 @@ impl GroveDb {
     /// `(value, original_key)` pairs straight from the secondary, with no
     /// primary read. Both the resolving wrapper and the keys-only wrapper
     /// are built on this, so the two can never disagree about the page.
+    #[cfg(test)]
     fn indexed_axis_top_k_rows_generic<'b, B, T>(
         &self,
         path: SubtreePath<'b, B>,
@@ -1337,6 +1353,7 @@ impl GroveDb {
 
     /// One implementation of the `indexed_<axis>_top_k` shape. See the
     /// per-axis wrappers for the public contract.
+    #[cfg(test)]
     fn indexed_axis_top_k_generic<'b, B, T>(
         &self,
         path: SubtreePath<'b, B>,
@@ -1371,6 +1388,7 @@ impl GroveDb {
     /// Keys-only `indexed_<axis>_top_k`: the ranking pairs without
     /// resolving any primary value. See
     /// [`Self::indexed_count_top_k_keys`] for why this exists.
+    #[cfg(test)]
     fn indexed_axis_top_k_keys_generic<'b, B, T>(
         &self,
         path: SubtreePath<'b, B>,
@@ -1754,7 +1772,8 @@ impl GroveDb {
     ///
     /// For a verifiable variant, see [`Self::prove_indexed_count_top_k`]
     /// and [`Self::verify_indexed_count_top_k`].
-    pub fn indexed_count_top_k<'b, B, P>(
+    #[cfg(test)]
+    pub(crate) fn indexed_count_top_k<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -1794,7 +1813,7 @@ impl GroveDb {
     /// variant use [`Self::prove_indexed_count_top_k_paginated`] which
     /// relies on the merk-level count-offset proof to commit the skipped
     /// count via `HashWithCount`.
-    pub fn indexed_count_top_k_paginated<'b, B, P>(
+    pub(crate) fn indexed_count_top_k_paginated<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -1826,7 +1845,7 @@ impl GroveDb {
     /// Bounds are inclusive on both sides; `(0, u64::MAX, false, limit)`
     /// is equivalent to a full scan. `lo_count > hi_count` returns an
     /// empty vector.
-    pub fn indexed_count_range<'b, B, P>(
+    pub(crate) fn indexed_count_range<'b, B, P>(
         &self,
         path: P,
         lo_count: u64,
@@ -1906,7 +1925,7 @@ impl GroveDb {
     /// verifiable count, use
     /// [`Self::prove_indexed_count_aggregate_over_value_range`] +
     /// [`Self::verify_indexed_count_aggregate_over_value_range`].
-    pub fn indexed_count_aggregate_over_value_range<'b, B, P>(
+    pub(crate) fn indexed_count_aggregate_over_value_range<'b, B, P>(
         &self,
         path: P,
         lo_count: u64,
@@ -1972,7 +1991,8 @@ impl GroveDb {
     /// Each returned entry is `(sum, original_key)`. The signed `i64`
     /// sum is decoded from the secondary's sign-flipped big-endian
     /// prefix (see [`grovedb_element::indexed::encode_sum_sort_key`]).
-    pub fn indexed_sum_top_k<'b, B, P>(
+    #[cfg(test)]
+    pub(crate) fn indexed_sum_top_k<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -2002,7 +2022,7 @@ impl GroveDb {
     /// secondary merk in `O(log n)` node loads, and
     /// [`IndexedTopKPage::skipped`] reports the true
     /// `min(offset, population)`. Not a verifiable / proof-bounded read.
-    pub fn indexed_sum_top_k_paginated<'b, B, P>(
+    pub(crate) fn indexed_sum_top_k_paginated<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -2034,7 +2054,7 @@ impl GroveDb {
     /// Bounds are inclusive on both sides. `lo_sum > hi_sum` returns
     /// an empty vector. `lo_sum == i64::MIN && hi_sum == i64::MAX` is
     /// equivalent to a full scan.
-    pub fn indexed_sum_range<'b, B, P>(
+    pub(crate) fn indexed_sum_range<'b, B, P>(
         &self,
         path: P,
         lo_sum: i64,
@@ -2106,7 +2126,7 @@ impl GroveDb {
     /// indexed-tree". Like the count counterpart, this call has no
     /// cryptographic guarantee; for a verifiable sum use the
     /// proof-bound variant in the proof submodule.
-    pub fn indexed_sum_aggregate_over_value_range<'b, B, P>(
+    pub(crate) fn indexed_sum_aggregate_over_value_range<'b, B, P>(
         &self,
         path: P,
         lo_sum: i64,
@@ -2166,7 +2186,7 @@ impl GroveDb {
     ///
     /// `O(log n)`: the walk folds contained subtrees' stored counts and
     /// descends only along the two band boundaries.
-    pub fn indexed_sum_population_over_value_range<'b, B, P>(
+    pub(crate) fn indexed_sum_population_over_value_range<'b, B, P>(
         &self,
         path: P,
         lo_sum: i64,
@@ -2228,7 +2248,7 @@ impl GroveDb {
     ///
     /// `O(log n)`: the walk folds contained subtrees' stored sums and
     /// descends only along the two band boundaries.
-    pub fn indexed_count_total_over_value_range<'b, B, P>(
+    pub(crate) fn indexed_count_total_over_value_range<'b, B, P>(
         &self,
         path: P,
         lo_count: u64,
@@ -2298,7 +2318,8 @@ impl GroveDb {
     /// view if you need one — noting an `f64` view is approximate at
     /// this scale; the `i128` fixed-point value is the exact consensus
     /// value.
-    pub fn indexed_avg_top_k<'b, B, P>(
+    #[cfg(test)]
+    pub(crate) fn indexed_avg_top_k<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -2328,7 +2349,7 @@ impl GroveDb {
     /// secondary merk in `O(log n)` node loads, and
     /// [`IndexedTopKPage::skipped`] reports the true
     /// `min(offset, population)`. Not a verifiable / proof-bounded read.
-    pub fn indexed_avg_top_k_paginated<'b, B, P>(
+    pub(crate) fn indexed_avg_top_k_paginated<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -2369,7 +2390,7 @@ impl GroveDb {
     /// "aggregate avg in range" should compute it client-side from
     /// `indexed_count_aggregate_over_value_range` + `indexed_sum_aggregate_over_value_range`
     /// against the same path's count and sum secondaries.
-    pub fn indexed_avg_range<'b, B, P>(
+    pub(crate) fn indexed_avg_range<'b, B, P>(
         &self,
         path: P,
         lo_avg: i128,
@@ -2446,7 +2467,8 @@ impl GroveDb {
 
     /// Keys-only [`Self::indexed_count_top_k`]: the top-`k`
     /// `(count, original_key)` pairs, with no primary value resolved.
-    pub fn indexed_count_top_k_keys<'b, B, P>(
+    #[cfg(test)]
+    pub(crate) fn indexed_count_top_k_keys<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -2473,7 +2495,7 @@ impl GroveDb {
     /// `(count, original_key)` pairs and the skipped count, produced
     /// entirely inside the pinned secondary view, with no primary value
     /// resolved.
-    pub fn indexed_count_top_k_paginated_keys<'b, B, P>(
+    pub(crate) fn indexed_count_top_k_paginated_keys<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -2500,7 +2522,7 @@ impl GroveDb {
 
     /// Keys-only [`Self::indexed_count_range`]: the in-range
     /// `(count, original_key)` pairs, with no primary value resolved.
-    pub fn indexed_count_range_keys<'b, B, P>(
+    pub(crate) fn indexed_count_range_keys<'b, B, P>(
         &self,
         path: P,
         lo_count: u64,
@@ -2538,7 +2560,8 @@ impl GroveDb {
     }
 
     /// Keys-only [`Self::indexed_sum_top_k`].
-    pub fn indexed_sum_top_k_keys<'b, B, P>(
+    #[cfg(test)]
+    pub(crate) fn indexed_sum_top_k_keys<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -2562,7 +2585,7 @@ impl GroveDb {
     }
 
     /// Keys-only [`Self::indexed_sum_top_k_paginated`].
-    pub fn indexed_sum_top_k_paginated_keys<'b, B, P>(
+    pub(crate) fn indexed_sum_top_k_paginated_keys<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -2588,7 +2611,7 @@ impl GroveDb {
     }
 
     /// Keys-only [`Self::indexed_sum_range`].
-    pub fn indexed_sum_range_keys<'b, B, P>(
+    pub(crate) fn indexed_sum_range_keys<'b, B, P>(
         &self,
         path: P,
         lo_sum: i64,
@@ -2626,7 +2649,8 @@ impl GroveDb {
     }
 
     /// Keys-only [`Self::indexed_avg_top_k`].
-    pub fn indexed_avg_top_k_keys<'b, B, P>(
+    #[cfg(test)]
+    pub(crate) fn indexed_avg_top_k_keys<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -2650,7 +2674,7 @@ impl GroveDb {
     }
 
     /// Keys-only [`Self::indexed_avg_top_k_paginated`].
-    pub fn indexed_avg_top_k_paginated_keys<'b, B, P>(
+    pub(crate) fn indexed_avg_top_k_paginated_keys<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -2676,7 +2700,7 @@ impl GroveDb {
     }
 
     /// Keys-only [`Self::indexed_avg_range`].
-    pub fn indexed_avg_range_keys<'b, B, P>(
+    pub(crate) fn indexed_avg_range_keys<'b, B, P>(
         &self,
         path: P,
         lo_avg: i128,
