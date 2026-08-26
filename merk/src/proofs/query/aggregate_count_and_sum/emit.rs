@@ -19,7 +19,7 @@
 //!   `own_count` / `own_sum` later.)
 //! - **Boundary** → emit `KVDigestCountSum(key, value_hash, node_count,
 //!   node_sum)` for the current node, recurse into both children, and
-//!   add `own_count` / `own_sum` to the running totals iff the node's
+//!   add `own_count` / `own_sum` to the running totals if and only if the node's
 //!   key is itself in range.
 
 use std::collections::LinkedList;

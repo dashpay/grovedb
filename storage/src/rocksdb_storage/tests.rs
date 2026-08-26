@@ -1840,3 +1840,441 @@ mod transactional_context_without_batch {
         );
     }
 }
+
+/// Item 3 of the snapshot-read hardening (issue #832): correctness of a
+/// snapshot read transaction depends on EVERY read method of both
+/// prefixed transaction contexts threading the snapshot through its
+/// read options. The trait's read surface is small and closed — get /
+/// get_aux / get_root / get_meta and the raw iterator — so one
+/// conformance walk per context covers it, and a read method added
+/// later without snapshot plumbing fails here as an obvious
+/// test-extension gap instead of silently reverting to
+/// latest-committed reads.
+mod snapshot_read_transactions {
+    use super::*;
+    use crate::{error::Error, RawIterator, Storage, StorageBatch, StorageContext};
+
+    const PATH: &[&[u8]] = &[b"tree"];
+
+    /// Seed every column family under one prefix, committed to the DB:
+    /// `updated` and `removed` keys everywhere, plus `iter_a`..`iter_c`
+    /// in the data CF for the iterator walks.
+    fn seed(storage: &TempStorage) {
+        let tx = storage.start_transaction();
+        let batch = StorageBatch::new();
+        let ctx = storage
+            .get_transactional_storage_context(PATH.into(), Some(&batch), &tx)
+            .unwrap();
+        for (key, value) in [
+            (b"updated".as_slice(), b"before".as_slice()),
+            (b"removed", b"doomed"),
+            (b"iter_a", b"va"),
+            (b"iter_b", b"vb"),
+            (b"iter_c", b"vc"),
+        ] {
+            ctx.put(key, value, None, None).unwrap().expect("seed put");
+        }
+        ctx.put_aux(b"updated", b"aux_before", None)
+            .unwrap()
+            .expect("seed put_aux");
+        ctx.put_aux(b"removed", b"aux_doomed", None)
+            .unwrap()
+            .expect("seed put_aux");
+        ctx.put_root(b"updated", b"root_before", None)
+            .unwrap()
+            .expect("seed put_root");
+        ctx.put_root(b"removed", b"root_doomed", None)
+            .unwrap()
+            .expect("seed put_root");
+        ctx.put_meta(b"updated", b"meta_before", None)
+            .unwrap()
+            .expect("seed put_meta");
+        ctx.put_meta(b"removed", b"meta_doomed", None)
+            .unwrap()
+            .expect("seed put_meta");
+        storage
+            .commit_multi_context_batch(batch, Some(&tx))
+            .unwrap()
+            .expect("seed batch commit");
+        storage
+            .commit_transaction(tx)
+            .unwrap()
+            .expect("seed tx commit");
+    }
+
+    /// The "concurrent block commit" that lands AFTER the snapshot
+    /// transaction was created: overwrite `updated`, delete `removed`,
+    /// and insert `fresh` in every column family (data CF also swaps
+    /// `iter_c` for `iter_d`).
+    fn commit_concurrent_change(storage: &TempStorage) {
+        let tx = storage.start_transaction();
+        let batch = StorageBatch::new();
+        let ctx = storage
+            .get_transactional_storage_context(PATH.into(), Some(&batch), &tx)
+            .unwrap();
+        ctx.put(b"updated", b"after", None, None)
+            .unwrap()
+            .expect("overwrite");
+        ctx.put(b"fresh", b"created", None, None)
+            .unwrap()
+            .expect("insert");
+        ctx.put(b"iter_d", b"vd", None, None)
+            .unwrap()
+            .expect("insert");
+        ctx.delete(b"removed", None).unwrap().expect("delete");
+        ctx.delete(b"iter_c", None).unwrap().expect("delete");
+        ctx.put_aux(b"updated", b"aux_after", None)
+            .unwrap()
+            .expect("overwrite aux");
+        ctx.put_aux(b"fresh", b"aux_created", None)
+            .unwrap()
+            .expect("insert aux");
+        ctx.delete_aux(b"removed", None)
+            .unwrap()
+            .expect("delete aux");
+        ctx.put_root(b"updated", b"root_after", None)
+            .unwrap()
+            .expect("overwrite root");
+        ctx.put_root(b"fresh", b"root_created", None)
+            .unwrap()
+            .expect("insert root");
+        ctx.delete_root(b"removed", None)
+            .unwrap()
+            .expect("delete root");
+        ctx.put_meta(b"updated", b"meta_after", None)
+            .unwrap()
+            .expect("overwrite meta");
+        ctx.put_meta(b"fresh", b"meta_created", None)
+            .unwrap()
+            .expect("insert meta");
+        ctx.delete_meta(b"removed", None)
+            .unwrap()
+            .expect("delete meta");
+        storage
+            .commit_multi_context_batch(batch, Some(&tx))
+            .unwrap()
+            .expect("concurrent batch commit");
+        storage
+            .commit_transaction(tx)
+            .unwrap()
+            .expect("concurrent tx commit");
+    }
+
+    fn get<'db>(ctx: &impl StorageContext<'db>, key: &[u8]) -> Option<Vec<u8>> {
+        ctx.get(key).unwrap().expect("get")
+    }
+
+    /// Walk the whole prefix forward from `seek_to_first`, collecting
+    /// (key, value) pairs.
+    fn collect_forward<'db>(ctx: &impl StorageContext<'db>) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut iter = ctx.raw_iter();
+        iter.seek_to_first().unwrap();
+        let mut out = Vec::new();
+        while iter.valid().unwrap() {
+            out.push((
+                iter.key().unwrap().expect("key").to_vec(),
+                iter.value().unwrap().expect("value").to_vec(),
+            ));
+            iter.next().unwrap();
+        }
+        out
+    }
+
+    /// Walk the whole prefix backward from `seek_to_last`.
+    fn collect_backward<'db>(ctx: &impl StorageContext<'db>) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut iter = ctx.raw_iter();
+        iter.seek_to_last().unwrap();
+        let mut out = Vec::new();
+        while iter.valid().unwrap() {
+            out.push((
+                iter.key().unwrap().expect("key").to_vec(),
+                iter.value().unwrap().expect("value").to_vec(),
+            ));
+            iter.prev().unwrap();
+        }
+        out
+    }
+
+    /// Every read method of the given context must observe the
+    /// creation-time committed state: the pre-commit value of the
+    /// overwritten key, the still-present deleted key, no trace of the
+    /// post-snapshot insertions.
+    fn assert_reads_pinned<'db>(ctx: &impl StorageContext<'db>) {
+        // Point reads, one per column family.
+        assert_eq!(get(ctx, b"updated"), Some(b"before".to_vec()));
+        assert_eq!(get(ctx, b"removed"), Some(b"doomed".to_vec()));
+        assert_eq!(get(ctx, b"fresh"), None);
+        assert_eq!(
+            ctx.get_aux(b"updated").unwrap().expect("get_aux"),
+            Some(b"aux_before".to_vec())
+        );
+        assert_eq!(
+            ctx.get_aux(b"removed").unwrap().expect("get_aux"),
+            Some(b"aux_doomed".to_vec())
+        );
+        assert_eq!(ctx.get_aux(b"fresh").unwrap().expect("get_aux"), None);
+        assert_eq!(
+            ctx.get_root(b"updated").unwrap().expect("get_root"),
+            Some(b"root_before".to_vec())
+        );
+        assert_eq!(
+            ctx.get_root(b"removed").unwrap().expect("get_root"),
+            Some(b"root_doomed".to_vec())
+        );
+        assert_eq!(ctx.get_root(b"fresh").unwrap().expect("get_root"), None);
+        assert_eq!(
+            ctx.get_meta(b"updated").unwrap().expect("get_meta"),
+            Some(b"meta_before".to_vec())
+        );
+        assert_eq!(
+            ctx.get_meta(b"removed").unwrap().expect("get_meta"),
+            Some(b"meta_doomed".to_vec())
+        );
+        assert_eq!(ctx.get_meta(b"fresh").unwrap().expect("get_meta"), None);
+
+        // Raw iterator, every navigation variant. The pre-commit data
+        // CF holds exactly these five keys under the prefix.
+        let pinned: Vec<(Vec<u8>, Vec<u8>)> = [
+            (b"iter_a".as_slice(), b"va".as_slice()),
+            (b"iter_b", b"vb"),
+            (b"iter_c", b"vc"),
+            (b"removed", b"doomed"),
+            (b"updated", b"before"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_vec(), v.to_vec()))
+        .collect();
+        assert_eq!(collect_forward(ctx), pinned, "forward walk");
+        assert_eq!(
+            collect_backward(ctx),
+            pinned.iter().cloned().rev().collect::<Vec<_>>(),
+            "backward walk"
+        );
+
+        // seek lands on the deleted-after-snapshot key, seek_for_prev
+        // must not see the post-snapshot `iter_d`.
+        let mut iter = ctx.raw_iter();
+        iter.seek(b"iter_c").unwrap();
+        assert_eq!(
+            iter.key().unwrap().expect("seek key"),
+            b"iter_c",
+            "seek sees the pre-commit key"
+        );
+        let mut iter = ctx.raw_iter();
+        iter.seek_for_prev(b"iter_d").unwrap();
+        assert_eq!(
+            iter.key().unwrap().expect("seek_for_prev key"),
+            b"iter_c",
+            "seek_for_prev lands before the invisible post-snapshot key"
+        );
+    }
+
+    /// The mirror-image control: a context on latest-committed state
+    /// must see the post-commit values.
+    fn assert_reads_latest<'db>(ctx: &impl StorageContext<'db>) {
+        assert_eq!(get(ctx, b"updated"), Some(b"after".to_vec()));
+        assert_eq!(get(ctx, b"removed"), None);
+        assert_eq!(get(ctx, b"fresh"), Some(b"created".to_vec()));
+        assert_eq!(
+            ctx.get_aux(b"fresh").unwrap().expect("get_aux"),
+            Some(b"aux_created".to_vec())
+        );
+        assert_eq!(
+            ctx.get_root(b"fresh").unwrap().expect("get_root"),
+            Some(b"root_created".to_vec())
+        );
+        assert_eq!(
+            ctx.get_meta(b"fresh").unwrap().expect("get_meta"),
+            Some(b"meta_created".to_vec())
+        );
+        let keys: Vec<Vec<u8>> = collect_forward(ctx).into_iter().map(|(k, _)| k).collect();
+        assert!(keys.contains(&b"iter_d".to_vec()), "latest sees iter_d");
+        assert!(!keys.contains(&b"iter_c".to_vec()), "iter_c is gone");
+    }
+
+    #[test]
+    fn every_read_method_of_the_transactional_context_is_pinned() {
+        let storage = TempStorage::new();
+        seed(&storage);
+        let snapshot_tx = storage.start_snapshot_read_transaction();
+        let plain_tx = storage.start_transaction();
+        commit_concurrent_change(&storage);
+
+        let pinned_ctx = storage
+            .get_transactional_storage_context(PATH.into(), None, &snapshot_tx)
+            .unwrap();
+        assert_reads_pinned(&pinned_ctx);
+
+        // A plain transaction reads latest-committed on every
+        // operation — the exact behavior the snapshot suppresses.
+        let latest_ctx = storage
+            .get_transactional_storage_context(PATH.into(), None, &plain_tx)
+            .unwrap();
+        assert_reads_latest(&latest_ctx);
+    }
+
+    #[test]
+    fn every_read_method_of_the_immediate_context_is_pinned() {
+        let storage = TempStorage::new();
+        seed(&storage);
+        let snapshot_tx = storage.start_snapshot_read_transaction();
+        let plain_tx = storage.start_transaction();
+        commit_concurrent_change(&storage);
+
+        let pinned_ctx = storage
+            .get_immediate_storage_context(PATH.into(), &snapshot_tx)
+            .unwrap();
+        assert_reads_pinned(&pinned_ctx);
+
+        let latest_ctx = storage
+            .get_immediate_storage_context(PATH.into(), &plain_tx)
+            .unwrap();
+        assert_reads_latest(&latest_ctx);
+    }
+
+    /// Item 1: a snapshot read transaction is read-only by
+    /// construction, not by documentation — every write entry point and
+    /// commit refuse it with the typed error, and rollback (a harmless
+    /// no-op) still succeeds.
+    #[test]
+    fn snapshot_read_transaction_refuses_writes_and_commit() {
+        let storage = TempStorage::new();
+        seed(&storage);
+        let snapshot_tx = storage.start_snapshot_read_transaction();
+        assert!(snapshot_tx.is_snapshot_read());
+
+        // Immediate context: every write refuses immediately.
+        let ctx = storage
+            .get_immediate_storage_context(PATH.into(), &snapshot_tx)
+            .unwrap();
+        let refused = |result: Result<(), Error>| {
+            assert!(
+                matches!(result, Err(Error::SnapshotReadOnlyTransaction(_))),
+                "expected the typed snapshot-read-only refusal, got {result:?}"
+            );
+        };
+        refused(ctx.put(b"updated", b"smuggled", None, None).unwrap());
+        refused(ctx.put_aux(b"updated", b"smuggled", None).unwrap());
+        refused(ctx.put_root(b"updated", b"smuggled", None).unwrap());
+        refused(ctx.put_meta(b"updated", b"smuggled", None).unwrap());
+        refused(ctx.delete(b"updated", None).unwrap());
+        refused(ctx.delete_aux(b"updated", None).unwrap());
+        refused(ctx.delete_root(b"updated", None).unwrap());
+        refused(ctx.delete_meta(b"updated", None).unwrap());
+        refused(ctx.commit_batch(ctx.new_batch()).unwrap());
+
+        // Batch-apply entry point: puts into a deferred StorageBatch
+        // are accepted (they touch nothing), the apply refuses.
+        let batch = StorageBatch::new();
+        let batched_ctx = storage
+            .get_transactional_storage_context(PATH.into(), Some(&batch), &snapshot_tx)
+            .unwrap();
+        batched_ctx
+            .put(b"updated", b"smuggled", None, None)
+            .unwrap()
+            .expect("a deferred batch put touches nothing yet");
+        refused(
+            storage
+                .commit_multi_context_batch(batch, Some(&snapshot_tx))
+                .unwrap(),
+        );
+
+        // Rollback is allowed; commit refuses and consumes.
+        storage
+            .rollback_transaction(&snapshot_tx)
+            .expect("rollback is a harmless no-op on a snapshot read transaction");
+        refused(storage.commit_transaction(snapshot_tx).unwrap());
+
+        // Nothing leaked through: latest-committed state is untouched.
+        let control_tx = storage.start_transaction();
+        let control = storage
+            .get_transactional_storage_context(PATH.into(), None, &control_tx)
+            .unwrap();
+        assert_eq!(get(&control, b"updated"), Some(b"before".to_vec()));
+    }
+
+    /// Item 2: snapshot lifetime is observable. A plain transaction has
+    /// no snapshot age; a snapshot read transaction reports a
+    /// monotonically growing hold time.
+    #[test]
+    fn snapshot_age_is_exposed_and_grows() {
+        let storage = TempStorage::new();
+
+        let plain_tx = storage.start_transaction();
+        assert!(!plain_tx.is_snapshot_read());
+        assert_eq!(plain_tx.snapshot_age(), None);
+
+        let snapshot_tx = storage.start_snapshot_read_transaction();
+        assert!(snapshot_tx.is_snapshot_read());
+        let first = snapshot_tx.snapshot_age().expect("snapshot age");
+        let second = snapshot_tx.snapshot_age().expect("snapshot age");
+        assert!(second >= first, "age must not run backwards");
+    }
+
+    /// The savepoint family is part of the wrapper's public surface —
+    /// platform sets a savepoint per state transition and rewinds one
+    /// failed group without discarding the transaction. Pin the
+    /// pass-through: writes since `set_savepoint` are undone by
+    /// `rollback_to_savepoint`, writes before it survive, and the
+    /// rollback family stays callable on a snapshot read transaction.
+    #[test]
+    fn savepoints_unwind_writes_since_the_savepoint() {
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let ctx = storage
+            .get_immediate_storage_context(PATH.into(), &tx)
+            .unwrap();
+
+        ctx.put(b"kept", b"kept_value", None, None)
+            .unwrap()
+            .expect("pre-savepoint put");
+        tx.set_savepoint();
+        ctx.put(b"unwound", b"gone", None, None)
+            .unwrap()
+            .expect("post-savepoint put");
+        assert_eq!(get(&ctx, b"unwound"), Some(b"gone".to_vec()));
+
+        tx.rollback_to_savepoint().expect("rollback to savepoint");
+        assert_eq!(get(&ctx, b"kept"), Some(b"kept_value".to_vec()));
+        assert_eq!(get(&ctx, b"unwound"), None);
+
+        storage
+            .commit_transaction(tx)
+            .unwrap()
+            .expect("commit after savepoint rewind");
+
+        // The rollback family is allowed on a snapshot read
+        // transaction — it can only unwind writes, which such a
+        // transaction cannot accumulate.
+        let snapshot_tx = storage.start_snapshot_read_transaction();
+        snapshot_tx.set_savepoint();
+        snapshot_tx
+            .rollback_to_savepoint()
+            .expect("savepoint family is a harmless no-op on a snapshot read transaction");
+    }
+
+    /// Holding the snapshot past the debug warning threshold and then
+    /// reading exercises the loud-log path (fires once per
+    /// transaction); reads keep returning pinned data regardless.
+    #[test]
+    fn long_held_snapshot_still_reads_pinned_data() {
+        let storage = TempStorage::new();
+        seed(&storage);
+        let snapshot_tx = storage.start_snapshot_read_transaction();
+        commit_concurrent_change(&storage);
+
+        // Cross the debug-build warning threshold (1s) before reading.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        assert!(
+            snapshot_tx.snapshot_age().expect("snapshot age") > std::time::Duration::from_secs(1)
+        );
+
+        let ctx = storage
+            .get_transactional_storage_context(PATH.into(), None, &snapshot_tx)
+            .unwrap();
+        // Two reads: the first trips the once-per-transaction warning,
+        // the second takes the already-warned path.
+        assert_eq!(get(&ctx, b"updated"), Some(b"before".to_vec()));
+        assert_eq!(get(&ctx, b"removed"), Some(b"doomed".to_vec()));
+    }
+}

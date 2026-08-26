@@ -13,7 +13,7 @@
 //! - **Boundary** → emit `KVDigestCount(key, value_hash, node_count)`
 //!   for the current node, recurse into both children for descent, and
 //!   add `own_count = node_count − left_struct − right_struct` to the
-//!   running total iff the node's key is itself in range. This is what
+//!   running total if and only if the node's key is itself in range. This is what
 //!   makes `NonCounted`-wrapped entries fall out of the in-range total
 //!   automatically (their node_count is 0).
 

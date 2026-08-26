@@ -545,7 +545,7 @@ impl GroveOp {
         }
     }
 
-    /// True iff this op, when applied at a cidx primary's path, can
+    /// True if and only if this op, when applied at a cidx primary's path, can
     /// change the `count_value` (or absence) of the element at the
     /// op's key — and therefore requires the cidx primary's secondary
     /// mirror to be updated for that key.

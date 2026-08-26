@@ -377,7 +377,7 @@ impl SumBudgetWindowProof {
 ///   `other_axes_root_hashes` + the recomputed queried-axis root for
 ///   PCPSIT), which must equal the parent-committed `value_hash` — any
 ///   forgery fails that comparison.
-/// - `rank` is present iff the traversal is `RankOfKey`: the verifier
+/// - `rank` is present if and only if the traversal is `RankOfKey`: the verifier
 ///   needs the claimed rank to drive the count-offset verification
 ///   walk, whose counted commitments then attest it (a wrong claim
 ///   fails verification), and the single yielded entry must be the
