@@ -3216,11 +3216,14 @@ impl GroveDb {
     /// - `BulkAppendTree`: `blake3("bulk_state" || mmr_root || dense_root)`
     /// - `MmrTree`: the MMR root hash
     /// - `DenseAppendOnlyFixedSizeTree`: the dense tree root hash
+    /// - `PrivateDocumentStore`: `blake3("pds_state" || config_hash ||
+    ///   bulk_state_root)`
     ///
     /// For empty trees this returns the same conventions the insert path
     /// binds into the parent: `EMPTY_COMMITMENT_TREE_STATE_ROOT` for an
-    /// empty commitment tree, `NULL_HASH` (the empty Merk root) for the
-    /// other three types.
+    /// empty commitment tree, the config-parametrized empty state root for
+    /// an empty private document store, and `NULL_HASH` (the empty Merk
+    /// root) for the other three types.
     ///
     /// Returns an error if `element` is not a non-Merk data tree, or if the
     /// payload cannot be read back as a consistent tree of the declared
@@ -3325,6 +3328,41 @@ impl GroveDb {
                             "cannot compute dense tree root from payload: {e}"
                         ))
                     })
+            }
+            Element::PrivateDocumentStore(total_count, entry_size, chunk_power, _) => {
+                // The state root binds the committed config even when the
+                // store is empty, so the empty case is the
+                // config-parametrized empty root rather than NULL_HASH.
+                if *total_count == 0 {
+                    return Ok(
+                        grovedb_private_document_store::empty_private_document_store_state_root(
+                            *entry_size,
+                            *chunk_power,
+                        ),
+                    );
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                let store = grovedb_private_document_store::PrivateDocumentStore::from_state(
+                    *total_count,
+                    *entry_size,
+                    *chunk_power,
+                    storage_ctx,
+                )
+                .unwrap()
+                .map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "cannot open private document store of {total_count} entries from \
+                         payload: {e}"
+                    ))
+                })?;
+                store.compute_current_state_root_from_values().map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "cannot compute private document store state root from payload: {e}"
+                    ))
+                })
             }
             _ => Err(Error::InternalError(format!(
                 "compute_non_merk_state_root called on a non append-only element: {}",

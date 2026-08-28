@@ -107,12 +107,11 @@ impl GroveDb {
     ///   associated data.
     /// - Empty trees return an empty byte vector.
     /// - Non-Merk append-only subtrees (`CommitmentTree`, `MmrTree`,
-    ///   `BulkAppendTree`, `DenseAppendOnlyFixedSizeTree`) are served as
-    ///   cursor-based entry pages instead of Merk chunks. A request for one
-    ///   of these subtrees without a page cursor returns
-    ///   `Error::NotSupported`.
-    /// - Indexed-tree requests and populated `PrivateDocumentStore`
-    ///   requests return `Error::NotSupported`.
+    ///   `BulkAppendTree`, `DenseAppendOnlyFixedSizeTree`,
+    ///   `PrivateDocumentStore`) are served as cursor-based entry pages
+    ///   instead of Merk chunks. A request for one of these subtrees
+    ///   without a page cursor returns `Error::NotSupported`.
+    /// - Indexed-tree requests return `Error::NotSupported`.
     pub fn fetch_chunk(
         &self,
         packed_global_chunk_id: &[u8],
@@ -163,14 +162,12 @@ impl GroveDb {
             }
 
             // Non-Merk append-only trees (CommitmentTree / MmrTree /
-            // BulkAppendTree / DenseAppendOnlyFixedSizeTree) have no Merk
-            // nodes to chunk — their payload is served as target-driven
-            // entry pages instead. The target encodes a page cursor into
-            // every local chunk id; a request without one comes from a
-            // peer speaking the pre-#785 protocol, which cannot sync
-            // these subtrees. (Other non-Merk types without a replay arm
-            // — PrivateDocumentStore — fall through to the Merk path,
-            // which serves them empty or rejects them populated below.)
+            // BulkAppendTree / DenseAppendOnlyFixedSizeTree /
+            // PrivateDocumentStore) have no Merk nodes to chunk — their
+            // payload is served as target-driven entry pages instead. The
+            // target encodes a page cursor into every local chunk id; a
+            // request without one comes from a peer speaking the pre-#785
+            // protocol, which cannot sync these subtrees.
             if non_merk_sync::supports_entry_replay(tree_type) {
                 if nested_chunk_ids.is_empty() {
                     return Err(Error::NotSupported(
@@ -215,16 +212,6 @@ impl GroveDb {
             if merk.is_empty_tree().unwrap() {
                 local_chunk_bytes.push(vec![]);
             } else {
-                // A non-Merk data tree whose namespace is populated but that
-                // has no entry-replay arm (PrivateDocumentStore, see issues
-                // #783 / #784): there are no Merk nodes to chunk, so fail
-                // descriptively instead of dying in the chunk producer.
-                if tree_type.uses_non_merk_data_storage() {
-                    return Err(Error::NotSupported(format!(
-                        "state sync does not yet support populated {tree_type} subtrees \
-                         (non-Merk data storage without an entry-replay arm)"
-                    )));
-                }
                 let mut chunk_producer = ChunkProducer::new(&merk).map_err(|e| {
                     Error::CorruptedData(format!(
                         "failed to create chunk producer by prefix tx:{} with:{}",

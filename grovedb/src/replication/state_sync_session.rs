@@ -19,7 +19,7 @@ use grovedb_version::version::GroveVersion;
 
 use super::{
     is_supported_state_sync_version,
-    non_merk_sync::{element_supports_entry_replay, supports_entry_replay, NonMerkRestorer},
+    non_merk_sync::{supports_entry_replay, NonMerkRestorer},
     utils::{decode_vec_ops, encode_global_chunk_id, path_to_string},
 };
 use crate::{
@@ -37,7 +37,8 @@ pub(crate) type SubtreePrefix = [u8; 32];
 /// The restore backend for one subtree: Merk chunk restore for ordinary
 /// subtrees, entry replay for the non-Merk append-only tree family
 /// (CommitmentTree / MmrTree / BulkAppendTree /
-/// DenseAppendOnlyFixedSizeTree) — see issue #785.
+/// DenseAppendOnlyFixedSizeTree / PrivateDocumentStore) — see issues #785
+/// and #783 / #784.
 enum SubtreeRestorer<'db> {
     Merk(Restorer<PrefixedRocksDbImmediateStorageContext<'db>>),
     NonMerk(NonMerkRestorer),
@@ -369,11 +370,9 @@ impl<'db> MultiStateSyncSession<'db> {
         {
             if supports_entry_replay(tree_type) {
                 // Non-Merk append-only subtree: restored by replaying leaf
-                // entries rather than Merk chunks (see issue #785). The
-                // Merk opened above is structurally empty for these types
-                // and is not needed. (A PrivateDocumentStore reaches the
-                // Merk restorer below instead: discovery only lets an
-                // EMPTY one through, which the Merk path handles.)
+                // entries rather than Merk chunks (see issues #785 and
+                // #783 / #784). The Merk opened above is structurally
+                // empty for these types and is not needed.
                 drop(merk);
                 let element = element.ok_or_else(|| {
                     Error::InternalError(
@@ -791,28 +790,11 @@ impl<'db> MultiStateSyncSession<'db> {
                     ));
                 }
                 // Non-Merk append-only trees (CommitmentTree / MmrTree /
-                // BulkAppendTree / DenseAppendOnlyFixedSizeTree) are
-                // discovered like any subtree; `add_subtree_sync_info`
-                // routes them to the entry-replay restore path instead of
-                // Merk chunk restore (see issue #785).
-                //
-                // Any other non-Merk data tree (PrivateDocumentStore, see
-                // issues #783 / #784) has no replay arm yet. An EMPTY one
-                // is fine — the Merk path transfers its (empty) Merk and
-                // the parent binding is already verified — but a populated
-                // one has no Merk nodes to chunk and would only fail
-                // opaquely in the source's chunk producer, so reject it
-                // up-front here where the decoded `Element` is available.
-                if value.uses_non_merk_data_storage()
-                    && !element_supports_entry_replay(&value)
-                    && value.non_merk_entry_count().unwrap_or(0) > 0
-                {
-                    return Err(Error::NotSupported(format!(
-                        "state sync does not yet support populated {} subtrees \
-                         (non-Merk data storage without an entry-replay arm)",
-                        value.type_str()
-                    )));
-                }
+                // BulkAppendTree / DenseAppendOnlyFixedSizeTree /
+                // PrivateDocumentStore) are discovered like any subtree;
+                // `add_subtree_sync_info` routes them to the entry-replay
+                // restore path instead of Merk chunk restore (see issues
+                // #785 and #783 / #784).
                 subtree_keys.insert(key.to_vec());
             }
         }

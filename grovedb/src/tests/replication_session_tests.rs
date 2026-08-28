@@ -13,24 +13,24 @@ mod tests {
         Element, GroveDb,
     };
 
-    /// Optional in-flight mutation of a commitment tree page:
+    /// Optional in-flight mutation of a non-Merk entry-replay page:
     /// `(more, aux, entries) -> (more, aux, entries)`. Used by tamper tests.
-    type CtPageMutator<'a> =
+    type NonMerkPageMutator<'a> =
         &'a dyn Fn(bool, Vec<u8>, Vec<Vec<u8>>) -> (bool, Vec<u8>, Vec<Vec<u8>>);
 
     /// The single sync driver behind every test in this file: checkpoint the
     /// source (the standard replication pattern — the tutorial does the
     /// same), run the fetch/apply loop with the given subtree batch size,
-    /// optionally mutating commitment tree pages in flight, verify
+    /// optionally mutating non-Merk entry-replay pages in flight, verify
     /// completion, and commit the session.
     fn run_sync(
         source: &TempGroveDb,
         grove_version: &GroveVersion,
         subtrees_batch_size: usize,
-        mutate_ct_page: Option<CtPageMutator>,
+        mutate_page: Option<NonMerkPageMutator>,
     ) -> Result<TempGroveDb, crate::Error> {
         use crate::replication::{
-            non_merk_sync::{decode_non_merk_page, encode_non_merk_page},
+            non_merk_sync::{decode_non_merk_page, encode_non_merk_page, supports_entry_replay},
             utils::{decode_global_chunk_id, pack_nested_bytes, unpack_nested_bytes},
         };
 
@@ -67,9 +67,9 @@ mod tests {
                 grove_version,
             )?;
 
-            if let Some(mutate) = mutate_ct_page {
-                // Mirror apply_chunk's unpacking to find commitment tree
-                // pages and run them through the mutator.
+            if let Some(mutate) = mutate_page {
+                // Mirror apply_chunk's unpacking to find non-Merk
+                // entry-replay pages and run them through the mutator.
                 let global_ids: Vec<Vec<u8>> = if chunk_id.as_slice() == app_hash.as_slice() {
                     vec![chunk_id.clone()]
                 } else {
@@ -80,10 +80,7 @@ mod tests {
                 let mut mutated_globals = Vec::with_capacity(global_data.len());
                 for (gid, gdata) in global_ids.iter().zip(global_data) {
                     let (_, _, tree_type, _) = decode_global_chunk_id(gid, &app_hash)?;
-                    if matches!(
-                        tree_type,
-                        grovedb_merk::tree_type::TreeType::CommitmentTree(_)
-                    ) {
+                    if supports_entry_replay(tree_type) {
                         let pages = unpack_nested_bytes(&gdata)?;
                         let mut mutated_pages = Vec::with_capacity(pages.len());
                         for page in pages {
@@ -1373,10 +1370,10 @@ mod tests {
         );
     }
 
-    /// `PrivateDocumentStore` also uses non-Merk data storage but has no
-    /// entry-replay arm yet. An EMPTY one must keep syncing through the
-    /// ordinary Merk path (exactly as before the append-only work), and the
-    /// restored store must be usable afterwards.
+    /// An EMPTY `PrivateDocumentStore` syncs through the entry-replay path
+    /// with a single empty page; verification reduces to the
+    /// config-parametrized empty state root, and the restored store must be
+    /// usable afterwards.
     #[test]
     fn state_sync_empty_private_document_store_round_trip() {
         let grove_version = GroveVersion::latest();
@@ -1423,14 +1420,12 @@ mod tests {
         );
     }
 
-    /// A POPULATED `PrivateDocumentStore` cannot be transferred yet: the
-    /// target rejects it descriptively at discovery (never a silent
-    /// truncation to an empty store), and the source rejects a chunk request
-    /// for it descriptively too.
+    /// Full state-sync round trip for a POPULATED `PrivateDocumentStore`
+    /// (issues #783 / #784). Uses chunk_power 2 (epoch of 4) with 10
+    /// fixed-size documents so the payload spans two compacted chunk blobs
+    /// AND the current buffer.
     #[test]
-    fn state_sync_rejects_populated_private_document_store_up_front() {
-        use crate::replication::utils::{encode_global_chunk_id, pack_nested_bytes};
-
+    fn state_sync_populated_private_document_store_round_trip() {
         let grove_version = GroveVersion::latest();
         let source = make_test_grovedb(grove_version);
 
@@ -1445,51 +1440,178 @@ mod tests {
             )
             .unwrap()
             .expect("insert private document store");
+        // A sibling item so the parent subtree holds mixed content.
         source
-            .private_document_store_insert(
+            .insert(
                 [TEST_LEAF].as_ref(),
-                b"docs",
-                vec![1u8; 16],
+                b"sibling",
+                Element::new_item(b"item next to the docs".to_vec()),
+                None,
                 None,
                 grove_version,
             )
             .unwrap()
-            .expect("insert document");
+            .expect("insert sibling item");
 
-        let err = try_sync_source_to_destination(&source, grove_version)
-            .expect_err("state sync of a DB containing a populated PDS must fail up-front");
-        let msg = format!("{err:?}");
-        assert!(
-            matches!(err, crate::Error::NotSupported(_)) && msg.contains("populated"),
-            "target-side: expected descriptive NotSupported, got: {msg}"
+        for i in 0u8..10 {
+            source
+                .private_document_store_insert(
+                    [TEST_LEAF].as_ref(),
+                    b"docs",
+                    vec![i; 16],
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert document");
+        }
+
+        let dest = sync_source_to_destination(&source, grove_version);
+
+        assert_eq!(
+            source.root_hash(None, grove_version).unwrap().unwrap(),
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+            "app hash must match"
         );
 
-        // Source side: the Merk-path request shape for this subtree.
-        let tx = source.start_transaction();
-        let (merk, root_key, tree_type, _element) = source
-            .open_merk_for_replication([TEST_LEAF, b"docs"].as_ref().into(), &tx, grove_version)
-            .expect("open pds merk for replication");
-        drop(merk);
-        let pds_path: &[&[u8]] = &[TEST_LEAF, b"docs"];
-        let prefix = grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(
-            pds_path.as_ref().into(),
-        )
-        .unwrap();
-        let global_chunk_id =
-            encode_global_chunk_id(prefix, root_key, tree_type, vec![]).expect("encode chunk id");
-        let packed = pack_nested_bytes(vec![global_chunk_id]).expect("pack chunk id");
-        let err = source
-            .fetch_chunk(
-                packed.as_slice(),
-                Some(&tx),
-                CURRENT_STATE_SYNC_VERSION,
+        // Every document survives, both in the compacted chunks (positions
+        // 0..8) and in the buffer (positions 8..10).
+        for pos in 0u64..10 {
+            let source_value = source
+                .private_document_store_get_value(
+                    [TEST_LEAF].as_ref(),
+                    b"docs",
+                    pos,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("source document")
+                .expect("source document present");
+            let dest_value = dest
+                .private_document_store_get_value(
+                    [TEST_LEAF].as_ref(),
+                    b"docs",
+                    pos,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("dest document")
+                .expect("dest document present");
+            assert_eq!(source_value, dest_value, "document {pos} must match");
+        }
+
+        // The destination passes a full integrity check.
+        let dest_issues = dest
+            .verify_grovedb(None, true, false, grove_version)
+            .expect("dest verify_grovedb should run");
+        assert!(
+            dest_issues.is_empty(),
+            "destination must verify clean, got: {:?}",
+            dest_issues
+        );
+
+        // The restored store is fully usable for future writes: appending
+        // the same document on both sides keeps the states identical.
+        for db in [&source, &dest] {
+            db.private_document_store_insert(
+                [TEST_LEAF].as_ref(),
+                b"docs",
+                vec![42u8; 16],
+                None,
                 grove_version,
             )
-            .expect_err("populated PDS chunk request must be rejected");
-        let msg = format!("{err:?}");
+            .unwrap()
+            .expect("post-sync document insert");
+        }
+        assert_eq!(
+            source.root_hash(None, grove_version).unwrap().unwrap(),
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+            "post-sync inserts must produce identical states"
+        );
+    }
+
+    /// Byzantine-source coverage for `PrivateDocumentStore` pages: a
+    /// flipped document byte, a wrong-sized document, and a dropped
+    /// document must all fail the sync instead of committing corrupt
+    /// state. The wrong-size case is rejected at replay time by the
+    /// committed `entry_size` from the target's hash-verified element,
+    /// before the finalize-time state-root check even runs.
+    #[test]
+    fn state_sync_private_document_store_tampered_pages_rejected() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"docs",
+                Element::empty_private_document_store(16, 2).expect("valid config"),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert private document store");
+        for i in 0u8..6 {
+            source
+                .private_document_store_insert(
+                    [TEST_LEAF].as_ref(),
+                    b"docs",
+                    vec![i; 16],
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert document");
+        }
+
+        // Sanity: with the identity mutation the sync completes.
+        try_sync_with_page_mutation(&source, grove_version, &|more, aux, entries| {
+            (more, aux, entries)
+        })
+        .expect("un-tampered sync must succeed");
+
+        // 1. Flip one byte of one document: the replayed payload no longer
+        //    hashes to the bound state root.
+        let err = try_sync_with_page_mutation(&source, grove_version, &|more, aux, mut entries| {
+            if let Some(first) = entries.first_mut() {
+                first[0] ^= 0x01;
+            }
+            (more, aux, entries)
+        })
+        .expect_err("flipped document byte must be rejected");
         assert!(
-            matches!(err, crate::Error::NotSupported(_)) && msg.contains("populated"),
-            "source-side: expected descriptive NotSupported, got: {msg}"
+            format!("{err:?}").contains("state root mismatch after replay"),
+            "expected state-root rejection, got: {err:?}"
+        );
+
+        // 2. A document of the wrong size: rejected by the committed
+        //    entry_size before anything is written.
+        let err = try_sync_with_page_mutation(&source, grove_version, &|more, aux, mut entries| {
+            if let Some(first) = entries.first_mut() {
+                first.push(0xAB);
+            }
+            (more, aux, entries)
+        })
+        .expect_err("wrong-sized document must be rejected");
+        assert!(
+            format!("{err:?}").contains("cannot replay private document store entries"),
+            "expected entry-size rejection, got: {err:?}"
+        );
+
+        // 3. Drop the last document while still claiming the page is final.
+        let err = try_sync_with_page_mutation(&source, grove_version, &|more, aux, mut entries| {
+            if !more {
+                entries.pop();
+            }
+            (more, aux, entries)
+        })
+        .expect_err("dropped document must be rejected");
+        assert!(
+            format!("{err:?}").contains("replay incomplete"),
+            "expected incomplete-replay rejection, got: {err:?}"
         );
     }
 
@@ -1759,14 +1881,14 @@ mod tests {
         assert!(dest_issues.is_empty(), "got: {:?}", dest_issues);
     }
 
-    /// Drive the full sync loop while mutating the wire bytes of commitment
-    /// tree pages. Every mutation must be rejected before the session can
-    /// complete — the target recomputes the state root from the replayed
-    /// payload and checks it against the parent binding.
-    fn try_sync_with_ct_page_mutation(
+    /// Drive the full sync loop while mutating the wire bytes of non-Merk
+    /// entry-replay pages. Every mutation must be rejected before the
+    /// session can complete — the target recomputes the state root from the
+    /// replayed payload and checks it against the parent binding.
+    fn try_sync_with_page_mutation(
         source: &TempGroveDb,
         grove_version: &GroveVersion,
-        mutate_page: CtPageMutator,
+        mutate_page: NonMerkPageMutator,
     ) -> Result<(), crate::Error> {
         run_sync(source, grove_version, 64, Some(mutate_page)).map(|_| ())
     }
@@ -1807,28 +1929,27 @@ mod tests {
         }
 
         // Sanity: with the identity mutation the sync completes.
-        try_sync_with_ct_page_mutation(&source, grove_version, &|more, aux, entries| {
+        try_sync_with_page_mutation(&source, grove_version, &|more, aux, entries| {
             (more, aux, entries)
         })
         .expect("un-tampered sync must succeed");
 
         // 1. Flip one byte of one entry: the replayed payload no longer
         //    hashes to the bound state root.
-        let err =
-            try_sync_with_ct_page_mutation(&source, grove_version, &|more, aux, mut entries| {
-                if let Some(first) = entries.first_mut() {
-                    first[0] ^= 0x01;
-                }
-                (more, aux, entries)
-            })
-            .expect_err("flipped entry byte must be rejected");
+        let err = try_sync_with_page_mutation(&source, grove_version, &|more, aux, mut entries| {
+            if let Some(first) = entries.first_mut() {
+                first[0] ^= 0x01;
+            }
+            (more, aux, entries)
+        })
+        .expect_err("flipped entry byte must be rejected");
         assert!(
             format!("{err:?}").contains("state root mismatch after replay"),
             "expected state-root rejection, got: {err:?}"
         );
 
         // 2. Strip the frontier from the first page.
-        let err = try_sync_with_ct_page_mutation(&source, grove_version, &|more, _aux, entries| {
+        let err = try_sync_with_page_mutation(&source, grove_version, &|more, _aux, entries| {
             (more, Vec::new(), entries)
         })
         .expect_err("stripped frontier must be rejected");
@@ -1839,15 +1960,14 @@ mod tests {
 
         // 3. Tamper with the frontier bytes: the recomputed sinsemilla root
         //    diverges from the one bound into ct_state.
-        let err =
-            try_sync_with_ct_page_mutation(&source, grove_version, &|more, mut aux, entries| {
-                if !aux.is_empty() {
-                    let last = aux.len() - 1;
-                    aux[last] ^= 0x01;
-                }
-                (more, aux, entries)
-            })
-            .expect_err("tampered frontier must be rejected");
+        let err = try_sync_with_page_mutation(&source, grove_version, &|more, mut aux, entries| {
+            if !aux.is_empty() {
+                let last = aux.len() - 1;
+                aux[last] ^= 0x01;
+            }
+            (more, aux, entries)
+        })
+        .expect_err("tampered frontier must be rejected");
         let msg = format!("{err:?}");
         assert!(
             msg.contains("state root mismatch after replay")
@@ -1858,14 +1978,13 @@ mod tests {
         );
 
         // 4. Drop the last entry while still claiming the page is final.
-        let err =
-            try_sync_with_ct_page_mutation(&source, grove_version, &|more, aux, mut entries| {
-                if !more {
-                    entries.pop();
-                }
-                (more, aux, entries)
-            })
-            .expect_err("dropped entry must be rejected");
+        let err = try_sync_with_page_mutation(&source, grove_version, &|more, aux, mut entries| {
+            if !more {
+                entries.pop();
+            }
+            (more, aux, entries)
+        })
+        .expect_err("dropped entry must be rejected");
         assert!(
             format!("{err:?}").contains("replay incomplete"),
             "expected incomplete-replay rejection, got: {err:?}"
@@ -1912,21 +2031,20 @@ mod tests {
         }
 
         // Padded frontier: decodes to the genuine frontier, different bytes.
-        let err =
-            try_sync_with_ct_page_mutation(&source, grove_version, &|more, mut aux, entries| {
-                if !aux.is_empty() {
-                    aux.push(0x00);
-                }
-                (more, aux, entries)
-            })
-            .expect_err("padded frontier must be rejected");
+        let err = try_sync_with_page_mutation(&source, grove_version, &|more, mut aux, entries| {
+            if !aux.is_empty() {
+                aux.push(0x00);
+            }
+            (more, aux, entries)
+        })
+        .expect_err("padded frontier must be rejected");
         assert!(
             format!("{err:?}").contains("not canonically encoded"),
             "expected canonical-encoding rejection, got: {err:?}"
         );
 
         // Garbage that does not decode at all is rejected too.
-        let err = try_sync_with_ct_page_mutation(&source, grove_version, &|more, aux, entries| {
+        let err = try_sync_with_page_mutation(&source, grove_version, &|more, aux, entries| {
             let aux = if aux.is_empty() {
                 aux
             } else {
@@ -1965,7 +2083,7 @@ mod tests {
 
         // `[0x00]` is the canonical serialization of an EMPTY frontier: a
         // perfectly well-formed value that still must not be accepted.
-        let err = try_sync_with_ct_page_mutation(&source, grove_version, &|more, _aux, entries| {
+        let err = try_sync_with_page_mutation(&source, grove_version, &|more, _aux, entries| {
             (more, vec![0x00], entries)
         })
         .expect_err("planted frontier on an empty commitment tree must be rejected");
