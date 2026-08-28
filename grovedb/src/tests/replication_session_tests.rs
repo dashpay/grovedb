@@ -3026,4 +3026,274 @@ mod tests {
             .expect("dest verify_grovedb should run");
         assert!(dest_issues.is_empty(), "got: {:?}", dest_issues);
     }
+
+    // ---------- Aggregate-tree round trips ----------
+    //
+    // One state-sync round trip per aggregate-carrying Merk tree type.
+    // The Provable* variants bake their aggregates into every node hash,
+    // so these also pin the finalize-time aggregate rewrite in the Merk
+    // restorer (chunk proof nodes carry subtree AGGREGATES, not own
+    // values); the plain variants pin correct link aggregate_data on the
+    // restored tree, which `verify_grovedb`'s aggregate audit checks.
+
+    /// Build `[TEST_LEAF, name]` as `tree_element`, fill it with
+    /// `children`, sync, and require: identical app hash, a clean
+    /// destination integrity check, and identical post-sync writes.
+    fn aggregate_tree_round_trip(
+        name: &[u8],
+        tree_element: Element,
+        children: &[(&[u8], Element)],
+    ) {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                name,
+                tree_element,
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert aggregate tree");
+        for (key, element) in children {
+            source
+                .insert(
+                    [TEST_LEAF, name].as_ref(),
+                    key,
+                    element.clone(),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert child");
+        }
+
+        let dest = sync_source_to_destination(&source, grove_version);
+
+        assert_eq!(
+            source.root_hash(None, grove_version).unwrap().unwrap(),
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+            "app hash must match for {:?}",
+            String::from_utf8_lossy(name)
+        );
+        let dest_issues = dest
+            .verify_grovedb(None, true, false, grove_version)
+            .expect("dest verify_grovedb should run");
+        assert!(
+            dest_issues.is_empty(),
+            "{:?}: destination must verify clean, got: {:?}",
+            String::from_utf8_lossy(name),
+            dest_issues
+        );
+
+        // The restored tree stays writable and both sides evolve
+        // identically.
+        let (_, post_element) = &children[0];
+        for db in [&source, &dest] {
+            db.insert(
+                [TEST_LEAF, name].as_ref(),
+                b"post_sync",
+                post_element.clone(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("post-sync insert");
+        }
+        assert_eq!(
+            source.root_hash(None, grove_version).unwrap().unwrap(),
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+            "post-sync writes must produce identical states for {:?}",
+            String::from_utf8_lossy(name)
+        );
+    }
+
+    fn sum_children() -> Vec<(&'static [u8], Element)> {
+        vec![
+            (b"a", Element::new_sum_item(4)),
+            (b"b", Element::new_sum_item(-2)),
+            (b"c", Element::new_sum_item(10)),
+            (b"d", Element::new_sum_item(0)),
+            (b"e", Element::new_sum_item(-7)),
+        ]
+    }
+
+    fn item_children() -> Vec<(&'static [u8], Element)> {
+        vec![
+            (b"a", Element::new_item(b"one".to_vec())),
+            (b"b", Element::new_item(b"two".to_vec())),
+            (b"c", Element::new_item(b"three".to_vec())),
+            (b"d", Element::new_item(b"four".to_vec())),
+            (b"e", Element::new_item(b"five".to_vec())),
+        ]
+    }
+
+    #[test]
+    fn state_sync_sum_tree_round_trip() {
+        aggregate_tree_round_trip(b"sum", Element::empty_sum_tree(), &sum_children());
+    }
+
+    #[test]
+    fn state_sync_big_sum_tree_round_trip() {
+        aggregate_tree_round_trip(b"big_sum", Element::empty_big_sum_tree(), &sum_children());
+    }
+
+    #[test]
+    fn state_sync_count_tree_round_trip() {
+        aggregate_tree_round_trip(b"count", Element::empty_count_tree(), &item_children());
+    }
+
+    #[test]
+    fn state_sync_count_sum_tree_round_trip() {
+        aggregate_tree_round_trip(
+            b"count_sum",
+            Element::empty_count_sum_tree(),
+            &sum_children(),
+        );
+    }
+
+    #[test]
+    fn state_sync_provable_sum_tree_round_trip() {
+        aggregate_tree_round_trip(
+            b"provable_sum",
+            Element::empty_provable_sum_tree(),
+            &sum_children(),
+        );
+    }
+
+    #[test]
+    fn state_sync_provable_count_tree_round_trip() {
+        aggregate_tree_round_trip(
+            b"provable_count",
+            Element::empty_provable_count_tree(),
+            &item_children(),
+        );
+    }
+
+    #[test]
+    fn state_sync_provable_count_sum_tree_round_trip() {
+        aggregate_tree_round_trip(
+            b"provable_count_sum",
+            Element::empty_provable_count_sum_tree(),
+            &sum_children(),
+        );
+    }
+
+    #[test]
+    fn state_sync_provable_count_provable_sum_tree_round_trip() {
+        aggregate_tree_round_trip(
+            b"pcps",
+            Element::empty_provable_count_provable_sum_tree(),
+            &sum_children(),
+        );
+    }
+
+    /// A deep (6-level), many-subtree hierarchy with mixed tree types at
+    /// every level, synced with a small batch size so discovery pacing
+    /// crosses batch boundaries repeatedly.
+    #[test]
+    fn state_sync_deep_hierarchy_round_trip() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        // Level 1..=5 under TEST_LEAF: lvl1/lvl2/lvl3/lvl4/lvl5, each
+        // level carrying two sibling subtrees and a couple of items.
+        let mut path: Vec<Vec<u8>> = vec![TEST_LEAF.to_vec()];
+        for level in 1u8..=5 {
+            let path_refs: Vec<&[u8]> = path.iter().map(|p| p.as_slice()).collect();
+            let level_key = format!("lvl{level}").into_bytes();
+
+            // The spine subtree the next level nests into.
+            source
+                .insert(
+                    path_refs.as_slice(),
+                    &level_key,
+                    Element::empty_tree(),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert spine subtree");
+            // A sibling aggregate subtree with content.
+            let sibling_key = format!("side{level}").into_bytes();
+            source
+                .insert(
+                    path_refs.as_slice(),
+                    &sibling_key,
+                    Element::empty_sum_tree(),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert sibling sum tree");
+            let mut sibling_path = path.clone();
+            sibling_path.push(sibling_key);
+            let sibling_refs: Vec<&[u8]> = sibling_path.iter().map(|p| p.as_slice()).collect();
+            for i in 0u8..3 {
+                source
+                    .insert(
+                        sibling_refs.as_slice(),
+                        &[i],
+                        Element::new_sum_item(i64::from(i) * i64::from(level)),
+                        None,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("insert sibling sum item");
+            }
+            // Items alongside the subtrees.
+            source
+                .insert(
+                    path_refs.as_slice(),
+                    format!("item{level}").as_bytes(),
+                    Element::new_item(vec![level; 8]),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert level item");
+
+            path.push(level_key);
+        }
+        // A leaf item at the deepest level (6 levels below the root).
+        let path_refs: Vec<&[u8]> = path.iter().map(|p| p.as_slice()).collect();
+        source
+            .insert(
+                path_refs.as_slice(),
+                b"deep_leaf",
+                Element::new_item(b"bottom".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert deepest item");
+
+        // Small batch size: discovery must park and resume repeatedly.
+        let dest = run_sync_with_version(&source, grove_version, 2, None, None, V2)
+            .expect("deep hierarchy sync should succeed");
+
+        assert_eq!(
+            source.root_hash(None, grove_version).unwrap().unwrap(),
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+        );
+        let deep = dest
+            .get(path_refs.as_slice(), b"deep_leaf", None, grove_version)
+            .unwrap()
+            .expect("deepest item must be readable on destination");
+        assert_eq!(deep, Element::new_item(b"bottom".to_vec()));
+        let dest_issues = dest
+            .verify_grovedb(None, true, false, grove_version)
+            .expect("dest verify_grovedb should run");
+        assert!(dest_issues.is_empty(), "got: {:?}", dest_issues);
+    }
 }
