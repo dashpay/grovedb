@@ -32,15 +32,29 @@ pub type ChunkIdentifier = (
 /// Current version of the state sync protocol.
 pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
 
+/// Every state sync protocol version this build can speak, newest last.
+///
+/// Version checks are membership tests against this set (not equality with
+/// [`CURRENT_STATE_SYNC_VERSION`]), so a build can keep serving older
+/// protocol versions after the current one is bumped.
+pub const SUPPORTED_STATE_SYNC_VERSIONS: &[u16] = &[1];
+
+/// Whether this build supports the given state sync protocol version.
+pub(crate) fn is_supported_state_sync_version(version: u16) -> bool {
+    SUPPORTED_STATE_SYNC_VERSIONS.contains(&version)
+}
+
 #[cfg(feature = "minimal")]
 impl GroveDb {
-    /// Starts a new state synchronization session with the given app hash and batch size.
+    /// Starts a new state synchronization session with the given app hash,
+    /// batch size and state sync protocol version.
     pub fn start_syncing_session(
         &self,
         app_hash: [u8; 32],
         subtrees_batch_size: usize,
+        version: u16,
     ) -> Pin<Box<MultiStateSyncSession<'_>>> {
-        MultiStateSyncSession::new(self, app_hash, subtrees_batch_size)
+        MultiStateSyncSession::new(self, app_hash, subtrees_batch_size, version)
     }
 
     /// Commits a completed state synchronization session.
@@ -85,7 +99,7 @@ impl GroveDb {
     ///
     /// # Notes
     ///
-    /// - Only `CURRENT_STATE_SYNC_VERSION` is supported.
+    /// - Only versions in `SUPPORTED_STATE_SYNC_VERSIONS` are supported.
     /// - If the `packed_global_chunk_id` matches the `root_app_hash` length, it
     ///   is treated as a single ID.
     /// - Otherwise, it is unpacked into multiple nested chunk IDs.
@@ -113,8 +127,7 @@ impl GroveDb {
 
         let tx = TxRef::new(&self.db, transaction);
 
-        // For now, only CURRENT_STATE_SYNC_VERSION is supported
-        if version != CURRENT_STATE_SYNC_VERSION {
+        if !is_supported_state_sync_version(version) {
             return Err(Error::CorruptedData(
                 "Unsupported state sync protocol version".to_string(),
             ));
@@ -301,8 +314,7 @@ impl GroveDb {
                 .replication
                 .start_snapshot_syncing
         );
-        // For now, only CURRENT_STATE_SYNC_VERSION is supported
-        if version != CURRENT_STATE_SYNC_VERSION {
+        if !is_supported_state_sync_version(version) {
             return Err(Error::CorruptedData(
                 "Unsupported state sync protocol version".to_string(),
             ));
@@ -316,7 +328,7 @@ impl GroveDb {
 
         let root_prefix = [0u8; 32];
 
-        let mut session = self.start_syncing_session(app_hash, subtrees_batch_size);
+        let mut session = self.start_syncing_session(app_hash, subtrees_batch_size, version);
 
         session.add_subtree_sync_info(
             SubtreePath::empty(),

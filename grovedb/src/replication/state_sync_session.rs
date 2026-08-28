@@ -19,9 +19,9 @@ use grovedb_storage::{
 use grovedb_version::version::GroveVersion;
 
 use super::{
+    is_supported_state_sync_version,
     non_merk_sync::{element_supports_entry_replay, supports_entry_replay, NonMerkRestorer},
     utils::{decode_vec_ops, encode_global_chunk_id, path_to_string},
-    CURRENT_STATE_SYNC_VERSION,
 };
 use crate::{
     element::elements_iterator::ElementIteratorExtensions,
@@ -217,15 +217,21 @@ pub struct MultiStateSyncSession<'db> {
 }
 
 impl<'db> MultiStateSyncSession<'db> {
-    /// Initializes a new state sync session.
-    pub fn new(db: &'db GroveDb, app_hash: [u8; 32], subtrees_batch_size: usize) -> Pin<Box<Self>> {
+    /// Initializes a new state sync session speaking the given state sync
+    /// protocol version.
+    pub fn new(
+        db: &'db GroveDb,
+        app_hash: [u8; 32],
+        subtrees_batch_size: usize,
+        version: u16,
+    ) -> Pin<Box<Self>> {
         Box::pin(MultiStateSyncSession {
             db,
             transaction: db.start_transaction(),
             current_prefixes: Default::default(),
             processed_prefixes: Default::default(),
             app_hash,
-            version: CURRENT_STATE_SYNC_VERSION,
+            version,
             subtrees_batch_size,
             num_processed_subtrees_in_batch: 0,
             pending_discovered_subtrees: None,
@@ -508,15 +514,14 @@ impl<'db> MultiStateSyncSession<'db> {
         version: u16,
         grove_version: &GroveVersion,
     ) -> Result<Vec<Vec<u8>>, Error> {
-        // For now, only CURRENT_STATE_SYNC_VERSION is supported
-        if version != CURRENT_STATE_SYNC_VERSION {
+        if !is_supported_state_sync_version(version) {
             return Err(Error::CorruptedData(
                 "Unsupported state sync protocol version".to_string(),
             ));
         }
         if version != self.version {
             return Err(Error::CorruptedData(
-                "Unsupported state sync protocol version".to_string(),
+                "state sync protocol version does not match the session's version".to_string(),
             ));
         }
 

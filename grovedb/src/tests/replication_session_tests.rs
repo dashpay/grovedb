@@ -683,7 +683,12 @@ mod tests {
     fn is_sync_completed_returns_false_before_any_sync() {
         let grove_version = GroveVersion::latest();
         let dest = make_empty_grovedb();
-        let session = crate::replication::MultiStateSyncSession::new(&dest, [0u8; 32], 64);
+        let session = crate::replication::MultiStateSyncSession::new(
+            &dest,
+            [0u8; 32],
+            64,
+            CURRENT_STATE_SYNC_VERSION,
+        );
         assert!(
             !session.is_sync_completed(),
             "is_sync_completed should return false when no sync has ever started"
@@ -726,7 +731,12 @@ mod tests {
         let dest = make_empty_grovedb();
 
         // Create a session that has never synced any chunks
-        let session = crate::replication::MultiStateSyncSession::new(&dest, [0xAB; 32], 64);
+        let session = crate::replication::MultiStateSyncSession::new(
+            &dest,
+            [0xAB; 32],
+            64,
+            CURRENT_STATE_SYNC_VERSION,
+        );
 
         // commit() should reject because the session is incomplete
         let err = dest
