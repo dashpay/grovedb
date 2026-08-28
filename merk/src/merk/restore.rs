@@ -819,12 +819,14 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 })?;
         }
 
-        if !self
-            .merk
-            .verify(self.merk.tree_type != TreeType::NormalTree, grove_version)
-            .0
-            .is_empty()
-        {
+        // Full verification INCLUDING the aggregate cross-checks
+        // (`skip_sum_checks: false`). Historically the aggregate checks
+        // were skipped for aggregate-bearing tree types because restored
+        // aggregates were not authoritative; `rewrite_aggregates` above
+        // now makes them so, and keeping the check active is the
+        // defense-in-depth backstop for a chunk producer lying about
+        // aggregate contributions.
+        if !self.merk.verify(false, grove_version).0.is_empty() {
             return Err(Error::ChunkRestoringError(ChunkError::InternalError(
                 "restored tree invalid",
             )));
