@@ -5,25 +5,31 @@ use std::{
     pin::Pin,
 };
 
+use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::{
+    element::costs::ElementCostExtensions,
     tree::{kv::ValueDefinedCostType, value_hash},
     tree_type::TreeType,
-    CryptoHash, Restorer,
+    CryptoHash, Merk, Restorer,
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbImmediateStorageContext, RocksDbStorage},
-    StorageContext,
+    Storage, StorageContext,
 };
 use grovedb_version::version::GroveVersion;
 
 use super::{
+    indexed_sync::{
+        verify_indexed_binding, IndexedHeader, IndexedHeaderRequest, INDEXED_SYNC_MIN_VERSION,
+    },
     is_supported_state_sync_version,
     non_merk_sync::{supports_entry_replay, NonMerkRestorer},
     utils::{decode_vec_ops, encode_global_chunk_id, path_to_string},
 };
 use crate::{
     element::elements_iterator::ElementIteratorExtensions,
+    operations::indexed_tree::{axis_secondary_tree_type, indexed_element_axes},
     replication,
     replication::utils::{pack_nested_bytes, unpack_nested_bytes},
     Element, Error, GroveDb, Transaction,
@@ -42,6 +48,12 @@ pub(crate) type SubtreePrefix = [u8; 32];
 enum SubtreeRestorer<'db> {
     Merk(Restorer<PrefixedRocksDbImmediateStorageContext<'db>>),
     NonMerk(NonMerkRestorer),
+    /// An indexed primary (protocol version 2) waiting for its header
+    /// page: the actual `Restorer` cannot be constructed until the
+    /// [`IndexedHeader`] delivers the expected primary root hash. Holds
+    /// the opened Merk; `None` only transiently while the header page is
+    /// being processed.
+    IndexedPending(Option<Merk<PrefixedRocksDbImmediateStorageContext<'db>>>),
 }
 
 /// Struct governing the state synchronization of one subtree.
@@ -79,10 +91,10 @@ impl SubtreeStateSyncInfo<'_> {
     ///   synchronization.
     ///
     /// # Returns
-    /// - `Ok(Vec<Vec<u8>>)`: A vector of global chunk IDs (each represented as
-    ///   a vector of bytes) that can be fetched from sources for further
-    ///   synchronization. Ownership of the `SubtreeStateSyncInfo` is
-    ///   transferred back to the caller.
+    /// - `Ok((Vec<Vec<u8>>, Option<IndexedHeader>))`: the next local chunk
+    ///   IDs to fetch for this subtree, plus — exactly once per indexed
+    ///   primary — the decoded [`IndexedHeader`] the session must use to
+    ///   activate the group's axis secondaries.
     /// - `Err(Error)`: An error if the chunk cannot be applied.
     ///
     /// # Behavior
@@ -108,7 +120,7 @@ impl SubtreeStateSyncInfo<'_> {
         chunk_id: &[u8],
         chunk_data: &[u8],
         grove_version: &GroveVersion,
-    ) -> Result<Vec<Vec<u8>>, Error> {
+    ) -> Result<(Vec<Vec<u8>>, Option<IndexedHeader>), Error> {
         let mut res = vec![];
 
         if !self.pending_chunks.contains(chunk_id) {
@@ -117,6 +129,54 @@ impl SubtreeStateSyncInfo<'_> {
             ));
         }
         self.pending_chunks.remove(chunk_id);
+
+        // An indexed primary's first response is its header page:
+        // `pack([header, root_chunk_ops])`. Construct the real Merk
+        // restorer against the header's primary root hash (direct
+        // root-hash comparison — the three-input parent binding is
+        // verified at group finalize), process the bundled root chunk,
+        // and hand the header up so the session can activate the axis
+        // secondaries.
+        if matches!(self.restorer, SubtreeRestorer::IndexedPending(_)) {
+            let SubtreeRestorer::IndexedPending(pending_merk) =
+                std::mem::replace(&mut self.restorer, SubtreeRestorer::IndexedPending(None))
+            else {
+                unreachable!("matched IndexedPending above");
+            };
+            let merk = pending_merk.ok_or_else(|| {
+                Error::InternalError("indexed primary header page processed twice".to_string())
+            })?;
+            let sections = unpack_nested_bytes(chunk_data)?;
+            let [header_bytes, root_chunk_ops]: [Vec<u8>; 2] =
+                sections.try_into().map_err(|_| {
+                    Error::CorruptedData(
+                        "indexed header page must carry exactly a header and a root chunk"
+                            .to_string(),
+                    )
+                })?;
+            let header = IndexedHeader::decode(&header_bytes)?;
+            let mut restorer = Restorer::new(merk, header.primary_root_hash, None);
+            if !root_chunk_ops.is_empty() {
+                let ops = decode_vec_ops(&root_chunk_ops)?;
+                match restorer.process_chunk(&[], ops, grove_version) {
+                    Ok(next_chunk_ids) => {
+                        self.num_processed_chunks += 1;
+                        for next_chunk_id in next_chunk_ids {
+                            self.pending_chunks.insert(next_chunk_id.clone());
+                            res.push(next_chunk_id);
+                        }
+                    }
+                    Err(e) => {
+                        return Err(Error::InternalError(format!(
+                            "Unable to process indexed primary root chunk: {e}"
+                        )));
+                    }
+                }
+            }
+            self.restorer = SubtreeRestorer::Merk(restorer);
+            return Ok((res, Some(header)));
+        }
+
         match &mut self.restorer {
             SubtreeRestorer::Merk(restorer) => {
                 if !chunk_data.is_empty() {
@@ -160,9 +220,12 @@ impl SubtreeStateSyncInfo<'_> {
                     res.push(next_chunk_id);
                 }
             }
+            SubtreeRestorer::IndexedPending(_) => {
+                unreachable!("handled before the match above");
+            }
         }
 
-        Ok(res)
+        Ok((res, None))
     }
 }
 
@@ -208,12 +271,46 @@ pub struct MultiStateSyncSession<'db> {
     /// Metadata for newly discovered subtrees that are pending processing.
     pending_discovered_subtrees: Option<SubtreesMetadata>,
 
+    /// In-flight indexed-tree groups (protocol version 2), keyed by the
+    /// primary's prefix. A group is removed — after passing the joint
+    /// verification — once its primary and every axis secondary have been
+    /// fully restored.
+    indexed_groups: BTreeMap<SubtreePrefix, IndexedSyncGroup>,
+
+    /// Maps each in-flight axis secondary's derived prefix to its owning
+    /// `(primary_prefix, axis_tag)`.
+    secondary_owner: BTreeMap<SubtreePrefix, (SubtreePrefix, u8)>,
+
     /// Transaction used for the synchronization process.
     /// This is placed last to ensure it is dropped last.
     transaction: Transaction<'db>,
 
     /// Marker to ensure this struct is not moved in memory.
     _pin: PhantomPinned,
+}
+
+/// Target-side tracking of one indexed subtree's transfer (protocol
+/// version 2): the parent-bound hashes to verify against, the configured
+/// axes, and the actual root hashes of members restored so far.
+struct IndexedSyncGroup {
+    /// Path of the primary subtree (for error reporting).
+    path: Vec<Vec<u8>>,
+    /// The indexed element as decoded from the restored parent.
+    element: Element,
+    /// `value_hash(element_bytes)` from the parent.
+    actual_value_hash: CryptoHash,
+    /// The three-input combined element value hash bound into the parent.
+    elem_value_hash: CryptoHash,
+    /// `(axis_tag, secondary_prefix, secondary_root_key)` in canonical
+    /// element order.
+    axes: Vec<(u8, SubtreePrefix, Option<Vec<u8>>)>,
+    /// The wire header, once received. A hint for per-chunk verification
+    /// only — the joint check uses the actual restored root hashes.
+    header: Option<IndexedHeader>,
+    /// Actual root hash of the fully restored primary.
+    primary_root: Option<CryptoHash>,
+    /// Actual root hashes of fully restored secondaries, by axis tag.
+    secondary_roots: BTreeMap<u8, CryptoHash>,
 }
 
 impl<'db> MultiStateSyncSession<'db> {
@@ -235,6 +332,8 @@ impl<'db> MultiStateSyncSession<'db> {
             subtrees_batch_size,
             num_processed_subtrees_in_batch: 0,
             pending_discovered_subtrees: None,
+            indexed_groups: Default::default(),
+            secondary_owner: Default::default(),
             _pin: PhantomPinned,
         })
     }
@@ -258,6 +357,12 @@ impl<'db> MultiStateSyncSession<'db> {
         }
 
         if self.pending_discovered_subtrees.is_some() {
+            return false;
+        }
+
+        // An indexed group still tracked here has members whose joint
+        // verification has not run yet (e.g. secondaries not activated).
+        if !self.indexed_groups.is_empty() {
             return false;
         }
 
@@ -453,6 +558,296 @@ impl<'db> MultiStateSyncSession<'db> {
         &mut unsafe { self.get_unchecked_mut() }.pending_discovered_subtrees
     }
 
+    fn indexed_groups(
+        self: Pin<&mut MultiStateSyncSession<'db>>,
+    ) -> &mut BTreeMap<SubtreePrefix, IndexedSyncGroup> {
+        // SAFETY: we only access a single field and do not move the struct;
+        // the pin invariant only protects `transaction` from being moved.
+        &mut unsafe { self.get_unchecked_mut() }.indexed_groups
+    }
+
+    fn secondary_owner(
+        self: Pin<&mut MultiStateSyncSession<'db>>,
+    ) -> &mut BTreeMap<SubtreePrefix, (SubtreePrefix, u8)> {
+        // SAFETY: we only access a single field and do not move the struct;
+        // the pin invariant only protects `transaction` from being moved.
+        &mut unsafe { self.get_unchecked_mut() }.secondary_owner
+    }
+
+    /// Registers an indexed subtree group (protocol version 2) and opens
+    /// its primary for restore.
+    ///
+    /// The primary starts in the header-pending state: its single pending
+    /// chunk is the [`IndexedHeaderRequest`] carrying the axis tags and
+    /// secondary root keys from the hash-verified element; the responding
+    /// header page delivers the root hashes needed to construct the
+    /// actual restorer. Axis secondaries are activated when that header
+    /// arrives (see [`Self::register_indexed_header`]).
+    fn add_indexed_primary_sync_info(
+        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        path: Vec<Vec<u8>>,
+        elem_value_hash: CryptoHash,
+        actual_value_hash: CryptoHash,
+        element: Element,
+        chunk_prefix: SubtreePrefix,
+        grove_version: &GroveVersion,
+    ) -> Result<Vec<u8>, Error> {
+        let transaction_ref: &'db Transaction<'db> = unsafe {
+            let tx: &Transaction<'db> = &self.as_ref().transaction;
+            &*(tx as *const _)
+        };
+
+        let subtree_path: Vec<&[u8]> = path.iter().map(|vec| vec.as_slice()).collect();
+        let path_ref: &[&[u8]] = &subtree_path;
+        let (merk, root_key, tree_type, _element) = self
+            .db
+            .open_merk_for_replication(path_ref.into(), transaction_ref, grove_version)
+            .map_err(|e| {
+                Error::InternalError(format!(
+                    "Unable to open indexed primary for replication: {e}"
+                ))
+            })?;
+        if !tree_type.is_indexed_primary() {
+            return Err(Error::InternalError(format!(
+                "expected an indexed primary at {:?}, got {tree_type:?}",
+                path_to_string(&path)
+            )));
+        }
+
+        let axes_pairs = indexed_element_axes(&element)?;
+        let mut axes = Vec::with_capacity(axes_pairs.len());
+        let mut request_axes = Vec::with_capacity(axes_pairs.len());
+        for (axis, secondary_root_key) in axes_pairs {
+            let secondary_prefix =
+                RocksDbStorage::secondary_prefix_for(&chunk_prefix, axis.tag()).unwrap();
+            axes.push((axis.tag(), secondary_prefix, secondary_root_key.clone()));
+            request_axes.push((axis.tag(), secondary_root_key));
+        }
+        let header_request = IndexedHeaderRequest { axes: request_axes }.encode();
+
+        for (tag, secondary_prefix, _) in &axes {
+            self.as_mut()
+                .secondary_owner()
+                .insert(*secondary_prefix, (chunk_prefix, *tag));
+        }
+        self.as_mut().indexed_groups().insert(
+            chunk_prefix,
+            IndexedSyncGroup {
+                path: path.clone(),
+                element,
+                actual_value_hash,
+                elem_value_hash,
+                axes,
+                header: None,
+                primary_root: None,
+                secondary_roots: BTreeMap::new(),
+            },
+        );
+
+        let mut sync_info = SubtreeStateSyncInfo {
+            restorer: SubtreeRestorer::IndexedPending(Some(merk)),
+            root_key: root_key.clone(),
+            tree_type,
+            pending_chunks: Default::default(),
+            current_path: path,
+            num_processed_chunks: 0,
+        };
+        sync_info.pending_chunks.insert(header_request.clone());
+        self.as_mut()
+            .current_prefixes()
+            .insert(chunk_prefix, sync_info);
+        encode_global_chunk_id(chunk_prefix, root_key, tree_type, vec![header_request])
+    }
+
+    /// Activates the Merk chunk restore of one axis secondary, verified
+    /// per-chunk against the group header's hash for that axis. Called
+    /// only after the group's header arrived.
+    fn add_indexed_secondary_sync_info(
+        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        secondary_prefix: SubtreePrefix,
+        primary_prefix: SubtreePrefix,
+        axis_tag: u8,
+        grove_version: &GroveVersion,
+    ) -> Result<Vec<u8>, Error> {
+        let group = self.indexed_groups.get(&primary_prefix).ok_or_else(|| {
+            Error::InternalError("indexed secondary has no registered group".to_string())
+        })?;
+        let header = group.header.as_ref().ok_or_else(|| {
+            Error::InternalError("indexed secondary activated before the group header".to_string())
+        })?;
+        let expected_root_hash = header
+            .axes
+            .iter()
+            .find(|(tag, _)| *tag == axis_tag)
+            .map(|(_, hash)| *hash)
+            .ok_or_else(|| {
+                Error::InternalError("group header is missing the requested axis".to_string())
+            })?;
+        let root_key = group
+            .axes
+            .iter()
+            .find(|(tag, ..)| *tag == axis_tag)
+            .map(|(_, _, root_key)| root_key.clone())
+            .ok_or_else(|| {
+                Error::InternalError("group axes are missing the requested axis".to_string())
+            })?;
+        let axis = IndexAxis::try_from_tag(axis_tag)
+            .map_err(|e| Error::CorruptedData(format!("invalid axis tag in indexed group: {e}")))?;
+        let tree_type = axis_secondary_tree_type(axis);
+
+        let transaction_ref: &'db Transaction<'db> = unsafe {
+            let tx: &Transaction<'db> = &self.as_ref().transaction;
+            &*(tx as *const _)
+        };
+        let storage = self
+            .db
+            .db
+            .get_immediate_storage_context_by_subtree_prefix(secondary_prefix, transaction_ref)
+            .unwrap();
+        let merk = if root_key.is_some() {
+            Merk::open_layered_with_root_key(
+                storage,
+                root_key.clone(),
+                tree_type,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .map_err(|e| {
+                Error::CorruptedData(format!("cannot open indexed secondary for restore: {e}"))
+            })
+            .unwrap()?
+        } else {
+            Merk::open_base(
+                storage,
+                tree_type,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .map_err(|e| {
+                Error::CorruptedData(format!(
+                    "cannot open empty indexed secondary for restore: {e}"
+                ))
+            })
+            .unwrap()?
+        };
+        let restorer = Restorer::new(merk, expected_root_hash, None);
+        let mut sync_info = SubtreeStateSyncInfo::new(restorer);
+        sync_info.pending_chunks.insert(vec![]);
+        sync_info.root_key = root_key.clone();
+        sync_info.tree_type = tree_type;
+        // Secondaries live at a derived prefix, not a path; current_path
+        // stays empty and completion skips subtree discovery for them.
+        self.as_mut()
+            .current_prefixes()
+            .insert(secondary_prefix, sync_info);
+        encode_global_chunk_id(secondary_prefix, root_key, tree_type, vec![])
+    }
+
+    /// Stores a received indexed header on its group after validating
+    /// that its axis tags exactly match the element's configured axes,
+    /// and returns the metadata entries that activate the group's
+    /// secondaries.
+    fn register_indexed_header(
+        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        primary_prefix: SubtreePrefix,
+        header: IndexedHeader,
+    ) -> Result<SubtreesMetadata, Error> {
+        let group = self
+            .as_mut()
+            .indexed_groups()
+            .get_mut(&primary_prefix)
+            .ok_or_else(|| {
+                Error::InternalError("received an indexed header for an unknown group".to_string())
+            })?;
+        if group.header.is_some() {
+            return Err(Error::InternalError(
+                "received a second indexed header for the same group".to_string(),
+            ));
+        }
+        if header.axes.len() != group.axes.len()
+            || header
+                .axes
+                .iter()
+                .zip(group.axes.iter())
+                .any(|((header_tag, _), (group_tag, ..))| header_tag != group_tag)
+        {
+            return Err(Error::CorruptedData(
+                "indexed header axes do not match the element's configured axes".to_string(),
+            ));
+        }
+        let mut metadata = SubtreesMetadata::new();
+        for (tag, secondary_prefix, _) in &group.axes {
+            metadata.data.insert(
+                *secondary_prefix,
+                SubtreeMetadata::IndexedSecondary {
+                    primary_prefix,
+                    axis_tag: *tag,
+                },
+            );
+        }
+        group.header = Some(header);
+        Ok(metadata)
+    }
+
+    /// Records the actual restored root hash of a completed subtree that
+    /// is a member of an indexed group (no-op otherwise) and, once the
+    /// whole group is restored, runs the unconditional joint verification
+    /// against the parent binding. The recorded hashes come from the
+    /// restored Merks themselves — the wire header plays no part here.
+    fn note_indexed_member_complete(
+        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        chunk_prefix: SubtreePrefix,
+        actual_root_hash: CryptoHash,
+    ) -> Result<(), Error> {
+        let (primary_prefix, axis_tag) = if self.indexed_groups.contains_key(&chunk_prefix) {
+            (chunk_prefix, None)
+        } else if let Some((primary_prefix, axis_tag)) = self.secondary_owner.get(&chunk_prefix) {
+            (*primary_prefix, Some(*axis_tag))
+        } else {
+            return Ok(());
+        };
+
+        let groups = self.as_mut().indexed_groups();
+        let group = groups
+            .get_mut(&primary_prefix)
+            .expect("membership checked above");
+        match axis_tag {
+            None => group.primary_root = Some(actual_root_hash),
+            Some(tag) => {
+                group.secondary_roots.insert(tag, actual_root_hash);
+            }
+        }
+        let group_complete = group.header.is_some()
+            && group.primary_root.is_some()
+            && group.secondary_roots.len() == group.axes.len();
+        if !group_complete {
+            return Ok(());
+        }
+
+        let group = groups.remove(&primary_prefix).expect("present above");
+        for (_, secondary_prefix, _) in &group.axes {
+            self.as_mut().secondary_owner().remove(secondary_prefix);
+        }
+        let secondary_roots: Vec<(u8, CryptoHash)> = group
+            .axes
+            .iter()
+            .map(|(tag, ..)| (*tag, group.secondary_roots[tag]))
+            .collect();
+        verify_indexed_binding(
+            &group.element,
+            &group.actual_value_hash,
+            &group.elem_value_hash,
+            &group.primary_root.expect("checked complete above"),
+            &secondary_roots,
+        )
+        .map_err(|e| {
+            Error::CorruptedData(format!(
+                "indexed subtree at {:?} failed joint verification: {e}",
+                path_to_string(&group.path)
+            ))
+        })
+    }
+
     /// Applies a chunk during the state synchronization process.
     /// This method should be called by ABCI when the `ApplySnapshotChunk`
     /// method is invoked.
@@ -538,6 +933,7 @@ impl<'db> MultiStateSyncSession<'db> {
         };
 
         let mut next_global_chunk_ids: Vec<Vec<u8>> = vec![];
+        let mut received_headers: Vec<(SubtreePrefix, IndexedHeader)> = vec![];
 
         for (iter_global_chunk_id, iter_packed_chunks) in nested_global_chunk_ids
             .iter()
@@ -576,13 +972,17 @@ impl<'db> MultiStateSyncSession<'db> {
             for (current_local_chunk_id, current_local_chunks) in
                 it_chunk_ids.iter().zip(current_nested_chunk_data.iter())
             {
-                next_local_chunk_ids.extend(subtree_state_sync.apply_inner_chunk(
+                let (local_ids, header) = subtree_state_sync.apply_inner_chunk(
                     db,
                     transaction_ref,
                     current_local_chunk_id.as_slice(),
                     current_local_chunks.as_slice(),
                     grove_version,
-                )?);
+                )?;
+                next_local_chunk_ids.extend(local_ids);
+                if let Some(header) = header {
+                    received_headers.push((chunk_prefix, header));
+                }
             }
 
             if !next_local_chunk_ids.is_empty() {
@@ -601,6 +1001,10 @@ impl<'db> MultiStateSyncSession<'db> {
                 // Subtree is finished. We can save it.
                 let is_subtree_empty = subtree_state_sync.num_processed_chunks == 0;
                 let mut is_non_merk_subtree = false;
+                // Actual root hash of a completed Merk restore, recorded
+                // for indexed-group members (the joint verification uses
+                // these, never the wire header's claims).
+                let mut completed_member_root: Option<CryptoHash> = None;
                 if let Some(prefix_data) = current_prefixes.remove(&chunk_prefix) {
                     match prefix_data.restorer {
                         SubtreeRestorer::Merk(restorer) => {
@@ -616,11 +1020,19 @@ impl<'db> MultiStateSyncSession<'db> {
                                         "empty subtree has non-null root hash".to_string(),
                                     ));
                                 }
-                            } else if let Err(err) = restorer.finalize(grove_version) {
-                                return Err(Error::InternalError(format!(
-                                    "Unable to finalize Merk: {:?}",
-                                    err
-                                )));
+                                completed_member_root = Some(merk_root);
+                            } else {
+                                match restorer.finalize(grove_version) {
+                                    Ok(merk) => {
+                                        completed_member_root = Some(merk.root_hash().unwrap());
+                                    }
+                                    Err(err) => {
+                                        return Err(Error::InternalError(format!(
+                                            "Unable to finalize Merk: {:?}",
+                                            err
+                                        )));
+                                    }
+                                }
                             }
                         }
                         SubtreeRestorer::NonMerk(non_merk_restorer) => {
@@ -637,6 +1049,11 @@ impl<'db> MultiStateSyncSession<'db> {
                                 grove_version,
                             )?;
                         }
+                        SubtreeRestorer::IndexedPending(_) => {
+                            return Err(Error::InternalError(
+                                "indexed primary completed before its header page".to_string(),
+                            ));
+                        }
                     }
                 } else {
                     return Err(Error::InternalError(format!(
@@ -645,15 +1062,26 @@ impl<'db> MultiStateSyncSession<'db> {
                     )));
                 }
 
+                // Whether this prefix is an axis secondary must be read
+                // BEFORE the group bookkeeping below, which un-registers
+                // the group's members once the group resolves.
+                let is_indexed_secondary = self.secondary_owner.contains_key(&chunk_prefix);
+
                 self.as_mut().processed_prefixes().insert(chunk_prefix);
 
                 *self.as_mut().num_processed_subtrees_in_batch() += 1;
 
+                if let Some(actual_root_hash) = completed_member_root {
+                    self.note_indexed_member_complete(chunk_prefix, actual_root_hash)?;
+                }
+
                 // Non-Merk append-only subtrees never contain child
                 // subtrees, and their data namespace holds raw payload
                 // entries (not Elements) — running element discovery over
-                // it would fail. Skip it.
-                let new_subtrees_metadata = if is_non_merk_subtree {
+                // it would fail. Skip it. Indexed-axis secondaries hold
+                // only reference rows and live at a derived prefix with no
+                // path, so discovery is skipped for them too.
+                let new_subtrees_metadata = if is_non_merk_subtree || is_indexed_secondary {
                     SubtreesMetadata::default()
                 } else {
                     self.discover_new_subtrees_metadata(&completed_path, grove_version)?
@@ -680,6 +1108,32 @@ impl<'db> MultiStateSyncSession<'db> {
                     next_chunk_ids.extend(res);
                     next_global_chunk_ids.extend(next_chunk_ids);
                 }
+            }
+        }
+
+        // Indexed headers received in this call activate their groups'
+        // axis secondaries, through the same discovery pacing as newly
+        // discovered subtrees.
+        for (primary_prefix, header) in received_headers {
+            let secondaries_metadata = self.register_indexed_header(primary_prefix, header)?;
+            if self.num_processed_subtrees_in_batch >= self.subtrees_batch_size {
+                match self.as_mut().pending_discovered_subtrees() {
+                    None => {
+                        *self.as_mut().pending_discovered_subtrees() = Some(secondaries_metadata);
+                    }
+                    Some(existing_subtrees_metadata) => {
+                        existing_subtrees_metadata
+                            .data
+                            .extend(secondaries_metadata.data);
+                    }
+                }
+            } else {
+                let res = self
+                    .prepare_sync_state_sessions(secondaries_metadata, grove_version)
+                    .map_err(|e| {
+                        Error::InternalError(format!("Unable to activate indexed secondaries: {e}"))
+                    })?;
+                next_global_chunk_ids.extend(res);
             }
         }
 
@@ -766,26 +1220,25 @@ impl<'db> MultiStateSyncSession<'db> {
         if merk.is_empty_tree().unwrap() {
             return Ok(SubtreesMetadata::default());
         }
-        let mut subtree_keys = BTreeSet::new();
+        let mut subtree_elements: BTreeMap<Vec<u8>, Element> = BTreeMap::new();
 
         let mut raw_iter = Element::iterator(merk.storage.raw_iter()).unwrap();
         while let Some((key, value)) = raw_iter.next_element(grove_version).unwrap()? {
             if value.is_any_tree() {
-                // State sync does not yet support indexed trees. Their
-                // primaries commit a three-input `combine_hash_three`
-                // (vs. the two-input combine the restorer expects) and
-                // carry secondary storage namespaces at
-                // `Blake3(prefix ‖ axis_tag)` that discovery never
-                // enumerates — so a chunk-based restore would fail
+                // Indexed trees are transferable starting with state sync
+                // protocol version 2 (their primaries commit a three-input
+                // `combine_hash_three` and carry secondary storage
+                // namespaces at `Blake3(prefix ‖ axis_tag)` — see
+                // `indexed_sync`). A version 1 session keeps the up-front
+                // reject: its peer cannot serve them and its restorer
+                // cannot verify them, so a chunk-based restore would fail
                 // midway with an opaque "chunk doesn't match expected
-                // root hash". Reject up-front here (the choke point
-                // where the decoded `Element` is available) with a
-                // descriptive error instead.
-                if value.is_indexed_tree() {
+                // root hash".
+                if value.is_indexed_tree() && self.version < INDEXED_SYNC_MIN_VERSION {
                     return Err(Error::NotSupported(
-                        "state sync does not yet support indexed trees \
+                        "state sync does not support indexed trees \
                          (ProvableCountIndexedTree / ProvableSumIndexedTree / \
-                         ProvableCountProvableSumIndexedTree)"
+                         ProvableCountProvableSumIndexedTree) before protocol version 2"
                             .to_string(),
                     ));
                 }
@@ -795,12 +1248,12 @@ impl<'db> MultiStateSyncSession<'db> {
                 // `add_subtree_sync_info` routes them to the entry-replay
                 // restore path instead of Merk chunk restore (see issues
                 // #785 and #783 / #784).
-                subtree_keys.insert(key.to_vec());
+                subtree_elements.insert(key.to_vec(), value);
             }
         }
 
         let mut subtrees_metadata = SubtreesMetadata::new();
-        for subtree_key in &subtree_keys {
+        for (subtree_key, element) in subtree_elements {
             let (elem_value, elem_value_hash) = merk
                 .get_value_and_value_hash(
                     subtree_key.as_slice(),
@@ -822,16 +1275,27 @@ impl<'db> MultiStateSyncSession<'db> {
 
             let actual_value_hash = value_hash(&elem_value).unwrap();
             let mut new_path = path_vec.to_vec();
-            new_path.push(subtree_key.to_vec());
+            new_path.push(subtree_key);
 
             let subtree_path: Vec<&[u8]> = new_path.iter().map(|vec| vec.as_slice()).collect();
             let path: &[&[u8]] = &subtree_path;
             let prefix = RocksDbStorage::build_prefix(path.as_ref().into()).unwrap();
 
-            subtrees_metadata.data.insert(
-                prefix,
-                (new_path.to_vec(), actual_value_hash, elem_value_hash),
-            );
+            let entry = if element.is_indexed_tree() {
+                SubtreeMetadata::IndexedPrimary {
+                    path: new_path,
+                    actual_value_hash,
+                    elem_value_hash,
+                    element,
+                }
+            } else {
+                SubtreeMetadata::Ordinary {
+                    path: new_path,
+                    actual_value_hash,
+                    elem_value_hash,
+                }
+            };
+            subtrees_metadata.data.insert(prefix, entry);
         }
 
         Ok(subtrees_metadata)
@@ -877,47 +1341,108 @@ impl<'db> MultiStateSyncSession<'db> {
     ) -> Result<Vec<Vec<u8>>, Error> {
         let mut res = vec![];
 
-        for (prefix, prefix_metadata) in &subtrees_metadata.data {
-            if !self.processed_prefixes.contains(prefix)
-                && !self.current_prefixes.contains_key(prefix)
+        for (prefix, prefix_metadata) in subtrees_metadata.data {
+            if self.processed_prefixes.contains(&prefix)
+                || self.current_prefixes.contains_key(&prefix)
             {
-                let (current_path, actual_value_hash, elem_value_hash) = &prefix_metadata;
-
-                let subtree_path: Vec<&[u8]> =
-                    current_path.iter().map(|vec| vec.as_slice()).collect();
-                let path: &[&[u8]] = &subtree_path;
-
-                let next_chunks_ids = self.add_subtree_sync_info(
-                    path.into(),
-                    *elem_value_hash,
-                    Some(*actual_value_hash),
-                    *prefix,
-                    grove_version,
-                )?;
-
-                res.push(next_chunks_ids);
+                continue;
             }
+            let next_chunks_ids = match prefix_metadata {
+                SubtreeMetadata::Ordinary {
+                    path,
+                    actual_value_hash,
+                    elem_value_hash,
+                } => {
+                    let subtree_path: Vec<&[u8]> = path.iter().map(|vec| vec.as_slice()).collect();
+                    let path_ref: &[&[u8]] = &subtree_path;
+
+                    self.add_subtree_sync_info(
+                        path_ref.into(),
+                        elem_value_hash,
+                        Some(actual_value_hash),
+                        prefix,
+                        grove_version,
+                    )?
+                }
+                SubtreeMetadata::IndexedPrimary {
+                    path,
+                    actual_value_hash,
+                    elem_value_hash,
+                    element,
+                } => self.add_indexed_primary_sync_info(
+                    path,
+                    elem_value_hash,
+                    actual_value_hash,
+                    element,
+                    prefix,
+                    grove_version,
+                )?,
+                SubtreeMetadata::IndexedSecondary {
+                    primary_prefix,
+                    axis_tag,
+                } => self.add_indexed_secondary_sync_info(
+                    prefix,
+                    primary_prefix,
+                    axis_tag,
+                    grove_version,
+                )?,
+            };
+
+            res.push(next_chunks_ids);
         }
 
         Ok(res)
     }
 }
 
+/// Metadata for one discovered subtree awaiting synchronization.
+///
+/// The `actual_value_hash` (`value_hash(element_bytes)`) and
+/// `elem_value_hash` (the element value hash the parent Merk committed to)
+/// are required to verify the integrity of the newly constructed subtree
+/// after synchronization.
+pub enum SubtreeMetadata {
+    /// An ordinary subtree — including the non-Merk entry-replay family.
+    Ordinary {
+        /// The path of the subtree in GroveDB.
+        path: Vec<Vec<u8>>,
+        /// The subtree's actual value hash in the parent.
+        actual_value_hash: CryptoHash,
+        /// The subtree's element value hash in the parent.
+        elem_value_hash: CryptoHash,
+    },
+    /// An indexed-tree primary (protocol version 2). Carries the decoded
+    /// element so the axis tags and secondary root keys survive to
+    /// session setup.
+    IndexedPrimary {
+        /// The path of the primary subtree in GroveDB.
+        path: Vec<Vec<u8>>,
+        /// The subtree's actual value hash in the parent.
+        actual_value_hash: CryptoHash,
+        /// The subtree's (three-input) element value hash in the parent.
+        elem_value_hash: CryptoHash,
+        /// The decoded indexed-tree element.
+        element: Element,
+    },
+    /// One axis secondary of an indexed group, emitted when the group's
+    /// header arrives; everything else needed lives on the registered
+    /// group.
+    IndexedSecondary {
+        /// Prefix of the owning primary.
+        primary_prefix: SubtreePrefix,
+        /// The axis this secondary indexes.
+        axis_tag: u8,
+    },
+}
+
 /// Struct containing metadata about the current subtrees found in GroveDB.
 /// This metadata is used during the state synchronization process to track
 /// discovered subtrees and verify their integrity after they are constructed.
 pub struct SubtreesMetadata {
-    /// A map where:
-    /// - **Key**: `SubtreePrefix` (the path digest of the subtree).
-    /// - **Value**: A tuple containing:
-    ///   - `Vec<Vec<u8>>`: The actual path of the subtree in GroveDB.
-    ///   - `CryptoHash`: The parent subtree's actual value hash.
-    ///   - `CryptoHash`: The parent subtree's element value hash.
-    ///
-    /// The `parent subtree actual_value_hash` and `parent subtree
-    /// elem_value_hash` are required to verify the integrity of the newly
-    /// constructed subtree after synchronization.
-    pub data: BTreeMap<SubtreePrefix, (Vec<Vec<u8>>, CryptoHash, CryptoHash)>,
+    /// Discovered subtrees pending sync, keyed by their `SubtreePrefix`
+    /// (the path digest of the subtree, or the derived secondary prefix
+    /// for indexed-axis secondaries).
+    pub data: BTreeMap<SubtreePrefix, SubtreeMetadata>,
 }
 
 impl SubtreesMetadata {
@@ -937,14 +1462,35 @@ impl Default for SubtreesMetadata {
 impl fmt::Debug for SubtreesMetadata {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for (prefix, metadata) in self.data.iter() {
-            let metadata_path = &metadata.0;
-            let metadata_path_str = path_to_string(metadata_path);
-            writeln!(
-                f,
-                " prefix:{:?} -> path:{:?}",
-                hex::encode(prefix),
-                metadata_path_str,
-            )?;
+            match metadata {
+                SubtreeMetadata::Ordinary { path, .. } => {
+                    writeln!(
+                        f,
+                        " prefix:{:?} -> path:{:?}",
+                        hex::encode(prefix),
+                        path_to_string(path),
+                    )?;
+                }
+                SubtreeMetadata::IndexedPrimary { path, .. } => {
+                    writeln!(
+                        f,
+                        " prefix:{:?} -> indexed primary path:{:?}",
+                        hex::encode(prefix),
+                        path_to_string(path),
+                    )?;
+                }
+                SubtreeMetadata::IndexedSecondary {
+                    primary_prefix,
+                    axis_tag,
+                } => {
+                    writeln!(
+                        f,
+                        " prefix:{:?} -> indexed secondary (axis {axis_tag}) of primary:{:?}",
+                        hex::encode(prefix),
+                        hex::encode(primary_prefix),
+                    )?;
+                }
+            }
         }
         Ok(())
     }

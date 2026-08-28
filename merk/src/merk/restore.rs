@@ -34,7 +34,10 @@ use std::collections::BTreeMap;
 use grovedb_storage::{Batch, StorageContext};
 use grovedb_version::version::GroveVersion;
 
+use grovedb_element::Element;
+
 use crate::{
+    element::tree_type::ElementTreeTypeExtensions,
     merk,
     merk::MerkSource,
     proofs::{
@@ -47,7 +50,9 @@ use crate::{
         tree::{execute, Child, Tree as ProofTree},
         Node, Op,
     },
-    tree::{combine_hash, kv::ValueDefinedCostType, value_hash, RefWalker, TreeNode},
+    tree::{
+        combine_hash, kv::ValueDefinedCostType, value_hash, AggregateData, RefWalker, TreeNode,
+    },
     tree_type::TreeType,
     CryptoHash, Error,
     Error::{CostsError, StorageError},
@@ -627,6 +632,113 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             .map_err(StorageError)
     }
 
+    /// Recomputes all aggregate metadata (node OWN feature values and link
+    /// `aggregate_data`) bottom-up from the actual tree contents.
+    ///
+    /// Chunk proof nodes for the `Provable*` aggregate families (`KVCount`,
+    /// `KVSum`, `KVCountSum`) embed the node's SUBTREE aggregate — that is
+    /// what the verifier hashes via `node_hash_with_*` — so `write_chunk`
+    /// persists aggregate totals where the node's OWN contribution belongs,
+    /// and `Child::as_link` stores whatever value the proof child carried
+    /// (an aggregate for `KVCount`-family children, an OWN value for
+    /// `KVValueHashFeatureType` children with descendants, a placeholder
+    /// across chunk boundaries). None of that is authoritative.
+    ///
+    /// This pass — the aggregate counterpart of `rewrite_heights` — walks
+    /// the fully restored tree bottom-up and:
+    /// - re-derives every node's own feature value from its element bytes
+    ///   exactly as the write path does (`Element::get_feature_type`); a
+    ///   value that does not parse as a GroveDB `Element` (raw merk usage)
+    ///   keeps its stored feature value, and
+    /// - rewrites every link's `aggregate_data` from the recomputed child
+    ///   subtree aggregates,
+    ///
+    /// leaving the tree indistinguishable from one built by ordinary
+    /// writes. Hashes are untouched: the feature type does not participate
+    /// in the kv hash, and node hashes always recombine aggregates live
+    /// from own + link values. `finalize()`'s subsequent `verify()` then
+    /// checks the recomputed aggregates against the (chunk-verified) node
+    /// hashes, so a chunk producer lying about aggregates is still caught.
+    fn rewrite_aggregates(&mut self, grove_version: &GroveVersion) -> Result<(), Error> {
+        fn rewrite_child_aggregates<'s, 'db, S: StorageContext<'db>>(
+            tree_type: TreeType,
+            mut walker: RefWalker<MerkSource<'s, S>>,
+            batch: &mut <S as StorageContext<'db>>::Batch,
+            grove_version: &GroveVersion,
+        ) -> Result<AggregateData, Error> {
+            let mut cloned_node = TreeNode::decode(
+                walker.tree().key().to_vec(),
+                walker.tree().encode().as_slice(),
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+            .map_err(|_| {
+                Error::CorruptedState("failed to decode tree node during aggregate rewrite")
+            })?;
+
+            // Re-derive the node's OWN contribution from its element
+            // bytes, mirroring the write path.
+            if let Ok(element) = Element::deserialize(cloned_node.value_as_slice(), grove_version) {
+                let derived_feature_type = element.get_feature_type(tree_type).map_err(|_| {
+                    Error::CorruptedState("cannot derive feature type during aggregate rewrite")
+                })?;
+                cloned_node.set_feature_type(derived_feature_type);
+            }
+
+            for side in [LEFT, RIGHT] {
+                if let Some(child_walker) = walker
+                    .walk(
+                        side,
+                        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                        grove_version,
+                    )
+                    .value?
+                {
+                    let child_aggregate =
+                        rewrite_child_aggregates(tree_type, child_walker, batch, grove_version)?;
+                    if let Some(Link::Reference { aggregate_data, .. }) = cloned_node.link_mut(side)
+                    {
+                        *aggregate_data = child_aggregate;
+                    } else {
+                        return Err(Error::CorruptedState(
+                            "expected a reference link after walking child during aggregate \
+                             rewrite",
+                        ));
+                    }
+                }
+            }
+
+            let bytes = cloned_node.encode();
+            batch
+                .put(walker.tree().key(), &bytes, None, None)
+                .map_err(CostsError)?;
+
+            cloned_node.aggregate_data().map_err(|_| {
+                Error::CorruptedState("cannot combine aggregates during aggregate rewrite")
+            })
+        }
+
+        let mut batch = self.merk.storage.new_batch();
+        let Some(mut tree) = self.merk.tree.take() else {
+            // Empty tree: nothing to rewrite.
+            return Ok(());
+        };
+        let tree_type = self.merk.tree_type;
+        let walker = RefWalker::new(&mut tree, self.merk.source());
+
+        let result = rewrite_child_aggregates(tree_type, walker, &mut batch, grove_version);
+
+        self.merk.tree.set(Some(tree));
+        result?;
+
+        // costs intentionally discarded — restorer does not track them
+        self.merk
+            .storage
+            .commit_batch(batch)
+            .value
+            .map_err(StorageError)
+    }
+
     /// Rebuild restoration state from partial storage state
     #[allow(dead_code)]
     fn attempt_state_recovery(&mut self, grove_version: &GroveVersion) -> Result<(), Error> {
@@ -684,6 +796,25 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 .map_err(|_| {
                     Error::ChunkRestoringError(ChunkError::InternalError(
                         "failed to reload base root after height rewrite",
+                    ))
+                })?;
+        }
+
+        // Aggregate metadata written during chunk processing is not
+        // authoritative (see `rewrite_aggregates`). Recompute it bottom-up
+        // for every aggregate-bearing tree type before the final `verify`.
+        if self.merk.tree_type != TreeType::NormalTree {
+            self.rewrite_aggregates(grove_version)?;
+            // update the root node after the aggregate rewrite
+            self.merk
+                .load_base_root(
+                    None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                    grove_version,
+                )
+                .value
+                .map_err(|_| {
+                    Error::ChunkRestoringError(ChunkError::InternalError(
+                        "failed to reload base root after aggregate rewrite",
                     ))
                 })?;
         }
@@ -1851,14 +1982,15 @@ mod tests {
 
     // ---------- write_chunk node dispatch coverage ----------
     //
-    // Single-leaf chunk round-trips exercise the new `KVSum` and
+    // Single-leaf chunk round-trips exercise the `KVSum` and
     // `KVCountSum` write-chunk arms end-to-end. For a single-leaf
     // tree (no children) the on-disk feature_type's OWN value equals
     // the chunk's reported AGGREGATE value, so the restored root
-    // hash matches the source's root hash. (Multi-key chunks on
-    // Provable* trees have a separate pre-existing
-    // OWN-vs-AGGREGATE issue affecting `ProvableCountTree` too;
-    // that's out of scope here.)
+    // hash matches the source's root hash even without the
+    // finalize-time aggregate rewrite. Multi-key trees (where OWN and
+    // AGGREGATE diverge) are covered by
+    // `restore_multi_node_provable_trees_round_trip` below, which
+    // exercises `rewrite_aggregates`.
 
     fn single_leaf_chunk_round_trip(tree_type: TreeType, feature_type: TreeFeatureType) {
         let grove_version = GroveVersion::latest();
@@ -1944,5 +2076,115 @@ mod tests {
             TreeType::ProvableCountProvableSumTree,
             TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(1, 7),
         );
+    }
+
+    /// Multi-node chunk restore for a Provable* tree, with GroveDB
+    /// `Element` values (as every GroveDB subtree stores). The chunk's
+    /// `KVCount`-family nodes carry subtree AGGREGATES, so on inner
+    /// nodes OWN and AGGREGATE diverge; without the finalize-time
+    /// `rewrite_aggregates` pass the restored merk would recompute
+    /// inflated aggregates and a root hash different from the
+    /// (chunk-verified) source root.
+    fn multi_node_provable_chunk_round_trip(
+        tree_type: TreeType,
+        make_element: impl Fn(u8) -> Element,
+    ) {
+        let grove_version = GroveVersion::latest();
+
+        // Source merk with 12 element-valued leaves.
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let mut source_merk = Merk::open_base(
+            storage
+                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .unwrap(),
+            tree_type,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        let batch: Vec<(Vec<u8>, crate::tree::Op)> = (0u8..12)
+            .map(|i| {
+                let element = make_element(i);
+                let feature_type = element
+                    .get_feature_type(tree_type)
+                    .expect("feature type for element");
+                let bytes = element.serialize(grove_version).expect("serialize element");
+                (vec![i], crate::tree::Op::Put(bytes, feature_type))
+            })
+            .collect();
+        source_merk
+            .apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .unwrap()
+            .expect("apply elements");
+
+        // Empty restoration merk with the matching tree_type.
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let restoration_merk = Merk::open_base(
+            storage
+                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .unwrap(),
+            tree_type,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        // Drain the full chunk stream.
+        let mut chunk_producer =
+            ChunkProducer::new(&source_merk).expect("should create chunk producer");
+        let mut restorer = Restorer::new(restoration_merk, source_merk.root_hash().unwrap(), None);
+        let mut pending: Vec<Vec<u8>> = vec![traversal_instruction_as_vec_bytes(&[])];
+        while let Some(chunk_id) = pending.pop() {
+            let instruction =
+                vec_bytes_as_traversal_instruction(&chunk_id).expect("valid chunk id");
+            let (chunk, _) = chunk_producer
+                .chunk(
+                    &traversal_instruction_as_vec_bytes(&instruction),
+                    grove_version,
+                )
+                .expect("produce chunk");
+            pending.extend(
+                restorer
+                    .process_chunk(&chunk_id, chunk, grove_version)
+                    .expect("process chunk"),
+            );
+        }
+
+        let restored_merk = restorer.finalize(grove_version).expect("finalize");
+        assert_eq!(
+            source_merk.root_hash().unwrap(),
+            restored_merk.root_hash().unwrap(),
+            "multi-node restored root must match source root for {:?}",
+            tree_type
+        );
+        assert_eq!(
+            source_merk
+                .root_hash_key_and_aggregate_data()
+                .unwrap()
+                .expect("source aggregate"),
+            restored_merk
+                .root_hash_key_and_aggregate_data()
+                .unwrap()
+                .expect("restored aggregate"),
+            "restored aggregate data must match source for {:?}",
+            tree_type
+        );
+    }
+
+    #[test]
+    fn restore_multi_node_provable_trees_round_trip() {
+        multi_node_provable_chunk_round_trip(TreeType::ProvableCountTree, |_| {
+            Element::new_item(b"item".to_vec())
+        });
+        multi_node_provable_chunk_round_trip(TreeType::ProvableSumTree, |i| {
+            Element::new_sum_item(i64::from(i) * 3 - 10)
+        });
+        multi_node_provable_chunk_round_trip(TreeType::ProvableCountProvableSumTree, |i| {
+            Element::new_item_with_sum_item(vec![i], i64::from(i) * 5 - 20)
+        });
     }
 }

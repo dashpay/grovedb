@@ -1,3 +1,4 @@
+pub(crate) mod indexed_sync;
 pub(crate) mod non_merk_sync;
 mod state_sync_session;
 
@@ -37,7 +38,11 @@ pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
 /// Version checks are membership tests against this set (not equality with
 /// [`CURRENT_STATE_SYNC_VERSION`]), so a build can keep serving older
 /// protocol versions after the current one is bumped.
-pub const SUPPORTED_STATE_SYNC_VERSIONS: &[u16] = &[1];
+///
+/// - Version 1: Merk chunk restore plus non-Merk entry replay; indexed
+///   trees are rejected on both sides.
+/// - Version 2: adds indexed-tree transfer (see `indexed_sync`).
+pub const SUPPORTED_STATE_SYNC_VERSIONS: &[u16] = &[1, 2];
 
 /// Whether this build supports the given state sync protocol version.
 pub(crate) fn is_supported_state_sync_version(version: u16) -> bool {
@@ -111,7 +116,10 @@ impl GroveDb {
     ///   `PrivateDocumentStore`) are served as cursor-based entry pages
     ///   instead of Merk chunks. A request for one of these subtrees
     ///   without a page cursor returns `Error::NotSupported`.
-    /// - Indexed-tree requests return `Error::NotSupported`.
+    /// - Indexed-tree requests are served starting with protocol version 2
+    ///   (header page + Merk chunks for the primary, ordinary by-prefix
+    ///   Merk chunks for the axis secondaries); version 1 requests return
+    ///   `Error::NotSupported`.
     pub fn fetch_chunk(
         &self,
         packed_global_chunk_id: &[u8],
@@ -145,20 +153,50 @@ impl GroveDb {
             let (chunk_prefix, root_key, tree_type, nested_chunk_ids) =
                 utils::decode_global_chunk_id(global_chunk_id.as_slice(), &root_app_hash)?;
 
-            // State sync does not yet support indexed trees. Reject on the
-            // source side too (target-side discovery also rejects) so a
-            // peer requesting an indexed-tree chunk gets a descriptive
-            // error rather than a chunk that would fail root-hash
-            // verification on apply (indexed primaries commit a
-            // three-input combine_hash_three the restorer cannot match,
-            // and their axis secondary namespaces are never enumerated).
+            // Indexed trees are transferred starting with state sync
+            // protocol version 2 (see `indexed_sync`). Version 1 peers
+            // cannot restore them (their restorer only knows the
+            // two-input parent binding and never enumerates the axis
+            // secondary namespaces), so keep the descriptive reject for
+            // them rather than serving chunks that would fail root-hash
+            // verification on apply.
             if tree_type.is_indexed_primary() {
-                return Err(Error::NotSupported(
-                    "state sync does not yet support indexed trees \
-                     (ProvableCountIndexedTree / ProvableSumIndexedTree / \
-                     ProvableCountProvableSumIndexedTree)"
-                        .to_string(),
-                ));
+                if version < indexed_sync::INDEXED_SYNC_MIN_VERSION {
+                    return Err(Error::NotSupported(
+                        "state sync does not support indexed trees \
+                         (ProvableCountIndexedTree / ProvableSumIndexedTree / \
+                         ProvableCountProvableSumIndexedTree) before protocol version 2"
+                            .to_string(),
+                    ));
+                }
+                // The initial (version 2) request for an indexed primary
+                // is a single header request carrying the axis tags and
+                // secondary root keys; answer it with the indexed header
+                // plus the primary's root chunk. Any other request for an
+                // indexed primary is an ordinary Merk chunk request and
+                // falls through to the generic serving below.
+                if nested_chunk_ids
+                    .first()
+                    .is_some_and(|id| indexed_sync::is_indexed_header_request(id))
+                {
+                    if nested_chunk_ids.len() != 1 {
+                        return Err(Error::CorruptedData(
+                            "an indexed header request must be the only chunk id in its \
+                             global chunk"
+                                .to_string(),
+                        ));
+                    }
+                    let payload = self.serve_indexed_header_page(
+                        chunk_prefix,
+                        root_key,
+                        tree_type,
+                        &nested_chunk_ids[0],
+                        tx.as_ref(),
+                        grove_version,
+                    )?;
+                    global_chunk_bytes.push(pack_nested_bytes(vec![payload])?);
+                    continue;
+                }
             }
 
             // Non-Merk append-only trees (CommitmentTree / MmrTree /

@@ -409,6 +409,17 @@ impl TreeNode {
         self.inner.kv.feature_type
     }
 
+    /// Replaces this node's feature type in place, leaving key, value and
+    /// cached hashes untouched (the feature type does not participate in
+    /// the kv hash). Used by chunk restoration to re-derive a node's OWN
+    /// aggregate contribution — chunk proof nodes for the `Provable*`
+    /// families carry subtree AGGREGATES, not own values (see
+    /// `Restorer::rewrite_aggregates`).
+    #[inline]
+    pub(crate) fn set_feature_type(&mut self, feature_type: TreeFeatureType) {
+        self.inner.kv.feature_type = feature_type;
+    }
+
     /// Returns the root node's key as a slice.
     #[inline]
     pub fn key_as_ref(&self) -> &Vec<u8> {

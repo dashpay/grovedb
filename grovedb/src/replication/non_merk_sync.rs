@@ -104,7 +104,11 @@ pub(crate) fn supports_entry_replay(tree_type: TreeType) -> bool {
     )
 }
 
-/// Element-level twin of [`supports_entry_replay`].
+/// Element-level twin of [`supports_entry_replay`]. Discovery no longer
+/// needs it (every non-Merk type now has a replay arm), so it survives
+/// only to pin element-level parity with the tree-type predicate in
+/// tests.
+#[cfg(test)]
 pub(crate) fn element_supports_entry_replay(element: &Element) -> bool {
     matches!(
         element.underlying(),
