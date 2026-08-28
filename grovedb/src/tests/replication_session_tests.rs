@@ -634,6 +634,124 @@ mod tests {
         );
     }
 
+    /// Atomicity across discovery batches (issue #775): with a batch size
+    /// of 1, earlier subtrees complete (and cross a batch boundary) before
+    /// a later chunk fails. Nothing may be persisted by the failed sync —
+    /// every restored subtree must stay inside the session transaction and
+    /// roll back when the session is dropped.
+    #[test]
+    fn failed_chunk_after_batched_sync_rolls_back_all_restored_subtrees() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"sub",
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert subtree");
+        source
+            .insert(
+                [TEST_LEAF, b"sub"].as_ref(),
+                b"nested",
+                Element::new_item(b"value".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert nested item");
+
+        let source_hash = source
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get source hash");
+
+        let dest = make_empty_grovedb();
+        let empty_dest_hash = dest
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get empty destination hash");
+        let mut session = dest
+            .start_snapshot_syncing(source_hash, 1, CURRENT_STATE_SYNC_VERSION, grove_version)
+            .expect("should start snapshot syncing");
+
+        let root_chunk_data = source
+            .fetch_chunk(
+                source_hash.as_slice(),
+                None,
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )
+            .expect("should fetch root chunk");
+        let next_chunk_ids = session
+            .apply_chunk(
+                source_hash.as_slice(),
+                &root_chunk_data,
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )
+            .expect("should apply root chunk");
+        assert!(
+            !next_chunk_ids.is_empty(),
+            "root chunk should discover child subtree chunks"
+        );
+
+        // Even before the failure, nothing of the root subtree may be
+        // visible outside the session transaction.
+        assert_eq!(
+            dest.root_hash(None, grove_version)
+                .unwrap()
+                .expect("should get destination hash mid-sync"),
+            empty_dest_hash,
+            "in-flight sync must not persist restored subtrees"
+        );
+
+        let next_chunk_id = next_chunk_ids.first().expect("expected next chunk id");
+        let mut corrupt_chunk_data = source
+            .fetch_chunk(
+                next_chunk_id.as_slice(),
+                None,
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )
+            .expect("should fetch child chunk");
+        let last_byte = corrupt_chunk_data
+            .last_mut()
+            .expect("chunk data should not be empty");
+        *last_byte ^= 0xFF;
+
+        let err = session
+            .apply_chunk(
+                next_chunk_id.as_slice(),
+                &corrupt_chunk_data,
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )
+            .expect_err("corrupt child chunk should fail");
+        let err_msg = format!("{err:?}");
+        assert!(
+            err_msg.contains("Unable to finalize Merk")
+                || err_msg.contains("Unable to process incoming chunk")
+                || err_msg.contains("Unable to decode incoming chunk")
+                || err_msg.contains("Corrupted"),
+            "unexpected error: {err:?}"
+        );
+        drop(session);
+        assert_eq!(
+            dest.root_hash(None, grove_version)
+                .unwrap()
+                .expect("should get destination hash after failed sync"),
+            empty_dest_hash,
+            "failed sync must not persist any restored subtree"
+        );
+    }
+
     #[test]
     fn sync_with_empty_subtree_succeeds() {
         let grove_version = GroveVersion::latest();
@@ -1933,7 +2051,8 @@ mod tests {
             .expect("dense insert");
 
         // Same sync loop as the shared driver but with subtrees_batch_size
-        // of 1, exercising set_new_transaction between subtrees.
+        // of 1, exercising the discovery-pacing batch boundary between
+        // subtrees.
         let dest = run_sync(&source, grove_version, 1, None)
             .expect("state sync with batch size 1 should succeed");
 

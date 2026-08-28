@@ -2,7 +2,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
     marker::PhantomPinned,
-    mem,
     pin::Pin,
 };
 
@@ -285,12 +284,13 @@ impl<'db> MultiStateSyncSession<'db> {
         // Individual subtree chunks are hash-verified during restore, but we must also
         // verify the overall GroveDB root to ensure the composition is correct.
         //
-        // TODO(https://github.com/dashpay/grovedb/issues/775): This check is not
-        // fully atomic. apply_chunk() flushes completed
-        // subtree batches via set_new_transaction()/commit_transaction(), so on
-        // mismatch only the last transaction is rolled back while earlier subtrees
-        // remain on disk. A full fix requires staging all subtree commits and only
-        // persisting them after root hash verification passes.
+        // INVARIANT (https://github.com/dashpay/grovedb/issues/775): every write of
+        // the sync — all restored subtrees across every discovery batch — stays
+        // inside `session.transaction` until this check passes. Nothing is
+        // persisted early; a mismatch here (or dropping the session at any point
+        // before commit) rolls the destination back to its pre-sync state.
+        // `subtrees_batch_size` only paces subtree discovery; it must never
+        // reintroduce intermediate commits.
         let actual_root_hash = session
             .db
             .root_hash(Some(&session.transaction), grove_version)
@@ -311,24 +311,6 @@ impl<'db> MultiStateSyncSession<'db> {
             .commit_transaction(session.transaction)
             .value
             .map_err(|e| Error::InternalError(format!("failed to commit sync transaction: {e}")))?;
-        Ok(())
-    }
-
-    // SAFETY: This is unsafe as it requires `self.current_prefixes` to be empty
-    // so no storage contexts hold references to the transaction being replaced.
-    unsafe fn set_new_transaction(
-        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
-    ) -> Result<(), Error> {
-        if !self.current_prefixes.is_empty() {
-            return Err(Error::InternalError(
-                "current_prefixes must be empty before replacing transaction".to_string(),
-            ));
-        }
-        let this = unsafe { Pin::as_mut(self).get_unchecked_mut() };
-        let old_tx = mem::replace(&mut this.transaction, this.db.start_transaction());
-        self.db.commit_transaction(old_tx).value.map_err(|e| {
-            Error::InternalError(format!("failed to commit old transaction during sync: {e}"))
-        })?;
         Ok(())
     }
 
@@ -551,12 +533,6 @@ impl<'db> MultiStateSyncSession<'db> {
         // dropped last; the reference is only used within this call while
         // the session is alive. This mirrors the pattern used by
         // `add_subtree_sync_info` and `discover_new_subtrees_metadata`.
-        //
-        // ADDITIONAL INVARIANT for this call site: `set_new_transaction()`
-        // below replaces and commits `self.transaction`, which invalidates
-        // `transaction_ref`. Every use of `transaction_ref` MUST stay inside
-        // the per-chunk loop, above the `set_new_transaction()` call. Do not
-        // use `transaction_ref` after that point.
         let transaction_ref: &'db Transaction<'db> = unsafe {
             let tx: &Transaction<'db> = &self.as_ref().transaction;
             &*(tx as *const _)
@@ -711,12 +687,10 @@ impl<'db> MultiStateSyncSession<'db> {
         if self.num_processed_subtrees_in_batch >= self.subtrees_batch_size
             && self.current_prefixes.is_empty()
         {
-            // SAFETY: we made sure `self.current_prefixes` is empty so there are no
-            // references to the transaction we're about to replace
-            unsafe {
-                self.set_new_transaction()?;
-            }
-
+            // Batch boundary: everything restored so far stays inside the
+            // session transaction (see the atomicity invariant in
+            // `commit()`); `subtrees_batch_size` only paces how many
+            // subtrees are discovered and in flight at once.
             let new_subtrees_metadata =
                 self.as_mut()
                     .pending_discovered_subtrees()
