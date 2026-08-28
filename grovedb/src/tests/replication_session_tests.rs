@@ -887,16 +887,16 @@ mod tests {
         }
     }
 
-    // ---------- Indexed-tree state-sync rejection ----------
+    // ---------- Indexed-tree rejection at protocol version 1 ----------
     //
-    // State sync cannot yet handle indexed trees: their primaries commit a
-    // three-input `combine_hash_three` (the restorer only knows the
-    // two-input combine), and their axis secondary namespaces are never
-    // enumerated during discovery. Rather than failing midway with an
-    // opaque "chunk doesn't match expected root hash", both the source
-    // side (`fetch_chunk`) and the target side (discovery in
-    // `discover_new_subtrees_metadata`) now reject up-front with a
-    // descriptive `Error::NotSupported`.
+    // Protocol version 1 cannot handle indexed trees: its restorer only
+    // knows the two-input parent binding and never enumerates the axis
+    // secondary namespaces. Rather than failing midway with an opaque
+    // "chunk doesn't match expected root hash", both the source side
+    // (`fetch_chunk`) and the target side (discovery in
+    // `discover_new_subtrees_metadata`) reject a version 1 request
+    // up-front with a descriptive `Error::NotSupported`. Version 2
+    // transfers indexed trees — see the round trips further down.
 
     fn assert_not_supported_indexed(err: &crate::Error, context: &str) {
         let msg = format!("{err:?}");
@@ -910,18 +910,18 @@ mod tests {
         );
     }
 
-    /// Drive the full source->destination sync loop (mirroring
-    /// `sync_source_to_destination`) but return the first error instead of
+    /// Drive the full source->destination sync loop at protocol version 1
+    /// (the pre-indexed protocol) and return the first error instead of
     /// panicking, so the test can assert on it.
-    fn try_sync_source_to_destination(
+    fn try_sync_source_to_destination_v1(
         source: &TempGroveDb,
         grove_version: &GroveVersion,
     ) -> Result<(), crate::Error> {
-        run_sync(source, grove_version, 64, None).map(|_| ())
+        run_sync_with_version(source, grove_version, 64, None, None, 1).map(|_| ())
     }
 
     #[test]
-    fn state_sync_rejects_populated_pcit_up_front() {
+    fn state_sync_v1_rejects_populated_pcit_up_front() {
         let grove_version = GroveVersion::latest();
         let source = make_test_grovedb(grove_version);
 
@@ -965,13 +965,13 @@ mod tests {
             }
         }
 
-        let err = try_sync_source_to_destination(&source, grove_version)
-            .expect_err("state sync of a DB containing a populated PCIT must fail up-front");
+        let err = try_sync_source_to_destination_v1(&source, grove_version)
+            .expect_err("a version 1 sync of a DB containing a populated PCIT must fail up-front");
         assert_not_supported_indexed(&err, "PCIT sync");
     }
 
     #[test]
-    fn state_sync_rejects_populated_psit_up_front() {
+    fn state_sync_v1_rejects_populated_psit_up_front() {
         let grove_version = GroveVersion::latest();
         let source = make_test_grovedb(grove_version);
 
@@ -999,13 +999,13 @@ mod tests {
                 .expect("insert PSIT entry");
         }
 
-        let err = try_sync_source_to_destination(&source, grove_version)
-            .expect_err("state sync of a DB containing a populated PSIT must fail up-front");
+        let err = try_sync_source_to_destination_v1(&source, grove_version)
+            .expect_err("a version 1 sync of a DB containing a populated PSIT must fail up-front");
         assert_not_supported_indexed(&err, "PSIT sync");
     }
 
     #[test]
-    fn fetch_chunk_source_side_rejects_indexed_tree_chunk() {
+    fn fetch_chunk_v1_rejects_indexed_tree_chunk() {
         // Directly exercise the source-side `fetch_chunk` rejection: build
         // the global chunk id for the PCIT subtree's own prefix and ask
         // the source to produce it. The source must reject with
@@ -1074,14 +1074,11 @@ mod tests {
         // protocol does.
         let packed = pack_nested_bytes(vec![global_chunk_id]).expect("pack chunk id");
 
+        // A version 1 request (an old client against this v2 source) must
+        // keep getting the descriptive reject.
         let err = source
-            .fetch_chunk(
-                packed.as_slice(),
-                Some(&tx),
-                CURRENT_STATE_SYNC_VERSION,
-                grove_version,
-            )
-            .expect_err("source-side fetch_chunk of an indexed tree must be rejected");
+            .fetch_chunk(packed.as_slice(), Some(&tx), 1, grove_version)
+            .expect_err("version 1 fetch_chunk of an indexed tree must be rejected");
         assert_not_supported_indexed(&err, "source-side fetch_chunk");
     }
 
@@ -2944,17 +2941,89 @@ mod tests {
         );
     }
 
-    /// A version 1 session against the same source keeps the pre-v2
-    /// behavior: target-side discovery rejects a DB containing an indexed
-    /// tree up-front.
+    /// Dual-version serving: a version 1 client (the pre-indexed
+    /// protocol) against this source still round-trips a database without
+    /// indexed trees — including non-Merk entry-replay subtrees — after
+    /// the current version moved to 2.
     #[test]
-    fn state_sync_v1_still_rejects_indexed_trees() {
+    fn state_sync_v1_client_round_trip_against_v2_source() {
         let grove_version = GroveVersion::latest();
-        let source = tamper_test_psit_source(grove_version);
+        let source = make_test_grovedb(grove_version);
 
-        let err = run_sync_with_version(&source, grove_version, 64, None, None, 1)
-            .map(|_| ())
-            .expect_err("v1 sync of a DB containing an indexed tree must fail");
-        assert_not_supported_indexed(&err, "v1 PSIT sync");
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"sub",
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert subtree");
+        source
+            .insert(
+                [TEST_LEAF, b"sub"].as_ref(),
+                b"k",
+                Element::new_item(b"v".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert item");
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"mmr",
+                Element::empty_mmr_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert mmr");
+        source
+            .mmr_tree_append(
+                [TEST_LEAF].as_ref(),
+                b"mmr",
+                b"leaf".to_vec(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("append mmr leaf");
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"docs",
+                Element::empty_private_document_store(16, 2).expect("valid config"),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert pds");
+        source
+            .private_document_store_insert(
+                [TEST_LEAF].as_ref(),
+                b"docs",
+                vec![7u8; 16],
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert document");
+
+        let dest = run_sync_with_version(&source, grove_version, 64, None, None, 1)
+            .expect("a version 1 sync against a v2 source must still succeed");
+        assert_eq!(
+            source.root_hash(None, grove_version).unwrap().unwrap(),
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+        );
+        let dest_issues = dest
+            .verify_grovedb(None, true, false, grove_version)
+            .expect("dest verify_grovedb should run");
+        assert!(dest_issues.is_empty(), "got: {:?}", dest_issues);
     }
 }

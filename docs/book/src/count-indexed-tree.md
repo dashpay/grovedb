@@ -779,16 +779,26 @@ ordering. Top-k descending iteration encounters them last.
 
 ## Limitations and non-goals
 
-- **State sync does not support indexed trees.** A database containing
-  any indexed tree cannot be snapshot-synced: the restorer binds a
-  restored subtree to its parent with the two-input `combine_hash`,
-  which can never reproduce an indexed element's three-input binding,
-  and subtree discovery never enumerates the derived per-axis secondary
-  namespaces. Both the source (`fetch_chunk`) and target (subtree
-  discovery) sides reject with `Error::NotSupported` before any chunk is
-  produced or committed, so the failure is loud and early rather than a
-  half-restored database — but note the rejection is **database-wide**:
-  one indexed tree anywhere disables snapshot sync for the whole grove.
+- **State sync requires protocol version 2 for indexed trees.** At
+  state sync protocol version 2 (the current version) an indexed
+  subtree snapshot-syncs as one group: the target requests the primary
+  with a header request built from its hash-verified element (axis tags
+  plus secondary root keys), the source answers with an *indexed
+  header* — the primary root hash and each axis secondary's root hash,
+  which the element itself never stores — bundled with the primary's
+  root chunk, and the per-axis secondaries transfer as ordinary Merk
+  chunks addressed by their derived prefixes (they cannot be rebuilt
+  locally: a secondary's root commits to its write-history-dependent
+  AVL shape). The header is only a hint for per-chunk verification;
+  once the primary and every secondary are restored, the target
+  unconditionally recomputes the three-input binding
+  (`combine_hash_three`, with the canonical `axes_digest` for the
+  multi-axis variant) from the *actual* restored root hashes and
+  requires it to match the element value hash bound into the restored
+  parent. A **version 1** peer keeps the old behavior: both the source
+  (`fetch_chunk`) and the target (subtree discovery) reject a database
+  containing any indexed tree with `Error::NotSupported`, loud and
+  early — and that rejection is database-wide.
 - **Generic writes into an indexed primary are rejected.** `db.insert`,
   `db.delete` and `clear_subtree` targeting an indexed primary return
   `Error::NotSupported`, because none of them can mirror the change into

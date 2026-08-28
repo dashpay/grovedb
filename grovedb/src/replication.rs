@@ -31,7 +31,11 @@ pub type ChunkIdentifier = (
 );
 
 /// Current version of the state sync protocol.
-pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
+///
+/// Version 2 adds indexed-tree transfer (see `indexed_sync`). Version 1
+/// remains fully served for older peers — see
+/// [`SUPPORTED_STATE_SYNC_VERSIONS`].
+pub const CURRENT_STATE_SYNC_VERSION: u16 = 2;
 
 /// Every state sync protocol version this build can speak, newest last.
 ///
