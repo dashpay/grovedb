@@ -52,9 +52,7 @@ impl GroveDb {
         session: Pin<Box<MultiStateSyncSession>>,
         grove_version: &GroveVersion,
     ) -> Result<(), Error> {
-        session
-            .commit(grove_version)
-            .inspect_err(|e| eprintln!("Failed to commit session: {:?}", e))
+        session.commit(grove_version)
     }
 
     /// Fetches a chunk of data from the database based on the given global
