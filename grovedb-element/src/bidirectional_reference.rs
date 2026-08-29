@@ -156,6 +156,13 @@ mod tests {
             Element::new_sum_item_allowing_bidirectional_references_with_flags(7, Some(vec![2])),
             Element::SumItemWithBackwardsReferences(7, Vec::new(), Some(vec![2]))
         );
+        assert_eq!(
+            Element::new_item_allowing_bidirectional_references_with_flags(
+                b"v".to_vec(),
+                Some(vec![3])
+            ),
+            Element::ItemWithBackwardsReferences(b"v".to_vec(), Vec::new(), Some(vec![3]))
+        );
         let Element::BidirectionalReference(full) =
             Element::new_bidirectional_reference_with_options(
                 sibling_ref(),
@@ -250,6 +257,153 @@ mod tests {
         let over_ref = Element::BidirectionalReference(reference);
         assert!(over_ref.validate_backward_references_limits().is_err());
         assert!(over_ref.serialize(grove_version).is_err());
+    }
+
+    #[test]
+    fn display_and_type_names_for_the_family() {
+        let bidi_with = Element::BidirectionalReference(BidirectionalReference {
+            forward_reference_path: sibling_ref(),
+            cascade_on_update: false,
+            max_hop: None,
+            backward_references: Vec::new(),
+            flags: Some(vec![7]),
+        });
+        let s = format!("{}", bidi_with);
+        assert!(
+            s.starts_with("BidirectionalReference(") && s.contains("flags"),
+            "got: {s}"
+        );
+        let s = format!("{}", bidi(None));
+        assert!(s.contains("max_hop: 5") && !s.contains("flags"), "got: {s}");
+
+        let item = Element::ItemWithBackwardsReferences(b"v".to_vec(), Vec::new(), Some(vec![1]));
+        let s = format!("{}", item);
+        assert!(s.starts_with("ItemWithBackwardsReferences("), "got: {s}");
+        let sum = Element::SumItemWithBackwardsReferences(-2, Vec::new(), None);
+        let s = format!("{}", sum);
+        assert!(
+            s.starts_with("SumItemWithBackwardsReferences(-2"),
+            "got: {s}"
+        );
+
+        assert_eq!(
+            item.element_type(),
+            ElementType::ItemWithBackwardsReferences
+        );
+        assert_eq!(
+            sum.element_type(),
+            ElementType::SumItemWithBackwardsReferences
+        );
+        assert_eq!(
+            ElementType::BidirectionalReference.as_str(),
+            "bidirectional reference"
+        );
+        assert_eq!(
+            ElementType::ItemWithBackwardsReferences.as_str(),
+            "item with backwards references"
+        );
+        assert_eq!(
+            ElementType::SumItemWithBackwardsReferences.as_str(),
+            "sum item with backwards references"
+        );
+    }
+
+    #[test]
+    fn aggregation_wrappers_reject_the_family() {
+        for element in [
+            bidi(None),
+            Element::ItemWithBackwardsReferences(b"v".to_vec(), Vec::new(), None),
+            Element::SumItemWithBackwardsReferences(1, Vec::new(), None),
+        ] {
+            assert!(
+                Element::new_non_counted(element.clone()).is_err(),
+                "NonCounted must reject {element}"
+            );
+            let hand_built = Element::NonCounted(Box::new(element));
+            assert!(hand_built.validate_wrapper_invariants().is_err());
+        }
+    }
+
+    #[test]
+    fn value_accessors_see_through_the_family() {
+        let item = Element::ItemWithBackwardsReferences(b"v".to_vec(), Vec::new(), None);
+        assert_eq!(item.clone().into_item_bytes().unwrap(), b"v".to_vec());
+        let sum = Element::SumItemWithBackwardsReferences(-4, Vec::new(), None);
+        assert_eq!(sum.as_sum_item_value().unwrap(), -4);
+        assert_eq!(sum.clone().into_sum_item_value().unwrap(), -4);
+    }
+
+    #[test]
+    fn flags_accessors_cover_the_family() {
+        for mut element in [
+            bidi(Some(vec![1])),
+            Element::ItemWithBackwardsReferences(b"v".to_vec(), Vec::new(), Some(vec![1])),
+            Element::SumItemWithBackwardsReferences(1, Vec::new(), Some(vec![1])),
+        ] {
+            assert_eq!(element.get_flags(), &Some(vec![1]));
+            *element.get_flags_mut() = Some(vec![2]);
+            element.set_flags(Some(vec![3]));
+            assert_eq!(element.clone().get_flags_owned(), Some(vec![3]));
+        }
+    }
+
+    #[test]
+    fn bidirectional_forward_path_can_be_made_absolute() {
+        let element = bidi(None);
+        let absolute = element
+            .convert_if_reference_to_absolute_reference(
+                &[b"root".as_slice(), b"leaf".as_slice()],
+                Some(b"me".as_slice()),
+            )
+            .unwrap();
+        let Element::BidirectionalReference(reference) = absolute else {
+            panic!("expected a bidirectional reference");
+        };
+        assert_eq!(
+            reference.forward_reference_path,
+            ReferencePathType::AbsolutePathReference(vec![
+                b"root".to_vec(),
+                b"leaf".to_vec(),
+                b"target".to_vec()
+            ])
+        );
+        // An already-absolute forward path is returned unchanged.
+        let element = Element::BidirectionalReference(BidirectionalReference {
+            forward_reference_path: ReferencePathType::AbsolutePathReference(vec![b"x".to_vec()]),
+            cascade_on_update: false,
+            max_hop: None,
+            backward_references: Vec::new(),
+            flags: None,
+        });
+        assert_eq!(
+            element
+                .clone()
+                .convert_if_reference_to_absolute_reference(&[b"a".as_slice()], None)
+                .unwrap(),
+            element
+        );
+    }
+
+    #[test]
+    fn corrupt_and_over_limit_bytes_are_rejected() {
+        let grove_version = GroveVersion::latest();
+
+        // Garbage referrer-list bytes fail the standalone codec.
+        assert!(deserialize_backward_references(&[0xff, 0xff, 0xff]).is_err());
+
+        // Raw element bytes with an over-limit referrer list (crafted by
+        // encoding the enum directly, bypassing `serialize`'s validation)
+        // are rejected on deserialize.
+        let over = Element::ItemWithBackwardsReferences(
+            b"v".to_vec(),
+            (0..33u8).map(|i| backref(&[i])).collect(),
+            None,
+        );
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let bytes = bincode::encode_to_vec(&over, config).unwrap();
+        assert!(Element::deserialize(&bytes, grove_version).is_err());
     }
 
     #[test]

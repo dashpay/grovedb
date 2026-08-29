@@ -420,6 +420,39 @@ impl fmt::Display for Node {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn backwards_references_node_display_and_codec() {
+        use crate::proofs::encoding::encode_into;
+
+        let small = Node::KVBackwardsReferencesValueHash(
+            b"key".to_vec(),
+            b"stripped-value".to_vec(),
+            [7; 32],
+        );
+        let shown = format!("{}", small);
+        assert!(
+            shown.contains("KVBackwardsReferencesValueHash("),
+            "got: {shown}"
+        );
+
+        // A value over u16::MAX bytes selects the wide length encoding.
+        let large =
+            Node::KVBackwardsReferencesValueHash(b"key".to_vec(), vec![0xAB; 70_000], [9; 32]);
+
+        for node in [small, large] {
+            for op in [Op::Push(node.clone()), Op::PushInverted(node.clone())] {
+                let mut bytes = Vec::new();
+                encode_into([op.clone()].iter(), &mut bytes);
+                assert_eq!(bytes.len(), ed::Encode::encoding_length(&op).unwrap());
+                let decoded: Vec<Op> = Decoder::new(&bytes)
+                    .collect::<Result<_, _>>()
+                    .expect("decode");
+                assert_eq!(decoded, vec![op]);
+            }
+        }
+    }
+
     use super::*;
 
     #[test]

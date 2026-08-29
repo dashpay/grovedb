@@ -57,6 +57,7 @@ use grovedb_costs::{
     },
     CostResult, CostsExt, OperationCost,
 };
+use grovedb_element::ElementType;
 use grovedb_merk::{
     element::{
         costs::ElementCostExtensions, delete::ElementDeleteFromStorageExtensions,
@@ -1822,9 +1823,9 @@ where
                 )),
             };
 
-            let referenced_element_value_hash_opt = cost_return_on_error!(
+            let referenced_value_and_hash_opt = cost_return_on_error!(
                 &mut cost,
-                merk.get_value_hash(
+                merk.get_value_and_value_hash(
                     key.as_ref(),
                     true,
                     Some(Element::value_defined_cost_for_serialized_value),
@@ -1833,9 +1834,9 @@ where
                 .map_err(|e| Error::CorruptedData(e.to_string()))
             );
 
-            let referenced_element_value_hash = cost_return_on_error!(
+            let (referenced_value, referenced_element_value_hash) = cost_return_on_error!(
                 &mut cost,
-                referenced_element_value_hash_opt
+                referenced_value_and_hash_opt
                     .ok_or({
                         let reference_string = reference_path
                             .iter()
@@ -1850,6 +1851,32 @@ where
                     })
                     .wrap_with_cost(OperationCost::default())
             );
+
+            // One exception to the read-the-stored-hash shortcut: a
+            // backward-references item terminal stores the COMBINED
+            // (inner ‖ backrefs) hash, while every reference in a chain
+            // commits to the target's LOGICAL (stripped) hash — otherwise
+            // registering a referrer would ripple through chains. Sniff the
+            // type from the serialized bytes and recompute for that family
+            // only; everything else keeps the fast path unchanged.
+            if matches!(
+                ElementType::from_serialized_value(&referenced_value).map(|et| et.base()),
+                Ok(ElementType::ItemWithBackwardsReferences
+                    | ElementType::SumItemWithBackwardsReferences)
+            ) {
+                let element = cost_return_on_error_into_no_add!(
+                    cost,
+                    Element::deserialize(&referenced_value, grove_version)
+                );
+                let serialized = cost_return_on_error_into_no_add!(
+                    cost,
+                    element
+                        .stripped_of_backward_references()
+                        .serialize(grove_version)
+                );
+                let logical_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                return Ok(logical_hash).wrap_with_cost(cost);
+            }
 
             return Ok(referenced_element_value_hash).wrap_with_cost(cost);
         }
@@ -2058,13 +2085,25 @@ where
         // from the OUTER element's serialized bytes. Storage keeps the
         // wrapper byte; the on-disk value hash must reflect that.
         match element.underlying() {
-            Element::Item(..)
-            | Element::SumItem(..)
-            | Element::ItemWithSumItem(..)
-            | Element::ItemWithBackwardsReferences(..)
-            | Element::SumItemWithBackwardsReferences(..) => {
+            Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                 let serialized =
                     cost_return_on_error_into_no_add!(cost, element.serialize(grove_version));
+                let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                Ok(val_hash).wrap_with_cost(cost)
+            }
+            // A chain terminal with backward references: every reference in
+            // a chain commits to the target's LOGICAL (stripped) hash — the
+            // referrer list is excluded so registrations never ripple
+            // through chains. (These elements reject aggregation wrappers,
+            // so the outer element IS the underlying one.)
+            Element::ItemWithBackwardsReferences(..)
+            | Element::SumItemWithBackwardsReferences(..) => {
+                let serialized = cost_return_on_error_into_no_add!(
+                    cost,
+                    element
+                        .stripped_of_backward_references()
+                        .serialize(grove_version)
+                );
                 let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                 Ok(val_hash).wrap_with_cost(cost)
             }
@@ -2188,11 +2227,7 @@ where
                     // Look through NonCounted for dispatch; serialize the outer
                     // wrapper for hashing so the value hash matches storage.
                     match element.underlying() {
-                        Element::Item(..)
-                        | Element::SumItem(..)
-                        | Element::ItemWithSumItem(..)
-                        | Element::ItemWithBackwardsReferences(..)
-                        | Element::SumItemWithBackwardsReferences(..) => {
+                        Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                             let serialized = cost_return_on_error_into_no_add!(
                                 cost,
                                 element.serialize(grove_version)
@@ -2241,10 +2276,12 @@ where
                                 }
                             }
                         }
-                        // A batch op inserting a `BidirectionalReference` is
-                        // rejected at every batch entry point, so no pending
-                        // op can hold one; unreachable, fail closed.
-                        Element::BidirectionalReference(..) => Err(Error::NotSupported(
+                        // Batch ops carrying backward-references elements
+                        // are rejected at every batch entry point, so no
+                        // pending op can hold one; unreachable, fail closed.
+                        Element::BidirectionalReference(..)
+                        | Element::ItemWithBackwardsReferences(..)
+                        | Element::SumItemWithBackwardsReferences(..) => Err(Error::NotSupported(
                             "backward-references elements are not yet supported in batch \
                              operations"
                                 .to_owned(),
@@ -2299,11 +2336,7 @@ where
                 }
                 GroveOp::InsertWithKnownToNotAlreadyExist { element }
                 | GroveOp::InsertIfNotExists { element, .. } => match element.underlying() {
-                    Element::Item(..)
-                    | Element::SumItem(..)
-                    | Element::ItemWithSumItem(..)
-                    | Element::ItemWithBackwardsReferences(..)
-                    | Element::SumItemWithBackwardsReferences(..) => {
+                    Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                         let serialized = cost_return_on_error_into_no_add!(
                             cost,
                             element.serialize(grove_version)
@@ -2311,9 +2344,11 @@ where
                         let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                         Ok(val_hash).wrap_with_cost(cost)
                     }
-                    // Unreachable: bidi-reference ops are rejected at every
-                    // batch entry point. Fail closed.
-                    Element::BidirectionalReference(..) => Err(Error::NotSupported(
+                    // Unreachable: ops carrying backward-references elements
+                    // are rejected at every batch entry point. Fail closed.
+                    Element::BidirectionalReference(..)
+                    | Element::ItemWithBackwardsReferences(..)
+                    | Element::SumItemWithBackwardsReferences(..) => Err(Error::NotSupported(
                         "backward-references elements are not yet supported in batch operations"
                             .to_owned(),
                     ))

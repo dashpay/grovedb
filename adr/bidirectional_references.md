@@ -161,7 +161,10 @@ where `end_hash` for a bidirectional reference is the hash of what it transitive
 at, and `combine` is the existing two-input node-hash combinator.
 
 Every reference in a chain (ordinary or bidirectional) commits to the target's *logical*
-(`inner`) hash — the hash of the stripped serialization. Registering another referrer on a
+(`inner`) hash — the hash of the stripped serialization. This rule binds every write
+path, including `apply_batch`: a batch-inserted plain reference that terminates on (or
+chains through) a backward-references element commits the stripped hash, never the
+node's combined hash. Registering another referrer on a
 target changes only `backrefs_hash`, so the target's own node re-hashes (and propagates up
 its subtree as usual), while every referrer that already points at it keeps its stored
 node hash bit-for-bit. Cascaded hash propagation only happens when the *payload* — the

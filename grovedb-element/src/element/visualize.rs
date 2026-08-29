@@ -348,6 +348,56 @@ impl fmt::Debug for Element {
 mod tests {
     use grovedb_visualize::to_hex;
 
+    #[test]
+    fn visualize_backward_references_family() {
+        let render = |e: &Element| {
+            let mut out = Vec::new();
+            let drawer = Drawer::new(&mut out);
+            e.visualize(drawer).expect("visualize IO error");
+            String::from_utf8_lossy(&out).into_owned()
+        };
+
+        let bidi = Element::BidirectionalReference(crate::BidirectionalReference {
+            forward_reference_path: ReferencePathType::SiblingReference(b"t".to_vec()),
+            cascade_on_update: true,
+            max_hop: Some(3),
+            backward_references: Vec::new(),
+            flags: Some(vec![1]),
+        });
+        let s = render(&bidi);
+        assert!(
+            s.starts_with("bidi_ref: [") && s.contains("cascade: true") && s.contains("max_hop: 3"),
+            "got: {s}"
+        );
+
+        let bidi_plain = Element::BidirectionalReference(crate::BidirectionalReference {
+            forward_reference_path: ReferencePathType::SiblingReference(b"t".to_vec()),
+            cascade_on_update: false,
+            max_hop: None,
+            backward_references: Vec::new(),
+            flags: None,
+        });
+        assert!(render(&bidi_plain).contains("max_hop: None"));
+
+        let item = Element::ItemWithBackwardsReferences(b"v".to_vec(), Vec::new(), Some(vec![2]));
+        let s = render(&item);
+        assert!(
+            s.starts_with("item_with_backwards_references: "),
+            "got: {s}"
+        );
+        let item_plain = Element::ItemWithBackwardsReferences(b"v".to_vec(), Vec::new(), None);
+        render(&item_plain);
+
+        let sum = Element::SumItemWithBackwardsReferences(-7, Vec::new(), Some(vec![3]));
+        let s = render(&sum);
+        assert!(
+            s.starts_with("sum_item_with_backwards_references: -7"),
+            "got: {s}"
+        );
+        let sum_plain = Element::SumItemWithBackwardsReferences(-7, Vec::new(), None);
+        render(&sum_plain);
+    }
+
     use super::*;
     use crate::reference_path::ReferencePathType;
 

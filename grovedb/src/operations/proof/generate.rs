@@ -893,6 +893,21 @@ impl GroveDb {
             };
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
+                    // Merk emits this node kind for backward-references
+                    // elements unconditionally; it is a V1-only wire shape
+                    // and the frozen V0 format must refuse to carry it
+                    // (released V0 verifiers reject the tag). Guard on the
+                    // NODE KIND — the element-typed rejection below cannot
+                    // fire for it because this outer match would otherwise
+                    // skip the node entirely.
+                    Node::KVBackwardsReferencesValueHash(..) => {
+                        return Err(Error::NotSupported(
+                            "backward-references elements are not supported in V0 proofs; they \
+                             require GROVE_V4+, which proves through V1"
+                                .to_owned(),
+                        ))
+                        .wrap_with_cost(cost);
+                    }
                     Node::KV(key, value)
                     | Node::KVValueHash(key, value, ..)
                     | Node::KVCount(key, value, _)
