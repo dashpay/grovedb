@@ -2035,12 +2035,12 @@ impl GroveDb {
                 let mut reference_self_hash_override = None;
                 let elem = match elem {
                     ref e @ Element::BidirectionalReference(..) => {
-                        let hashes = e
-                            .backward_references_hashes(grove_version)
-                            .unwrap_add_cost(&mut cost)
-                            .ok()
-                            .flatten()
-                            .expect("bidirectional references carry hashes");
+                        let hashes = cost_return_on_error!(
+                            &mut cost,
+                            e.backward_references_hashes(grove_version)
+                                .map_err(Error::from)
+                        )
+                        .expect("bidirectional references carry hashes");
                         reference_self_hash_override = Some(hashes.combined);
                         let Element::BidirectionalReference(reference) = elem else {
                             unreachable!("checked above");
@@ -2269,26 +2269,26 @@ impl GroveDb {
                         // (not H(stored bytes)) — capture it here, before
                         // normalization discards the distinction.
                         let mut reference_self_hash_override = None;
-                        let elem = elem.map(|e| match e {
-                            Element::BidirectionalReference(..) => {
-                                let hashes = e
-                                    .backward_references_hashes(grove_version)
-                                    .unwrap_add_cost(&mut cost)
-                                    .ok()
-                                    .flatten()
-                                    .expect("bidirectional references carry hashes");
+                        let elem = match elem {
+                            Ok(ref e @ Element::BidirectionalReference(..)) => {
+                                let hashes = cost_return_on_error!(
+                                    &mut cost,
+                                    e.backward_references_hashes(grove_version)
+                                        .map_err(Error::from)
+                                )
+                                .expect("bidirectional references carry hashes");
                                 reference_self_hash_override = Some(hashes.combined);
-                                let Element::BidirectionalReference(reference) = e else {
+                                let Ok(Element::BidirectionalReference(reference)) = elem else {
                                     unreachable!("checked above");
                                 };
-                                Element::Reference(
+                                Ok(Element::Reference(
                                     reference.forward_reference_path,
                                     reference.max_hop,
                                     reference.flags,
-                                )
+                                ))
                             }
                             other => other,
-                        });
+                        };
                         match elem {
                             // `ReferenceWithSumItem` shares this proof path
                             // with `Reference` — both produce a

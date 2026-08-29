@@ -272,11 +272,16 @@ fn insert_with_backward_references<'db, 'b, B: AsRef<[u8]>>(
                         Element::get_optional(m, key, true, grove_version).map_err(Error::MerkError)
                     })
                 );
-                if let (Some(previous_refs), Some(refs)) = (
-                    previous.as_ref().and_then(|p| p.backward_references()),
-                    element.backward_references_mut(),
-                ) {
-                    *refs = previous_refs.to_vec();
+                if let Some(refs) = element.backward_references_mut() {
+                    // The stored list is authoritative; whatever the caller
+                    // supplied is not theirs to claim — forged entries would
+                    // later let cascades and propagations follow arbitrary
+                    // inverted paths.
+                    *refs = previous
+                        .as_ref()
+                        .and_then(|p| p.backward_references())
+                        .map(|p| p.to_vec())
+                        .unwrap_or_default();
                 }
             }
             let delta = cost_return_on_error!(

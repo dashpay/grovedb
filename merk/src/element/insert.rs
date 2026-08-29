@@ -2318,5 +2318,16 @@ mod tests {
             .unwrap()
             .expect("hash present");
         assert_ne!(stored_before, stored_after);
+
+        // Same element AND same child root: nothing to do, hash stable.
+        tree.insert_subtree_if_changed(&mut merk, b"t", [9; 32], None, grove_version)
+            .unwrap()
+            .expect("no-op insert");
+        assert_eq!(
+            Element::get_value_hash(&merk, b"t", true, grove_version)
+                .unwrap()
+                .unwrap(),
+            Some(stored_after)
+        );
     }
 }

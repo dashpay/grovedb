@@ -942,6 +942,9 @@ impl Decode for Op {
                     len as usize
                 } else {
                     let len: u32 = Decode::decode(&mut input)?;
+                    if len > MAX_VALUE_LEN {
+                        return Err(ed::Error::UnexpectedByte(0x51));
+                    }
                     len as usize
                 };
                 let mut value = vec![0; value_len];
@@ -966,6 +969,9 @@ impl Decode for Op {
                     len as usize
                 } else {
                     let len: u32 = Decode::decode(&mut input)?;
+                    if len > MAX_VALUE_LEN {
+                        return Err(ed::Error::UnexpectedByte(0x53));
+                    }
                     len as usize
                 };
                 let mut value = vec![0; value_len];

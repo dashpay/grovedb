@@ -1341,35 +1341,89 @@ fn proofs_dereference_bidirectional_references_in_aggregate_parents() {
     let grove_version = GroveVersion::latest();
     let db = make_test_grovedb(grove_version);
 
-    for (tree_key, tree, target) in [
+    // Plain aggregate parents hold the backward-references TARGET locally;
+    // Provable* parents reject the item family, so their bidirectional
+    // references point at a target outside the tree.
+    db.insert(
+        &[TEST_LEAF],
+        b"ext",
+        Element::new_item_allowing_bidirectional_references(b"external".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    let external =
+        ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"ext".to_vec()]);
+    for (tree_key, tree, target, forward) in [
         (
             b"sums".as_slice(),
             Element::new_sum_tree(None),
-            Element::new_sum_item_allowing_bidirectional_references(41),
+            Some(Element::new_sum_item_allowing_bidirectional_references(41)),
+            None,
         ),
         (
             b"counts".as_slice(),
             Element::new_count_tree(None),
-            Element::new_item_allowing_bidirectional_references(b"counted".to_vec()),
+            Some(Element::new_item_allowing_bidirectional_references(
+                b"counted".to_vec(),
+            )),
+            None,
+        ),
+        (
+            b"psums",
+            Element::new_provable_sum_tree(None),
+            None,
+            Some(external.clone()),
+        ),
+        (
+            b"pcounts",
+            Element::new_provable_count_tree(None),
+            None,
+            Some(external.clone()),
+        ),
+        (
+            b"pcps",
+            Element::new_provable_count_provable_sum_tree(None),
+            None,
+            Some(external.clone()),
         ),
     ] {
         db.insert(&[TEST_LEAF], tree_key, tree, None, None, grove_version)
             .unwrap()
             .unwrap();
-        db.insert(
-            &[TEST_LEAF, tree_key],
-            b"target",
-            target.clone(),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .unwrap();
+        let (reference, expected) = match (target, forward) {
+            (Some(target), None) => {
+                db.insert(
+                    &[TEST_LEAF, tree_key],
+                    b"target",
+                    target.clone(),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .unwrap();
+                (sibling_bidi(b"target", true), target)
+            }
+            (None, Some(forward)) => {
+                let Element::BidirectionalReference(mut reference) = sibling_bidi(b"x", true)
+                else {
+                    unreachable!()
+                };
+                reference.forward_reference_path = forward;
+                (
+                    Element::BidirectionalReference(reference),
+                    Element::new_item_allowing_bidirectional_references(b"external".to_vec()),
+                )
+            }
+            _ => unreachable!(),
+        };
         db.insert(
             &[TEST_LEAF, tree_key],
             b"zref",
-            sibling_bidi(b"target", true),
+            reference,
             None,
             None,
             grove_version,
@@ -1391,7 +1445,7 @@ fn proofs_dereference_bidirectional_references_in_aggregate_parents() {
             vec![(
                 vec![TEST_LEAF.to_vec(), tree_key.to_vec()],
                 b"zref".to_vec(),
-                Some(target)
+                Some(expected)
             )],
             "tree: {}",
             String::from_utf8_lossy(tree_key)
@@ -2266,5 +2320,210 @@ fn flagged_inserts_refuse_every_non_empty_tree_variant() {
             ),
             "non-empty tree variant {idx} must be refused"
         );
+    }
+}
+
+/// An edge update that keeps the forward path but changes an option
+/// (cascade, max_hop, flags) must refresh the single registration in
+/// place — never append a duplicate, and never strip the edge when the
+/// old registration is cleaned up.
+#[test]
+fn option_only_edge_updates_keep_exactly_one_registration() {
+    use grovedb_merk::element::get::ElementFetchFromStorageExtensions;
+
+    let grove_version = GroveVersion::latest();
+    let db = db_with_bwr_item();
+    let tx = db.start_transaction();
+    db.insert(
+        &[TEST_LEAF],
+        b"ref",
+        sibling_bidi(b"value", true),
+        None,
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    // Same forward path, cascade flipped.
+    db.insert(
+        &[TEST_LEAF],
+        b"ref",
+        sibling_bidi(b"value", false),
+        None,
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    let merk = db
+        .open_transactional_merk_at_path(SubtreePath::from(&[TEST_LEAF]), &tx, None, grove_version)
+        .unwrap()
+        .unwrap();
+    let target = Element::get(&merk, b"value", true, grove_version)
+        .unwrap()
+        .unwrap();
+    let refs = target.backward_references().unwrap();
+    assert_eq!(refs.len(), 1, "one registration, refreshed in place");
+    assert!(!refs[0].cascade_on_update, "the option change must stick");
+    drop(merk);
+
+    // Same again on a CHAINED reference target (1-registration budget):
+    // updating an option on a referrer of a bidirectional reference must
+    // not trip the budget.
+    db.insert(
+        &[TEST_LEAF],
+        b"head",
+        sibling_bidi(b"ref", true),
+        None,
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF],
+        b"head",
+        sibling_bidi(b"ref", false),
+        None,
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .expect("option change on a chained edge must not exceed the budget");
+
+    // The refreshed edges still propagate: update the end target and check
+    // the whole graph verifies.
+    db.insert(
+        &[TEST_LEAF],
+        b"value",
+        Element::new_item_allowing_bidirectional_references(b"updated".to_vec()),
+        flag_on(),
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(db
+        .verify_grovedb(Some(&tx), true, true, grove_version)
+        .unwrap()
+        .is_empty());
+}
+
+/// The stored referrer list is bookkeeping the insert flow maintains:
+/// caller-supplied entries on a fresh insert are discarded, so forged
+/// inverted paths can never be planted for later cascades to follow.
+#[test]
+fn caller_supplied_referrer_lists_are_discarded_on_insert() {
+    use grovedb_merk::element::get::ElementFetchFromStorageExtensions;
+
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    let tx = db.start_transaction();
+
+    let forged = crate::bidirectional_references::BackwardReference {
+        inverted_reference: ReferencePathType::SiblingReference(b"victim".to_vec()),
+        cascade_on_update: true,
+    };
+    db.insert(
+        &[TEST_LEAF],
+        b"planted",
+        Element::ItemWithBackwardsReferences(b"x".to_vec(), vec![forged.clone()], None),
+        flag_on(),
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    let merk = db
+        .open_transactional_merk_at_path(SubtreePath::from(&[TEST_LEAF]), &tx, None, grove_version)
+        .unwrap()
+        .unwrap();
+    let stored = Element::get(&merk, b"planted", true, grove_version)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored.backward_references().unwrap().len(),
+        0,
+        "forged referrer entries must not persist"
+    );
+    drop(merk);
+
+    // Same for a bidirectional reference insert.
+    db.insert(
+        &[TEST_LEAF],
+        b"target",
+        Element::new_item_allowing_bidirectional_references(b"t".to_vec()),
+        None,
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    let Element::BidirectionalReference(mut reference) = sibling_bidi(b"target", true) else {
+        unreachable!()
+    };
+    reference.backward_references = vec![forged];
+    db.insert(
+        &[TEST_LEAF],
+        b"planted_ref",
+        Element::BidirectionalReference(reference),
+        None,
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    let merk = db
+        .open_transactional_merk_at_path(SubtreePath::from(&[TEST_LEAF]), &tx, None, grove_version)
+        .unwrap()
+        .unwrap();
+    let stored = Element::get(&merk, b"planted_ref", true, grove_version)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.backward_references().unwrap().len(), 0);
+}
+
+/// A backward-references node is a legitimate absence-proof boundary: a
+/// proof for a missing key adjacent to one must verify (in range and
+/// key-list shapes, both directions).
+#[test]
+fn backward_references_nodes_are_valid_absence_boundaries() {
+    let grove_version = GroveVersion::latest();
+    let db = db_with_bwr_item();
+    db.insert(
+        &[TEST_LEAF],
+        b"ref",
+        sibling_bidi(b"value", true),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    // "value" is the greatest key; "zz"/"aa" are absent on each side.
+    for keys in [
+        vec![b"value".to_vec(), b"zz".to_vec()],
+        vec![b"aa".to_vec(), b"value".to_vec()],
+        vec![b"value".to_vec(), b"x".to_vec(), b"zz".to_vec()],
+    ] {
+        for left_to_right in [true, false] {
+            let mut query = Query::new_with_direction(left_to_right);
+            for key in &keys {
+                query.insert_key(key.clone());
+            }
+            let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+            let proof = db
+                .prove_query(&path_query, None, grove_version)
+                .unwrap()
+                .expect("absence next to a backward-references node must prove");
+            let (hash, result_set) = GroveDb::verify_query(&proof, &path_query, grove_version)
+                .expect("a backward-references boundary node must be accepted by absence checks");
+            assert_eq!(hash, db.root_hash(None, grove_version).unwrap().unwrap());
+            assert_eq!(result_set.len(), 1, "only `value` exists");
+        }
     }
 }

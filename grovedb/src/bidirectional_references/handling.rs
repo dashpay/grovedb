@@ -124,7 +124,19 @@ fn register_backward_reference(
                     "target does not support backward references".to_owned()
                 ))
         );
-        refs.push(backward_reference);
+        // Upsert: a referrer is identified by its inverted path, so an
+        // edge update that only changes an option (e.g. cascade_on_update)
+        // replaces the existing entry instead of appending a duplicate —
+        // a duplicate would both break the budget check and be dropped
+        // wholesale by a later removal of the same inverted path.
+        if let Some(existing) = refs
+            .iter_mut()
+            .find(|r| r.inverted_reference == backward_reference.inverted_reference)
+        {
+            *existing = backward_reference;
+        } else {
+            refs.push(backward_reference);
+        }
     }
     cost_return_on_error_no_add!(
         cost,
@@ -369,15 +381,20 @@ pub(crate) fn process_bidirectional_reference_insertion<'b, B: AsRef<[u8]>>(
         // If previous value was another bidirectional reference, its backward
         // registration on the OLD target must be removed
         Some(Element::BidirectionalReference(old_reference)) => {
-            cost_return_on_error!(
-                &mut cost,
-                remove_backward_reference(
-                    merk_cache,
-                    path.derive_owned(),
-                    key,
-                    old_reference.forward_reference_path,
-                )
-            );
+            // Same forward path means same target and same inverted path:
+            // the registration was just refreshed in place by the upsert
+            // above, and removing it here would strip the edge entirely.
+            if old_reference.forward_reference_path != reference.forward_reference_path {
+                cost_return_on_error!(
+                    &mut cost,
+                    remove_backward_reference(
+                        merk_cache,
+                        path.derive_owned(),
+                        key,
+                        old_reference.forward_reference_path,
+                    )
+                );
+            }
 
             // The chain now resolves to a new end hash; referrers of THIS
             // reference must be updated with it.

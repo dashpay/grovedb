@@ -489,9 +489,11 @@ where
                 ProofNodeType::KvValueHash => self.to_kv_value_hash_node(),
                 // Backward-references elements: emit the dedicated wire
                 // node — STRIPPED bytes plus the referrer-list hash — so
-                // the verifier recombines and binds the payload. (The
-                // fallbacks below are defensive: the stored bytes always
-                // deserialize for honestly written elements.)
+                // the verifier recombines and binds the payload. The stored
+                // bytes always deserialize for honestly written elements;
+                // failing to rebuild means corrupted storage, and emitting a
+                // plain KVValueHash instead would only move the failure to
+                // the verifier with a misleading message — error out here.
                 ProofNodeType::KvBackwardsReferencesValueHash => {
                     use crate::element::ElementExt;
                     let rebuilt = grovedb_element::Element::deserialize(
@@ -517,7 +519,13 @@ where
                     });
                     match rebuilt {
                         Some(node) => node,
-                        None => self.to_kv_value_hash_node(),
+                        None => {
+                            return Err(Error::CorruptedData(format!(
+                                "cannot rebuild the backward-references proof node for key {}",
+                                hex::encode(self.tree().key())
+                            )))
+                            .wrap_with_cost(cost);
+                        }
                     }
                 }
                 ProofNodeType::KvValueHashFeatureType => self.to_kv_value_hash_feature_type_node(),
