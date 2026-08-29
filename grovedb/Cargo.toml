@@ -61,6 +61,9 @@ hex = { workspace = true }
 # has to be read from the OS rather than from a Rust allocator hook.
 libc = "0.2"
 pretty_assertions = "1.4.0"
+# Adversarial-input properties for the untrusted state-sync decode
+# surfaces (`tests/replication_fuzz_tests.rs`).
+proptest = "1.10.0"
 rand = { workspace = true }
 rand_distr = "0.6"
 assert_matches = { workspace = true }
