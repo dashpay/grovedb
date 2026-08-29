@@ -1552,6 +1552,12 @@ struct TreeCacheMerkByPath<S, F, F2> {
     /// `apply_batch`'s post-apply phase to select cleanup namespaces from
     /// what was really stored rather than what the op declared.
     deleted_tree_actual_types: Vec<(Vec<Vec<u8>>, TreeType)>,
+    /// Total secondary-mirror re-key churn bytes accumulated across every
+    /// indexed primary this apply mirrored. Consumed by `apply_batch`'s
+    /// commit-time cost assembly, which rebills this many bytes out of the
+    /// added and unattributed-removal lanes into `replaced_bytes` — a row
+    /// move is physically a delete plus an insert but logically an update.
+    indexed_mirror_rekey_churn_bytes: u32,
 }
 
 impl<S, F, F2> fmt::Debug for TreeCacheMerkByPath<S, F, F2> {
@@ -1573,6 +1579,79 @@ struct BatchApplyCaptures {
     /// target that was really deleted; cleanup namespaces are selected from
     /// the actual type, not the declared one.
     deleted_tree_actual_types: Vec<(Vec<Vec<u8>>, TreeType)>,
+    /// Total secondary-mirror re-key churn bytes; rebilled as
+    /// `replaced_bytes` at commit-time cost assembly.
+    indexed_mirror_rekey_churn_bytes: u32,
+}
+
+/// Rebill secondary-mirror re-key churn as the update it logically is.
+///
+/// A mirrored row MOVE is physically a delete at the old sort key plus an
+/// insert at the new one, so the raw commit accounting reports the old
+/// row's bytes as removed and the new row's as added — perpetual-storage
+/// price for churn that does not grow the store, with the removal
+/// unattributable (mirror rows carry no flags, so it lands in the
+/// unattributed lane: `BasicStorageRemoval`, or the
+/// `(Identifier::default(), UNKNOWN_EPOCH)` bucket once merged into a
+/// sectioned removal). This moves `churn_bytes` out of both lanes into
+/// `replaced_bytes`.
+///
+/// `churn_bytes` is a per-pair min of element-level charged sizes (see
+/// `build_axis_mirror_batch`), a conservative lower bound on both lanes'
+/// real contributions — and the caps below make the subtraction safe even
+/// if that ever ceased to hold: nothing is rebilled that the lanes cannot
+/// cover, and flagged (refundable) removal buckets are never touched.
+pub(crate) fn reclassify_indexed_mirror_rekey_churn(
+    storage_cost: &mut StorageCost,
+    churn_bytes: u32,
+) {
+    use grovedb_costs::storage_cost::removal::{Identifier, StorageRemovedBytes::*, UNKNOWN_EPOCH};
+    if churn_bytes == 0 {
+        return;
+    }
+    let unattributed_removal = match &storage_cost.removed_bytes {
+        NoStorageRemoval => 0,
+        BasicStorageRemoval(bytes) => *bytes,
+        SectionedStorageRemoval(by_identifier) => by_identifier
+            .get(&Identifier::default())
+            .and_then(|by_epoch| by_epoch.get(UNKNOWN_EPOCH))
+            .copied()
+            .unwrap_or(0),
+    };
+    let net = churn_bytes
+        .min(storage_cost.added_bytes)
+        .min(unattributed_removal);
+    if net == 0 {
+        return;
+    }
+    storage_cost.added_bytes -= net;
+    storage_cost.replaced_bytes += net;
+    match &mut storage_cost.removed_bytes {
+        NoStorageRemoval => unreachable!("net is capped by the unattributed removal"),
+        BasicStorageRemoval(bytes) => {
+            *bytes -= net;
+            if *bytes == 0 {
+                storage_cost.removed_bytes = NoStorageRemoval;
+            }
+        }
+        SectionedStorageRemoval(by_identifier) => {
+            let identifier = Identifier::default();
+            if let Some(by_epoch) = by_identifier.get_mut(&identifier) {
+                let remaining = by_epoch.get(UNKNOWN_EPOCH).copied().unwrap_or(0) - net;
+                if remaining == 0 {
+                    by_epoch.remove(UNKNOWN_EPOCH);
+                } else {
+                    by_epoch.insert(UNKNOWN_EPOCH, remaining);
+                }
+                if by_epoch.is_empty() {
+                    by_identifier.remove(&identifier);
+                }
+            }
+            if by_identifier.is_empty() {
+                storage_cost.removed_bytes = NoStorageRemoval;
+            }
+        }
+    }
 }
 
 /// Result of the pre-apply `DeleteTree` scan shared by
@@ -1706,6 +1785,13 @@ trait TreeCache<G, SR> {
     /// type. Default impl returns an empty Vec.
     fn take_deleted_tree_actual_types(&mut self) -> Vec<(Vec<Vec<u8>>, TreeType)> {
         Vec::new()
+    }
+
+    /// After all level processing completes, `apply_batch` calls this to
+    /// retrieve the total secondary-mirror re-key churn bytes for the
+    /// commit-time cost reclassification. Default impl returns 0.
+    fn take_indexed_mirror_rekey_churn_bytes(&mut self) -> u32 {
+        0
     }
 }
 
@@ -2429,6 +2515,10 @@ where
 
     fn take_deleted_tree_actual_types(&mut self) -> Vec<(Vec<Vec<u8>>, TreeType)> {
         std::mem::take(&mut self.deleted_tree_actual_types)
+    }
+
+    fn take_indexed_mirror_rekey_churn_bytes(&mut self) -> u32 {
+        std::mem::take(&mut self.indexed_mirror_rekey_churn_bytes)
     }
 
     fn update_base_merk_root_key(
@@ -4073,7 +4163,7 @@ where
             );
             let mut per_axis = Vec::with_capacity(secondaries.len());
             for (axis, mut secondary_merk) in secondaries {
-                let (sec_hash, sec_root_key) = cost_return_on_error!(
+                let (sec_hash, sec_root_key, rekey_churn_bytes) = cost_return_on_error!(
                     &mut cost,
                     indexed_tree::apply_indexed_secondary_mirror_post_apply(
                         &transitions,
@@ -4082,6 +4172,9 @@ where
                         grove_version,
                     )
                 );
+                self.indexed_mirror_rekey_churn_bytes = self
+                    .indexed_mirror_rekey_churn_bytes
+                    .saturating_add(rekey_churn_bytes);
                 per_axis.push((axis.tag(), sec_hash, sec_root_key));
             }
             self.indexed_secondary_after_apply
@@ -4695,6 +4788,8 @@ impl GroveDb {
                     cidx_overwrite_cleanup_paths: merk_tree_cache
                         .take_cidx_overwrite_cleanup_paths(),
                     deleted_tree_actual_types: merk_tree_cache.take_deleted_tree_actual_types(),
+                    indexed_mirror_rekey_churn_bytes: merk_tree_cache
+                        .take_indexed_mirror_rekey_churn_bytes(),
                 };
                 return Ok((Some(ops_by_level_paths), captures)).wrap_with_cost(cost);
             }
@@ -4703,6 +4798,8 @@ impl GroveDb {
         let captures = BatchApplyCaptures {
             cidx_overwrite_cleanup_paths: merk_tree_cache.take_cidx_overwrite_cleanup_paths(),
             deleted_tree_actual_types: merk_tree_cache.take_deleted_tree_actual_types(),
+            indexed_mirror_rekey_churn_bytes: merk_tree_cache
+                .take_indexed_mirror_rekey_churn_bytes(),
         };
         Ok((None, captures)).wrap_with_cost(cost)
     }
@@ -4755,6 +4852,7 @@ impl GroveDb {
                     indexed_secondary_after_apply: Default::default(),
                     cidx_overwrite_cleanup_paths: Default::default(),
                     deleted_tree_actual_types: Default::default(),
+                    indexed_mirror_rekey_churn_bytes: 0,
                 },
                 grove_version
             )
@@ -4816,6 +4914,7 @@ impl GroveDb {
                     indexed_secondary_after_apply: Default::default(),
                     cidx_overwrite_cleanup_paths: Default::default(),
                     deleted_tree_actual_types: Default::default(),
+                    indexed_mirror_rekey_churn_bytes: 0,
                 },
                 grove_version
             )
@@ -5854,6 +5953,7 @@ impl GroveDb {
         let BatchApplyCaptures {
             cidx_overwrite_cleanup_paths,
             deleted_tree_actual_types,
+            indexed_mirror_rekey_churn_bytes,
         } = batch_apply_captures;
 
         // V4+: fold the `(path, ACTUAL stored type)` pairs captured during
@@ -6049,6 +6149,13 @@ impl GroveDb {
             self.db
                 .commit_multi_context_batch(storage_batch, Some(tx.as_ref()))
                 .map_err(|e| e.into())
+        );
+
+        // Rebill mirrored re-key churn as replaced bytes now that the
+        // commit has folded every op's storage cost into `cost`.
+        reclassify_indexed_mirror_rekey_churn(
+            &mut cost.storage_cost,
+            indexed_mirror_rekey_churn_bytes,
         );
 
         // Keep this commented for easy debugging in the future.
@@ -6352,10 +6459,12 @@ impl GroveDb {
         let BatchApplyCaptures {
             cidx_overwrite_cleanup_paths: partial_cidx_overwrite_cleanup_paths,
             deleted_tree_actual_types: partial_deleted_tree_actual_types,
+            indexed_mirror_rekey_churn_bytes: partial_rekey_churn_bytes,
         } = partial_captures;
         let BatchApplyCaptures {
             cidx_overwrite_cleanup_paths: continue_cidx_overwrite_cleanup_paths,
             deleted_tree_actual_types: continue_deleted_tree_actual_types,
+            indexed_mirror_rekey_churn_bytes: continue_rekey_churn_bytes,
         } = continue_captures;
 
         // V4+: fold captures from BOTH applies into the cleanup lists
@@ -6556,6 +6665,13 @@ impl GroveDb {
             self.db
                 .commit_db_write_batch(write_batch, pending_costs, Some(tx.as_ref()))
                 .map_err(|e| e.into())
+        );
+
+        // Rebill mirrored re-key churn from BOTH applies as replaced bytes
+        // (see apply_batch_with_element_flags_update).
+        reclassify_indexed_mirror_rekey_churn(
+            &mut cost.storage_cost,
+            partial_rekey_churn_bytes.saturating_add(continue_rekey_churn_bytes),
         );
 
         tx.commit_local().wrap_with_cost(cost)

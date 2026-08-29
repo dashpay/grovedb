@@ -572,7 +572,11 @@ impl GroveDb {
                 max_size: secondary_key_size,
             };
             // The mirror is delete-old-row then insert-new-row, each of which
-            // rebalances and re-roots the secondary.
+            // rebalances and re-roots the secondary. (The ACTUAL commit
+            // accounting rebills a moved pair's churn out of added/removed
+            // into replaced; this estimate deliberately keeps the raw
+            // delete+insert shape, over-reserving `added_bytes` by up to
+            // the churn rather than ever coming in under.)
             //
             // The inserted row must be sized with the AXIS's real row shape:
             // `average_case_merk_insert_element` charges non-tree elements by
