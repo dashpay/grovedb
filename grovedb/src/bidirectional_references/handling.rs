@@ -1,4 +1,12 @@
-//! Bidirectional references handling module.
+//! The `MerkCache` driver for backward-references bookkeeping.
+//!
+//! All decisions live in the pure planners of [`super::semantics`]; this
+//! module supplies the two halves the planners abstract over:
+//! - [`MerkCacheChainStore`], the read-only [`ChainStore`] view backed by
+//!   the transaction's `MerkCache` (so planning sees uncommitted writes of
+//!   EARLIER operations), and
+//! - [`apply_plan`], which executes a [`Plan`]'s mutations through the same
+//!   cache in order.
 //!
 //! Backward references live ON their target element and are covered by the
 //! node hash through the two-layer scheme described in
@@ -7,97 +15,133 @@
 //! referrer rewrites only the target itself — never the hashes stored by
 //! other referrers.
 
-use std::collections::VecDeque;
-
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add, storage_cost::removal::StorageRemovedBytes,
-    CostResult, CostsExt,
+    cost_return_on_error, storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt,
 };
 use grovedb_merk::{
     element::{
         delete::ElementDeleteFromStorageExtensions,
         get::ElementFetchFromStorageExtensions,
         insert::{Delta, ElementInsertToStorageExtensions},
-        ElementExt,
     },
     CryptoHash,
 };
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
 
-use super::{BackwardReference, BidirectionalReference};
-use crate::{
-    merk_cache::{MerkCache, MerkHandle},
-    operations::insert::InsertOptions,
-    reference_path::{
-        follow_reference, follow_reference_once, path_from_reference_path_type, ReferencePathType,
-        ResolvedReference,
+use super::{
+    semantics::{
+        plan_element_update, plan_reference_insertion, ChainStore, DerivedMutation, Plan,
+        ResolvedPosition,
     },
+    BidirectionalReference,
+};
+use crate::{
+    merk_cache::MerkCache,
+    merk_cache::MerkHandle,
+    operations::insert::InsertOptions,
+    reference_path::{follow_reference, follow_reference_once, ReferencePathType},
     Element, Error,
 };
 
-/// A backward entry only identifies its referrer by position. Before acting
-/// on the occupant of that position (rewriting it during propagation,
-/// deleting it during a cascade), confirm it really is the registered
-/// referrer: a `BidirectionalReference` whose forward path resolves back to
-/// the element carrying the entry. A reused key would otherwise hand an
-/// unrelated element to the cascade.
-fn referrer_points_back<B: AsRef<[u8]>>(
-    origin_element: &Element,
-    origin_path: &SubtreePathBuilder<'_, B>,
-    origin_key: &[u8],
-    expected_path: &SubtreePathBuilder<'_, B>,
-    expected_key: &[u8],
-) -> bool {
-    let Element::BidirectionalReference(reference) = origin_element else {
-        return false;
-    };
-    let Ok(forward_qualified) = path_from_reference_path_type(
-        reference.forward_reference_path.clone(),
-        &origin_path.to_vec(),
-        Some(origin_key),
-    ) else {
-        return false;
-    };
-    let mut expected_qualified = expected_path.to_vec();
-    expected_qualified.push(expected_key.to_vec());
-    forward_qualified == expected_qualified
+/// [`ChainStore`] over the transaction's `MerkCache`.
+struct MerkCacheChainStore<'c, 'db, 'b, B: AsRef<[u8]>>(&'c MerkCache<'db, 'b, B>);
+
+impl<'c, 'db, 'b, B: AsRef<[u8]>> MerkCacheChainStore<'c, 'db, 'b, B> {
+    fn builder(&self, path: &[Vec<u8>]) -> SubtreePathBuilder<'b, B> {
+        SubtreePathBuilder::owned_from_iter(path)
+    }
 }
 
-/// Write back a backward-references-capable element whose referrer list was
-/// just modified. Items carry their combined hash implicitly
-/// (`Element::insert` supplies it); a bidirectional reference additionally
-/// needs the resolved end-of-chain hash its node commits to.
-fn write_updated_target(
+impl<'c, 'db, 'b, B: AsRef<[u8]>> ChainStore for MerkCacheChainStore<'c, 'db, 'b, B> {
+    fn element_at(&self, path: &[Vec<u8>], key: &[u8]) -> CostResult<Option<Element>, Error> {
+        let mut cost = Default::default();
+        let mut merk = cost_return_on_error!(&mut cost, self.0.get_merk(self.builder(path)));
+        merk.for_merk(|m| {
+            Element::get_optional(m, key, true, self.0.version).map_err(Error::MerkError)
+        })
+        .add_cost(cost)
+    }
+
+    fn resolve_once(
+        &self,
+        path: &[Vec<u8>],
+        key: &[u8],
+        reference_path: ReferencePathType,
+    ) -> CostResult<ResolvedPosition, Error> {
+        follow_reference_once(self.0, self.builder(path), key, reference_path).map_ok(|resolved| {
+            ResolvedPosition {
+                path: resolved.target_path.to_vec(),
+                key: resolved.target_key,
+                element: resolved.target_element,
+                node_value_hash: resolved.target_node_value_hash,
+                hops: resolved.hops,
+            }
+        })
+    }
+
+    fn resolve_chain(
+        &self,
+        path: &[Vec<u8>],
+        key: &[u8],
+        reference_path: ReferencePathType,
+    ) -> CostResult<ResolvedPosition, Error> {
+        follow_reference(self.0, self.builder(path), key, reference_path).map_ok(|resolved| {
+            ResolvedPosition {
+                path: resolved.target_path.to_vec(),
+                key: resolved.target_key,
+                element: resolved.target_element,
+                node_value_hash: resolved.target_node_value_hash,
+                hops: resolved.hops,
+            }
+        })
+    }
+
+    fn version(&self) -> &grovedb_version::version::GroveVersion {
+        self.0.version
+    }
+}
+
+/// Execute a single derived write through the cache. Bidirectional
+/// references are written through `insert_reference` with their resolved
+/// end hash; the item variants derive their combined hash from the bytes.
+fn apply_write(
     merk: &mut MerkHandle<'_, '_>,
     key: &[u8],
     element: Element,
-    end_hash_for_reference: Option<CryptoHash>,
+    end_hash: Option<CryptoHash>,
+    options: Option<InsertOptions>,
     version: &grovedb_version::version::GroveVersion,
 ) -> CostResult<(), Error> {
     let mut cost = Default::default();
-    match &element {
-        Element::BidirectionalReference(..) => {
-            let end_hash = cost_return_on_error_no_add!(
-                cost,
-                end_hash_for_reference.ok_or(Error::InternalError(
-                    "rewriting a bidirectional reference requires its resolved end hash".to_owned(),
-                ))
-            );
+    match (&element, end_hash) {
+        (Element::BidirectionalReference(..), Some(end_hash)) => {
             cost_return_on_error!(
                 &mut cost,
                 merk.for_merk(|m| {
                     element
-                        .insert_reference(m, key, end_hash, None, version)
+                        .insert_reference(
+                            m,
+                            key,
+                            end_hash,
+                            options.map(|o| o.as_merk_options()),
+                            version,
+                        )
                         .map_err(Error::MerkError)
                 })
             );
+        }
+        (Element::BidirectionalReference(..), None) => {
+            return Err(Error::InternalError(
+                "rewriting a bidirectional reference requires its resolved end hash".to_owned(),
+            ))
+            .wrap_with_cost(cost);
         }
         _ => {
             cost_return_on_error!(
                 &mut cost,
                 merk.for_merk(|m| {
                     element
-                        .insert(m, key, None, version)
+                        .insert(m, key, options.map(|o| o.as_merk_options()), version)
                         .map_err(Error::MerkError)
                 })
             );
@@ -106,411 +150,99 @@ fn write_updated_target(
     Ok(()).wrap_with_cost(cost)
 }
 
-/// Resolve the end-of-chain hash a bidirectional reference element at the
-/// given position commits to (needed to rewrite it when only its referrer
-/// list changes).
-fn resolve_end_hash_for_reference_at<'db, 'b, 'c, B: AsRef<[u8]>>(
-    merk_cache: &'c MerkCache<'db, 'b, B>,
-    path: SubtreePathBuilder<'b, B>,
-    key: &[u8],
-    element: &Element,
-) -> CostResult<Option<CryptoHash>, Error> {
-    let mut cost = Default::default();
-    let Element::BidirectionalReference(reference) = element else {
-        return Ok(None).wrap_with_cost(cost);
-    };
-    let resolved = cost_return_on_error!(
-        &mut cost,
-        follow_reference(
-            merk_cache,
-            path,
-            key,
-            reference.forward_reference_path.clone()
-        )
-    );
-    Ok(Some(resolved.target_node_value_hash)).wrap_with_cost(cost)
-}
-
-/// Register `backward_reference` on the target element, enforcing the
-/// referrer budget (32 for items, 1 for references). `end_hash_for_target`
-/// must be provided when the target is itself a bidirectional reference.
-fn register_backward_reference(
-    target_merk: &mut MerkHandle<'_, '_>,
-    target_key: &[u8],
-    mut target_element: Element,
-    backward_reference: BackwardReference,
-    end_hash_for_target: Option<CryptoHash>,
-    version: &grovedb_version::version::GroveVersion,
+/// Apply a plan's mutations in order through the `MerkCache`.
+/// `primary_options` are the caller's insert options, applied to the plan's
+/// primary write only (the user-visible element the plan was derived from).
+fn apply_plan<'b, B: AsRef<[u8]>>(
+    merk_cache: &MerkCache<'_, 'b, B>,
+    plan: Plan,
+    primary_options: Option<InsertOptions>,
 ) -> CostResult<(), Error> {
     let mut cost = Default::default();
 
-    {
-        let refs = cost_return_on_error_no_add!(
-            cost,
-            target_element
-                .backward_references_mut()
-                .ok_or(Error::BidirectionalReferenceRule(
-                    "target does not support backward references".to_owned()
-                ))
-        );
-        // Upsert: a referrer is identified by its inverted path, so an
-        // edge update that only changes an option (e.g. cascade_on_update)
-        // replaces the existing entry instead of appending a duplicate —
-        // a duplicate would both break the budget check and be dropped
-        // wholesale by a later removal of the same inverted path.
-        if let Some(existing) = refs
-            .iter_mut()
-            .find(|r| r.inverted_reference == backward_reference.inverted_reference)
-        {
-            *existing = backward_reference;
-        } else {
-            refs.push(backward_reference);
-        }
-    }
-    cost_return_on_error_no_add!(
-        cost,
-        target_element
-            .validate_backward_references_limits()
-            .map_err(|_| {
-                Error::BidirectionalReferenceRule(
-                    "backward references budget exceeded (32 per item, 1 per bidirectional \
-                     reference)"
-                        .to_owned(),
-                )
-            })
-    );
-
-    cost_return_on_error!(
-        &mut cost,
-        write_updated_target(
-            target_merk,
-            target_key,
-            target_element,
-            end_hash_for_target,
-            version
-        )
-    );
-    Ok(()).wrap_with_cost(cost)
-}
-
-/// Remove the referrer entry matching the inversion of
-/// `forward_reference_path` from the element it resolves to (as seen from
-/// `current_path`/`current_key`). Missing targets and missing entries are
-/// tolerated — consistency can legitimately be bypassed by unflagged
-/// writes.
-fn remove_backward_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
-    merk_cache: &'c MerkCache<'db, 'b, B>,
-    current_path: SubtreePathBuilder<'b, B>,
-    current_key: &[u8],
-    forward_reference_path: ReferencePathType,
-) -> CostResult<(), Error> {
-    let mut cost = Default::default();
-
-    let inverted_reference = cost_return_on_error_no_add!(
-        cost,
-        forward_reference_path
-            .invert(SubtreePath::from(&current_path), current_key)
-            .ok_or_else(|| Error::BidirectionalReferenceRule(
-                "unable to get an inverted reference".to_owned()
-            ))
-    );
-
-    match follow_reference_once(
-        merk_cache,
-        current_path,
-        current_key,
-        forward_reference_path,
-    )
-    .unwrap_add_cost(&mut cost)
-    {
-        Ok(ResolvedReference {
-            mut target_merk,
-            target_key,
-            mut target_element,
-            target_path,
-            ..
-        }) => {
-            let Some(refs) = target_element.backward_references_mut() else {
-                // The target was overwritten by something without backward
-                // references support through a path that skipped
-                // bookkeeping; nothing to clean.
-                return Ok(()).wrap_with_cost(cost);
-            };
-            let before = refs.len();
-            refs.retain(|r| r.inverted_reference != inverted_reference);
-            if refs.len() == before {
-                // Entry already gone — tolerated.
-                return Ok(()).wrap_with_cost(cost);
+    for mutation in plan.mutations {
+        match mutation {
+            DerivedMutation::Write {
+                path,
+                key,
+                element,
+                end_hash,
+                is_primary,
+            } => {
+                let mut merk = cost_return_on_error!(
+                    &mut cost,
+                    merk_cache.get_merk(SubtreePathBuilder::owned_from_iter(&path))
+                );
+                let options = if is_primary {
+                    primary_options.clone()
+                } else {
+                    None
+                };
+                cost_return_on_error!(
+                    &mut cost,
+                    apply_write(
+                        &mut merk,
+                        &key,
+                        element,
+                        end_hash,
+                        options,
+                        merk_cache.version
+                    )
+                );
             }
-            let end_hash = cost_return_on_error!(
-                &mut cost,
-                resolve_end_hash_for_reference_at(
-                    merk_cache,
-                    target_path,
-                    &target_key,
-                    &target_element
-                )
-            );
-            cost_return_on_error!(
-                &mut cost,
-                write_updated_target(
-                    &mut target_merk,
-                    &target_key,
-                    target_element,
-                    end_hash,
-                    merk_cache.version
-                )
-            );
+            DerivedMutation::Delete { path, key } => {
+                let mut merk = cost_return_on_error!(
+                    &mut cost,
+                    merk_cache.get_merk(SubtreePathBuilder::owned_from_iter(&path))
+                );
+                cost_return_on_error!(
+                    &mut cost,
+                    merk.for_merk(|m| {
+                        Element::delete_with_sectioned_removal_bytes(
+                            m,
+                            &key,
+                            None,
+                            false,
+                            m.tree_type,
+                            &mut |_, removed_key_bytes, removed_value_bytes| {
+                                Ok((
+                                    StorageRemovedBytes::BasicStorageRemoval(removed_key_bytes),
+                                    StorageRemovedBytes::BasicStorageRemoval(removed_value_bytes),
+                                ))
+                            },
+                            merk_cache.version,
+                        )
+                        .map_err(Error::MerkError)
+                    })
+                );
+            }
         }
-        // We tolerate missing references because consistency can be bypassed,
-        // and out-of-sync situations might be common.
-        Err(Error::CorruptedReferencePathKeyNotFound(_)) => {}
-        Err(e) => return Err(e).wrap_with_cost(cost),
     }
 
     Ok(()).wrap_with_cost(cost)
 }
 
 /// Insert bidirectional reference at specified location performing required
-/// checks and updates
+/// checks and updates.
 pub(crate) fn process_bidirectional_reference_insertion<'b, B: AsRef<[u8]>>(
     merk_cache: &MerkCache<'_, 'b, B>,
     path: SubtreePath<'b, B>,
     key: &[u8],
-    mut reference: BidirectionalReference,
+    reference: BidirectionalReference,
     options: Option<InsertOptions>,
 ) -> CostResult<(), Error> {
     let mut cost = Default::default();
 
-    // Read what the key currently holds first. The stored referrer list is
-    // carried over onto the new element (registrations survive an edge
-    // update), and re-inserting an identical edge must be a true no-op.
-    let mut merk = cost_return_on_error!(&mut cost, merk_cache.get_merk(path.derive_owned()));
-    let previous_value = cost_return_on_error!(
+    let store = MerkCacheChainStore(merk_cache);
+    let plan = cost_return_on_error!(
         &mut cost,
-        merk.for_merk(|m| {
-            Element::get_optional(m, key, true, merk_cache.version).map_err(Error::MerkError)
-        })
+        plan_reference_insertion(&store, &path.to_vec(), key, reference)
     );
-    if let Some(Element::BidirectionalReference(ref old_ref)) = previous_value {
-        // Carry the existing referrer list over.
-        reference.backward_references = old_ref.backward_references.clone();
-        if old_ref.forward_reference_path == reference.forward_reference_path
-            && old_ref.cascade_on_update == reference.cascade_on_update
-            && old_ref.max_hop == reference.max_hop
-            && old_ref.flags == reference.flags
-        {
-            // Identical logical edge: nothing changed.
-            return Ok(()).wrap_with_cost(cost);
-        }
-    } else {
-        // The referrer list is bookkeeping this module maintains; whatever
-        // the caller supplied is not theirs to claim.
-        reference.backward_references.clear();
-    }
-
-    // Since we limit what kind of elements a bidirectional reference can target, a
-    // check goes first:
-    let ResolvedReference {
-        mut target_merk,
-        target_key,
-        target_element,
-        target_node_value_hash,
-        ..
-    } = cost_return_on_error!(
-        &mut cost,
-        follow_reference_once(
-            merk_cache,
-            path.derive_owned(),
-            key,
-            reference.forward_reference_path.clone(),
-        )
-    );
-
-    if !target_element.supports_backward_references() {
-        return Err(Error::BidirectionalReferenceRule(
-            "Bidirectional references can only point variants with backward references support"
-                .to_owned(),
-        ))
-        .wrap_with_cost(cost);
-    }
-
-    // If the closest target is a bidirectional reference itself, follow the
-    // FULL chain starting from the position being written: the resolved
-    // end-of-chain hash is what every chain member stores, and
-    // `follow_reference` seeds its visited set with the starting qualified
-    // path — so a chain that loops back through this key (a cycle that
-    // would only materialize AFTER the write) is rejected with
-    // `CyclicReference` before any mutation.
-    let (target_value_hash, downstream_hops) =
-        if let Element::BidirectionalReference(..) = target_element {
-            let resolved = cost_return_on_error!(
-                &mut cost,
-                follow_reference(
-                    merk_cache,
-                    path.derive_owned(),
-                    key,
-                    reference.forward_reference_path.clone()
-                )
-            );
-            (resolved.target_node_value_hash, resolved.hops)
-        } else {
-            (target_node_value_hash, 1)
-        };
-
-    // The whole PROSPECTIVE component must fit the global hop budget:
-    // downstream was just measured; upstream is this position's referrer
-    // chain (carried on the element — each bidirectional reference holds at
-    // most one referrer, so it is a single path). Without this, repeated
-    // retargets could splice independently valid segments into chains
-    // longer than any reader will follow.
-    let mut upstream_hops: usize = 0;
-    {
-        let mut current_refs = reference.backward_references.clone();
-        let mut current_path = path.derive_owned();
-        let mut current_key = key.to_vec();
-        while let Some(entry) = current_refs.first().cloned() {
-            upstream_hops += 1;
-            if upstream_hops + downstream_hops > crate::operations::get::MAX_REFERENCE_HOPS {
-                break;
-            }
-            match follow_reference_once(
-                merk_cache,
-                current_path.clone(),
-                &current_key,
-                entry.inverted_reference,
-            )
-            .unwrap_add_cost(&mut cost)
-            {
-                Ok(resolved)
-                    if referrer_points_back(
-                        &resolved.target_element,
-                        &resolved.target_path,
-                        &resolved.target_key,
-                        &current_path,
-                        &current_key,
-                    ) =>
-                {
-                    current_refs = resolved
-                        .target_element
-                        .backward_references()
-                        .map(|refs| refs.to_vec())
-                        .unwrap_or_default();
-                    current_path = resolved.target_path;
-                    current_key = resolved.target_key;
-                }
-                // Dangling or stale entries end the live upstream chain.
-                _ => break,
-            }
-        }
-    }
-    if upstream_hops + downstream_hops > crate::operations::get::MAX_REFERENCE_HOPS {
-        return Err(Error::BidirectionalReferenceRule(format!(
-            "the resulting reference component would exceed the global budget of {} hops",
-            crate::operations::get::MAX_REFERENCE_HOPS
-        )))
-        .wrap_with_cost(cost);
-    }
-
-    // Register the backward edge on the target:
-    let inverted_reference = cost_return_on_error_no_add!(
-        cost,
-        reference
-            .forward_reference_path
-            .invert(path.clone(), key)
-            .ok_or_else(|| Error::BidirectionalReferenceRule(
-                "unable to get an inverted reference".to_owned()
-            ))
-    );
-    // Rewriting a bidirectional-reference target needs the end hash ITS
-    // node commits to — the same end-of-chain hash just resolved.
-    let end_hash_for_target = if matches!(target_element, Element::BidirectionalReference(..)) {
-        Some(target_value_hash)
-    } else {
-        None
+    let Some(plan) = plan else {
+        // Identical logical edge: a true no-op.
+        return Ok(()).wrap_with_cost(cost);
     };
-    cost_return_on_error!(
-        &mut cost,
-        register_backward_reference(
-            &mut target_merk,
-            &target_key,
-            target_element,
-            BackwardReference {
-                inverted_reference,
-                cascade_on_update: reference.cascade_on_update,
-            },
-            end_hash_for_target,
-            merk_cache.version,
-        )
-    );
-
-    // Write the new reference (its node hash combines its stripped bytes,
-    // the resolved end hash, and its carried referrer list):
-    cost_return_on_error!(
-        &mut cost,
-        merk.for_merk(|m| {
-            Element::BidirectionalReference(reference.clone())
-                .insert_reference(
-                    m,
-                    key,
-                    target_value_hash,
-                    options.map(|o| o.as_merk_options()),
-                    merk_cache.version,
-                )
-                .map_err(Error::MerkError)
-        })
-    );
-
-    match previous_value {
-        // If previous value was another bidirectional reference, its backward
-        // registration on the OLD target must be removed
-        Some(Element::BidirectionalReference(old_reference)) => {
-            // Same forward path means same target and same inverted path:
-            // the registration was just refreshed in place by the upsert
-            // above, and removing it here would strip the edge entirely.
-            if old_reference.forward_reference_path != reference.forward_reference_path {
-                cost_return_on_error!(
-                    &mut cost,
-                    remove_backward_reference(
-                        merk_cache,
-                        path.derive_owned(),
-                        key,
-                        old_reference.forward_reference_path,
-                    )
-                );
-            }
-
-            // The chain now resolves to a new end hash; referrers of THIS
-            // reference must be updated with it.
-            cost_return_on_error!(
-                &mut cost,
-                propagate_backward_references(
-                    merk_cache,
-                    merk,
-                    path.derive_owned(),
-                    key.to_vec(),
-                    target_value_hash
-                )
-            );
-        }
-        // If overwriting items with backward references it is an error since they can have many
-        // backward references when inserted bidirectional reference can have only one
-        Some(
-            Element::ItemWithBackwardsReferences(..) | Element::SumItemWithBackwardsReferences(..),
-        ) => {
-            return Err(Error::BidirectionalReferenceRule(
-                "insertion of bidirectional reference cannot override elements with backward \
-                 references (item/sum item) since only one backward reference is supported for \
-                 bidirectional reference and those may have up to 32"
-                    .to_owned(),
-            ))
-            .wrap_with_cost(cost)
-        }
-        // Fresh insertion or overwrite of a plain element: nothing extra.
-        _ => {}
-    }
-
-    Ok(()).wrap_with_cost(cost)
+    apply_plan(merk_cache, plan, options).add_cost(cost)
 }
 
 /// Post-processing of possible backward references relationships after
@@ -524,6 +256,7 @@ pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: As
     delta: Delta,
 ) -> CostResult<(), Error> {
     let mut cost = Default::default();
+    let _ = merk;
 
     // On no changes no propagations shall happen:
     if !delta.has_changed() {
@@ -535,347 +268,10 @@ pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: As
         return Ok(()).wrap_with_cost(cost);
     };
 
-    match (old, delta.new) {
-        (
-            Element::ItemWithBackwardsReferences(..) | Element::SumItemWithBackwardsReferences(..),
-            Some(
-                new @ (Element::ItemWithBackwardsReferences(..)
-                | Element::SumItemWithBackwardsReferences(..)
-                | Element::ItemWithSumItemWithBackwardsReferences(..)),
-            ),
-        ) => {
-            // Update with another backward references-compatible element:
-            // referrers commit to the INNER hash, so propagate the new one
-            // along every chain.
-            let new_logical_hash = cost_return_on_error!(
-                &mut cost,
-                new.logical_value_hash(merk_cache.version)
-                    .map_err(Error::from)
-            );
-            cost_return_on_error!(
-                &mut cost,
-                propagate_backward_references(
-                    merk_cache,
-                    merk,
-                    path,
-                    key.to_vec(),
-                    new_logical_hash
-                )
-            );
-        }
-        (
-            old @ (Element::ItemWithBackwardsReferences(..)
-            | Element::SumItemWithBackwardsReferences(..)
-            | Element::ItemWithSumItemWithBackwardsReferences(..)),
-            _,
-        ) => {
-            // Update with non backward references-compatible element (or deletion), equals
-            // to cascade deletion of references' chains:
-            cost_return_on_error!(
-                &mut cost,
-                delete_backward_references_recursively(merk_cache, path, key.to_vec(), old)
-            );
-        }
-
-        (
-            Element::BidirectionalReference(old_reference),
-            Some(
-                new @ (Element::ItemWithBackwardsReferences(..)
-                | Element::SumItemWithBackwardsReferences(..)
-                | Element::ItemWithSumItemWithBackwardsReferences(..)),
-            ),
-        ) => {
-            // Overwrite of bidirectional reference with backward references-compatible
-            // elements triggers propagation and removes the old backward
-            // registration on the old target
-            let new_logical_hash = cost_return_on_error!(
-                &mut cost,
-                new.logical_value_hash(merk_cache.version)
-                    .map_err(Error::from)
-            );
-            cost_return_on_error!(
-                &mut cost,
-                propagate_backward_references(
-                    merk_cache,
-                    merk,
-                    path.clone(),
-                    key.to_vec(),
-                    new_logical_hash
-                )
-            );
-
-            cost_return_on_error!(
-                &mut cost,
-                remove_backward_reference(
-                    merk_cache,
-                    path,
-                    key,
-                    old_reference.forward_reference_path
-                )
-            );
-        }
-        (Element::BidirectionalReference(old_reference), _) => {
-            // Overwrite of bidirectional reference with non backward
-            // references-compatible element (or with nothing aka deletion)
-            // shall trigger recursive deletion and removal of the backward
-            // registration from where the bidi ref used to point to
-            cost_return_on_error!(
-                &mut cost,
-                delete_backward_references_recursively(
-                    merk_cache,
-                    path.clone(),
-                    key.to_vec(),
-                    Element::BidirectionalReference(old_reference.clone()),
-                )
-            );
-
-            cost_return_on_error!(
-                &mut cost,
-                remove_backward_reference(
-                    merk_cache,
-                    path,
-                    key,
-                    old_reference.forward_reference_path
-                )
-            );
-        }
-        _ => {
-            // All other overwrites don't require special attention
-        }
-    }
-
-    Ok(()).wrap_with_cost(cost)
-}
-
-/// Recursively deletes all backward references' chains of a key if all of
-/// them allow cascade deletion. `start_element` is the (already
-/// overwritten/deleted) element whose referrer list seeds the cascade.
-fn delete_backward_references_recursively<'db, 'b, 'c, B: AsRef<[u8]>>(
-    merk_cache: &'c MerkCache<'db, 'b, B>,
-    path: SubtreePathBuilder<'b, B>,
-    key: Vec<u8>,
-    start_element: Element,
-) -> CostResult<(), Error> {
-    let mut cost = Default::default();
-    let mut queue = VecDeque::new();
-    // Each node has exactly one forward edge, so reverse reachability from
-    // one start forms a tree; a revisit means the on-disk graph encodes a
-    // cycle, which insertion rejects — corrupted state, bail instead of
-    // looping forever.
-    let mut visited: std::collections::HashSet<(Vec<Vec<u8>>, Vec<u8>)> = Default::default();
-
-    visited.insert((path.to_vec(), key.clone()));
-    queue.push_back((path, key, start_element, true));
-
-    while let Some((current_path, current_key, current_element, first)) = queue.pop_front() {
-        let backward_references = current_element
-            .backward_references()
-            .map(|refs| refs.to_vec())
-            .unwrap_or_default();
-
-        for backward_ref in backward_references {
-            if !backward_ref.cascade_on_update {
-                return Err(Error::BidirectionalReferenceRule(
-                    "deletion of backward references through deletion of an element requires \
-                     `cascade_on_update` setting"
-                        .to_owned(),
-                ))
-                .wrap_with_cost(cost);
-            }
-
-            let resolved = follow_reference_once(
-                merk_cache,
-                current_path.clone(),
-                &current_key,
-                backward_ref.inverted_reference,
-            )
-            .unwrap_add_cost(&mut cost);
-
-            let ResolvedReference {
-                target_path: origin_path,
-                target_key: origin_key,
-                target_element: origin_element,
-                ..
-            } = match resolved {
-                Ok(resolved) => resolved,
-                // Dangling referrer (removed by an unflagged write or a
-                // batch): nothing left to cascade there.
-                Err(Error::CorruptedReferencePathKeyNotFound(_)) => continue,
-                Err(e) => return Err(e).wrap_with_cost(cost),
-            };
-
-            // A reused position holding something other than the registered
-            // referrer is stale bookkeeping, not a cascade member; the
-            // entry disappears with the element being deleted.
-            if !referrer_points_back(
-                &origin_element,
-                &origin_path,
-                &origin_key,
-                &current_path,
-                &current_key,
-            ) {
-                continue;
-            }
-
-            if !visited.insert((origin_path.to_vec(), origin_key.clone())) {
-                return Err(Error::CyclicReference).wrap_with_cost(cost);
-            }
-            queue.push_back((origin_path, origin_key, origin_element, false));
-        }
-
-        // Delete the element itself, unless it is the cascade's start (the
-        // original was already overwritten or deleted by the caller).
-        if !first {
-            let mut origin_merk =
-                cost_return_on_error!(&mut cost, merk_cache.get_merk(current_path.clone()));
-            cost_return_on_error!(
-                &mut cost,
-                origin_merk.for_merk(|m| {
-                    Element::delete_with_sectioned_removal_bytes(
-                        m,
-                        current_key,
-                        None,
-                        false,
-                        m.tree_type,
-                        &mut |_, removed_key_bytes, removed_value_bytes| {
-                            Ok((
-                                StorageRemovedBytes::BasicStorageRemoval(removed_key_bytes),
-                                StorageRemovedBytes::BasicStorageRemoval(removed_value_bytes),
-                            ))
-                        },
-                        merk_cache.version,
-                    )
-                    .map_err(Error::MerkError)
-                })
-            );
-        }
-    }
-
-    Ok(()).wrap_with_cost(cost)
-}
-
-/// Recursively updates all backward references' chains of a key with the
-/// new end-of-chain value hash.
-fn propagate_backward_references<'db, 'b, 'c, B: AsRef<[u8]>>(
-    merk_cache: &'c MerkCache<'db, 'b, B>,
-    mut merk: MerkHandle<'db, 'c>,
-    path: SubtreePathBuilder<'b, B>,
-    key: Vec<u8>,
-    referenced_element_value_hash: CryptoHash,
-) -> CostResult<(), Error> {
-    let mut cost = Default::default();
-    let mut queue = VecDeque::new();
-    // See the identical bound in `delete_backward_references_recursively`.
-    let mut visited: std::collections::HashSet<(Vec<Vec<u8>>, Vec<u8>)> = Default::default();
-
-    // Seed with the updated element's current referrer list.
-    let start_element = cost_return_on_error!(
+    let store = MerkCacheChainStore(merk_cache);
+    let plan = cost_return_on_error!(
         &mut cost,
-        merk.for_merk(|m| {
-            Element::get(m, &key, true, merk_cache.version).map_err(Error::MerkError)
-        })
+        plan_element_update(&store, &path.to_vec(), key, old, delta.new.cloned())
     );
-    visited.insert((path.to_vec(), key.clone()));
-    queue.push_back((path, key, start_element));
-
-    while let Some((current_path, current_key, current_element)) = queue.pop_front() {
-        let backward_references = current_element
-            .backward_references()
-            .map(|refs| refs.to_vec())
-            .unwrap_or_default();
-        let mut dangling: Vec<ReferencePathType> = Vec::new();
-
-        for backward_ref in backward_references {
-            let resolved = follow_reference_once(
-                merk_cache,
-                current_path.clone(),
-                &current_key,
-                backward_ref.inverted_reference.clone(),
-            )
-            .unwrap_add_cost(&mut cost);
-
-            let ResolvedReference {
-                target_merk: mut origin_merk,
-                target_path: origin_path,
-                target_key: origin_key,
-                target_element: origin_element,
-                ..
-            } = match resolved {
-                Ok(resolved) => resolved,
-                // Dangling referrer (removed by an unflagged write or a
-                // batch): clean the stale entry lazily and keep going.
-                Err(Error::CorruptedReferencePathKeyNotFound(_)) => {
-                    dangling.push(backward_ref.inverted_reference);
-                    continue;
-                }
-                Err(e) => return Err(e).wrap_with_cost(cost),
-            };
-
-            // A reused position holding something other than the registered
-            // referrer must not be rewritten — treat the entry as stale and
-            // clean it lazily like a dangling one.
-            if !referrer_points_back(
-                &origin_element,
-                &origin_path,
-                &origin_key,
-                &current_path,
-                &current_key,
-            ) {
-                dangling.push(backward_ref.inverted_reference);
-                continue;
-            }
-
-            // Rewrite the referrer with the new end hash (its own referrer
-            // list rides along inside the element bytes).
-            cost_return_on_error!(
-                &mut cost,
-                origin_merk.for_merk(|m| {
-                    origin_element
-                        .clone()
-                        .insert_reference(
-                            m,
-                            &origin_key,
-                            referenced_element_value_hash,
-                            None,
-                            merk_cache.version,
-                        )
-                        .map_err(Error::MerkError)
-                })
-            );
-
-            if !visited.insert((origin_path.to_vec(), origin_key.clone())) {
-                return Err(Error::CyclicReference).wrap_with_cost(cost);
-            }
-            queue.push_back((origin_path, origin_key, origin_element));
-        }
-
-        if !dangling.is_empty() {
-            // Drop the dangling entries from the current element and write
-            // it back (for a bidirectional reference the end hash it
-            // commits to is exactly the one being propagated).
-            let mut current_merk =
-                cost_return_on_error!(&mut cost, merk_cache.get_merk(current_path.clone()));
-            let mut updated = current_element;
-            if let Some(refs) = updated.backward_references_mut() {
-                refs.retain(|r| !dangling.contains(&r.inverted_reference));
-            }
-            let end_hash = if matches!(updated, Element::BidirectionalReference(..)) {
-                Some(referenced_element_value_hash)
-            } else {
-                None
-            };
-            cost_return_on_error!(
-                &mut cost,
-                write_updated_target(
-                    &mut current_merk,
-                    &current_key,
-                    updated,
-                    end_hash,
-                    merk_cache.version
-                )
-            );
-        }
-    }
-
-    Ok(()).wrap_with_cost(cost)
+    apply_plan(merk_cache, plan, None).add_cost(cost)
 }

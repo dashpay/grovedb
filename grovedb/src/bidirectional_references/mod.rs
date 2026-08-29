@@ -7,6 +7,7 @@
 //! deletion. See `adr/bidirectional_references.md`.
 
 mod handling;
+pub(crate) mod semantics;
 
 pub use grovedb_element::{BackwardReference, BidirectionalReference};
 pub(crate) use handling::*;
