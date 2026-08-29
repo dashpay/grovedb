@@ -514,13 +514,8 @@ mod tests {
             .unwrap()
             .expect("should get root hash");
 
-        // Use a hypothetical future version, one past the newest supported.
-        let future_version = crate::replication::SUPPORTED_STATE_SYNC_VERSIONS
-            .iter()
-            .max()
-            .copied()
-            .expect("at least one supported version")
-            + 1;
+        // Use a hypothetical future version, one past the current one.
+        let future_version = CURRENT_STATE_SYNC_VERSION + 1;
         let result = db.fetch_chunk(&root_hash, None, future_version, grove_version);
         assert!(
             result.is_err(),

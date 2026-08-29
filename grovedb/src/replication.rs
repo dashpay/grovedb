@@ -30,28 +30,16 @@ pub type ChunkIdentifier = (
     Vec<Vec<u8>>,
 );
 
-/// Current version of the state sync protocol.
+/// The state sync protocol version this build speaks.
 ///
-/// Version 2 adds indexed-tree transfer (see `indexed_sync`). Version 1
-/// remains fully served for older peers — see
-/// [`SUPPORTED_STATE_SYNC_VERSIONS`].
-pub const CURRENT_STATE_SYNC_VERSION: u16 = 2;
-
-/// Every state sync protocol version this build can speak, newest last.
-///
-/// Version checks are membership tests against this set (not equality with
-/// [`CURRENT_STATE_SYNC_VERSION`]), so a build can keep serving older
-/// protocol versions after the current one is bumped.
-///
-/// - Version 1: Merk chunk restore plus non-Merk entry replay; indexed
-///   trees are rejected on both sides.
-/// - Version 2: adds indexed-tree transfer (see `indexed_sync`).
-pub const SUPPORTED_STATE_SYNC_VERSIONS: &[u16] = &[1, 2];
-
-/// Whether this build supports the given state sync protocol version.
-pub(crate) fn is_supported_state_sync_version(version: u16) -> bool {
-    SUPPORTED_STATE_SYNC_VERSIONS.contains(&version)
-}
+/// State sync speaks exactly one protocol version: both sides pass this
+/// value, and every entry point (`fetch_chunk`, `start_snapshot_syncing`,
+/// `apply_chunk`) rejects any other with a descriptive error. The constant
+/// — and the `version` parameter threading through those entry points —
+/// exists so a future incompatible wire change can bump it and old/new
+/// peers fail fast with a clear error instead of failing midway with an
+/// opaque hash mismatch.
+pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
 
 #[cfg(feature = "minimal")]
 impl GroveDb {
@@ -108,7 +96,7 @@ impl GroveDb {
     ///
     /// # Notes
     ///
-    /// - Only versions in `SUPPORTED_STATE_SYNC_VERSIONS` are supported.
+    /// - Only [`CURRENT_STATE_SYNC_VERSION`] is supported.
     /// - If the `packed_global_chunk_id` matches the `root_app_hash` length, it
     ///   is treated as a single ID.
     /// - Otherwise, it is unpacked into multiple nested chunk IDs.
@@ -120,10 +108,10 @@ impl GroveDb {
     ///   `PrivateDocumentStore`) are served as cursor-based entry pages
     ///   instead of Merk chunks. A request for one of these subtrees
     ///   without a page cursor returns `Error::NotSupported`.
-    /// - Indexed-tree requests are served starting with protocol version 2
-    ///   (header page + Merk chunks for the primary, ordinary by-prefix
-    ///   Merk chunks for the axis secondaries); version 1 requests return
-    ///   `Error::NotSupported`.
+    /// - Indexed-tree primaries are served as a header page (carrying the
+    ///   primary and per-axis secondary root hashes) followed by ordinary
+    ///   Merk chunks; the axis secondaries are served as ordinary
+    ///   by-prefix Merk chunks (see `indexed_sync`).
     pub fn fetch_chunk(
         &self,
         packed_global_chunk_id: &[u8],
@@ -138,10 +126,11 @@ impl GroveDb {
 
         let tx = TxRef::new(&self.db, transaction);
 
-        if !is_supported_state_sync_version(version) {
-            return Err(Error::CorruptedData(
-                "Unsupported state sync protocol version".to_string(),
-            ));
+        if version != CURRENT_STATE_SYNC_VERSION {
+            return Err(Error::CorruptedData(format!(
+                "Unsupported state sync protocol version {version}; this build speaks version \
+                 {CURRENT_STATE_SYNC_VERSION}"
+            )));
         }
 
         let mut global_chunk_ids: Vec<Vec<u8>> = vec![];
@@ -157,66 +146,45 @@ impl GroveDb {
             let (chunk_prefix, root_key, tree_type, nested_chunk_ids) =
                 utils::decode_global_chunk_id(global_chunk_id.as_slice(), &root_app_hash)?;
 
-            // Indexed trees are transferred starting with state sync
-            // protocol version 2 (see `indexed_sync`). Version 1 peers
-            // cannot restore them (their restorer only knows the
-            // two-input parent binding and never enumerates the axis
-            // secondary namespaces), so keep the descriptive reject for
-            // them rather than serving chunks that would fail root-hash
-            // verification on apply.
-            if tree_type.is_indexed_primary() {
-                if version < indexed_sync::INDEXED_SYNC_MIN_VERSION {
-                    return Err(Error::NotSupported(
-                        "state sync does not support indexed trees \
-                         (ProvableCountIndexedTree / ProvableSumIndexedTree / \
-                         ProvableCountProvableSumIndexedTree) before protocol version 2"
+            // The initial request for an indexed primary is a single
+            // header request carrying the axis tags and secondary root
+            // keys; answer it with the indexed header plus the primary's
+            // root chunk. Any other request for an indexed primary is an
+            // ordinary Merk chunk request and falls through to the
+            // generic serving below.
+            if tree_type.is_indexed_primary()
+                && nested_chunk_ids
+                    .first()
+                    .is_some_and(|id| indexed_sync::is_indexed_header_request(id))
+            {
+                if nested_chunk_ids.len() != 1 {
+                    return Err(Error::CorruptedData(
+                        "an indexed header request must be the only chunk id in its global chunk"
                             .to_string(),
                     ));
                 }
-                // The initial (version 2) request for an indexed primary
-                // is a single header request carrying the axis tags and
-                // secondary root keys; answer it with the indexed header
-                // plus the primary's root chunk. Any other request for an
-                // indexed primary is an ordinary Merk chunk request and
-                // falls through to the generic serving below.
-                if nested_chunk_ids
-                    .first()
-                    .is_some_and(|id| indexed_sync::is_indexed_header_request(id))
-                {
-                    if nested_chunk_ids.len() != 1 {
-                        return Err(Error::CorruptedData(
-                            "an indexed header request must be the only chunk id in its \
-                             global chunk"
-                                .to_string(),
-                        ));
-                    }
-                    let payload = self.serve_indexed_header_page(
-                        chunk_prefix,
-                        root_key,
-                        tree_type,
-                        &nested_chunk_ids[0],
-                        tx.as_ref(),
-                        grove_version,
-                    )?;
-                    global_chunk_bytes.push(pack_nested_bytes(vec![payload])?);
-                    continue;
-                }
+                let payload = self.serve_indexed_header_page(
+                    chunk_prefix,
+                    root_key,
+                    tree_type,
+                    &nested_chunk_ids[0],
+                    tx.as_ref(),
+                    grove_version,
+                )?;
+                global_chunk_bytes.push(pack_nested_bytes(vec![payload])?);
+                continue;
             }
 
             // Non-Merk append-only trees (CommitmentTree / MmrTree /
             // BulkAppendTree / DenseAppendOnlyFixedSizeTree /
             // PrivateDocumentStore) have no Merk nodes to chunk — their
             // payload is served as target-driven entry pages instead. The
-            // target encodes a page cursor into every local chunk id; a
-            // request without one comes from a peer speaking the pre-#785
-            // protocol, which cannot sync these subtrees.
+            // target encodes a page cursor into every local chunk id, so
+            // a request without one is malformed.
             if non_merk_sync::supports_entry_replay(tree_type) {
                 if nested_chunk_ids.is_empty() {
                     return Err(Error::NotSupported(
-                        "append-only subtree chunk request is missing its page \
-                         cursor — the requesting peer does not support state \
-                         sync of append-only trees (see issue #785)"
-                            .to_string(),
+                        "append-only subtree chunk request is missing its page cursor".to_string(),
                     ));
                 }
                 let mut local_chunk_bytes: Vec<Vec<u8>> = vec![];
@@ -343,10 +311,11 @@ impl GroveDb {
                 .replication
                 .start_snapshot_syncing
         );
-        if !is_supported_state_sync_version(version) {
-            return Err(Error::CorruptedData(
-                "Unsupported state sync protocol version".to_string(),
-            ));
+        if version != CURRENT_STATE_SYNC_VERSION {
+            return Err(Error::CorruptedData(format!(
+                "Unsupported state sync protocol version {version}; this build speaks version \
+                 {CURRENT_STATE_SYNC_VERSION}"
+            )));
         }
 
         if subtrees_batch_size == 0 {

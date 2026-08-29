@@ -20,12 +20,10 @@ use grovedb_storage::{
 use grovedb_version::version::GroveVersion;
 
 use super::{
-    indexed_sync::{
-        verify_indexed_binding, IndexedHeader, IndexedHeaderRequest, INDEXED_SYNC_MIN_VERSION,
-    },
-    is_supported_state_sync_version,
+    indexed_sync::{verify_indexed_binding, IndexedHeader, IndexedHeaderRequest},
     non_merk_sync::{supports_entry_replay, NonMerkRestorer},
     utils::{decode_vec_ops, encode_global_chunk_id, path_to_string},
+    CURRENT_STATE_SYNC_VERSION,
 };
 use crate::{
     element::elements_iterator::ElementIteratorExtensions,
@@ -48,7 +46,7 @@ pub(crate) type SubtreePrefix = [u8; 32];
 enum SubtreeRestorer<'db> {
     Merk(Restorer<PrefixedRocksDbImmediateStorageContext<'db>>),
     NonMerk(NonMerkRestorer),
-    /// An indexed primary (protocol version 2) waiting for its header
+    /// An indexed primary waiting for its header
     /// page: the actual `Restorer` cannot be constructed until the
     /// [`IndexedHeader`] delivers the expected primary root hash. Holds
     /// the opened Merk; `None` only transiently while the header page is
@@ -271,7 +269,7 @@ pub struct MultiStateSyncSession<'db> {
     /// Metadata for newly discovered subtrees that are pending processing.
     pending_discovered_subtrees: Option<SubtreesMetadata>,
 
-    /// In-flight indexed-tree groups (protocol version 2), keyed by the
+    /// In-flight indexed-tree groups, keyed by the
     /// primary's prefix. A group is removed — after passing the joint
     /// verification — once its primary and every axis secondary have been
     /// fully restored.
@@ -289,9 +287,9 @@ pub struct MultiStateSyncSession<'db> {
     _pin: PhantomPinned,
 }
 
-/// Target-side tracking of one indexed subtree's transfer (protocol
-/// version 2): the parent-bound hashes to verify against, the configured
-/// axes, and the actual root hashes of members restored so far.
+/// Target-side tracking of one indexed subtree's transfer: the
+/// parent-bound hashes to verify against, the configured axes, and the
+/// actual root hashes of members restored so far.
 struct IndexedSyncGroup {
     /// Path of the primary subtree (for error reporting).
     path: Vec<Vec<u8>>,
@@ -574,8 +572,8 @@ impl<'db> MultiStateSyncSession<'db> {
         &mut unsafe { self.get_unchecked_mut() }.secondary_owner
     }
 
-    /// Registers an indexed subtree group (protocol version 2) and opens
-    /// its primary for restore.
+    /// Registers an indexed subtree group and opens its primary for
+    /// restore.
     ///
     /// The primary starts in the header-pending state: its single pending
     /// chunk is the [`IndexedHeaderRequest`] carrying the axis tags and
@@ -890,10 +888,11 @@ impl<'db> MultiStateSyncSession<'db> {
         version: u16,
         grove_version: &GroveVersion,
     ) -> Result<Vec<Vec<u8>>, Error> {
-        if !is_supported_state_sync_version(version) {
-            return Err(Error::CorruptedData(
-                "Unsupported state sync protocol version".to_string(),
-            ));
+        if version != CURRENT_STATE_SYNC_VERSION {
+            return Err(Error::CorruptedData(format!(
+                "Unsupported state sync protocol version {version}; this build speaks version \
+                 {CURRENT_STATE_SYNC_VERSION}"
+            )));
         }
         if version != self.version {
             return Err(Error::CorruptedData(
@@ -1225,23 +1224,10 @@ impl<'db> MultiStateSyncSession<'db> {
         let mut raw_iter = Element::iterator(merk.storage.raw_iter()).unwrap();
         while let Some((key, value)) = raw_iter.next_element(grove_version).unwrap()? {
             if value.is_any_tree() {
-                // Indexed trees are transferable starting with state sync
-                // protocol version 2 (their primaries commit a three-input
-                // `combine_hash_three` and carry secondary storage
-                // namespaces at `Blake3(prefix ‖ axis_tag)` — see
-                // `indexed_sync`). A version 1 session keeps the up-front
-                // reject: its peer cannot serve them and its restorer
-                // cannot verify them, so a chunk-based restore would fail
-                // midway with an opaque "chunk doesn't match expected
-                // root hash".
-                if value.is_indexed_tree() && self.version < INDEXED_SYNC_MIN_VERSION {
-                    return Err(Error::NotSupported(
-                        "state sync does not support indexed trees \
-                         (ProvableCountIndexedTree / ProvableSumIndexedTree / \
-                         ProvableCountProvableSumIndexedTree) before protocol version 2"
-                            .to_string(),
-                    ));
-                }
+                // Indexed trees are discovered like any subtree; their
+                // primaries commit a three-input `combine_hash_three` and
+                // carry secondary storage namespaces at
+                // `Blake3(prefix ‖ axis_tag)` — see `indexed_sync`.
                 // Non-Merk append-only trees (CommitmentTree / MmrTree /
                 // BulkAppendTree / DenseAppendOnlyFixedSizeTree /
                 // PrivateDocumentStore) are discovered like any subtree;
@@ -1411,9 +1397,8 @@ pub enum SubtreeMetadata {
         /// The subtree's element value hash in the parent.
         elem_value_hash: CryptoHash,
     },
-    /// An indexed-tree primary (protocol version 2). Carries the decoded
-    /// element so the axis tags and secondary root keys survive to
-    /// session setup.
+    /// An indexed-tree primary. Carries the decoded element so the axis
+    /// tags and secondary root keys survive to session setup.
     IndexedPrimary {
         /// The path of the primary subtree in GroveDB.
         path: Vec<Vec<u8>>,

@@ -779,26 +779,21 @@ ordering. Top-k descending iteration encounters them last.
 
 ## Limitations and non-goals
 
-- **State sync requires protocol version 2 for indexed trees.** At
-  state sync protocol version 2 (the current version) an indexed
-  subtree snapshot-syncs as one group: the target requests the primary
-  with a header request built from its hash-verified element (axis tags
-  plus secondary root keys), the source answers with an *indexed
-  header* — the primary root hash and each axis secondary's root hash,
-  which the element itself never stores — bundled with the primary's
-  root chunk, and the per-axis secondaries transfer as ordinary Merk
-  chunks addressed by their derived prefixes (they cannot be rebuilt
-  locally: a secondary's root commits to its write-history-dependent
-  AVL shape). The header is only a hint for per-chunk verification;
-  once the primary and every secondary are restored, the target
-  unconditionally recomputes the three-input binding
-  (`combine_hash_three`, with the canonical `axes_digest` for the
-  multi-axis variant) from the *actual* restored root hashes and
-  requires it to match the element value hash bound into the restored
-  parent. A **version 1** peer keeps the old behavior: both the source
-  (`fetch_chunk`) and the target (subtree discovery) reject a database
-  containing any indexed tree with `Error::NotSupported`, loud and
-  early — and that rejection is database-wide.
+- **State sync transfers an indexed subtree as one group.** The target
+  requests the primary with a header request built from its
+  hash-verified element (axis tags plus secondary root keys), the
+  source answers with an *indexed header* — the primary root hash and
+  each axis secondary's root hash, which the element itself never
+  stores — bundled with the primary's root chunk, and the per-axis
+  secondaries transfer as ordinary Merk chunks addressed by their
+  derived prefixes (they cannot be rebuilt locally: a secondary's root
+  commits to its write-history-dependent AVL shape). The header is only
+  a hint for per-chunk verification; once the primary and every
+  secondary are restored, the target unconditionally recomputes the
+  three-input binding (`combine_hash_three`, with the canonical
+  `axes_digest` for the multi-axis variant) from the *actual* restored
+  root hashes and requires it to match the element value hash bound
+  into the restored parent.
 - **Generic writes into an indexed primary are rejected.** `db.insert`,
   `db.delete` and `clear_subtree` targeting an indexed primary return
   `Error::NotSupported`, because none of them can mirror the change into

@@ -1,6 +1,5 @@
 //! State-sync support for indexed trees (`ProvableCountIndexedTree`,
-//! `ProvableSumIndexedTree`, `ProvableCountProvableSumIndexedTree`) —
-//! state sync protocol version 2.
+//! `ProvableSumIndexedTree`, `ProvableCountProvableSumIndexedTree`).
 //!
 //! An indexed subtree is one primary Merk at the ordinary path prefix plus
 //! one ordinary secondary Merk per configured axis at the derived prefix
@@ -65,9 +64,6 @@ use crate::{
     replication::utils::{encode_vec_ops, pack_nested_bytes},
     Element, Error, GroveDb, SubtreePrefix, Transaction,
 };
-
-/// First state sync protocol version able to transfer indexed trees.
-pub(crate) const INDEXED_SYNC_MIN_VERSION: u16 = 2;
 
 /// Marker byte opening an [`IndexedHeaderRequest`] local chunk id.
 ///

@@ -490,8 +490,8 @@ mod tests {
             .expect("append mmr leaf");
         }
 
-        // Indexed trees (protocol version 2: header page + primary chunks
-        // + one ordinary Merk chunk stream per axis secondary).
+        // Indexed trees (header page + primary chunks + one ordinary
+        // Merk chunk stream per axis secondary).
         for i in 0..shape.indexed_entries {
             db.insert_into_count_indexed_tree(
                 [b"idx_count".as_ref()].as_ref(),
