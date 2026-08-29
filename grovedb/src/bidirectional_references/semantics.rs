@@ -393,6 +393,28 @@ pub(crate) fn plan_reference_insertion(
         .wrap_with_cost(cost);
     }
 
+    // Different `ReferencePathType` encodings can resolve to the same
+    // position, so "did the target change?" must compare RESOLVED
+    // positions, never encodings. When a retarget stays on the same
+    // target, its old entry is replaced on the element being registered
+    // (planners never read their own writes — a separate removal write
+    // computed from the pre-plan target would win over the registration
+    // and strip the live edge entirely).
+    let old_edge_same_target = match previous_value {
+        Some(Element::BidirectionalReference(ref old_ref)) => {
+            let old_qualified = path_from_reference_path_type(
+                old_ref.forward_reference_path.clone(),
+                path,
+                Some(key),
+            )
+            .ok();
+            let mut new_qualified = target.path.clone();
+            new_qualified.push(target.key.clone());
+            old_qualified == Some(new_qualified)
+        }
+        _ => false,
+    };
+
     // Register the backward edge on the target:
     let inverted_reference = cost_return_on_error_no_add!(
         cost,
@@ -410,10 +432,24 @@ pub(crate) fn plan_reference_insertion(
     } else {
         None
     };
+    let mut target_element = target.element;
+    if old_edge_same_target
+        && let Some(Element::BidirectionalReference(ref old_ref)) = previous_value
+        && let Some(old_inverted) = old_ref
+            .forward_reference_path
+            .clone()
+            .invert(grovedb_path::SubtreePath::from(path), key)
+        && let Some(refs) = target_element.backward_references_mut()
+    {
+        // Same target under a different encoding: drop the old entry so
+        // the upsert below replaces it instead of accumulating a
+        // duplicate referrer.
+        refs.retain(|r| r.inverted_reference != old_inverted);
+    }
     let registered_target = cost_return_on_error_no_add!(
         cost,
         with_registration(
-            target.element,
+            target_element,
             BackwardReference {
                 inverted_reference,
                 cascade_on_update: reference.cascade_on_update,
@@ -440,10 +476,12 @@ pub(crate) fn plan_reference_insertion(
         // If previous value was another bidirectional reference, its
         // backward registration on the OLD target must be removed.
         Some(Element::BidirectionalReference(old_reference)) => {
-            // Same forward path means same target and same inverted path:
-            // the registration was just refreshed in place by the upsert
-            // above, and removing it here would strip the edge entirely.
-            if old_reference.forward_reference_path != reference.forward_reference_path {
+            // Same RESOLVED target (whatever the encoding): the old entry
+            // was already replaced in place on the registration write
+            // above, and a separate removal — planned from the pre-plan
+            // target — would win over that write and strip the edge
+            // entirely.
+            if !old_edge_same_target {
                 cost_return_on_error!(
                     &mut cost,
                     plan_remove_registration(
@@ -1001,6 +1039,63 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "re-inserting an identical edge is a no-op"
+        );
+    }
+
+    #[test]
+    fn same_target_retarget_under_a_different_encoding_replaces_the_entry() {
+        let store = MapStore::new();
+        // The target carries the sibling-encoded registration of `ref`.
+        let mut target = Element::new_item_allowing_bidirectional_references(b"v".to_vec());
+        target
+            .backward_references_mut()
+            .unwrap()
+            .push(BackwardReference {
+                inverted_reference: ReferencePathType::SiblingReference(b"ref".to_vec()),
+                cascade_on_update: true,
+            });
+        store.put(&[LEAF], b"target", target);
+        store.put(
+            &[LEAF],
+            b"ref",
+            Element::BidirectionalReference(sibling_bidi(b"target", true)),
+        );
+
+        // Re-point the SAME target through an absolute-path encoding.
+        let retarget = BidirectionalReference {
+            forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                LEAF.to_vec(),
+                b"target".to_vec(),
+            ]),
+            backward_references: Vec::new(),
+            cascade_on_update: true,
+            max_hop: None,
+            flags: None,
+        };
+        let plan = plan_reference_insertion(&store, &leaf(), b"ref", retarget)
+            .unwrap()
+            .unwrap()
+            .expect("a changed encoding is a real edge update");
+
+        // Registration write + primary write, and nothing else: no
+        // separate removal write may race the registration.
+        assert_eq!(plan.mutations.len(), 2);
+        let DerivedMutation::Write { key, element, .. } = &plan.mutations[0] else {
+            panic!("expected the target registration write");
+        };
+        assert_eq!(key, b"target");
+        let refs = element.backward_references().unwrap();
+        assert_eq!(
+            refs.len(),
+            1,
+            "the old entry must be REPLACED, not duplicated and not stripped"
+        );
+        assert!(
+            matches!(
+                refs[0].inverted_reference,
+                ReferencePathType::AbsolutePathReference(..)
+            ),
+            "the surviving entry is the new encoding's inversion"
         );
     }
 

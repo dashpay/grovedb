@@ -392,20 +392,23 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         batch.put(key, &bytes, None, None).map_err(CostsError)
                     }
                     Node::KVValueHash(key, value, vh) => {
-                        // Backward-references elements must arrive as
-                        // KVValueHashFeatureType (whose item variants get a
-                        // recompute check above); accepting them here would
-                        // let the bytes ride unbound on the carried hash.
-                        if matches!(
-                            grovedb_element::ElementType::from_serialized_value(value)
-                                .map(|et| et.base()),
-                            Ok(grovedb_element::ElementType::ItemWithBackwardsReferences
-                                | grovedb_element::ElementType::SumItemWithBackwardsReferences
-                                | grovedb_element::ElementType::ItemWithSumItemWithBackwardsReferences
-                                | grovedb_element::ElementType::BidirectionalReference)
-                        ) {
+                        // Backward-references ITEM variants must arrive as
+                        // KVValueHashFeatureType (where a recompute check
+                        // binds the bytes to the combined hash); accepting
+                        // them here would let the bytes ride unbound on the
+                        // carried hash. A `BidirectionalReference` is the
+                        // exception: the chunk producer legitimately emits
+                        // it in this shape (`KvRefValueHash` maps here for
+                        // normal trees), and its value hash includes the
+                        // resolved end-of-chain hash, which is not locally
+                        // derivable — so it keeps exactly the trust model
+                        // chunks give plain references.
+                        if grovedb_element::ElementType::from_serialized_value(value)
+                            .map(|et| et.is_backward_references_item())
+                            .unwrap_or(false)
+                        {
                             return Err(Error::ChunkRestoringError(ChunkError::InvalidChunkProof(
-                                "backward-references elements must be carried in \
+                                "backward-references items must be carried in \
                                      KVValueHashFeatureType chunk nodes",
                             )));
                         }

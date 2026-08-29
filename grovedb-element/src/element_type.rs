@@ -605,6 +605,21 @@ impl ElementType {
         }
     }
 
+    /// True for the backward-references ITEM variants — the elements whose
+    /// stored node hash is the two-layer combined hash and whose
+    /// chain-terminal commitment is the stripped LOGICAL hash. Every site
+    /// that special-cases the family by serialized type must use this
+    /// predicate, so adding a member cannot silently miss a dispatch.
+    #[inline]
+    pub fn is_backward_references_item(self) -> bool {
+        matches!(
+            self.base(),
+            ElementType::ItemWithBackwardsReferences
+                | ElementType::SumItemWithBackwardsReferences
+                | ElementType::ItemWithSumItemWithBackwardsReferences
+        )
+    }
+
     /// Returns the type of proof node that should be used for this element
     /// type, given the parent tree type.
     ///

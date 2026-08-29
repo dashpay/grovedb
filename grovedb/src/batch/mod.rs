@@ -1885,11 +1885,10 @@ where
             // registering a referrer would ripple through chains. Sniff the
             // type from the serialized bytes and recompute for that family
             // only; everything else keeps the fast path unchanged.
-            if matches!(
-                ElementType::from_serialized_value(&referenced_value).map(|et| et.base()),
-                Ok(ElementType::ItemWithBackwardsReferences
-                    | ElementType::SumItemWithBackwardsReferences)
-            ) {
+            if ElementType::from_serialized_value(&referenced_value)
+                .map(|et| et.is_backward_references_item())
+                .unwrap_or(false)
+            {
                 let element = cost_return_on_error_into_no_add!(
                     cost,
                     Element::deserialize(&referenced_value, grove_version)

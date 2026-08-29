@@ -830,7 +830,11 @@ impl Element {
             Element::NotCountedOrSummed(_) => Err(ElementError::InvalidInput(
                 "cannot wrap NotCountedOrSummed in NonCounted; wrappers are mutually exclusive",
             )),
-            other => Ok(Element::NonCounted(Box::new(other))),
+            // Delegate so every `new_non_counted` guard (notably the
+            // backward-references family rejection) applies here too —
+            // otherwise this helper would return an element that wrapper
+            // validation and serialization then refuse.
+            other => Self::new_non_counted(other),
         }
     }
 

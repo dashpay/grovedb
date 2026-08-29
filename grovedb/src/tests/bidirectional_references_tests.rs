@@ -795,6 +795,87 @@ fn sum_queries_resolve_backward_references_sum_items() {
             QueryItemOrSumReturnType::SumValue(b)
         ] if *a == 5 && *b == 5
     ));
+
+    // The aggregate-sum surface honors per-edge budgets like every other
+    // read: a one-hop edge with a direct sum-item terminal resolves…
+    db.insert(
+        &[TEST_LEAF, b"sums"],
+        b"one_hop",
+        Element::BidirectionalReference(BidirectionalReference {
+            forward_reference_path: ReferencePathType::SiblingReference(b"s2".to_vec()),
+            backward_references: Vec::new(),
+            cascade_on_update: true,
+            max_hop: Some(1),
+            flags: None,
+        }),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect_err("dangling target rejected — insert s2 first");
+    db.insert(
+        &[TEST_LEAF, b"sums"],
+        b"s2",
+        Element::new_sum_item_allowing_bidirectional_references(7),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF, b"sums"],
+        b"one_hop",
+        Element::BidirectionalReference(BidirectionalReference {
+            forward_reference_path: ReferencePathType::SiblingReference(b"s2".to_vec()),
+            backward_references: Vec::new(),
+            cascade_on_update: true,
+            max_hop: Some(1),
+            flags: None,
+        }),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    let mut query = Query::new();
+    query.insert_key(b"one_hop".to_vec());
+    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"sums".to_vec()], query);
+    let (sums, _) = db
+        .query_sums(&path_query, true, true, true, None, grove_version)
+        .unwrap()
+        .unwrap();
+    assert_eq!(sums, vec![7], "a direct terminal is within a 1-hop budget");
+
+    // …while a one-hop edge whose target is another reference is out of
+    // budget on the read.
+    let mut query = Query::new();
+    query.insert_key(b"capped".to_vec());
+    let capped = Element::BidirectionalReference(BidirectionalReference {
+        forward_reference_path: ReferencePathType::SiblingReference(b"rs".to_vec()),
+        backward_references: Vec::new(),
+        cascade_on_update: true,
+        max_hop: Some(1),
+        flags: None,
+    });
+    db.insert(
+        &[TEST_LEAF, b"sums"],
+        b"capped",
+        capped,
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("the write path admits the edge; reads enforce the budget");
+    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"sums".to_vec()], query);
+    assert!(matches!(
+        db.query_sums(&path_query, true, true, true, None, grove_version)
+            .unwrap(),
+        Err(Error::ReferenceLimit)
+    ));
 }
 
 #[test]
@@ -2120,6 +2201,52 @@ fn batch_hop_one_references_commit_the_logical_hash_of_family_targets() {
         .unwrap()
         .expect("hop-1 reference to a backward-references item is well-formed");
 
+    // The sum-carrying twin takes the same shortcut: its stored node hash
+    // also includes the referrer list, so the hop-1 path must recompute
+    // the stripped logical hash for it too.
+    db.insert(
+        &[TEST_LEAF],
+        b"sums",
+        Element::new_sum_tree(None),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF, b"sums"],
+        b"twin",
+        Element::new_item_with_sum_item_allowing_bidirectional_references(b"pay".to_vec(), 5),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF, b"sums"],
+        b"twinref",
+        sibling_bidi(b"twin", true),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+        vec![TEST_LEAF.to_vec(), b"sums".to_vec()],
+        b"hop1twin".to_vec(),
+        Element::Reference(
+            ReferencePathType::SiblingReference(b"twin".to_vec()),
+            Some(1),
+            None,
+        ),
+    )];
+    db.apply_batch(ops, None, None, grove_version)
+        .unwrap()
+        .expect("hop-1 reference to the sum-carrying twin is well-formed");
+
     assert!(db
         .verify_grovedb(None, true, true, grove_version)
         .unwrap()
@@ -2395,6 +2522,86 @@ fn option_only_edge_updates_keep_exactly_one_registration() {
 
     // The refreshed edges still propagate: update the end target and check
     // the whole graph verifies.
+    db.insert(
+        &[TEST_LEAF],
+        b"value",
+        Element::new_item_allowing_bidirectional_references(b"updated".to_vec()),
+        flag_on(),
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(db
+        .verify_grovedb(Some(&tx), true, true, grove_version)
+        .unwrap()
+        .is_empty());
+}
+
+/// Different `ReferencePathType` encodings can resolve to the same
+/// position: retargeting an edge from a sibling encoding to an absolute
+/// encoding of the SAME target must replace the registration entry — not
+/// duplicate it, and (the reported bug) not strip it via a stale removal
+/// write racing the registration.
+#[test]
+fn same_target_retarget_with_different_encoding_keeps_the_registration() {
+    use grovedb_merk::element::get::ElementFetchFromStorageExtensions;
+
+    let grove_version = GroveVersion::latest();
+    let db = db_with_bwr_item();
+    let tx = db.start_transaction();
+    db.insert(
+        &[TEST_LEAF],
+        b"ref",
+        sibling_bidi(b"value", true),
+        None,
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    // Same target, absolute encoding.
+    db.insert(
+        &[TEST_LEAF],
+        b"ref",
+        Element::BidirectionalReference(BidirectionalReference {
+            forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec(),
+                b"value".to_vec(),
+            ]),
+            backward_references: Vec::new(),
+            cascade_on_update: true,
+            max_hop: None,
+            flags: None,
+        }),
+        None,
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    let merk = db
+        .open_transactional_merk_at_path(SubtreePath::from(&[TEST_LEAF]), &tx, None, grove_version)
+        .unwrap()
+        .unwrap();
+    let target = Element::get(&merk, b"value", true, grove_version)
+        .unwrap()
+        .unwrap();
+    let refs = target.backward_references().unwrap();
+    assert_eq!(
+        refs.len(),
+        1,
+        "the registration must survive the re-encoding, exactly once"
+    );
+    assert!(matches!(
+        refs[0].inverted_reference,
+        ReferencePathType::AbsolutePathReference(..)
+    ));
+    drop(merk);
+
+    // The refreshed edge still propagates and the whole graph verifies.
     db.insert(
         &[TEST_LEAF],
         b"value",
@@ -2703,6 +2910,100 @@ fn per_edge_max_hop_is_enforced_on_reads() {
     db.query_item_value(&path_query, true, true, true, None, grove_version)
         .unwrap()
         .unwrap();
+
+    // Direct `get` honors the source edge's budget too: head's one-hop
+    // declaration must not resolve through mid.
+    assert!(matches!(
+        db.get(&[TEST_LEAF], b"head", None, grove_version).unwrap(),
+        Err(Error::ReferenceLimit)
+    ));
+
+    // A MID-CHAIN one-hop edge whose target is the direct terminal is
+    // valid: the budget counts hops from that edge, not from the chain
+    // start — `mid2(max_hop=1) -> value` resolves…
+    db.insert(
+        &[TEST_LEAF],
+        b"mid2",
+        Element::BidirectionalReference(BidirectionalReference {
+            forward_reference_path: ReferencePathType::SiblingReference(b"value".to_vec()),
+            backward_references: Vec::new(),
+            cascade_on_update: true,
+            max_hop: Some(1),
+            flags: None,
+        }),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF],
+        b"head2",
+        sibling_bidi(b"mid2", true),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        db.get(&[TEST_LEAF], b"head2", None, grove_version)
+            .unwrap()
+            .unwrap(),
+        Element::new_item_allowing_bidirectional_references(b"hello".to_vec()),
+        "one direct terminal hop past a max_hop-1 edge is within budget"
+    );
+
+    // …while the same edge one link earlier in a chain (its target is
+    // ANOTHER reference) stays out of budget.
+    db.insert(
+        &[TEST_LEAF],
+        b"value2",
+        Element::new_item_allowing_bidirectional_references(b"v2".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF],
+        b"mid_a",
+        sibling_bidi(b"value2", true),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    let result = db
+        .insert(
+            &[TEST_LEAF],
+            b"mid3",
+            Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"mid_a".to_vec()),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: Some(1),
+                flags: None,
+            }),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap();
+    match result {
+        // Insert-time chain resolution may already enforce the declared
+        // budget; if it admits the edge, the read must enforce it.
+        Err(_) => {}
+        Ok(()) => {
+            assert!(matches!(
+                db.get(&[TEST_LEAF], b"mid3", None, grove_version).unwrap(),
+                Err(Error::ReferenceLimit)
+            ));
+        }
+    }
 }
 
 /// Raw query surfaces also strip referrer lists — public reads never see

@@ -91,11 +91,7 @@ impl GroveDb {
         .into_underlying()
         {
             Element::Reference(reference_path, ..)
-            | Element::ReferenceWithSumItem(reference_path, ..)
-            | Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path: reference_path,
-                ..
-            }) => {
+            | Element::ReferenceWithSumItem(reference_path, ..) => {
                 let path_owned = cost_return_on_error_into!(
                     &mut cost,
                     path_from_reference_path_type(reference_path, &path.to_vec(), Some(key))
@@ -103,6 +99,28 @@ impl GroveDb {
                 );
                 self.follow_reference(
                     path_owned.as_slice().into(),
+                    allow_cache,
+                    transaction,
+                    grove_version,
+                )
+                .add_cost(cost)
+            }
+            // A bidirectional reference's declared `max_hop` bounds the
+            // whole resolution, exactly like the query surfaces (plain
+            // references keep their historical global-budget behavior).
+            Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path: reference_path,
+                max_hop,
+                ..
+            }) => {
+                let path_owned = cost_return_on_error_into!(
+                    &mut cost,
+                    path_from_reference_path_type(reference_path, &path.to_vec(), Some(key))
+                        .wrap_with_cost(OperationCost::default())
+                );
+                self.follow_reference_with_max_hop(
+                    path_owned.as_slice().into(),
+                    max_hop,
                     allow_cache,
                     transaction,
                     grove_version,
@@ -205,11 +223,14 @@ impl GroveDb {
                 }
                 Element::BidirectionalReference(reference) => {
                     // Per-edge budget: this edge's declaration caps however
-                    // much of the global budget remains. `hops_left` is
-                    // decremented below, so an edge declaring `max_hop: 1`
-                    // permits exactly its own hop and no further reference.
+                    // much of the global budget remains. The fetch of THIS
+                    // node is already paid for (the decrement below), and
+                    // the edge's budget counts hops from here on — so cap
+                    // at `edge_budget + 1`, leaving exactly `edge_budget`
+                    // further fetches. An edge declaring `max_hop: 1` may
+                    // reach its direct target but no reference beyond it.
                     if let Some(edge_budget) = reference.max_hop {
-                        hops_left = hops_left.min(edge_budget as usize);
+                        hops_left = hops_left.min(edge_budget as usize + 1);
                     }
                     current_path = cost_return_on_error_into!(
                         &mut cost,

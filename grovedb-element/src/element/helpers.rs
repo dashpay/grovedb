@@ -1031,6 +1031,21 @@ mod non_counted_tests {
     }
 
     #[test]
+    fn into_non_counted_rejects_backward_references_family() {
+        // `into_non_counted` delegates to `new_non_counted`, so the family
+        // guard applies on both paths — otherwise the helper would return
+        // Ok with an element that wrapper validation and serialization
+        // then refuse.
+        for element in [
+            Element::new_item_allowing_bidirectional_references(b"v".to_vec()),
+            Element::new_sum_item_allowing_bidirectional_references(5),
+            Element::new_item_with_sum_item_allowing_bidirectional_references(b"v".to_vec(), 5),
+        ] {
+            assert!(element.into_non_counted().is_err());
+        }
+    }
+
+    #[test]
     fn new_non_counted_rejects_not_summed() {
         // Symmetric to `new_not_summed_rejects_non_counted` — `new_non_counted`
         // must reject any pre-existing wrapper inner, including NotSummed.
