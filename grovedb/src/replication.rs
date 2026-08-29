@@ -53,13 +53,29 @@ pub(crate) const INCOMPLETE_RESTORE_AUX_KEY: &[u8] = b"grovedb_state_sync_restor
 /// How much restored chunk payload an [`RestoreCommitMode::Incremental`]
 /// session accumulates before it takes the next intermediate commit.
 ///
-/// Chosen as a payload budget rather than a memory budget because it is
-/// the quantity the session can count exactly; peak process memory is a
-/// multiple of it (measured at roughly 5x on Platform-shaped state, the
-/// same multiplier the atomic mode applies to the whole grove). 128 MiB
-/// of payload therefore costs well under a gigabyte of peak footprint,
-/// independent of how large the source state is.
-pub const DEFAULT_RESTORE_CHUNK_BUDGET_BYTES: u64 = 128 * 1024 * 1024;
+/// A payload budget rather than a memory budget because it is the
+/// quantity the session can count exactly: RocksDB's only handle on the
+/// transaction's write-batch size copies the whole batch to report it.
+///
+/// Peak memory is not a clean multiple of this number, because a commit
+/// can only land on a subtree boundary — the effective granularity is
+/// `max(budget, largest single subtree)`, and below that the budget stops
+/// buying anything. Measured on the medium scale tier (1.31 GiB source
+/// grove, `restore_memory_ceiling_tier_medium`), peak footprint increment
+/// over the pre-sync baseline:
+///
+/// ```text
+/// atomic          7046 MiB  (5.24x the source)   52.3 s
+/// 128 MiB budget  2666 MiB  (1.98x)              53.0 s
+///  64 MiB budget  2357 MiB  (1.75x)              48.2 s
+///  16 MiB budget  1428 MiB  (1.06x)              81.5 s
+/// ```
+///
+/// 16 MiB is the default because it is the smallest budget measured to
+/// hold a gigabyte-scale restore near the size of the source rather than
+/// a multiple of it; the wall-clock it costs is paid once, on a node that
+/// is not yet serving.
+pub const DEFAULT_RESTORE_CHUNK_BUDGET_BYTES: u64 = 16 * 1024 * 1024;
 
 /// How a restore session persists the subtrees it has rebuilt.
 ///
@@ -81,8 +97,16 @@ pub enum RestoreCommitMode {
     #[default]
     Atomic,
     /// Commit at proven-safe boundaries once `budget_bytes` of chunk
-    /// payload has accumulated, so peak memory is a multiple of the
-    /// budget instead of a multiple of the state.
+    /// payload has accumulated, so peak memory tracks the budget and the
+    /// largest single subtree rather than the size of the whole state.
+    ///
+    /// The residual term is real and worth stating: a subtree's restorer
+    /// holds its storage context for the subtree's whole life, so no
+    /// commit can land inside one. Peak memory is therefore
+    /// `O(budget + largest subtree)`, not `O(budget)`. On Platform state
+    /// the largest subtree is one contract's document index — far smaller
+    /// than the grove, but it does grow with adoption, and driving the
+    /// bound below it would need commit points inside a Merk restore.
     ///
     /// The final commit still verifies the root hash and still refuses
     /// to commit on a mismatch — what is given up is only the *rollback*:
