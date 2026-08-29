@@ -1,0 +1,667 @@
+//! Scale and memory-ceiling measurement for state sync restore.
+//!
+//! The restore side of state sync is **atomic**: every write of the whole
+//! sync — all restored subtrees, across every discovery batch — is held in
+//! a single `OptimisticTransactionDB` transaction (a
+//! `WriteBatchWithIndex`) until `commit_session` verifies the root hash
+//! (see the invariant comment in `state_sync_session::commit`). That write
+//! batch lives in RocksDB's C++ heap, so its cost shows up as process RSS
+//! and nowhere else — a Rust allocator hook would not see it.
+//!
+//! These tests measure that ceiling. They build a synthetic grove shaped
+//! roughly like Dash Platform state (identity-like items under a flat
+//! subtree, document-like items across nested per-contract subtrees, a sum
+//! tree, a commitment tree, an MMR, and two indexed trees with populated
+//! axes), checkpoint it, restore it into a fresh directory, and report:
+//!
+//! - peak process RSS during the restore window (sampled, plus the
+//!   baseline captured just before the window so the restore's own
+//!   increment is visible),
+//! - wall-clock of the fetch/apply/commit loop,
+//! - the number of `fetch_chunk` round trips and total wire bytes,
+//! - the on-disk size of the source checkpoint and of the restored target.
+//!
+//! Every test here is `#[ignore]`d: they take minutes and gigabytes, so CI
+//! cost is zero. Run one explicitly, in **release** (the unoptimized
+//! profile makes the build phase hours long):
+//!
+//! ```text
+//! cargo test --release -p grovedb \
+//!     restore_memory_ceiling_tier_small -- --ignored --nocapture
+//! ```
+//!
+//! `--nocapture` matters: the measurement is printed, not asserted.
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::VecDeque,
+        path::Path,
+        sync::{
+            atomic::{AtomicBool, AtomicU64, Ordering},
+            Arc,
+        },
+        time::{Duration, Instant},
+    };
+
+    use grovedb_version::version::GroveVersion;
+    use tempfile::TempDir;
+
+    use crate::{
+        batch::QualifiedGroveDbOp, replication::CURRENT_STATE_SYNC_VERSION, Element, GroveDb,
+    };
+
+    // ── Shape of the synthetic grove ────────────────────────────────────
+
+    /// Parameterized "Platform-shaped" grove. Byte totals are dominated by
+    /// `identities` and `contracts * documents_per_contract`; the other
+    /// members exist so every state-sync transfer mode (Merk chunks,
+    /// non-Merk entry replay, indexed header + axis secondaries) is
+    /// exercised at scale rather than only in the round-trip unit tests.
+    #[derive(Debug, Clone, Copy)]
+    struct GroveShape {
+        /// Human label used in the printed report.
+        tier: &'static str,
+        /// Items under a single flat `identities` subtree.
+        identities: usize,
+        /// Bytes per identity-like item value.
+        identity_value_bytes: usize,
+        /// Number of per-contract subtrees under `documents`.
+        contracts: usize,
+        /// Document-like items in each contract's `docs` subtree.
+        documents_per_contract: usize,
+        /// Bytes per document-like item value.
+        document_value_bytes: usize,
+        /// Sum items in the `balances` sum tree.
+        sum_entries: usize,
+        /// Notes appended to the `notes` commitment tree. Sinsemilla
+        /// hashing dominates build time per note, so this stays small and
+        /// roughly constant across tiers on purpose.
+        commitment_entries: usize,
+        /// Leaves appended to the `history` MMR tree.
+        mmr_entries: usize,
+        /// Entries in each of the two indexed trees (`idx_count` /
+        /// `idx_sum`).
+        indexed_entries: usize,
+    }
+
+    impl GroveShape {
+        /// Logical payload bytes (values only, no Merk node overhead).
+        fn logical_value_bytes(&self) -> u64 {
+            (self.identities * self.identity_value_bytes) as u64
+                + (self.contracts * self.documents_per_contract * self.document_value_bytes) as u64
+        }
+    }
+
+    /// ~10 MB of payload: a fast smoke run that proves the harness works.
+    const TIER_TINY: GroveShape = GroveShape {
+        tier: "tiny",
+        identities: 4_000,
+        identity_value_bytes: 256,
+        contracts: 2,
+        documents_per_contract: 8_000,
+        document_value_bytes: 512,
+        sum_entries: 2_000,
+        commitment_entries: 128,
+        mmr_entries: 2_000,
+        indexed_entries: 500,
+    };
+
+    /// ~100 MB of payload.
+    const TIER_SMALL: GroveShape = GroveShape {
+        tier: "small",
+        identities: 40_000,
+        identity_value_bytes: 256,
+        contracts: 8,
+        documents_per_contract: 22_000,
+        document_value_bytes: 512,
+        sum_entries: 20_000,
+        commitment_entries: 512,
+        mmr_entries: 20_000,
+        indexed_entries: 2_000,
+    };
+
+    /// ~1 GB of payload.
+    const TIER_MEDIUM: GroveShape = GroveShape {
+        tier: "medium",
+        identities: 400_000,
+        identity_value_bytes: 256,
+        contracts: 16,
+        documents_per_contract: 110_000,
+        document_value_bytes: 512,
+        sum_entries: 100_000,
+        commitment_entries: 512,
+        mmr_entries: 100_000,
+        indexed_entries: 5_000,
+    };
+
+    /// ~4 GB of payload.
+    const TIER_LARGE: GroveShape = GroveShape {
+        tier: "large",
+        identities: 1_200_000,
+        identity_value_bytes: 256,
+        contracts: 32,
+        documents_per_contract: 220_000,
+        document_value_bytes: 512,
+        sum_entries: 200_000,
+        commitment_entries: 512,
+        mmr_entries: 200_000,
+        indexed_entries: 10_000,
+    };
+
+    // ── Process RSS sampling ────────────────────────────────────────────
+
+    /// Current resident set size of this process, in bytes.
+    ///
+    /// Read from the OS rather than from a Rust allocator hook on purpose:
+    /// the allocation under measurement is RocksDB's C++
+    /// `WriteBatchWithIndex`, which never passes through Rust's
+    /// `GlobalAlloc`. Returns `None` on platforms with neither reading
+    /// (the harness then reports zeroes instead of failing).
+    #[cfg(target_os = "macos")]
+    fn current_rss_bytes() -> Option<u64> {
+        let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+        // SAFETY: `info` is a correctly sized, zero-initialised
+        // `proc_taskinfo` and `size` is its exact size in bytes.
+        let written = unsafe {
+            libc::proc_pidinfo(
+                std::process::id() as libc::c_int,
+                libc::PROC_PIDTASKINFO,
+                0,
+                (&raw mut info).cast(),
+                size,
+            )
+        };
+        (written == size).then_some(info.pti_resident_size)
+    }
+
+    /// Linux twin of the macOS reading above: field 2 of `/proc/self/statm`
+    /// is the resident set in pages.
+    #[cfg(target_os = "linux")]
+    fn current_rss_bytes() -> Option<u64> {
+        let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+        let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+        // SAFETY: `sysconf` is a pure query with no pointer arguments.
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        (page_size > 0).then(|| pages * page_size as u64)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    fn current_rss_bytes() -> Option<u64> {
+        None
+    }
+
+    /// Background sampler recording the high-water mark of process RSS
+    /// over a window.
+    struct RssSampler {
+        peak: Arc<AtomicU64>,
+        stop: Arc<AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl RssSampler {
+        fn start() -> Self {
+            let peak = Arc::new(AtomicU64::new(0));
+            let stop = Arc::new(AtomicBool::new(false));
+            let (peak_t, stop_t) = (Arc::clone(&peak), Arc::clone(&stop));
+            let handle = std::thread::spawn(move || {
+                while !stop_t.load(Ordering::Relaxed) {
+                    if let Some(rss) = current_rss_bytes() {
+                        peak_t.fetch_max(rss, Ordering::Relaxed);
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                // One final sample so a short window is never empty.
+                if let Some(rss) = current_rss_bytes() {
+                    peak_t.fetch_max(rss, Ordering::Relaxed);
+                }
+            });
+            RssSampler {
+                peak,
+                stop,
+                handle: Some(handle),
+            }
+        }
+
+        fn finish(mut self) -> u64 {
+            self.stop.store(true, Ordering::Relaxed);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+            self.peak.load(Ordering::Relaxed)
+        }
+    }
+
+    // ── Disk accounting ─────────────────────────────────────────────────
+
+    /// Sum of file sizes under `path`, recursively. Deliberately logical
+    /// (not `du`'s allocated blocks): a RocksDB checkpoint hard-links its
+    /// SSTs, and the number wanted here is how many bytes the source would
+    /// actually have to serve, not how much unique disk it occupies.
+    fn dir_size_bytes(path: &Path) -> u64 {
+        let mut total = 0;
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return 0;
+        };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() {
+                total += dir_size_bytes(&entry.path());
+            } else {
+                total += meta.len();
+            }
+        }
+        total
+    }
+
+    fn mib(bytes: u64) -> f64 {
+        bytes as f64 / (1024.0 * 1024.0)
+    }
+
+    // ── Source construction ─────────────────────────────────────────────
+
+    /// Deterministic pseudo-random-ish key so insertion order does not
+    /// produce a degenerate (perfectly sequential) Merk shape.
+    fn scattered_key(i: usize) -> Vec<u8> {
+        // Multiply by a large odd constant and take the big-endian bytes:
+        // a cheap bijection over `u64` that scatters consecutive `i`.
+        (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15).to_be_bytes()[..]
+            .iter()
+            .copied()
+            .chain((i as u32).to_be_bytes())
+            .collect()
+    }
+
+    /// Deterministic **incompressible** value bytes.
+    ///
+    /// This matters for the measurement, not just for realism: a filler of
+    /// repeated bytes compresses to nothing in RocksDB's SSTs, which would
+    /// shrink the reported on-disk size by an order of magnitude and
+    /// inflate every "peak RSS versus on-disk size" ratio derived from it.
+    /// A xorshift stream keeps the source's on-disk footprint honest.
+    fn filler(seed: usize, len: usize) -> Vec<u8> {
+        let mut state = (seed as u64).wrapping_mul(0x2545_F491_4F6C_DD1D) | 1;
+        let mut out = Vec::with_capacity(len);
+        while out.len() < len {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            out.extend_from_slice(&state.to_le_bytes());
+        }
+        out.truncate(len);
+        out
+    }
+
+    /// Apply `ops` in fixed-size batches so the *build* side never becomes
+    /// the memory story the test is trying to measure on the restore side.
+    fn apply_in_batches(db: &GroveDb, ops: Vec<QualifiedGroveDbOp>, grove_version: &GroveVersion) {
+        const BATCH: usize = 2_000;
+        let mut buf = Vec::with_capacity(BATCH);
+        for op in ops {
+            buf.push(op);
+            if buf.len() == BATCH {
+                db.apply_batch(std::mem::take(&mut buf), None, None, grove_version)
+                    .unwrap()
+                    .expect("batch insert should succeed");
+                buf.reserve(BATCH);
+            }
+        }
+        if !buf.is_empty() {
+            db.apply_batch(buf, None, None, grove_version)
+                .unwrap()
+                .expect("final batch insert should succeed");
+        }
+    }
+
+    /// Build the Platform-shaped grove described by `shape` at `path`.
+    fn build_platform_shaped_grove(
+        path: &Path,
+        shape: &GroveShape,
+        grove_version: &GroveVersion,
+    ) -> GroveDb {
+        let db = GroveDb::open(path).expect("open source grovedb");
+
+        let root_trees: &[(&[u8], Element)] = &[
+            (b"identities", Element::empty_tree()),
+            (b"documents", Element::empty_tree()),
+            (b"balances", Element::empty_sum_tree()),
+            (
+                b"notes",
+                Element::empty_commitment_tree(4).expect("valid chunk power"),
+            ),
+            (b"history", Element::empty_mmr_tree()),
+            (b"idx_count", Element::empty_provable_count_indexed_tree()),
+            (b"idx_sum", Element::empty_provable_sum_indexed_tree()),
+        ];
+        for (key, element) in root_trees {
+            db.insert(
+                crate::SubtreePath::empty(),
+                key,
+                element.clone(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert root subtree");
+        }
+
+        // Identity-like items: one flat, wide subtree.
+        let ops = (0..shape.identities)
+            .map(|i| {
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![b"identities".to_vec()],
+                    scattered_key(i),
+                    Element::new_item(filler(i, shape.identity_value_bytes)),
+                )
+            })
+            .collect();
+        apply_in_batches(&db, ops, grove_version);
+
+        // Document-like items: nested `documents/contract_i/docs/*`.
+        for c in 0..shape.contracts {
+            let contract = format!("contract_{c}").into_bytes();
+            db.insert(
+                [b"documents".as_ref()].as_ref(),
+                &contract,
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert contract subtree");
+            db.insert(
+                [b"documents".as_ref(), contract.as_ref()].as_ref(),
+                b"docs",
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert docs subtree");
+
+            let ops = (0..shape.documents_per_contract)
+                .map(|i| {
+                    QualifiedGroveDbOp::insert_or_replace_op(
+                        vec![b"documents".to_vec(), contract.clone(), b"docs".to_vec()],
+                        scattered_key(i),
+                        Element::new_item(filler(i + c, shape.document_value_bytes)),
+                    )
+                })
+                .collect();
+            apply_in_batches(&db, ops, grove_version);
+        }
+
+        // Sum tree.
+        let ops = (0..shape.sum_entries)
+            .map(|i| {
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![b"balances".to_vec()],
+                    scattered_key(i),
+                    Element::new_sum_item((i as i64) * 7 - 3),
+                )
+            })
+            .collect();
+        apply_in_batches(&db, ops, grove_version);
+
+        // Commitment tree (non-Merk entry replay + Sinsemilla frontier).
+        // `cmx` / `rho` / `cv_net` must be canonical Pallas field elements,
+        // so only the low limb varies and the high bytes stay zero.
+        let field_element = |v: u64| {
+            let mut out = [0u8; 32];
+            out[..8].copy_from_slice(&v.to_le_bytes());
+            out
+        };
+        for i in 0..shape.commitment_entries {
+            db.commitment_tree_insert_raw(
+                crate::SubtreePath::empty(),
+                b"notes",
+                field_element(i as u64),
+                field_element(i as u64 + 1_000_000),
+                field_element(i as u64 + 2_000_000),
+                filler(i, 216),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("append commitment note");
+        }
+
+        // MMR tree (non-Merk entry replay).
+        for i in 0..shape.mmr_entries {
+            db.mmr_tree_append(
+                crate::SubtreePath::empty(),
+                b"history",
+                filler(i, 48),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("append mmr leaf");
+        }
+
+        // Indexed trees (protocol version 2: header page + primary chunks
+        // + one ordinary Merk chunk stream per axis secondary).
+        for i in 0..shape.indexed_entries {
+            db.insert_into_count_indexed_tree(
+                [b"idx_count".as_ref()].as_ref(),
+                &scattered_key(i),
+                Element::empty_provable_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert PCIT entry");
+            db.insert_into_provable_sum_indexed_tree(
+                [b"idx_sum".as_ref()].as_ref(),
+                &scattered_key(i),
+                Element::new_sum_item((i as i64) % 97),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert PSIT entry");
+        }
+
+        db
+    }
+
+    // ── Measurement ─────────────────────────────────────────────────────
+
+    struct Measurement {
+        tier: &'static str,
+        logical_bytes: u64,
+        checkpoint_bytes: u64,
+        restored_bytes: u64,
+        baseline_rss: u64,
+        peak_rss: u64,
+        wall: Duration,
+        build_wall: Duration,
+        fetch_calls: u64,
+        wire_bytes: u64,
+    }
+
+    impl Measurement {
+        fn report(&self) {
+            println!(
+                "\n=== state sync restore memory ceiling: tier {} ===",
+                self.tier
+            );
+            println!(
+                "  logical payload        : {:>10.1} MiB",
+                mib(self.logical_bytes)
+            );
+            println!(
+                "  source checkpoint      : {:>10.1} MiB",
+                mib(self.checkpoint_bytes)
+            );
+            println!(
+                "  restored target on disk: {:>10.1} MiB",
+                mib(self.restored_bytes)
+            );
+            println!(
+                "  wire bytes fetched     : {:>10.1} MiB",
+                mib(self.wire_bytes)
+            );
+            println!("  fetch_chunk round trips: {:>10}", self.fetch_calls);
+            println!(
+                "  build wall-clock       : {:>10.1} s",
+                self.build_wall.as_secs_f64()
+            );
+            println!(
+                "  restore wall-clock     : {:>10.1} s",
+                self.wall.as_secs_f64()
+            );
+            println!(
+                "  RSS baseline (pre-sync): {:>10.1} MiB",
+                mib(self.baseline_rss)
+            );
+            println!(
+                "  RSS peak  (during sync): {:>10.1} MiB",
+                mib(self.peak_rss)
+            );
+            println!(
+                "  RSS increment          : {:>10.1} MiB",
+                mib(self.peak_rss.saturating_sub(self.baseline_rss))
+            );
+            println!(
+                "  peak RSS / checkpoint  : {:>10.2} x",
+                self.peak_rss as f64 / self.checkpoint_bytes.max(1) as f64
+            );
+            println!(
+                "  increment / checkpoint : {:>10.2} x",
+                self.peak_rss.saturating_sub(self.baseline_rss) as f64
+                    / self.checkpoint_bytes.max(1) as f64
+            );
+        }
+    }
+
+    /// Build → checkpoint → restore → commit, measuring the restore window.
+    fn measure_restore(shape: &GroveShape) -> Measurement {
+        let grove_version = GroveVersion::latest();
+        let work = TempDir::new().expect("temp work dir");
+
+        let source_path = work.path().join("source");
+        let checkpoint_path = work.path().join("checkpoint");
+        let target_path = work.path().join("target");
+        std::fs::create_dir_all(&source_path).expect("create source dir");
+        std::fs::create_dir_all(&target_path).expect("create target dir");
+
+        let build_start = Instant::now();
+        let source = build_platform_shaped_grove(&source_path, shape, grove_version);
+        let build_wall = build_start.elapsed();
+        let source_hash = source
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("source root hash");
+        source
+            .create_checkpoint(&checkpoint_path)
+            .expect("create checkpoint");
+        // Drop the source DB before measuring: only the checkpoint (the
+        // "remote peer") and the target participate in the restore, so the
+        // builder's block cache and memtables must not be counted.
+        drop(source);
+
+        let checkpoint_bytes = dir_size_bytes(&checkpoint_path);
+        let checkpoint_db = GroveDb::open(&checkpoint_path).expect("open checkpoint db");
+        let target = GroveDb::open(&target_path).expect("open target db");
+
+        let baseline_rss = current_rss_bytes().unwrap_or(0);
+        let sampler = RssSampler::start();
+        let sync_start = Instant::now();
+
+        let mut session = target
+            .start_snapshot_syncing(source_hash, 64, CURRENT_STATE_SYNC_VERSION, grove_version)
+            .expect("start snapshot syncing");
+
+        let mut queue: VecDeque<Vec<u8>> = VecDeque::new();
+        queue.push_back(source_hash.to_vec());
+        let mut fetch_calls = 0u64;
+        let mut wire_bytes = 0u64;
+
+        while let Some(chunk_id) = queue.pop_front() {
+            let chunk_data = checkpoint_db
+                .fetch_chunk(
+                    chunk_id.as_slice(),
+                    None,
+                    CURRENT_STATE_SYNC_VERSION,
+                    grove_version,
+                )
+                .expect("fetch chunk");
+            fetch_calls += 1;
+            wire_bytes += chunk_data.len() as u64;
+            let more = session
+                .apply_chunk(
+                    chunk_id.as_slice(),
+                    &chunk_data,
+                    CURRENT_STATE_SYNC_VERSION,
+                    grove_version,
+                )
+                .expect("apply chunk");
+            queue.extend(more);
+        }
+
+        assert!(session.is_sync_completed(), "sync should have completed");
+        target
+            .commit_session(session, grove_version)
+            .expect("commit session");
+
+        let wall = sync_start.elapsed();
+        let peak_rss = sampler.finish();
+
+        assert_eq!(
+            target.root_hash(None, grove_version).unwrap().unwrap(),
+            source_hash,
+            "restored root hash must match the source app hash"
+        );
+
+        drop(checkpoint_db);
+        drop(target);
+        let restored_bytes = dir_size_bytes(&target_path);
+
+        Measurement {
+            tier: shape.tier,
+            logical_bytes: shape.logical_value_bytes(),
+            checkpoint_bytes,
+            restored_bytes,
+            baseline_rss,
+            peak_rss,
+            wall,
+            build_wall,
+            fetch_calls,
+            wire_bytes,
+        }
+    }
+
+    fn run_tier(shape: &GroveShape) {
+        let measurement = measure_restore(shape);
+        measurement.report();
+    }
+
+    #[test]
+    #[ignore = "measurement harness: minutes of runtime, run explicitly in --release"]
+    fn restore_memory_ceiling_tier_tiny() {
+        run_tier(&TIER_TINY);
+    }
+
+    #[test]
+    #[ignore = "measurement harness: minutes of runtime, run explicitly in --release"]
+    fn restore_memory_ceiling_tier_small() {
+        run_tier(&TIER_SMALL);
+    }
+
+    #[test]
+    #[ignore = "measurement harness: minutes of runtime and >1 GiB of disk"]
+    fn restore_memory_ceiling_tier_medium() {
+        run_tier(&TIER_MEDIUM);
+    }
+
+    #[test]
+    #[ignore = "measurement harness: tens of minutes and >4 GiB of disk and RAM"]
+    fn restore_memory_ceiling_tier_large() {
+        run_tier(&TIER_LARGE);
+    }
+}
