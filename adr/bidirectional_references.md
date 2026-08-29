@@ -78,9 +78,11 @@ Current limitations (fail closed, lift as needed):
 
 - The three variants may not be wrapped in the aggregation wrappers
   (`NonCounted` / `NotSummed` / `NotCountedOrSummed`).
-- `apply_batch` (and every batch entry point) rejects ops carrying them —
-  the batch pipeline performs none of the backward-reference bookkeeping.
-  Batch (or unflagged) ops that DELETE or OVERWRITE an existing
+- `apply_batch` supports the family when the batch opts in via
+  `BatchApplyOptions::propagate_backward_references` (see the batching
+  section under Implementation); batches without the flag — and partial
+  batches, which have no expansion support — reject ops carrying the
+  family. Unflagged ops that DELETE or OVERWRITE an existing
   backward-references participant are still admitted, exactly like any
   other unflagged write: consistency is forfeited at that point. A
   backward reference left dangling this way is tolerated — later flagged
@@ -132,9 +134,43 @@ preventing the operation from completing successfully.
 
 ## Implementation
 
-_Work in progress: Support for bidirectional references in `apply_batch` is
-not yet implemented — every batch entry point rejects the three element
-variants._
+### Batching
+
+`apply_batch` supports the whole family when the batch sets
+`BatchApplyOptions::propagate_backward_references` (GROVE_V4+, riding the
+same activation as the live flagged flow). A preprocessing pass
+(`batch::backward_references`) expands the user's operations into the
+derived operations the live flow would perform, planned by the SAME
+semantic core (`bidirectional_references::semantics`) the `MerkCache`
+driver uses, so live and batched semantics cannot drift. The master
+invariant, enforced by tests: for any logical operation set, batch and
+non-batch execution produce byte-identical root hashes.
+
+The expansion simulates one canonical sequential order over an overlay of
+pending position states (pre-batch DB state plus the batch's staged
+effects): first every non-reference op in user order, then every
+`BidirectionalReference` op in topological order — targets before their
+referrers. This makes references to targets created in the same batch
+work regardless of op order, lets whole chains be created in one batch,
+and validates the hop/component budgets against the prospective
+post-batch state. Derived writes execute through the internal
+`GroveOp::ReplaceBackwardReferenceFamilyMember` (rejected when supplied by
+callers), which installs the fully-combined node value hash; user
+reference ops are themselves converted into that form (an identical-edge
+re-insert converts into nothing, mirroring the live no-op), and
+registrations onto targets written in the same batch merge into the
+target op's element.
+
+Conflicts fail closed with specified errors: a reference inserted in the
+same batch that deletes its target; a cascade deleting a position another
+op touches; a propagation rewrite hitting a user delete; and
+`RefreshReference` on a position holding a bidirectional reference.
+
+Estimated costs (average and worst case) model the derived fan-out on
+GROVE_V4+ under the batch flag, bounded by the budgets above (≤32
+referrers per item, ≤10-hop chains, 1 referrer per reference); pre-V4
+estimation is preserved byte-for-byte for replay of historical admission
+decisions.
 
 Bidirectional references are optional for each call to GroveDB's public API, and a flag is
 used to enable their functionality for that specific call. Essentially, when the flag is

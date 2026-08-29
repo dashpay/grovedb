@@ -74,10 +74,12 @@ pub struct BatchApplyOptions {
     /// Most of the time this should be not set
     pub batch_pause_height: Option<u8>,
     /// Opt into backward-references bookkeeping for this batch: ops
-    /// carrying the backward-references ITEM variants become valid, and
-    /// overwrites/deletes of registered targets expand into the derived
-    /// propagation/cascade operations the live flagged flow would perform.
-    /// `BidirectionalReference` element ops remain rejected for now.
+    /// carrying the backward-references family (`BidirectionalReference`
+    /// and the three backward-references item variants) become valid, and
+    /// the batch expands into the derived registration / propagation /
+    /// cascade operations the live flagged flow would perform — including
+    /// references whose targets are created in the same batch. See
+    /// `batch::backward_references` for the expansion and conflict rules.
     pub propagate_backward_references: bool,
 }
 

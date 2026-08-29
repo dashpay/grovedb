@@ -23,9 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never re-hashes what existing referrers committed to; public reads return
   the stripped element, and proofs authenticate these elements through the
   new `Node::KVBackwardsReferencesValueHash` wire node whose value hash the
-  verifier recomputes. Requires `GROVE_V4`; earlier versions, V0 proofs,
-  `Provable*` aggregate parents, and all batch entry points reject the new
-  variants (fail closed). See `adr/bidirectional_references.md`.
+  verifier recomputes. Requires `GROVE_V4`; earlier versions, V0 proofs, and
+  `Provable*` aggregate parents reject the new variants (fail closed).
+  `apply_batch` supports the whole family when the batch opts in via
+  `BatchApplyOptions::propagate_backward_references`: a preprocessing pass
+  expands the batch into the derived registration/propagation/cascade
+  operations the live flagged flow performs (shared semantic core, so batch
+  and non-batch execution produce byte-identical root hashes), including
+  references whose targets are created in the same batch; conflicting
+  combinations (a reference plus its target's deletion, a cascade hitting
+  another op's position, `RefreshReference` on a bidirectional reference)
+  fail closed. Average/worst-case batch estimation charges the derived
+  fan-out on `GROVE_V4` (bounded: ≤32 referrers per item, ≤10-hop chains, 1
+  referrer per reference) while pre-V4 estimation stays byte-stable for
+  replay. See `adr/bidirectional_references.md`.
 - **BREAKING**: Added `add_parent_tree_on_subquery` feature to PathQuery (#379)
   - New field in `Query` struct: `add_parent_tree_on_subquery: bool`
   - When set to `true`, parent tree elements (like CountTree or SumTree) are included in query results when performing subqueries
