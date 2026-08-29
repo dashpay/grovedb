@@ -32,8 +32,10 @@ mod tests {
     /// the interesting question is never whether a large budget
     /// eventually trips, it is whether the *safety* conditions hold when
     /// it trips as often as it possibly can.
-    const COMMIT_AT_EVERY_SAFE_POINT: RestoreCommitMode =
-        RestoreCommitMode::Incremental { budget_bytes: 1 };
+    const COMMIT_AT_EVERY_SAFE_POINT: RestoreCommitMode = RestoreCommitMode::Incremental {
+        budget_bytes: 1,
+        max_subtrees_in_flight: 1,
+    };
 
     /// What a driven restore's session did along the way.
     struct SyncOutcome {
@@ -117,8 +119,13 @@ mod tests {
         commit_mode: RestoreCommitMode,
     ) -> Result<(TempGroveDb, SyncOutcome), crate::Error> {
         let dest = make_empty_grovedb();
-        let outcome =
-            run_incremental_sync_into(source, &dest, grove_version, subtrees_batch_size, commit_mode)?;
+        let outcome = run_incremental_sync_into(
+            source,
+            &dest,
+            grove_version,
+            subtrees_batch_size,
+            commit_mode,
+        )?;
         Ok((dest, outcome))
     }
 
@@ -264,10 +271,14 @@ mod tests {
             "an incrementally committed restore must produce the same root hash"
         );
         assert_eq!(
-            dest
-                .get([TEST_LEAF, b"c3"].as_ref(), &7u32.to_be_bytes(), None, grove_version)
-                .unwrap()
-                .expect("restored item should be readable"),
+            dest.get(
+                [TEST_LEAF, b"c3"].as_ref(),
+                &7u32.to_be_bytes(),
+                None,
+                grove_version
+            )
+            .unwrap()
+            .expect("restored item should be readable"),
             Element::new_item(vec![3u8; 64]),
         );
     }
@@ -321,11 +332,15 @@ mod tests {
         let source = indexed_source(grove_version);
 
         for batch_size in [1usize, 2, 3, 64] {
-            let (dest, outcome) =
-                run_incremental_sync(&source, grove_version, batch_size, COMMIT_AT_EVERY_SAFE_POINT)
-                    .unwrap_or_else(|e| {
-                        panic!("incremental sync with batch size {batch_size} should succeed: {e}")
-                    });
+            let (dest, outcome) = run_incremental_sync(
+                &source,
+                grove_version,
+                batch_size,
+                COMMIT_AT_EVERY_SAFE_POINT,
+            )
+            .unwrap_or_else(|e| {
+                panic!("incremental sync with batch size {batch_size} should succeed: {e}")
+            });
 
             assert!(
                 outcome.commits_deferred_for_open_group > 0,
@@ -444,9 +459,14 @@ mod tests {
 
         let dest_dir = TempDir::new().expect("temp dir");
         let dest = GroveDb::open(dest_dir.path()).expect("open destination");
-        let outcome =
-            run_incremental_sync_into(&source, &dest, grove_version, 64, COMMIT_AT_EVERY_SAFE_POINT)
-                .expect("incremental sync should succeed");
+        let outcome = run_incremental_sync_into(
+            &source,
+            &dest,
+            grove_version,
+            64,
+            COMMIT_AT_EVERY_SAFE_POINT,
+        )
+        .expect("incremental sync should succeed");
         assert!(outcome.intermediate_commits > 0);
         assert!(
             !dest.has_incomplete_restore().unwrap(),

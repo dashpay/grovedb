@@ -674,9 +674,26 @@ impl<'db> MultiStateSyncSession<'db> {
         }
         match self.commit_mode {
             RestoreCommitMode::Atomic => false,
-            RestoreCommitMode::Incremental { budget_bytes } => {
+            RestoreCommitMode::Incremental {
+                budget_bytes,
+                max_subtrees_in_flight,
+            } => {
                 self.bytes_since_commit >= budget_bytes
+                    || self.current_prefixes.len() >= max_subtrees_in_flight
             }
+        }
+    }
+
+    /// How many more subtrees may be put in flight right now, or `None`
+    /// for "no limit" (the atomic mode, which activates everything a
+    /// parent discovers at once).
+    fn free_in_flight_slots(&self) -> Option<usize> {
+        match self.commit_mode {
+            RestoreCommitMode::Atomic => None,
+            RestoreCommitMode::Incremental {
+                max_subtrees_in_flight,
+                ..
+            } => Some(max_subtrees_in_flight.saturating_sub(self.current_prefixes.len())),
         }
     }
 
@@ -710,7 +727,7 @@ impl<'db> MultiStateSyncSession<'db> {
     fn intermediate_commit_decision(&self) -> IntermediateCommitDecision {
         let budget_reached = match self.commit_mode {
             RestoreCommitMode::Atomic => false,
-            RestoreCommitMode::Incremental { budget_bytes } => {
+            RestoreCommitMode::Incremental { budget_bytes, .. } => {
                 self.bytes_since_commit >= budget_bytes
             }
         };
@@ -1380,7 +1397,7 @@ impl<'db> MultiStateSyncSession<'db> {
             }
         }
 
-        if self.discovery_batch_full() && self.current_prefixes.is_empty() {
+        if self.current_prefixes.is_empty() && self.pending_discovered_subtrees.is_some() {
             // Batch boundary: everything restored so far stays inside the
             // session transaction (see the atomicity invariant in
             // `commit()`); `subtrees_batch_size` only paces how many
@@ -1583,12 +1600,27 @@ impl<'db> MultiStateSyncSession<'db> {
         grove_version: &GroveVersion,
     ) -> Result<Vec<Vec<u8>>, Error> {
         let mut res = vec![];
+        // Bounded-memory mode caps how many subtrees may be part-restored
+        // at once; the overflow goes back to `pending_discovered_subtrees`
+        // and is activated at a later drained boundary. Without this the
+        // cap would be advisory only -- a parent's whole fan-out is
+        // discovered in one go, and this is the only place it is turned
+        // into live restorers.
+        let mut free_slots = self.free_in_flight_slots();
+        let mut deferred = SubtreesMetadata::new();
 
         for (prefix, prefix_metadata) in subtrees_metadata.data {
             if self.processed_prefixes.contains(&prefix)
                 || self.current_prefixes.contains_key(&prefix)
             {
                 continue;
+            }
+            if let Some(slots) = free_slots.as_mut() {
+                if *slots == 0 {
+                    deferred.data.insert(prefix, prefix_metadata);
+                    continue;
+                }
+                *slots -= 1;
             }
             let next_chunks_ids = match prefix_metadata {
                 SubtreeMetadata::Ordinary {
@@ -1632,6 +1664,13 @@ impl<'db> MultiStateSyncSession<'db> {
             };
 
             res.push(next_chunks_ids);
+        }
+
+        if !deferred.data.is_empty() {
+            match self.as_mut().pending_discovered_subtrees() {
+                None => *self.as_mut().pending_discovered_subtrees() = Some(deferred),
+                Some(pending) => pending.data.extend(deferred.data),
+            }
         }
 
         Ok(res)

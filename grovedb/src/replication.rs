@@ -97,6 +97,25 @@ pub enum RestoreCommitMode {
         /// Chunk payload bytes to accumulate between intermediate
         /// commits. See [`DEFAULT_RESTORE_CHUNK_BUDGET_BYTES`].
         budget_bytes: u64,
+        /// How many subtrees may be part-restored at the same time.
+        ///
+        /// This is the other half of the memory bound, and without it
+        /// the byte budget does nothing. A commit is only safe once
+        /// every in-flight restorer has released the transaction, so the
+        /// budget can only be *spent* at a moment when no subtree is
+        /// part-restored. Left uncapped, the restore puts every subtree
+        /// discovered under a parent in flight at once -- a Platform
+        /// grove's root fans out to a handful of very large subtrees --
+        /// and that moment does not arrive until nearly the whole state
+        /// is already in the write batch. Measured on the medium tier:
+        /// uncapped, a 64 MiB budget over 1 GiB of payload took exactly
+        /// one intermediate commit and moved peak memory by 7%.
+        ///
+        /// Peak memory is therefore roughly
+        /// `budget_bytes + (this many partly-restored subtrees)`. One is
+        /// the tightest bound and the default; raising it trades memory
+        /// for more chunk requests in flight across subtrees.
+        max_subtrees_in_flight: usize,
     },
 }
 
@@ -105,6 +124,7 @@ impl RestoreCommitMode {
     pub const fn incremental() -> Self {
         RestoreCommitMode::Incremental {
             budget_bytes: DEFAULT_RESTORE_CHUNK_BUDGET_BYTES,
+            max_subtrees_in_flight: 1,
         }
     }
 
@@ -462,8 +482,12 @@ impl GroveDb {
 
         let root_prefix = [0u8; 32];
 
-        let mut session =
-            self.start_syncing_session_with_mode(app_hash, subtrees_batch_size, version, commit_mode);
+        let mut session = self.start_syncing_session_with_mode(
+            app_hash,
+            subtrees_batch_size,
+            version,
+            commit_mode,
+        );
 
         session.add_subtree_sync_info(
             SubtreePath::empty(),

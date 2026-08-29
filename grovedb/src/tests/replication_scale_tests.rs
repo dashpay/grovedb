@@ -81,7 +81,9 @@ mod tests {
     /// Unset (the default) measures the atomic restore. Setting
     /// `GROVEDB_SCALE_RESTORE_BUDGET_MIB=<n>` measures the bounded-memory
     /// restore with an `n` MiB payload budget, which is how the
-    /// before/after table in the PR is reproduced without editing code:
+    /// before/after table in the PR is reproduced without editing code.
+    /// `GROVEDB_SCALE_RESTORE_IN_FLIGHT=<n>` overrides the in-flight
+    /// subtree cap (default 1):
     ///
     /// ```text
     /// GROVEDB_SCALE_RESTORE_BUDGET_MIB=64 cargo test --release -p grovedb \
@@ -94,6 +96,11 @@ mod tests {
         {
             Some(mib) if mib > 0 => RestoreCommitMode::Incremental {
                 budget_bytes: mib * 1024 * 1024,
+                max_subtrees_in_flight: std::env::var("GROVEDB_SCALE_RESTORE_IN_FLIGHT")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(1),
             },
             _ => RestoreCommitMode::Atomic,
         }
