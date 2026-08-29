@@ -2301,6 +2301,92 @@ impl GroveDb {
         Ok(())
     }
 
+    /// Reciprocal audit for one element's authenticated referrer list:
+    /// every backward entry must name a live `BidirectionalReference`
+    /// whose forward path resolves back to this exact position, and no
+    /// inverted path may appear twice. Violations are recorded in
+    /// `issues` keyed by the REFERRER's qualified path, with a zero hash
+    /// in the middle slot marking a reciprocity (not value-hash) failure.
+    #[allow(clippy::too_many_arguments)]
+    fn verify_reciprocal_backward_references<B: AsRef<[u8]>>(
+        &self,
+        element: &Element,
+        path: &SubtreePath<B>,
+        key: &[u8],
+        allow_cache: bool,
+        transaction: &Transaction,
+        grove_version: &GroveVersion,
+        issues: &mut HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>,
+    ) -> Result<(), Error> {
+        let Some(backward_references) = element.backward_references() else {
+            return Ok(());
+        };
+        let hashes = element
+            .backward_references_hashes(grove_version)
+            .unwrap()?
+            .expect("backward-references elements carry hashes");
+        let mut expected_forward = path.to_vec();
+        expected_forward.push(key.to_vec());
+
+        let mut seen: std::collections::HashSet<Vec<Vec<u8>>> = Default::default();
+        for entry in backward_references {
+            let referrer_qualified = match path_from_reference_path_type(
+                entry.inverted_reference.clone(),
+                &path.to_vec(),
+                Some(key),
+            ) {
+                Ok(qualified) => qualified,
+                Err(_) => {
+                    let mut marker = expected_forward.clone();
+                    marker.push(b"?invalid-inverse".to_vec());
+                    issues.insert(marker, (hashes.combined, [0; 32], hashes.combined));
+                    continue;
+                }
+            };
+            if !seen.insert(referrer_qualified.clone()) {
+                issues.insert(
+                    referrer_qualified.clone(),
+                    (hashes.combined, [0; 32], hashes.combined),
+                );
+                continue;
+            }
+            let Some((referrer_key, referrer_path)) = referrer_qualified.split_last() else {
+                continue;
+            };
+            let referrer_path_slices: Vec<&[u8]> =
+                referrer_path.iter().map(|p| p.as_slice()).collect();
+            let occupant = self
+                .get_raw_optional(
+                    referrer_path_slices.as_slice().into(),
+                    referrer_key,
+                    Some(transaction),
+                    grove_version,
+                )
+                .unwrap();
+            let reciprocal = match occupant {
+                Ok(Some(Element::BidirectionalReference(ref referrer))) => {
+                    path_from_reference_path_type(
+                        referrer.forward_reference_path.clone(),
+                        referrer_path,
+                        Some(referrer_key),
+                    )
+                    .map(|forward| forward == expected_forward)
+                    .unwrap_or(false)
+                }
+                Ok(_) => false,
+                Err(_) => false,
+            };
+            if !reciprocal {
+                issues.insert(
+                    referrer_qualified,
+                    (hashes.combined, [0; 32], hashes.combined),
+                );
+            }
+        }
+        let _ = allow_cache;
+        Ok(())
+    }
+
     fn verify_merk_and_submerks_in_transaction<'db, B: AsRef<[u8]>, S: StorageContext<'db>>(
         &'db self,
         merk: Merk<S>,
@@ -2694,9 +2780,20 @@ impl GroveDb {
                         .expect("backward-references elements carry hashes");
                     if hashes.combined != element_value_hash {
                         issues.insert(
-                            path.derive_owned_with_child(key).to_vec(),
+                            path.derive_owned_with_child(key.clone()).to_vec(),
                             (hashes.combined, element_value_hash, hashes.combined),
                         );
+                    }
+                    if verify_references {
+                        self.verify_reciprocal_backward_references(
+                            &element,
+                            path,
+                            &key,
+                            allow_cache,
+                            transaction,
+                            grove_version,
+                            &mut issues,
+                        )?;
                     }
                 }
                 Element::Reference(ref reference_path, ..)
@@ -2765,9 +2862,21 @@ impl GroveDb {
 
                     if combined_value_hash != element_value_hash {
                         issues.insert(
-                            path.derive_owned_with_child(key).to_vec(),
+                            path.derive_owned_with_child(key.clone()).to_vec(),
                             (combined_value_hash, element_value_hash, combined_value_hash),
                         );
+                    }
+
+                    if matches!(element, Element::BidirectionalReference(..)) {
+                        self.verify_reciprocal_backward_references(
+                            &element,
+                            path,
+                            &key,
+                            allow_cache,
+                            transaction,
+                            grove_version,
+                            &mut issues,
+                        )?;
                     }
                 }
                 // ProvableSumIndexedTree integrity: identical shape to

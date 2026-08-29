@@ -2248,6 +2248,95 @@ impl GroveDb {
 
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
+                    // A FILLER bidirectional-reference row (past the limit)
+                    // is still rewritten into its bound KVRefValueHash shape:
+                    // the rewrite is node-hash-neutral, and the strict V1
+                    // verifier rejects raw bidirectional bytes in
+                    // trusted-value results — a truncated window can still
+                    // count such a row as in range.
+                    Node::KV(key, value)
+                    | Node::KVValueHash(key, value, ..)
+                    | Node::KVCount(key, value, _)
+                    | Node::KVSum(key, value, _)
+                    | Node::KVCountSum(key, value, ..)
+                    | Node::KVValueHashFeatureType(key, value, ..)
+                        if done_with_results
+                            && matches!(
+                                grovedb_element::ElementType::from_serialized_value(value)
+                                    .map(|et| et.base()),
+                                Ok(grovedb_element::ElementType::BidirectionalReference)
+                            ) =>
+                    {
+                        let elem = cost_return_on_error_into!(
+                            &mut cost,
+                            Element::deserialize(value, grove_version)
+                                .wrap_with_cost(OperationCost::default())
+                        );
+                        let hashes = cost_return_on_error!(
+                            &mut cost,
+                            elem.backward_references_hashes(grove_version)
+                                .map_err(Error::from)
+                        )
+                        .expect("bidirectional references carry hashes");
+                        let Element::BidirectionalReference(reference) = elem.into_underlying()
+                        else {
+                            unreachable!("matched by the guard above");
+                        };
+                        let absolute_path = cost_return_on_error_into!(
+                            &mut cost,
+                            path_from_reference_path_type(
+                                reference.forward_reference_path,
+                                &path.to_vec(),
+                                Some(key.as_slice())
+                            )
+                            .wrap_with_cost(OperationCost::default())
+                        );
+                        let referenced_elem = cost_return_on_error_into!(
+                            &mut cost,
+                            self.follow_reference(
+                                absolute_path.as_slice().into(),
+                                true,
+                                None,
+                                grove_version
+                            )
+                        );
+                        let serialized_referenced_elem = cost_return_on_error_into!(
+                            &mut cost,
+                            referenced_elem
+                                .stripped_of_backward_references()
+                                .serialize(grove_version)
+                                .wrap_with_cost(OperationCost::default())
+                        );
+                        *node = if let Some((count, sum)) = count_sum_for_ref {
+                            Node::KVRefValueHashCountSum(
+                                key.to_owned(),
+                                serialized_referenced_elem,
+                                hashes.combined,
+                                count,
+                                sum,
+                            )
+                        } else if let Some(sum) = sum_for_ref {
+                            Node::KVRefValueHashSum(
+                                key.to_owned(),
+                                serialized_referenced_elem,
+                                hashes.combined,
+                                sum,
+                            )
+                        } else if let Some(count) = count_for_ref {
+                            Node::KVRefValueHashCount(
+                                key.to_owned(),
+                                serialized_referenced_elem,
+                                hashes.combined,
+                                count,
+                            )
+                        } else {
+                            Node::KVRefValueHash(
+                                key.to_owned(),
+                                serialized_referenced_elem,
+                                hashes.combined,
+                            )
+                        };
+                    }
                     Node::KV(key, value)
                     | Node::KVValueHash(key, value, ..)
                     | Node::KVBackwardsReferencesValueHash(key, value, ..)

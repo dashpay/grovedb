@@ -97,12 +97,16 @@ impl GroveDb {
                     // A bidirectional reference resolves exactly like a
                     // plain reference; normalize it so the match below needs
                     // no extra arm.
+                    let mut bidirectional_edge_budget = None;
                     let element = match element.into_underlying() {
-                        Element::BidirectionalReference(reference) => Element::Reference(
-                            reference.forward_reference_path,
-                            reference.max_hop,
-                            reference.flags,
-                        ),
+                        Element::BidirectionalReference(reference) => {
+                            bidirectional_edge_budget = reference.max_hop;
+                            Element::Reference(
+                                reference.forward_reference_path,
+                                reference.max_hop,
+                                reference.flags,
+                            )
+                        }
                         other => other,
                     };
                     match element {
@@ -115,8 +119,9 @@ impl GroveDb {
                                 // external costs accumulator instead of
                                 // returning costs from `map` call.
                                 let maybe_item = self
-                                    .follow_reference(
+                                    .follow_reference_with_max_hop(
                                         absolute_path.as_slice().into(),
+                                        bidirectional_edge_budget,
                                         allow_cache,
                                         transaction,
                                         grove_version,
@@ -246,12 +251,16 @@ where {
         // normalize it so the match below needs no extra arm. Never leaks to
         // the caller: reference-family elements are always resolved, not
         // returned.
+        let mut bidirectional_edge_budget = None;
         let element = match element {
-            Element::BidirectionalReference(reference) => Element::Reference(
-                reference.forward_reference_path,
-                reference.max_hop,
-                reference.flags,
-            ),
+            Element::BidirectionalReference(reference) => {
+                bidirectional_edge_budget = reference.max_hop;
+                Element::Reference(
+                    reference.forward_reference_path,
+                    reference.max_hop,
+                    reference.flags,
+                )
+            }
             other => other,
         };
         match element {
@@ -271,8 +280,9 @@ where {
                         // path; the sum carried on the source element does
                         // not affect what `follow_reference` returns.
                         let maybe_item = self
-                            .follow_reference(
+                            .follow_reference_with_max_hop(
                                 absolute_path.as_slice().into(),
+                                bidirectional_edge_budget,
                                 allow_cache,
                                 transaction,
                                 grove_version,
@@ -414,12 +424,16 @@ where {
                     // Normalize a bidirectional reference to its
                     // plain-reference shape; resolution is identical and the
                     // reference element itself is never returned from here.
+                    let mut bidirectional_edge_budget = None;
                     let element = match element {
-                        Element::BidirectionalReference(reference) => Element::Reference(
-                            reference.forward_reference_path,
-                            reference.max_hop,
-                            reference.flags,
-                        ),
+                        Element::BidirectionalReference(reference) => {
+                            bidirectional_edge_budget = reference.max_hop;
+                            Element::Reference(
+                                reference.forward_reference_path,
+                                reference.max_hop,
+                                reference.flags,
+                            )
+                        }
                         other => other,
                     };
                     match element {
@@ -437,8 +451,9 @@ where {
                                     // external costs accumulator instead of
                                     // returning costs from `map` call.
                                     let maybe_item = self
-                                        .follow_reference(
+                                        .follow_reference_with_max_hop(
                                             absolute_path.as_slice().into(),
+                                            bidirectional_edge_budget,
                                             allow_cache,
                                             transaction,
                                             grove_version,
@@ -554,12 +569,16 @@ where {
                     // Normalize a bidirectional reference to its
                     // plain-reference shape; resolution is identical and the
                     // reference element itself is never returned from here.
+                    let mut bidirectional_edge_budget = None;
                     let element = match element {
-                        Element::BidirectionalReference(reference) => Element::Reference(
-                            reference.forward_reference_path,
-                            reference.max_hop,
-                            reference.flags,
-                        ),
+                        Element::BidirectionalReference(reference) => {
+                            bidirectional_edge_budget = reference.max_hop;
+                            Element::Reference(
+                                reference.forward_reference_path,
+                                reference.max_hop,
+                                reference.flags,
+                            )
+                        }
                         other => other,
                     };
                     match element {
@@ -577,8 +596,9 @@ where {
                                     // external costs accumulator instead of
                                     // returning costs from `map` call.
                                     let maybe_item = self
-                                        .follow_reference(
+                                        .follow_reference_with_max_hop(
                                             absolute_path.as_slice().into(),
+                                            bidirectional_edge_budget,
                                             allow_cache,
                                             transaction,
                                             grove_version,
@@ -1151,12 +1171,16 @@ where {
                     // Normalize a bidirectional reference to its
                     // plain-reference shape; resolution is identical and the
                     // reference element itself is never returned from here.
+                    let mut bidirectional_edge_budget = None;
                     let element = match element {
-                        Element::BidirectionalReference(reference) => Element::Reference(
-                            reference.forward_reference_path,
-                            reference.max_hop,
-                            reference.flags,
-                        ),
+                        Element::BidirectionalReference(reference) => {
+                            bidirectional_edge_budget = reference.max_hop;
+                            Element::Reference(
+                                reference.forward_reference_path,
+                                reference.max_hop,
+                                reference.flags,
+                            )
+                        }
                         other => other,
                     };
                     match element {
@@ -1175,8 +1199,9 @@ where {
                                     // external costs accumulator instead of
                                     // returning costs from `map` call.
                                     let maybe_item = self
-                                        .follow_reference(
+                                        .follow_reference_with_max_hop(
                                             absolute_path.as_slice().into(),
+                                            bidirectional_edge_budget,
                                             allow_cache,
                                             transaction,
                                             grove_version,

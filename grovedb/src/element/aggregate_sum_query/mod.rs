@@ -423,6 +423,9 @@ impl ElementAggregateSumQueryExtensions for Element {
             let ref_path = match element {
                 Element::Reference(ref_path, _, _)
                 | Element::ReferenceWithSumItem(ref_path, _, _, _) => ref_path,
+                // A bidirectional reference resolves through its forward
+                // path exactly like a plain reference.
+                Element::BidirectionalReference(reference) => reference.forward_reference_path,
                 _ => {
                     return Err(Error::InternalError(
                         "expected a reference after conversion".to_string(),
@@ -476,6 +479,16 @@ impl ElementAggregateSumQueryExtensions for Element {
                         .map_err(|e| e.into())
                 );
 
+                let resolved = match resolved {
+                    // An intermediate bidirectional reference continues the
+                    // chain through its forward path like any reference.
+                    Element::BidirectionalReference(reference) => Element::Reference(
+                        reference.forward_reference_path,
+                        reference.max_hop,
+                        reference.flags,
+                    ),
+                    other => other,
+                };
                 match resolved {
                     // Both reference variants continue the chain.
                     Element::Reference(next_ref_path, _, _)

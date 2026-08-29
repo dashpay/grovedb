@@ -29,10 +29,39 @@ use crate::{
     merk_cache::{MerkCache, MerkHandle},
     operations::insert::InsertOptions,
     reference_path::{
-        follow_reference, follow_reference_once, ReferencePathType, ResolvedReference,
+        follow_reference, follow_reference_once, path_from_reference_path_type, ReferencePathType,
+        ResolvedReference,
     },
     Element, Error,
 };
+
+/// A backward entry only identifies its referrer by position. Before acting
+/// on the occupant of that position (rewriting it during propagation,
+/// deleting it during a cascade), confirm it really is the registered
+/// referrer: a `BidirectionalReference` whose forward path resolves back to
+/// the element carrying the entry. A reused key would otherwise hand an
+/// unrelated element to the cascade.
+fn referrer_points_back<B: AsRef<[u8]>>(
+    origin_element: &Element,
+    origin_path: &SubtreePathBuilder<'_, B>,
+    origin_key: &[u8],
+    expected_path: &SubtreePathBuilder<'_, B>,
+    expected_key: &[u8],
+) -> bool {
+    let Element::BidirectionalReference(reference) = origin_element else {
+        return false;
+    };
+    let Ok(forward_qualified) = path_from_reference_path_type(
+        reference.forward_reference_path.clone(),
+        &origin_path.to_vec(),
+        Some(origin_key),
+    ) else {
+        return false;
+    };
+    let mut expected_qualified = expected_path.to_vec();
+    expected_qualified.push(expected_key.to_vec());
+    forward_qualified == expected_qualified
+}
 
 /// Write back a backward-references-capable element whose referrer list was
 /// just modified. Items carry their combined hash implicitly
@@ -313,20 +342,75 @@ pub(crate) fn process_bidirectional_reference_insertion<'b, B: AsRef<[u8]>>(
     // path — so a chain that loops back through this key (a cycle that
     // would only materialize AFTER the write) is rejected with
     // `CyclicReference` before any mutation.
-    let target_value_hash = if let Element::BidirectionalReference(..) = target_element {
-        cost_return_on_error!(
-            &mut cost,
-            follow_reference(
+    let (target_value_hash, downstream_hops) =
+        if let Element::BidirectionalReference(..) = target_element {
+            let resolved = cost_return_on_error!(
+                &mut cost,
+                follow_reference(
+                    merk_cache,
+                    path.derive_owned(),
+                    key,
+                    reference.forward_reference_path.clone()
+                )
+            );
+            (resolved.target_node_value_hash, resolved.hops)
+        } else {
+            (target_node_value_hash, 1)
+        };
+
+    // The whole PROSPECTIVE component must fit the global hop budget:
+    // downstream was just measured; upstream is this position's referrer
+    // chain (carried on the element — each bidirectional reference holds at
+    // most one referrer, so it is a single path). Without this, repeated
+    // retargets could splice independently valid segments into chains
+    // longer than any reader will follow.
+    let mut upstream_hops: usize = 0;
+    {
+        let mut current_refs = reference.backward_references.clone();
+        let mut current_path = path.derive_owned();
+        let mut current_key = key.to_vec();
+        while let Some(entry) = current_refs.first().cloned() {
+            upstream_hops += 1;
+            if upstream_hops + downstream_hops > crate::operations::get::MAX_REFERENCE_HOPS {
+                break;
+            }
+            match follow_reference_once(
                 merk_cache,
-                path.derive_owned(),
-                key,
-                reference.forward_reference_path.clone()
+                current_path.clone(),
+                &current_key,
+                entry.inverted_reference,
             )
-        )
-        .target_node_value_hash
-    } else {
-        target_node_value_hash
-    };
+            .unwrap_add_cost(&mut cost)
+            {
+                Ok(resolved)
+                    if referrer_points_back(
+                        &resolved.target_element,
+                        &resolved.target_path,
+                        &resolved.target_key,
+                        &current_path,
+                        &current_key,
+                    ) =>
+                {
+                    current_refs = resolved
+                        .target_element
+                        .backward_references()
+                        .map(|refs| refs.to_vec())
+                        .unwrap_or_default();
+                    current_path = resolved.target_path;
+                    current_key = resolved.target_key;
+                }
+                // Dangling or stale entries end the live upstream chain.
+                _ => break,
+            }
+        }
+    }
+    if upstream_hops + downstream_hops > crate::operations::get::MAX_REFERENCE_HOPS {
+        return Err(Error::BidirectionalReferenceRule(format!(
+            "the resulting reference component would exceed the global budget of {} hops",
+            crate::operations::get::MAX_REFERENCE_HOPS
+        )))
+        .wrap_with_cost(cost);
+    }
 
     // Register the backward edge on the target:
     let inverted_reference = cost_return_on_error_no_add!(
@@ -617,6 +701,19 @@ fn delete_backward_references_recursively<'db, 'b, 'c, B: AsRef<[u8]>>(
                 Err(e) => return Err(e).wrap_with_cost(cost),
             };
 
+            // A reused position holding something other than the registered
+            // referrer is stale bookkeeping, not a cascade member; the
+            // entry disappears with the element being deleted.
+            if !referrer_points_back(
+                &origin_element,
+                &origin_path,
+                &origin_key,
+                &current_path,
+                &current_key,
+            ) {
+                continue;
+            }
+
             if !visited.insert((origin_path.to_vec(), origin_key.clone())) {
                 return Err(Error::CyclicReference).wrap_with_cost(cost);
             }
@@ -710,6 +807,20 @@ fn propagate_backward_references<'db, 'b, 'c, B: AsRef<[u8]>>(
                 }
                 Err(e) => return Err(e).wrap_with_cost(cost),
             };
+
+            // A reused position holding something other than the registered
+            // referrer must not be rewritten — treat the entry as stale and
+            // clean it lazily like a dangling one.
+            if !referrer_points_back(
+                &origin_element,
+                &origin_path,
+                &origin_key,
+                &current_path,
+                &current_key,
+            ) {
+                dangling.push(backward_ref.inverted_reference);
+                continue;
+            }
 
             // Rewrite the referrer with the new end hash (its own referrer
             // list rides along inside the element bytes).

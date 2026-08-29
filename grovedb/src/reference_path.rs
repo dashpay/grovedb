@@ -23,6 +23,9 @@ pub(crate) struct ResolvedReference<'db, 'b, 'c, B> {
     pub target_key: Vec<u8>,
     pub target_element: Element,
     pub target_node_value_hash: CryptoHash,
+    /// Reference edges traversed to reach the terminal (1 for a direct
+    /// target).
+    pub hops: usize,
 }
 
 pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
@@ -46,6 +49,7 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
     let mut cost = Default::default();
 
     let mut hops_left = MAX_REFERENCE_HOPS;
+    let mut hops_taken: usize = 0;
     let mut visited = HashSet::new();
 
     let mut qualified_path = path.clone();
@@ -58,6 +62,7 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
     let mut current_ref = ref_path;
 
     while hops_left > 0 {
+        hops_taken += 1;
         let referred_qualified_path = cost_return_on_error_into_no_add!(
             cost,
             current_ref.absolute_qualified_path(current_path, &current_key)
@@ -135,6 +140,7 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
                     target_key: referred_key,
                     target_element: e,
                     target_node_value_hash,
+                    hops: hops_taken,
                 })
                 .wrap_with_cost(cost);
             }
@@ -211,6 +217,7 @@ pub(crate) fn follow_reference_once<'db, 'b, 'c, B: AsRef<[u8]>>(
         target_key: referred_key,
         target_element: element,
         target_node_value_hash,
+        hops: 1,
     })
     .wrap_with_cost(cost)
 }

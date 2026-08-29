@@ -169,9 +169,15 @@ where
             ProofNodeType::KvSum => self.to_kv_sum_node(),
             ProofNodeType::KvCountSum => self.to_kv_count_sum_node(),
             ProofNodeType::KvValueHash => self.to_kv_value_hash_node(),
-            // Chunks carry full nodes with their stored (combined) value
-            // hashes; the stripped/backrefs split is a query-proof concern.
-            ProofNodeType::KvBackwardsReferencesValueHash => self.to_kv_value_hash_node(),
+            // Chunks must restore the FULL element (the referrer list is
+            // state), so the stripped/backrefs query node cannot be used.
+            // Emit KVValueHashFeatureType: it carries the full bytes, the
+            // stored (combined) value hash, and the feature type — and the
+            // restorer recomputes the combined hash from the bytes for the
+            // item variants, binding them (see `write_chunk`).
+            ProofNodeType::KvBackwardsReferencesValueHash => {
+                self.to_kv_value_hash_feature_type_node()
+            }
             ProofNodeType::KvValueHashFeatureType => self.to_kv_value_hash_feature_type_node(),
             // References: at merk level, generate same node type as non-ref counterpart
             // GroveDB will post-process if needed

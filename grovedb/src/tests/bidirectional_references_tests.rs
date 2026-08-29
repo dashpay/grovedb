@@ -2527,3 +2527,326 @@ fn backward_references_nodes_are_valid_absence_boundaries() {
         }
     }
 }
+
+/// V1 verifiers reject a bidirectional reference smuggled into a plain
+/// KVValueHash RESULT node (downgraded from the bound KVRefValueHash
+/// shape): the raw reference bytes would ride unbound on the carried hash.
+#[test]
+fn verifier_rejects_downgraded_bidirectional_reference_results() {
+    use bincode::config;
+    use grovedb_merk::{
+        proofs::{encoding::encode_into, Decoder, Node, Op},
+        tree::{combine_hash, value_hash},
+    };
+
+    use crate::operations::proof::{GroveDBProof, GroveDBProofV1, LayerProof, ProofBytes};
+
+    let grove_version = GroveVersion::latest();
+    let db = db_with_bwr_item();
+    db.insert(
+        &[TEST_LEAF],
+        b"ref",
+        sibling_bidi(b"value", true),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    let mut query = Query::new();
+    query.insert_key(b"ref".to_vec());
+    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+    let proof = db
+        .prove_query(&path_query, None, grove_version)
+        .unwrap()
+        .unwrap();
+    GroveDb::verify_query(&proof, &path_query, grove_version).expect("honest proof verifies");
+
+    // Downgrade: rebuild the dereferenced node as a plain KVValueHash whose
+    // carried hash still reconstructs the same node hash, but whose value
+    // bytes are now arbitrary reference bytes.
+    let raw_reference_bytes = sibling_bidi(b"value", true)
+        .serialize(grove_version)
+        .unwrap();
+    let cfg = config::standard()
+        .with_big_endian()
+        .with_limit::<{ 256 * 1024 * 1024 }>();
+    let (mut decoded, _): (GroveDBProof, _) = bincode::decode_from_slice(&proof, cfg).unwrap();
+    let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut decoded else {
+        panic!("expected V1");
+    };
+    let mut layer: &mut LayerProof = root_layer;
+    for key in &path_query.path {
+        layer = layer.lower_layers.get_mut(key).unwrap();
+    }
+    let ProofBytes::Merk(leaf_bytes) = &mut layer.merk_proof else {
+        panic!("expected merk bytes");
+    };
+    let mut ops: Vec<Op> = Decoder::new(leaf_bytes).collect::<Result<_, _>>().unwrap();
+    let mut swapped = false;
+    for op in ops.iter_mut() {
+        if let Op::Push(Node::KVRefValueHash(key, target_bytes, self_hash))
+        | Op::PushInverted(Node::KVRefValueHash(key, target_bytes, self_hash)) = op
+        {
+            let node_value_hash =
+                combine_hash(self_hash, &value_hash(target_bytes).unwrap()).unwrap();
+            *op = Op::Push(Node::KVValueHash(
+                key.clone(),
+                raw_reference_bytes.clone(),
+                node_value_hash,
+            ));
+            swapped = true;
+            break;
+        }
+    }
+    assert!(swapped, "proof must contain the dereferenced node");
+    let mut new_leaf = Vec::new();
+    encode_into(ops.iter(), &mut new_leaf);
+    *leaf_bytes = new_leaf;
+    let forged = bincode::encode_to_vec(
+        decoded,
+        config::standard().with_big_endian().with_no_limit(),
+    )
+    .unwrap();
+
+    let err = GroveDb::verify_query(&forged, &path_query, grove_version)
+        .expect_err("downgraded bidirectional result must be rejected");
+    assert!(err.to_string().contains("must be"), "got: {err}");
+}
+
+/// Limit-truncated proofs still verify when a bidirectional reference
+/// lands past the window: the prover rewrites filler rows into the bound
+/// shape too.
+#[test]
+fn truncated_windows_over_bidirectional_references_still_verify() {
+    let grove_version = GroveVersion::latest();
+    let db = db_with_bwr_item();
+    db.insert(
+        &[TEST_LEAF],
+        b"zref",
+        sibling_bidi(b"value", true),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    for limit in [1u16, 2] {
+        let mut query = Query::new();
+        query.insert_range_inclusive(b"a".to_vec()..=b"zz".to_vec());
+        let path_query = PathQuery::new(
+            vec![TEST_LEAF.to_vec()],
+            crate::SizedQuery::new(query, Some(limit), None),
+        );
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (hash, _) = GroveDb::verify_query(&proof, &path_query, grove_version)
+            .unwrap_or_else(|e| panic!("limit {limit} proof must verify, got {e}"));
+        assert_eq!(hash, db.root_hash(None, grove_version).unwrap().unwrap());
+    }
+}
+
+/// A per-edge `max_hop` on a bidirectional reference caps resolution:
+/// an edge declaring one hop cannot resolve through a second reference.
+#[test]
+fn per_edge_max_hop_is_enforced_on_reads() {
+    let grove_version = GroveVersion::latest();
+    let db = db_with_bwr_item();
+    db.insert(
+        &[TEST_LEAF],
+        b"mid",
+        sibling_bidi(b"value", true),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    // head -> mid -> value, but head declares max_hop 1.
+    db.insert(
+        &[TEST_LEAF],
+        b"head",
+        Element::BidirectionalReference(BidirectionalReference {
+            forward_reference_path: ReferencePathType::SiblingReference(b"mid".to_vec()),
+            backward_references: Vec::new(),
+            cascade_on_update: true,
+            max_hop: Some(1),
+            flags: None,
+        }),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    let mut query = Query::new();
+    query.insert_key(b"head".to_vec());
+    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+    assert!(
+        matches!(
+            db.query_item_value(&path_query, true, true, true, None, grove_version)
+                .unwrap(),
+            Err(Error::ReferenceLimit)
+        ),
+        "a one-hop edge must not resolve through a second reference"
+    );
+
+    // The unrestricted sibling still resolves.
+    let mut query = Query::new();
+    query.insert_key(b"mid".to_vec());
+    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+    db.query_item_value(&path_query, true, true, true, None, grove_version)
+        .unwrap()
+        .unwrap();
+}
+
+/// Raw query surfaces also strip referrer lists — public reads never see
+/// the bookkeeping.
+#[test]
+fn raw_queries_strip_referrer_lists() {
+    let grove_version = GroveVersion::latest();
+    let db = db_with_bwr_item();
+    db.insert(
+        &[TEST_LEAF],
+        b"ref",
+        sibling_bidi(b"value", true),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    let mut query = Query::new();
+    query.insert_key(b"value".to_vec());
+    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+    let (results, _) = db
+        .query_raw(
+            &path_query,
+            true,
+            true,
+            true,
+            crate::query_result_type::QueryResultType::QueryElementResultType,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+    for result in results.into_iterator() {
+        let crate::query_result_type::QueryResultElement::ElementResultItem(element) = result
+        else {
+            panic!("unexpected result shape")
+        };
+        assert_eq!(element.backward_references().unwrap().len(), 0);
+    }
+}
+
+/// Flagged deletion refuses to sweep through descendant specialized trees
+/// instead of corrupting or failing mid-way.
+#[test]
+fn flagged_delete_rejects_specialized_descendants() {
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    db.insert(
+        &[TEST_LEAF],
+        b"outer",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF, b"outer"],
+        b"mmr",
+        Element::new_mmr_tree(0, None),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    let options = DeleteOptions {
+        allow_deleting_non_empty_trees: true,
+        deleting_non_empty_trees_returns_error: false,
+        propagate_backward_references: true,
+        ..Default::default()
+    };
+    assert!(matches!(
+        db.delete(&[TEST_LEAF], b"outer", Some(options), None, grove_version)
+            .unwrap(),
+        Err(Error::NotSupported(_))
+    ));
+}
+
+/// `verify_grovedb` audits reciprocity: a forged referrer entry naming a
+/// position that does not point back is reported.
+#[test]
+fn verify_grovedb_reports_forged_referrer_entries() {
+    use grovedb_merk::{tree::Op as MerkOp, TreeFeatureType};
+    use grovedb_storage::{Storage, StorageBatch};
+
+    let grove_version = GroveVersion::latest();
+    let db = db_with_bwr_item();
+    let tx = db.start_transaction();
+
+    // Forge an item claiming `value` refers to it — with a CONSISTENT
+    // combined hash, so only the reciprocity audit can catch it.
+    let forged_element = Element::ItemWithBackwardsReferences(
+        b"x".to_vec(),
+        vec![crate::bidirectional_references::BackwardReference {
+            inverted_reference: ReferencePathType::SiblingReference(b"value".to_vec()),
+            cascade_on_update: true,
+        }],
+        None,
+    );
+    use grovedb_merk::element::ElementExt;
+    let combined = forged_element
+        .backward_references_hashes(grove_version)
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .combined;
+    let bytes = forged_element.serialize(grove_version).unwrap();
+    let batch = StorageBatch::new();
+    let mut merk = db
+        .open_transactional_merk_at_path(
+            SubtreePath::from(&[TEST_LEAF]),
+            &tx,
+            Some(&batch),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+    merk.apply::<_, Vec<u8>>(
+        &[(
+            b"forged".to_vec(),
+            MerkOp::PutWithProvidedValueHash(bytes, combined, TreeFeatureType::BasicMerkNode),
+        )],
+        &[],
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    drop(merk);
+    db.db
+        .commit_multi_context_batch(batch, Some(&tx))
+        .unwrap()
+        .unwrap();
+
+    let issues = db
+        .verify_grovedb(Some(&tx), true, true, grove_version)
+        .unwrap();
+    assert!(
+        !issues.is_empty(),
+        "the forged referrer entry must be reported"
+    );
+}

@@ -597,6 +597,10 @@ impl ElementQueryExtensions for Element {
         } = args;
 
         let element = element.convert_if_reference_to_absolute_reference(path, key)?;
+        // Public results never carry referrer lists — they are internal
+        // bookkeeping (raw queries return backward-references elements
+        // unresolved, but still stripped).
+        let element = element.stripped_of_backward_references();
 
         if offset.unwrap_or(0) == 0 {
             match result_type {

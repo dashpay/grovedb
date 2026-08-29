@@ -1877,6 +1877,23 @@ where
                 let logical_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                 return Ok(logical_hash).wrap_with_cost(cost);
             }
+            // A bidirectional reference here means the declared hop budget
+            // ran out one hop short of a terminal: its stored hash is the
+            // COMBINED reference hash, never the terminal logical hash a
+            // dependent reference commits to. Fail closed rather than bake
+            // a hash that verify_grovedb will report as corrupt. (Plain
+            // references keep the long-standing documented contract: an
+            // ill-formed hop-1 chain surfaces at verification instead.)
+            if matches!(
+                ElementType::from_serialized_value(&referenced_value).map(|et| et.base()),
+                Ok(ElementType::BidirectionalReference)
+            ) {
+                return Err(Error::InvalidBatchOperation(
+                    "reference hop budget exhausted on a bidirectional reference; the chain \
+                     needs at least one more hop to reach its terminal",
+                ))
+                .wrap_with_cost(cost);
+            }
 
             return Ok(referenced_element_value_hash).wrap_with_cost(cost);
         }
