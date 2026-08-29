@@ -183,6 +183,71 @@ mod tests {
         );
     }
 
+    #[test]
+    fn partial_batch_combines_both_segments_churn() {
+        // The partial flow accumulates churn from TWO applies — the initial
+        // segment and the continuation the add-on closure supplies — and
+        // reclassifies their sum at its single commit. Re-key one group in
+        // each segment: if either segment's churn were dropped, its old
+        // row's removal would survive into the final cost.
+        //
+        // Scoped to the COST LANES only: apply_partial_batch has a
+        // pre-existing state bug when both segments touch the same
+        // secondary (the initial segment's row deletion is resurrected by
+        // the continuation's rotation writes — see
+        // https://github.com/dashpay/grovedb/issues/842), so state-level
+        // assertions belong to that fix, not this accounting change.
+        let grove_version = GroveVersion::latest();
+
+        let db = setup_pcit_with_group(grove_version, 2);
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"q",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert group q");
+        for i in 0..2u64 {
+            db.insert(
+                [TEST_LEAF, b"cidx", b"q"].as_ref(),
+                &i.to_be_bytes(),
+                Element::new_item(vec![]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate group q");
+        }
+
+        let bump_op = |group: &[u8]| {
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx".to_vec(), group.to_vec()],
+                2u64.to_be_bytes().to_vec(),
+                Element::new_item(vec![]),
+            )
+        };
+
+        let cost_result = db.apply_partial_batch(
+            vec![bump_op(b"p")],
+            Some(crate::batch::BatchApplyOptions::default()),
+            |_cost, _left_over_ops| Ok(vec![bump_op(b"q")]),
+            None,
+            grove_version,
+        );
+        let cost = cost_result.cost;
+        cost_result.value.expect("partial batch applies");
+
+        assert_eq!(
+            total_removed(&cost),
+            0,
+            "both segments' re-key churn must be rebilled at the one commit"
+        );
+        assert!(cost.storage_cost.replaced_bytes > 0);
+    }
+
     // -----------------------------------------------------------------
     // Unit: the reclassifier's lane handling
     // -----------------------------------------------------------------
