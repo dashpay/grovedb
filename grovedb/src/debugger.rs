@@ -863,10 +863,15 @@ fn reference_path_to_grovedbg(
 
 fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
     match element {
-        crate::Element::Item(value, element_flags) => grovedbg_types::Element::Item {
-            value,
-            element_flags,
-        },
+        crate::Element::Item(value, element_flags)
+        | crate::Element::ItemWithBackwardsReferences(value, element_flags) => {
+            // grovedbg has no backward-references variants; show the plain
+            // counterpart.
+            grovedbg_types::Element::Item {
+                value,
+                element_flags,
+            }
+        }
         crate::Element::Tree(root_key, element_flags) => grovedbg_types::Element::Subtree {
             root_key,
             element_flags,
@@ -875,6 +880,13 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             grovedbg_types::Element::Reference(reference_path_to_grovedbg(
                 reference_path,
                 element_flags,
+            ))
+        }
+        crate::Element::BidirectionalReference(reference) => {
+            // Shown as its plain-reference shape.
+            grovedbg_types::Element::Reference(reference_path_to_grovedbg(
+                reference.forward_reference_path,
+                reference.flags,
             ))
         }
         crate::Element::ReferenceWithSumItem(
@@ -886,10 +898,13 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             reference: reference_path_to_grovedbg(reference_path, element_flags),
             sum_item_value,
         },
-        crate::Element::SumItem(value, element_flags) => grovedbg_types::Element::SumItem {
-            value,
-            element_flags,
-        },
+        crate::Element::SumItem(value, element_flags)
+        | crate::Element::SumItemWithBackwardsReferences(value, element_flags) => {
+            grovedbg_types::Element::SumItem {
+                value,
+                element_flags,
+            }
+        }
         crate::Element::ItemWithSumItem(value, sum_value, element_flags) => {
             grovedbg_types::Element::ItemWithSumItem {
                 value,

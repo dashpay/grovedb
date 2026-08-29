@@ -37,7 +37,7 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
             .grovedb_versions
             .operations
             .get
-            .follow_reference
+            .ref_path_follow_reference
     );
 
     let mut cost = Default::default();
@@ -73,15 +73,16 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
             cost_return_on_error!(&mut cost, merk_cache.get_merk(referred_path.clone()));
         let (element, value_hash) = cost_return_on_error!(
             &mut cost,
-            referred_merk
-                .for_merk(|m| {
-                    Element::get_with_value_hash(m, &referred_key, true, merk_cache.version)
-                })
-                .map_err(|e| match e {
-                    grovedb_merk::error::Error::PathKeyNotFound(s) =>
-                        Error::CorruptedReferencePathKeyNotFound(s),
-                    e => e.into(),
-                })
+            referred_merk.for_merk(|m| {
+                Element::get_with_value_hash(m, &referred_key, true, merk_cache.version).map_err(
+                    |e| match e {
+                        grovedb_merk::error::Error::PathKeyNotFound(s) => {
+                            Error::CorruptedReferencePathKeyNotFound(s)
+                        }
+                        e => e.into(),
+                    },
+                )
+            })
         );
 
         // Look through wrapper variants so a wrapper-wrapped reference is
@@ -96,11 +97,20 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
         // share the resolution path. The carried sum on
         // `ReferenceWithSumItem` is irrelevant to chain following: it's a
         // parent-aggregation property, not a per-hop value.
+        // `BidirectionalReference` is a reference too: its forward path is
+        // followed exactly like a plain reference's. (Its backward slot is
+        // bookkeeping for update propagation, irrelevant to resolution.)
         match element.into_underlying() {
             Element::Reference(ref_path, ..) | Element::ReferenceWithSumItem(ref_path, ..) => {
                 current_path = referred_path;
                 current_key = referred_key;
                 current_ref = ref_path;
+                hops_left -= 1;
+            }
+            Element::BidirectionalReference(reference) => {
+                current_path = referred_path;
+                current_key = referred_key;
+                current_ref = reference.forward_reference_path;
                 hops_left -= 1;
             }
             e => {
@@ -156,15 +166,16 @@ pub(crate) fn follow_reference_once<'db, 'b, 'c, B: AsRef<[u8]>>(
         cost_return_on_error!(&mut cost, merk_cache.get_merk(referred_path.clone()));
     let (element, value_hash) = cost_return_on_error!(
         &mut cost,
-        referred_merk
-            .for_merk(|m| {
-                Element::get_with_value_hash(m, &referred_key, true, merk_cache.version)
+        referred_merk.for_merk(|m| {
+            Element::get_with_value_hash(m, &referred_key, true, merk_cache.version).map_err(|e| {
+                match e {
+                    grovedb_merk::error::Error::PathKeyNotFound(s) => {
+                        Error::CorruptedReferencePathKeyNotFound(s)
+                    }
+                    e => e.into(),
+                }
             })
-            .map_err(|e| match e {
-                grovedb_merk::error::Error::PathKeyNotFound(s) =>
-                    Error::CorruptedReferencePathKeyNotFound(s),
-                e => e.into(),
-            })
+        })
     );
 
     Ok(ResolvedReference {

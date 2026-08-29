@@ -15,7 +15,10 @@ use std::fmt;
 
 use bincode::{Decode, Encode};
 
-use crate::{element_type::ElementType, reference_path::ReferencePathType};
+use crate::{
+    bidirectional_reference::BidirectionalReference, element_type::ElementType,
+    reference_path::ReferencePathType,
+};
 
 /// Optional meta-data to be stored per element
 pub type ElementFlags = Vec<u8>;
@@ -348,6 +351,37 @@ pub enum Element {
     /// Variant order in this enum determines bincode's variant-index
     /// encoding on disk. This variant gets index 24.
     PrivateDocumentStore(u64, u32, u8, Option<ElementFlags>),
+    /// A reference that registers itself in its target's backward-reference
+    /// meta storage, so target updates propagate back along the chain (or
+    /// cascade-delete it). Resolves like `Reference` on reads. May only
+    /// target elements with backward-reference support
+    /// (`ItemWithBackwardsReferences`, `SumItemWithBackwardsReferences`,
+    /// or another `BidirectionalReference`).
+    ///
+    /// May not be wrapped in `NonCounted` / `NotSummed` /
+    /// `NotCountedOrSummed`, and is rejected by `apply_batch` (batch
+    /// support for backward-reference propagation is not implemented yet).
+    ///
+    /// Discriminant 25.
+    BidirectionalReference(BidirectionalReference),
+    /// An ordinary value that supports being targeted by bidirectional
+    /// references: up to 32 backward references are tracked for it in the
+    /// subtree's meta storage. Behaves like `Item` in every other way.
+    ///
+    /// May not be wrapped in the aggregation wrappers and is rejected by
+    /// `apply_batch` (same reason as `BidirectionalReference`).
+    ///
+    /// Discriminant 26.
+    ItemWithBackwardsReferences(Vec<u8>, Option<ElementFlags>),
+    /// A signed integer value that can be totaled in a sum tree AND supports
+    /// being targeted by bidirectional references. Behaves like `SumItem`
+    /// in every other way.
+    ///
+    /// May not be wrapped in the aggregation wrappers and is rejected by
+    /// `apply_batch` (same reason as `BidirectionalReference`).
+    ///
+    /// Discriminant 27.
+    SumItemWithBackwardsReferences(SumValue, Option<ElementFlags>),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -668,6 +702,44 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path,
+                cascade_on_update,
+                max_hop,
+                flags,
+                ..
+            }) => {
+                write!(
+                    f,
+                    "BidirectionalReference({}, max_hop: {}, cascade: {}{})",
+                    forward_reference_path,
+                    max_hop.map_or("None".to_string(), |h| h.to_string()),
+                    cascade_on_update,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::ItemWithBackwardsReferences(data, flags) => {
+                write!(
+                    f,
+                    "ItemWithBackwardsReferences({}{})",
+                    hex_to_ascii(data),
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::SumItemWithBackwardsReferences(sum_value, flags) => {
+                write!(
+                    f,
+                    "SumItemWithBackwardsReferences({}{})",
+                    sum_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
         }
     }
 }
@@ -705,6 +777,11 @@ impl Element {
                 ElementType::ProvableCountProvableSumIndexedTree
             }
             Element::PrivateDocumentStore(..) => ElementType::PrivateDocumentStore,
+            Element::BidirectionalReference(..) => ElementType::BidirectionalReference,
+            Element::ItemWithBackwardsReferences(..) => ElementType::ItemWithBackwardsReferences,
+            Element::SumItemWithBackwardsReferences(..) => {
+                ElementType::SumItemWithBackwardsReferences
+            }
             Element::NonCounted(inner) => match inner.element_type() {
                 ElementType::Item => ElementType::NonCountedItem,
                 ElementType::Reference => ElementType::NonCountedReference,
@@ -833,6 +910,18 @@ impl Element {
                 ) {
                     return Err(crate::error::ElementError::InvalidInput(
                         "NonCounted cannot wrap another wrapper",
+                    ));
+                }
+                if matches!(
+                    **inner,
+                    Element::BidirectionalReference(..)
+                        | Element::ItemWithBackwardsReferences(..)
+                        | Element::SumItemWithBackwardsReferences(..)
+                ) {
+                    return Err(crate::error::ElementError::InvalidInput(
+                        "NonCounted cannot wrap backward-references elements \
+                         (BidirectionalReference, ItemWithBackwardsReferences, \
+                         SumItemWithBackwardsReferences)",
                     ));
                 }
             }
@@ -964,6 +1053,9 @@ mod serde_impl {
             Option<ElementFlags>,
         ),
         PrivateDocumentStore(u64, u32, u8, Option<ElementFlags>),
+        BidirectionalReference(crate::bidirectional_reference::BidirectionalReference),
+        ItemWithBackwardsReferences(Vec<u8>, Option<ElementFlags>),
+        SumItemWithBackwardsReferences(SumValue, Option<ElementFlags>),
     }
 
     impl From<ElementShadow> for Element {
@@ -1015,6 +1107,13 @@ mod serde_impl {
                 }
                 ElementShadow::PrivateDocumentStore(c, e, p, f) => {
                     Element::PrivateDocumentStore(c, e, p, f)
+                }
+                ElementShadow::BidirectionalReference(r) => Element::BidirectionalReference(r),
+                ElementShadow::ItemWithBackwardsReferences(v, f) => {
+                    Element::ItemWithBackwardsReferences(v, f)
+                }
+                ElementShadow::SumItemWithBackwardsReferences(v, f) => {
+                    Element::SumItemWithBackwardsReferences(v, f)
                 }
             }
         }

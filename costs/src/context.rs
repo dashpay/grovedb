@@ -149,6 +149,17 @@ impl<T> CostContext<CostContext<T>> {
 
 /// Extension trait to add costs context to values.
 pub trait CostsExt {
+    /// Wraps any value into `CostResult` with default costs and `Ok` variant.
+    fn wrap_cost_ok<E>(self) -> CostResult<Self, E>
+    where
+        Self: Sized,
+    {
+        CostContext {
+            value: Ok(self),
+            cost: Default::default(),
+        }
+    }
+
     /// Wraps any value into a `CostContext` object with provided costs.
     fn wrap_with_cost(self, cost: OperationCost) -> CostContext<Self>
     where

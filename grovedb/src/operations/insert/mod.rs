@@ -1,20 +1,19 @@
 //! Insert operations
 
-use std::{collections::HashMap, option::Option::None};
+use std::option::Option::None;
 
-use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
-};
-use grovedb_merk::{Merk, MerkOptions};
+use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_merk::MerkOptions;
 use grovedb_path::SubtreePath;
-use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch};
+use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
-use crate::{util::TxRef, Element, Error, GroveDb, Transaction, TransactionArg};
+use crate::{util::TxRef, Element, Error, GroveDb, TransactionArg};
 
 /// Versioned dispatch for `add_element_on_transaction` (the non-batch insert
 /// path). Consensus-critical — see the module docs.
 mod add_element_on_transaction;
+mod insert_on_transaction;
 
 #[derive(Clone)]
 /// Insert options
@@ -25,6 +24,14 @@ pub struct InsertOptions {
     pub validate_insertion_does_not_override_tree: bool,
     /// Base root storage is free
     pub base_root_storage_is_free: bool,
+    /// Propagate updates to elements with backward references. This enables
+    /// bidirectional-reference bookkeeping for this call: overwrites of
+    /// backward-references elements trigger hash propagation along the
+    /// reference chains, or cascade deletion when the new element no longer
+    /// supports backward references. Since the checks require an extra
+    /// fetch on every write, the feature is opt-in per call. Requires
+    /// `GROVE_V4`+; ignored (never set) by shipped v1..v3 flows.
+    pub propagate_backward_references: bool,
 }
 
 impl Default for InsertOptions {
@@ -33,6 +40,7 @@ impl Default for InsertOptions {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: true,
             base_root_storage_is_free: true,
+            propagate_backward_references: false,
         }
     }
 }
@@ -42,7 +50,7 @@ impl InsertOptions {
         self.validate_insertion_does_not_override_tree || self.validate_insertion_does_not_override
     }
 
-    fn as_merk_options(&self) -> MerkOptions {
+    pub(crate) fn as_merk_options(&self) -> MerkOptions {
         MerkOptions {
             base_root_storage_is_free: self.base_root_storage_is_free,
         }
@@ -111,67 +119,6 @@ impl GroveDb {
         );
 
         tx.commit_local().wrap_with_cost(cost)
-    }
-
-    fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
-        &self,
-        path: SubtreePath<'b, B>,
-        key: &[u8],
-        element: Element,
-        options: InsertOptions,
-        transaction: &'db Transaction,
-        batch: &StorageBatch,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        check_grovedb_v0_with_cost!(
-            "insert_on_transaction",
-            grove_version
-                .grovedb_versions
-                .operations
-                .insert
-                .insert_on_transaction
-        );
-
-        let mut cost = OperationCost::default();
-
-        let mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>> =
-            HashMap::default();
-
-        let merk = cost_return_on_error!(
-            &mut cost,
-            self.add_element_on_transaction(
-                path.clone(),
-                key,
-                element,
-                options,
-                transaction,
-                batch,
-                grove_version
-            )
-        );
-        // A generic insert cannot mirror the new child's ordering value into
-        // an indexed primary's secondary index. Reject before propagation, so
-        // the `StorageBatch` is discarded and nothing is committed.
-        cost_return_on_error_no_add!(
-            cost,
-            crate::operations::indexed_tree::reject_generic_write_into_indexed_primary(
-                merk.tree_type,
-                "insert",
-            )
-        );
-        merk_cache.insert(path.clone(), merk);
-        cost_return_on_error!(
-            &mut cost,
-            self.propagate_changes_with_transaction(
-                merk_cache,
-                path,
-                transaction,
-                batch,
-                grove_version
-            )
-        );
-
-        Ok(()).wrap_with_cost(cost)
     }
 
     /// Insert if not exists
@@ -341,9 +288,15 @@ mod tests {
     use grovedb_version::version::GroveVersion;
     use pretty_assertions::assert_eq;
 
+    use grovedb_merk::element::get::ElementFetchFromStorageExtensions;
+    use grovedb_path::SubtreePath;
+
     use crate::{
         operations::insert::InsertOptions,
-        tests::{common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, TEST_LEAF},
+        tests::{
+            common::{make_tree_with_bidi_references, EMPTY_PATH},
+            make_empty_grovedb, make_test_grovedb, TEST_LEAF,
+        },
         Element, Error,
     };
 
@@ -521,6 +474,7 @@ mod tests {
                     validate_insertion_does_not_override: true,
                     validate_insertion_does_not_override_tree: true,
                     base_root_storage_is_free: true,
+                    propagate_backward_references: false,
                 }),
                 None,
                 gv,
@@ -590,6 +544,7 @@ mod tests {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: false,
             base_root_storage_is_free: true,
+            propagate_backward_references: false,
         }
     }
 
@@ -3295,6 +3250,7 @@ mod tests {
                     validate_insertion_does_not_override: false,
                     validate_insertion_does_not_override_tree: false,
                     base_root_storage_is_free: true,
+                    propagate_backward_references: false,
                 }),
                 Some(&tx),
                 grove_version,
@@ -3548,5 +3504,90 @@ mod tests {
     #[test]
     fn indexed_conversion_of_plain_tree_rejected_v1() {
         indexed_conversion_of_plain_tree_is_rejected(GroveVersion::latest());
+    }
+
+    #[test]
+    fn update_item_with_backward_references() {
+        let version = GroveVersion::latest();
+
+        let db = make_tree_with_bidi_references(version);
+
+        let transaction = db.start_transaction();
+
+        let get_hash = || {
+            Element::get_value_hash(
+                &db.open_transactional_merk_at_path(
+                    SubtreePath::from(&[TEST_LEAF, b"innertree"]),
+                    &transaction,
+                    None,
+                    version,
+                )
+                .unwrap()
+                .unwrap(),
+                b"ref",
+                true,
+                version,
+            )
+            .unwrap()
+            .unwrap()
+            .unwrap()
+        };
+
+        let hash_before = get_hash();
+
+        db.insert(
+            &[b"deep_leaf".as_ref(), b"deep_node_1", b"deeper_2"],
+            b"key5",
+            Element::new_item_allowing_bidirectional_references(b"certainly new value".to_vec()),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+
+        let hash_after = get_hash();
+
+        assert_ne!(hash_before, hash_after);
+    }
+
+    #[test]
+    fn update_item_with_backward_references_with_no_support() {
+        // Overwriting an item that has backward references with an element
+        // that no longer supports them cascades the reference chain away
+        // (every reference allowed cascade_on_update).
+        let version = GroveVersion::latest();
+
+        let db = make_tree_with_bidi_references(version);
+
+        let transaction = db.start_transaction();
+
+        db.insert(
+            &[b"deep_leaf".as_ref(), b"deep_node_1", b"deeper_2"],
+            b"key5",
+            Element::new_item(b"hello".to_vec()),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(matches!(
+            db.get(
+                &[TEST_LEAF, b"innertree"],
+                b"ref",
+                Some(&transaction),
+                version
+            )
+            .unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ));
     }
 }

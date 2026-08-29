@@ -1144,6 +1144,20 @@ impl GroveDb {
                             // results, we can modify the proof to alter
                             // }
 
+                            // Backward-references elements activate with
+                            // GROVE_V4, which proves through V1; the V0
+                            // prover (locked wire format, grove v1/v2)
+                            // can never legitimately encounter them.
+                            Ok(Element::BidirectionalReference(..))
+                            | Ok(Element::ItemWithBackwardsReferences(..))
+                            | Ok(Element::SumItemWithBackwardsReferences(..)) => {
+                                return Err(Error::NotSupported(
+                                    "backward-references elements are not supported in V0 \
+                                     proofs; use a grove version with V1 proofs (GROVE_V3+)"
+                                        .to_owned(),
+                                ))
+                                .wrap_with_cost(cost);
+                            }
                             // Explicit: when done_with_results is true, the above guards fail
                             // and we skip. Listed explicitly so adding a new Element variant
                             // produces a compile error here instead of silently dropping it.
@@ -2198,6 +2212,20 @@ impl GroveDb {
                         // the proof) keeps its wrapper byte either way.
                         let elem =
                             Element::deserialize(value, grove_version).map(|e| e.into_underlying());
+                        // Normalize a bidirectional reference to its plain
+                        // reference shape: proof-wise both resolve the same
+                        // way, and `elem` is only used for dispatch here —
+                        // the node's `value` bytes (which carry the real
+                        // serialized element and feed value_hash) are left
+                        // untouched.
+                        let elem = elem.map(|e| match e {
+                            Element::BidirectionalReference(reference) => Element::Reference(
+                                reference.forward_reference_path,
+                                reference.max_hop,
+                                reference.flags,
+                            ),
+                            other => other,
+                        });
                         match elem {
                             // `ReferenceWithSumItem` shares this proof path
                             // with `Reference` — both produce a
@@ -2276,6 +2304,8 @@ impl GroveDb {
                             Ok(Element::Item(..))
                             | Ok(Element::SumItem(..))
                             | Ok(Element::ItemWithSumItem(..))
+                            | Ok(Element::ItemWithBackwardsReferences(..))
+                            | Ok(Element::SumItemWithBackwardsReferences(..))
                                 if !done_with_results =>
                             {
                                 if !should_preserve_node_type {
@@ -3256,9 +3286,14 @@ impl GroveDb {
                             // Explicit: when done_with_results is true, the above guards fail
                             // and we skip. Listed explicitly so adding a new Element variant
                             // produces a compile error here instead of silently dropping it.
+                            Ok(Element::BidirectionalReference(..)) => {
+                                unreachable!("normalized to Element::Reference above")
+                            }
                             Ok(Element::Item(..))
                             | Ok(Element::SumItem(..))
                             | Ok(Element::ItemWithSumItem(..))
+                            | Ok(Element::ItemWithBackwardsReferences(..))
+                            | Ok(Element::SumItemWithBackwardsReferences(..))
                             | Ok(Element::Tree(..))
                             | Ok(Element::SumTree(..))
                             | Ok(Element::BigSumTree(..))

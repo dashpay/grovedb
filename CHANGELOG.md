@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Bidirectional references (#345): three new `Element` variants —
+  `BidirectionalReference` (discriminant 25), `ItemWithBackwardsReferences`
+  (26), and `SumItemWithBackwardsReferences` (27) — plus a
+  backward-references subsystem that keeps reference chains consistent:
+  updating a referenced element propagates the new hash along every chain,
+  and deleting/overwriting it cascades the chains away (each affected
+  reference must opt in via `cascade_on_update`). Opt-in per call through
+  the new `propagate_backward_references` flag on `InsertOptions` /
+  `DeleteOptions`. Requires `GROVE_V4`; earlier versions and all batch
+  entry points reject the new variants (fail closed). See
+  `adr/bidirectional_references.md`.
 - **BREAKING**: Added `add_parent_tree_on_subquery` feature to PathQuery (#379)
   - New field in `Query` struct: `add_parent_tree_on_subquery: bool`
   - When set to `true`, parent tree elements (like CountTree or SumTree) are included in query results when performing subqueries

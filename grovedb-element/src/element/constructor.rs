@@ -78,6 +78,66 @@ impl Element {
         Element::SumItem(value, flags)
     }
 
+    /// Set element to an item without flags that can be targeted by
+    /// bidirectional references
+    pub fn new_item_allowing_bidirectional_references(item_value: Vec<u8>) -> Self {
+        Element::ItemWithBackwardsReferences(item_value, None)
+    }
+
+    /// Set element to an item with flags that can be targeted by
+    /// bidirectional references
+    pub fn new_item_allowing_bidirectional_references_with_flags(
+        item_value: Vec<u8>,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::ItemWithBackwardsReferences(item_value, flags)
+    }
+
+    /// Set element to a sum item without flags that can be targeted by
+    /// bidirectional references
+    pub fn new_sum_item_allowing_bidirectional_references(value: i64) -> Self {
+        Element::SumItemWithBackwardsReferences(value, None)
+    }
+
+    /// Set element to a sum item with flags that can be targeted by
+    /// bidirectional references
+    pub fn new_sum_item_allowing_bidirectional_references_with_flags(
+        value: i64,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::SumItemWithBackwardsReferences(value, flags)
+    }
+
+    /// Set element to a bidirectional reference without flags. The
+    /// `backward_reference_slot` is assigned during insertion; the value
+    /// given here is a placeholder.
+    pub fn new_bidirectional_reference(reference_path: ReferencePathType) -> Self {
+        Element::BidirectionalReference(crate::bidirectional_reference::BidirectionalReference {
+            forward_reference_path: reference_path,
+            backward_reference_slot: 0,
+            cascade_on_update: false,
+            max_hop: None,
+            flags: None,
+        })
+    }
+
+    /// Set element to a bidirectional reference with every knob exposed. The
+    /// `backward_reference_slot` is assigned during insertion.
+    pub fn new_bidirectional_reference_with_options(
+        reference_path: ReferencePathType,
+        max_hop: MaxReferenceHop,
+        cascade_on_update: bool,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::BidirectionalReference(crate::bidirectional_reference::BidirectionalReference {
+            forward_reference_path: reference_path,
+            backward_reference_slot: 0,
+            cascade_on_update,
+            max_hop,
+            flags,
+        })
+    }
+
     /// Set element to an item with sum value (no flags)
     pub fn new_item_with_sum_item(item_value: Vec<u8>, sum_value: SumValue) -> Self {
         Element::ItemWithSumItem(item_value, sum_value, None)
@@ -712,6 +772,16 @@ impl Element {
         ) {
             return Err(ElementError::InvalidInput(
                 "NonCounted cannot wrap another wrapper",
+            ));
+        }
+        if matches!(
+            inner,
+            Element::BidirectionalReference(..)
+                | Element::ItemWithBackwardsReferences(..)
+                | Element::SumItemWithBackwardsReferences(..)
+        ) {
+            return Err(ElementError::InvalidInput(
+                "NonCounted cannot wrap backward-references elements",
             ));
         }
         Ok(Element::NonCounted(Box::new(inner)))

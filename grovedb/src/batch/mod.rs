@@ -88,6 +88,7 @@ pub use crate::batch::batch_structure::{OpsByLevelPath, OpsByPath};
 use crate::batch::estimated_costs::EstimatedCostsType;
 use crate::{
     batch::{batch_structure::BatchStructure, mode::BatchRunMode},
+    bidirectional_references::BidirectionalReference,
     element::{MaxReferenceHop, SumValue},
     operations::{delete::DeleteOptions, get::MAX_REFERENCE_HOPS, proof::util::hex_to_ascii},
     reference_path::{
@@ -2057,15 +2058,26 @@ where
         // from the OUTER element's serialized bytes. Storage keeps the
         // wrapper byte; the on-disk value hash must reflect that.
         match element.underlying() {
-            Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
+            Element::Item(..)
+            | Element::SumItem(..)
+            | Element::ItemWithSumItem(..)
+            | Element::ItemWithBackwardsReferences(..)
+            | Element::SumItemWithBackwardsReferences(..) => {
                 let serialized =
                     cost_return_on_error_into_no_add!(cost, element.serialize(grove_version));
                 let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                 Ok(val_hash).wrap_with_cost(cost)
             }
-            // Both reference variants follow the same chain-resolution path
-            // to compute their effective value hash.
-            Element::Reference(path, ..) | Element::ReferenceWithSumItem(path, ..) => {
+            // All reference variants follow the same chain-resolution path
+            // to compute their effective value hash. A pre-existing
+            // `BidirectionalReference` (inserted through the non-batch
+            // path) resolves through its forward path like any reference.
+            Element::Reference(path, ..)
+            | Element::ReferenceWithSumItem(path, ..)
+            | Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path: path,
+                ..
+            }) => {
                 let path = cost_return_on_error_into_no_add!(
                     cost,
                     path_from_reference_qualified_path_type(path.clone(), qualified_path)
@@ -2176,7 +2188,11 @@ where
                     // Look through NonCounted for dispatch; serialize the outer
                     // wrapper for hashing so the value hash matches storage.
                     match element.underlying() {
-                        Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
+                        Element::Item(..)
+                        | Element::SumItem(..)
+                        | Element::ItemWithSumItem(..)
+                        | Element::ItemWithBackwardsReferences(..)
+                        | Element::SumItemWithBackwardsReferences(..) => {
                             let serialized = cost_return_on_error_into_no_add!(
                                 cost,
                                 element.serialize(grove_version)
@@ -2225,6 +2241,15 @@ where
                                 }
                             }
                         }
+                        // A batch op inserting a `BidirectionalReference` is
+                        // rejected at every batch entry point, so no pending
+                        // op can hold one; unreachable, fail closed.
+                        Element::BidirectionalReference(..) => Err(Error::NotSupported(
+                            "backward-references elements are not yet supported in batch \
+                             operations"
+                                .to_owned(),
+                        ))
+                        .wrap_with_cost(cost),
                         // Both reference variants follow the same chain.
                         Element::Reference(path, ..) | Element::ReferenceWithSumItem(path, ..) => {
                             let path = cost_return_on_error_into_no_add!(
@@ -2274,7 +2299,11 @@ where
                 }
                 GroveOp::InsertWithKnownToNotAlreadyExist { element }
                 | GroveOp::InsertIfNotExists { element, .. } => match element.underlying() {
-                    Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
+                    Element::Item(..)
+                    | Element::SumItem(..)
+                    | Element::ItemWithSumItem(..)
+                    | Element::ItemWithBackwardsReferences(..)
+                    | Element::SumItemWithBackwardsReferences(..) => {
                         let serialized = cost_return_on_error_into_no_add!(
                             cost,
                             element.serialize(grove_version)
@@ -2282,6 +2311,13 @@ where
                         let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                         Ok(val_hash).wrap_with_cost(cost)
                     }
+                    // Unreachable: bidi-reference ops are rejected at every
+                    // batch entry point. Fail closed.
+                    Element::BidirectionalReference(..) => Err(Error::NotSupported(
+                        "backward-references elements are not yet supported in batch operations"
+                            .to_owned(),
+                    ))
+                    .wrap_with_cost(cost),
                     Element::Reference(path, ..) | Element::ReferenceWithSumItem(path, ..) => {
                         let path = cost_return_on_error_into_no_add!(
                             cost,
@@ -3153,6 +3189,20 @@ where
                                     grove_version,
                                 )
                             );
+                        }
+                        // Unreachable: ops carrying backward-references
+                        // elements are rejected at every batch entry point.
+                        // Fail closed — executing them here would skip all
+                        // backward-reference bookkeeping.
+                        Element::BidirectionalReference(..)
+                        | Element::ItemWithBackwardsReferences(..)
+                        | Element::SumItemWithBackwardsReferences(..) => {
+                            return Err(Error::NotSupported(
+                                "backward-references elements are not yet supported in batch \
+                                 operations"
+                                    .to_owned(),
+                            ))
+                            .wrap_with_cost(cost);
                         }
                         Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                             let merk_feature_type = cost_return_on_error_into!(
@@ -5000,6 +5050,7 @@ impl GroveDb {
                             .as_ref()
                             .is_none_or(|o| o.base_root_storage_is_free),
                         validate_tree_at_path_exists: false,
+                        propagate_backward_references: false,
                     };
                     cost_return_on_error!(
                         &mut cost,
@@ -5666,6 +5717,41 @@ impl GroveDb {
         Ok(scan).wrap_with_cost(cost)
     }
 
+    /// Backward-references elements are not yet supported in batches: the
+    /// batch pipeline performs none of the backward-reference meta-storage
+    /// bookkeeping or chain propagation the non-batch insert path does, so
+    /// letting them through would silently produce inconsistent
+    /// backward-reference state (a `BidirectionalReference` whose target
+    /// never learns about it). Fail closed until batch support lands.
+    fn reject_backward_references_elements_in_batch(
+        ops: &[QualifiedGroveDbOp],
+    ) -> Result<(), Error> {
+        for op in ops {
+            let element = match &op.op {
+                GroveOp::InsertWithKnownToNotAlreadyExist { element }
+                | GroveOp::InsertIfNotExists { element, .. }
+                | GroveOp::InsertOrReplace { element }
+                | GroveOp::Replace { element }
+                | GroveOp::Patch { element, .. } => element,
+                _ => continue,
+            };
+            if matches!(
+                element,
+                Element::BidirectionalReference(..)
+                    | Element::ItemWithBackwardsReferences(..)
+                    | Element::SumItemWithBackwardsReferences(..)
+            ) {
+                return Err(Error::NotSupported(
+                    "backward-references elements (BidirectionalReference, \
+                     ItemWithBackwardsReferences, SumItemWithBackwardsReferences) are not yet \
+                     supported in batch operations"
+                        .to_owned(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Applies batch of operations on GroveDB
     pub fn apply_batch_with_element_flags_update(
         &self,
@@ -5718,6 +5804,11 @@ impl GroveDb {
                 .wrap_with_cost(cost);
             }
         }
+
+        cost_return_on_error_no_add!(
+            cost,
+            Self::reject_backward_references_elements_in_batch(&ops)
+        );
 
         cost_return_on_error!(
             &mut cost,
@@ -6128,6 +6219,11 @@ impl GroveDb {
                 .wrap_with_cost(cost);
             }
         }
+
+        cost_return_on_error_no_add!(
+            cost,
+            Self::reject_backward_references_elements_in_batch(&ops)
+        );
 
         cost_return_on_error!(
             &mut cost,

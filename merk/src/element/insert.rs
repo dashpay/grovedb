@@ -19,6 +19,33 @@ use crate::{
     BatchEntry, CryptoHash, Error, Merk, MerkOptions, Op, TreeFeatureType,
 };
 
+/// The before/after pair of an idempotent write: `old` is what the key held
+/// before (fetched as part of the write), `new` is what the caller asked to
+/// store (`None` for a deletion). The write is skipped when nothing changed;
+/// [`Delta::has_changed`] reports which way it went. Backward-reference
+/// post-processing keys off this to decide between hash propagation and
+/// cascade deletion.
+#[derive(Debug)]
+pub struct Delta<'e> {
+    /// The element the caller asked to store; `None` when the operation was
+    /// a deletion.
+    pub new: Option<&'e Element>,
+    /// What the key held before the operation, if anything.
+    pub old: Option<Element>,
+}
+
+impl Delta<'_> {
+    /// Whether the operation changed the stored value.
+    pub fn has_changed(&self) -> bool {
+        match (self.old.as_ref(), self.new) {
+            (None, None) => false,
+            (None, Some(_)) => true,
+            (Some(_), None) => true,
+            (Some(old), Some(new)) => old != new,
+        }
+    }
+}
+
 /// Extension trait for inserting elements into Merk storage.
 pub trait ElementInsertToStorageExtensions {
     /// Whether this element may legally live in a tree of `tree_type`.
@@ -93,7 +120,7 @@ pub trait ElementInsertToStorageExtensions {
         key: &[u8],
         options: Option<MerkOptions>,
         grove_version: &GroveVersion,
-    ) -> CostResult<(bool, Option<Element>), Error>;
+    ) -> CostResult<Delta<'_>, Error>;
 
     /// Adds a "Put" op to batch operations with the element and key if the
     /// value is different from what already exists; Returns CostResult.
@@ -121,6 +148,34 @@ pub trait ElementInsertToStorageExtensions {
         options: Option<MerkOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>;
+
+    /// Insert a reference element in Merk under a key if it differs from
+    /// what already exists, returning the [`Delta`]. Reads the previous
+    /// value through the Merk tree (so uncommitted in-memory state is
+    /// seen), and performs the same validations and write as
+    /// [`Self::insert_reference`] when a write is needed.
+    fn insert_reference_if_changed_value<'db, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: &[u8],
+        referenced_value: CryptoHash,
+        options: Option<MerkOptions>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Delta<'_>, Error>;
+
+    /// Insert a subtree element in Merk under a key if it differs from what
+    /// already exists, returning the [`Delta`]. Reads the previous value
+    /// through the Merk tree (so uncommitted in-memory state is seen), and
+    /// performs the same validations and write as [`Self::insert_subtree`]
+    /// when a write is needed.
+    fn insert_subtree_if_changed<'db, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: &[u8],
+        subtree_root_hash: CryptoHash,
+        options: Option<MerkOptions>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Delta<'_>, Error>;
 
     /// Adds a "Put" op to batch operations with reference and key. Returns
     /// CostResult.
@@ -416,30 +471,37 @@ impl ElementInsertToStorageExtensions for Element {
         key: &[u8],
         options: Option<MerkOptions>,
         grove_version: &GroveVersion,
-    ) -> CostResult<(bool, Option<Element>), Error> {
-        check_grovedb_v0_with_cost!(
+    ) -> CostResult<Delta<'_>, Error> {
+        use grovedb_version::dispatch_version;
+
+        let mut cost = OperationCost::default();
+
+        // v0 reads the previous value from committed storage; v1
+        // (`GROVE_V4`+) reads it through the Merk tree, so uncommitted
+        // in-memory writes made earlier in the same cached operation are
+        // seen. This matters for the backward-references flow, where
+        // several writes share one `MerkCache` before anything commits.
+        let previous_element_res = dispatch_version!(
             "insert_if_changed_value",
             grove_version
                 .grovedb_versions
                 .element
-                .insert_if_changed_value
+                .insert_if_changed_value,
+            0 => { Self::get_optional_from_storage(&merk.storage, key, grove_version) }
+            1 => { Self::get_optional(merk, key, true, grove_version) }
         );
+        let previous_element = cost_return_on_error!(&mut cost, previous_element_res);
 
-        let mut cost = OperationCost::default();
-        let previous_element = cost_return_on_error!(
-            &mut cost,
-            Self::get_optional_from_storage(&merk.storage, key, grove_version)
-        );
-        let needs_insert = match &previous_element {
-            None => true,
-            Some(previous_element) => previous_element != self,
+        let delta = Delta {
+            new: Some(self),
+            old: previous_element,
         };
-        if !needs_insert {
-            Ok((false, None)).wrap_with_cost(cost)
-        } else {
+
+        if delta.has_changed() {
             cost_return_on_error!(&mut cost, self.insert(merk, key, options, grove_version));
-            Ok((true, previous_element)).wrap_with_cost(cost)
         }
+
+        Ok(delta).wrap_with_cost(cost)
     }
 
     /// Adds a "Put" op to batch operations with the element and key if the
@@ -578,6 +640,81 @@ impl ElementInsertToStorageExtensions for Element {
             grove_version,
         )
         .map_err(|e| Error::CorruptedData(e.to_string()))
+    }
+
+    fn insert_reference_if_changed_value<'db, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: &[u8],
+        referenced_value: CryptoHash,
+        options: Option<MerkOptions>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Delta<'_>, Error> {
+        let mut cost = OperationCost::default();
+
+        // Read through the Merk tree so uncommitted in-memory writes made
+        // earlier under the same `MerkCache` are seen.
+        let previous_element = cost_return_on_error!(
+            &mut cost,
+            Self::get_optional(merk, key, true, grove_version)
+        );
+
+        let delta = Delta {
+            new: Some(self),
+            old: previous_element,
+        };
+
+        if delta.has_changed() {
+            cost_return_on_error!(
+                &mut cost,
+                self.insert_reference(merk, key, referenced_value, options, grove_version)
+            );
+        }
+
+        Ok(delta).wrap_with_cost(cost)
+    }
+
+    fn insert_subtree_if_changed<'db, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: &[u8],
+        subtree_root_hash: CryptoHash,
+        options: Option<MerkOptions>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Delta<'_>, Error> {
+        use grovedb_version::dispatch_version;
+
+        dispatch_version!(
+            "insert_subtree_if_changed",
+            grove_version
+                .grovedb_versions
+                .element
+                .insert_subtree_if_changed,
+            0 => {}
+        );
+
+        let mut cost = OperationCost::default();
+
+        // Read through the Merk tree so uncommitted in-memory writes made
+        // earlier under the same `MerkCache` are seen.
+        let previous_element = cost_return_on_error!(
+            &mut cost,
+            Self::get_optional(merk, key, true, grove_version)
+        );
+
+        let delta = Delta {
+            new: Some(self),
+            old: previous_element,
+        };
+
+        if delta.has_changed() {
+            cost_return_on_error!(
+                &mut cost,
+                self.insert_subtree(merk, key, subtree_root_hash, options, grove_version)
+            );
+        }
+
+        Ok(delta).wrap_with_cost(cost)
     }
 
     /// Adds a "Put" op to batch operations with reference and key. Returns
@@ -1080,15 +1217,16 @@ mod tests {
 
         merk.commit(grove_version);
 
-        let (inserted, previous) = Element::new_item(b"value".to_vec())
+        let element = Element::new_item(b"value".to_vec());
+        let delta = element
             .insert_if_changed_value(&mut merk, b"another-key", None, grove_version)
             .unwrap()
             .expect("expected successful insertion 2");
 
-        merk.commit(grove_version);
+        assert!(!delta.has_changed());
+        assert_eq!(delta.old, Some(Element::new_item(b"value".to_vec())));
 
-        assert!(!inserted);
-        assert_eq!(previous, None);
+        merk.commit(grove_version);
         assert_eq!(
             Element::get(&merk, b"another-key", true, grove_version)
                 .unwrap()
@@ -1121,13 +1259,14 @@ mod tests {
 
         let batch = StorageBatch::new();
         let mut merk = empty_path_merk(&*storage, &transaction, &batch, grove_version);
-        let (inserted, previous) = Element::new_item(b"value2".to_vec())
+        let element = Element::new_item(b"value2".to_vec());
+        let delta = element
             .insert_if_changed_value(&mut merk, b"another-key", None, grove_version)
             .unwrap()
             .expect("expected successful insertion 2");
 
-        assert!(inserted);
-        assert_eq!(previous, Some(Element::new_item(b"value".to_vec())),);
+        assert!(delta.has_changed());
+        assert_eq!(delta.old, Some(Element::new_item(b"value".to_vec())),);
 
         storage
             .commit_multi_context_batch(batch, None)
@@ -1151,13 +1290,14 @@ mod tests {
             .insert(&mut merk, b"mykey", None, grove_version)
             .unwrap()
             .expect("expected successful insertion");
-        let (inserted, previous) = Element::new_item(b"value2".to_vec())
+        let element = Element::new_item(b"value2".to_vec());
+        let delta = element
             .insert_if_changed_value(&mut merk, b"another-key", None, grove_version)
             .unwrap()
             .expect("expected successful insertion 2");
 
-        assert!(inserted);
-        assert_eq!(previous, None);
+        assert!(delta.has_changed());
+        assert_eq!(delta.old, None);
 
         assert_eq!(
             Element::get(&merk, b"another-key", true, grove_version)

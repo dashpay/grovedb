@@ -1,6 +1,8 @@
+mod bidirectional_reference;
 mod element;
 mod element_type;
 
+pub use bidirectional_reference::{BidirectionalReference, CascadeOnUpdate, SlotIdx};
 pub use element::*;
 pub use element_type::{ElementType, ProofNodeType};
 pub mod error;
