@@ -73,6 +73,12 @@ pub struct BatchApplyOptions {
     /// At what height do we want to pause applying batch operations
     /// Most of the time this should be not set
     pub batch_pause_height: Option<u8>,
+    /// Opt into backward-references bookkeeping for this batch: ops
+    /// carrying the backward-references ITEM variants become valid, and
+    /// overwrites/deletes of registered targets expand into the derived
+    /// propagation/cascade operations the live flagged flow would perform.
+    /// `BidirectionalReference` element ops remain rejected for now.
+    pub propagate_backward_references: bool,
 }
 
 #[cfg(feature = "minimal")]
@@ -84,6 +90,7 @@ impl Default for BatchApplyOptions {
             disable_operation_consistency_check: false,
             base_root_storage_is_free: true,
             batch_pause_height: None,
+            propagate_backward_references: false,
         }
     }
 }
@@ -97,7 +104,7 @@ impl BatchApplyOptions {
             validate_insertion_does_not_override_tree: self
                 .validate_insertion_does_not_override_tree,
             base_root_storage_is_free: self.base_root_storage_is_free,
-            propagate_backward_references: false,
+            propagate_backward_references: self.propagate_backward_references,
         }
     }
 

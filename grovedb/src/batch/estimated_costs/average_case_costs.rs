@@ -67,6 +67,13 @@ impl GroveOp {
             }
         };
         match self {
+            // Cost models for derived backward-references rewrites land
+            // with batching milestone M5; estimation is refused until then.
+            GroveOp::ReplaceBackwardReferenceFamilyMember { .. } => Err(Error::NotSupported(
+                "estimated costs for backward-references batch operations are not implemented yet"
+                    .to_owned(),
+            ))
+            .wrap_with_cost(OperationCost::default()),
             GroveOp::ReplaceTreeRootKey { aggregate_data, .. } => {
                 GroveDb::average_case_merk_replace_tree(
                     key,
