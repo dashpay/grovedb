@@ -23,7 +23,10 @@
 
 use grovedb_costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt};
 use grovedb_merk::{
-    element::{costs::ElementCostExtensions, insert::ElementInsertToStorageExtensions},
+    element::{
+        costs::ElementCostExtensions, get::ElementFetchFromStorageExtensions,
+        insert::ElementInsertToStorageExtensions,
+    },
     tree::NULL_HASH,
 };
 use grovedb_path::SubtreePath;
@@ -256,6 +259,26 @@ fn insert_with_backward_references<'db, 'b, B: AsRef<[u8]>>(
         | Element::ItemWithSumItem(..)
         | Element::ItemWithBackwardsReferences(..)
         | Element::SumItemWithBackwardsReferences(..) => {
+            // A backward-references element's referrer list is bookkeeping
+            // this flow maintains: carry the stored list over onto the new
+            // element so an update never silently drops registrations (and
+            // so the changed/unchanged comparison reflects the LOGICAL
+            // value, the referrer lists being equal on both sides).
+            let mut element = element;
+            if element.supports_backward_references() {
+                let previous = cost_return_on_error!(
+                    &mut cost,
+                    subtree_to_insert_into.for_merk(|m| {
+                        Element::get_optional(m, key, true, grove_version).map_err(Error::MerkError)
+                    })
+                );
+                if let (Some(previous_refs), Some(refs)) = (
+                    previous.as_ref().and_then(|p| p.backward_references()),
+                    element.backward_references_mut(),
+                ) {
+                    *refs = previous_refs.to_vec();
+                }
+            }
             let delta = cost_return_on_error!(
                 &mut cost,
                 subtree_to_insert_into.for_merk(|m| {

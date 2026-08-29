@@ -424,6 +424,7 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             | Some(Element::Reference(..))
             | Some(Element::ReferenceWithSumItem(..))
             | Some(Element::ItemWithBackwardsReferences(..))
+            | Some(Element::SumItemWithBackwardsReferences(..))
             | Some(Element::BidirectionalReference(..)) => {
                 // while the loaded item might be a sum item, it is given for free
                 // as it would be very hard to know in advance
@@ -433,8 +434,7 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
                     NodeType::NormalNode,
                 ) as u64
             }
-            Some(Element::SumItem(_, flags))
-            | Some(Element::SumItemWithBackwardsReferences(_, flags)) => {
+            Some(Element::SumItem(_, flags)) => {
                 let cost_size = SUM_ITEM_COST_SIZE;
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -546,6 +546,7 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             | Element::Reference(..)
             | Element::ReferenceWithSumItem(..)
             | Element::ItemWithBackwardsReferences(..)
+            | Element::SumItemWithBackwardsReferences(..)
             | Element::BidirectionalReference(..) => {
                 // while the loaded item might be a sum item, it is given for free
                 // as it would be very hard to know in advance
@@ -555,7 +556,7 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
                     node_type,
                 ) as u64
             }
-            Element::SumItem(_, flags) | Element::SumItemWithBackwardsReferences(_, flags) => {
+            Element::SumItem(_, flags) => {
                 let cost_size = SUM_ITEM_COST_SIZE;
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;

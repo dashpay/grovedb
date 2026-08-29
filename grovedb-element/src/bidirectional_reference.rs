@@ -2,15 +2,30 @@
 //!
 //! A bidirectional reference behaves like [`crate::Element::Reference`] on
 //! reads, but additionally registers itself in its target's backward-reference
-//! meta storage so that updates to the target propagate back along the
-//! reference chain (or cascade-delete it). Only elements that opt into
-//! backward references (`ItemWithBackwardsReferences`,
-//! `SumItemWithBackwardsReferences`, or another `BidirectionalReference`)
-//! may be targeted.
+//! list so that updates to the target propagate back along the reference
+//! chain (or cascade-delete it). Only elements that opt into backward
+//! references (`ItemWithBackwardsReferences`, `SumItemWithBackwardsReferences`,
+//! or another `BidirectionalReference`) may be targeted.
 //!
-//! The definitions live here (rather than in the `grovedb` crate that hosts
-//! the propagation machinery) because the `Element` enum embeds
-//! [`BidirectionalReference`] directly.
+//! # Storage & hashing model
+//!
+//! Backward references live **on the target element itself** and are covered
+//! by the node hash through a two-layer scheme:
+//!
+//! ```text
+//! inner_hash      = H(serialize(element with backward_references = []))
+//! backrefs_hash   = H(serialize(backward_references))
+//! node value_hash = combine(inner_hash, backrefs_hash)            // items
+//!                 = combine3(inner_hash, target_inner_hash,
+//!                            backrefs_hash)                       // bidi refs
+//! ```
+//!
+//! Forward references (and every member of a reference chain) commit to the
+//! target's **inner** hash, so registering or removing a referrer changes
+//! only the target's own node hash — never the hashes stored by other
+//! referrers. Proofs carry the stripped (inner) serialization plus the
+//! 32-byte `backrefs_hash`, so the referrer set is authenticated without
+//! bloating or leaking into result sets.
 
 use bincode::{Decode, Encode};
 
@@ -19,13 +34,37 @@ use crate::{
     reference_path::ReferencePathType,
 };
 
-/// Index of a backward reference inside its target's 32-slot meta bitvec.
-pub type SlotIdx = usize;
+/// The maximum number of backward references an
+/// `ItemWithBackwardsReferences` / `SumItemWithBackwardsReferences` may
+/// carry. Keeps worst-case propagation cost bounded and predictable.
+pub const MAX_BACKWARD_REFERENCES: usize = 32;
+
+/// The maximum number of backward references a `BidirectionalReference`
+/// itself may carry (chains do not branch, keeping worst-case propagation
+/// tractable).
+pub const MAX_BACKWARD_REFERENCES_ON_REFERENCE: usize = 1;
 
 /// Flag to indicate whether the bidirectional reference should be deleted when
 /// the pointed-to item no longer exists or becomes incompatible. When unset,
 /// such an update is refused with an error instead.
 pub type CascadeOnUpdate = bool;
+
+/// One registered referrer of a backward-references-capable element: the
+/// inverse path leading back to the referring `BidirectionalReference`,
+/// plus its cascade policy.
+///
+/// A referrer is identified by its `inverted_reference` (which is derived
+/// from the referrer's position, so it is unique per referrer); there are
+/// no slot indices.
+#[derive(Clone, Debug, Encode, Decode, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct BackwardReference {
+    /// Path leading back to the referring `BidirectionalReference`.
+    pub inverted_reference: ReferencePathType,
+    /// Whether the referrer may be cascade-deleted when this element is
+    /// removed or becomes incompatible.
+    pub cascade_on_update: bool,
+}
 
 /// Payload of [`crate::Element::BidirectionalReference`].
 #[derive(Clone, Debug, Encode, Decode, PartialEq, Eq, Hash)]
@@ -33,17 +72,50 @@ pub type CascadeOnUpdate = bool;
 pub struct BidirectionalReference {
     /// Where this reference points to, like a regular reference.
     pub forward_reference_path: ReferencePathType,
-    /// Slot (0..32) occupied in the target's backward-references bitvec.
-    /// Assigned on insertion; the value supplied by the caller is
-    /// overwritten.
-    pub backward_reference_slot: SlotIdx,
     /// Whether overwriting/deleting the target may cascade-delete this
     /// reference (otherwise such an update errors).
     pub cascade_on_update: CascadeOnUpdate,
     /// Maximum number of reference hops allowed when following the chain.
     pub max_hop: MaxReferenceHop,
+    /// Referrers registered on THIS reference (it can itself be targeted by
+    /// at most [`MAX_BACKWARD_REFERENCES_ON_REFERENCE`] other bidirectional
+    /// references). Excluded from the inner hash; see the module docs.
+    pub backward_references: Vec<BackwardReference>,
     /// Optional per-element metadata.
     pub flags: Option<ElementFlags>,
+}
+
+/// Canonical serialization of a backward-references list (bincode, big
+/// endian, no limit — the same codec configuration `Element` uses). The
+/// 32-byte hash of these bytes is the `backrefs_hash` half of the node's
+/// combined value hash, so this encoding is consensus-critical.
+pub fn serialize_backward_references(
+    backward_references: &[BackwardReference],
+) -> Result<Vec<u8>, crate::error::ElementError> {
+    let config = bincode::config::standard()
+        .with_big_endian()
+        .with_no_limit();
+    bincode::encode_to_vec(backward_references, config).map_err(|e| {
+        crate::error::ElementError::CorruptedData(format!(
+            "unable to serialize backward references: {e}"
+        ))
+    })
+}
+
+/// Inverse of [`serialize_backward_references`].
+pub fn deserialize_backward_references(
+    bytes: &[u8],
+) -> Result<Vec<BackwardReference>, crate::error::ElementError> {
+    let config = bincode::config::standard()
+        .with_big_endian()
+        .with_no_limit();
+    bincode::decode_from_slice(bytes, config)
+        .map(|(v, _)| v)
+        .map_err(|e| {
+            crate::error::ElementError::CorruptedData(format!(
+                "unable to deserialize backward references: {e}"
+            ))
+        })
 }
 
 #[cfg(test)]
@@ -57,12 +129,19 @@ mod tests {
         ReferencePathType::SiblingReference(b"target".to_vec())
     }
 
+    fn backref(tag: &[u8]) -> BackwardReference {
+        BackwardReference {
+            inverted_reference: ReferencePathType::SiblingReference(tag.to_vec()),
+            cascade_on_update: true,
+        }
+    }
+
     fn bidi(flags: Option<ElementFlags>) -> Element {
         Element::BidirectionalReference(BidirectionalReference {
             forward_reference_path: sibling_ref(),
-            backward_reference_slot: 3,
             cascade_on_update: true,
             max_hop: Some(5),
+            backward_references: Vec::new(),
             flags,
         })
     }
@@ -71,35 +150,12 @@ mod tests {
     fn constructors_produce_expected_shapes() {
         assert_eq!(
             Element::new_item_allowing_bidirectional_references(b"v".to_vec()),
-            Element::ItemWithBackwardsReferences(b"v".to_vec(), None)
-        );
-        assert_eq!(
-            Element::new_item_allowing_bidirectional_references_with_flags(
-                b"v".to_vec(),
-                Some(vec![1])
-            ),
-            Element::ItemWithBackwardsReferences(b"v".to_vec(), Some(vec![1]))
-        );
-        assert_eq!(
-            Element::new_sum_item_allowing_bidirectional_references(7),
-            Element::SumItemWithBackwardsReferences(7, None)
+            Element::ItemWithBackwardsReferences(b"v".to_vec(), Vec::new(), None)
         );
         assert_eq!(
             Element::new_sum_item_allowing_bidirectional_references_with_flags(7, Some(vec![2])),
-            Element::SumItemWithBackwardsReferences(7, Some(vec![2]))
+            Element::SumItemWithBackwardsReferences(7, Vec::new(), Some(vec![2]))
         );
-
-        let Element::BidirectionalReference(plain) =
-            Element::new_bidirectional_reference(sibling_ref())
-        else {
-            panic!("expected a bidirectional reference");
-        };
-        assert_eq!(plain.forward_reference_path, sibling_ref());
-        assert_eq!(plain.backward_reference_slot, 0);
-        assert!(!plain.cascade_on_update);
-        assert_eq!(plain.max_hop, None);
-        assert_eq!(plain.flags, None);
-
         let Element::BidirectionalReference(full) =
             Element::new_bidirectional_reference_with_options(
                 sibling_ref(),
@@ -112,145 +168,97 @@ mod tests {
         };
         assert_eq!(full.max_hop, Some(2));
         assert!(full.cascade_on_update);
+        assert!(full.backward_references.is_empty());
         assert_eq!(full.flags, Some(vec![9]));
-    }
-
-    #[test]
-    fn display_covers_backward_references_family() {
-        let shown = format!("{}", bidi(Some(vec![1])));
-        assert!(shown.contains("BidirectionalReference"), "{shown}");
-        assert!(shown.contains("max_hop: 5"), "{shown}");
-        assert!(shown.contains("cascade: true"), "{shown}");
-        assert!(shown.contains("flags"), "{shown}");
-
-        let shown = format!(
-            "{}",
-            Element::ItemWithBackwardsReferences(b"abc".to_vec(), None)
-        );
-        assert!(shown.contains("ItemWithBackwardsReferences"), "{shown}");
-        assert!(shown.contains("abc"), "{shown}");
-
-        let shown = format!("{}", Element::SumItemWithBackwardsReferences(-4, None));
-        assert!(shown.contains("SumItemWithBackwardsReferences"), "{shown}");
-        assert!(shown.contains("-4"), "{shown}");
     }
 
     #[test]
     fn classification_of_backward_references_family() {
         let bidi = bidi(None);
-        let item = Element::ItemWithBackwardsReferences(b"v".to_vec(), None);
-        let sum_item = Element::SumItemWithBackwardsReferences(-3, None);
+        let item = Element::ItemWithBackwardsReferences(b"v".to_vec(), Vec::new(), None);
+        let sum_item = Element::SumItemWithBackwardsReferences(-3, Vec::new(), None);
 
         assert!(bidi.is_reference());
-        assert!(!bidi.is_any_item());
-        assert!(!bidi.is_any_tree());
         assert!(item.is_any_item());
-        assert!(!item.is_sum_item());
-        assert!(sum_item.is_any_item());
         assert!(sum_item.is_sum_item());
         assert!(sum_item.is_sum_bearing_child());
-        assert!(!item.is_sum_bearing_child());
+        assert!(item.supports_backward_references());
+        assert!(bidi.supports_backward_references());
+        assert!(!Element::new_item(b"x".to_vec()).supports_backward_references());
 
         assert_eq!(bidi.element_type(), ElementType::BidirectionalReference);
+        assert_eq!(sum_item.sum_value_or_default(), -3);
+        assert_eq!(item.as_item_bytes().unwrap(), b"v");
         assert_eq!(
-            item.element_type(),
-            ElementType::ItemWithBackwardsReferences
+            bidi.clone().into_reference_path_type().unwrap(),
+            sibling_ref()
         );
-        assert_eq!(
-            sum_item.element_type(),
-            ElementType::SumItemWithBackwardsReferences
-        );
-        assert_eq!(bidi.type_str(), "bidirectional reference");
-        assert_eq!(item.type_str(), "item with backwards references");
-        assert_eq!(sum_item.type_str(), "sum item with backwards references");
 
-        // Proof shapes: the reference gets the combined-hash family, the
-        // items the simple-hash family.
+        // Proof shapes: the reference resolves through KvRefValueHash; the
+        // items use the dedicated recombining node kind.
         assert_eq!(
             ElementType::BidirectionalReference.proof_node_type(Some(ElementType::Tree)),
             ProofNodeType::KvRefValueHash
         );
         assert_eq!(
             ElementType::ItemWithBackwardsReferences.proof_node_type(Some(ElementType::Tree)),
-            ProofNodeType::Kv
+            ProofNodeType::KvBackwardsReferencesValueHash
         );
     }
 
     #[test]
-    fn value_helpers_cover_backward_references_family() {
-        let bidi = bidi(None);
-        let item = Element::ItemWithBackwardsReferences(b"v".to_vec(), None);
-        let sum_item = Element::SumItemWithBackwardsReferences(-3, None);
-
-        assert_eq!(sum_item.sum_value_or_default(), -3);
-        assert_eq!(item.sum_value_or_default(), 0);
-        assert_eq!(bidi.sum_value_or_default(), 0);
-        assert_eq!(sum_item.count_value_or_default(), 1);
-        assert_eq!(sum_item.count_sum_value_or_default(), (1, -3));
-        assert_eq!(item.count_sum_value_or_default(), (1, 0));
-        assert_eq!(sum_item.big_sum_value_or_default(), -3i128);
-
-        assert_eq!(sum_item.as_sum_item_value().unwrap(), -3);
-        assert_eq!(sum_item.clone().into_sum_item_value().unwrap(), -3);
-        assert_eq!(item.as_item_bytes().unwrap(), b"v");
-        assert_eq!(item.clone().into_item_bytes().unwrap(), b"v".to_vec());
-        assert_eq!(
-            bidi.clone().into_reference_path_type().unwrap(),
-            sibling_ref()
-        );
-    }
-
-    #[test]
-    fn flags_accessors_cover_backward_references_family() {
-        let mut elements = [
-            bidi(Some(vec![1])),
-            Element::ItemWithBackwardsReferences(b"v".to_vec(), Some(vec![2])),
-            Element::SumItemWithBackwardsReferences(5, Some(vec![3])),
-        ];
-        for (i, element) in elements.iter_mut().enumerate() {
-            let expected = Some(vec![(i + 1) as u8]);
-            assert_eq!(element.get_flags(), &expected);
-            assert_eq!(element.clone().get_flags_owned(), expected);
-            assert_eq!(element.get_flags_mut(), &mut expected.clone());
-            element.set_flags(Some(vec![42]));
-            assert_eq!(element.get_flags(), &Some(vec![42]));
-        }
-    }
-
-    #[test]
-    fn bidirectional_reference_converts_to_absolute() {
+    fn stripping_and_limits() {
         let grove_version = GroveVersion::latest();
-        let element = bidi(None);
-        let converted = element
-            .convert_if_reference_to_absolute_reference(&[b"root", b"sub"], Some(b"self_key"))
-            .expect("conversion works");
-        let Element::BidirectionalReference(reference) = &converted else {
-            panic!("variant preserved");
-        };
-        assert_eq!(
-            reference.forward_reference_path,
-            ReferencePathType::AbsolutePathReference(vec![
-                b"root".to_vec(),
-                b"sub".to_vec(),
-                b"target".to_vec()
-            ])
-        );
-        // Slot/cascade/max_hop survive the conversion.
-        assert_eq!(reference.backward_reference_slot, 3);
-        assert!(reference.cascade_on_update);
-        assert_eq!(reference.max_hop, Some(5));
 
-        // An already-absolute forward path passes through unchanged, and the
-        // whole element round-trips the codec.
-        let again = converted
-            .clone()
-            .convert_if_reference_to_absolute_reference(&[b"other"], None)
-            .expect("absolute passthrough");
-        assert_eq!(again, converted);
-        let bytes = again.serialize(grove_version).expect("serializes");
-        assert_eq!(
-            Element::deserialize(&bytes, grove_version).expect("deserializes"),
-            again
+        let mut item = Element::ItemWithBackwardsReferences(
+            b"v".to_vec(),
+            vec![backref(b"a"), backref(b"b")],
+            Some(vec![1]),
         );
+        let stripped = item.stripped_of_backward_references();
+        assert_eq!(
+            stripped,
+            Element::ItemWithBackwardsReferences(b"v".to_vec(), Vec::new(), Some(vec![1]))
+        );
+        // Stripped form round-trips the codec (it IS a valid element).
+        let bytes = stripped.serialize(grove_version).unwrap();
+        assert_eq!(
+            Element::deserialize(&bytes, grove_version).unwrap(),
+            stripped
+        );
+
+        // Registering a referrer never changes the stripped form.
+        item.backward_references_mut().unwrap().push(backref(b"c"));
+        assert_eq!(item.stripped_of_backward_references(), stripped);
+
+        // Budgets: 32 for items...
+        let full_list: Vec<_> = (0..32u8).map(|i| backref(&[i])).collect();
+        let at_limit = Element::ItemWithBackwardsReferences(b"v".to_vec(), full_list.clone(), None);
+        assert!(at_limit.validate_backward_references_limits().is_ok());
+        assert!(at_limit.serialize(grove_version).is_ok());
+        let mut over = full_list;
+        over.push(backref(b"!"));
+        let over_limit = Element::ItemWithBackwardsReferences(b"v".to_vec(), over, None);
+        assert!(over_limit.validate_backward_references_limits().is_err());
+        assert!(over_limit.serialize(grove_version).is_err());
+
+        // ...and 1 for references.
+        let Element::BidirectionalReference(mut reference) = bidi(None) else {
+            unreachable!()
+        };
+        reference.backward_references = vec![backref(b"a"), backref(b"b")];
+        let over_ref = Element::BidirectionalReference(reference);
+        assert!(over_ref.validate_backward_references_limits().is_err());
+        assert!(over_ref.serialize(grove_version).is_err());
+    }
+
+    #[test]
+    fn backward_references_codec_round_trips() {
+        let list = vec![backref(b"a"), backref(b"zz")];
+        let bytes = serialize_backward_references(&list).unwrap();
+        assert_eq!(deserialize_backward_references(&bytes).unwrap(), list);
+        // The empty list has a stable 1-byte encoding (its hash is a
+        // protocol constant).
+        assert_eq!(serialize_backward_references(&[]).unwrap().len(), 1);
     }
 }

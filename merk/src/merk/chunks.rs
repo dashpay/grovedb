@@ -477,6 +477,7 @@ mod test {
                 Node::KVHash(_) => counts.kv_hash += 1,
                 Node::KV(..) => counts.kv += 1,
                 Node::KVValueHash(..) => counts.kv_value_hash += 1,
+                Node::KVBackwardsReferencesValueHash(..) => counts.kv_value_hash += 1,
                 Node::KVDigest(..) => counts.kv_digest += 1,
                 Node::KVDigestCount(..) => counts.kv_digest += 1,
                 Node::KVRefValueHash(..) => counts.kv_ref_value_hash += 1,

@@ -1259,7 +1259,7 @@ impl GroveDb {
             let value = match element.into_underlying() {
                 Element::SumItem(value, _)
                 | Element::ItemWithSumItem(_, value, _)
-                | Element::SumItemWithBackwardsReferences(value, _) => value,
+                | Element::SumItemWithBackwardsReferences(value, _, _) => value,
                 _ => {
                     return Err(Error::InvalidProof(
                         query.clone(),
@@ -4475,6 +4475,7 @@ impl GroveDb {
         match node {
             Node::KV(key, value)
             | Node::KVValueHash(key, value, ..)
+            | Node::KVBackwardsReferencesValueHash(key, value, ..)
             | Node::KVValueHashFeatureType(key, value, ..)
             | Node::KVValueHashFeatureTypeWithChildHash(key, value, ..)
             | Node::KVCount(key, value, ..)

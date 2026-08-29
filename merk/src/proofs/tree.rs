@@ -156,6 +156,16 @@ impl Tree {
                 kv_digest_to_kv_hash(key.as_slice(), value_hash)
                     .flat_map(|kv_hash| compute_hash(self, kv_hash))
             }
+            Node::KVBackwardsReferencesValueHash(key, value, backrefs_hash) => {
+                // The node's value hash is combine(H(stripped_value),
+                // backrefs_hash) and we RECOMPUTE it here, so the payload
+                // bytes are bound by the proof (unlike KVValueHash, whose
+                // bytes ride on trust in the carried hash).
+                value_hash(value.as_slice())
+                    .flat_map(|inner| combine_hash(&inner, backrefs_hash))
+                    .flat_map(|vh| kv_digest_to_kv_hash(key.as_slice(), &vh))
+                    .flat_map(|kv_hash| compute_hash(self, kv_hash))
+            }
             Node::KVValueHashFeatureType(key, _, value_hash, feature_type)
             | Node::KVValueHashFeatureTypeWithChildHash(key, _, value_hash, feature_type, _) => {
                 // Note: Same as KVValueHash - cannot verify hash(value) == value_hash
@@ -529,6 +539,7 @@ impl Tree {
         match &self.node {
             Node::KV(key, _)
             | Node::KVValueHash(key, ..)
+            | Node::KVBackwardsReferencesValueHash(key, ..)
             | Node::KVRefValueHash(key, ..)
             | Node::KVValueHashFeatureType(key, ..)
             | Node::KVValueHashFeatureTypeWithChildHash(key, ..)

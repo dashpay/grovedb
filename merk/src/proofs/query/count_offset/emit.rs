@@ -562,6 +562,10 @@ where
 
     match kind {
         ProofNodeType::Kv => walker.to_kv_node(),
+        // Unreachable: backward-references elements are rejected inside
+        // Provable* count trees at insertion; fall back to the trusted
+        // value-hash shape defensively.
+        ProofNodeType::KvBackwardsReferencesValueHash => walker.to_kv_value_hash_node(),
         ProofNodeType::KvCount => Node::KVCount(key, value_bytes.to_vec(), count),
         ProofNodeType::KvCountSum => {
             // PCPS host, Item-flavored entry: emit the dual-axis

@@ -487,6 +487,39 @@ where
                 ProofNodeType::KvSum => self.to_kv_sum_node(),
                 ProofNodeType::KvCountSum => self.to_kv_count_sum_node(),
                 ProofNodeType::KvValueHash => self.to_kv_value_hash_node(),
+                // Backward-references elements: emit the dedicated wire
+                // node — STRIPPED bytes plus the referrer-list hash — so
+                // the verifier recombines and binds the payload. (The
+                // fallbacks below are defensive: the stored bytes always
+                // deserialize for honestly written elements.)
+                ProofNodeType::KvBackwardsReferencesValueHash => {
+                    use crate::element::ElementExt;
+                    let rebuilt = grovedb_element::Element::deserialize(
+                        self.tree().value_ref(),
+                        grove_version,
+                    )
+                    .ok()
+                    .and_then(|element| {
+                        let hashes = element
+                            .backward_references_hashes(grove_version)
+                            .unwrap_add_cost(&mut cost)
+                            .ok()
+                            .flatten()?;
+                        let stripped = element
+                            .stripped_of_backward_references()
+                            .serialize(grove_version)
+                            .ok()?;
+                        Some(Node::KVBackwardsReferencesValueHash(
+                            self.tree().key().to_vec(),
+                            stripped,
+                            hashes.backrefs,
+                        ))
+                    });
+                    match rebuilt {
+                        Some(node) => node,
+                        None => self.to_kv_value_hash_node(),
+                    }
+                }
                 ProofNodeType::KvValueHashFeatureType => self.to_kv_value_hash_feature_type_node(),
                 // References: at merk level, generate same node type as non-ref counterpart
                 // GroveDB will post-process to KVRefValueHash with dereferenced value

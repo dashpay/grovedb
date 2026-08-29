@@ -1281,6 +1281,63 @@ impl TreeNode {
         Ok(self).wrap_with_cost(cost)
     }
 
+    /// Replaces the value and sets the node's value hash to the provided
+    /// (already fully computed) hash. Used by backward-references elements.
+    pub fn put_value_with_provided_value_hash(
+        mut self,
+        value: Vec<u8>,
+        value_hash: CryptoHash,
+        feature_type: TreeFeatureType,
+        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        get_temp_new_value_with_old_flags: &impl Fn(
+            &Vec<u8>,
+            &Vec<u8>,
+        ) -> Result<Option<Vec<u8>>, Error>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> CostResult<Self, Error> {
+        let mut cost = OperationCost::default();
+
+        self.inner.kv = self.inner.kv.put_value_no_update_of_hashes(value);
+        self.inner.kv.feature_type = feature_type;
+
+        if self.old_value.is_some() {
+            // we are replacing a value
+            // in this case there is a possibility that the client would want to update the
+            // element flags based on the change of values
+            cost_return_on_error_no_add!(
+                cost,
+                self.just_in_time_tree_node_value_update(
+                    old_specialized_cost,
+                    get_temp_new_value_with_old_flags,
+                    update_tree_value_based_on_costs,
+                    section_removal_bytes
+                )
+            );
+        }
+
+        self.inner.kv = self
+            .inner
+            .kv
+            .update_hashes_with_provided_value_hash(value_hash)
+            .unwrap_add_cost(&mut cost);
+        Ok(self).wrap_with_cost(cost)
+    }
+
     /// H1-A variant: replaces the root node's value with the given value,
     /// computing the value hash from
     /// `Blake3(actual_value_hash ‖ primary_root_hash ‖ secondary_root_hash)`

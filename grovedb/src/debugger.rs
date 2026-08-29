@@ -433,6 +433,12 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
     Ok(match node {
         Node::Hash(hash) => MerkProofNode::Hash(hash),
         Node::KVHash(hash) => MerkProofNode::KVHash(hash),
+        // grovedbg has no dedicated variant; show as a KVValueHash-style
+        // node with the backrefs hash in the hash slot.
+        Node::KVBackwardsReferencesValueHash(key, value, backrefs_hash) => {
+            let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
+            MerkProofNode::KVValueHash(key, element_to_grovedbg(element), backrefs_hash)
+        }
         Node::KVDigest(key, hash) => MerkProofNode::KVDigest(key, hash),
         Node::KVDigestCount(key, hash, count) => {
             // KVDigestCount is like KVDigest but with count for ProvableCountTree
@@ -864,7 +870,7 @@ fn reference_path_to_grovedbg(
 fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
     match element {
         crate::Element::Item(value, element_flags)
-        | crate::Element::ItemWithBackwardsReferences(value, element_flags) => {
+        | crate::Element::ItemWithBackwardsReferences(value, _, element_flags) => {
             // grovedbg has no backward-references variants; show the plain
             // counterpart.
             grovedbg_types::Element::Item {
@@ -899,7 +905,7 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             sum_item_value,
         },
         crate::Element::SumItem(value, element_flags)
-        | crate::Element::SumItemWithBackwardsReferences(value, element_flags) => {
+        | crate::Element::SumItemWithBackwardsReferences(value, _, element_flags) => {
             grovedbg_types::Element::SumItem {
                 value,
                 element_flags,

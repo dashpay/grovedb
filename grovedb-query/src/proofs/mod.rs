@@ -98,6 +98,21 @@ pub enum Node {
     /// Contains: `(key, referenced_value, reference_element_hash)`
     KVRefValueHash(Vec<u8>, Vec<u8>, CryptoHash),
 
+    /// Key, the element's STRIPPED serialization (backward-references list
+    /// emptied), and the 32-byte hash of the serialized backward-references
+    /// list. For GroveDB's backward-references-capable elements
+    /// (`ItemWithBackwardsReferences` / `SumItemWithBackwardsReferences`),
+    /// whose node value hash is
+    /// `combine_hash(H(stripped_value), backrefs_hash)`.
+    ///
+    /// The verifier RECOMPUTES that combination, so the payload bytes are
+    /// bound by the proof (unlike `KVValueHash`, whose value bytes are
+    /// carried on trust) while the referrer set itself stays out of the
+    /// proof — only its hash travels.
+    ///
+    /// Contains: `(key, stripped_value, backward_references_hash)`
+    KVBackwardsReferencesValueHash(Vec<u8>, Vec<u8>, CryptoHash),
+
     /// Key, value, and count. For queried Items in ProvableCountTree.
     ///
     /// Contains: `(key, value, count)`
@@ -262,6 +277,12 @@ impl fmt::Display for Node {
                 hex_to_ascii(key),
                 hex_to_ascii(value),
                 hex::encode(value_hash)
+            ),
+            Node::KVBackwardsReferencesValueHash(key, value, backrefs_hash) => format!(
+                "KVBackwardsReferencesValueHash({}, {}, HASH[{}])",
+                hex_to_ascii(key),
+                hex_to_ascii(value),
+                hex::encode(backrefs_hash)
             ),
             Node::KVDigest(key, value_hash) => format!(
                 "KVDigest({}, HASH[{}])",

@@ -2647,11 +2647,7 @@ impl GroveDb {
                         )?);
                     }
                 }
-                Element::Item(..)
-                | Element::SumItem(..)
-                | Element::ItemWithSumItem(..)
-                | Element::ItemWithBackwardsReferences(..)
-                | Element::SumItemWithBackwardsReferences(..) => {
+                Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
@@ -2671,6 +2667,35 @@ impl GroveDb {
                         issues.insert(
                             path.derive_owned_with_child(key).to_vec(),
                             (actual_value_hash, element_value_hash, actual_value_hash),
+                        );
+                    }
+                }
+                Element::ItemWithBackwardsReferences(..)
+                | Element::SumItemWithBackwardsReferences(..) => {
+                    // The node commits to combine(inner_hash, backrefs_hash),
+                    // both recomputable from the stored bytes.
+                    let (_, element_value_hash) = merk
+                        .get_value_and_value_hash(
+                            &key,
+                            allow_cache,
+                            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                            grove_version,
+                        )
+                        .unwrap()
+                        .map_err(MerkError)?
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for {}",
+                            hex_to_ascii(&key),
+                            element.type_str()
+                        )))?;
+                    let hashes = element
+                        .backward_references_hashes(grove_version)
+                        .unwrap()?
+                        .expect("backward-references elements carry hashes");
+                    if hashes.combined != element_value_hash {
+                        issues.insert(
+                            path.derive_owned_with_child(key).to_vec(),
+                            (hashes.combined, element_value_hash, hashes.combined),
                         );
                     }
                 }
@@ -2719,14 +2744,24 @@ impl GroveDb {
                                 grove_version,
                             )
                             .unwrap()?;
-                        item.value_hash(grove_version).unwrap()?
+                        item.logical_value_hash(grove_version).unwrap()?
                     };
 
-                    // Take the current item (reference) hash and combine it with referenced value's
-                    // hash
-                    let self_actual_value_hash = value_hash(&kv_value).unwrap();
-                    let combined_value_hash =
-                        combine_hash(&self_actual_value_hash, &referenced_value_hash).unwrap();
+                    // Take the current reference's own hash and combine it
+                    // with the referenced value's hash. A bidirectional
+                    // reference commits to THREE inputs: its stripped bytes,
+                    // the resolved end hash, and its referrer-list hash.
+                    let combined_value_hash = if let Element::BidirectionalReference(..) = &element
+                    {
+                        let hashes = element
+                            .backward_references_hashes(grove_version)
+                            .unwrap()?
+                            .expect("bidirectional references carry hashes");
+                        combine_hash(&hashes.combined, &referenced_value_hash).unwrap()
+                    } else {
+                        let self_actual_value_hash = value_hash(&kv_value).unwrap();
+                        combine_hash(&self_actual_value_hash, &referenced_value_hash).unwrap()
+                    };
 
                     if combined_value_hash != element_value_hash {
                         issues.insert(

@@ -390,6 +390,21 @@ impl QueryProofVerify for Query {
                                 "KVValueHash node must not contain an item element".to_string(),
                             ));
                         }
+                        // Backward-references elements must come through
+                        // KVBackwardsReferencesValueHash, whose combined
+                        // hash is RECOMPUTED — as a KVValueHash the value
+                        // bytes would ride unbound on the carried hash.
+                        if matches!(
+                            element_type.base(),
+                            ElementType::ItemWithBackwardsReferences
+                                | ElementType::SumItemWithBackwardsReferences
+                        ) {
+                            return Err(Error::InvalidProofError(
+                                "KVValueHash node must not contain a backward-references \
+                                 element; use KVBackwardsReferencesValueHash"
+                                    .to_string(),
+                            ));
+                        }
                     }
                     execute_node(key, Some(value), *value_hash, false)?;
                 }
@@ -413,6 +428,30 @@ impl QueryProofVerify for Query {
                         println!("Processing KVRefValueHash node");
                     }
                     execute_node(key, Some(value), *value_hash, false)?;
+                }
+                Node::KVBackwardsReferencesValueHash(key, value, backrefs_hash) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVBackwardsReferencesValueHash node");
+                    }
+                    // The node kind was introduced with GROVE_V4 / V1
+                    // envelopes; a V0 proof carrying it would be accepted
+                    // here but rejected by every released verifier.
+                    if proof_version == 0 {
+                        return Err(Error::InvalidProofError(
+                            "KVBackwardsReferencesValueHash nodes are not allowed in V0 proofs"
+                                .to_string(),
+                        ));
+                    }
+                    // The node's combined hash is recomputed from the
+                    // stripped payload bytes it carries, so the bytes are
+                    // bound; the result set receives the stripped element.
+                    let combined = value_hash(value)
+                        .unwrap()
+                        .wrap_with_cost(Default::default())
+                        .flat_map(|inner| crate::tree::hash::combine_hash(&inner, backrefs_hash))
+                        .unwrap();
+                    execute_node(key, Some(value), combined, false)?;
                 }
                 Node::KVCount(key, value, _count) => {
                     #[cfg(feature = "proof_debug")]
@@ -439,6 +478,18 @@ impl QueryProofVerify for Query {
                         if element_type.has_simple_value_hash() {
                             return Err(Error::InvalidProofError(
                                 "KVValueHashFeatureType node must not contain an item element"
+                                    .to_string(),
+                            ));
+                        }
+                        // Same rationale as the KVValueHash guard above.
+                        if matches!(
+                            element_type.base(),
+                            ElementType::ItemWithBackwardsReferences
+                                | ElementType::SumItemWithBackwardsReferences
+                        ) {
+                            return Err(Error::InvalidProofError(
+                                "KVValueHashFeatureType node must not contain a \
+                                 backward-references element"
                                     .to_string(),
                             ));
                         }

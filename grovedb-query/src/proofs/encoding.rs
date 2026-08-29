@@ -91,6 +91,22 @@ impl Encode for Op {
                     dest.write_all(value_hash)?;
                 }
             }
+            Op::Push(Node::KVBackwardsReferencesValueHash(key, value, backrefs_hash)) => {
+                let key_len = key_len_u8(key)?;
+                if value.len() < 65536 {
+                    dest.write_all(&[0x50, key_len])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(backrefs_hash)?;
+                } else {
+                    dest.write_all(&[0x51, key_len])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(backrefs_hash)?;
+                }
+            }
             Op::Push(Node::KVValueHashFeatureType(key, value, value_hash, feature_type)) => {
                 let key_len = key_len_u8(key)?;
                 if value.len() < 65536 {
@@ -235,6 +251,22 @@ impl Encode for Op {
                 dest.write_all(&[0x0c, key_len])?;
                 dest.write_all(key)?;
                 dest.write_all(value_hash)?;
+            }
+            Op::PushInverted(Node::KVBackwardsReferencesValueHash(key, value, backrefs_hash)) => {
+                let key_len = key_len_u8(key)?;
+                if value.len() < 65536 {
+                    dest.write_all(&[0x52, key_len])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(backrefs_hash)?;
+                } else {
+                    dest.write_all(&[0x53, key_len])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(backrefs_hash)?;
+                }
             }
             Op::PushInverted(Node::KVRefValueHash(key, value, value_hash)) => {
                 let key_len = key_len_u8(key)?;
@@ -658,6 +690,11 @@ impl Encode for Op {
                 let header = if value.len() < 65536 { 4 } else { 6 };
                 header + key.len() + value.len() + HASH_LENGTH
             }
+            Op::Push(Node::KVBackwardsReferencesValueHash(key, value, _))
+            | Op::PushInverted(Node::KVBackwardsReferencesValueHash(key, value, _)) => {
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header + key.len() + value.len() + HASH_LENGTH
+            }
             Op::Push(Node::KVValueHashFeatureType(key, value, _, feature_type)) => {
                 let header = if value.len() < 65536 { 4 } else { 6 };
                 header + key.len() + value.len() + HASH_LENGTH + feature_type.encoding_length()?
@@ -894,6 +931,54 @@ impl Decode for Op {
                 input.read_exact(&mut value_hash)?;
 
                 Self::Push(Node::KVRefValueHash(key, value, value_hash))
+            }
+            0x50 | 0x51 => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len = if variant == 0x50 {
+                    let len: u16 = Decode::decode(&mut input)?;
+                    len as usize
+                } else {
+                    let len: u32 = Decode::decode(&mut input)?;
+                    len as usize
+                };
+                let mut value = vec![0; value_len];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut backrefs_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut backrefs_hash)?;
+
+                Self::Push(Node::KVBackwardsReferencesValueHash(
+                    key,
+                    value,
+                    backrefs_hash,
+                ))
+            }
+            0x52 | 0x53 => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len = if variant == 0x52 {
+                    let len: u16 = Decode::decode(&mut input)?;
+                    len as usize
+                } else {
+                    let len: u32 = Decode::decode(&mut input)?;
+                    len as usize
+                };
+                let mut value = vec![0; value_len];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut backrefs_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut backrefs_hash)?;
+
+                Self::PushInverted(Node::KVBackwardsReferencesValueHash(
+                    key,
+                    value,
+                    backrefs_hash,
+                ))
             }
             0x07 => {
                 let key_len: u8 = Decode::decode(&mut input)?;

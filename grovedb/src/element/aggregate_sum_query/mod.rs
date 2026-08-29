@@ -794,7 +794,7 @@ impl ElementAggregateSumQueryExtensions for Element {
         let value = match element.into_underlying() {
             Element::SumItem(value, _)
             | Element::ItemWithSumItem(_, value, _)
-            | Element::SumItemWithBackwardsReferences(value, _) => value,
+            | Element::SumItemWithBackwardsReferences(value, _, _) => value,
             _ => return Err(Error::InvalidInput("Only sum items are allowed")),
         };
 

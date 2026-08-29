@@ -34,13 +34,13 @@ impl Visualize for Element {
             Element::BidirectionalReference(reference) => {
                 drawer.write(
                     format!(
-                        "bidi_ref: [forward: {}, slot: {}, cascade: {}, max_hop: {}]",
+                        "bidi_ref: [forward: {}, cascade: {}, max_hop: {}, backrefs: {}]",
                         reference.forward_reference_path,
-                        reference.backward_reference_slot,
                         reference.cascade_on_update,
                         reference
                             .max_hop
                             .map_or("None".to_string(), |h| h.to_string()),
+                        reference.backward_references.len(),
                     )
                     .as_bytes(),
                 )?;
@@ -50,7 +50,7 @@ impl Visualize for Element {
                     drawer = f.visualize(drawer)?;
                 }
             }
-            Element::ItemWithBackwardsReferences(value, flags) => {
+            Element::ItemWithBackwardsReferences(value, _, flags) => {
                 drawer.write(b"item_with_backwards_references: ")?;
                 drawer = value.visualize(drawer)?;
 
@@ -60,7 +60,7 @@ impl Visualize for Element {
                     drawer = f.visualize(drawer)?;
                 }
             }
-            Element::SumItemWithBackwardsReferences(value, flags) => {
+            Element::SumItemWithBackwardsReferences(value, _, flags) => {
                 drawer.write(format!("sum_item_with_backwards_references: {value}").as_bytes())?;
 
                 if let Some(f) = flags

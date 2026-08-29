@@ -1601,7 +1601,7 @@ mod tests {
                             crate::tests::TEST_LEAF.to_vec(),
                             b"target".to_vec(),
                         ]),
-                    backward_reference_slot: 0,
+                    backward_references: Vec::new(),
                     cascade_on_update: true,
                     max_hop: None,
                     flags: None,

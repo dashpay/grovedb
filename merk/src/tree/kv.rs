@@ -231,6 +231,22 @@ impl KV {
         self.wrap_with_cost(cost)
     }
 
+    /// Sets the value hash to the provided (already fully computed) hash
+    /// and recomputes the kv hash. Used for backward-references elements,
+    /// whose value hash is combined grovedb-side from the STRIPPED
+    /// serialization plus the backward-references hash — neither of which
+    /// merk can derive from the stored bytes.
+    #[inline]
+    pub fn update_hashes_with_provided_value_hash(
+        mut self,
+        provided_value_hash: CryptoHash,
+    ) -> CostContext<Self> {
+        let mut cost = OperationCost::default();
+        self.value_hash = provided_value_hash;
+        self.hash = kv_digest_to_kv_hash(self.key(), self.value_hash()).unwrap_add_cost(&mut cost);
+        self.wrap_with_cost(cost)
+    }
+
     /// Updates the hashes and returns the modified `KV`.
     #[inline]
     pub fn update_hashes_using_reference_value_hash(

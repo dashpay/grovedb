@@ -4933,7 +4933,7 @@ mod general_tests {
             b"refc",
             Element::BidirectionalReference(BidirectionalReference {
                 forward_reference_path: ReferencePathType::SiblingReference(b"value".to_vec()),
-                backward_reference_slot: 0,
+                backward_references: Vec::new(),
                 cascade_on_update: true,
                 max_hop: None,
                 flags: None,
@@ -4953,7 +4953,7 @@ mod general_tests {
             b"refb",
             Element::BidirectionalReference(BidirectionalReference {
                 forward_reference_path: ReferencePathType::SiblingReference(b"refc".to_vec()),
-                backward_reference_slot: 0,
+                backward_references: Vec::new(),
                 cascade_on_update: true,
                 max_hop: None,
                 flags: None,
@@ -4973,7 +4973,7 @@ mod general_tests {
             b"refa",
             Element::BidirectionalReference(BidirectionalReference {
                 forward_reference_path: ReferencePathType::SiblingReference(b"refb".to_vec()),
-                backward_reference_slot: 0,
+                backward_references: Vec::new(),
                 cascade_on_update: true,
                 max_hop: None,
                 flags: None,
@@ -5029,7 +5029,7 @@ mod general_tests {
             Element::new_sum_item_allowing_bidirectional_references(1),
             Element::BidirectionalReference(BidirectionalReference {
                 forward_reference_path: ReferencePathType::SiblingReference(b"x".to_vec()),
-                backward_reference_slot: 0,
+                backward_references: Vec::new(),
                 cascade_on_update: true,
                 max_hop: None,
                 flags: None,
@@ -5060,7 +5060,7 @@ mod general_tests {
             Element::new_sum_item_allowing_bidirectional_references(1),
             Element::BidirectionalReference(BidirectionalReference {
                 forward_reference_path: ReferencePathType::SiblingReference(b"x".to_vec()),
-                backward_reference_slot: 0,
+                backward_references: Vec::new(),
                 cascade_on_update: true,
                 max_hop: None,
                 flags: None,

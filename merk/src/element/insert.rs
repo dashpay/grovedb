@@ -13,7 +13,7 @@ use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 use crate::{
     element::{
         costs::ElementCostExtensions, exists::ElementExistsInStorageExtensions,
-        get::ElementFetchFromStorageExtensions, tree_type::ElementTreeTypeExtensions,
+        get::ElementFetchFromStorageExtensions, tree_type::ElementTreeTypeExtensions, ElementExt,
     },
     tree_type::TreeType,
     BatchEntry, CryptoHash, Error, Merk, MerkOptions, Op, TreeFeatureType,
@@ -289,6 +289,20 @@ impl ElementInsertToStorageExtensions for Element {
                 "cannot add sum item to non sum tree",
             ));
         }
+        if self.supports_backward_references()
+            && matches!(
+                tree_type,
+                TreeType::ProvableCountTree
+                    | TreeType::ProvableCountSumTree
+                    | TreeType::ProvableSumTree
+                    | TreeType::ProvableCountProvableSumTree
+            )
+        {
+            return Err(Error::InvalidInputError(
+                "backward-references elements may not live in Provable* aggregate trees: their \
+                 combined value hash has no aggregate-carrying proof-node variant yet",
+            ));
+        }
         Ok(())
     }
 
@@ -309,6 +323,48 @@ impl ElementInsertToStorageExtensions for Element {
 
         let merk_feature_type =
             cost_return_on_error_into_default!(self.get_feature_type(merk.tree_type));
+        if matches!(self, Element::BidirectionalReference(..)) {
+            return Err(Error::InvalidInputError(
+                "a bidirectional reference must be written through insert_reference with its \
+                 resolved target hash",
+            ))
+            .wrap_with_cost(Default::default());
+        }
+        let mut cost = Default::default();
+        // Backward-references items: the node value hash is combined from
+        // the stripped serialization plus the backward-references hash, so
+        // it is supplied fully computed.
+        let backward_references_hashes = cost_return_on_error!(
+            &mut cost,
+            self.backward_references_hashes(grove_version)
+                .map_err(Error::from)
+        );
+        if let Some(hashes) = backward_references_hashes {
+            let batch_operations = [(
+                key,
+                Op::PutWithProvidedValueHash(serialized, hashes.combined, merk_feature_type),
+            )];
+            let tree_type = merk.tree_type;
+            return merk
+                .apply_with_specialized_costs::<_, Vec<u8>>(
+                    &batch_operations,
+                    &[],
+                    options,
+                    &|key, value| {
+                        Self::specialized_costs_for_key_value(
+                            key,
+                            value,
+                            tree_type.inner_node_type(),
+                            grove_version,
+                        )
+                        .map_err(|e| Error::ClientCorruptionError(e.to_string()))
+                    },
+                    Some(&Element::value_defined_cost_for_serialized_value),
+                    grove_version,
+                )
+                .map_err(|e| Error::CorruptedData(e.to_string()))
+                .add_cost(cost);
+        }
         // Use is_sum_item() (which looks through NonCounted) so that a
         // NonCounted(SumItem(..)) takes the same specialized cost path as a
         // bare SumItem(..).
@@ -618,6 +674,49 @@ impl ElementInsertToStorageExtensions for Element {
                 .wrap_with_cost(OperationCost::default())
         );
 
+        // A bidirectional reference's node value hash combines THREE
+        // inputs: its stripped serialization, the resolved target hash,
+        // and its own backward-references hash. Supply it fully computed.
+        if matches!(self, Element::BidirectionalReference(..)) {
+            let hashes = cost_return_on_error!(
+                &mut cost,
+                self.backward_references_hashes(grove_version)
+                    .map_err(Error::from)
+            )
+            .expect("bidirectional references carry backward references");
+            // Nested combine keeps the existing KVRefValueHash* wire
+            // binding valid: the proof carries
+            // self_combined = combine(inner, backrefs) opaquely and the
+            // verifier recomputes combine(self_combined, H(stripped
+            // target)) — exactly this value hash.
+            let value_hash = crate::tree::hash::combine_hash(&hashes.combined, &referenced_value)
+                .unwrap_add_cost(&mut cost);
+            let batch_operations = [(
+                key,
+                Op::PutWithProvidedValueHash(serialized, value_hash, merk_feature_type),
+            )];
+            let tree_type = merk.tree_type;
+            return merk
+                .apply_with_specialized_costs::<_, Vec<u8>>(
+                    &batch_operations,
+                    &[],
+                    options,
+                    &|key, value| {
+                        Self::specialized_costs_for_key_value(
+                            key,
+                            value,
+                            tree_type.inner_node_type(),
+                            grove_version,
+                        )
+                        .map_err(|e| Error::ClientCorruptionError(e.to_string()))
+                    },
+                    Some(&Element::value_defined_cost_for_serialized_value),
+                    grove_version,
+                )
+                .map_err(|e| Error::CorruptedData(e.to_string()))
+                .add_cost(cost);
+        }
+
         let batch_operations = [(
             key,
             Op::PutCombinedReference(serialized, referenced_value, merk_feature_type),
@@ -677,15 +776,26 @@ impl ElementInsertToStorageExtensions for Element {
                 &mut cost,
                 Self::get_value_hash(merk, key, true, grove_version)
             );
-            let serialized = cost_return_on_error_no_add!(
-                cost,
-                self.serialize(grove_version).map_err(Error::from)
-            );
-            let expected = combine_hash(
-                &value_hash(&serialized).unwrap_add_cost(&mut cost),
-                &referenced_value,
-            )
-            .unwrap_add_cost(&mut cost);
+            let expected = if matches!(self, Element::BidirectionalReference(..)) {
+                let hashes = cost_return_on_error!(
+                    &mut cost,
+                    self.backward_references_hashes(grove_version)
+                        .map_err(Error::from)
+                )
+                .expect("bidirectional references carry backward references");
+                crate::tree::hash::combine_hash(&hashes.combined, &referenced_value)
+                    .unwrap_add_cost(&mut cost)
+            } else {
+                let serialized = cost_return_on_error_no_add!(
+                    cost,
+                    self.serialize(grove_version).map_err(Error::from)
+                );
+                combine_hash(
+                    &value_hash(&serialized).unwrap_add_cost(&mut cost),
+                    &referenced_value,
+                )
+                .unwrap_add_cost(&mut cost)
+            };
             stored != Some(expected)
         } else {
             false

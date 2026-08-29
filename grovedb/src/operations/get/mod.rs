@@ -109,7 +109,7 @@ impl GroveDb {
                 )
                 .add_cost(cost)
             }
-            other => Ok(other).wrap_with_cost(cost),
+            other => Ok(other.stripped_of_backward_references()).wrap_with_cost(cost),
         }
     }
 
@@ -188,7 +188,12 @@ impl GroveDb {
                             .wrap_with_cost(OperationCost::default())
                     )
                 }
-                other => return Ok(other).wrap_with_cost(cost),
+                other => {
+                    // The referrer list is internal bookkeeping; public
+                    // reads return the logical (stripped) form, matching
+                    // what proofs carry.
+                    return Ok(other.stripped_of_backward_references()).wrap_with_cost(cost);
+                }
             }
             hops_left -= 1;
         }
@@ -239,6 +244,7 @@ impl GroveDb {
             tx.as_ref(),
             grove_version,
         )
+        .map_ok(|element| element.stripped_of_backward_references())
     }
 
     /// Get Element at specified path and key
@@ -290,6 +296,7 @@ impl GroveDb {
             tx.as_ref(),
             grove_version,
         )
+        .map_ok(|element| element.map(|e| e.stripped_of_backward_references()))
     }
 
     /// Get tree item without following references

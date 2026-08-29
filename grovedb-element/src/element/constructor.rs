@@ -81,7 +81,7 @@ impl Element {
     /// Set element to an item without flags that can be targeted by
     /// bidirectional references
     pub fn new_item_allowing_bidirectional_references(item_value: Vec<u8>) -> Self {
-        Element::ItemWithBackwardsReferences(item_value, None)
+        Element::ItemWithBackwardsReferences(item_value, Vec::new(), None)
     }
 
     /// Set element to an item with flags that can be targeted by
@@ -90,13 +90,13 @@ impl Element {
         item_value: Vec<u8>,
         flags: Option<ElementFlags>,
     ) -> Self {
-        Element::ItemWithBackwardsReferences(item_value, flags)
+        Element::ItemWithBackwardsReferences(item_value, Vec::new(), flags)
     }
 
     /// Set element to a sum item without flags that can be targeted by
     /// bidirectional references
     pub fn new_sum_item_allowing_bidirectional_references(value: i64) -> Self {
-        Element::SumItemWithBackwardsReferences(value, None)
+        Element::SumItemWithBackwardsReferences(value, Vec::new(), None)
     }
 
     /// Set element to a sum item with flags that can be targeted by
@@ -105,24 +105,24 @@ impl Element {
         value: i64,
         flags: Option<ElementFlags>,
     ) -> Self {
-        Element::SumItemWithBackwardsReferences(value, flags)
+        Element::SumItemWithBackwardsReferences(value, Vec::new(), flags)
     }
 
     /// Set element to a bidirectional reference without flags. The
-    /// `backward_reference_slot` is assigned during insertion; the value
-    /// given here is a placeholder.
+    /// `backward_references` list is bookkeeping maintained by insertion —
+    /// anything supplied here is overwritten by the write path.
     pub fn new_bidirectional_reference(reference_path: ReferencePathType) -> Self {
         Element::BidirectionalReference(crate::bidirectional_reference::BidirectionalReference {
             forward_reference_path: reference_path,
-            backward_reference_slot: 0,
             cascade_on_update: false,
             max_hop: None,
+            backward_references: Vec::new(),
             flags: None,
         })
     }
 
     /// Set element to a bidirectional reference with every knob exposed. The
-    /// `backward_reference_slot` is assigned during insertion.
+    /// `backward_references` list is bookkeeping maintained by insertion.
     pub fn new_bidirectional_reference_with_options(
         reference_path: ReferencePathType,
         max_hop: MaxReferenceHop,
@@ -131,9 +131,9 @@ impl Element {
     ) -> Self {
         Element::BidirectionalReference(crate::bidirectional_reference::BidirectionalReference {
             forward_reference_path: reference_path,
-            backward_reference_slot: 0,
             cascade_on_update,
             max_hop,
+            backward_references: Vec::new(),
             flags,
         })
     }

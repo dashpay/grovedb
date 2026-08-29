@@ -8,10 +8,5 @@
 
 mod handling;
 
-pub use grovedb_element::{BidirectionalReference, SlotIdx};
+pub use grovedb_element::{BackwardReference, BidirectionalReference};
 pub(crate) use handling::*;
-
-/// Namespace inside a subtree's meta storage under which backward
-/// references are recorded (extended with the target key's length and
-/// bytes, then the slot index).
-const META_BACKWARD_REFERENCES_PREFIX: &[u8] = b"refs";

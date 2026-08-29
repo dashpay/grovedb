@@ -92,6 +92,17 @@ pub enum ProofNodeType {
     ///           ProvableCountTree parent
     KvValueHash,
 
+    /// Use `Node::KVBackwardsReferencesValueHash` — the node carries the
+    /// element's STRIPPED (inner) serialization plus the 32-byte hash of
+    /// its backward-references list; the verifier recomputes
+    /// `value_hash = combine(H(stripped), backrefs_hash)`, which binds the
+    /// payload bytes without shipping (or leaking) the referrer set.
+    ///
+    /// Used for: ItemWithBackwardsReferences, SumItemWithBackwardsReferences
+    /// (which are rejected inside Provable* aggregate parents, so no
+    /// count/sum-carrying twin is needed).
+    KvBackwardsReferencesValueHash,
+
     /// Use `Node::KVRefValueHash` - like KVValueHash but for references.
     ///
     /// At the merk layer, this generates `KVValueHash` (since merk doesn't
@@ -672,7 +683,15 @@ impl ElementType {
             || is_provable_count_and_provable_sum_tree;
 
         let base = self.base();
-        if base.has_simple_value_hash() {
+        if matches!(
+            base,
+            ElementType::ItemWithBackwardsReferences | ElementType::SumItemWithBackwardsReferences
+        ) {
+            // Combined-hash items: stripped payload + backrefs hash. These
+            // are rejected inside Provable* aggregate parents at insertion,
+            // so no aggregate-carrying variant exists.
+            ProofNodeType::KvBackwardsReferencesValueHash
+        } else if base.has_simple_value_hash() {
             // Items (Item, SumItem, ItemWithSumItem)
             if is_provable_count_and_provable_sum_tree {
                 ProofNodeType::KvCountSum
@@ -721,11 +740,7 @@ impl ElementType {
     pub fn has_simple_value_hash(&self) -> bool {
         matches!(
             self.base(),
-            ElementType::Item
-                | ElementType::SumItem
-                | ElementType::ItemWithSumItem
-                | ElementType::ItemWithBackwardsReferences
-                | ElementType::SumItemWithBackwardsReferences
+            ElementType::Item | ElementType::SumItem | ElementType::ItemWithSumItem
         )
     }
 

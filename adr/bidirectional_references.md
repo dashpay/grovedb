@@ -15,19 +15,26 @@ pub enum Element {
     ...
     /// A reference to an object by its path — discriminant 25
     BidirectionalReference(BidirectionalReference),
-    /// An ordinary value that has a backwards reference — discriminant 26
-    ItemWithBackwardsReferences(Vec<u8>, Option<ElementFlags>),
-    /// Signed integer value that can be totaled in a sum tree and has a
-    /// backwards reference — discriminant 27
-    SumItemWithBackwardsReferences(SumValue, Option<ElementFlags>),
+    /// An ordinary value that can be targeted by bidirectional references —
+    /// discriminant 26
+    ItemWithBackwardsReferences(Vec<u8>, Vec<BackwardReference>, Option<ElementFlags>),
+    /// Signed integer value that can be totaled in a sum tree and targeted
+    /// by bidirectional references — discriminant 27
+    SumItemWithBackwardsReferences(SumValue, Vec<BackwardReference>, Option<ElementFlags>),
 }
 
 pub struct BidirectionalReference {
     pub forward_reference_path: ReferencePathType,
-    pub backward_reference_slot: SlotIdx,
     pub cascade_on_update: CascadeOnUpdate,
     pub max_hop: MaxReferenceHop,
+    pub backward_references: Vec<BackwardReference>,
     pub flags: Option<ElementFlags>,
+}
+
+pub struct BackwardReference {
+    /// Inverted path leading back to the referrer.
+    pub inverted_reference: ReferencePathType,
+    pub cascade_on_update: bool,
 }
 ```
 
@@ -132,53 +139,64 @@ present, it modifies the regular execution process in two ways:
 
 Quite a lot happens behind this "post-processing," and we'll go into the details shortly.
 
-### Meta Storage
+### On-element storage and two-layer hashing
 
-Bidirectional references do not alter the state of the elements they point to, as that
-could unintentionally trigger a cascade of propagations. Since backward references are
-not stored directly with the element's data, the meta column family is used to store them
-instead.
+The referrer list lives directly on the element: each of the three variants carries a
+`Vec<BackwardReference>`. Registering or removing a referrer rewrites the TARGET element's
+bytes — but a naive design would then re-hash the target's value, changing the very hash
+every existing referrer has committed to, and each registration would trigger a cascade of
+propagations across all other referrers.
 
-Meta storage follows the same scheme as regular storage, using prefixes. By employing
-prefixes, we achieve a local meta storage for each Merk. This prefix is extended with a
-"namespace" to separate the backward references domain from any other possible usages of
-meta storage and the element's key is appended.
-
-Under the key made by that concatenation, a 32-bit integer is stored, representing
-a bit vector. Each bit set corresponds to a backward reference stored under the prefix,
-with the index added to the prefix to create a new key. This key is used to store the
-actual backward reference data. When inserting or changing a bidirectional reference,
-which alters the backward references list of an element, the integer (bitvec) is modified
-to set or unset a slot. The value under the new key, composed of the prefix and the slot
-index, is updated without affecting other slots, maintaining determinism.
-
-The backward reference is defined as:
-
-```rust
-pub(crate) struct BackwardReference {
-    pub(crate) inverted_reference: ReferencePathType,
-    pub(crate) cascade_on_update: bool,
-}
-```
-
-For example, the data for a subtree `[a, b]` with key `c`, which contains
-`ItemWithBackwardsReferences` and is referenced by two bidirectional references from `[d]`
-with keys `e` and `f`, could look like this:
+To avoid that, elements with backward references use a two-layer hash:
 
 ```text
-* [a,b] prefix = ba1337ab
-* [d] prefix = ee322322
-
-Data:
-  ba1337abc : TreeNode { .. Element::ItemWithBackwardsReferences(..)} // approx
-  ee322322e : TreeNode { .. Element::BidirectionalReference(/* reference path [a,b,c] */) }
-  ee322322f : TreeNode { .. Element::BidirectionalReference(/* reference path [a,b,c] */) }
-
-Meta:
-  ba1337abrefsc  : b00000000000000000000000000000011
-  ba1337abrefsc0 : BackwardReference(/* reference path [d,e] */)
-  ba1337abrefsc1 : BackwardReference(/* reference path [d,f] */)
+inner_hash    = H(serialize(element with backward_references = []))   // the LOGICAL hash
+backrefs_hash = H(serialize(backward_references))
+node value_hash:
+  (Sum)ItemWithBackwardsReferences  = combine(inner_hash, backrefs_hash)
+  BidirectionalReference            = combine(combine(inner_hash, backrefs_hash), end_hash)
 ```
+
+where `end_hash` for a bidirectional reference is the hash of what it transitively points
+at, and `combine` is the existing two-input node-hash combinator.
+
+Every reference in a chain (ordinary or bidirectional) commits to the target's *logical*
+(`inner`) hash — the hash of the stripped serialization. Registering another referrer on a
+target changes only `backrefs_hash`, so the target's own node re-hashes (and propagates up
+its subtree as usual), while every referrer that already points at it keeps its stored
+node hash bit-for-bit. Cascaded hash propagation only happens when the *payload* — the
+logical hash — actually changes.
+
+Public reads (`get`, `get_raw`, query results, proved results) return the STRIPPED
+element: the referrer list is internal bookkeeping and never crosses the API boundary.
+Internal flows (propagation, cascade deletion, `verify_grovedb`) read the full element at
+the merk level.
+
+Since the referrer list is ordinary element data, state sync and chunk restore carry it
+for free — no side-channel storage has to be reconstructed.
+
+### Proofs
+
+Because the node's `value_hash` is no longer `H(value_bytes)`, a plain `KVValueHash` proof
+node cannot authenticate these elements. A dedicated proof node kind ships the stripped
+payload plus the 32-byte referrer-list hash:
+
+```text
+Node::KVBackwardsReferencesValueHash(key, stripped_value_bytes, backrefs_hash)
+```
+
+The verifier RECOMPUTES `combine(H(stripped_value_bytes), backrefs_hash)` as the node's
+value hash — the payload bytes are bound by the recomputation rather than trusted, and
+tampering with either the payload or the referrer-list hash breaks the root-hash chain.
+The verifier also rejects backward-references elements smuggled inside plain `KVValueHash`
+/ `KVValueHashFeatureType` nodes, and the node kind itself is rejected in V0 proofs
+(V0 is a frozen wire format). Bidirectional references resolve through the existing
+`KVRefValueHash` mechanics with `combine(inner, backrefs)` as the carried self-hash.
+
+One consequence: elements with backward references are rejected inside `Provable*`
+aggregate trees (`ProvableCountTree`, `ProvableSumTree`, `ProvableCountSumTree`,
+`ProvableCountProvableSumTree`) — their proof nodes carry aggregate data in shapes that
+have no backward-references twin. Plain `SumTree` / `CountTree` parents work.
 
 ### Propagation
 

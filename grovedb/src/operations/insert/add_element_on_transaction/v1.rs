@@ -127,7 +127,7 @@ impl GroveDb {
 
                 let referenced_element_value_hash = cost_return_on_error_into!(
                     &mut cost,
-                    referenced_item.value_hash(grove_version)
+                    referenced_item.logical_value_hash(grove_version)
                 );
 
                 cost_return_on_error_into!(

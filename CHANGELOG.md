@@ -16,9 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and deleting/overwriting it cascades the chains away (each affected
   reference must opt in via `cascade_on_update`). Opt-in per call through
   the new `propagate_backward_references` flag on `InsertOptions` /
-  `DeleteOptions`. Requires `GROVE_V4`; earlier versions and all batch
-  entry points reject the new variants (fail closed). See
-  `adr/bidirectional_references.md`.
+  `DeleteOptions`. The referrer list is stored on the element itself under a
+  two-layer hash (`combine(inner, backrefs)`), so registering a referrer
+  never re-hashes what existing referrers committed to; public reads return
+  the stripped element, and proofs authenticate these elements through the
+  new `Node::KVBackwardsReferencesValueHash` wire node whose value hash the
+  verifier recomputes. Requires `GROVE_V4`; earlier versions, V0 proofs,
+  `Provable*` aggregate parents, and all batch entry points reject the new
+  variants (fail closed). See `adr/bidirectional_references.md`.
 - **BREAKING**: Added `add_parent_tree_on_subquery` feature to PathQuery (#379)
   - New field in `Query` struct: `add_parent_tree_on_subquery: bool`
   - When set to `true`, parent tree elements (like CountTree or SumTree) are included in query results when performing subqueries

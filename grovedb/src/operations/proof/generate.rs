@@ -10,6 +10,7 @@ use grovedb_costs::{
 };
 use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
 use grovedb_merk::{
+    element::ElementExt,
     proofs::{encode_into, query::QueryItem, Node, Op},
     tree::{combine_hash, value_hash},
     Merk, ProofWithoutEncodingResult, TreeFeatureType,
@@ -935,8 +936,9 @@ impl GroveDb {
                                     )
                                 );
 
-                                let serialized_referenced_elem =
-                                    referenced_elem.serialize(grove_version);
+                                let serialized_referenced_elem = referenced_elem
+                                    .stripped_of_backward_references()
+                                    .serialize(grove_version);
                                 if serialized_referenced_elem.is_err() {
                                     return Err(Error::CorruptedData(String::from(
                                         "unable to serialize element",
@@ -2015,12 +2017,25 @@ impl GroveDb {
                 // node's `value` bytes (which feed value_hash) are left
                 // untouched. Mirrors the normalization in the general
                 // subquery path below.
+                let mut reference_self_hash_override = None;
                 let elem = match elem {
-                    Element::BidirectionalReference(reference) => Element::Reference(
-                        reference.forward_reference_path,
-                        reference.max_hop,
-                        reference.flags,
-                    ),
+                    ref e @ Element::BidirectionalReference(..) => {
+                        let hashes = e
+                            .backward_references_hashes(grove_version)
+                            .unwrap_add_cost(&mut cost)
+                            .ok()
+                            .flatten()
+                            .expect("bidirectional references carry hashes");
+                        reference_self_hash_override = Some(hashes.combined);
+                        let Element::BidirectionalReference(reference) = elem else {
+                            unreachable!("checked above");
+                        };
+                        Element::Reference(
+                            reference.forward_reference_path,
+                            reference.max_hop,
+                            reference.flags,
+                        )
+                    }
                     other => other,
                 };
                 let (Element::Reference(reference_path, ..)
@@ -2045,7 +2060,10 @@ impl GroveDb {
                         grove_version
                     )
                 );
-                let serialized_referenced_elem = match referenced_elem.serialize(grove_version) {
+                let serialized_referenced_elem = match referenced_elem
+                    .stripped_of_backward_references()
+                    .serialize(grove_version)
+                {
                     Ok(bytes) => bytes,
                     Err(_) => {
                         return Err(Error::CorruptedData(String::from(
@@ -2054,7 +2072,10 @@ impl GroveDb {
                         .wrap_with_cost(cost);
                     }
                 };
-                let reference_element_hash = value_hash(value).unwrap_add_cost(&mut cost);
+                let reference_element_hash = match reference_self_hash_override {
+                    Some(hash) => hash,
+                    None => value_hash(value).unwrap_add_cost(&mut cost),
+                };
                 *node = match feature_type {
                     TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => {
                         Node::KVRefValueHashCountSum(
@@ -2214,6 +2235,7 @@ impl GroveDb {
                 Op::Push(node) | Op::PushInverted(node) => match node {
                     Node::KV(key, value)
                     | Node::KVValueHash(key, value, ..)
+                    | Node::KVBackwardsReferencesValueHash(key, value, ..)
                     | Node::KVCount(key, value, _)
                     | Node::KVSum(key, value, _)
                     | Node::KVCountSum(key, value, ..)
@@ -2227,16 +2249,29 @@ impl GroveDb {
                             Element::deserialize(value, grove_version).map(|e| e.into_underlying());
                         // Normalize a bidirectional reference to its plain
                         // reference shape: proof-wise both resolve the same
-                        // way, and `elem` is only used for dispatch here —
-                        // the node's `value` bytes (which carry the real
-                        // serialized element and feed value_hash) are left
-                        // untouched.
+                        // way. A bidirectional reference's self-hash slot in
+                        // KVRefValueHash* nodes is combine(inner, backrefs)
+                        // (not H(stored bytes)) — capture it here, before
+                        // normalization discards the distinction.
+                        let mut reference_self_hash_override = None;
                         let elem = elem.map(|e| match e {
-                            Element::BidirectionalReference(reference) => Element::Reference(
-                                reference.forward_reference_path,
-                                reference.max_hop,
-                                reference.flags,
-                            ),
+                            Element::BidirectionalReference(..) => {
+                                let hashes = e
+                                    .backward_references_hashes(grove_version)
+                                    .unwrap_add_cost(&mut cost)
+                                    .ok()
+                                    .flatten()
+                                    .expect("bidirectional references carry hashes");
+                                reference_self_hash_override = Some(hashes.combined);
+                                let Element::BidirectionalReference(reference) = e else {
+                                    unreachable!("checked above");
+                                };
+                                Element::Reference(
+                                    reference.forward_reference_path,
+                                    reference.max_hop,
+                                    reference.flags,
+                                )
+                            }
                             other => other,
                         });
                         match elem {
@@ -2267,7 +2302,7 @@ impl GroveDb {
                                 );
 
                                 let serialized_referenced_elem =
-                                    referenced_elem.serialize(grove_version);
+                                    referenced_elem.stripped_of_backward_references().serialize(grove_version);
                                 if serialized_referenced_elem.is_err() {
                                     return Err(Error::CorruptedData(String::from(
                                         "unable to serialize element",
@@ -2280,11 +2315,15 @@ impl GroveDb {
                                 // single-axis Sum, then single-axis Count,
                                 // then plain ref. See the v1 loop for the
                                 // longer-form comment.
+                                let reference_self_hash = match reference_self_hash_override {
+                                    Some(hash) => hash,
+                                    None => value_hash(value).unwrap_add_cost(&mut cost),
+                                };
                                 *node = if let Some((count, sum)) = count_sum_for_ref {
                                     Node::KVRefValueHashCountSum(
                                         key.to_owned(),
                                         serialized_referenced_elem.expect("confirmed ok above"),
-                                        value_hash(value).unwrap_add_cost(&mut cost),
+                                        reference_self_hash,
                                         count,
                                         sum,
                                     )
@@ -2292,23 +2331,36 @@ impl GroveDb {
                                     Node::KVRefValueHashSum(
                                         key.to_owned(),
                                         serialized_referenced_elem.expect("confirmed ok above"),
-                                        value_hash(value).unwrap_add_cost(&mut cost),
+                                        reference_self_hash,
                                         sum,
                                     )
                                 } else if let Some(count) = count_for_ref {
                                     Node::KVRefValueHashCount(
                                         key.to_owned(),
                                         serialized_referenced_elem.expect("confirmed ok above"),
-                                        value_hash(value).unwrap_add_cost(&mut cost),
+                                        reference_self_hash,
                                         count,
                                     )
                                 } else {
                                     Node::KVRefValueHash(
                                         key.to_owned(),
                                         serialized_referenced_elem.expect("confirmed ok above"),
-                                        value_hash(value).unwrap_add_cost(&mut cost),
+                                        reference_self_hash,
                                     )
                                 };
+                                if let Some(limit) = overall_limit.as_mut() {
+                                    *limit -= 1;
+                                }
+                                has_a_result_at_level |= true;
+                            }
+                            Ok(Element::ItemWithBackwardsReferences(..))
+                            | Ok(Element::SumItemWithBackwardsReferences(..))
+                                if !done_with_results =>
+                            {
+                                // Merk already emitted the dedicated
+                                // KVBackwardsReferencesValueHash wire node
+                                // (stripped bytes + referrer-list hash);
+                                // only result bookkeeping remains here.
                                 if let Some(limit) = overall_limit.as_mut() {
                                     *limit -= 1;
                                 }
@@ -2317,8 +2369,6 @@ impl GroveDb {
                             Ok(Element::Item(..))
                             | Ok(Element::SumItem(..))
                             | Ok(Element::ItemWithSumItem(..))
-                            | Ok(Element::ItemWithBackwardsReferences(..))
-                            | Ok(Element::SumItemWithBackwardsReferences(..))
                                 if !done_with_results =>
                             {
                                 if !should_preserve_node_type {
