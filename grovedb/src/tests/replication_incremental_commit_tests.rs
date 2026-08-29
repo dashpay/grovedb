@@ -249,6 +249,40 @@ mod tests {
         assert!(!dest.has_incomplete_restore().unwrap());
     }
 
+    /// A zero in-flight cap must be clamped, not obeyed.
+    ///
+    /// `RestoreCommitMode::Incremental`'s fields are public, so a caller
+    /// can build one with `max_subtrees_in_flight: 0`. Taken literally
+    /// that is not a slow restore, it is a silent hang: every discovered
+    /// subtree is deferred, `apply_chunk` returns no next chunk ids, the
+    /// caller's queue drains, and `is_sync_completed()` stays false
+    /// forever with no error to report. This drives a real sync with that
+    /// configuration; if the clamp regresses, the loop in
+    /// `run_incremental_sync_into` exits early and the completion
+    /// assertion fires.
+    #[test]
+    fn a_zero_in_flight_cap_is_clamped_rather_than_hanging() {
+        let grove_version = GroveVersion::latest();
+        let source = indexed_source(grove_version);
+
+        let (dest, outcome) = run_incremental_sync(
+            &source,
+            grove_version,
+            64,
+            RestoreCommitMode::Incremental {
+                budget_bytes: 1,
+                max_subtrees_in_flight: 0,
+            },
+        )
+        .expect("a zero in-flight cap must still restore");
+
+        assert!(outcome.intermediate_commits > 0);
+        assert_eq!(
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+            source.root_hash(None, grove_version).unwrap().unwrap(),
+        );
+    }
+
     /// The incremental mode commits repeatedly and still lands on the same
     /// grove.
     #[test]

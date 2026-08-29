@@ -288,6 +288,11 @@ pub struct MultiStateSyncSession<'db> {
     /// makes the group-splitting test non-vacuous.
     commits_deferred_for_open_group: usize,
 
+    /// Set when an intermediate commit failed, which loses the writes
+    /// accumulated since the previous one. Every subsequent entry point
+    /// refuses; see [`Self::intermediate_commit`].
+    failed: bool,
+
     /// In-flight indexed-tree groups, keyed by the
     /// primary's prefix. A group is removed — after passing the joint
     /// verification — once its primary and every axis secondary have been
@@ -368,6 +373,7 @@ impl<'db> MultiStateSyncSession<'db> {
             bytes_since_commit: 0,
             intermediate_commits: 0,
             commits_deferred_for_open_group: 0,
+            failed: false,
             indexed_groups: Default::default(),
             secondary_owner: Default::default(),
             _pin: PhantomPinned,
@@ -457,6 +463,11 @@ impl<'db> MultiStateSyncSession<'db> {
     /// expected `app_hash` to ensure the overall composition of all restored
     /// subtrees is correct.
     pub fn commit(self: Pin<Box<Self>>, grove_version: &GroveVersion) -> Result<(), Error> {
+        if self.failed {
+            return Err(Error::CorruptedData(
+                "cannot commit a state sync session whose intermediate commit failed".to_string(),
+            ));
+        }
         if !self.is_sync_completed() {
             return Err(Error::CorruptedData(
                 "cannot commit an incomplete state sync session".to_string(),
@@ -674,13 +685,28 @@ impl<'db> MultiStateSyncSession<'db> {
         }
         match self.commit_mode {
             RestoreCommitMode::Atomic => false,
-            RestoreCommitMode::Incremental {
-                budget_bytes,
-                max_subtrees_in_flight,
-            } => {
+            RestoreCommitMode::Incremental { budget_bytes, .. } => {
                 self.bytes_since_commit >= budget_bytes
-                    || self.current_prefixes.len() >= max_subtrees_in_flight
+                    || self.current_prefixes.len() >= self.in_flight_limit()
             }
+        }
+    }
+
+    /// The effective cap on part-restored subtrees.
+    ///
+    /// Clamped to at least one because zero is a hang, not a
+    /// configuration: with no slots the session defers every discovered
+    /// subtree forever, `apply_chunk` returns no next chunk ids, and the
+    /// caller's queue drains while `is_sync_completed()` stays false. The
+    /// field is public, so refusing to honour a zero here is cheaper than
+    /// trusting every caller to avoid it.
+    fn in_flight_limit(&self) -> usize {
+        match self.commit_mode {
+            RestoreCommitMode::Atomic => usize::MAX,
+            RestoreCommitMode::Incremental {
+                max_subtrees_in_flight,
+                ..
+            } => max_subtrees_in_flight.max(1),
         }
     }
 
@@ -690,10 +716,10 @@ impl<'db> MultiStateSyncSession<'db> {
     fn free_in_flight_slots(&self) -> Option<usize> {
         match self.commit_mode {
             RestoreCommitMode::Atomic => None,
-            RestoreCommitMode::Incremental {
-                max_subtrees_in_flight,
-                ..
-            } => Some(max_subtrees_in_flight.saturating_sub(self.current_prefixes.len())),
+            RestoreCommitMode::Incremental { .. } => Some(
+                self.in_flight_limit()
+                    .saturating_sub(self.current_prefixes.len()),
+            ),
         }
     }
 
@@ -766,10 +792,21 @@ impl<'db> MultiStateSyncSession<'db> {
             session.set_incomplete_restore_marker(true)?;
         }
 
+        // The swap has to happen before the commit (`Tx::commit` consumes
+        // the transaction), so a failed commit leaves the session holding
+        // a fresh transaction with the failed batch's writes gone. That is
+        // an unrecoverable hole in the middle of the restore, so mark the
+        // session dead rather than letting a caller that ignored this
+        // error drive it further -- the final root hash check would very
+        // likely catch the gap, but "very likely" is not a guarantee worth
+        // depending on.
         let finished = std::mem::replace(&mut session.transaction, db.start_transaction());
-        db.commit_transaction(finished).value.map_err(|e| {
-            Error::InternalError(format!("failed to commit intermediate sync batch: {e}"))
-        })?;
+        if let Err(e) = db.commit_transaction(finished).value {
+            session.failed = true;
+            return Err(Error::InternalError(format!(
+                "failed to commit intermediate sync batch: {e}"
+            )));
+        }
 
         session.bytes_since_commit = 0;
         session.intermediate_commits += 1;
@@ -1165,6 +1202,11 @@ impl<'db> MultiStateSyncSession<'db> {
         if nested_global_chunk_ids.len() != nested_global_chunks.len() {
             return Err(Error::InternalError(
                 "Packed num of global chunkIDs and chunks are not matching".to_string(),
+            ));
+        }
+        if self.failed {
+            return Err(Error::InternalError(
+                "state sync session was abandoned after a failed intermediate commit".to_string(),
             ));
         }
         if self.is_empty() {
