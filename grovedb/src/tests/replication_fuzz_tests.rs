@@ -416,6 +416,122 @@ mod tests {
         }
     }
 
+    // ── Non-vacuity guard ───────────────────────────────────────────────
+
+    /// Every property above is written as `if let Ok(..) = decode(input)`,
+    /// which asserts nothing when the decoder always rejects. That is not
+    /// hypothetical: unstructured bytes essentially never parse as any of
+    /// these formats (a random 512-byte buffer has to hit an exact length
+    /// and an exact count byte), which is precisely why each surface is
+    /// also fuzzed from *mutated valid encodings*.
+    ///
+    /// This test makes that load-bearing assumption explicit. It walks a
+    /// deterministic mutation corpus per surface and requires both arms to
+    /// be reached: at least one mutant still decodes (so the canonical
+    /// re-encode assertions actually run) and at least one is rejected (so
+    /// the corpus is not just the identity). If a future encoding change
+    /// made every mutant unparseable, the properties would keep "passing"
+    /// while asserting nothing — this fails instead.
+    /// Genuine edits of `valid` only — the unmutated input is deliberately
+    /// NOT included, so "some mutant decodes" cannot be satisfied by the
+    /// identity element alone.
+    fn deterministic_mutants(valid: &[u8]) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        for i in 0..valid.len().min(48) {
+            for v in [0u8, 1, 2, 3, 0xFE, 0xFF] {
+                let mut m = valid.to_vec();
+                m[i] = v;
+                out.push(m);
+            }
+            let mut truncated = valid.to_vec();
+            truncated.truncate(i);
+            out.push(truncated);
+            let mut spliced = valid.to_vec();
+            spliced.insert(i, 0xAA);
+            out.push(spliced);
+        }
+        out
+    }
+
+    /// Run `decode` over the corpus and assert both arms are reached.
+    fn assert_corpus_reaches_both_arms<T>(
+        surface: &str,
+        valid: &[u8],
+        decode: impl Fn(&[u8]) -> Result<T, crate::Error>,
+    ) {
+        assert!(
+            decode(valid).is_ok(),
+            "{surface}: the corpus seed is not a valid encoding"
+        );
+        let corpus = deterministic_mutants(valid);
+        let accepted = corpus.iter().filter(|m| decode(m).is_ok()).count();
+        assert!(
+            accepted > 0,
+            "{surface}: no edited input decoded — the `if let Ok(..)` properties are vacuous"
+        );
+        assert!(
+            accepted < corpus.len(),
+            "{surface}: every edited input decoded — the corpus never exercises a rejection"
+        );
+    }
+
+    #[test]
+    fn mutation_corpora_reach_both_the_accept_and_reject_arms() {
+        assert_corpus_reaches_both_arms(
+            "unpack_nested_bytes",
+            &pack_nested_bytes(vec![vec![1, 2, 3], vec![], vec![9; 10]]).unwrap(),
+            |b| unpack_nested_bytes(b),
+        );
+
+        assert_corpus_reaches_both_arms(
+            "decode_global_chunk_id",
+            &encode_global_chunk_id(
+                [7u8; 32],
+                Some(vec![1, 2, 3, 4]),
+                TreeType::NormalTree,
+                vec![vec![0, 1], vec![1]],
+            )
+            .unwrap(),
+            |b| decode_global_chunk_id(b, &FUZZ_APP_HASH),
+        );
+
+        assert_corpus_reaches_both_arms(
+            "IndexedHeader::decode",
+            &IndexedHeader {
+                primary_root_hash: [3u8; 32],
+                axes: vec![(0, [4u8; 32]), (1, [5u8; 32])],
+            }
+            .encode(),
+            IndexedHeader::decode,
+        );
+
+        assert_corpus_reaches_both_arms(
+            "IndexedHeaderRequest::decode",
+            &IndexedHeaderRequest {
+                axes: vec![(0, Some(vec![1, 2, 3])), (1, None)],
+            }
+            .encode(),
+            IndexedHeaderRequest::decode,
+        );
+
+        assert_corpus_reaches_both_arms(
+            "NonMerkChunkId::decode",
+            &NonMerkChunkId {
+                start: 5,
+                state: 11,
+                param: 2,
+            }
+            .encode(),
+            NonMerkChunkId::decode,
+        );
+
+        assert_corpus_reaches_both_arms(
+            "decode_non_merk_page",
+            &encode_non_merk_page(true, vec![7, 7], vec![vec![1, 2], vec![3]]).unwrap(),
+            |b| decode_non_merk_page(b),
+        );
+    }
+
     // ── Targeted error branches: `IndexedHeader::decode` ────────────────
     //
     // One test per distinct rejection in the decoder, asserting the
