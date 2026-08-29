@@ -11,9 +11,11 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "minimal")]
+use grovedb_merk::estimated_costs::add_cost_case_merk_replace_same_size;
+#[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::worst_case_costs::{
-    add_worst_case_merk_has_value, worst_case_merk_propagate, WorstCaseLayerInformation,
-    MERK_BIGGEST_VALUE_SIZE,
+    add_worst_case_get_merk_node, add_worst_case_merk_has_value, worst_case_merk_propagate,
+    WorstCaseLayerInformation, MERK_BIGGEST_KEY_SIZE, MERK_BIGGEST_VALUE_SIZE,
 };
 use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions, tree::AggregateData, tree_type::TreeType,
@@ -44,6 +46,10 @@ impl GroveOp {
         key: &KeyInfo,
         in_parent_tree_type: TreeType,
         worst_case_layer_element_estimates: &WorstCaseLayerInformation,
+        // Whether the batch opts into backward-references bookkeeping
+        // (`BatchApplyOptions::propagate_backward_references`): family ops
+        // and deletes then charge the derived fan-out on GROVE_V4+.
+        backward_references_enabled: bool,
         propagate: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -54,14 +60,83 @@ impl GroveOp {
                 None
             }
         };
+        let fan_out_version = grove_version
+            .grovedb_versions
+            .operations
+            .worst_case
+            .worst_case_backward_references_fan_out;
+        // The derived fan-out charged on top of an op's own model, per the
+        // documented worst-case bounds (see the model in `super`).
+        let backward_references_fan_out = |element: Option<&Element>| {
+            if !backward_references_enabled || fan_out_version == 0 {
+                return None;
+            }
+            match element {
+                Some(reference @ Element::BidirectionalReference(..)) => {
+                    // The registration entry appended to the target: the
+                    // inverted forward path (bounded by the reference's own
+                    // encoded size plus a key-sized re-anchoring term) and
+                    // the cascade flag with framing.
+                    let entry_bound = reference
+                        .serialized_size(grove_version)
+                        .map(|size| size as u32)
+                        .unwrap_or(0)
+                        .saturating_add(MERK_BIGGEST_KEY_SIZE)
+                        .saturating_add(16);
+                    Some(super::BackwardReferencesFanOut::worst_reference(entry_bound))
+                }
+                Some(
+                    Element::ItemWithBackwardsReferences(..)
+                    | Element::SumItemWithBackwardsReferences(..)
+                    | Element::ItemWithSumItemWithBackwardsReferences(..),
+                )
+                // A delete cannot see what it deletes; under the flag it
+                // may cascade, so it charges the full item fan-out.
+                | None => Some(super::BackwardReferencesFanOut::worst_item()),
+                Some(_) => None,
+            }
+        };
+        let with_fan_out = |base: CostResult<(), Error>,
+                            fan_out: Option<super::BackwardReferencesFanOut>|
+         -> CostResult<(), Error> {
+            let Some(fan_out) = fan_out else { return base };
+            let mut extra = OperationCost::default();
+            match add_worst_case_backward_references_fan_out(
+                &mut extra,
+                fan_out,
+                in_parent_tree_type,
+                worst_case_layer_element_estimates,
+            ) {
+                Ok(()) => base.add_cost(extra),
+                Err(e) => Err(e).wrap_with_cost(extra),
+            }
+        };
         match self {
-            // Cost models for derived backward-references rewrites land
-            // with batching milestone M5; estimation is refused until then.
-            GroveOp::ReplaceBackwardReferenceFamilyMember { .. } => Err(Error::NotSupported(
-                "estimated costs for backward-references batch operations are not implemented yet"
-                    .to_owned(),
-            ))
-            .wrap_with_cost(OperationCost::default()),
+            // The internal derived rewrite: a same-size element replace
+            // whose node hash is provided precombined — the standard
+            // replace model plus the two combine calls.
+            GroveOp::ReplaceBackwardReferenceFamilyMember { element, .. } => {
+                if fan_out_version == 0 {
+                    return Err(Error::NotSupported(
+                        "estimated costs for backward-references batch operations require \
+                         GROVE_V4+"
+                            .to_owned(),
+                    ))
+                    .wrap_with_cost(OperationCost::default());
+                }
+                let combine_cost = OperationCost {
+                    hash_node_calls: 2,
+                    ..Default::default()
+                };
+                GroveDb::worst_case_merk_replace_element(
+                    key,
+                    element,
+                    in_parent_tree_type,
+                    propagate_if_input(),
+                    grove_version,
+                )
+                .add_cost(combine_cost)
+            }
             GroveOp::ReplaceTreeRootKey { aggregate_data, .. } => {
                 GroveDb::worst_case_merk_replace_tree(
                     key,
@@ -90,15 +165,16 @@ impl GroveOp {
                 grove_version,
             ),
             GroveOp::InsertOrReplace { element }
-            | GroveOp::InsertWithKnownToNotAlreadyExist { element } => {
+            | GroveOp::InsertWithKnownToNotAlreadyExist { element } => with_fan_out(
                 GroveDb::worst_case_merk_insert_element(
                     key,
                     element,
                     in_parent_tree_type,
                     propagate_if_input(),
                     grove_version,
-                )
-            }
+                ),
+                backward_references_fan_out(Some(element)),
+            ),
             GroveOp::InsertIfNotExists { element, .. } => {
                 // Same insert cost as InsertWithKnownToNotAlreadyExist, plus an
                 // additional seek to check whether the key already exists.
@@ -111,12 +187,15 @@ impl GroveOp {
                     key.max_length() as u32,
                     MERK_BIGGEST_VALUE_SIZE,
                 );
-                GroveDb::worst_case_merk_insert_element(
-                    key,
-                    element,
-                    in_parent_tree_type,
-                    propagate_if_input(),
-                    grove_version,
+                with_fan_out(
+                    GroveDb::worst_case_merk_insert_element(
+                        key,
+                        element,
+                        in_parent_tree_type,
+                        propagate_if_input(),
+                        grove_version,
+                    ),
+                    backward_references_fan_out(Some(element)),
                 )
                 .add_cost(has_cost)
             }
@@ -169,28 +248,37 @@ impl GroveOp {
                     grove_version,
                 )
             }
-            GroveOp::Replace { element } => GroveDb::worst_case_merk_replace_element(
-                key,
-                element,
-                in_parent_tree_type,
-                propagate_if_input(),
-                grove_version,
+            GroveOp::Replace { element } => with_fan_out(
+                GroveDb::worst_case_merk_replace_element(
+                    key,
+                    element,
+                    in_parent_tree_type,
+                    propagate_if_input(),
+                    grove_version,
+                ),
+                backward_references_fan_out(Some(element)),
             ),
             GroveOp::Patch {
                 element,
                 change_in_bytes: _,
-            } => GroveDb::worst_case_merk_replace_element(
-                key,
-                element,
-                in_parent_tree_type,
-                propagate_if_input(),
-                grove_version,
+            } => with_fan_out(
+                GroveDb::worst_case_merk_replace_element(
+                    key,
+                    element,
+                    in_parent_tree_type,
+                    propagate_if_input(),
+                    grove_version,
+                ),
+                backward_references_fan_out(Some(element)),
             ),
-            GroveOp::Delete => GroveDb::worst_case_merk_delete_element(
-                key,
-                worst_case_layer_element_estimates,
-                propagate,
-                grove_version,
+            GroveOp::Delete => with_fan_out(
+                GroveDb::worst_case_merk_delete_element(
+                    key,
+                    worst_case_layer_element_estimates,
+                    propagate,
+                    grove_version,
+                ),
+                backward_references_fan_out(None),
             ),
             GroveOp::DeleteTree(tree_type, _) => GroveDb::worst_case_merk_delete_tree(
                 key,
@@ -558,6 +646,58 @@ impl GroveOp {
 }
 
 #[cfg(feature = "minimal")]
+/// Charge the derived backward-references fan-out at its worst (see the
+/// model in `super`): each rewrite is a biggest-node load plus a same-size
+/// biggest-node rewrite with the family's hash calls, each resolution a
+/// biggest-node load, and each propagation a replay of the layer's merk
+/// propagation.
+fn add_worst_case_backward_references_fan_out(
+    cost: &mut OperationCost,
+    fan_out: super::BackwardReferencesFanOut,
+    in_parent_tree_type: TreeType,
+    worst_case_layer_element_estimates: &WorstCaseLayerInformation,
+) -> Result<(), Error> {
+    let node_type = in_parent_tree_type.inner_node_type();
+    for _ in 0..fan_out.rewrites {
+        add_worst_case_get_merk_node(
+            cost,
+            MERK_BIGGEST_KEY_SIZE,
+            MERK_BIGGEST_VALUE_SIZE,
+            node_type,
+        )
+        .map_err(Error::MerkError)?;
+        add_cost_case_merk_replace_same_size(
+            cost,
+            MERK_BIGGEST_KEY_SIZE,
+            MERK_BIGGEST_VALUE_SIZE,
+            in_parent_tree_type,
+        );
+        cost.hash_node_calls = cost
+            .hash_node_calls
+            .saturating_add(super::BACKWARD_REFERENCES_REWRITE_HASH_CALLS);
+    }
+    for _ in 0..fan_out.resolution_loads {
+        add_worst_case_get_merk_node(
+            cost,
+            MERK_BIGGEST_KEY_SIZE,
+            MERK_BIGGEST_VALUE_SIZE,
+            node_type,
+        )
+        .map_err(Error::MerkError)?;
+    }
+    cost.storage_cost.added_bytes = cost
+        .storage_cost
+        .added_bytes
+        .saturating_add(fan_out.registration_added_bytes);
+    for _ in 0..fan_out.propagations {
+        worst_case_merk_propagate(worst_case_layer_element_estimates)
+            .unwrap_add_cost(cost)
+            .map_err(Error::MerkError)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "minimal")]
 /// Cache for subtree paths for worst case scenario costs.
 #[derive(Default)]
 pub(in crate::batch) struct WorstCaseTreeCacheKnownPaths {
@@ -613,7 +753,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         path: &KeyInfoPath,
         ops_at_path_by_key: BTreeMap<KeyInfo, GroveOp>,
         _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, GroveOp>,
-        _batch_apply_options: &BatchApplyOptions,
+        batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
         grove_version: &GroveVersion,
@@ -651,6 +791,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
                     &key,
                     TreeType::NormalTree,
                     worst_case_layer_element_estimates,
+                    batch_apply_options.propagate_backward_references,
                     false,
                     grove_version
                 )
@@ -1313,6 +1454,7 @@ mod tests {
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
                 false,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -1336,6 +1478,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 true,
                 grove_version,
             )
@@ -1360,6 +1503,7 @@ mod tests {
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
                 false,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -1383,6 +1527,7 @@ mod tests {
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
                 false,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -1404,6 +1549,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 false,
                 grove_version,
             )
@@ -1439,6 +1585,7 @@ mod tests {
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
                 false,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -1464,6 +1611,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 true,
                 grove_version,
             )
@@ -1486,6 +1634,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(50),
+                false,
                 true,
                 grove_version,
             )
@@ -1517,6 +1666,7 @@ mod tests {
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
                 false,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -1546,6 +1696,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 true,
                 grove_version,
             )
@@ -1580,6 +1731,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 false,
                 grove_version,
             )
@@ -1634,6 +1786,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 false,
                 grove_version,
             )
@@ -1704,6 +1857,7 @@ mod tests {
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
                 false,
+                false,
                 grove_version,
             )
             .cost_as_result()
@@ -1728,6 +1882,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 true,
                 grove_version,
             )
@@ -1776,6 +1931,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &layer_info,
+                false,
                 false,
                 grove_version,
             )
@@ -1834,6 +1990,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 false,
                 grove_version,
             )

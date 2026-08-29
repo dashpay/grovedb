@@ -353,6 +353,20 @@ pub struct GroveDBOperationsAverageCaseVersions {
     ///   full ommer cascade, dense-buffer recompute, and epoch compaction
     ///   (issue #812).
     pub average_case_commitment_tree_insert: FeatureVersion,
+    /// Cost model for backward-references family ops in batch estimation.
+    ///
+    /// - `0` (V1..V3): the family is estimated like plain elements with no
+    ///   derived fan-out, and `ReplaceBackwardReferenceFamilyMember` is
+    ///   refused. Matches those versions' apply path, which rejects the
+    ///   family in batches, so historical admission decisions replay
+    ///   byte-identically.
+    /// - `1` (V4+): family-carrying ops and (under
+    ///   `BatchApplyOptions::propagate_backward_references`) deletes charge
+    ///   the derived registration / propagation / cascade fan-out, bounded
+    ///   by the apply path's budgets (≤32 referrers per item, ≤10-hop
+    ///   chains, 1 referrer per reference), and the derived op itself gets
+    ///   a real model.
+    pub average_case_backward_references_fan_out: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -380,6 +394,11 @@ pub struct GroveDBOperationsWorstCaseVersions {
     ///   full ommer cascade, dense-buffer recompute, and epoch compaction
     ///   (issue #812).
     pub worst_case_commitment_tree_insert: FeatureVersion,
+    /// Cost model for backward-references family ops in batch estimation.
+    /// Same contract as
+    /// `GroveDBOperationsAverageCaseVersions::average_case_backward_references_fan_out`,
+    /// with the worst-case bounds charged in full.
+    pub worst_case_backward_references_fan_out: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
