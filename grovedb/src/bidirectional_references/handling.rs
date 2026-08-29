@@ -540,7 +540,8 @@ pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: As
             Element::ItemWithBackwardsReferences(..) | Element::SumItemWithBackwardsReferences(..),
             Some(
                 new @ (Element::ItemWithBackwardsReferences(..)
-                | Element::SumItemWithBackwardsReferences(..)),
+                | Element::SumItemWithBackwardsReferences(..)
+                | Element::ItemWithSumItemWithBackwardsReferences(..)),
             ),
         ) => {
             // Update with another backward references-compatible element:
@@ -564,7 +565,8 @@ pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: As
         }
         (
             old @ (Element::ItemWithBackwardsReferences(..)
-            | Element::SumItemWithBackwardsReferences(..)),
+            | Element::SumItemWithBackwardsReferences(..)
+            | Element::ItemWithSumItemWithBackwardsReferences(..)),
             _,
         ) => {
             // Update with non backward references-compatible element (or deletion), equals
@@ -579,7 +581,8 @@ pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: As
             Element::BidirectionalReference(old_reference),
             Some(
                 new @ (Element::ItemWithBackwardsReferences(..)
-                | Element::SumItemWithBackwardsReferences(..)),
+                | Element::SumItemWithBackwardsReferences(..)
+                | Element::ItemWithSumItemWithBackwardsReferences(..)),
             ),
         ) => {
             // Overwrite of bidirectional reference with backward references-compatible

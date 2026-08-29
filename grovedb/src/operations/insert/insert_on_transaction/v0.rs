@@ -33,6 +33,7 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
         Element::BidirectionalReference(..)
             | Element::ItemWithBackwardsReferences(..)
             | Element::SumItemWithBackwardsReferences(..)
+            | Element::ItemWithSumItemWithBackwardsReferences(..)
     ) {
         return Err(Error::NotSupported(
             "backward-references elements (BidirectionalReference, \

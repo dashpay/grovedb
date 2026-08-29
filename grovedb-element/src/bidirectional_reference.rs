@@ -407,6 +407,96 @@ mod tests {
     }
 
     #[test]
+    fn item_with_sum_item_twin_matches_family_semantics() {
+        let grove_version = GroveVersion::latest();
+        let element =
+            Element::new_item_with_sum_item_allowing_bidirectional_references(b"v".to_vec(), 7);
+        assert_eq!(
+            element,
+            Element::ItemWithSumItemWithBackwardsReferences(b"v".to_vec(), 7, Vec::new(), None)
+        );
+        assert_eq!(
+            Element::new_item_with_sum_item_allowing_bidirectional_references_with_flags(
+                b"v".to_vec(),
+                7,
+                Some(vec![1])
+            ),
+            Element::ItemWithSumItemWithBackwardsReferences(
+                b"v".to_vec(),
+                7,
+                Vec::new(),
+                Some(vec![1])
+            )
+        );
+
+        // Classification mirrors ItemWithSumItem plus the family flags.
+        assert!(element.is_any_item());
+        assert!(element.is_sum_item());
+        assert!(element.is_item_with_sum_item());
+        assert!(element.has_basic_item());
+        assert!(element.is_sum_bearing_child());
+        assert!(element.is_count_and_sum_bearing_child());
+        assert!(element.supports_backward_references());
+        assert_eq!(element.sum_value_or_default(), 7);
+        assert_eq!(element.as_item_bytes().unwrap(), b"v");
+        assert_eq!(element.as_sum_item_value().unwrap(), 7);
+        assert_eq!(element.clone().into_item_bytes().unwrap(), b"v".to_vec());
+        assert_eq!(element.clone().into_sum_item_value().unwrap(), 7);
+        assert_eq!(
+            element.element_type(),
+            ElementType::ItemWithSumItemWithBackwardsReferences
+        );
+        assert_eq!(
+            ElementType::ItemWithSumItemWithBackwardsReferences.as_str(),
+            "item with sum item with backwards references"
+        );
+        assert_eq!(
+            ElementType::ItemWithSumItemWithBackwardsReferences
+                .proof_node_type(Some(ElementType::Tree)),
+            ProofNodeType::KvBackwardsReferencesValueHash
+        );
+        let shown = format!("{element}");
+        assert!(
+            shown.starts_with("ItemWithSumItemWithBackwardsReferences("),
+            "got: {shown}"
+        );
+
+        // Wrapper rejection.
+        assert!(Element::new_non_counted(element.clone()).is_err());
+
+        // Codec: roundtrip, stripping, and the 32-entry budget.
+        let with_refs = Element::ItemWithSumItemWithBackwardsReferences(
+            b"v".to_vec(),
+            7,
+            vec![backref(b"a"), backref(b"b")],
+            Some(vec![2]),
+        );
+        let bytes = with_refs.serialize(grove_version).unwrap();
+        assert_eq!(
+            Element::deserialize(&bytes, grove_version).unwrap(),
+            with_refs
+        );
+        assert_eq!(bytes[0], 28, "wire discriminant is pinned");
+        assert_eq!(
+            with_refs.stripped_of_backward_references(),
+            Element::ItemWithSumItemWithBackwardsReferences(
+                b"v".to_vec(),
+                7,
+                Vec::new(),
+                Some(vec![2])
+            )
+        );
+        let over = Element::ItemWithSumItemWithBackwardsReferences(
+            b"v".to_vec(),
+            7,
+            (0..33u8).map(|i| backref(&[i])).collect(),
+            None,
+        );
+        assert!(over.validate_backward_references_limits().is_err());
+        assert!(over.serialize(grove_version).is_err());
+    }
+
+    #[test]
     fn backward_references_codec_round_trips() {
         let list = vec![backref(b"a"), backref(b"zz")];
         let bytes = serialize_backward_references(&list).unwrap();

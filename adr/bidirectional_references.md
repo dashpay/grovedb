@@ -21,6 +21,14 @@ pub enum Element {
     /// Signed integer value that can be totaled in a sum tree and targeted
     /// by bidirectional references — discriminant 27
     SumItemWithBackwardsReferences(SumValue, Vec<BackwardReference>, Option<ElementFlags>),
+    /// Item carrying an explicit sum value (like `ItemWithSumItem`) that can
+    /// be targeted by bidirectional references — discriminant 28
+    ItemWithSumItemWithBackwardsReferences(
+        Vec<u8>,
+        SumValue,
+        Vec<BackwardReference>,
+        Option<ElementFlags>,
+    ),
 }
 
 pub struct BidirectionalReference {

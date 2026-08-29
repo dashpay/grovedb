@@ -363,6 +363,7 @@ impl<'b, B: AsRef<[u8]>> Visit<'b, B> for DeletionVisitor<'_, '_, 'b, B> {
                 element,
                 Element::ItemWithBackwardsReferences(..)
                     | Element::SumItemWithBackwardsReferences(..)
+                    | Element::ItemWithSumItemWithBackwardsReferences(..)
                     | Element::BidirectionalReference(..)
             )
         {

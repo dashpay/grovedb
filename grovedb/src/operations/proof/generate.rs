@@ -1167,7 +1167,8 @@ impl GroveDb {
                             // can never legitimately encounter them.
                             Ok(Element::BidirectionalReference(..))
                             | Ok(Element::ItemWithBackwardsReferences(..))
-                            | Ok(Element::SumItemWithBackwardsReferences(..)) => {
+                            | Ok(Element::SumItemWithBackwardsReferences(..))
+                            | Ok(Element::ItemWithSumItemWithBackwardsReferences(..)) => {
                                 return Err(Error::NotSupported(
                                     "backward-references elements are not supported in V0 \
                                      proofs; they require GROVE_V4+, which proves through V1"
@@ -2459,6 +2460,7 @@ impl GroveDb {
                             }
                             Ok(Element::ItemWithBackwardsReferences(..))
                             | Ok(Element::SumItemWithBackwardsReferences(..))
+                            | Ok(Element::ItemWithSumItemWithBackwardsReferences(..))
                                 if !done_with_results =>
                             {
                                 // Merk already emitted the dedicated
@@ -3461,6 +3463,7 @@ impl GroveDb {
                             | Ok(Element::ItemWithSumItem(..))
                             | Ok(Element::ItemWithBackwardsReferences(..))
                             | Ok(Element::SumItemWithBackwardsReferences(..))
+                            | Ok(Element::ItemWithSumItemWithBackwardsReferences(..))
                             | Ok(Element::Tree(..))
                             | Ok(Element::SumTree(..))
                             | Ok(Element::BigSumTree(..))

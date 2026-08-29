@@ -258,7 +258,8 @@ fn insert_with_backward_references<'db, 'b, B: AsRef<[u8]>>(
         | Element::SumItem(..)
         | Element::ItemWithSumItem(..)
         | Element::ItemWithBackwardsReferences(..)
-        | Element::SumItemWithBackwardsReferences(..) => {
+        | Element::SumItemWithBackwardsReferences(..)
+        | Element::ItemWithSumItemWithBackwardsReferences(..) => {
             // A backward-references element's referrer list is bookkeeping
             // this flow maintains: carry the stored list over onto the new
             // element so an update never silently drops registrations (and

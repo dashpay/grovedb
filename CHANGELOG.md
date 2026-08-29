@@ -8,9 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Bidirectional references (#345): three new `Element` variants —
+- Bidirectional references (#345): four new `Element` variants —
   `BidirectionalReference` (discriminant 25), `ItemWithBackwardsReferences`
-  (26), and `SumItemWithBackwardsReferences` (27) — plus a
+  (26), `SumItemWithBackwardsReferences` (27), and
+  `ItemWithSumItemWithBackwardsReferences` (28, the `ItemWithSumItem`
+  twin) — plus a
   backward-references subsystem that keeps reference chains consistent:
   updating a referenced element propagates the new hash along every chain,
   and deleting/overwriting it cascades the chains away (each affected

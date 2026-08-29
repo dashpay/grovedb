@@ -392,6 +392,24 @@ pub enum Element {
         Vec<crate::bidirectional_reference::BackwardReference>,
         Option<ElementFlags>,
     ),
+    /// An item that simultaneously carries an explicit `SumValue` (like
+    /// `ItemWithSumItem`) AND supports being targeted by bidirectional
+    /// references. The sum contributes to sum-bearing parents exactly as
+    /// `ItemWithSumItem`'s does; the referrer list is carried ON the
+    /// element and covered by the node hash through the two-layer scheme
+    /// described in [`crate::bidirectional_reference`]. Readers and proofs
+    /// see the stripped (inner) form.
+    ///
+    /// May not be wrapped in the aggregation wrappers and is rejected by
+    /// `apply_batch` (same reason as `BidirectionalReference`).
+    ///
+    /// Discriminant 28.
+    ItemWithSumItemWithBackwardsReferences(
+        Vec<u8>,
+        SumValue,
+        Vec<crate::bidirectional_reference::BackwardReference>,
+        Option<ElementFlags>,
+    ),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -750,6 +768,17 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::ItemWithSumItemWithBackwardsReferences(data, sum_value, _, flags) => {
+                write!(
+                    f,
+                    "ItemWithSumItemWithBackwardsReferences({}, {}{})",
+                    hex_to_ascii(data),
+                    sum_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
         }
     }
 }
@@ -791,6 +820,9 @@ impl Element {
             Element::ItemWithBackwardsReferences(..) => ElementType::ItemWithBackwardsReferences,
             Element::SumItemWithBackwardsReferences(..) => {
                 ElementType::SumItemWithBackwardsReferences
+            }
+            Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                ElementType::ItemWithSumItemWithBackwardsReferences
             }
             Element::NonCounted(inner) => match inner.element_type() {
                 ElementType::Item => ElementType::NonCountedItem,
@@ -927,11 +959,13 @@ impl Element {
                     Element::BidirectionalReference(..)
                         | Element::ItemWithBackwardsReferences(..)
                         | Element::SumItemWithBackwardsReferences(..)
+                        | Element::ItemWithSumItemWithBackwardsReferences(..)
                 ) {
                     return Err(crate::error::ElementError::InvalidInput(
                         "NonCounted cannot wrap backward-references elements \
                          (BidirectionalReference, ItemWithBackwardsReferences, \
-                         SumItemWithBackwardsReferences)",
+                         SumItemWithBackwardsReferences, \
+                         ItemWithSumItemWithBackwardsReferences)",
                     ));
                 }
             }
@@ -1074,6 +1108,12 @@ mod serde_impl {
             Vec<crate::bidirectional_reference::BackwardReference>,
             Option<ElementFlags>,
         ),
+        ItemWithSumItemWithBackwardsReferences(
+            Vec<u8>,
+            SumValue,
+            Vec<crate::bidirectional_reference::BackwardReference>,
+            Option<ElementFlags>,
+        ),
     }
 
     impl From<ElementShadow> for Element {
@@ -1132,6 +1172,9 @@ mod serde_impl {
                 }
                 ElementShadow::SumItemWithBackwardsReferences(v, b, f) => {
                     Element::SumItemWithBackwardsReferences(v, b, f)
+                }
+                ElementShadow::ItemWithSumItemWithBackwardsReferences(v, sv, b, f) => {
+                    Element::ItemWithSumItemWithBackwardsReferences(v, sv, b, f)
                 }
             }
         }

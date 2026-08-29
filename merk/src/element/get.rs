@@ -425,6 +425,7 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             | Some(Element::ReferenceWithSumItem(..))
             | Some(Element::ItemWithBackwardsReferences(..))
             | Some(Element::SumItemWithBackwardsReferences(..))
+            | Some(Element::ItemWithSumItemWithBackwardsReferences(..))
             | Some(Element::BidirectionalReference(..)) => {
                 // while the loaded item might be a sum item, it is given for free
                 // as it would be very hard to know in advance
@@ -547,6 +548,7 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             | Element::ReferenceWithSumItem(..)
             | Element::ItemWithBackwardsReferences(..)
             | Element::SumItemWithBackwardsReferences(..)
+            | Element::ItemWithSumItemWithBackwardsReferences(..)
             | Element::BidirectionalReference(..) => {
                 // while the loaded item might be a sum item, it is given for free
                 // as it would be very hard to know in advance

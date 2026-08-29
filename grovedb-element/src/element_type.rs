@@ -319,6 +319,11 @@ pub enum ElementType {
     /// Sum item that supports being targeted by bidirectional references -
     /// discriminant 27. Hashes like `SumItem`. No wrapper twins.
     SumItemWithBackwardsReferences = 27,
+    /// Item carrying an explicit sum value that supports being targeted by
+    /// bidirectional references - discriminant 28. Hashes through the
+    /// combined (stripped ‖ backrefs) scheme like the other two backward-
+    /// references item variants. No wrapper twins.
+    ItemWithSumItemWithBackwardsReferences = 28,
     /// Non-counted wrapper around `Item` - discriminant 128
     NonCountedItem = 128,
     /// Non-counted wrapper around `Reference` - discriminant 129
@@ -685,7 +690,9 @@ impl ElementType {
         let base = self.base();
         if matches!(
             base,
-            ElementType::ItemWithBackwardsReferences | ElementType::SumItemWithBackwardsReferences
+            ElementType::ItemWithBackwardsReferences
+                | ElementType::SumItemWithBackwardsReferences
+                | ElementType::ItemWithSumItemWithBackwardsReferences
         ) {
             // Combined-hash items: stripped payload + backrefs hash. These
             // are rejected inside Provable* aggregate parents at insertion,
@@ -835,6 +842,7 @@ impl ElementType {
                 | ElementType::ItemWithSumItem
                 | ElementType::ItemWithBackwardsReferences
                 | ElementType::SumItemWithBackwardsReferences
+                | ElementType::ItemWithSumItemWithBackwardsReferences
         )
     }
 
@@ -868,6 +876,9 @@ impl ElementType {
             ElementType::BidirectionalReference => "bidirectional reference",
             ElementType::ItemWithBackwardsReferences => "item with backwards references",
             ElementType::SumItemWithBackwardsReferences => "sum item with backwards references",
+            ElementType::ItemWithSumItemWithBackwardsReferences => {
+                "item with sum item with backwards references"
+            }
             ElementType::NonCountedItem => "non_counted item",
             ElementType::NonCountedReference => "non_counted reference",
             ElementType::NonCountedTree => "non_counted tree",
@@ -961,6 +972,7 @@ impl TryFrom<u8> for ElementType {
             25 => Ok(ElementType::BidirectionalReference),
             26 => Ok(ElementType::ItemWithBackwardsReferences),
             27 => Ok(ElementType::SumItemWithBackwardsReferences),
+            28 => Ok(ElementType::ItemWithSumItemWithBackwardsReferences),
             128 => Ok(ElementType::NonCountedItem),
             129 => Ok(ElementType::NonCountedReference),
             130 => Ok(ElementType::NonCountedTree),
@@ -1109,8 +1121,12 @@ mod tests {
             ElementType::try_from(27).unwrap(),
             ElementType::SumItemWithBackwardsReferences
         );
-        // 28..=127 are unallocated and invalid.
-        assert!(ElementType::try_from(28).is_err());
+        assert_eq!(
+            ElementType::try_from(28).unwrap(),
+            ElementType::ItemWithSumItemWithBackwardsReferences
+        );
+        // 29..=127 are unallocated and invalid.
+        assert!(ElementType::try_from(29).is_err());
         assert!(ElementType::try_from(100).is_err());
 
         // NonCounted twins (0x80 | base): 128..142, plus 146 (= 0x80|18 =

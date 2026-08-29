@@ -2850,3 +2850,238 @@ fn verify_grovedb_reports_forged_referrer_entries() {
         "the forged referrer entry must be reported"
     );
 }
+
+/// The `ItemWithSumItemWithBackwardsReferences` twin: a valid
+/// bidirectional-reference target that carries item bytes AND a sum
+/// contribution, end to end — writes, hash isolation, sum aggregation,
+/// every query surface, proofs, and the family's fail-closed rules.
+#[test]
+fn item_with_sum_item_twin_works_end_to_end() {
+    use grovedb_merk::element::get::ElementFetchFromStorageExtensions;
+
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    let tx = db.start_transaction();
+
+    // Lives in a sum tree, contributing its sum like ItemWithSumItem.
+    db.insert(
+        &[TEST_LEAF],
+        b"sums",
+        Element::new_sum_tree(None),
+        None,
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    let twin =
+        Element::new_item_with_sum_item_allowing_bidirectional_references(b"payload".to_vec(), 9);
+    db.insert(
+        &[TEST_LEAF, b"sums"],
+        b"twin",
+        twin.clone(),
+        None,
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF, b"sums"],
+        b"plain",
+        Element::new_sum_item(5),
+        None,
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    // A bidirectional reference can target it; registration changes only
+    // the twin's node hash.
+    let node_hash = |tx, key: &[u8]| {
+        Element::get_value_hash(
+            &db.open_transactional_merk_at_path(
+                SubtreePath::from(&[TEST_LEAF, b"sums"]),
+                tx,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap(),
+            key,
+            true,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap()
+        .unwrap()
+    };
+    let plain_before = node_hash(&tx, b"plain");
+    let twin_before = node_hash(&tx, b"twin");
+    db.insert(
+        &[TEST_LEAF, b"sums"],
+        b"zref",
+        sibling_bidi(b"twin", true),
+        None,
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    assert_ne!(node_hash(&tx, b"twin"), twin_before);
+    assert_eq!(node_hash(&tx, b"plain"), plain_before);
+
+    // The parent sum totals all three contributions (9 + 5 + 0 for the ref).
+    let sums_element = db
+        .get(&[TEST_LEAF], b"sums", Some(&tx), grove_version)
+        .unwrap()
+        .unwrap();
+    assert_eq!(sums_element.sum_value_or_default(), 14);
+
+    // Public reads strip; merk-level reads carry the registration.
+    let public = db
+        .get(&[TEST_LEAF, b"sums"], b"twin", Some(&tx), grove_version)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        public,
+        Element::new_item_with_sum_item_allowing_bidirectional_references(b"payload".to_vec(), 9)
+    );
+    let merk = db
+        .open_transactional_merk_at_path(
+            SubtreePath::from(&[TEST_LEAF, b"sums"]),
+            &tx,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        Element::get(&merk, b"twin", true, grove_version)
+            .unwrap()
+            .unwrap()
+            .backward_references()
+            .unwrap()
+            .len(),
+        1
+    );
+    drop(merk);
+
+    // Every query surface sees the ItemWithSumItem shape.
+    let mut query = Query::new();
+    query.insert_key(b"twin".to_vec());
+    query.insert_key(b"zref".to_vec());
+    let path_query =
+        PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"sums".to_vec()], query.clone());
+    let (values, _) = db
+        .query_item_value(&path_query, true, true, true, Some(&tx), grove_version)
+        .unwrap()
+        .unwrap();
+    assert_eq!(values, vec![b"payload".to_vec(), b"payload".to_vec()]);
+    let (values, _) = db
+        .query_item_value_or_sum(&path_query, true, true, true, Some(&tx), grove_version)
+        .unwrap()
+        .unwrap();
+    assert!(values.iter().all(|v| matches!(
+        v,
+        QueryItemOrSumReturnType::ItemDataWithSumValue(data, 9) if data == b"payload"
+    )));
+    let (values, _) = db
+        .query_sums(&path_query, true, true, true, Some(&tx), grove_version)
+        .unwrap()
+        .unwrap();
+    assert_eq!(values, vec![9, 9]);
+
+    // The whole graph verifies, including the twin's combined hash and the
+    // reciprocal registration.
+    assert!(db
+        .verify_grovedb(Some(&tx), true, true, grove_version)
+        .unwrap()
+        .is_empty());
+    db.commit_transaction(tx).unwrap().unwrap();
+
+    // Proof roundtrip: the twin arrives stripped via the recombining node,
+    // directly and dereferenced.
+    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"sums".to_vec()], query);
+    let proof = db
+        .prove_query(&path_query, None, grove_version)
+        .unwrap()
+        .unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query, grove_version).unwrap();
+    assert_eq!(hash, db.root_hash(None, grove_version).unwrap().unwrap());
+    assert_eq!(result_set.len(), 2);
+    for (_, _, element) in result_set {
+        assert_eq!(
+            element,
+            Some(
+                Element::new_item_with_sum_item_allowing_bidirectional_references(
+                    b"payload".to_vec(),
+                    9
+                )
+            )
+        );
+    }
+
+    // Tampering with the recombining node still fails.
+    let tampered = tamper_backward_references_node(&proof, &path_query, |_, backrefs_hash| {
+        backrefs_hash[0] ^= 1;
+    })
+    .expect("proof must carry the twin's recombining node");
+    assert!(GroveDb::verify_query(&tampered, &path_query, grove_version).is_err());
+
+    // Family fail-closed rules hold for the twin.
+    db.insert(
+        &[TEST_LEAF],
+        b"pst",
+        Element::new_provable_sum_tree(None),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(db
+        .insert(
+            &[TEST_LEAF, b"pst"],
+            b"k",
+            Element::new_item_with_sum_item_allowing_bidirectional_references(b"x".to_vec(), 1),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .is_err());
+    {
+        use crate::batch::QualifiedGroveDbOp;
+        assert!(db
+            .apply_batch(
+                vec![QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"batched".to_vec(),
+                    Element::new_item_with_sum_item_allowing_bidirectional_references(
+                        b"x".to_vec(),
+                        1,
+                    ),
+                )],
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .is_err());
+    }
+    let v1 = &grovedb_version::version::v1::GROVE_V1;
+    assert!(matches!(
+        db.insert(
+            &[TEST_LEAF],
+            b"old",
+            Element::new_item_with_sum_item_allowing_bidirectional_references(b"x".to_vec(), 1),
+            None,
+            None,
+            v1,
+        )
+        .unwrap(),
+        Err(Error::NotSupported(_))
+    ));
+}

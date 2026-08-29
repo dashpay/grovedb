@@ -424,6 +424,7 @@ impl QueryProofVerify for Query {
                             element_type.base(),
                             ElementType::ItemWithBackwardsReferences
                                 | ElementType::SumItemWithBackwardsReferences
+                                | ElementType::ItemWithSumItemWithBackwardsReferences
                         ) {
                             return Err(Error::InvalidProofError(
                                 "KVValueHash node must not contain a backward-references \
@@ -512,6 +513,7 @@ impl QueryProofVerify for Query {
                             element_type.base(),
                             ElementType::ItemWithBackwardsReferences
                                 | ElementType::SumItemWithBackwardsReferences
+                                | ElementType::ItemWithSumItemWithBackwardsReferences
                         ) {
                             return Err(Error::InvalidProofError(
                                 "KVValueHashFeatureType node must not contain a \

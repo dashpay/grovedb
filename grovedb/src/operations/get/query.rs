@@ -132,7 +132,10 @@ impl GroveDb {
                                 match maybe_item.into_underlying() {
                                     Element::Item(item, _)
                                     | Element::ItemWithSumItem(item, ..)
-                                    | Element::ItemWithBackwardsReferences(item, _, _) => Ok(item),
+                                    | Element::ItemWithBackwardsReferences(item, _, _)
+                                    | Element::ItemWithSumItemWithBackwardsReferences(item, ..) => {
+                                        Ok(item)
+                                    }
                                     Element::SumItem(value, _)
                                     | Element::SumItemWithBackwardsReferences(value, _, _) => {
                                         Ok(value.encode_var_vec())
@@ -306,6 +309,7 @@ where {
             | Element::ItemWithSumItem(..)
             | Element::ItemWithBackwardsReferences(..)
             | Element::SumItemWithBackwardsReferences(..)
+            | Element::ItemWithSumItemWithBackwardsReferences(..)
             | Element::SumTree(..)
             | Element::BigSumTree(..)
             | Element::CountTree(..)
@@ -463,9 +467,11 @@ where {
                                     match maybe_item.into_underlying() {
                                         Element::Item(item, _)
                                         | Element::ItemWithSumItem(item, ..)
-                                        | Element::ItemWithBackwardsReferences(item, _, _) => {
-                                            Ok(item)
-                                        }
+                                        | Element::ItemWithBackwardsReferences(item, _, _)
+                                        | Element::ItemWithSumItemWithBackwardsReferences(
+                                            item,
+                                            ..,
+                                        ) => Ok(item),
                                         Element::SumItem(item, _)
                                         | Element::SumItemWithBackwardsReferences(item, _, _) => {
                                             Ok(item.encode_var_vec())
@@ -482,7 +488,8 @@ where {
                         }
                         Element::Item(item, _)
                         | Element::ItemWithSumItem(item, ..)
-                        | Element::ItemWithBackwardsReferences(item, _, _) => Ok(item),
+                        | Element::ItemWithBackwardsReferences(item, _, _)
+                        | Element::ItemWithSumItemWithBackwardsReferences(item, ..) => Ok(item),
                         Element::SumItem(item, _)
                         | Element::SumItemWithBackwardsReferences(item, _, _) => {
                             Ok(item.encode_var_vec())
@@ -616,11 +623,14 @@ where {
                                             _,
                                             _,
                                         ) => Ok(QueryItemOrSumReturnType::SumValue(sum_value)),
-                                        Element::ItemWithSumItem(item, sum_value, _) => {
-                                            Ok(QueryItemOrSumReturnType::ItemDataWithSumValue(
-                                                item, sum_value,
-                                            ))
-                                        }
+                                        Element::ItemWithSumItem(item, sum_value, _)
+                                        | Element::ItemWithSumItemWithBackwardsReferences(
+                                            item,
+                                            sum_value,
+                                            ..,
+                                        ) => Ok(QueryItemOrSumReturnType::ItemDataWithSumValue(
+                                            item, sum_value,
+                                        )),
                                         Element::SumTree(_, sum_value, _) => {
                                             Ok(QueryItemOrSumReturnType::SumValue(sum_value))
                                         }
@@ -694,9 +704,12 @@ where {
                         | Element::SumItemWithBackwardsReferences(sum_value, _, _) => {
                             Ok(QueryItemOrSumReturnType::SumValue(sum_value))
                         }
-                        Element::ItemWithSumItem(item, sum_value, _) => Ok(
-                            QueryItemOrSumReturnType::ItemDataWithSumValue(item, sum_value),
-                        ),
+                        Element::ItemWithSumItem(item, sum_value, _)
+                        | Element::ItemWithSumItemWithBackwardsReferences(item, sum_value, ..) => {
+                            Ok(QueryItemOrSumReturnType::ItemDataWithSumValue(
+                                item, sum_value,
+                            ))
+                        }
                         Element::BidirectionalReference(..) => {
                             unreachable!("normalized to Element::Reference above")
                         }
@@ -1210,9 +1223,12 @@ where {
 
                                     match maybe_item.into_underlying() {
                                         Element::SumItem(item, _)
-                                        | Element::SumItemWithBackwardsReferences(item, _, _) => {
-                                            Ok(item)
-                                        }
+                                        | Element::SumItemWithBackwardsReferences(item, _, _)
+                                        | Element::ItemWithSumItemWithBackwardsReferences(
+                                            _,
+                                            item,
+                                            ..,
+                                        ) => Ok(item),
                                         _ => Err(Error::InvalidQuery(
                                             "the reference must result in a sum item",
                                         )),
@@ -1225,7 +1241,8 @@ where {
                         }
                         Element::SumItem(item, _)
                         | Element::ItemWithSumItem(_, item, _)
-                        | Element::SumItemWithBackwardsReferences(item, _, _) => Ok(item),
+                        | Element::SumItemWithBackwardsReferences(item, _, _)
+                        | Element::ItemWithSumItemWithBackwardsReferences(_, item, ..) => Ok(item),
                         Element::BidirectionalReference(..) => {
                             unreachable!("normalized to Element::Reference above")
                         }

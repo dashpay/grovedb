@@ -2114,7 +2114,8 @@ where
             // through chains. (These elements reject aggregation wrappers,
             // so the outer element IS the underlying one.)
             Element::ItemWithBackwardsReferences(..)
-            | Element::SumItemWithBackwardsReferences(..) => {
+            | Element::SumItemWithBackwardsReferences(..)
+            | Element::ItemWithSumItemWithBackwardsReferences(..) => {
                 let serialized = cost_return_on_error_into_no_add!(
                     cost,
                     element
@@ -2298,7 +2299,8 @@ where
                         // pending op can hold one; unreachable, fail closed.
                         Element::BidirectionalReference(..)
                         | Element::ItemWithBackwardsReferences(..)
-                        | Element::SumItemWithBackwardsReferences(..) => Err(Error::NotSupported(
+                        | Element::SumItemWithBackwardsReferences(..)
+                        | Element::ItemWithSumItemWithBackwardsReferences(..) => Err(Error::NotSupported(
                             "backward-references elements are not yet supported in batch \
                              operations"
                                 .to_owned(),
@@ -2365,7 +2367,8 @@ where
                     // are rejected at every batch entry point. Fail closed.
                     Element::BidirectionalReference(..)
                     | Element::ItemWithBackwardsReferences(..)
-                    | Element::SumItemWithBackwardsReferences(..) => Err(Error::NotSupported(
+                    | Element::SumItemWithBackwardsReferences(..)
+                    | Element::ItemWithSumItemWithBackwardsReferences(..) => Err(Error::NotSupported(
                         "backward-references elements are not yet supported in batch operations"
                             .to_owned(),
                     ))
@@ -3248,7 +3251,8 @@ where
                         // backward-reference bookkeeping.
                         Element::BidirectionalReference(..)
                         | Element::ItemWithBackwardsReferences(..)
-                        | Element::SumItemWithBackwardsReferences(..) => {
+                        | Element::SumItemWithBackwardsReferences(..)
+                        | Element::ItemWithSumItemWithBackwardsReferences(..) => {
                             return Err(Error::NotSupported(
                                 "backward-references elements are not yet supported in batch \
                                  operations"
@@ -5792,6 +5796,7 @@ impl GroveDb {
                 Element::BidirectionalReference(..)
                     | Element::ItemWithBackwardsReferences(..)
                     | Element::SumItemWithBackwardsReferences(..)
+                    | Element::ItemWithSumItemWithBackwardsReferences(..)
             ) {
                 return Err(Error::NotSupported(
                     "backward-references elements (BidirectionalReference, \

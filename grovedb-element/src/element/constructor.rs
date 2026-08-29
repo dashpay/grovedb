@@ -99,6 +99,25 @@ impl Element {
         Element::SumItemWithBackwardsReferences(value, Vec::new(), None)
     }
 
+    /// Set element to an item carrying an explicit sum value that can be
+    /// targeted by bidirectional references
+    pub fn new_item_with_sum_item_allowing_bidirectional_references(
+        item_value: Vec<u8>,
+        sum_value: i64,
+    ) -> Self {
+        Element::ItemWithSumItemWithBackwardsReferences(item_value, sum_value, Vec::new(), None)
+    }
+
+    /// Set element to an item carrying an explicit sum value, with flags,
+    /// that can be targeted by bidirectional references
+    pub fn new_item_with_sum_item_allowing_bidirectional_references_with_flags(
+        item_value: Vec<u8>,
+        sum_value: i64,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::ItemWithSumItemWithBackwardsReferences(item_value, sum_value, Vec::new(), flags)
+    }
+
     /// Set element to a sum item with flags that can be targeted by
     /// bidirectional references
     pub fn new_sum_item_allowing_bidirectional_references_with_flags(
@@ -779,6 +798,7 @@ impl Element {
             Element::BidirectionalReference(..)
                 | Element::ItemWithBackwardsReferences(..)
                 | Element::SumItemWithBackwardsReferences(..)
+                | Element::ItemWithSumItemWithBackwardsReferences(..)
         ) {
             return Err(ElementError::InvalidInput(
                 "NonCounted cannot wrap backward-references elements",

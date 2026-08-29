@@ -264,7 +264,8 @@ impl GroveDb {
             | Element::SumItem(..)
             | Element::ItemWithSumItem(..)
             | Element::ItemWithBackwardsReferences(..)
-            | Element::SumItemWithBackwardsReferences(..) => {
+            | Element::SumItemWithBackwardsReferences(..)
+            | Element::ItemWithSumItemWithBackwardsReferences(..) => {
                 // The backward-references item variants store exactly like
                 // their plain counterparts; the backward-reference
                 // bookkeeping only runs when the caller opts in via

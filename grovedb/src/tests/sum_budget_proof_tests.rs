@@ -362,7 +362,9 @@ mod tests {
     fn budget_window_includes_backward_references_sum_items() {
         let grove_version = GroveVersion::latest();
         let db = make_test_sum_tree_grovedb(grove_version);
-        for (key, sum) in [(b"a".as_ref(), 7i64), (b"b", 5), (b"c", 11)] {
+        // Mix both backward-references sum shapes: the plain sum item and
+        // the item-with-sum twin.
+        for (key, sum) in [(b"a".as_ref(), 7i64), (b"c", 11)] {
             db.insert(
                 [TEST_LEAF].as_ref(),
                 key,
@@ -374,6 +376,16 @@ mod tests {
             .unwrap()
             .expect("insert backward-references sum item");
         }
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"b",
+            Element::new_item_with_sum_item_allowing_bidirectional_references(b"pay".to_vec(), 5),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert backward-references item-with-sum twin");
 
         let pq = budget_query(20, None);
         let (proved_root, matches, consumed, stop) =

@@ -329,7 +329,8 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                             grovedb_element::ElementType::from_serialized_value(value)
                                 .map(|et| et.base()),
                             Ok(grovedb_element::ElementType::ItemWithBackwardsReferences
-                                | grovedb_element::ElementType::SumItemWithBackwardsReferences)
+                                | grovedb_element::ElementType::SumItemWithBackwardsReferences
+                                | grovedb_element::ElementType::ItemWithSumItemWithBackwardsReferences)
                         ) {
                             use crate::element::ElementExt;
                             let expected =
@@ -400,6 +401,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                                 .map(|et| et.base()),
                             Ok(grovedb_element::ElementType::ItemWithBackwardsReferences
                                 | grovedb_element::ElementType::SumItemWithBackwardsReferences
+                                | grovedb_element::ElementType::ItemWithSumItemWithBackwardsReferences
                                 | grovedb_element::ElementType::BidirectionalReference)
                         ) {
                             return Err(Error::ChunkRestoringError(ChunkError::InvalidChunkProof(

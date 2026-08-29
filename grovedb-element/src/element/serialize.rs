@@ -55,6 +55,7 @@ impl Element {
                 Element::BidirectionalReference(..)
                     | Element::ItemWithBackwardsReferences(..)
                     | Element::SumItemWithBackwardsReferences(..)
+                    | Element::ItemWithSumItemWithBackwardsReferences(..)
             )
         {
             return Err(ElementError::CorruptedData(
@@ -193,6 +194,7 @@ impl Element {
                 Element::BidirectionalReference(..)
                     | Element::ItemWithBackwardsReferences(..)
                     | Element::SumItemWithBackwardsReferences(..)
+                    | Element::ItemWithSumItemWithBackwardsReferences(..)
             )
         {
             return Err(ElementError::CorruptedData(

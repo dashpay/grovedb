@@ -2757,7 +2757,8 @@ impl GroveDb {
                     }
                 }
                 Element::ItemWithBackwardsReferences(..)
-                | Element::SumItemWithBackwardsReferences(..) => {
+                | Element::SumItemWithBackwardsReferences(..)
+                | Element::ItemWithSumItemWithBackwardsReferences(..) => {
                     // The node commits to combine(inner_hash, backrefs_hash),
                     // both recomputable from the stored bytes.
                     let (_, element_value_hash) = merk

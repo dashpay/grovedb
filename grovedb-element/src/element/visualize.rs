@@ -69,6 +69,17 @@ impl Visualize for Element {
                     drawer = f.visualize(drawer)?;
                 }
             }
+            Element::ItemWithSumItemWithBackwardsReferences(value, sum_value, _, flags) => {
+                drawer.write(b"item_with_sum_item_with_backwards_references: ")?;
+                drawer = value.visualize(drawer)?;
+                drawer.write(format!(", sum: {sum_value}").as_bytes())?;
+
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
+                }
+            }
             Element::Reference(_ref, ..) => {
                 drawer.write(b"ref")?;
                 // drawer.write(b"ref: [path: ")?;
