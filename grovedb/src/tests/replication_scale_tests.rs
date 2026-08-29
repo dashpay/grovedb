@@ -5,8 +5,9 @@
 //! a single `OptimisticTransactionDB` transaction (a
 //! `WriteBatchWithIndex`) until `commit_session` verifies the root hash
 //! (see the invariant comment in `state_sync_session::commit`). That write
-//! batch lives in RocksDB's C++ heap, so its cost shows up as process RSS
-//! and nowhere else — a Rust allocator hook would not see it.
+//! batch lives in RocksDB's C++ heap, so its cost shows up in the
+//! process's memory footprint and nowhere else — a Rust allocator hook
+//! would not see it.
 //!
 //! These tests measure that ceiling. They build a synthetic grove shaped
 //! roughly like Dash Platform state (identity-like items under a flat
@@ -14,9 +15,11 @@
 //! tree, a commitment tree, an MMR, and two indexed trees with populated
 //! axes), checkpoint it, restore it into a fresh directory, and report:
 //!
-//! - peak process RSS during the restore window (sampled, plus the
-//!   baseline captured just before the window so the restore's own
-//!   increment is visible),
+//! - the peak process memory footprint during the restore window
+//!   (sampled, plus the baseline captured just before the window so the
+//!   restore's own increment is visible, and a reading taken immediately
+//!   before `commit_session` so the write batch can be separated from the
+//!   commit-time flush),
 //! - wall-clock of the fetch/apply/commit loop,
 //! - the number of `fetch_chunk` round trips and total wire bytes,
 //! - the on-disk size of the source checkpoint and of the restored target.
@@ -31,6 +34,23 @@
 //! ```
 //!
 //! `--nocapture` matters: the measurement is printed, not asserted.
+//!
+//! # What the number does and does not attribute
+//!
+//! The simulated remote peer (`checkpoint_db`) and the syncing node
+//! (`target`) share one process, so the sampled window covers both sides
+//! of the wire: the peer's read path (block cache fills, SST decompression
+//! buffers) is counted alongside the target's write batch. The reported
+//! increment is therefore an **upper bound** on what a real syncing node
+//! needs, not an exact attribution.
+//!
+//! The bound is a tight one, and the tiers show why: RocksDB's read-side
+//! caches are fixed-size, so the peer's contribution is a constant, while
+//! the measured increment grows with state size. `mem before commit`
+//! isolates the part that matters most — at that point the entire sync
+//! write set is sitting in the transaction's `WriteBatchWithIndex` and
+//! nothing has been flushed, so it is the write batch, not the flush, that
+//! the reading reflects.
 
 #[cfg(test)]
 mod tests {
@@ -86,7 +106,12 @@ mod tests {
     }
 
     impl GroveShape {
-        /// Logical payload bytes (values only, no Merk node overhead).
+        /// Bytes of item *values* in the identity-like and document-like
+        /// subtrees. Deliberately partial: it excludes keys, Merk node
+        /// overhead, and the sum / commitment / MMR / indexed members, so
+        /// it is a floor on the logical content, reported only as a rough
+        /// scale label. The on-disk and wire figures are the ones to
+        /// derive ratios from.
         fn logical_value_bytes(&self) -> u64 {
             (self.identities * self.identity_value_bytes) as u64
                 + (self.contracts * self.documents_per_contract * self.document_value_bytes) as u64
@@ -149,37 +174,44 @@ mod tests {
         indexed_entries: 10_000,
     };
 
-    // ── Process RSS sampling ────────────────────────────────────────────
+    // ── Process memory sampling ─────────────────────────────────────────
 
-    /// Current resident set size of this process, in bytes.
+    /// Current physical memory footprint of this process, in bytes.
     ///
     /// Read from the OS rather than from a Rust allocator hook on purpose:
     /// the allocation under measurement is RocksDB's C++
     /// `WriteBatchWithIndex`, which never passes through Rust's
-    /// `GlobalAlloc`. Returns `None` on platforms with neither reading
-    /// (the harness then reports zeroes instead of failing).
+    /// `GlobalAlloc`. Returns `None` on platforms with no reading (the
+    /// harness then reports zeroes instead of failing).
+    ///
+    /// On macOS this is `ri_phys_footprint`, **not** resident size. The
+    /// distinction decides whether the largest tiers mean anything: under
+    /// memory pressure macOS compresses anonymous pages, which drops them
+    /// out of RSS while the process still owns them. Sampling RSS makes a
+    /// restore that is swamping the machine look *cheaper* than one that
+    /// fits, which is exactly backwards. `phys_footprint` counts
+    /// compressed pages and does not have that failure mode.
     #[cfg(target_os = "macos")]
-    fn current_rss_bytes() -> Option<u64> {
-        let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
-        let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
-        // SAFETY: `info` is a correctly sized, zero-initialised
-        // `proc_taskinfo` and `size` is its exact size in bytes.
-        let written = unsafe {
-            libc::proc_pidinfo(
+    fn current_memory_bytes() -> Option<u64> {
+        let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
+        // SAFETY: `proc_pid_rusage` writes one `rusage_info_v4` through the
+        // buffer pointer when called with `RUSAGE_INFO_V4`; `info` is a
+        // zero-initialised value of exactly that type.
+        let rc = unsafe {
+            libc::proc_pid_rusage(
                 std::process::id() as libc::c_int,
-                libc::PROC_PIDTASKINFO,
-                0,
+                libc::RUSAGE_INFO_V4,
                 (&raw mut info).cast(),
-                size,
             )
         };
-        (written == size).then_some(info.pti_resident_size)
+        (rc == 0).then_some(info.ri_phys_footprint)
     }
 
     /// Linux twin of the macOS reading above: field 2 of `/proc/self/statm`
-    /// is the resident set in pages.
+    /// is the resident set in pages. Linux does not compress anonymous
+    /// memory by default, so resident size is the comparable figure there.
     #[cfg(target_os = "linux")]
-    fn current_rss_bytes() -> Option<u64> {
+    fn current_memory_bytes() -> Option<u64> {
         let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
         let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
         // SAFETY: `sysconf` is a pure query with no pointer arguments.
@@ -188,12 +220,12 @@ mod tests {
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    fn current_rss_bytes() -> Option<u64> {
+    fn current_memory_bytes() -> Option<u64> {
         None
     }
 
-    /// Background sampler recording the high-water mark of process RSS
-    /// over a window.
+    /// Background sampler recording the high-water mark of the process
+    /// memory footprint over a window.
     struct RssSampler {
         peak: Arc<AtomicU64>,
         stop: Arc<AtomicBool>,
@@ -207,13 +239,13 @@ mod tests {
             let (peak_t, stop_t) = (Arc::clone(&peak), Arc::clone(&stop));
             let handle = std::thread::spawn(move || {
                 while !stop_t.load(Ordering::Relaxed) {
-                    if let Some(rss) = current_rss_bytes() {
+                    if let Some(rss) = current_memory_bytes() {
                         peak_t.fetch_max(rss, Ordering::Relaxed);
                     }
                     std::thread::sleep(Duration::from_millis(25));
                 }
                 // One final sample so a short window is never empty.
-                if let Some(rss) = current_rss_bytes() {
+                if let Some(rss) = current_memory_bytes() {
                     peak_t.fetch_max(rss, Ordering::Relaxed);
                 }
             });
@@ -225,11 +257,25 @@ mod tests {
         }
 
         fn finish(mut self) -> u64 {
+            self.shut_down();
+            self.peak.load(Ordering::Relaxed)
+        }
+
+        fn shut_down(&mut self) {
             self.stop.store(true, Ordering::Relaxed);
             if let Some(handle) = self.handle.take() {
                 let _ = handle.join();
             }
-            self.peak.load(Ordering::Relaxed)
+        }
+    }
+
+    /// Stop the sampler even when the measurement panics part-way through.
+    /// Without this an `.expect()` anywhere between `start()` and
+    /// `finish()` would leave the poll loop spinning for the rest of the
+    /// test process.
+    impl Drop for RssSampler {
+        fn drop(&mut self) {
+            self.shut_down();
         }
     }
 
@@ -278,7 +324,8 @@ mod tests {
     /// This matters for the measurement, not just for realism: a filler of
     /// repeated bytes compresses to nothing in RocksDB's SSTs, which would
     /// shrink the reported on-disk size by an order of magnitude and
-    /// inflate every "peak RSS versus on-disk size" ratio derived from it.
+    /// inflate every "peak memory versus on-disk size" ratio derived from
+    /// it.
     /// A xorshift stream keeps the source's on-disk footprint honest.
     fn filler(seed: usize, len: usize) -> Vec<u8> {
         let mut state = (seed as u64).wrapping_mul(0x2545_F491_4F6C_DD1D) | 1;
@@ -477,6 +524,10 @@ mod tests {
         checkpoint_bytes: u64,
         restored_bytes: u64,
         baseline_rss: u64,
+        /// Footprint sampled at the last moment before `commit_session`, i.e.
+        /// with the entire sync write set accumulated in the transaction's
+        /// `WriteBatchWithIndex` but nothing yet flushed.
+        pre_commit_rss: u64,
         peak_rss: u64,
         wall: Duration,
         build_wall: Duration,
@@ -491,7 +542,7 @@ mod tests {
                 self.tier
             );
             println!(
-                "  logical payload        : {:>10.1} MiB",
+                "  item value bytes       : {:>10.1} MiB",
                 mib(self.logical_bytes)
             );
             println!(
@@ -516,19 +567,33 @@ mod tests {
                 self.wall.as_secs_f64()
             );
             println!(
-                "  RSS baseline (pre-sync): {:>10.1} MiB",
+                "  mem baseline (pre-sync): {:>10.1} MiB",
                 mib(self.baseline_rss)
             );
             println!(
-                "  RSS peak  (during sync): {:>10.1} MiB",
-                mib(self.peak_rss)
+                "  mem before commit      : {:>10.1} MiB",
+                mib(self.pre_commit_rss)
             );
             println!(
-                "  RSS increment          : {:>10.1} MiB",
+                "  mem peak  (during sync): {:>10.1} MiB",
+                mib(self.peak_rss)
+            );
+            // Which of the two costs dominates decides the remedy: if the
+            // peak is already reached before commit, the write batch is
+            // the ceiling and only a scratch/staging strategy moves it; if
+            // the peak arrives during commit, it is RocksDB's flush and is
+            // tunable with write-buffer settings.
+            println!(
+                "  write-batch share      : {:>10.1} % of the increment is present pre-commit",
+                100.0 * self.pre_commit_rss.saturating_sub(self.baseline_rss) as f64
+                    / self.peak_rss.saturating_sub(self.baseline_rss).max(1) as f64
+            );
+            println!(
+                "  mem increment          : {:>10.1} MiB",
                 mib(self.peak_rss.saturating_sub(self.baseline_rss))
             );
             println!(
-                "  peak RSS / checkpoint  : {:>10.2} x",
+                "  peak mem / checkpoint  : {:>10.2} x",
                 self.peak_rss as f64 / self.checkpoint_bytes.max(1) as f64
             );
             println!(
@@ -569,7 +634,7 @@ mod tests {
         let checkpoint_db = GroveDb::open(&checkpoint_path).expect("open checkpoint db");
         let target = GroveDb::open(&target_path).expect("open target db");
 
-        let baseline_rss = current_rss_bytes().unwrap_or(0);
+        let baseline_rss = current_memory_bytes().unwrap_or(0);
         let sampler = RssSampler::start();
         let sync_start = Instant::now();
 
@@ -605,6 +670,10 @@ mod tests {
         }
 
         assert!(session.is_sync_completed(), "sync should have completed");
+        // The whole sync write set is in the transaction's write batch and
+        // nothing has been flushed yet: this reading separates the batch's
+        // cost from the commit-time flush that follows.
+        let pre_commit_rss = current_memory_bytes().unwrap_or(0);
         target
             .commit_session(session, grove_version)
             .expect("commit session");
@@ -628,6 +697,7 @@ mod tests {
             checkpoint_bytes,
             restored_bytes,
             baseline_rss,
+            pre_commit_rss,
             peak_rss,
             wall,
             build_wall,
