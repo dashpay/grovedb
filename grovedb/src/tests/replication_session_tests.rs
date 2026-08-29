@@ -823,6 +823,7 @@ mod tests {
             [0u8; 32],
             64,
             CURRENT_STATE_SYNC_VERSION,
+            crate::replication::RestoreCommitMode::Atomic,
         );
         assert!(
             !session.is_sync_completed(),
@@ -871,6 +872,7 @@ mod tests {
             [0xAB; 32],
             64,
             CURRENT_STATE_SYNC_VERSION,
+            crate::replication::RestoreCommitMode::Atomic,
         );
 
         // commit() should reject because the session is incomplete

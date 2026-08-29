@@ -99,6 +99,7 @@ mod read_mode_gate_tests;
 mod reference_path_tests;
 mod reference_with_sum_item_tests;
 mod replication_checkpoint_prune_tests;
+mod replication_incremental_commit_tests;
 mod replication_fuzz_tests;
 mod replication_scale_tests;
 mod replication_session_tests;

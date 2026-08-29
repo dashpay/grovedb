@@ -41,6 +41,79 @@ pub type ChunkIdentifier = (
 /// opaque hash mismatch.
 pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
 
+/// Aux-storage key holding the "a state sync restore was applied to this
+/// database but never finished" marker.
+///
+/// Written by the first intermediate commit of a
+/// [`RestoreCommitMode::Incremental`] session and deleted by that
+/// session's final commit, both inside the same transaction as the data
+/// they describe. See [`GroveDb::has_incomplete_restore`].
+pub(crate) const INCOMPLETE_RESTORE_AUX_KEY: &[u8] = b"grovedb_state_sync_restore_in_progress";
+
+/// How much restored chunk payload an [`RestoreCommitMode::Incremental`]
+/// session accumulates before it takes the next intermediate commit.
+///
+/// Chosen as a payload budget rather than a memory budget because it is
+/// the quantity the session can count exactly; peak process memory is a
+/// multiple of it (measured at roughly 5x on Platform-shaped state, the
+/// same multiplier the atomic mode applies to the whole grove). 128 MiB
+/// of payload therefore costs well under a gigabyte of peak footprint,
+/// independent of how large the source state is.
+pub const DEFAULT_RESTORE_CHUNK_BUDGET_BYTES: u64 = 128 * 1024 * 1024;
+
+/// How a restore session persists the subtrees it has rebuilt.
+///
+/// The trade this enum exposes is memory against crash atomicity, and
+/// both sides of it are legitimate; see the variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RestoreCommitMode {
+    /// Every write of the sync stays in one RocksDB transaction until
+    /// [`GroveDb::commit_session`] has verified the restored root hash
+    /// against the offered `app_hash` (issue #775). Nothing reaches the
+    /// database early, so an aborted, failed or crashed restore leaves
+    /// the destination exactly as it was.
+    ///
+    /// The cost is that the entire restored state is resident: the
+    /// transaction's `WriteBatchWithIndex` holds every key and value,
+    /// and committing it copies the batch into a memtable, so peak
+    /// memory is a multiple of the *whole* source grove and grows with
+    /// it forever.
+    #[default]
+    Atomic,
+    /// Commit at proven-safe boundaries once `budget_bytes` of chunk
+    /// payload has accumulated, so peak memory is a multiple of the
+    /// budget instead of a multiple of the state.
+    ///
+    /// The final commit still verifies the root hash and still refuses
+    /// to commit on a mismatch — what is given up is only the *rollback*:
+    /// a restore that fails or is interrupted after the first
+    /// intermediate commit leaves partially restored, hash-unverified
+    /// data behind. Such a database is marked (see
+    /// [`GroveDb::has_incomplete_restore`]) and must be discarded, not
+    /// used. Callers that already wipe-and-re-sync a failed restore —
+    /// drive-abci's restore sentinel does — lose nothing by choosing
+    /// this mode.
+    Incremental {
+        /// Chunk payload bytes to accumulate between intermediate
+        /// commits. See [`DEFAULT_RESTORE_CHUNK_BUDGET_BYTES`].
+        budget_bytes: u64,
+    },
+}
+
+impl RestoreCommitMode {
+    /// The standard bounded-memory configuration.
+    pub const fn incremental() -> Self {
+        RestoreCommitMode::Incremental {
+            budget_bytes: DEFAULT_RESTORE_CHUNK_BUDGET_BYTES,
+        }
+    }
+
+    /// Whether this mode ever commits before the root hash is verified.
+    pub const fn is_incremental(&self) -> bool {
+        matches!(self, RestoreCommitMode::Incremental { .. })
+    }
+}
+
 #[cfg(feature = "minimal")]
 impl GroveDb {
     /// Starts a new state synchronization session with the given app hash,
@@ -51,7 +124,44 @@ impl GroveDb {
         subtrees_batch_size: usize,
         version: u16,
     ) -> Pin<Box<MultiStateSyncSession<'_>>> {
-        MultiStateSyncSession::new(self, app_hash, subtrees_batch_size, version)
+        self.start_syncing_session_with_mode(
+            app_hash,
+            subtrees_batch_size,
+            version,
+            RestoreCommitMode::default(),
+        )
+    }
+
+    /// [`GroveDb::start_syncing_session`] with an explicit
+    /// [`RestoreCommitMode`].
+    pub fn start_syncing_session_with_mode(
+        &self,
+        app_hash: [u8; 32],
+        subtrees_batch_size: usize,
+        version: u16,
+        commit_mode: RestoreCommitMode,
+    ) -> Pin<Box<MultiStateSyncSession<'_>>> {
+        MultiStateSyncSession::new(self, app_hash, subtrees_batch_size, version, commit_mode)
+    }
+
+    /// Whether this database holds a partially applied, hash-unverified
+    /// state sync restore.
+    ///
+    /// Only a [`RestoreCommitMode::Incremental`] session can leave one:
+    /// it marks the database inside its first intermediate commit and
+    /// clears the mark inside the final, root-hash-verified commit, so
+    /// the marker survives exactly the window in which the database
+    /// contains restore writes that were never checked against the
+    /// offered `app_hash`. A `true` here means the contents are
+    /// meaningless and the directory must be discarded — it is never a
+    /// state to resume from or serve reads out of.
+    ///
+    /// Callers running an [`RestoreCommitMode::Atomic`] restore never
+    /// need this: that mode cannot leave partial state behind.
+    pub fn has_incomplete_restore(&self) -> Result<bool, Error> {
+        self.get_aux(INCOMPLETE_RESTORE_AUX_KEY, None)
+            .value
+            .map(|marker| marker.is_some())
     }
 
     /// Commits a completed state synchronization session.
@@ -304,6 +414,32 @@ impl GroveDb {
         version: u16,
         grove_version: &GroveVersion,
     ) -> Result<Pin<Box<MultiStateSyncSession<'_>>>, Error> {
+        self.start_snapshot_syncing_with_mode(
+            app_hash,
+            subtrees_batch_size,
+            version,
+            RestoreCommitMode::default(),
+            grove_version,
+        )
+    }
+
+    /// [`GroveDb::start_snapshot_syncing`] with an explicit
+    /// [`RestoreCommitMode`].
+    ///
+    /// Memory-constrained callers that already discard and re-sync a
+    /// failed restore should pass [`RestoreCommitMode::incremental`]:
+    /// peak memory then tracks the configured chunk budget instead of
+    /// the size of the state being restored. Read
+    /// [`RestoreCommitMode::Incremental`] first — it changes what a
+    /// crashed restore leaves on disk.
+    pub fn start_snapshot_syncing_with_mode(
+        &self,
+        app_hash: CryptoHash,
+        subtrees_batch_size: usize,
+        version: u16,
+        commit_mode: RestoreCommitMode,
+        grove_version: &GroveVersion,
+    ) -> Result<Pin<Box<MultiStateSyncSession<'_>>>, Error> {
         check_grovedb_v0!(
             "start_snapshot_syncing",
             grove_version
@@ -326,7 +462,8 @@ impl GroveDb {
 
         let root_prefix = [0u8; 32];
 
-        let mut session = self.start_syncing_session(app_hash, subtrees_batch_size, version);
+        let mut session =
+            self.start_syncing_session_with_mode(app_hash, subtrees_batch_size, version, commit_mode);
 
         session.add_subtree_sync_info(
             SubtreePath::empty(),

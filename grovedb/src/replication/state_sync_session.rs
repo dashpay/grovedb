@@ -23,7 +23,7 @@ use super::{
     indexed_sync::{verify_indexed_binding, IndexedHeader, IndexedHeaderRequest},
     non_merk_sync::{supports_entry_replay, NonMerkRestorer},
     utils::{decode_vec_ops, encode_global_chunk_id, path_to_string},
-    CURRENT_STATE_SYNC_VERSION,
+    RestoreCommitMode, CURRENT_STATE_SYNC_VERSION, INCOMPLETE_RESTORE_AUX_KEY,
 };
 use crate::{
     element::elements_iterator::ElementIteratorExtensions,
@@ -269,6 +269,25 @@ pub struct MultiStateSyncSession<'db> {
     /// Metadata for newly discovered subtrees that are pending processing.
     pending_discovered_subtrees: Option<SubtreesMetadata>,
 
+    /// Whether restored data may be committed before the final root hash
+    /// check, and with what payload budget between commits.
+    commit_mode: RestoreCommitMode,
+
+    /// Chunk payload bytes applied since the last intermediate commit (or
+    /// since the session started). Always maintained; only consulted in
+    /// [`RestoreCommitMode::Incremental`].
+    bytes_since_commit: u64,
+
+    /// Number of intermediate commits taken so far. Zero for the whole
+    /// life of an [`RestoreCommitMode::Atomic`] session, which is what
+    /// the atomicity regression test asserts.
+    intermediate_commits: usize,
+
+    /// Number of times a due intermediate commit was refused *solely*
+    /// because an indexed group was still in flight. Non-zero is what
+    /// makes the group-splitting test non-vacuous.
+    commits_deferred_for_open_group: usize,
+
     /// In-flight indexed-tree groups, keyed by the
     /// primary's prefix. A group is removed — after passing the joint
     /// verification — once its primary and every axis secondary have been
@@ -285,6 +304,20 @@ pub struct MultiStateSyncSession<'db> {
 
     /// Marker to ensure this struct is not moved in memory.
     _pin: PhantomPinned,
+}
+
+/// Outcome of the safe-point test run at a drained discovery boundary.
+/// See [`MultiStateSyncSession::intermediate_commit_decision`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntermediateCommitDecision {
+    /// Budget spent and the session is at a safe point: commit.
+    Take,
+    /// Budget spent and no restorer holds the transaction, but an
+    /// indexed group's joint verification has not run yet. Committing
+    /// here would split the group; wait for it instead.
+    DeferForOpenIndexedGroup,
+    /// Atomic mode, or the payload budget is not spent yet.
+    NotDue,
 }
 
 /// Target-side tracking of one indexed subtree's transfer: the
@@ -319,6 +352,7 @@ impl<'db> MultiStateSyncSession<'db> {
         app_hash: [u8; 32],
         subtrees_batch_size: usize,
         version: u16,
+        commit_mode: RestoreCommitMode,
     ) -> Pin<Box<Self>> {
         Box::pin(MultiStateSyncSession {
             db,
@@ -330,10 +364,60 @@ impl<'db> MultiStateSyncSession<'db> {
             subtrees_batch_size,
             num_processed_subtrees_in_batch: 0,
             pending_discovered_subtrees: None,
+            commit_mode,
+            bytes_since_commit: 0,
+            intermediate_commits: 0,
+            commits_deferred_for_open_group: 0,
             indexed_groups: Default::default(),
             secondary_owner: Default::default(),
             _pin: PhantomPinned,
         })
+    }
+
+    /// How this session persists restored data. See
+    /// [`RestoreCommitMode`].
+    pub fn commit_mode(&self) -> RestoreCommitMode {
+        self.commit_mode
+    }
+
+    /// How many intermediate commits this session has taken. Always `0`
+    /// for [`RestoreCommitMode::Atomic`]; a non-zero value means the
+    /// destination database already holds restore writes that have not
+    /// been verified against the offered `app_hash`.
+    pub fn intermediate_commits(&self) -> usize {
+        self.intermediate_commits
+    }
+
+    /// How many times an intermediate commit was due and otherwise safe
+    /// but was held back because an indexed group's joint verification
+    /// had not run yet. See
+    /// [`MultiStateSyncSession::intermediate_commit_decision`].
+    pub fn commits_deferred_for_open_group(&self) -> usize {
+        self.commits_deferred_for_open_group
+    }
+
+    /// Whether an indexed-tree group is part-restored right now, i.e. its
+    /// primary and axis secondaries have not all completed and the joint
+    /// verification binding them to the parent has not run. No
+    /// intermediate commit may land while this is true; see
+    /// [`Self::intermediate_commit_decision`].
+    pub fn has_open_indexed_group(&self) -> bool {
+        !self.indexed_groups.is_empty()
+    }
+
+    /// Replace the app hash the final commit checks against.
+    ///
+    /// A test seam, and deliberately not reachable outside the crate: it
+    /// exists so the root-hash gate can be exercised on a session that
+    /// has already taken intermediate commits, which no honest chunk
+    /// stream can produce (every per-subtree chunk is verified on the way
+    /// in, so a stream that reaches `commit` at all reaches it with the
+    /// right composition).
+    #[cfg(test)]
+    pub(crate) fn set_app_hash_for_test(self: &mut Pin<Box<Self>>, app_hash: [u8; 32]) {
+        // SAFETY: `app_hash` is a plain array field; only `transaction` is
+        // protected by the pin.
+        unsafe { self.as_mut().get_unchecked_mut() }.app_hash = app_hash;
     }
 
     /// Returns true if there are no prefixes currently being synced.
@@ -388,13 +472,22 @@ impl<'db> MultiStateSyncSession<'db> {
         // Individual subtree chunks are hash-verified during restore, but we must also
         // verify the overall GroveDB root to ensure the composition is correct.
         //
-        // INVARIANT (https://github.com/dashpay/grovedb/issues/775): every write of
-        // the sync — all restored subtrees across every discovery batch — stays
-        // inside `session.transaction` until this check passes. Nothing is
-        // persisted early; a mismatch here (or dropping the session at any point
-        // before commit) rolls the destination back to its pre-sync state.
+        // INVARIANT (https://github.com/dashpay/grovedb/issues/775), for the
+        // default `RestoreCommitMode::Atomic`: every write of the sync — all
+        // restored subtrees across every discovery batch — stays inside
+        // `session.transaction` until this check passes. Nothing is persisted
+        // early; a mismatch here (or dropping the session at any point before
+        // commit) rolls the destination back to its pre-sync state.
         // `subtrees_batch_size` only paces subtree discovery; it must never
-        // reintroduce intermediate commits.
+        // reintroduce intermediate commits, and `discovery_batch_full` keeps
+        // that true by returning `false` for the budget in atomic mode.
+        //
+        // `RestoreCommitMode::Incremental` deliberately trades that rollback
+        // away for a memory ceiling that does not grow with the state (see the
+        // variant's documentation). The check below still runs and still
+        // gates the final commit; what it no longer does is undo the earlier
+        // ones, which is why such a database carries the unfinished-restore
+        // marker until this point is reached.
         let actual_root_hash = session
             .db
             .root_hash(Some(&session.transaction), grove_version)
@@ -408,6 +501,13 @@ impl<'db> MultiStateSyncSession<'db> {
                 hex::encode(session.app_hash),
                 hex::encode(actual_root_hash),
             )));
+        }
+
+        // The root hash is verified, so the destination is about to become a
+        // complete, checked restore: retire the unfinished-restore marker in
+        // the very transaction that makes that true.
+        if session.intermediate_commits > 0 {
+            session.set_incomplete_restore_marker(false)?;
         }
 
         session
@@ -554,6 +654,141 @@ impl<'db> MultiStateSyncSession<'db> {
         // SAFETY: we only access a single field and do not move the struct;
         // the pin invariant only protects `transaction` from being moved.
         &mut unsafe { self.get_unchecked_mut() }.pending_discovered_subtrees
+    }
+
+    /// Whether discovery should stop activating new subtrees and let the
+    /// in-flight ones drain.
+    ///
+    /// Two independent reasons close a discovery batch. `subtrees_batch_size`
+    /// paces how many subtrees are in flight at once and is what the atomic
+    /// mode uses. The payload budget is the bounded-memory mode's lever: it
+    /// is what turns "the write set has grown past what we are willing to
+    /// hold" into a drained `current_prefixes`, which is the only state in
+    /// which an intermediate commit is safe (see
+    /// [`Self::intermediate_commit_decision`]). Counting subtrees could not do
+    /// that job — a grove of ten fat subtrees never reaches a subtree-count
+    /// boundary at all, and Platform-shaped state is exactly that shape.
+    fn discovery_batch_full(&self) -> bool {
+        if self.num_processed_subtrees_in_batch >= self.subtrees_batch_size {
+            return true;
+        }
+        match self.commit_mode {
+            RestoreCommitMode::Atomic => false,
+            RestoreCommitMode::Incremental { budget_bytes } => {
+                self.bytes_since_commit >= budget_bytes
+            }
+        }
+    }
+
+    /// What to do about an intermediate commit at a drained discovery
+    /// boundary.
+    ///
+    /// A commit is *wanted* when the session is in bounded-memory mode and
+    /// has accumulated its payload budget. Two conditions make it *safe*,
+    /// and they are the load-bearing part:
+    ///
+    /// - `current_prefixes` must be empty. Every live `SubtreeStateSyncInfo`
+    ///   owns a `PrefixedRocksDbImmediateStorageContext` built from a
+    ///   `&'db Transaction` conjured out of the pinned session
+    ///   (`add_subtree_sync_info` and friends). Replacing the transaction
+    ///   under a live context would dangle that reference. An empty map is
+    ///   the proof that none exists.
+    /// - `indexed_groups` must be empty. An indexed subtree is verified as
+    ///   a *group*: `note_indexed_member_complete` runs
+    ///   `verify_indexed_binding` over the primary's restored root hash
+    ///   together with every axis secondary's, and only that joint check
+    ///   ties the group to the hash the parent committed to. Committing
+    ///   while a group is open would persist members whose only binding to
+    ///   the parent has not been checked yet.
+    ///
+    /// The second condition is not theoretical: a group's secondaries are
+    /// activated from `pending_discovered_subtrees`, so a group routinely
+    /// stays open across a boundary at which `current_prefixes` has
+    /// already drained. [`Self::commits_deferred_for_open_group`] counts
+    /// how often that happened, which is how the regression test proves
+    /// the guard is doing work rather than describing an impossible case.
+    fn intermediate_commit_decision(&self) -> IntermediateCommitDecision {
+        let budget_reached = match self.commit_mode {
+            RestoreCommitMode::Atomic => false,
+            RestoreCommitMode::Incremental { budget_bytes } => {
+                self.bytes_since_commit >= budget_bytes
+            }
+        };
+        if !budget_reached || !self.current_prefixes.is_empty() {
+            return IntermediateCommitDecision::NotDue;
+        }
+        if !self.indexed_groups.is_empty() {
+            return IntermediateCommitDecision::DeferForOpenIndexedGroup;
+        }
+        IntermediateCommitDecision::Take
+    }
+
+    /// Persist everything restored so far and continue the sync in a
+    /// fresh transaction.
+    ///
+    /// Only ever called from a state
+    /// [`Self::intermediate_commit_decision`] has approved. The first such
+    /// commit also stamps the database as holding an unfinished restore;
+    /// [`Self::commit`] clears the stamp in the same transaction that
+    /// passes the root hash check, so the marker is present for exactly
+    /// the window in which the destination holds unverified data.
+    fn intermediate_commit(self: &mut Pin<Box<MultiStateSyncSession<'db>>>) -> Result<(), Error> {
+        // SAFETY: only `transaction` is protected by the pin, and it is
+        // replaced here rather than moved out from under a borrower:
+        // `intermediate_commit_decision` established that no storage
+        // context holds a reference to it.
+        let session = unsafe { self.as_mut().get_unchecked_mut() };
+        if !session.current_prefixes.is_empty() || !session.indexed_groups.is_empty() {
+            return Err(Error::InternalError(
+                "refusing an intermediate state sync commit at an unsafe point".to_string(),
+            ));
+        }
+        let db = session.db;
+
+        if session.intermediate_commits == 0 {
+            session.set_incomplete_restore_marker(true)?;
+        }
+
+        let finished = std::mem::replace(&mut session.transaction, db.start_transaction());
+        db.commit_transaction(finished).value.map_err(|e| {
+            Error::InternalError(format!("failed to commit intermediate sync batch: {e}"))
+        })?;
+
+        session.bytes_since_commit = 0;
+        session.intermediate_commits += 1;
+        Ok(())
+    }
+
+    /// Write or delete the unfinished-restore marker inside the session's
+    /// current transaction, so it lands with the data it describes.
+    fn set_incomplete_restore_marker(&self, present: bool) -> Result<(), Error> {
+        let storage = self
+            .db
+            .db
+            .get_immediate_storage_context(SubtreePath::empty(), &self.transaction)
+            .unwrap();
+        let result = if present {
+            storage.put_aux(INCOMPLETE_RESTORE_AUX_KEY, &self.app_hash, None)
+        } else {
+            storage.delete_aux(INCOMPLETE_RESTORE_AUX_KEY, None)
+        };
+        result
+            .unwrap()
+            .map_err(|e| Error::InternalError(format!("failed to write restore marker: {e}")))
+    }
+
+    fn commits_deferred_for_open_group_mut(
+        self: Pin<&mut MultiStateSyncSession<'db>>,
+    ) -> &mut usize {
+        // SAFETY: we only access a single field and do not move the struct;
+        // the pin invariant only protects `transaction` from being moved.
+        &mut unsafe { self.get_unchecked_mut() }.commits_deferred_for_open_group
+    }
+
+    fn bytes_since_commit(self: Pin<&mut MultiStateSyncSession<'db>>) -> &mut u64 {
+        // SAFETY: we only access a single field and do not move the struct;
+        // the pin invariant only protects `transaction` from being moved.
+        &mut unsafe { self.get_unchecked_mut() }.bytes_since_commit
     }
 
     fn indexed_groups(
@@ -921,6 +1156,15 @@ impl<'db> MultiStateSyncSession<'db> {
             ));
         }
 
+        // Payload applied since the last commit. Counted on the wire
+        // bytes rather than on the transaction's write batch because
+        // RocksDB's only handle on that batch's size copies the whole
+        // batch to report it. The two are proportional (the payload *is*
+        // the Merk nodes being written), so a wire-byte budget bounds the
+        // write set within a constant factor -- which is all a memory
+        // budget needs to do.
+        *self.as_mut().bytes_since_commit() += packed_global_chunks.len() as u64;
+
         let db = self.db;
         // SAFETY: the transaction lives as long as the pinned session and is
         // dropped last; the reference is only used within this call while
@@ -1086,7 +1330,7 @@ impl<'db> MultiStateSyncSession<'db> {
                     self.discover_new_subtrees_metadata(&completed_path, grove_version)?
                 };
 
-                if self.num_processed_subtrees_in_batch >= self.subtrees_batch_size {
+                if self.discovery_batch_full() {
                     match self.as_mut().pending_discovered_subtrees() {
                         None => {
                             *self.as_mut().pending_discovered_subtrees() =
@@ -1115,7 +1359,7 @@ impl<'db> MultiStateSyncSession<'db> {
         // discovered subtrees.
         for (primary_prefix, header) in received_headers {
             let secondaries_metadata = self.register_indexed_header(primary_prefix, header)?;
-            if self.num_processed_subtrees_in_batch >= self.subtrees_batch_size {
+            if self.discovery_batch_full() {
                 match self.as_mut().pending_discovered_subtrees() {
                     None => {
                         *self.as_mut().pending_discovered_subtrees() = Some(secondaries_metadata);
@@ -1136,9 +1380,7 @@ impl<'db> MultiStateSyncSession<'db> {
             }
         }
 
-        if self.num_processed_subtrees_in_batch >= self.subtrees_batch_size
-            && self.current_prefixes.is_empty()
-        {
+        if self.discovery_batch_full() && self.current_prefixes.is_empty() {
             // Batch boundary: everything restored so far stays inside the
             // session transaction (see the atomicity invariant in
             // `commit()`); `subtrees_batch_size` only paces how many
@@ -1151,6 +1393,21 @@ impl<'db> MultiStateSyncSession<'db> {
                         "No pending subtrees available for resume_sync".to_string(),
                     ))?;
             *self.as_mut().num_processed_subtrees_in_batch() = 0;
+
+            // Bounded-memory mode only: `current_prefixes` has just
+            // drained and no indexed group is open, so this is the one
+            // point in the sync at which the accumulated write set can be
+            // handed to RocksDB without dangling a restorer's storage
+            // context or splitting a group's joint verification. It must
+            // happen before `prepare_sync_state_sessions` below opens the
+            // next batch's contexts on the transaction.
+            match self.intermediate_commit_decision() {
+                IntermediateCommitDecision::Take => self.intermediate_commit()?,
+                IntermediateCommitDecision::DeferForOpenIndexedGroup => {
+                    *self.as_mut().commits_deferred_for_open_group_mut() += 1;
+                }
+                IntermediateCommitDecision::NotDue => {}
+            }
 
             let mut next_chunk_ids = vec![];
 
