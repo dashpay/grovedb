@@ -1,13 +1,16 @@
 //! Scale and memory-ceiling measurement for state sync restore.
 //!
-//! The restore side of state sync is **atomic**: every write of the whole
-//! sync — all restored subtrees, across every discovery batch — is held in
-//! a single `OptimisticTransactionDB` transaction (a
-//! `WriteBatchWithIndex`) until `commit_session` verifies the root hash
-//! (see the invariant comment in `state_sync_session::commit`). That write
-//! batch lives in RocksDB's C++ heap, so its cost shows up in the
-//! process's memory footprint and nowhere else — a Rust allocator hook
-//! would not see it.
+//! The default restore is **atomic**: every write of the whole sync — all
+//! restored subtrees, across every discovery batch — is held in a single
+//! `OptimisticTransactionDB` transaction (a `WriteBatchWithIndex`) until
+//! `commit_session` verifies the root hash (see the invariant comment in
+//! `state_sync_session::commit`). That write batch lives in RocksDB's C++
+//! heap, so its cost shows up in the process's memory footprint and
+//! nowhere else — a Rust allocator hook would not see it.
+//!
+//! Setting `GROVEDB_SCALE_RESTORE_BUDGET_MIB=<n>` runs the same
+//! measurement against `RestoreCommitMode::Incremental` instead, which is
+//! how the before/after comparison is reproduced.
 //!
 //! These tests measure that ceiling. They build a synthetic grove shaped
 //! roughly like Dash Platform state (identity-like items under a flat
@@ -68,8 +71,33 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::{
-        batch::QualifiedGroveDbOp, replication::CURRENT_STATE_SYNC_VERSION, Element, GroveDb,
+        batch::QualifiedGroveDbOp,
+        replication::{RestoreCommitMode, CURRENT_STATE_SYNC_VERSION},
+        Element, GroveDb,
     };
+
+    /// Restore commit mode for this run, from the environment.
+    ///
+    /// Unset (the default) measures the atomic restore. Setting
+    /// `GROVEDB_SCALE_RESTORE_BUDGET_MIB=<n>` measures the bounded-memory
+    /// restore with an `n` MiB payload budget, which is how the
+    /// before/after table in the PR is reproduced without editing code:
+    ///
+    /// ```text
+    /// GROVEDB_SCALE_RESTORE_BUDGET_MIB=64 cargo test --release -p grovedb \
+    ///     restore_memory_ceiling_tier_medium -- --ignored --nocapture
+    /// ```
+    fn commit_mode_from_env() -> RestoreCommitMode {
+        match std::env::var("GROVEDB_SCALE_RESTORE_BUDGET_MIB")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            Some(mib) if mib > 0 => RestoreCommitMode::Incremental {
+                budget_bytes: mib * 1024 * 1024,
+            },
+            _ => RestoreCommitMode::Atomic,
+        }
+    }
 
     // ── Shape of the synthetic grove ────────────────────────────────────
 
@@ -106,6 +134,18 @@ mod tests {
     }
 
     impl GroveShape {
+        /// Total number of restored key/value entries across every
+        /// member, i.e. the number of `WriteBatchWithIndex` skiplist
+        /// entries the restore's write set is at least as large as.
+        fn entry_count(&self) -> u64 {
+            (self.identities
+                + self.contracts * self.documents_per_contract
+                + self.sum_entries
+                + self.commitment_entries
+                + self.mmr_entries
+                + self.indexed_entries * 2) as u64
+        }
+
         /// Bytes of item *values* in the identity-like and document-like
         /// subtrees. Deliberately partial: it excludes keys, Merk node
         /// overhead, and the sum / commitment / MMR / indexed members, so
@@ -158,6 +198,46 @@ mod tests {
         commitment_entries: 512,
         mmr_entries: 100_000,
         indexed_entries: 5_000,
+    };
+
+    /// Roughly the same on-disk size as [`SHAPE_KEY_HEAVY`], reached with
+    /// few, large values.
+    ///
+    /// The pair exists to answer one attribution question: does the
+    /// restore's memory ceiling track the write batch's *data* (the
+    /// serialised key and value bytes) or its *index* (one skiplist entry
+    /// per key in the `WriteBatchWithIndex`)? At ~40x the entry count for
+    /// the same on-disk size, an index-dominated ceiling would show a
+    /// dramatically worse ratio on the key-heavy side. Measured, it does
+    /// not: cost per source byte matches within ~15% while cost per entry
+    /// differs 60x, so the batch payload is the ceiling and the skiplist
+    /// is a single-digit percentage of it.
+    const SHAPE_VALUE_HEAVY: GroveShape = GroveShape {
+        tier: "value-heavy",
+        identities: 12_000,
+        identity_value_bytes: 8_192,
+        contracts: 2,
+        documents_per_contract: 6_000,
+        document_value_bytes: 8_192,
+        sum_entries: 0,
+        commitment_entries: 0,
+        mmr_entries: 0,
+        indexed_entries: 0,
+    };
+
+    /// See [`SHAPE_VALUE_HEAVY`]: same rough on-disk size, ~40x the entry
+    /// count.
+    const SHAPE_KEY_HEAVY: GroveShape = GroveShape {
+        tier: "key-heavy",
+        identities: 500_000,
+        identity_value_bytes: 32,
+        contracts: 5,
+        documents_per_contract: 100_000,
+        document_value_bytes: 32,
+        sum_entries: 0,
+        commitment_entries: 0,
+        mmr_entries: 0,
+        indexed_entries: 0,
     };
 
     /// ~4 GB of payload.
@@ -520,6 +600,10 @@ mod tests {
 
     struct Measurement {
         tier: &'static str,
+        commit_mode: RestoreCommitMode,
+        /// Intermediate commits the session took. Zero in atomic mode.
+        intermediate_commits: usize,
+        entries: u64,
         logical_bytes: u64,
         checkpoint_bytes: u64,
         restored_bytes: u64,
@@ -540,6 +624,11 @@ mod tests {
             println!(
                 "\n=== state sync restore memory ceiling: tier {} ===",
                 self.tier
+            );
+            println!("  restore commit mode    : {:>10?}", self.commit_mode);
+            println!(
+                "  intermediate commits   : {:>10}",
+                self.intermediate_commits
             );
             println!(
                 "  item value bytes       : {:>10.1} MiB",
@@ -601,6 +690,11 @@ mod tests {
                 self.peak_rss.saturating_sub(self.baseline_rss) as f64
                     / self.checkpoint_bytes.max(1) as f64
             );
+            println!("  item entries restored  : {:>10}", self.entries);
+            println!(
+                "  increment / entry      : {:>10.1} B",
+                self.peak_rss.saturating_sub(self.baseline_rss) as f64 / self.entries.max(1) as f64
+            );
         }
     }
 
@@ -638,8 +732,15 @@ mod tests {
         let sampler = RssSampler::start();
         let sync_start = Instant::now();
 
+        let commit_mode = commit_mode_from_env();
         let mut session = target
-            .start_snapshot_syncing(source_hash, 64, CURRENT_STATE_SYNC_VERSION, grove_version)
+            .start_snapshot_syncing_with_mode(
+                source_hash,
+                64,
+                CURRENT_STATE_SYNC_VERSION,
+                commit_mode,
+                grove_version,
+            )
             .expect("start snapshot syncing");
 
         let mut queue: VecDeque<Vec<u8>> = VecDeque::new();
@@ -674,6 +775,7 @@ mod tests {
         // nothing has been flushed yet: this reading separates the batch's
         // cost from the commit-time flush that follows.
         let pre_commit_rss = current_memory_bytes().unwrap_or(0);
+        let intermediate_commits = session.intermediate_commits();
         target
             .commit_session(session, grove_version)
             .expect("commit session");
@@ -693,6 +795,9 @@ mod tests {
 
         Measurement {
             tier: shape.tier,
+            commit_mode,
+            intermediate_commits,
+            entries: shape.entry_count(),
             logical_bytes: shape.logical_value_bytes(),
             checkpoint_bytes,
             restored_bytes,
@@ -733,5 +838,17 @@ mod tests {
     #[ignore = "measurement harness: tens of minutes and >4 GiB of disk and RAM"]
     fn restore_memory_ceiling_tier_large() {
         run_tier(&TIER_LARGE);
+    }
+
+    #[test]
+    #[ignore = "measurement harness: write-batch data vs index attribution"]
+    fn restore_memory_shape_value_heavy() {
+        run_tier(&SHAPE_VALUE_HEAVY);
+    }
+
+    #[test]
+    #[ignore = "measurement harness: write-batch data vs index attribution"]
+    fn restore_memory_shape_key_heavy() {
+        run_tier(&SHAPE_KEY_HEAVY);
     }
 }
