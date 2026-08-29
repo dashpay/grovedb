@@ -877,3 +877,200 @@ fn retargeting_onto_a_chained_reference_propagates_the_end_hash() {
         .unwrap()
         .is_empty());
 }
+
+#[test]
+fn retargeting_into_a_cycle_is_rejected() {
+    // Regression for a reproduced hang: with `A -> terminal` and `C -> A`,
+    // retargeting `A -> C` used to validate against the pre-write graph
+    // (following C resolved through the OLD A) and then loop forever in
+    // backward propagation. The chain is now followed from the position
+    // being written, so the prospective cycle is rejected before mutation.
+    let grove_version = GroveVersion::latest();
+    let db = db_with_bwr_item();
+
+    db.insert(
+        &[TEST_LEAF],
+        b"a",
+        sibling_bidi(b"value", true),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF],
+        b"c",
+        sibling_bidi(b"a", true),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    assert!(matches!(
+        db.insert(
+            &[TEST_LEAF],
+            b"a",
+            sibling_bidi(b"c", true),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap(),
+        Err(Error::CyclicReference)
+    ));
+
+    // Nothing was mutated: `a` still resolves through its original target
+    // and the graph verifies.
+    assert_eq!(
+        db.get(&[TEST_LEAF], b"a", None, grove_version)
+            .unwrap()
+            .unwrap(),
+        Element::new_item_allowing_bidirectional_references(b"hello".to_vec())
+    );
+    assert!(db
+        .verify_grovedb(None, true, true, grove_version)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn reinserting_an_identical_edge_is_a_no_op() {
+    let grove_version = GroveVersion::latest();
+    let db = db_with_bwr_item();
+
+    db.insert(
+        &[TEST_LEAF],
+        b"ref",
+        sibling_bidi(b"value", true),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    // A second reference chained onto `ref` occupies its single backward
+    // slot — an identical reinsertion of `chained` must still succeed.
+    db.insert(
+        &[TEST_LEAF],
+        b"chained",
+        sibling_bidi(b"ref", true),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    let root_before = db.root_hash(None, grove_version).unwrap().unwrap();
+
+    for key in [b"ref".as_ref(), b"chained"] {
+        db.insert(
+            &[TEST_LEAF],
+            key,
+            sibling_bidi(if key == b"ref" { b"value" } else { b"ref" }, true),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap_or_else(|e| panic!("identical reinsertion of {key:?} must be a no-op: {e}"));
+    }
+
+    assert_eq!(
+        db.root_hash(None, grove_version).unwrap().unwrap(),
+        root_before,
+        "identical reinsertions must not move the root hash"
+    );
+    assert!(db
+        .verify_grovedb(None, true, true, grove_version)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn propagation_skips_and_cleans_origins_removed_without_bookkeeping() {
+    // An origin removed through a path that performs no backward-references
+    // bookkeeping (here: a batch delete, which is rejected only for ops
+    // CARRYING the element family, not for ops touching participants)
+    // leaves a dangling slot on its target. Later flagged updates must not
+    // fail on it: the slot is skipped and lazily cleaned.
+    let grove_version = GroveVersion::latest();
+    let db = db_with_bwr_item();
+
+    db.insert(
+        &[TEST_LEAF],
+        b"origin",
+        sibling_bidi(b"value", true),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    // Batch-delete the origin: no backward-references bookkeeping runs.
+    db.apply_batch(
+        vec![crate::batch::QualifiedGroveDbOp::delete_op(
+            vec![TEST_LEAF.to_vec()],
+            b"origin".to_vec(),
+        )],
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    // A flagged update of the target now encounters the dangling slot —
+    // it must succeed, and afterwards the slot is free again.
+    db.insert(
+        &[TEST_LEAF],
+        b"value",
+        Element::new_item_allowing_bidirectional_references(b"updated".to_vec()),
+        flag_on(),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("dangling backward reference must be skipped, not fatal");
+
+    assert!(db
+        .verify_grovedb(None, true, true, grove_version)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn delete_with_flag_rejects_rows_of_indexed_primaries() {
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    db.insert(
+        &[TEST_LEAF],
+        b"pcit",
+        Element::empty_provable_count_indexed_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    // The guard fires on the CONTAINING Merk's type, before any key lookup.
+    assert!(matches!(
+        db.delete(
+            &[TEST_LEAF, b"pcit"],
+            b"row",
+            Some(DeleteOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            None,
+            grove_version,
+        )
+        .unwrap(),
+        Err(Error::NotSupported(_))
+    ));
+}

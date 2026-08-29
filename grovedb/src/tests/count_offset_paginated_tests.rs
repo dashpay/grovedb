@@ -1570,4 +1570,67 @@ mod tests {
         assert_eq!(items.len(), 1, "exactly the empty PSIT is returned");
         assert_eq!(items[0].1, b"b".to_vec());
     }
+
+    /// A bidirectional reference stored inside a `ProvableCountTree` must be
+    /// dereferenced by the count-offset proof path exactly like a plain
+    /// reference (the branch performs its own reference normalization).
+    #[test]
+    fn end_to_end_offset_dereferences_bidirectional_references() {
+        let v = GroveVersion::latest();
+        let (db, _keys) = make_provable_count_tree_with_n_items(6, v);
+
+        // A backward-references target outside the count tree...
+        db.insert(
+            &[crate::tests::TEST_LEAF],
+            b"target",
+            Element::new_item_allowing_bidirectional_references(b"pointed-at".to_vec()),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert target");
+        // ...and a bidirectional reference to it inside the count tree.
+        db.insert(
+            &[b"counts"],
+            b"z_ref",
+            Element::BidirectionalReference(
+                crate::bidirectional_references::BidirectionalReference {
+                    forward_reference_path:
+                        crate::reference_path::ReferencePathType::AbsolutePathReference(vec![
+                            crate::tests::TEST_LEAF.to_vec(),
+                            b"target".to_vec(),
+                        ]),
+                    backward_reference_slot: 0,
+                    cascade_on_update: true,
+                    max_hop: None,
+                    flags: None,
+                },
+            ),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert bidirectional reference");
+
+        let mut query = Query::new();
+        query.insert_range_inclusive(b"a".to_vec()..=b"z_ref".to_vec());
+        // Offset into the tail so the window covers the reference at `z_ref`.
+        let proved = round_trip_offset(&db, vec![b"counts".to_vec()], query, Some(3), Some(5), v);
+        assert!(
+            proved_keys(&proved).contains(&b"z_ref".to_vec()),
+            "window must cover the reference"
+        );
+        let ref_row = proved
+            .iter()
+            .find(|p| p.key == b"z_ref".to_vec())
+            .expect("reference row present");
+        let element = Element::deserialize(&ref_row.value, v).expect("deserialize proved value");
+        assert_eq!(
+            element,
+            Element::new_item_allowing_bidirectional_references(b"pointed-at".to_vec()),
+            "the proof must carry the dereferenced target element"
+        );
+    }
 }

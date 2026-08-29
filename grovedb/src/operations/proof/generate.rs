@@ -2010,6 +2010,19 @@ impl GroveDb {
                     Ok(e) => e.into_underlying(),
                     Err(_) => continue,
                 };
+                // Normalize a bidirectional reference to its plain-reference
+                // shape — proof-wise both resolve identically, and the
+                // node's `value` bytes (which feed value_hash) are left
+                // untouched. Mirrors the normalization in the general
+                // subquery path below.
+                let elem = match elem {
+                    Element::BidirectionalReference(reference) => Element::Reference(
+                        reference.forward_reference_path,
+                        reference.max_hop,
+                        reference.flags,
+                    ),
+                    other => other,
+                };
                 let (Element::Reference(reference_path, ..)
                 | Element::ReferenceWithSumItem(reference_path, ..)) = elem
                 else {

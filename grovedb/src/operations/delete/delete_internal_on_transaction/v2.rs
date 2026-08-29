@@ -19,7 +19,8 @@
 //! bidirectional references).
 
 use grovedb_costs::{
-    cost_return_on_error, storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt,
+    cost_return_on_error, cost_return_on_error_no_add, storage_cost::removal::StorageRemovedBytes,
+    CostResult, CostsExt,
 };
 use grovedb_merk::{
     element::{delete::ElementDeleteFromStorageExtensions, get::ElementFetchFromStorageExtensions},
@@ -108,16 +109,29 @@ impl GroveDb {
         let mut subtree_to_delete_from =
             cost_return_on_error!(&mut cost, cache.get_merk(path.derive_owned()));
 
+        let subtree_to_delete_from_type = cost_return_on_error!(
+            &mut cost,
+            subtree_to_delete_from.for_merk(|m| Ok(m.tree_type).wrap_with_cost(Default::default()))
+        );
+
+        // Guard on the CONTAINING Merk's type, before even looking the key
+        // up: deleting a row out of an indexed-tree primary through this
+        // generic flow would strand its mirrored secondary state. (The
+        // separate check further down guards the case where the deleted
+        // element is itself a specialized/indexed tree.)
+        cost_return_on_error_no_add!(
+            cost,
+            crate::operations::indexed_tree::reject_generic_write_into_indexed_primary(
+                subtree_to_delete_from_type,
+                "delete with propagate_backward_references",
+            )
+        );
+
         let element = cost_return_on_error!(
             &mut cost,
             subtree_to_delete_from.for_merk(|m| {
                 Element::get(m, key, true, grove_version).map_err(Error::MerkError)
             })
-        );
-
-        let subtree_to_delete_from_type = cost_return_on_error!(
-            &mut cost,
-            subtree_to_delete_from.for_merk(|m| Ok(m.tree_type).wrap_with_cost(Default::default()))
         );
 
         if element.is_any_tree() {

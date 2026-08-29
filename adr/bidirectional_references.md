@@ -65,6 +65,13 @@ Current limitations (fail closed, lift as needed):
   (`NonCounted` / `NotSummed` / `NotCountedOrSummed`).
 - `apply_batch` (and every batch entry point) rejects ops carrying them —
   the batch pipeline performs none of the backward-reference bookkeeping.
+  Batch (or unflagged) ops that DELETE or OVERWRITE an existing
+  backward-references participant are still admitted, exactly like any
+  other unflagged write: consistency is forfeited at that point. A
+  backward reference left dangling this way is tolerated — later flagged
+  propagations and cascades skip it and lazily clear its slot — but
+  `verify_grovedb` reports the affected references until the chain is
+  rewritten through flagged operations.
 - `clear_subtree` has no `propagate_backward_references` option yet; use
   `delete` with the flag for cascade-aware removal.
 - Under the flag, insert supports items, references, and empty plain-Merk

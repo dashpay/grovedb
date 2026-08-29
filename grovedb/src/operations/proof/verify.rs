@@ -1257,8 +1257,9 @@ impl GroveDb {
                 continue;
             }
             let value = match element.into_underlying() {
-                Element::SumItem(value, _) => value,
-                Element::ItemWithSumItem(_, value, _) => value,
+                Element::SumItem(value, _)
+                | Element::ItemWithSumItem(_, value, _)
+                | Element::SumItemWithBackwardsReferences(value, _) => value,
                 _ => {
                     return Err(Error::InvalidProof(
                         query.clone(),

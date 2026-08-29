@@ -792,8 +792,9 @@ impl ElementAggregateSumQueryExtensions for Element {
         // of element this aggregator should accept (suppress the count
         // contribution while still totaling the sum).
         let value = match element.into_underlying() {
-            Element::SumItem(value, _) => value,
-            Element::ItemWithSumItem(_, value, _) => value,
+            Element::SumItem(value, _)
+            | Element::ItemWithSumItem(_, value, _)
+            | Element::SumItemWithBackwardsReferences(value, _) => value,
             _ => return Err(Error::InvalidInput("Only sum items are allowed")),
         };
 

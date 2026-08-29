@@ -117,6 +117,34 @@ pub(crate) fn process_bidirectional_reference_insertion<'b, B: AsRef<[u8]>>(
 ) -> CostResult<(), Error> {
     let mut cost = Default::default();
 
+    // Read what the key currently holds first: re-inserting an identical
+    // edge must be a true no-op. Without this early check the backward
+    // reference registered below would count against itself — reinsertion
+    // of the same edge would migrate its slot (changing the root hash) and
+    // a one-slot bidirectional target would spuriously reject it as full.
+    let mut merk = cost_return_on_error!(&mut cost, merk_cache.get_merk(path.derive_owned()));
+    let previous_value = cost_return_on_error!(
+        &mut cost,
+        merk.for_merk(|m| {
+            Element::get_optional(m, key, true, merk_cache.version).map_err(Error::MerkError)
+        })
+    );
+    if let Some(Element::BidirectionalReference(ref old_ref)) = previous_value
+        && old_ref.forward_reference_path == reference.forward_reference_path
+        && old_ref.cascade_on_update == reference.cascade_on_update
+        && old_ref.max_hop == reference.max_hop
+        && old_ref.flags == reference.flags
+    {
+        // Identical logical edge (the slot is bookkeeping we assigned on the
+        // original insertion): nothing changed, keep the stored slot.
+        //
+        // A same-target reinsertion with DIFFERENT parameters still runs the
+        // full path below; against a one-slot bidirectional target it is
+        // rejected as full because the old edge occupies the slot until the
+        // overwrite completes.
+        return Ok(()).wrap_with_cost(cost);
+    }
+
     // Since we limit what kind of elements a bidirectional reference can target, a
     // check goes first:
     let ResolvedReference {
@@ -124,7 +152,7 @@ pub(crate) fn process_bidirectional_reference_insertion<'b, B: AsRef<[u8]>>(
         target_key,
         target_element,
         target_node_value_hash,
-        target_path,
+        ..
     } = cost_return_on_error!(
         &mut cost,
         follow_reference_once(
@@ -153,11 +181,7 @@ pub(crate) fn process_bidirectional_reference_insertion<'b, B: AsRef<[u8]>>(
     // 1. We limit the number of backward references it supports by 1.
     // 2. We ignore the value hash of the reference and continue following the
     //    chain.
-    let target_value_hash = if let Element::BidirectionalReference(BidirectionalReference {
-        forward_reference_path,
-        ..
-    }) = target_element
-    {
+    let target_value_hash = if let Element::BidirectionalReference(..) = target_element {
         let (_, bitvec) = cost_return_on_error!(
             &mut cost,
             get_backward_references_bitvec(&mut target_merk, &target_key)
@@ -172,9 +196,20 @@ pub(crate) fn process_bidirectional_reference_insertion<'b, B: AsRef<[u8]>>(
             .wrap_with_cost(cost);
         }
 
+        // Follow the FULL chain starting from the position being written:
+        // `follow_reference` seeds its visited set with the starting
+        // qualified path, so a chain that loops back through this key —
+        // e.g. retargeting `A -> C` while `C -> A` already exists, which
+        // only becomes a cycle AFTER the write — is rejected with
+        // `CyclicReference` here, before any mutation.
         cost_return_on_error!(
             &mut cost,
-            follow_reference(merk_cache, target_path, &target_key, forward_reference_path)
+            follow_reference(
+                merk_cache,
+                path.derive_owned(),
+                key,
+                reference.forward_reference_path.clone()
+            )
         )
         .target_node_value_hash
     } else {
@@ -208,22 +243,6 @@ pub(crate) fn process_bidirectional_reference_insertion<'b, B: AsRef<[u8]>>(
     reference.backward_reference_slot = slot;
 
     // Proceed with bidirectional reference insertion as regular reference
-    let mut merk = cost_return_on_error!(&mut cost, merk_cache.get_merk(path.derive_owned()));
-
-    let previous_value = cost_return_on_error!(
-        &mut cost,
-        merk.for_merk(|m| {
-            Element::get_optional(m, key, true, merk_cache.version).map_err(Error::MerkError)
-        })
-    );
-
-    if let Some(Element::BidirectionalReference(ref old_ref)) = previous_value
-        && old_ref == &reference
-    {
-        // Short-circuit if nothing was changed
-        return Ok(()).wrap_with_cost(cost);
-    }
-
     cost_return_on_error!(
         &mut cost,
         merk.for_merk(|m| {
@@ -427,7 +446,13 @@ fn delete_backward_references_recursively<'db, 'b, 'c, B: AsRef<[u8]>>(
 ) -> CostResult<(), Error> {
     let mut cost = Default::default();
     let mut queue = VecDeque::new();
+    // Each node has exactly one forward edge, so reverse reachability from
+    // one start forms a tree; revisiting a node means the on-disk backward
+    // metadata encodes a cycle. Insertion rejects prospective cycles, so a
+    // revisit here is corrupted metadata — bail instead of looping forever.
+    let mut visited: std::collections::HashSet<(Vec<Vec<u8>>, Vec<u8>)> = Default::default();
 
+    visited.insert((path.to_vec(), key.clone()));
     queue.push_back((merk, path, key));
     let mut first = true;
 
@@ -447,20 +472,13 @@ fn delete_backward_references_recursively<'db, 'b, 'c, B: AsRef<[u8]>>(
                 .wrap_with_cost(cost);
             }
 
-            let ResolvedReference {
-                target_merk: origin_bidi_merk,
-                target_path: origin_bidi_path,
-                target_key: origin_bidi_key,
-                ..
-            } = cost_return_on_error!(
-                &mut cost,
-                follow_reference_once(
-                    merk_cache,
-                    current_path.clone(),
-                    &current_key,
-                    backward_ref.inverted_reference
-                )
-            );
+            let resolved = follow_reference_once(
+                merk_cache,
+                current_path.clone(),
+                &current_key,
+                backward_ref.inverted_reference,
+            )
+            .unwrap_add_cost(&mut cost);
 
             // ... except removing backward references from meta...
             cost_return_on_error!(
@@ -468,6 +486,25 @@ fn delete_backward_references_recursively<'db, 'b, 'c, B: AsRef<[u8]>>(
                 remove_backward_reference_resolved(&mut current_merk, &current_key, idx)
             );
 
+            let ResolvedReference {
+                target_merk: origin_bidi_merk,
+                target_path: origin_bidi_path,
+                target_key: origin_bidi_key,
+                ..
+            } = match resolved {
+                Ok(resolved) => resolved,
+                // A dangling backward reference: the origin was removed
+                // through a path that performs no backward-references
+                // bookkeeping (an unflagged write or a batch). Consistency
+                // was forfeited at that point; the stale slot was cleaned
+                // above, and there is nothing further to cascade.
+                Err(Error::CorruptedReferencePathKeyNotFound(_)) => continue,
+                Err(e) => return Err(e).wrap_with_cost(cost),
+            };
+
+            if !visited.insert((origin_bidi_path.to_vec(), origin_bidi_key.clone())) {
+                return Err(Error::CyclicReference).wrap_with_cost(cost);
+            }
             queue.push_back((origin_bidi_merk, origin_bidi_path, origin_bidi_key));
         }
 
@@ -512,7 +549,11 @@ fn propagate_backward_references<'db, 'b, 'c, B: AsRef<[u8]>>(
 ) -> CostResult<(), Error> {
     let mut cost = Default::default();
     let mut queue = VecDeque::new();
+    // See the identical bound in `delete_backward_references_recursively`:
+    // a revisit means cyclic on-disk metadata.
+    let mut visited: std::collections::HashSet<(Vec<Vec<u8>>, Vec<u8>)> = Default::default();
 
+    visited.insert((path.to_vec(), key.clone()));
     queue.push_back((merk, path, key));
 
     while let Some((mut current_merk, current_path, current_key)) = queue.pop_front() {
@@ -520,22 +561,36 @@ fn propagate_backward_references<'db, 'b, 'c, B: AsRef<[u8]>>(
             &mut cost,
             get_backward_references(&mut current_merk, &current_key)
         );
-        for (_, backward_ref) in backward_references.into_iter() {
+        for (idx, backward_ref) in backward_references.into_iter() {
+            let resolved = follow_reference_once(
+                merk_cache,
+                current_path.clone(),
+                &current_key,
+                backward_ref.inverted_reference,
+            )
+            .unwrap_add_cost(&mut cost);
+
             let ResolvedReference {
                 target_merk: mut origin_bidi_merk,
                 target_path: origin_bidi_path,
                 target_key: origin_bidi_key,
                 target_element: origin_bidi_ref,
                 ..
-            } = cost_return_on_error!(
-                &mut cost,
-                follow_reference_once(
-                    merk_cache,
-                    current_path.clone(),
-                    &current_key,
-                    backward_ref.inverted_reference
-                )
-            );
+            } = match resolved {
+                Ok(resolved) => resolved,
+                // A dangling backward reference (origin removed by an
+                // unflagged write or a batch, which perform no
+                // backward-references bookkeeping). Clean the stale slot
+                // lazily and keep propagating to live origins.
+                Err(Error::CorruptedReferencePathKeyNotFound(_)) => {
+                    cost_return_on_error!(
+                        &mut cost,
+                        remove_backward_reference_resolved(&mut current_merk, &current_key, idx)
+                    );
+                    continue;
+                }
+                Err(e) => return Err(e).wrap_with_cost(cost),
+            };
 
             cost_return_on_error!(
                 &mut cost,
@@ -552,6 +607,9 @@ fn propagate_backward_references<'db, 'b, 'c, B: AsRef<[u8]>>(
                 })
             );
 
+            if !visited.insert((origin_bidi_path.to_vec(), origin_bidi_key.clone())) {
+                return Err(Error::CyclicReference).wrap_with_cost(cost);
+            }
             queue.push_back((origin_bidi_merk, origin_bidi_path, origin_bidi_key));
         }
     }
