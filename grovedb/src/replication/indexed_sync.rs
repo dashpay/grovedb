@@ -188,7 +188,9 @@ impl IndexedHeader {
             return Err(err("axis section length mismatch"));
         }
         let axes = rest
-            .chunks_exact(33)
+            .as_chunks::<33>()
+            .0
+            .iter()
             .map(|chunk| (chunk[0], chunk[1..33].try_into().expect("checked length")))
             .collect();
         Ok(IndexedHeader {
