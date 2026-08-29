@@ -67,6 +67,7 @@ mod indexed_axis_offset_proof_tests;
 mod indexed_axis_paginated_cost_tests;
 mod indexed_axis_proof_tests;
 mod indexed_reference_row_tests;
+mod indexed_secondary_rekey_cost_tests;
 mod indexed_target_chain_tamper_tests;
 mod indexed_tree_secondary_drift_tests;
 mod indexed_tree_security_regression_tests;
