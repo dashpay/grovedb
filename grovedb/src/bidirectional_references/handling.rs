@@ -249,7 +249,14 @@ pub(crate) fn process_bidirectional_reference_insertion<'b, B: AsRef<[u8]>>(
             );
 
             // This also requires propagation, because new target means new value hash and
-            // backward references' chain shall be notified:
+            // backward references' chain shall be notified. Note the chain
+            // convention: every member of a reference chain stores
+            // combine(H(self), H_end) where H_end is the END target's value
+            // hash — so the resolved `target_value_hash` is propagated, not
+            // the immediate target's node hash (`target_node_value_hash`),
+            // which for a chained (bidi-reference) target would be that
+            // intermediate node's combined hash and would corrupt every
+            // upstream reference.
             cost_return_on_error!(
                 &mut cost,
                 propagate_backward_references(
@@ -257,7 +264,7 @@ pub(crate) fn process_bidirectional_reference_insertion<'b, B: AsRef<[u8]>>(
                     merk,
                     path.derive_owned(),
                     key.to_vec(),
-                    target_node_value_hash
+                    target_value_hash
                 )
             );
         }

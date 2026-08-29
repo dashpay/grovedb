@@ -796,3 +796,84 @@ fn sum_queries_resolve_backward_references_sum_items() {
         ] if *a == 5 && *b == 5
     ));
 }
+
+#[test]
+fn retargeting_onto_a_chained_reference_propagates_the_end_hash() {
+    // Regression for the overwrite branch of
+    // `process_bidirectional_reference_insertion`: when the NEW target is
+    // itself a bidirectional reference (a chain), the hash pushed to the
+    // overwritten reference's own backward references must be the resolved
+    // END-of-chain value hash, not the intermediate node's combined hash.
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    let tx = db.start_transaction();
+
+    for (key, value) in [(b"v1".as_ref(), b"one".as_ref()), (b"v2", b"two")] {
+        db.insert(
+            &[TEST_LEAF],
+            key,
+            Element::new_item_allowing_bidirectional_references(value.to_vec()),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+    }
+    // An intermediate reference onto v2, a target reference onto v1, and an
+    // origin chained onto the target reference.
+    db.insert(
+        &[TEST_LEAF],
+        b"mid",
+        sibling_bidi(b"v2", true),
+        None,
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF],
+        b"target_ref",
+        sibling_bidi(b"v1", true),
+        None,
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF],
+        b"origin",
+        sibling_bidi(b"target_ref", true),
+        None,
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    // Retarget `target_ref` onto `mid` — a CHAINED target (mid -> v2).
+    // `origin`'s stored hash must be refreshed with v2's value hash.
+    db.insert(
+        &[TEST_LEAF],
+        b"target_ref",
+        sibling_bidi(b"mid", true),
+        None,
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(
+        db.get(&[TEST_LEAF], b"origin", Some(&tx), grove_version)
+            .unwrap()
+            .unwrap(),
+        Element::new_item_allowing_bidirectional_references(b"two".to_vec())
+    );
+    assert!(db
+        .verify_grovedb(Some(&tx), true, true, grove_version)
+        .unwrap()
+        .is_empty());
+}

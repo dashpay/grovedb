@@ -2358,5 +2358,39 @@ mod tests {
             .unwrap(),
             Err(Error::PathParentLayerNotFound(_))
         ));
+
+        // Commit and re-check against persisted state: the cascade must
+        // survive the transaction boundary, the whole graph must verify,
+        // and proofs over surviving data must check out against the new
+        // root hash.
+        db.commit_transaction(transaction).unwrap().unwrap();
+
+        assert!(matches!(
+            db.get(&[TEST_LEAF, b"innertree"], b"ref", None, version)
+                .unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ));
+        assert!(db
+            .verify_grovedb(None, true, true, version)
+            .unwrap()
+            .is_empty());
+
+        let mut query = crate::Query::new();
+        query.insert_all();
+        let path_query =
+            crate::PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query);
+        let proof = db
+            .prove_query(&path_query, None, version)
+            .unwrap()
+            .expect("should prove after cascade deletion");
+        let (proved_root, results) = crate::GroveDb::verify_query(&proof, &path_query, version)
+            .expect("proof should verify");
+        assert_eq!(
+            proved_root,
+            db.root_hash(None, version).unwrap().unwrap(),
+            "proved root must match the committed root"
+        );
+        // innertree originally held key1..key3 plus the now-cascaded `ref`.
+        assert_eq!(results.len(), 3);
     }
 }

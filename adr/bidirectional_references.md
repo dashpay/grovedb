@@ -36,8 +36,9 @@ A regular item with ordinary references does not propagate updates back to the r
 chain origin. When such behavior is required, a different type of element should be used.
 Moreover, these types are incompatible, which will be discussed in the "Rules" section.
 
-Additionally, a new flag was added to `InsertOptions`, `DeleteOptions`, and `ClearOptions`
-called `propagate_backward_references`. Since propagation incurs a cost, starting with the
+Additionally, a new flag was added to `InsertOptions` and `DeleteOptions`
+called `propagate_backward_references` (`ClearOptions` support is deferred —
+see the limitations below). Since propagation incurs a cost, starting with the
 checks required to determine whether it should be performed, bidirectional references are
 optional and must be explicitly enabled.
 
@@ -80,8 +81,8 @@ Next, we’ll go over the rules and limitations for using bidirectional referenc
 Note that for the rules to apply, the `propagate_backward_references` flag needs to be
 set.
 
-An 'Element with backward references' refers to `ItemWithBackwardReferences`,
-`SumItemWithBackwardReferences`, and `BidirectionalReference`, as all these types contain
+An 'Element with backward references' refers to `ItemWithBackwardsReferences`,
+`SumItemWithBackwardsReferences`, and `BidirectionalReference`, as all these types contain
 a list of backward references associated with them.
 
 - __Only elements with backward references can be targets of bidirectional references.__
@@ -154,15 +155,15 @@ pub(crate) struct BackwardReference {
 ```
 
 For example, the data for a subtree `[a, b]` with key `c`, which contains
-`ItemWithBackwardReferences` and is referenced by two bidirectional references from `[d]`
+`ItemWithBackwardsReferences` and is referenced by two bidirectional references from `[d]`
 with keys `e` and `f`, could look like this:
 
-```
+```text
 * [a,b] prefix = ba1337ab
 * [d] prefix = ee322322
 
 Data:
-  ba1337abc : TreeNode { .. Element::ItemWithBackwardReferences(..)} // approx
+  ba1337abc : TreeNode { .. Element::ItemWithBackwardsReferences(..)} // approx
   ee322322e : TreeNode { .. Element::BidirectionalReference(/* reference path [a,b,c] */) }
   ee322322f : TreeNode { .. Element::BidirectionalReference(/* reference path [a,b,c] */) }
 

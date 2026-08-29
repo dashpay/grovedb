@@ -6407,6 +6407,14 @@ impl GroveDb {
             }
         }
 
+        // The callback is caller-provided, so add-on ops get the same
+        // backward-references gate the initial ops got — otherwise an op
+        // carrying the family would only fail deep inside execution.
+        cost_return_on_error_no_add!(
+            cost,
+            Self::reject_backward_references_elements_in_batch(&new_operations)
+        );
+
         // we are trying to finalize
         batch_apply_options.batch_pause_height = None;
 

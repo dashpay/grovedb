@@ -269,6 +269,16 @@ impl GroveDb {
                 // their plain counterparts; the backward-reference
                 // bookkeeping only runs when the caller opts in via
                 // `propagate_backward_references` (routed before this call).
+                //
+                // DELIBERATE TRADEOFF (see adr/bidirectional_references.md):
+                // without the flag, overwriting a key that carries backward
+                // references performs NO cascade/propagation — any
+                // bidirectional references pointing at it keep their old
+                // hashes and `verify_grovedb(..., verify_references, ..)`
+                // will then report them. Detecting that case would require
+                // fetching the previous element on EVERY insert, a cost the
+                // flag exists to avoid; consistency is the caller's promise
+                // once they've mixed flagged and unflagged writes.
                 cost_return_on_error_into!(
                     &mut cost,
                     element.insert(

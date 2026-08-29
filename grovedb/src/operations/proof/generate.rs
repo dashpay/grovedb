@@ -1153,7 +1153,7 @@ impl GroveDb {
                             | Ok(Element::SumItemWithBackwardsReferences(..)) => {
                                 return Err(Error::NotSupported(
                                     "backward-references elements are not supported in V0 \
-                                     proofs; use a grove version with V1 proofs (GROVE_V3+)"
+                                     proofs; they require GROVE_V4+, which proves through V1"
                                         .to_owned(),
                                 ))
                                 .wrap_with_cost(cost);
