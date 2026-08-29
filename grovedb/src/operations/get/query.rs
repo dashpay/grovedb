@@ -94,7 +94,18 @@ impl GroveDb {
                     // Look through `NonCounted` so a wrapped reference still
                     // resolves; the wrapper is transparent at the query
                     // layer.
-                    match element.into_underlying() {
+                    // A bidirectional reference resolves exactly like a
+                    // plain reference; normalize it so the match below needs
+                    // no extra arm.
+                    let element = match element.into_underlying() {
+                        Element::BidirectionalReference(reference) => Element::Reference(
+                            reference.forward_reference_path,
+                            reference.max_hop,
+                            reference.flags,
+                        ),
+                        other => other,
+                    };
+                    match element {
                         Element::Reference(reference_path, ..)
                         | Element::ReferenceWithSumItem(reference_path, ..) => match reference_path
                         {
@@ -114,9 +125,13 @@ impl GroveDb {
 
                                 // Same treatment for the resolved value.
                                 match maybe_item.into_underlying() {
-                                    Element::Item(item, _) => Ok(item),
-                                    Element::ItemWithSumItem(item, ..) => Ok(item),
-                                    Element::SumItem(value, _) => Ok(value.encode_var_vec()),
+                                    Element::Item(item, _)
+                                    | Element::ItemWithSumItem(item, ..)
+                                    | Element::ItemWithBackwardsReferences(item, _) => Ok(item),
+                                    Element::SumItem(value, _)
+                                    | Element::SumItemWithBackwardsReferences(value, _) => {
+                                        Ok(value.encode_var_vec())
+                                    }
                                     _ => Err(Error::InvalidQuery(
                                         "the reference must result in an item",
                                     )),
@@ -428,8 +443,12 @@ where {
 
                                     match maybe_item.into_underlying() {
                                         Element::Item(item, _)
-                                        | Element::ItemWithSumItem(item, ..) => Ok(item),
-                                        Element::SumItem(item, _) => Ok(item.encode_var_vec()),
+                                        | Element::ItemWithSumItem(item, ..)
+                                        | Element::ItemWithBackwardsReferences(item, _) => Ok(item),
+                                        Element::SumItem(item, _)
+                                        | Element::SumItemWithBackwardsReferences(item, _) => {
+                                            Ok(item.encode_var_vec())
+                                        }
                                         _ => Err(Error::InvalidQuery(
                                             "the reference must result in an item",
                                         )),

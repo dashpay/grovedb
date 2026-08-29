@@ -1170,6 +1170,20 @@ mod serde_impl {
                 Element::Item(b"abc".to_vec(), None),
                 Element::SumTree(Some(b"r".to_vec()), 42, None),
                 Element::PrivateDocumentStore(9, 64, 4, Some(vec![1])),
+                Element::BidirectionalReference(
+                    crate::bidirectional_reference::BidirectionalReference {
+                        forward_reference_path:
+                            crate::reference_path::ReferencePathType::SiblingReference(
+                                b"t".to_vec(),
+                            ),
+                        backward_reference_slot: 1,
+                        cascade_on_update: true,
+                        max_hop: Some(4),
+                        flags: Some(vec![7]),
+                    },
+                ),
+                Element::ItemWithBackwardsReferences(b"v".to_vec(), None),
+                Element::SumItemWithBackwardsReferences(-9, Some(vec![1])),
                 Element::new_non_counted(Element::Item(b"x".to_vec(), None)).unwrap(),
                 Element::new_not_summed(Element::SumTree(None, 100, None)).unwrap(),
                 Element::new_not_counted_or_summed(Element::CountSumTree(None, 3, 100, None))

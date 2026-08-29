@@ -31,8 +31,24 @@ impl Visualize for Element {
                     drawer = f.visualize(drawer)?;
                 }
             }
-            Element::BidirectionalReference(..) => {
-                drawer.write(b"bidi_ref")?;
+            Element::BidirectionalReference(reference) => {
+                drawer.write(
+                    format!(
+                        "bidi_ref: [forward: {}, slot: {}, cascade: {}, max_hop: {}]",
+                        reference.forward_reference_path,
+                        reference.backward_reference_slot,
+                        reference.cascade_on_update,
+                        reference
+                            .max_hop
+                            .map_or("None".to_string(), |h| h.to_string()),
+                    )
+                    .as_bytes(),
+                )?;
+                if let Some(f) = &reference.flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
+                }
             }
             Element::ItemWithBackwardsReferences(value, flags) => {
                 drawer.write(b"item_with_backwards_references: ")?;

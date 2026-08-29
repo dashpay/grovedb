@@ -21,6 +21,7 @@ mod batch_indexed_overwrite_tests;
 mod batch_indexed_tree_tests;
 mod batch_rejection_tests;
 mod batch_unit_tests;
+mod bidirectional_references_tests;
 mod bulk_append_tree_tests;
 mod checkpoint_tests;
 mod chunk_branch_proof_tests;

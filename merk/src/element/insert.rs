@@ -1977,4 +1977,109 @@ mod tests {
             other => panic!("expected ReplaceLayered, got: {:?}", other),
         }
     }
+
+    #[test]
+    fn delta_has_changed_matrix() {
+        let a = Element::new_item(b"a".to_vec());
+        let b = Element::new_item(b"b".to_vec());
+
+        assert!(!Delta {
+            new: None,
+            old: None
+        }
+        .has_changed());
+        assert!(Delta {
+            new: Some(&a),
+            old: None
+        }
+        .has_changed());
+        assert!(Delta {
+            new: None,
+            old: Some(a.clone())
+        }
+        .has_changed());
+        assert!(!Delta {
+            new: Some(&a),
+            old: Some(a.clone())
+        }
+        .has_changed());
+        assert!(Delta {
+            new: Some(&b),
+            old: Some(a)
+        }
+        .has_changed());
+    }
+
+    #[test]
+    fn insert_reference_if_changed_value_skips_and_writes() {
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
+
+        let reference = Element::new_reference(
+            grovedb_element::reference_path::ReferencePathType::AbsolutePathReference(vec![
+                b"somewhere".to_vec(),
+            ]),
+        );
+
+        // Fresh insert: no previous value, write happens.
+        let delta = reference
+            .insert_reference_if_changed_value(&mut merk, b"r", [7; 32], None, grove_version)
+            .unwrap()
+            .expect("fresh reference insert");
+        assert!(delta.has_changed());
+        assert_eq!(delta.old, None);
+
+        // Same element again: previous value equal, write skipped.
+        let delta = reference
+            .insert_reference_if_changed_value(&mut merk, b"r", [7; 32], None, grove_version)
+            .unwrap()
+            .expect("idempotent reference insert");
+        assert!(!delta.has_changed());
+        assert_eq!(delta.old, Some(reference.clone()));
+
+        // Different element: write happens and old value is returned.
+        let other = Element::new_reference(
+            grovedb_element::reference_path::ReferencePathType::AbsolutePathReference(vec![
+                b"elsewhere".to_vec(),
+            ]),
+        );
+        let delta = other
+            .insert_reference_if_changed_value(&mut merk, b"r", [7; 32], None, grove_version)
+            .unwrap()
+            .expect("replacing reference insert");
+        assert!(delta.has_changed());
+        assert_eq!(delta.old, Some(reference));
+    }
+
+    #[test]
+    fn insert_subtree_if_changed_skips_and_writes() {
+        use crate::tree::hash::NULL_HASH;
+
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
+
+        let tree = Element::empty_tree();
+
+        let delta = tree
+            .insert_subtree_if_changed(&mut merk, b"t", NULL_HASH, None, grove_version)
+            .unwrap()
+            .expect("fresh subtree insert");
+        assert!(delta.has_changed());
+        assert_eq!(delta.old, None);
+
+        let delta = tree
+            .insert_subtree_if_changed(&mut merk, b"t", NULL_HASH, None, grove_version)
+            .unwrap()
+            .expect("idempotent subtree insert");
+        assert!(!delta.has_changed());
+        assert_eq!(delta.old, Some(tree.clone()));
+
+        let sum_tree = Element::empty_sum_tree();
+        let delta = sum_tree
+            .insert_subtree_if_changed(&mut merk, b"t", NULL_HASH, None, grove_version)
+            .unwrap()
+            .expect("replacing subtree insert");
+        assert!(delta.has_changed());
+        assert_eq!(delta.old, Some(tree));
+    }
 }
