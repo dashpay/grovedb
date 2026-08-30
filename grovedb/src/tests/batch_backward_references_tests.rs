@@ -1462,3 +1462,227 @@ fn batch_populates_a_subtree_created_in_the_same_batch() {
         .unwrap()
         .is_empty());
 }
+
+/// A flagged overwrite of a family item carrying a DANGLING registration
+/// (its referrer was removed through an unflagged batch) plans a stale-
+/// entry cleanup targeting the op's own position: that cleanup must fold
+/// into the op itself, not become a second op that fails consistency.
+#[test]
+fn batch_flagged_overwrite_folds_own_stale_cleanup() {
+    let grove_version = GroveVersion::latest();
+    let build = || {
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            &[TEST_LEAF],
+            b"value",
+            Element::new_item_allowing_bidirectional_references(b"hello".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        db.insert(
+            &[TEST_LEAF],
+            b"ref",
+            sibling_bidi(b"value", true),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        // Remove the referrer through the supported UNFLAGGED batch path:
+        // the registration on `value` is left dangling.
+        db.apply_batch(
+            vec![QualifiedGroveDbOp::delete_op(
+                vec![TEST_LEAF.to_vec()],
+                b"ref".to_vec(),
+            )],
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        db
+    };
+    let (batch_db, live_db) = (build(), build());
+
+    let updated = Element::new_item_allowing_bidirectional_references(b"updated".to_vec());
+    batch_db
+        .apply_batch(
+            vec![QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"value".to_vec(),
+                updated.clone(),
+            )],
+            batch_flag_on(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("the stale-entry cleanup must fold into the overwrite itself");
+    live_db
+        .insert(
+            &[TEST_LEAF],
+            b"value",
+            updated,
+            flag_on(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+    roots_match(&batch_db, &live_db, grove_version);
+}
+
+/// `Patch` executes as a general element write and can create a tree: the
+/// fresh-subtree pre-scan must see it, or a child write under the patched
+/// tree reads a parent absent from committed storage.
+#[test]
+fn batch_patch_created_subtree_is_fresh() {
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+
+    db.apply_batch(
+        vec![
+            QualifiedGroveDbOp::patch_op(
+                vec![TEST_LEAF.to_vec()],
+                b"sub".to_vec(),
+                Element::empty_tree(),
+                0,
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"sub".to_vec()],
+                b"item".to_vec(),
+                Element::new_item(b"i".to_vec()),
+            ),
+        ],
+        batch_flag_on(),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("a Patch-created subtree is fresh like any other tree write");
+
+    assert_eq!(
+        db.get(
+            &[TEST_LEAF, b"sub".as_slice()],
+            b"item",
+            None,
+            grove_version
+        )
+        .unwrap()
+        .unwrap(),
+        Element::new_item(b"i".to_vec()),
+    );
+    assert!(db
+        .verify_grovedb(None, true, true, grove_version)
+        .unwrap()
+        .is_empty());
+}
+
+/// Bidirectional-edge positions are bounded to
+/// `MAX_BACKWARD_REFERENCES_GROVE_DEPTH` subtree levels — the depth the
+/// estimation models charge per derived propagation. Deeper referrers are
+/// rejected at registration, in the batch and the live flow alike.
+#[test]
+fn batch_registration_depth_is_bounded() {
+    use crate::bidirectional_references::MAX_BACKWARD_REFERENCES_GROVE_DEPTH;
+
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+
+    // Nested plain trees down to one level beyond the bound (plain trees
+    // themselves have no depth rule).
+    let mut deep_path: Vec<Vec<u8>> = vec![TEST_LEAF.to_vec()];
+    while deep_path.len() < MAX_BACKWARD_REFERENCES_GROVE_DEPTH + 1 {
+        let segment = format!("d{}", deep_path.len()).into_bytes();
+        let path_refs: Vec<&[u8]> = deep_path.iter().map(|p| p.as_slice()).collect();
+        db.insert(
+            path_refs.as_slice(),
+            &segment,
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        deep_path.push(segment);
+    }
+    db.insert(
+        &[TEST_LEAF],
+        b"value",
+        Element::new_item_allowing_bidirectional_references(b"hello".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    let ref_to_value = || {
+        Element::BidirectionalReference(BidirectionalReference {
+            forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec(),
+                b"value".to_vec(),
+            ]),
+            backward_references: Vec::new(),
+            cascade_on_update: true,
+            max_hop: None,
+            flags: None,
+        })
+    };
+
+    // One level beyond the bound: rejected in the batch and live flows.
+    let too_deep = deep_path.clone();
+    assert!(matches!(
+        db.apply_batch(
+            vec![QualifiedGroveDbOp::insert_or_replace_op(
+                too_deep.clone(),
+                b"ref".to_vec(),
+                ref_to_value(),
+            )],
+            batch_flag_on(),
+            None,
+            grove_version,
+        )
+        .unwrap(),
+        Err(Error::BidirectionalReferenceRule(_))
+    ));
+    let path_refs: Vec<&[u8]> = too_deep.iter().map(|p| p.as_slice()).collect();
+    assert!(matches!(
+        db.insert(
+            path_refs.as_slice(),
+            b"ref",
+            ref_to_value(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap(),
+        Err(Error::BidirectionalReferenceRule(_))
+    ));
+
+    // At the bound: accepted.
+    let at_bound = &deep_path[..MAX_BACKWARD_REFERENCES_GROVE_DEPTH];
+    db.apply_batch(
+        vec![QualifiedGroveDbOp::insert_or_replace_op(
+            at_bound.to_vec(),
+            b"ref".to_vec(),
+            ref_to_value(),
+        )],
+        batch_flag_on(),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("a referrer at the depth bound is valid");
+    assert!(db
+        .verify_grovedb(None, true, true, grove_version)
+        .unwrap()
+        .is_empty());
+}

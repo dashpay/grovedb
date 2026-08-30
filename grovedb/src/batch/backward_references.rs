@@ -379,8 +379,15 @@ impl<'db, 'g> Expansion<'db, 'g> {
                     // - conditional inserts that turned out not to execute
                     //   are dropped at processing time, so a retained op
                     //   here always writes.
+                    //
+                    // The CURRENTLY processed op counts as processed
+                    // (`<=`): its own plan may clean a stale referrer
+                    // entry off the very element it writes (a dangling
+                    // registration on the overwritten family item), and
+                    // that cleanup must fold into the op rather than
+                    // become a second op on the same position.
                     let mergeable_into_user_op = retained_user_op
-                        .filter(|&index| index < current_index)
+                        .filter(|&index| index <= current_index)
                         .filter(|&index| {
                             let user_op = self.ops[index].as_ref().expect("retained above");
                             match &user_op.op {
@@ -574,6 +581,7 @@ pub(super) fn expand_backward_references_ops(
         .filter_map(|op| match &op.op {
             GroveOp::InsertOrReplace { element }
             | GroveOp::Replace { element }
+            | GroveOp::Patch { element, .. }
             | GroveOp::InsertIfNotExists { element, .. }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element }
                 if element.is_any_tree() =>

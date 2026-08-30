@@ -11,11 +11,13 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "minimal")]
-use grovedb_merk::estimated_costs::add_cost_case_merk_replace_same_size;
-#[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::average_case_costs::{
     add_average_case_get_merk_node, add_average_case_merk_has_value, average_case_merk_propagate,
     EstimatedLayerInformation,
+};
+#[cfg(feature = "minimal")]
+use grovedb_merk::estimated_costs::{
+    add_cost_case_merk_replace_layered, add_cost_case_merk_replace_same_size,
 };
 use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions, tree::AggregateData, tree_type::TreeType,
@@ -796,6 +798,19 @@ fn add_average_case_backward_references_fan_out(
         average_case_merk_propagate(layer_element_estimates, grove_version)
             .unwrap_add_cost(cost)
             .map_err(Error::MerkError)?;
+        // A derived write in a FOREIGN subtree also propagates up the
+        // Grove: charge a typical shallow ancestor walk (the worst-case
+        // model charges the full registration depth bound).
+        for _ in 0..super::BACKWARD_REFERENCES_AVERAGE_ANCESTOR_LEVELS {
+            add_average_case_get_merk_node(cost, key_width, node_value_size, node_type)
+                .map_err(Error::MerkError)?;
+            add_cost_case_merk_replace_layered(
+                cost,
+                key_width,
+                node_value_size,
+                layer_element_estimates.tree_type,
+            );
+        }
     }
     Ok(())
 }

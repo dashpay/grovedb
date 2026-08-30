@@ -74,6 +74,14 @@ pub(in crate::batch) fn wrapper_overhead_for(
 // subtrees are not GroveDB-declarable here, so the model assumes the
 // component's nodes are shaped like the declared layer. Callers must
 // declare the largest-node layer of the component.
+//
+// Each derived propagation additionally charges the GROVE-DEPTH ancestor
+// walk of its foreign subtree: registration enforces
+// `MAX_BACKWARD_REFERENCES_GROVE_DEPTH` on every bidirectional-edge
+// position, so the worst model charges exactly that many biggest-node
+// parent updates per propagation (without the registration bound this
+// walk would be unboundable — a referrer parked arbitrarily deep would
+// out-cost any fixed estimate).
 
 /// Worst-case number of derived node rewrites (or cascade deletions) an
 /// overwrite/delete of a backward-references ITEM can trigger: every entry
@@ -111,6 +119,12 @@ pub(in crate::batch) const BACKWARD_REFERENCES_AVERAGE_REFERENCE_FAN_OUT: u32 = 
 /// Average-case chain-resolution loads for a reference insertion.
 #[cfg(feature = "minimal")]
 pub(in crate::batch) const BACKWARD_REFERENCES_AVERAGE_REFERENCE_RESOLUTION_LOADS: u32 = 4;
+
+/// Average-case ancestor levels a derived foreign-subtree propagation
+/// walks (worst case charges the full
+/// `MAX_BACKWARD_REFERENCES_GROVE_DEPTH` registration bound).
+#[cfg(feature = "minimal")]
+pub(in crate::batch) const BACKWARD_REFERENCES_AVERAGE_ANCESTOR_LEVELS: u32 = 2;
 
 /// Hash calls per derived family rewrite: stripped value hash, referrer-
 /// list hash, the two-layer combine, the end-hash combine, the kv digest

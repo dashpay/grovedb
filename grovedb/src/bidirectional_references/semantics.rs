@@ -326,6 +326,21 @@ pub(crate) fn plan_reference_insertion(
         .wrap_with_cost(cost);
     }
 
+    // Both ends of the edge must sit at a bounded Grove depth: every later
+    // derived write (propagation, cascade, cleanup) lands at one of these
+    // positions, and cost estimation charges ancestor propagation up to
+    // exactly this bound — an unboundedly deep referrer would make its
+    // propagation cost exceed any fixed estimate.
+    if path.len() > super::MAX_BACKWARD_REFERENCES_GROVE_DEPTH
+        || target.path.len() > super::MAX_BACKWARD_REFERENCES_GROVE_DEPTH
+    {
+        return Err(Error::BidirectionalReferenceRule(format!(
+            "bidirectional-reference positions may sit at most {} subtree levels deep",
+            super::MAX_BACKWARD_REFERENCES_GROVE_DEPTH
+        )))
+        .wrap_with_cost(cost);
+    }
+
     // If the closest target is a bidirectional reference itself, follow the
     // FULL chain starting from the position being written: the resolved
     // end-of-chain hash is what every chain member stores, and the chain

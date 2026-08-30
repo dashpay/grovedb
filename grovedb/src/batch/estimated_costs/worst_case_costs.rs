@@ -11,11 +11,13 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "minimal")]
-use grovedb_merk::estimated_costs::add_cost_case_merk_replace_same_size;
-#[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::worst_case_costs::{
     add_worst_case_get_merk_node, add_worst_case_merk_has_value, worst_case_merk_propagate,
     WorstCaseLayerInformation, MERK_BIGGEST_KEY_SIZE, MERK_BIGGEST_VALUE_SIZE,
+};
+#[cfg(feature = "minimal")]
+use grovedb_merk::estimated_costs::{
+    add_cost_case_merk_replace_layered, add_cost_case_merk_replace_same_size,
 };
 use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions, tree::AggregateData, tree_type::TreeType,
@@ -697,6 +699,26 @@ fn add_worst_case_backward_references_fan_out(
         worst_case_merk_propagate(worst_case_layer_element_estimates)
             .unwrap_add_cost(cost)
             .map_err(Error::MerkError)?;
+        // A derived write in a FOREIGN subtree also propagates up the
+        // Grove: one parent tree-element rewrite per ancestor level. The
+        // registration rule bounds every bidirectional-edge position to
+        // `MAX_BACKWARD_REFERENCES_GROVE_DEPTH` levels, so that many
+        // biggest-node ancestor updates is a true ceiling.
+        for _ in 0..crate::bidirectional_references::MAX_BACKWARD_REFERENCES_GROVE_DEPTH {
+            add_worst_case_get_merk_node(
+                cost,
+                MERK_BIGGEST_KEY_SIZE,
+                MERK_BIGGEST_VALUE_SIZE,
+                node_type,
+            )
+            .map_err(Error::MerkError)?;
+            add_cost_case_merk_replace_layered(
+                cost,
+                MERK_BIGGEST_KEY_SIZE,
+                MERK_BIGGEST_VALUE_SIZE,
+                in_parent_tree_type,
+            );
+        }
     }
     Ok(())
 }

@@ -115,6 +115,12 @@ just like regular references, bidirectional references cannot point to subtrees.
 - __A (Sum)Item with backward references can be referenced by up to 32 bidirectional
 references.__ This limit exists due to implementation constraints and to ensure worst-case
 costs remain predictable—without a limit, estimating these costs would not be possible.
+- __Both ends of a bidirectional edge must sit at most 32 subtree levels deep__
+(`MAX_BACKWARD_REFERENCES_GROVE_DEPTH`, enforced at registration). Every later derived
+write — propagation rewrite, cascade deletion, registration cleanup — lands at one of the
+edge's positions, and cost estimation charges up to this many ancestor updates per derived
+foreign-subtree propagation; without the bound, a referrer parked arbitrarily deep would
+make its propagation cost exceed any fixed estimate.
 - __A bidirectional reference can be referenced by another bidirectional reference, but
 no more than 1.__ This limitation was introduced for the same reason as before: to keep
 propagation costs predictable. By restricting chains to one reference per bidirectional
