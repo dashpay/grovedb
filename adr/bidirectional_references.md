@@ -82,7 +82,12 @@ Current limitations (fail closed, lift as needed):
   `BatchApplyOptions::propagate_backward_references` (see the batching
   section under Implementation); batches without the flag — and partial
   batches, which have no expansion support — reject ops carrying the
-  family. Unflagged ops that DELETE or OVERWRITE an existing
+  family. A flagged batch also refuses to delete a NON-EMPTY subtree:
+  its descendants may hold bidirectional-reference participants whose
+  external registrations, cascade consents, and surviving referrers the
+  batch engine's wholesale clearing would skip — use the live flagged
+  delete (which walks descendants with full bookkeeping) or empty the
+  subtree first. Unflagged ops that DELETE or OVERWRITE an existing
   backward-references participant are still admitted, exactly like any
   other unflagged write: consistency is forfeited at that point. A
   backward reference left dangling this way is tolerated — later flagged
@@ -115,6 +120,12 @@ just like regular references, bidirectional references cannot point to subtrees.
 - __A (Sum)Item with backward references can be referenced by up to 32 bidirectional
 references.__ This limit exists due to implementation constraints and to ensure worst-case
 costs remain predictable—without a limit, estimating these costs would not be possible.
+- __A bidirectional reference's declared `max_hop` must admit its own chain at
+insertion.__ Public reads enforce the declared budget deterministically, so an edge whose
+chain is already longer than its declaration would never resolve; the write path rejects
+such dead edges instead of persisting them. (An edge can still fall out of budget later —
+e.g. its target is overwritten into a plain reference through an unflagged write — and
+reads then return `ReferenceLimit`.)
 - __Both ends of a bidirectional edge must sit at most 32 subtree levels deep__
 (`MAX_BACKWARD_REFERENCES_GROVE_DEPTH`, enforced at registration). Every later derived
 write — propagation rewrite, cascade deletion, registration cleanup — lands at one of the

@@ -849,27 +849,69 @@ fn sum_queries_resolve_backward_references_sum_items() {
         .unwrap();
     assert_eq!(sums, vec![7], "a direct terminal is within a 1-hop budget");
 
-    // …while a one-hop edge whose target is another reference is out of
-    // budget on the read.
-    let mut query = Query::new();
-    query.insert_key(b"capped".to_vec());
-    let capped = Element::BidirectionalReference(BidirectionalReference {
+    // …while a one-hop edge whose chain needs two hops is rejected at the
+    // WRITE now (dead edges never persist)…
+    let capped_at_chain = Element::BidirectionalReference(BidirectionalReference {
         forward_reference_path: ReferencePathType::SiblingReference(b"rs".to_vec()),
         backward_references: Vec::new(),
         cascade_on_update: true,
         max_hop: Some(1),
         flags: None,
     });
+    assert!(matches!(
+        db.insert(
+            &[TEST_LEAF, b"sums"],
+            b"capped",
+            capped_at_chain,
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap(),
+        Err(Error::BidirectionalReferenceRule(_))
+    ));
+
+    // …and an edge that falls out of budget AFTER insertion (its target
+    // evolved into a reference through an unflagged overwrite) hits the
+    // budget on the read.
     db.insert(
         &[TEST_LEAF, b"sums"],
-        b"capped",
-        capped,
+        b"s3",
+        Element::new_sum_item_allowing_bidirectional_references(9),
         None,
         None,
         grove_version,
     )
     .unwrap()
-    .expect("the write path admits the edge; reads enforce the budget");
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF, b"sums"],
+        b"capped",
+        Element::BidirectionalReference(BidirectionalReference {
+            forward_reference_path: ReferencePathType::SiblingReference(b"s3".to_vec()),
+            backward_references: Vec::new(),
+            cascade_on_update: true,
+            max_hop: Some(1),
+            flags: None,
+        }),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF, b"sums"],
+        b"s3",
+        Element::new_reference_with_sum_item(ReferencePathType::SiblingReference(b"s".to_vec()), 0),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    let mut query = Query::new();
+    query.insert_key(b"capped".to_vec());
     let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"sums".to_vec()], query);
     assert!(matches!(
         db.query_sums(&path_query, true, true, true, None, grove_version)
@@ -2873,17 +2915,60 @@ fn per_edge_max_hop_is_enforced_on_reads() {
     )
     .unwrap()
     .unwrap();
-    // head -> mid -> value, but head declares max_hop 1.
+    // head -> mid -> value with head declaring max_hop 1: the chain needs
+    // two hops, so the write path now rejects the dead edge outright.
+    assert!(matches!(
+        db.insert(
+            &[TEST_LEAF],
+            b"head",
+            Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"mid".to_vec()),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: Some(1),
+                flags: None,
+            }),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap(),
+        Err(Error::BidirectionalReferenceRule(_))
+    ));
+
+    // An edge can still fall OUT of budget after insertion: head points at
+    // a family item within budget, then an unflagged overwrite turns that
+    // target into a plain reference — reads must now hit the budget.
+    db.insert(
+        &[TEST_LEAF],
+        b"mid_evolved",
+        Element::new_item_allowing_bidirectional_references(b"m".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
     db.insert(
         &[TEST_LEAF],
         b"head",
         Element::BidirectionalReference(BidirectionalReference {
-            forward_reference_path: ReferencePathType::SiblingReference(b"mid".to_vec()),
+            forward_reference_path: ReferencePathType::SiblingReference(b"mid_evolved".to_vec()),
             backward_references: Vec::new(),
             cascade_on_update: true,
             max_hop: Some(1),
             flags: None,
         }),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF],
+        b"mid_evolved",
+        Element::new_reference(ReferencePathType::SiblingReference(b"value".to_vec())),
         None,
         None,
         grove_version,
@@ -3385,4 +3470,262 @@ fn item_with_sum_item_twin_works_end_to_end() {
         .unwrap(),
         Err(Error::NotSupported(_))
     ));
+}
+
+/// A bidirectional edge whose declared `max_hop` cannot admit its own
+/// chain is a dead edge (reads would deterministically return
+/// `ReferenceLimit`) — the write path rejects it up front, in live and
+/// batch flows alike (shared planner).
+#[test]
+fn bidi_insert_rejects_undersized_max_hop() {
+    let grove_version = GroveVersion::latest();
+    let db = db_with_bwr_item();
+
+    // max_hop 0 cannot even reach a direct target.
+    assert!(matches!(
+        db.insert(
+            &[TEST_LEAF],
+            b"dead",
+            Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"value".to_vec()),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: Some(0),
+                flags: None,
+            }),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap(),
+        Err(Error::BidirectionalReferenceRule(_))
+    ));
+
+    // max_hop 1 admits exactly a direct target.
+    db.insert(
+        &[TEST_LEAF],
+        b"alive",
+        Element::BidirectionalReference(BidirectionalReference {
+            forward_reference_path: ReferencePathType::SiblingReference(b"value".to_vec()),
+            backward_references: Vec::new(),
+            cascade_on_update: true,
+            max_hop: Some(1),
+            flags: None,
+        }),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("a direct edge fits a one-hop declaration");
+
+    // …but not a two-hop chain, in the batch flow either.
+    assert!(matches!(
+        db.apply_batch(
+            vec![crate::batch::QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"dead2".to_vec(),
+                Element::BidirectionalReference(BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"alive".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: Some(1),
+                    flags: None,
+                }),
+            )],
+            Some(crate::batch::BatchApplyOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            None,
+            grove_version,
+        )
+        .unwrap(),
+        Err(Error::BidirectionalReferenceRule(_))
+    ));
+}
+
+/// Proof generation honors a bidirectional edge's declared budget exactly
+/// like reads: an edge that fell out of budget after insertion (its
+/// target evolved into a plain reference) fails proof generation with
+/// `ReferenceLimit` instead of proving a value `get` would refuse.
+#[test]
+fn proof_generation_respects_bidi_max_hop() {
+    let grove_version = GroveVersion::latest();
+    let db = db_with_bwr_item();
+    db.insert(
+        &[TEST_LEAF],
+        b"mid",
+        Element::new_item_allowing_bidirectional_references(b"m".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF],
+        b"head",
+        Element::BidirectionalReference(BidirectionalReference {
+            forward_reference_path: ReferencePathType::SiblingReference(b"mid".to_vec()),
+            backward_references: Vec::new(),
+            cascade_on_update: true,
+            max_hop: Some(1),
+            flags: None,
+        }),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF],
+        b"mid",
+        Element::new_reference(ReferencePathType::SiblingReference(b"value".to_vec())),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    let mut query = Query::new();
+    query.insert_key(b"head".to_vec());
+    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+    assert!(
+        matches!(
+            db.prove_query(&path_query, None, grove_version).unwrap(),
+            Err(Error::ReferenceLimit)
+        ),
+        "proving must not dereference past the edge's declared budget"
+    );
+}
+
+/// The reciprocity audit reports BOTH directions: a live edge whose
+/// target lost its registration (planted via a direct merk write with a
+/// consistent hash, so only the forward-membership audit can see it) and
+/// a corrupt empty inverse path.
+#[test]
+fn verify_grovedb_reports_missing_forward_registration_and_empty_inverse() {
+    use grovedb_merk::{element::ElementExt, tree::Op as MerkOp, TreeFeatureType};
+    use grovedb_storage::{Storage, StorageBatch};
+
+    let grove_version = GroveVersion::latest();
+    let db = db_with_bwr_item();
+    let tx = db.start_transaction();
+    db.insert(
+        &[TEST_LEAF],
+        b"ref",
+        sibling_bidi(b"value", true),
+        None,
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(db
+        .verify_grovedb(Some(&tx), true, true, grove_version)
+        .unwrap()
+        .is_empty());
+
+    // Strip the registration off the target with a hash-consistent direct
+    // write: the ref commits to the LOGICAL (stripped) hash, so nothing
+    // but the forward-membership audit can notice.
+    let stripped_target = Element::new_item_allowing_bidirectional_references(b"hello".to_vec());
+    let combined = stripped_target
+        .backward_references_hashes(grove_version)
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .combined;
+    let bytes = stripped_target.serialize(grove_version).unwrap();
+    let batch = StorageBatch::new();
+    let mut merk = db
+        .open_transactional_merk_at_path(
+            SubtreePath::from(&[TEST_LEAF]),
+            &tx,
+            Some(&batch),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+    merk.apply::<_, Vec<u8>>(
+        &[(
+            b"value".to_vec(),
+            MerkOp::PutWithProvidedValueHash(bytes, combined, TreeFeatureType::BasicMerkNode),
+        )],
+        &[],
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    drop(merk);
+    db.db
+        .commit_multi_context_batch(batch, Some(&tx))
+        .unwrap()
+        .unwrap();
+
+    let issues = db
+        .verify_grovedb(Some(&tx), true, true, grove_version)
+        .unwrap();
+    assert!(
+        issues
+            .keys()
+            .any(|path| path.last().map(|k| k.as_slice()) == Some(b"?missing-registration")),
+        "a live edge without its reverse registration must be reported: {issues:?}"
+    );
+
+    // A corrupt EMPTY inverse path on a target must also be reported.
+    let db = db_with_bwr_item();
+    let tx = db.start_transaction();
+    let forged = Element::ItemWithBackwardsReferences(
+        b"x".to_vec(),
+        vec![crate::bidirectional_references::BackwardReference {
+            inverted_reference: ReferencePathType::AbsolutePathReference(vec![]),
+            cascade_on_update: true,
+        }],
+        None,
+    );
+    let combined = forged
+        .backward_references_hashes(grove_version)
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .combined;
+    let bytes = forged.serialize(grove_version).unwrap();
+    let batch = StorageBatch::new();
+    let mut merk = db
+        .open_transactional_merk_at_path(
+            SubtreePath::from(&[TEST_LEAF]),
+            &tx,
+            Some(&batch),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+    merk.apply::<_, Vec<u8>>(
+        &[(
+            b"forged".to_vec(),
+            MerkOp::PutWithProvidedValueHash(bytes, combined, TreeFeatureType::BasicMerkNode),
+        )],
+        &[],
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    drop(merk);
+    db.db
+        .commit_multi_context_batch(batch, Some(&tx))
+        .unwrap()
+        .unwrap();
+    let issues = db
+        .verify_grovedb(Some(&tx), true, true, grove_version)
+        .unwrap();
+    assert!(
+        !issues.is_empty(),
+        "an empty resolved inverse path must be reported"
+    );
 }

@@ -358,6 +358,20 @@ pub(crate) fn plan_reference_insertion(
             (target.node_value_hash, 1)
         };
 
+    // The edge's own declared budget must admit its downstream chain:
+    // public reads enforce `max_hop` deterministically, so an edge whose
+    // chain is already longer than its declaration would never resolve —
+    // reject it at insertion instead of persisting a dead edge.
+    if let Some(declared) = reference.max_hop
+        && downstream_hops > declared as usize
+    {
+        return Err(Error::BidirectionalReferenceRule(format!(
+            "the reference's chain needs {downstream_hops} hops but its max_hop declares \
+             {declared}"
+        )))
+        .wrap_with_cost(cost);
+    }
+
     // The whole PROSPECTIVE component must fit the global hop budget:
     // downstream was just measured; upstream is this position's referrer
     // chain (each bidirectional reference holds at most one referrer, so it

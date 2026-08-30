@@ -1319,6 +1319,7 @@ impl TreeNode {
             // we are replacing a value
             // in this case there is a possibility that the client would want to update the
             // element flags based on the change of values
+            let value_before_update = self.inner.kv.value_as_slice().to_vec();
             cost_return_on_error_no_add!(
                 cost,
                 self.just_in_time_tree_node_value_update(
@@ -1328,6 +1329,21 @@ impl TreeNode {
                     section_removal_bytes
                 )
             );
+            // The provided hash was computed over the bytes supplied by the
+            // caller; a just-in-time value mutation (a flags carry-over or
+            // a flags-update callback rewrite) would commit bytes that no
+            // longer match their authenticated value hash. The caller of a
+            // provided-hash write supplies the element with its
+            // authoritative flags already in place, so a real mutation
+            // here is a contract violation — fail closed.
+            if self.inner.kv.value_as_slice() != value_before_update.as_slice() {
+                return Err(Error::ClientCorruptionError(
+                    "a just-in-time value update cannot apply to a provided-value-hash write: \
+                     the mutated bytes would no longer match the authenticated hash"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
         }
 
         self.inner.kv = self

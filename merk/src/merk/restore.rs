@@ -47,7 +47,9 @@ use crate::{
         tree::{execute, Child, Tree as ProofTree},
         Node, Op,
     },
-    tree::{combine_hash, kv::ValueDefinedCostType, value_hash, RefWalker, TreeNode},
+    tree::{
+        combine_hash, kv::ValueDefinedCostType, value_hash, AggregateData, RefWalker, TreeNode,
+    },
     tree_type::TreeType,
     CryptoHash, Error,
     Error::{CostsError, StorageError},
@@ -146,25 +148,49 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 
         let mut root_traversal_instruction = vec_bytes_as_traversal_instruction(chunk_id)?;
 
-        if root_traversal_instruction.is_empty() {
-            self.merk
-                .set_base_root_key(chunk_tree.key().map(|k| k.to_vec()))
-                .value?;
+        // The parent-link rewrite (and the root-key set) mutate committed
+        // restorer state, so they run only AFTER the chunk write — whose
+        // validations (including the backward-references bytes/hash
+        // recompute) may still reject the chunk. Mutating first would
+        // consume the `parent_keys` entry and leave a valid retry of the
+        // same chunk unable to proceed. Capture what the rewrite needs
+        // before the write consumes the tree.
+        let updated_parent_link = if root_traversal_instruction.is_empty() {
+            None
         } else {
-            // every non root chunk has some associated parent with an placeholder link
-            // here we update the placeholder link to represent the true data
-            self.rewrite_parent_link(
-                chunk_id,
-                &root_traversal_instruction,
-                &chunk_tree,
-                grove_version,
-            )?;
-        }
+            let updated_key = chunk_tree
+                .key()
+                .expect("chunk tree must have a key during restore")
+                .to_vec();
+            let updated_aggregate = chunk_tree.aggregate_data().map_err(|e| {
+                Error::CorruptedData(format!(
+                    "chunk tree root node must be KVValueHashFeatureType for aggregate data: {e}"
+                ))
+            })?;
+            Some((updated_key, updated_aggregate))
+        };
+        let root_key = chunk_tree.key().map(|k| k.to_vec());
 
         // next up, we need to write the chunk and build the map again
         let chunk_write_result =
             self.write_chunk(chunk_tree, &mut root_traversal_instruction, grove_version);
         if chunk_write_result.is_ok() {
+            match updated_parent_link {
+                None => {
+                    self.merk.set_base_root_key(root_key).value?;
+                }
+                Some((updated_key, updated_aggregate)) => {
+                    // every non root chunk has some associated parent with a
+                    // placeholder link; update it to represent the true data
+                    self.rewrite_parent_link(
+                        chunk_id,
+                        &root_traversal_instruction,
+                        &updated_key,
+                        updated_aggregate,
+                        grove_version,
+                    )?;
+                }
+            }
             // if we were able to successfully write the chunk, we can remove
             // the chunk expected root hash from our chunk id map
             self.chunk_id_to_root_hash.remove(chunk_id);
@@ -532,7 +558,8 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         &mut self,
         chunk_id: &[u8],
         traversal_instruction: &[bool],
-        chunk_tree: &ProofTree,
+        updated_key: &[u8],
+        updated_aggregate: AggregateData,
         grove_version: &GroveVersion,
     ) -> Result<(), Error> {
         let parent_key = self
@@ -556,15 +583,6 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             .last()
             .expect("rewrite is only called when traversal_instruction is not empty");
 
-        let updated_key = chunk_tree
-            .key()
-            .expect("chunk tree must have a key during restore");
-        let updated_sum = chunk_tree.aggregate_data().map_err(|e| {
-            Error::CorruptedData(format!(
-                "chunk tree root node must be KVValueHashFeatureType for aggregate data: {e}"
-            ))
-        })?;
-
         if let Some(Link::Reference {
             key,
             aggregate_data,
@@ -572,7 +590,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         }) = parent.link_mut(*is_left)
         {
             *key = updated_key.to_vec();
-            *aggregate_data = updated_sum;
+            *aggregate_data = updated_aggregate;
         }
 
         let parent_bytes = parent.encode();

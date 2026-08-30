@@ -2351,6 +2351,12 @@ impl GroveDb {
                 continue;
             }
             let Some((referrer_key, referrer_path)) = referrer_qualified.split_last() else {
+                // A corrupt inverse (e.g. `AbsolutePathReference([])`)
+                // resolves to an EMPTY qualified path: report it instead of
+                // silently passing the audit.
+                let mut marker = expected_forward.clone();
+                marker.push(b"?invalid-inverse".to_vec());
+                issues.insert(marker, (hashes.combined, [0; 32], hashes.combined));
                 continue;
             };
             let referrer_path_slices: Vec<&[u8]> =
@@ -2878,6 +2884,68 @@ impl GroveDb {
                             grove_version,
                             &mut issues,
                         )?;
+                        // The FORWARD direction of the reciprocity audit:
+                        // this edge's immediate target must carry the
+                        // edge's canonical inverse in its referrer list —
+                        // a missing registration leaves a live edge with
+                        // no reverse path for propagation or cascade to
+                        // follow.
+                        if let Element::BidirectionalReference(ref reference) = element {
+                            let target_qualified = path_from_reference_path_type(
+                                reference.forward_reference_path.clone(),
+                                &path.to_vec(),
+                                Some(&key),
+                            )?;
+                            let expected_inverse = reference
+                                .forward_reference_path
+                                .clone()
+                                .invert(path.clone(), &key);
+                            let registered = match (target_qualified.split_last(), expected_inverse)
+                            {
+                                (Some((target_key, target_path)), Some(inverse)) => {
+                                    // Merk-level read: public reads STRIP
+                                    // referrer lists, and the list is
+                                    // exactly what this audit inspects.
+                                    let target_path_slices: Vec<&[u8]> =
+                                        target_path.iter().map(|p| p.as_slice()).collect();
+                                    let target_element = self
+                                        .open_transactional_merk_at_path(
+                                            target_path_slices.as_slice().into(),
+                                            transaction,
+                                            batch,
+                                            grove_version,
+                                        )
+                                        .unwrap()
+                                        .ok()
+                                        .and_then(|target_merk| {
+                                            Element::get_optional(
+                                                &target_merk,
+                                                target_key,
+                                                allow_cache,
+                                                grove_version,
+                                            )
+                                            .unwrap()
+                                            .ok()
+                                            .flatten()
+                                        });
+                                    match target_element {
+                                        Some(target) => target
+                                            .backward_references()
+                                            .map(|refs| {
+                                                refs.iter().any(|r| r.inverted_reference == inverse)
+                                            })
+                                            .unwrap_or(false),
+                                        None => false,
+                                    }
+                                }
+                                _ => false,
+                            };
+                            if !registered {
+                                let mut marker = target_qualified;
+                                marker.push(b"?missing-registration".to_vec());
+                                issues.insert(marker, ([0; 32], [0; 32], [0; 32]));
+                            }
+                        }
                     }
                 }
                 // ProvableSumIndexedTree integrity: identical shape to

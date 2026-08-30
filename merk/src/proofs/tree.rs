@@ -825,7 +825,8 @@ where
                 | Node::KVRefValueHashSum(key, ..)
                 | Node::KVCountSum(key, ..)
                 | Node::KVDigestCountSum(key, ..)
-                | Node::KVRefValueHashCountSum(key, ..) = &node
+                | Node::KVRefValueHashCountSum(key, ..)
+                | Node::KVBackwardsReferencesValueHash(key, ..) = &node
                 {
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key
@@ -869,7 +870,8 @@ where
                 | Node::KVRefValueHashSum(key, ..)
                 | Node::KVCountSum(key, ..)
                 | Node::KVDigestCountSum(key, ..)
-                | Node::KVRefValueHashCountSum(key, ..) = &node
+                | Node::KVRefValueHashCountSum(key, ..)
+                | Node::KVBackwardsReferencesValueHash(key, ..) = &node
                 {
                     // keys should always decrease
                     if let Some(last_key) = &maybe_last_key
@@ -1004,6 +1006,53 @@ mod test {
             assert_node(iter.next().unwrap(), i);
         }
         assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn backwards_references_nodes_enforce_key_ordering() {
+        // Regression: `KVBackwardsReferencesValueHash` carries a key and
+        // must participate in the Push/PushInverted ordering checks —
+        // otherwise a malicious proof could push an authenticated parent
+        // before its real left child (attached via ChildInverted) and
+        // make an exact query for the child read as absent while the
+        // reconstructed root still matches.
+        let parent_before_child = vec![
+            Op::Push(Node::KVBackwardsReferencesValueHash(
+                vec![2],
+                vec![2],
+                [0; 32],
+            )),
+            Op::Push(Node::KVBackwardsReferencesValueHash(
+                vec![1],
+                vec![1],
+                [0; 32],
+            )),
+            Op::ChildInverted,
+        ];
+        let result = execute(parent_before_child.into_iter().map(Ok), false, |_| Ok(())).unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidProofError(ref s)) if s.contains("ordering")),
+            "got: {result:?}"
+        );
+
+        let inverted_wrong_order = vec![
+            Op::PushInverted(Node::KVBackwardsReferencesValueHash(
+                vec![1],
+                vec![1],
+                [0; 32],
+            )),
+            Op::PushInverted(Node::KVBackwardsReferencesValueHash(
+                vec![2],
+                vec![2],
+                [0; 32],
+            )),
+            Op::Child,
+        ];
+        let result = execute(inverted_wrong_order.into_iter().map(Ok), false, |_| Ok(())).unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidProofError(ref s)) if s.contains("ordering")),
+            "got: {result:?}"
+        );
     }
 
     #[test]

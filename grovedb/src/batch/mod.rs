@@ -2733,6 +2733,19 @@ where
                     element,
                     node_value_hash,
                 } => {
+                    use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
+                    // The same host-tree rules as direct insertion apply:
+                    // notably, backward-references ITEM variants are not
+                    // representable in Provable* aggregate hosts (no proof
+                    // node binds both their combined value hash and the
+                    // aggregate), so a derived rewrite may not create that
+                    // combination either.
+                    cost_return_on_error_into!(
+                        &mut cost,
+                        element
+                            .validate_insertable_into(in_tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
                     let serialized = cost_return_on_error_into!(
                         &mut cost,
                         element

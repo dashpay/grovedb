@@ -1686,3 +1686,200 @@ fn batch_registration_depth_is_bounded() {
         .unwrap()
         .is_empty());
 }
+
+/// A derived rewrite carries a precomputed node value hash: a flags
+/// callback that mutates the element mid-apply would commit bytes that no
+/// longer match that hash — the write fails closed instead.
+#[test]
+fn batch_flags_mutation_on_derived_rewrite_fails_closed() {
+    let grove_version = GroveVersion::latest();
+
+    let build = || {
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            &[TEST_LEAF],
+            b"value",
+            Element::ItemWithBackwardsReferences(b"hello".to_vec(), Vec::new(), Some(vec![1])),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        db.insert(
+            &[TEST_LEAF],
+            b"r1",
+            Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"value".to_vec()),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: None,
+                flags: Some(vec![1]),
+            }),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        db
+    };
+
+    // A callback that leaves flags alone: the derived rewrite of r1 goes
+    // through untouched.
+    let db = build();
+    db.apply_batch_with_element_flags_update(
+        vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"value".to_vec(),
+            Element::ItemWithBackwardsReferences(b"upd".to_vec(), Vec::new(), Some(vec![1])),
+        )],
+        batch_flag_on(),
+        |_cost, _old_flags, _new_flags| Ok(false),
+        |_flags, _removed_key_bytes, _removed_value_bytes| {
+            Ok((
+                grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval,
+                grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval,
+            ))
+        },
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("an inert flags callback leaves derived rewrites intact");
+    assert!(db
+        .verify_grovedb(None, true, true, grove_version)
+        .unwrap()
+        .is_empty());
+
+    // A callback that MUTATES flags: the derived rewrite's provided hash
+    // would no longer match the mutated bytes — the batch must fail, not
+    // commit a bytes/hash mismatch.
+    let db = build();
+    let result = db
+        .apply_batch_with_element_flags_update(
+            vec![QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"value".to_vec(),
+                Element::ItemWithBackwardsReferences(b"upd".to_vec(), Vec::new(), Some(vec![1])),
+            )],
+            batch_flag_on(),
+            |_cost, _old_flags, new_flags| {
+                new_flags.push(7);
+                Ok(true)
+            },
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((
+                    grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval,
+                    grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval,
+                ))
+            },
+            None,
+            grove_version,
+        )
+        .unwrap();
+    assert!(
+        result.is_err(),
+        "mutating flags on a provided-hash write must fail closed"
+    );
+    assert!(
+        db.verify_grovedb(None, true, true, grove_version)
+            .unwrap()
+            .is_empty(),
+        "the failed batch must not have committed a bytes/hash mismatch"
+    );
+}
+
+/// Deleting a NON-EMPTY subtree under the flag is refused: its
+/// descendants may hold bidirectional-reference participants whose
+/// bookkeeping the batch engine's wholesale clearing would skip. Empty
+/// subtrees still delete.
+#[test]
+fn batch_flagged_non_empty_subtree_deletion_is_refused() {
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    db.insert(
+        &[TEST_LEAF],
+        b"sub",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF, b"sub"],
+        b"member",
+        Element::new_item_allowing_bidirectional_references(b"x".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    assert!(matches!(
+        db.apply_batch(
+            vec![QualifiedGroveDbOp::delete_op(
+                vec![TEST_LEAF.to_vec()],
+                b"sub".to_vec(),
+            )],
+            batch_flag_on(),
+            None,
+            grove_version,
+        )
+        .unwrap(),
+        Err(Error::NotSupported(_))
+    ));
+
+    // A subtree created AND populated within the same batch cannot be
+    // deleted by it either.
+    let db2 = make_test_grovedb(grove_version);
+    assert!(matches!(
+        db2.apply_batch(
+            vec![
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"sub".to_vec(),
+                    Element::empty_tree(),
+                ),
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec(), b"sub".to_vec()],
+                    b"member".to_vec(),
+                    Element::new_item(b"x".to_vec()),
+                ),
+                QualifiedGroveDbOp::delete_op(vec![TEST_LEAF.to_vec()], b"sub".to_vec()),
+            ],
+            batch_flag_on(),
+            None,
+            grove_version,
+        )
+        .unwrap(),
+        Err(_)
+    ));
+
+    // An EMPTY subtree still deletes under the flag.
+    let db3 = make_test_grovedb(grove_version);
+    db3.insert(
+        &[TEST_LEAF],
+        b"empty_sub",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db3.apply_batch(
+        vec![QualifiedGroveDbOp::delete_op(
+            vec![TEST_LEAF.to_vec()],
+            b"empty_sub".to_vec(),
+        )],
+        batch_flag_on(),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("an empty subtree deletes under the flag");
+}

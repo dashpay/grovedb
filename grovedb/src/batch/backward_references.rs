@@ -133,6 +133,36 @@ impl<'db, 'g> OverlayChainStore<'db, 'g> {
         (1..=path.len()).any(|i| fresh.contains(&path[..i]))
     }
 
+    /// Whether the subtree at `qualified` holds any prospective content:
+    /// positions the batch stages under it, or committed elements (unless
+    /// the subtree is fresh, in which case committed storage has nothing).
+    fn subtree_has_content(&self, qualified: &[Vec<u8>]) -> CostResult<bool, Error> {
+        let staged_content = self.overlay.borrow().iter().any(|((path, _), element)| {
+            element.is_some()
+                && path.len() >= qualified.len()
+                && path[..qualified.len()] == *qualified
+        });
+        if staged_content {
+            return Ok(true).wrap_with_cost(OperationCost::default());
+        }
+        if self.under_fresh_subtree(qualified) || self.fresh_subtrees.borrow().contains(qualified) {
+            return Ok(false).wrap_with_cost(OperationCost::default());
+        }
+        let mut cost = OperationCost::default();
+        let path_slices: Vec<&[u8]> = qualified.iter().map(|p| p.as_slice()).collect();
+        let merk = cost_return_on_error!(
+            &mut cost,
+            self.db.open_transactional_merk_at_path(
+                SubtreePath::from(path_slices.as_slice()),
+                self.tx,
+                None,
+                self.version,
+            )
+        );
+        let is_empty = merk.is_empty_tree().unwrap_add_cost(&mut cost);
+        Ok(!is_empty).wrap_with_cost(cost)
+    }
+
     fn resolve_position(
         &self,
         path: &[Vec<u8>],
@@ -757,6 +787,31 @@ pub(super) fn expand_backward_references_ops(
             GroveOp::Delete | GroveOp::DeleteTree(..) => {
                 let previous =
                     cost_return_on_error!(&mut cost, expansion.store.element_at(&path, &key));
+                // Deleting a NON-EMPTY subtree is refused under the flag:
+                // its descendants may hold bidirectional-reference
+                // participants whose external registrations, cascade
+                // consents, and surviving referrers the batch engine's
+                // wholesale clearing would silently skip. The live flagged
+                // delete walks descendants with full bookkeeping — use it,
+                // or empty the subtree first.
+                if previous.as_ref().map(|p| p.is_any_tree()).unwrap_or(false) {
+                    let mut qualified = path.clone();
+                    qualified.push(key.clone());
+                    let non_empty = cost_return_on_error!(
+                        &mut cost,
+                        expansion.store.subtree_has_content(&qualified)
+                    );
+                    if non_empty {
+                        return Err(Error::NotSupported(
+                            "deleting a non-empty subtree in a batch with \
+                             propagate_backward_references is not supported; delete it through \
+                             the live flagged flow (which cascades descendants) or empty it \
+                             first"
+                                .to_owned(),
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                }
                 expansion.store.stage(position, None);
                 let Some(previous) = previous else { continue };
                 let needs_bookkeeping = matches!(previous, Element::BidirectionalReference(..))

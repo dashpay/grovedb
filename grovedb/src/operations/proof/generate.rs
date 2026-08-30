@@ -2034,6 +2034,10 @@ impl GroveDb {
                 // untouched. Mirrors the normalization in the general
                 // subquery path below.
                 let mut reference_self_hash_override = None;
+                // A bidirectional edge's declared max_hop bounds proof
+                // dereferencing exactly like reads (plain references keep
+                // their historical global budget).
+                let mut bidi_max_hop = None;
                 let elem = match elem {
                     ref e @ Element::BidirectionalReference(..) => {
                         let hashes = cost_return_on_error!(
@@ -2046,6 +2050,7 @@ impl GroveDb {
                         let Element::BidirectionalReference(reference) = elem else {
                             unreachable!("checked above");
                         };
+                        bidi_max_hop = reference.max_hop;
                         Element::Reference(
                             reference.forward_reference_path,
                             reference.max_hop,
@@ -2069,8 +2074,9 @@ impl GroveDb {
                 };
                 let referenced_elem = cost_return_on_error!(
                     &mut cost,
-                    self.follow_reference(
+                    self.follow_reference_with_max_hop(
                         absolute_path.as_slice().into(),
+                        bidi_max_hop,
                         true,
                         None,
                         grove_version
@@ -2294,8 +2300,9 @@ impl GroveDb {
                         );
                         let referenced_elem = cost_return_on_error_into!(
                             &mut cost,
-                            self.follow_reference(
+                            self.follow_reference_with_max_hop(
                                 absolute_path.as_slice().into(),
+                                reference.max_hop,
                                 true,
                                 None,
                                 grove_version
@@ -2359,6 +2366,10 @@ impl GroveDb {
                         // (not H(stored bytes)) — capture it here, before
                         // normalization discards the distinction.
                         let mut reference_self_hash_override = None;
+                        // A bidirectional edge's declared max_hop bounds
+                        // proof dereferencing exactly like reads (plain
+                        // references keep their historical global budget).
+                        let mut bidi_max_hop = None;
                         let elem = match elem {
                             Ok(ref e @ Element::BidirectionalReference(..)) => {
                                 let hashes = cost_return_on_error!(
@@ -2371,6 +2382,7 @@ impl GroveDb {
                                 let Ok(Element::BidirectionalReference(reference)) = elem else {
                                     unreachable!("checked above");
                                 };
+                                bidi_max_hop = reference.max_hop;
                                 Ok(Element::Reference(
                                     reference.forward_reference_path,
                                     reference.max_hop,
@@ -2398,8 +2410,9 @@ impl GroveDb {
 
                                 let referenced_elem = cost_return_on_error_into!(
                                     &mut cost,
-                                    self.follow_reference(
+                                    self.follow_reference_with_max_hop(
                                         absolute_path.as_slice().into(),
+                                        bidi_max_hop,
                                         true,
                                         None,
                                         grove_version
