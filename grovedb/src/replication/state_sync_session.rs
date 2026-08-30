@@ -402,6 +402,18 @@ impl<'db> MultiStateSyncSession<'db> {
         self.commits_deferred_for_open_group
     }
 
+    /// Chunk payload bytes applied since the last intermediate commit
+    /// (or since the session started).
+    ///
+    /// This is the session's own proxy for how much restored state is
+    /// currently sitting uncommitted in the transaction — the quantity
+    /// [`RestoreCommitMode::Incremental`]'s `budget_bytes` is meant to
+    /// bound. It only ever grows in [`RestoreCommitMode::Atomic`], where
+    /// holding the whole restore is the point.
+    pub fn uncommitted_payload_bytes(&self) -> u64 {
+        self.bytes_since_commit
+    }
+
     /// Whether an indexed-tree group is part-restored right now, i.e. its
     /// primary and axis secondaries have not all completed and the joint
     /// verification binding them to the parent has not run. No
@@ -1628,6 +1640,75 @@ impl<'db> MultiStateSyncSession<'db> {
         Ok(subtrees_metadata)
     }
 
+    /// The order in which discovered subtrees are put in flight: axis
+    /// secondaries of in-flight indexed groups first, then everything
+    /// else in its natural [`SubtreePrefix`] order.
+    ///
+    /// The first tier is load-bearing, and it also reaches back into
+    /// `pending_discovered_subtrees` for secondaries parked there,
+    /// because a group's secondaries are routinely parked in the same
+    /// round its primary's descendants are discovered.
+    ///
+    /// Without it the order is raw `SubtreePrefix` order — Blake3
+    /// digests, unrelated to the tree's shape. An indexed primary's
+    /// ordinary descendants then win activation rounds against the
+    /// group's secondaries purely by digest, while completing and
+    /// discovering yet more descendants that win the next round. The
+    /// group stays open the whole time, and an open group *correctly*
+    /// refuses every intermediate commit (its joint verification is the
+    /// only thing binding it to its parent, and it cannot run until every
+    /// member is restored). So the uncommitted write set grows to the
+    /// primary's entire descendancy no matter what payload budget the
+    /// caller set — the one thing [`RestoreCommitMode::Incremental`]
+    /// promises not to do. Resolving open groups first is what keeps
+    /// "open" a transient state rather than one the grove's shape can
+    /// extend indefinitely.
+    ///
+    /// Note this does not weaken the group-splitting guarantee: it makes
+    /// groups *close sooner*, and the commit guard in
+    /// [`Self::intermediate_commit_decision`] is untouched.
+    fn activation_order(
+        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        subtrees_metadata: SubtreesMetadata,
+    ) -> Vec<(SubtreePrefix, SubtreeMetadata)> {
+        fn is_secondary(metadata: &SubtreeMetadata) -> bool {
+            matches!(metadata, SubtreeMetadata::IndexedSecondary { .. })
+        }
+
+        // Secondaries parked in an earlier round outrank anything
+        // discovered since.
+        let mut ordered: Vec<(SubtreePrefix, SubtreeMetadata)> = Vec::new();
+        let pending_slot = self.as_mut().pending_discovered_subtrees();
+        let mut pending_drained = false;
+        if let Some(pending) = pending_slot.as_mut() {
+            let parked: Vec<SubtreePrefix> = pending
+                .data
+                .iter()
+                .filter(|(_, metadata)| is_secondary(metadata))
+                .map(|(prefix, _)| *prefix)
+                .collect();
+            for prefix in parked {
+                if let Some(metadata) = pending.data.remove(&prefix) {
+                    ordered.push((prefix, metadata));
+                }
+            }
+            pending_drained = pending.data.is_empty();
+        }
+        if pending_drained {
+            // Never leave an empty-but-present pending batch behind:
+            // `is_sync_completed` reads it as "still work to do".
+            *pending_slot = None;
+        }
+
+        let (secondaries, rest): (Vec<_>, Vec<_>) = subtrees_metadata
+            .data
+            .into_iter()
+            .partition(|(_, metadata)| is_secondary(metadata));
+        ordered.extend(secondaries);
+        ordered.extend(rest);
+        ordered
+    }
+
     /// Prepares a synchronization session for the newly discovered subtrees and
     /// returns the global chunk IDs of those subtrees.
     ///
@@ -1676,7 +1757,7 @@ impl<'db> MultiStateSyncSession<'db> {
         let mut free_slots = self.free_in_flight_slots();
         let mut deferred = SubtreesMetadata::new();
 
-        for (prefix, prefix_metadata) in subtrees_metadata.data {
+        for (prefix, prefix_metadata) in self.activation_order(subtrees_metadata) {
             if self.processed_prefixes.contains(&prefix)
                 || self.current_prefixes.contains_key(&prefix)
             {

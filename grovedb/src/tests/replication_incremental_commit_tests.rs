@@ -43,6 +43,9 @@ mod tests {
         /// How many due-and-otherwise-safe commits the session held back
         /// because an indexed group was still in flight.
         commits_deferred_for_open_group: usize,
+        /// The largest uncommitted payload the session ever carried —
+        /// the memory ceiling the incremental mode exists to provide.
+        peak_uncommitted_bytes: u64,
     }
 
     /// Checkpoint `source`, restore it into `dest` under `commit_mode`,
@@ -82,6 +85,7 @@ mod tests {
         let mut chunk_queue: VecDeque<Vec<u8>> = VecDeque::new();
         chunk_queue.push_back(app_hash.to_vec());
 
+        let mut peak_uncommitted_bytes = 0u64;
         while let Some(chunk_id) = chunk_queue.pop_front() {
             let chunk_data = checkpoint_db.fetch_chunk(
                 chunk_id.as_slice(),
@@ -95,6 +99,8 @@ mod tests {
                 CURRENT_STATE_SYNC_VERSION,
                 grove_version,
             )?;
+            peak_uncommitted_bytes =
+                peak_uncommitted_bytes.max(session.uncommitted_payload_bytes());
 
             chunk_queue.extend(more_ids);
         }
@@ -107,6 +113,7 @@ mod tests {
         Ok(SyncOutcome {
             intermediate_commits,
             commits_deferred_for_open_group,
+            peak_uncommitted_bytes,
         })
     }
 
@@ -390,6 +397,171 @@ mod tests {
                 source.root_hash(None, grove_version).unwrap().unwrap(),
             );
         }
+    }
+
+    /// How many ordinary descendants the starvation shape hangs off the
+    /// indexed primary, and how much payload each carries. Sized so the
+    /// descendants together are an order of magnitude past the budget:
+    /// if the group can hold every commit open across them, the peak
+    /// uncommitted payload is their whole sum.
+    const STARVING_CHILDREN: usize = 16;
+    const STARVING_ITEMS_PER_CHILD: u32 = 24;
+    const STARVING_ITEM_LEN: usize = 192;
+
+    /// A grove shaped to starve an indexed group's axis secondary.
+    ///
+    /// Subtree activation runs in raw `SubtreePrefix` order, and prefixes
+    /// are Blake3 digests — an ordering with no relation to the tree's
+    /// shape or semantics. So the adversarial case is not exotic, it is a
+    /// coin flip per subtree: this simply picks the keys that land it.
+    /// The primary is chosen so its axis-secondary prefix sits near the
+    /// very top of the order, and the primary's ordinary children are
+    /// chosen to sit below it.
+    ///
+    /// With a small in-flight cap, each activation round then takes
+    /// another ordinary child in preference to the secondary. The group
+    /// stays open for as long as the children last, and an open group
+    /// refuses every intermediate commit — so the uncommitted write set
+    /// grows to the whole of the primary's descendants regardless of the
+    /// payload budget.
+    ///
+    /// Returns the source and the total item payload hung off the
+    /// primary, so the assertion can be written against the shape rather
+    /// than a magic number.
+    fn secondary_starving_indexed_source(grove_version: &GroveVersion) -> (TempGroveDb, u64) {
+        use grovedb_query::axis_query::IndexAxis;
+        use grovedb_storage::rocksdb_storage::RocksDbStorage;
+
+        // A primary whose axis-secondary prefix is high in the ordering,
+        // leaving most of the space below it for its children.
+        let (primary_key, secondary_prefix) = (0u32..)
+            .take(100_000)
+            .find_map(|i| {
+                let key = format!("primary{i}").into_bytes();
+                let path: &[&[u8]] = &[TEST_LEAF, &key];
+                let prefix = RocksDbStorage::build_prefix(path.into()).unwrap();
+                let secondary =
+                    RocksDbStorage::secondary_prefix_for(&prefix, IndexAxis::Count.tag()).unwrap();
+                (secondary[0] >= 0xF0).then_some((key, secondary))
+            })
+            .expect("a primary with a high axis-secondary prefix must exist");
+
+        // Children that sort ahead of that secondary, so every
+        // activation round prefers them.
+        let child_keys: Vec<Vec<u8>> = (0u32..)
+            .take(100_000)
+            .filter_map(|i| {
+                let key = format!("child{i}").into_bytes();
+                let path: &[&[u8]] = &[TEST_LEAF, &primary_key, &key];
+                let prefix = RocksDbStorage::build_prefix(path.into()).unwrap();
+                (prefix < secondary_prefix).then_some(key)
+            })
+            .take(STARVING_CHILDREN)
+            .collect();
+        assert_eq!(
+            child_keys.len(),
+            STARVING_CHILDREN,
+            "could not find enough children sorting ahead of the axis secondary"
+        );
+
+        let source = make_test_grovedb(grove_version);
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                &primary_key,
+                Element::empty_provable_count_indexed_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create PCIT primary");
+        for key in &child_keys {
+            source
+                .insert_into_count_indexed_tree(
+                    [TEST_LEAF, &primary_key].as_ref(),
+                    key,
+                    Element::empty_provable_count_tree(),
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert PCIT entry");
+            for i in 0..STARVING_ITEMS_PER_CHILD {
+                source
+                    .insert(
+                        [TEST_LEAF, &primary_key, key].as_ref(),
+                        &i.to_be_bytes(),
+                        Element::new_item(vec![i as u8; STARVING_ITEM_LEN]),
+                        None,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("populate PCIT entry");
+            }
+        }
+
+        let descendant_payload = (STARVING_CHILDREN as u64)
+            * u64::from(STARVING_ITEMS_PER_CHILD)
+            * STARVING_ITEM_LEN as u64;
+        (source, descendant_payload)
+    }
+
+    /// An indexed group must not be able to hold every intermediate
+    /// commit open across an unbounded run of ordinary descendants.
+    ///
+    /// A commit is refused while a group is open, which is correct — the
+    /// group's joint verification is its only binding to the parent. But
+    /// "open" must be a short-lived state the session drives out of, not
+    /// something an adversarially (or just unluckily) shaped grove can
+    /// extend indefinitely: the group's axis secondaries and the
+    /// primary's ordinary descendants share one pending map keyed by
+    /// Blake3 prefix, so without a priority rule the secondaries can lose
+    /// every activation round while the descendants keep discovering
+    /// more. Every commit is then deferred and the transaction grows to
+    /// hold an arbitrary fraction of the grove, which is exactly the
+    /// property [`RestoreCommitMode::Incremental`] is sold on.
+    ///
+    /// The bound asserted here is the shape of the guarantee: the peak
+    /// uncommitted payload must stay far below the total payload hanging
+    /// off the primary. Without the secondary-first activation order the
+    /// peak *is* that total.
+    #[test]
+    fn an_open_indexed_group_cannot_defer_commits_across_its_descendants() {
+        let grove_version = GroveVersion::latest();
+        let (source, descendant_payload) = secondary_starving_indexed_source(grove_version);
+
+        let budget_bytes = 4096;
+        let (dest, outcome) = run_incremental_sync(
+            &source,
+            grove_version,
+            10_000,
+            RestoreCommitMode::Incremental {
+                budget_bytes,
+                max_subtrees_in_flight: 1,
+            },
+        )
+        .expect("incremental sync should succeed");
+
+        assert_eq!(
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+            source.root_hash(None, grove_version).unwrap().unwrap(),
+        );
+        assert!(
+            outcome.intermediate_commits >= STARVING_CHILDREN / 2,
+            "only {} intermediate commits over {STARVING_CHILDREN} descendant subtrees: commits \
+             were not flowing while the group was in flight",
+            outcome.intermediate_commits,
+        );
+        assert!(
+            outcome.peak_uncommitted_bytes < descendant_payload / 4,
+            "the session held {} uncommitted bytes at its peak against a {}-byte budget; the \
+             primary's descendants carry {descendant_payload} bytes, so the open indexed group \
+             deferred commits across them instead of resolving first",
+            outcome.peak_uncommitted_bytes,
+            budget_bytes,
+        );
     }
 
     /// A restore abandoned after its first intermediate commit leaves the
