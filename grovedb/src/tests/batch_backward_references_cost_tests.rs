@@ -431,3 +431,121 @@ fn derived_op_estimation_is_version_gated() {
     .cost_as_result();
     assert!(matches!(refused, Err(Error::NotSupported(_))));
 }
+
+/// The maximum legal component shape: `MAX_BACKWARD_REFERENCES` referrers
+/// on one target, each in its OWN branch at the full
+/// `MAX_BACKWARD_REFERENCES_GROVE_DEPTH` registration depth, with every
+/// ancestor Merk populated (so bubbling does real in-Merk propagation at
+/// each level). The worst-case estimate must cover the flagged overwrite
+/// componentwise — this pins the height-dependent ancestor-walk term.
+#[test]
+fn worst_case_estimate_covers_max_fan_out_deep_component() {
+    use grovedb_element::MAX_BACKWARD_REFERENCES;
+
+    use crate::bidirectional_references::MAX_BACKWARD_REFERENCES_GROVE_DEPTH;
+
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+
+    db.insert(
+        &[TEST_LEAF],
+        b"value",
+        Element::new_item_allowing_bidirectional_references(b"hello".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    for branch in 0..MAX_BACKWARD_REFERENCES {
+        let mut path: Vec<Vec<u8>> = vec![TEST_LEAF.to_vec()];
+        // First segment distinguishes the branch; deeper segments are
+        // constant (each lives in its own parent Merk).
+        let mut next_segment = format!("b{branch:02}").into_bytes();
+        while path.len() < MAX_BACKWARD_REFERENCES_GROVE_DEPTH {
+            let path_refs: Vec<&[u8]> = path.iter().map(|p| p.as_slice()).collect();
+            db.insert(
+                path_refs.as_slice(),
+                &next_segment,
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+            // Populate the parent Merk so bubbling does real work there.
+            db.insert(
+                path_refs.as_slice(),
+                &[next_segment.as_slice(), b"_fill"].concat(),
+                Element::new_item(b"f".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+            path.push(next_segment);
+            next_segment = b"d".to_vec();
+        }
+        let path_refs: Vec<&[u8]> = path.iter().map(|p| p.as_slice()).collect();
+        db.insert(
+            path_refs.as_slice(),
+            b"ref",
+            Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    b"value".to_vec(),
+                ]),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: None,
+                flags: None,
+            }),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+    }
+
+    let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+        vec![TEST_LEAF.to_vec()],
+        b"value".to_vec(),
+        Element::new_item_allowing_bidirectional_references(b"updated".to_vec()),
+    )];
+    // The declared layer must dominate every Merk in the component,
+    // ancestor Merks included (the model's documented contract).
+    let mut paths = HashMap::new();
+    paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(8));
+    paths.insert(
+        KeyInfoPath(vec![KeyInfo::KnownKey(TEST_LEAF.to_vec())]),
+        MaxElementsNumber(128),
+    );
+    let estimate = GroveDb::estimated_case_operations_for_batch(
+        WorstCaseCostsType(paths),
+        ops.clone(),
+        batch_flag_on(),
+        |_cost, _old_flags, _new_flags| Ok(false),
+        |_flags, _removed_key_bytes, _removed_value_bytes| {
+            Ok((
+                grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval,
+                grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval,
+            ))
+        },
+        grove_version,
+    )
+    .cost_as_result()
+    .expect("expected worst case costs");
+    let actual = db
+        .apply_batch(ops, batch_flag_on(), None, grove_version)
+        .cost_as_result()
+        .expect("apply succeeds — full-width propagation");
+
+    assert!(
+        estimate.worse_or_eq_than(&actual),
+        "worst-case estimate {estimate:?} must cover the maximum component shape {actual:?}"
+    );
+}

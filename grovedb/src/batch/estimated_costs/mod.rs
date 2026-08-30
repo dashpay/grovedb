@@ -73,15 +73,19 @@ pub(in crate::batch) fn wrapper_overhead_for(
 // propagation, all sized from the op's OWN declared layer — referrer
 // subtrees are not GroveDB-declarable here, so the model assumes the
 // component's nodes are shaped like the declared layer. Callers must
-// declare the largest-node layer of the component.
+// declare a layer that dominates every Merk in the component — the
+// referrer subtrees AND their ancestor Merks (whose in-Merk propagation
+// the ancestor walk below charges from the same declared shape).
 //
 // Each derived propagation additionally charges the GROVE-DEPTH ancestor
 // walk of its foreign subtree: registration enforces
 // `MAX_BACKWARD_REFERENCES_GROVE_DEPTH` on every bidirectional-edge
-// position, so the worst model charges exactly that many biggest-node
-// parent updates per propagation (without the registration bound this
-// walk would be unboundable — a referrer parked arbitrarily deep would
-// out-cost any fixed estimate).
+// position, so the worst model charges exactly that many ancestor levels
+// per propagation (without the registration bound this walk would be
+// unboundable — a referrer parked arbitrarily deep would out-cost any
+// fixed estimate). Each level is a full step of the actual bubbling: the
+// parent-Merk open, the changed tree element's biggest-node rewrite, and
+// that Merk's own worst-case propagation to its root.
 
 /// Worst-case number of derived node rewrites (or cascade deletions) an
 /// overwrite/delete of a backward-references ITEM can trigger: every entry
@@ -131,6 +135,35 @@ pub(in crate::batch) const BACKWARD_REFERENCES_AVERAGE_ANCESTOR_LEVELS: u32 = 2;
 /// and the node hash.
 #[cfg(feature = "minimal")]
 pub(in crate::batch) const BACKWARD_REFERENCES_REWRITE_HASH_CALLS: u32 = 6;
+
+/// Merge `unit × times` into `cost` with saturating arithmetic. The
+/// worst-case ancestor-walk bound can exceed the u32 cost domain
+/// (hundreds of derived propagations × the full registration depth ×
+/// biggest-node in-Merk propagation); any REAL batch's actual cost must
+/// itself fit that domain, so a saturated estimate still dominates every
+/// actual — while ordinary `+=` would panic on overflow in debug builds.
+#[cfg(feature = "minimal")]
+pub(in crate::batch) fn add_saturating_scaled(
+    cost: &mut OperationCost,
+    unit: &OperationCost,
+    times: u64,
+) {
+    let clamp_u32 = |value: u64| -> u32 { value.min(u32::MAX as u64) as u32 };
+    let scale_u32 = |base: u32, unit: u32| -> u32 {
+        clamp_u32(base as u64 + (unit as u64).saturating_mul(times).min(u32::MAX as u64))
+    };
+    cost.seek_count = scale_u32(cost.seek_count, unit.seek_count);
+    cost.hash_node_calls = scale_u32(cost.hash_node_calls, unit.hash_node_calls);
+    cost.storage_cost.added_bytes =
+        scale_u32(cost.storage_cost.added_bytes, unit.storage_cost.added_bytes);
+    cost.storage_cost.replaced_bytes = scale_u32(
+        cost.storage_cost.replaced_bytes,
+        unit.storage_cost.replaced_bytes,
+    );
+    cost.storage_loaded_bytes = cost
+        .storage_loaded_bytes
+        .saturating_add(unit.storage_loaded_bytes.saturating_mul(times));
+}
 
 /// The derived fan-out shape of a batch op under the backward-references
 /// flag: how many derived node rewrites, chain-resolution loads, and

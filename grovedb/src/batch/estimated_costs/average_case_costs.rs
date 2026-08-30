@@ -800,8 +800,12 @@ fn add_average_case_backward_references_fan_out(
             .map_err(Error::MerkError)?;
         // A derived write in a FOREIGN subtree also propagates up the
         // Grove: charge a typical shallow ancestor walk (the worst-case
-        // model charges the full registration depth bound).
+        // model charges the full registration depth bound). Each level is
+        // a parent-Merk open, the changed tree element's rewrite, and the
+        // in-Merk propagation to that Merk's root.
         for _ in 0..super::BACKWARD_REFERENCES_AVERAGE_ANCESTOR_LEVELS {
+            add_average_case_get_merk_node(cost, key_width, node_value_size, node_type)
+                .map_err(Error::MerkError)?;
             add_average_case_get_merk_node(cost, key_width, node_value_size, node_type)
                 .map_err(Error::MerkError)?;
             add_cost_case_merk_replace_layered(
@@ -810,6 +814,9 @@ fn add_average_case_backward_references_fan_out(
                 node_value_size,
                 layer_element_estimates.tree_type,
             );
+            average_case_merk_propagate(layer_element_estimates, grove_version)
+                .unwrap_add_cost(cost)
+                .map_err(Error::MerkError)?;
         }
     }
     Ok(())

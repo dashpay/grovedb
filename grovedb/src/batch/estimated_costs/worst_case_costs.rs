@@ -699,27 +699,52 @@ fn add_worst_case_backward_references_fan_out(
         worst_case_merk_propagate(worst_case_layer_element_estimates)
             .unwrap_add_cost(cost)
             .map_err(Error::MerkError)?;
-        // A derived write in a FOREIGN subtree also propagates up the
-        // Grove: one parent tree-element rewrite per ancestor level. The
-        // registration rule bounds every bidirectional-edge position to
-        // `MAX_BACKWARD_REFERENCES_GROVE_DEPTH` levels, so that many
-        // biggest-node ancestor updates is a true ceiling.
-        for _ in 0..crate::bidirectional_references::MAX_BACKWARD_REFERENCES_GROVE_DEPTH {
-            add_worst_case_get_merk_node(
-                cost,
-                MERK_BIGGEST_KEY_SIZE,
-                MERK_BIGGEST_VALUE_SIZE,
-                node_type,
-            )
-            .map_err(Error::MerkError)?;
-            add_cost_case_merk_replace_layered(
-                cost,
-                MERK_BIGGEST_KEY_SIZE,
-                MERK_BIGGEST_VALUE_SIZE,
-                in_parent_tree_type,
-            );
-        }
     }
+    // A derived write in a FOREIGN subtree also propagates up the Grove.
+    // Per ancestor level (the registration rule bounds every
+    // bidirectional-edge position to
+    // `MAX_BACKWARD_REFERENCES_GROVE_DEPTH` levels), actual bubbling
+    // opens the parent Merk, rewrites the changed tree element, and
+    // propagates it THROUGH that Merk to its root — height-dependent
+    // work, charged as the declared layer's full worst-case propagation
+    // per level. The declared layer must therefore dominate every Merk
+    // in the component, ancestor Merks of referrer subtrees included
+    // (see the model contract in `super`). The per-level unit is
+    // computed once and scaled saturatingly: at full fan-out the true
+    // bound exceeds the u32 cost domain, which no real batch can reach.
+    let mut level_cost = OperationCost::default();
+    // The parent-Merk open (its root node load)…
+    add_worst_case_get_merk_node(
+        &mut level_cost,
+        MERK_BIGGEST_KEY_SIZE,
+        MERK_BIGGEST_VALUE_SIZE,
+        node_type,
+    )
+    .map_err(Error::MerkError)?;
+    // …the changed tree element's load and layered rewrite…
+    add_worst_case_get_merk_node(
+        &mut level_cost,
+        MERK_BIGGEST_KEY_SIZE,
+        MERK_BIGGEST_VALUE_SIZE,
+        node_type,
+    )
+    .map_err(Error::MerkError)?;
+    add_cost_case_merk_replace_layered(
+        &mut level_cost,
+        MERK_BIGGEST_KEY_SIZE,
+        MERK_BIGGEST_VALUE_SIZE,
+        in_parent_tree_type,
+    );
+    // …and the in-Merk propagation to that Merk's root.
+    worst_case_merk_propagate(worst_case_layer_element_estimates)
+        .unwrap_add_cost(&mut level_cost)
+        .map_err(Error::MerkError)?;
+    super::add_saturating_scaled(
+        cost,
+        &level_cost,
+        fan_out.propagations as u64
+            * crate::bidirectional_references::MAX_BACKWARD_REFERENCES_GROVE_DEPTH as u64,
+    );
     Ok(())
 }
 
