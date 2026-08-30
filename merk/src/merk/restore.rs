@@ -683,8 +683,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// the fully restored tree bottom-up and:
     /// - re-derives every node's own feature value from its element bytes
     ///   exactly as the write path does (`Element::get_feature_type`); a
-    ///   value that does not parse as a GroveDB `Element` (raw merk usage)
-    ///   keeps its stored feature value, and
+    ///   value that does not parse as a GroveDB `Element` (raw merk usage,
+    ///   via the exported `ChunkProducer` / `Restorer` API) has no element
+    ///   to derive from, so its own contribution is recovered by
+    ///   subtracting the recomputed child aggregates from the
+    ///   proof-carried subtree total — see
+    ///   `own_contribution_from_subtree_total`, and
     /// - rewrites every link's `aggregate_data` from the recomputed child
     ///   subtree aggregates,
     ///
@@ -712,15 +716,26 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             })?;
 
             // Re-derive the node's OWN contribution from its element
-            // bytes, mirroring the write path.
-            if let Ok(element) = Element::deserialize(cloned_node.value_as_slice(), grove_version) {
-                let derived_feature_type = element.get_feature_type(tree_type).map_err(|_| {
-                    Error::CorruptedState("cannot derive feature type during aggregate rewrite")
-                })?;
-                cloned_node.set_feature_type(derived_feature_type);
-            }
+            // bytes, mirroring the write path. A value that is not a
+            // GroveDB `Element` has nothing to derive from; it is handled
+            // after the children are known, below.
+            let derived_from_element =
+                match Element::deserialize(cloned_node.value_as_slice(), grove_version) {
+                    Ok(element) => {
+                        let derived_feature_type =
+                            element.get_feature_type(tree_type).map_err(|_| {
+                                Error::CorruptedState(
+                                    "cannot derive feature type during aggregate rewrite",
+                                )
+                            })?;
+                        cloned_node.set_feature_type(derived_feature_type);
+                        true
+                    }
+                    Err(_) => false,
+                };
 
-            for side in [LEFT, RIGHT] {
+            let mut child_aggregates = [AggregateData::NoAggregateData; 2];
+            for (slot, side) in [LEFT, RIGHT].into_iter().enumerate() {
                 if let Some(child_walker) = walker
                     .walk(
                         side,
@@ -731,6 +746,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 {
                     let child_aggregate =
                         rewrite_child_aggregates(tree_type, child_walker, batch, grove_version)?;
+                    child_aggregates[slot] = child_aggregate;
                     if let Some(Link::Reference { aggregate_data, .. }) = cloned_node.link_mut(side)
                     {
                         *aggregate_data = child_aggregate;
@@ -741,6 +757,20 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         ));
                     }
                 }
+            }
+
+            // Raw (non-`Element`) values: the feature value on disk is
+            // whatever the chunk proof carried, which for a provable
+            // host is the node's SUBTREE total. Turn it back into the
+            // node's own contribution now that the children's aggregates
+            // are known.
+            if !derived_from_element {
+                let own = own_contribution_from_subtree_total(
+                    cloned_node.feature_type(),
+                    child_aggregates[0],
+                    child_aggregates[1],
+                )?;
+                cloned_node.set_feature_type(own);
             }
 
             let bytes = cloned_node.encode();
@@ -948,6 +978,91 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 
         Ok(())
     }
+}
+
+/// The provable count carried by a child's recomputed aggregate, or zero
+/// for an aggregate that carries no count.
+fn provable_count_of(data: AggregateData) -> u64 {
+    match data {
+        AggregateData::ProvableCount(count)
+        | AggregateData::ProvableCountAndSum(count, _)
+        | AggregateData::ProvableCountAndProvableSum(count, _) => count,
+        _ => 0,
+    }
+}
+
+/// The provable sum carried by a child's recomputed aggregate, or zero
+/// for an aggregate that carries no provable sum.
+fn provable_sum_of(data: AggregateData) -> i64 {
+    match data {
+        AggregateData::ProvableSum(sum)
+        | AggregateData::ProvableCountAndSum(_, sum)
+        | AggregateData::ProvableCountAndProvableSum(_, sum) => sum,
+        _ => 0,
+    }
+}
+
+/// Recover a node's OWN aggregate contribution from the value a chunk
+/// proof carried for it, given its children's recomputed aggregates.
+///
+/// Only reachable for values that are not GroveDB `Element`s (raw merk
+/// usage of the exported chunk API); an `Element` value is authoritative
+/// about its own contribution and never reaches here.
+///
+/// For the `Provable*` hosts the proof node's feature value is the
+/// node's SUBTREE total — that is what the verifier hashes, and it is
+/// what both `Node::KVCount`/`KVSum`/`KVCountSum` and
+/// `to_kv_value_hash_feature_type_node`'s `KVValueHashFeatureType`
+/// fallback put on the wire. Persisting that total as the node's own
+/// contribution and then re-attaching the children's aggregates would
+/// count every descendant twice, so the children are subtracted back
+/// out here.
+///
+/// Every other feature value — including the non-provable `SumTree` /
+/// `CountTree` / `CountSumTree` / `BigSumTree` family, whose aggregates
+/// do not participate in the node hash and whose proof nodes therefore
+/// carry the own value — is already the own contribution and is
+/// returned unchanged.
+fn own_contribution_from_subtree_total(
+    subtree_total: TreeFeatureType,
+    left: AggregateData,
+    right: AggregateData,
+) -> Result<TreeFeatureType, Error> {
+    let own_count = |total: u64| -> Result<u64, Error> {
+        total
+            .checked_sub(provable_count_of(left))
+            .and_then(|rest| rest.checked_sub(provable_count_of(right)))
+            .ok_or(Error::CorruptedState(
+                "chunk-carried subtree count is smaller than its children's counts",
+            ))
+    };
+    let own_sum = |total: i64| -> Result<i64, Error> {
+        total
+            .checked_sub(provable_sum_of(left))
+            .and_then(|rest| rest.checked_sub(provable_sum_of(right)))
+            .ok_or(Error::CorruptedState(
+                "chunk-carried subtree sum does not decompose against its children's sums",
+            ))
+    };
+
+    Ok(match subtree_total {
+        TreeFeatureType::ProvableCountedMerkNode(count) => {
+            TreeFeatureType::ProvableCountedMerkNode(own_count(count)?)
+        }
+        TreeFeatureType::ProvableSummedMerkNode(sum) => {
+            TreeFeatureType::ProvableSummedMerkNode(own_sum(sum)?)
+        }
+        TreeFeatureType::ProvableCountedSummedMerkNode(count, sum) => {
+            TreeFeatureType::ProvableCountedSummedMerkNode(own_count(count)?, own_sum(sum)?)
+        }
+        TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => {
+            TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(
+                own_count(count)?,
+                own_sum(sum)?,
+            )
+        }
+        own => own,
+    })
 }
 
 #[cfg(test)]
@@ -2127,8 +2242,28 @@ mod tests {
         make_element: impl Fn(u8) -> Element,
     ) {
         let grove_version = GroveVersion::latest();
+        let batch: Vec<(Vec<u8>, crate::tree::Op)> = (0u8..12)
+            .map(|i| {
+                let element = make_element(i);
+                let feature_type = element
+                    .get_feature_type(tree_type)
+                    .expect("feature type for element");
+                let bytes = element.serialize(grove_version).expect("serialize element");
+                (vec![i], crate::tree::Op::Put(bytes, feature_type))
+            })
+            .collect();
+        drive_multi_node_chunk_round_trip(tree_type, batch);
+    }
 
-        // Source merk with 12 element-valued leaves.
+    /// Build a source merk of `tree_type` from `batch`, stream every chunk
+    /// of it through a `Restorer`, finalize, and require the restored merk
+    /// to match the source's root hash and aggregate data.
+    fn drive_multi_node_chunk_round_trip(
+        tree_type: TreeType,
+        batch: Vec<(Vec<u8>, crate::tree::Op)>,
+    ) {
+        let grove_version = GroveVersion::latest();
+
         let storage = TempStorage::new();
         let tx = storage.start_transaction();
         let mut source_merk = Merk::open_base(
@@ -2141,16 +2276,6 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        let batch: Vec<(Vec<u8>, crate::tree::Op)> = (0u8..12)
-            .map(|i| {
-                let element = make_element(i);
-                let feature_type = element
-                    .get_feature_type(tree_type)
-                    .expect("feature type for element");
-                let bytes = element.serialize(grove_version).expect("serialize element");
-                (vec![i], crate::tree::Op::Put(bytes, feature_type))
-            })
-            .collect();
         source_merk
             .apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
@@ -2222,6 +2347,83 @@ mod tests {
         });
         multi_node_provable_chunk_round_trip(TreeType::ProvableCountProvableSumTree, |i| {
             Element::new_item_with_sum_item(vec![i], i64::from(i) * 5 - 20)
+        });
+    }
+
+    /// A value that is deliberately not a GroveDB `Element`: discriminant
+    /// byte 0xFE is unallocated, so both `ElementType::from_serialized_value`
+    /// (chunk producer) and `Element::deserialize` (aggregate rewrite)
+    /// reject it. This is what the exported raw-merk API stores.
+    fn raw_value(i: u8) -> Vec<u8> {
+        vec![0xFE, i, 0xAA, 0xBB]
+    }
+
+    /// The same multi-node round trip over a RAW merk — values that are
+    /// not GroveDB `Element`s, which is the whole point of the exported
+    /// `ChunkProducer` / `Restorer` API.
+    ///
+    /// A non-`Element` value makes the chunk producer fall back to
+    /// `Node::KVValueHashFeatureType`, and for a `Provable*` host
+    /// `to_kv_value_hash_feature_type_node` fills that feature type with
+    /// the node's SUBTREE aggregate (the verifier hashes the aggregate,
+    /// not the own contribution). `rewrite_aggregates` cannot re-derive
+    /// an own contribution from such a value, so it must recover it by
+    /// subtracting the recomputed child aggregates from the proof-carried
+    /// subtree total. Retaining the total as the node's own contribution
+    /// double-counts every descendant, and `finalize`'s `verify` then
+    /// rejects a perfectly valid restore.
+    fn multi_node_raw_provable_chunk_round_trip(
+        tree_type: TreeType,
+        make_feature_type: impl Fn(u8) -> TreeFeatureType,
+    ) {
+        let batch: Vec<(Vec<u8>, crate::tree::Op)> = (0u8..12)
+            .map(|i| {
+                (
+                    vec![i],
+                    crate::tree::Op::Put(raw_value(i), make_feature_type(i)),
+                )
+            })
+            .collect();
+        drive_multi_node_chunk_round_trip(tree_type, batch);
+    }
+
+    #[test]
+    fn restore_multi_node_raw_provable_trees_round_trip() {
+        multi_node_raw_provable_chunk_round_trip(TreeType::ProvableCountTree, |_| {
+            TreeFeatureType::ProvableCountedMerkNode(1)
+        });
+        multi_node_raw_provable_chunk_round_trip(TreeType::ProvableSumTree, |i| {
+            TreeFeatureType::ProvableSummedMerkNode(i64::from(i) * 3 - 10)
+        });
+        multi_node_raw_provable_chunk_round_trip(TreeType::ProvableCountProvableSumTree, |i| {
+            TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(1, i64::from(i) * 5 - 20)
+        });
+        // The fourth aggregate `to_kv_value_hash_feature_type_node`
+        // substitutes: only the count is bound into the node hash, but
+        // both halves travel as subtree totals and both must be
+        // decomposed.
+        multi_node_raw_provable_chunk_round_trip(TreeType::ProvableCountSumTree, |i| {
+            TreeFeatureType::ProvableCountedSummedMerkNode(1, i64::from(i) * 4 - 14)
+        });
+    }
+
+    /// The raw-merk fallback must not disturb the non-provable aggregate
+    /// hosts, whose proof nodes carry the node's OWN feature value (their
+    /// aggregates do not participate in the node hash). Subtracting child
+    /// aggregates from an own value would corrupt exactly these.
+    #[test]
+    fn restore_multi_node_raw_non_provable_aggregate_trees_round_trip() {
+        multi_node_raw_provable_chunk_round_trip(TreeType::SumTree, |i| {
+            TreeFeatureType::SummedMerkNode(i64::from(i) * 3 - 10)
+        });
+        multi_node_raw_provable_chunk_round_trip(TreeType::CountTree, |_| {
+            TreeFeatureType::CountedMerkNode(1)
+        });
+        multi_node_raw_provable_chunk_round_trip(TreeType::CountSumTree, |i| {
+            TreeFeatureType::CountedSummedMerkNode(1, i64::from(i) * 2 - 6)
+        });
+        multi_node_raw_provable_chunk_round_trip(TreeType::BigSumTree, |i| {
+            TreeFeatureType::BigSummedMerkNode(i128::from(i) * 7 - 30)
         });
     }
 }
