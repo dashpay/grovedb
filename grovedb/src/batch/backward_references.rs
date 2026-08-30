@@ -696,11 +696,31 @@ pub(super) fn expand_backward_references_ops(
             | GroveOp::InsertIfNotExists { element, .. }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element } => {
                 if let Element::BidirectionalReference(reference, _) = element {
-                    expansion.store.stage_pending_reference(
-                        position.clone(),
-                        reference.forward_reference_path.clone(),
-                        reference.max_hop,
-                    );
+                    // A conditional insert whose gate will SKIP it must not
+                    // advertise a pending edge: `InsertIfNotExists` over an
+                    // existing position writes nothing, so the STORED edge
+                    // stays authoritative for prospective-component checks.
+                    // (One op per position, and cascades refuse user-op
+                    // positions, so existence here is stable through
+                    // planning.) An erroring gate fails the whole batch
+                    // anyway, making its staleness irrelevant.
+                    let will_write = if matches!(
+                        op_kind,
+                        GroveOp::InsertIfNotExists { .. }
+                            | GroveOp::InsertWithKnownToNotAlreadyExist { .. }
+                    ) {
+                        cost_return_on_error!(&mut cost, expansion.store.element_at(&path, &key))
+                            .is_none()
+                    } else {
+                        true
+                    };
+                    if will_write {
+                        expansion.store.stage_pending_reference(
+                            position.clone(),
+                            reference.forward_reference_path.clone(),
+                            reference.max_hop,
+                        );
+                    }
                     bidi_op_indices.push(index);
                     continue;
                 }

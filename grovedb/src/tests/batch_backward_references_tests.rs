@@ -2036,3 +2036,158 @@ fn batch_paired_upstream_updates_validate_against_pending_edges() {
         Err(Error::BidirectionalReferenceRule(_))
     ));
 }
+
+/// A conditional insert whose gate will SKIP it must not advertise a
+/// pending edge: retargeting B while an `insert_if_not_exists_or_skip_op`
+/// "raises" the budget of the ALREADY-EXISTING upstream A is rejected in
+/// both op orders — the conditional writes nothing, so A's stored budget
+/// governs the component.
+#[test]
+fn batch_skipped_conditional_does_not_relax_upstream_budget() {
+    let grove_version = GroveVersion::latest();
+    let a_with = |max_hop: u8| {
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"b".to_vec()),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: Some(max_hop),
+            },
+            None,
+        )
+    };
+    let build = || {
+        let db = make_test_grovedb(grove_version);
+        for (key, element) in [
+            (
+                b"c".as_slice(),
+                Element::new_item_allowing_bidirectional_references(b"c".to_vec()),
+            ),
+            (
+                b"e",
+                Element::new_item_allowing_bidirectional_references(b"e".to_vec()),
+            ),
+            (b"b", sibling_bidi(b"c", true)),
+            (b"d", sibling_bidi(b"e", true)),
+        ] {
+            db.insert(&[TEST_LEAF], key, element, None, None, grove_version)
+                .unwrap()
+                .unwrap();
+        }
+        db.insert(&[TEST_LEAF], b"a", a_with(2), None, None, grove_version)
+            .unwrap()
+            .unwrap();
+        db
+    };
+
+    for flip in [false, true] {
+        let db = build();
+        let mut ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"b".to_vec(),
+                sibling_bidi(b"d", true),
+            ),
+            QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+                vec![TEST_LEAF.to_vec()],
+                b"a".to_vec(),
+                a_with(3),
+            ),
+        ];
+        if flip {
+            ops.reverse();
+        }
+        assert!(
+            matches!(
+                db.apply_batch(ops, batch_flag_on(), None, grove_version)
+                    .unwrap(),
+                Err(Error::BidirectionalReferenceRule(_))
+            ),
+            "a skipped conditional must not relax the stored budget (flip: {flip})"
+        );
+        // The stored graph is untouched and still reads through A.
+        assert!(db
+            .verify_grovedb(None, true, true, grove_version)
+            .unwrap()
+            .is_empty());
+    }
+}
+
+/// A detached ancestor must not consume component budget: with stored
+/// `A -> B`, retargeting A away in the same batch lets B take a
+/// downstream chain of exactly `MAX_REFERENCE_HOPS` — the boundary case
+/// the walk previously rejected by counting the detached A as hop one.
+#[test]
+fn batch_detached_ancestor_frees_full_downstream_budget() {
+    use crate::operations::get::MAX_REFERENCE_HOPS;
+
+    let grove_version = GroveVersion::latest();
+
+    for flip in [false, true] {
+        let db = make_test_grovedb(grove_version);
+        // The full-budget tail: t0 <- t1 <- … <- t9 (10 hops from B).
+        db.insert(
+            &[TEST_LEAF],
+            b"t0",
+            Element::new_item_allowing_bidirectional_references(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        for i in 1..MAX_REFERENCE_HOPS {
+            db.insert(
+                &[TEST_LEAF],
+                format!("t{i}").as_bytes(),
+                sibling_bidi(format!("t{}", i - 1).as_bytes(), true),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        }
+        // Stored A -> B (B currently targets a short chain) and a spare
+        // family item for A's retarget.
+        for (key, element) in [
+            (
+                b"x".as_slice(),
+                Element::new_item_allowing_bidirectional_references(b"x".to_vec()),
+            ),
+            (
+                b"f",
+                Element::new_item_allowing_bidirectional_references(b"f".to_vec()),
+            ),
+            (b"b", sibling_bidi(b"x", true)),
+            (b"a", sibling_bidi(b"b", true)),
+        ] {
+            db.insert(&[TEST_LEAF], key, element, None, None, grove_version)
+                .unwrap()
+                .unwrap();
+        }
+
+        let mut ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"b".to_vec(),
+                sibling_bidi(format!("t{}", MAX_REFERENCE_HOPS - 1).as_bytes(), true),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"a".to_vec(),
+                sibling_bidi(b"f", true),
+            ),
+        ];
+        if flip {
+            ops.reverse();
+        }
+        db.apply_batch(ops, batch_flag_on(), None, grove_version)
+            .unwrap()
+            .expect("the detached A must not count against B's component (flip: {flip})");
+        assert!(db
+            .verify_grovedb(None, true, true, grove_version)
+            .unwrap()
+            .is_empty());
+    }
+}

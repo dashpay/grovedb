@@ -401,10 +401,6 @@ pub(crate) fn plan_reference_insertion(
         let mut current_path = path.to_vec();
         let mut current_key = key.to_vec();
         while let Some(entry) = current_refs.first().cloned() {
-            upstream_hops += 1;
-            if upstream_hops + downstream_hops > MAX_REFERENCE_HOPS {
-                break;
-            }
             match store
                 .resolve_once(&current_path, &current_key, entry.inverted_reference)
                 .unwrap_add_cost(&mut cost)
@@ -458,6 +454,16 @@ pub(crate) fn plan_reference_insertion(
                                 }
                             }
                         };
+                    // The ancestor is a LIVE member of the prospective
+                    // component: only now does it consume a hop —
+                    // detached or stale ancestors above must not count
+                    // (or a retarget of A away from B would wrongly
+                    // charge B's component for A's hop, rejecting a
+                    // downstream chain at exactly the global budget).
+                    upstream_hops += 1;
+                    if upstream_hops + downstream_hops > MAX_REFERENCE_HOPS {
+                        break;
+                    }
                     // Each upstream ancestor's OWN declared budget must
                     // still admit its chain through the retargeted edge:
                     // from this ancestor the chain runs `upstream_hops`
