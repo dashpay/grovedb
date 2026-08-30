@@ -130,6 +130,30 @@ impl GroveOp {
                 Err(e) => Err(e).wrap_with_cost(extra),
             }
         };
+        // The flagged apply path probes a deleted tree's child subtree for
+        // emptiness (a merk open and its root read) before admitting the
+        // deletion — charged whenever the fan-out is active.
+        let flagged_delete_probe = || {
+            let mut probe = OperationCost::default();
+            if backward_references_enabled && fan_out_version != 0 {
+                let key_width = GroveDb::average_case_layer_key_size(
+                    &layer_element_estimates.estimated_layer_sizes,
+                );
+                let node_value_size = layer_element_estimates
+                    .estimated_layer_sizes
+                    .value_with_feature_and_flags_size(grove_version)
+                    .unwrap_or(0);
+                for _ in 0..2 {
+                    let _ = add_average_case_get_merk_node(
+                        &mut probe,
+                        key_width,
+                        node_value_size,
+                        layer_element_estimates.tree_type.inner_node_type(),
+                    );
+                }
+            }
+            probe
+        };
         match self {
             // The internal derived rewrite: a same-size element replace
             // whose node hash is provided precombined — the standard
@@ -311,14 +335,19 @@ impl GroveOp {
                     grove_version,
                 ),
                 backward_references_fan_out(None),
-            ),
-            GroveOp::DeleteTree(tree_type, _) => GroveDb::average_case_merk_delete_tree(
-                key,
-                *tree_type,
-                layer_element_estimates,
-                propagate,
-                grove_version,
-            ),
+            )
+            .add_cost(flagged_delete_probe()),
+            GroveOp::DeleteTree(tree_type, _) => with_fan_out(
+                GroveDb::average_case_merk_delete_tree(
+                    key,
+                    *tree_type,
+                    layer_element_estimates,
+                    propagate,
+                    grove_version,
+                ),
+                backward_references_fan_out(None),
+            )
+            .add_cost(flagged_delete_probe()),
             GroveOp::CommitmentTreeInsert { payload, .. } => {
                 Self::average_case_commitment_tree_insert(
                     payload,

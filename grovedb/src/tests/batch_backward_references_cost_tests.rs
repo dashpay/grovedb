@@ -549,3 +549,38 @@ fn worst_case_estimate_covers_max_fan_out_deep_component() {
         "worst-case estimate {estimate:?} must cover the maximum component shape {actual:?}"
     );
 }
+
+/// The flagged apply path probes a deleted tree's subtree for emptiness
+/// (a merk open plus its root read) before admitting the deletion; the
+/// estimators must charge it — a flagged empty-tree deletion previously
+/// cost more than its worst-case estimate.
+#[test]
+fn worst_case_estimate_covers_flagged_empty_tree_deletion() {
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    db.insert(
+        &[TEST_LEAF],
+        b"sub",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    let ops = vec![QualifiedGroveDbOp::delete_op(
+        vec![TEST_LEAF.to_vec()],
+        b"sub".to_vec(),
+    )];
+    let estimate = worst_case_estimate(ops.clone(), batch_flag_on(), grove_version);
+    let actual = db
+        .apply_batch(ops, batch_flag_on(), None, grove_version)
+        .cost_as_result()
+        .expect("an empty subtree deletes under the flag");
+
+    assert!(
+        estimate.worse_or_eq_than(&actual),
+        "worst-case estimate {estimate:?} must cover the emptiness probe {actual:?}"
+    );
+}

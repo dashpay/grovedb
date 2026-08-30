@@ -3729,3 +3729,111 @@ fn verify_grovedb_reports_missing_forward_registration_and_empty_inverse() {
         "an empty resolved inverse path must be reported"
     );
 }
+
+/// Retargeting an edge must revalidate every UPSTREAM ancestor's declared
+/// budget against the new downstream length: `A(max_hop=2) -> B -> C` is
+/// valid, but retargeting B onto a two-hop chain would leave A needing
+/// three hops — reads through A would deterministically fail, so the
+/// retarget is rejected atomically, in live and batch flows alike.
+#[test]
+fn retarget_rejects_upstream_max_hop_violation() {
+    let grove_version = GroveVersion::latest();
+    let build = || {
+        let db = db_with_bwr_item();
+        // B -> value, A(max_hop=2) -> B: A's chain is exactly 2 hops.
+        db.insert(
+            &[TEST_LEAF],
+            b"b",
+            sibling_bidi(b"value", true),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        db.insert(
+            &[TEST_LEAF],
+            b"a",
+            Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"b".to_vec()),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: Some(2),
+                flags: None,
+            }),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        // An independent two-hop tail: d -> e.
+        db.insert(
+            &[TEST_LEAF],
+            b"e",
+            Element::new_item_allowing_bidirectional_references(b"tail".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        db.insert(
+            &[TEST_LEAF],
+            b"d",
+            sibling_bidi(b"e", true),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        db
+    };
+
+    // Live retarget of B onto d -> e: A would need 3 hops.
+    let db = build();
+    assert!(matches!(
+        db.insert(
+            &[TEST_LEAF],
+            b"b",
+            sibling_bidi(b"d", true),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap(),
+        Err(Error::BidirectionalReferenceRule(_))
+    ));
+    // A still resolves through the unchanged chain.
+    assert_eq!(
+        db.get(&[TEST_LEAF], b"a", None, grove_version)
+            .unwrap()
+            .unwrap(),
+        Element::new_item_allowing_bidirectional_references(b"hello".to_vec()),
+    );
+
+    // The flagged batch flow shares the planner and rejects identically.
+    let db = build();
+    assert!(matches!(
+        db.apply_batch(
+            vec![crate::batch::QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"b".to_vec(),
+                sibling_bidi(b"d", true),
+            )],
+            Some(crate::batch::BatchApplyOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            None,
+            grove_version,
+        )
+        .unwrap(),
+        Err(Error::BidirectionalReferenceRule(_))
+    ));
+    assert!(db
+        .verify_grovedb(None, true, true, grove_version)
+        .unwrap()
+        .is_empty());
+}

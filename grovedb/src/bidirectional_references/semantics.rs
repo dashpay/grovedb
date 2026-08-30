@@ -401,6 +401,26 @@ pub(crate) fn plan_reference_insertion(
                         &current_key,
                     ) =>
                 {
+                    // Each upstream ancestor's OWN declared budget must
+                    // still admit its chain through the retargeted edge:
+                    // from this ancestor the chain runs `upstream_hops`
+                    // hops down to the position being written, then the
+                    // new `downstream_hops` beyond it. Without this, a
+                    // valid `A(max_hop=2) -> B -> C` breaks silently when
+                    // B is retargeted onto a two-hop chain — reads
+                    // through A would deterministically hit
+                    // `ReferenceLimit`.
+                    if let Element::BidirectionalReference(ref ancestor) = resolved.element
+                        && let Some(declared) = ancestor.max_hop
+                        && (declared as usize) < upstream_hops + downstream_hops
+                    {
+                        return Err(Error::BidirectionalReferenceRule(format!(
+                            "an upstream referrer's chain would need {} hops but its max_hop \
+                             declares {declared}",
+                            upstream_hops + downstream_hops
+                        )))
+                        .wrap_with_cost(cost);
+                    }
                     current_refs = resolved
                         .element
                         .backward_references()
