@@ -814,6 +814,180 @@ mod tests {
         assert_eq!(source_hash, dest_hash);
     }
 
+    /// The other end of the empty-payload check: an entirely empty grove
+    /// is the one case where the ROOT subtree legitimately answers with
+    /// no chunk at all. Its restorer carries the `app_hash` directly
+    /// rather than a parent binding, so the empty-tree commitment it must
+    /// match is the bare `NULL_HASH` — a case the ordinary
+    /// `combine_hash(H(element), NULL_HASH)` form would reject.
+    #[test]
+    fn sync_of_an_entirely_empty_grove_succeeds() {
+        let grove_version = GroveVersion::latest();
+        let source = make_empty_grovedb();
+        let dest = run_sync(&source, grove_version, 64, None).expect("empty grove should sync");
+
+        assert_eq!(
+            source.root_hash(None, grove_version).unwrap().unwrap(),
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+        );
+    }
+
+    /// Byzantine-source coverage for the empty-payload path.
+    ///
+    /// An empty per-subtree payload is the honest wire signal for a
+    /// subtree that really is empty: the source finds `is_empty_tree()`
+    /// and sends no chunk. Nothing is applied for it, so no chunk is ever
+    /// verified against the hash the parent committed to.
+    ///
+    /// A source that answers "empty" for a POPULATED subtree must
+    /// therefore be rejected right at completion. Nothing downstream can
+    /// catch it: the restored Merk's root hash is NULL either way, and
+    /// the final GroveDB root-hash check cannot see it — the parent Merk
+    /// already stores the source-committed combined child hash, and the
+    /// root hash is never re-derived from the child's actual contents.
+    /// Left unchecked, a byzantine source silently nulls out any subtree
+    /// (and everything below it) and still commits a "verified" restore.
+    #[test]
+    fn state_sync_empty_payload_for_a_populated_subtree_is_rejected() {
+        use grovedb_storage::rocksdb_storage::RocksDbStorage;
+
+        use crate::replication::utils::{
+            decode_global_chunk_id, pack_nested_bytes, unpack_nested_bytes,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"child",
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert child subtree");
+        for i in 0..8u32 {
+            source
+                .insert(
+                    [TEST_LEAF, b"child"].as_ref(),
+                    &i.to_be_bytes(),
+                    Element::new_item(vec![i as u8; 32]),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("should insert item into child");
+        }
+        // A grandchild, so a successful hollowing-out would also erase a
+        // whole branch rather than a single subtree's leaves.
+        source
+            .insert(
+                [TEST_LEAF, b"child"].as_ref(),
+                b"grandchild",
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert grandchild subtree");
+
+        let source_hash = source
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get source hash");
+
+        // The subtree the byzantine source will claim is empty.
+        let victim_path: &[&[u8]] = &[TEST_LEAF, b"child"];
+        let victim_prefix = RocksDbStorage::build_prefix(victim_path.into()).unwrap();
+
+        let dest = make_empty_grovedb();
+        let empty_dest_hash = dest
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get empty destination hash");
+        let mut session = dest
+            .start_snapshot_syncing(source_hash, 64, CURRENT_STATE_SYNC_VERSION, grove_version)
+            .expect("should start snapshot syncing");
+
+        let mut chunk_queue: VecDeque<Vec<u8>> = VecDeque::new();
+        chunk_queue.push_back(source_hash.to_vec());
+
+        let mut hollowed_out = false;
+        let mut apply_error = None;
+        while let Some(chunk_id) = chunk_queue.pop_front() {
+            let chunk_data = source
+                .fetch_chunk(
+                    chunk_id.as_slice(),
+                    None,
+                    CURRENT_STATE_SYNC_VERSION,
+                    grove_version,
+                )
+                .expect("should fetch chunk");
+
+            // Replace the victim's payload with exactly what the source
+            // emits for a genuinely empty Merk: one empty local chunk.
+            let global_ids: Vec<Vec<u8>> = if chunk_id.as_slice() == source_hash.as_slice() {
+                vec![chunk_id.clone()]
+            } else {
+                unpack_nested_bytes(&chunk_id).expect("should unpack chunk ids")
+            };
+            let global_data =
+                unpack_nested_bytes(&chunk_data).expect("should unpack chunk payloads");
+            assert_eq!(global_ids.len(), global_data.len());
+            let mut mutated = Vec::with_capacity(global_data.len());
+            for (gid, gdata) in global_ids.iter().zip(global_data) {
+                let (prefix, ..) =
+                    decode_global_chunk_id(gid, &source_hash).expect("should decode chunk id");
+                if prefix == victim_prefix {
+                    hollowed_out = true;
+                    mutated.push(pack_nested_bytes(vec![vec![]]).expect("should pack empty chunk"));
+                } else {
+                    mutated.push(gdata);
+                }
+            }
+            let chunk_data = pack_nested_bytes(mutated).expect("should repack payloads");
+
+            match session.apply_chunk(
+                chunk_id.as_slice(),
+                &chunk_data,
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            ) {
+                Ok(more_ids) => chunk_queue.extend(more_ids),
+                Err(e) => {
+                    apply_error = Some(e);
+                    break;
+                }
+            }
+        }
+
+        assert!(
+            hollowed_out,
+            "the test never reached the victim subtree, so it proves nothing"
+        );
+        let err = apply_error.expect(
+            "an empty payload for a populated subtree must be rejected while applying chunks",
+        );
+        assert!(
+            format!("{err}").contains("empty payload for a subtree"),
+            "unexpected error: {err}"
+        );
+
+        drop(session);
+        assert_eq!(
+            dest.root_hash(None, grove_version)
+                .unwrap()
+                .expect("should get destination hash after the rejected sync"),
+            empty_dest_hash,
+            "a rejected sync must leave the destination untouched"
+        );
+    }
+
     #[test]
     fn is_sync_completed_returns_false_before_any_sync() {
         let grove_version = GroveVersion::latest();

@@ -1311,10 +1311,35 @@ impl<'db> MultiStateSyncSession<'db> {
                     match prefix_data.restorer {
                         SubtreeRestorer::Merk(restorer) => {
                             if is_subtree_empty {
-                                // For empty subtrees, verify the restorer's underlying merk
-                                // has a NULL root hash. A malicious peer that sends empty
-                                // data for a non-empty subtree will be caught here (and
-                                // also at commit time via H3 root hash verification).
+                                // An empty payload means no chunk ever
+                                // reached `process_chunk`, so nothing has
+                                // been checked against the commitment the
+                                // parent made to this subtree. Check it
+                                // here, against the empty tree: the
+                                // restorer holds either
+                                // `combine_hash(H(element bytes), child
+                                // root)` from the parent Merk (ordinary
+                                // subtrees) or a bare root hash (indexed
+                                // members), and an empty subtree's root is
+                                // NULL_HASH.
+                                //
+                                // Nothing downstream would catch a
+                                // byzantine source hollowing out a
+                                // populated subtree this way. The restored
+                                // Merk's root hash is NULL either way, and
+                                // the final GroveDB root hash check cannot
+                                // see it: the parent already stores the
+                                // source-committed combined child hash and
+                                // the root hash is never re-derived from
+                                // the child's actual contents.
+                                if !restorer.expects_an_empty_tree() {
+                                    return Err(Error::CorruptedData(format!(
+                                        "state sync source sent an empty payload for a subtree \
+                                         the parent commits to as non-empty (prefix {}, path {:?})",
+                                        hex::encode(chunk_prefix),
+                                        path_to_string(&completed_path),
+                                    )));
+                                }
                                 let merk = restorer.into_merk();
                                 let merk_root = merk.root_hash().unwrap();
                                 if merk_root != grovedb_merk::tree::hash::NULL_HASH {

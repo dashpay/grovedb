@@ -51,7 +51,8 @@ use crate::{
         Node, Op,
     },
     tree::{
-        combine_hash, kv::ValueDefinedCostType, value_hash, AggregateData, RefWalker, TreeNode,
+        combine_hash, hash::NULL_HASH, kv::ValueDefinedCostType, value_hash, AggregateData,
+        RefWalker, TreeNode,
     },
     tree_type::TreeType,
     CryptoHash, Error,
@@ -128,6 +129,40 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// root hash) when no chunks have been processed.
     pub fn into_merk(self) -> Merk<S> {
         self.merk
+    }
+
+    /// Whether the commitment this restorer was constructed against is
+    /// the commitment of an EMPTY tree.
+    ///
+    /// This is the counterpart of [`Self::verify_chunk`] for the one
+    /// payload that never reaches it. A source that answers a root-chunk
+    /// request with no chunk at all is claiming the tree is empty, and
+    /// because nothing is applied, nothing is checked against
+    /// `expected_root_hash`. Asking this question is how the caller
+    /// establishes that "no data" was the honest answer rather than a
+    /// byzantine source hollowing out a populated tree — the restored
+    /// Merk's own root hash cannot: it is NULL either way.
+    ///
+    /// Returns `false` once the root chunk has been processed, since the
+    /// question no longer applies.
+    pub fn expects_an_empty_tree(&self) -> bool {
+        let Some(expected_root_hash) = self
+            .chunk_id_to_root_hash
+            .get(&traversal_instruction_as_vec_bytes(&[]))
+        else {
+            return false;
+        };
+        let empty_commitment = match self.parent_key_value_hash {
+            // Bound to a parent: the parent committed to
+            // `combine_hash(H(element bytes), child root hash)`, and an
+            // empty child's root hash is `NULL_HASH`.
+            Some(parent_key_value_hash) => {
+                combine_hash(&parent_key_value_hash, &NULL_HASH).unwrap()
+            }
+            // Unbound: the expected root hash IS the tree's root hash.
+            None => NULL_HASH,
+        };
+        *expected_root_hash == empty_commitment
     }
 
     /// Processes a chunk at some chunk id, returns the chunks id's of chunks
