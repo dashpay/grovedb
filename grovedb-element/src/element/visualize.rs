@@ -368,26 +368,30 @@ mod tests {
             String::from_utf8_lossy(&out).into_owned()
         };
 
-        let bidi = Element::BidirectionalReference(crate::BidirectionalReference {
-            forward_reference_path: ReferencePathType::SiblingReference(b"t".to_vec()),
-            cascade_on_update: true,
-            max_hop: Some(3),
-            backward_references: Vec::new(),
-            flags: Some(vec![1]),
-        });
+        let bidi = Element::BidirectionalReference(
+            crate::BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"t".to_vec()),
+                cascade_on_update: true,
+                max_hop: Some(3),
+                backward_references: Vec::new(),
+            },
+            Some(vec![1]),
+        );
         let s = render(&bidi);
         assert!(
             s.starts_with("bidi_ref: [") && s.contains("cascade: true") && s.contains("max_hop: 3"),
             "got: {s}"
         );
 
-        let bidi_plain = Element::BidirectionalReference(crate::BidirectionalReference {
-            forward_reference_path: ReferencePathType::SiblingReference(b"t".to_vec()),
-            cascade_on_update: false,
-            max_hop: None,
-            backward_references: Vec::new(),
-            flags: None,
-        });
+        let bidi_plain = Element::BidirectionalReference(
+            crate::BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"t".to_vec()),
+                cascade_on_update: false,
+                max_hop: None,
+                backward_references: Vec::new(),
+            },
+            None,
+        );
         assert!(render(&bidi_plain).contains("max_hop: None"));
 
         let item = Element::ItemWithBackwardsReferences(b"v".to_vec(), Vec::new(), Some(vec![2]));

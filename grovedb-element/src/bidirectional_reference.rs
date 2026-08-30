@@ -118,7 +118,7 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use super::*;
-    use crate::{Element, ElementType, ProofNodeType};
+    use crate::{element::ElementFlags, Element, ElementType, ProofNodeType};
 
     fn sibling_ref() -> ReferencePathType {
         ReferencePathType::SiblingReference(b"target".to_vec())
@@ -132,13 +132,15 @@ mod tests {
     }
 
     fn bidi(flags: Option<ElementFlags>) -> Element {
-        Element::BidirectionalReference(BidirectionalReference {
-            forward_reference_path: sibling_ref(),
-            cascade_on_update: true,
-            max_hop: Some(5),
-            backward_references: Vec::new(),
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: sibling_ref(),
+                cascade_on_update: true,
+                max_hop: Some(5),
+                backward_references: Vec::new(),
+            },
             flags,
-        })
+        )
     }
 
     #[test]
@@ -158,7 +160,7 @@ mod tests {
             ),
             Element::ItemWithBackwardsReferences(b"v".to_vec(), Vec::new(), Some(vec![3]))
         );
-        let Element::BidirectionalReference(full) =
+        let Element::BidirectionalReference(full, full_flags) =
             Element::new_bidirectional_reference_with_options(
                 sibling_ref(),
                 Some(2),
@@ -171,7 +173,7 @@ mod tests {
         assert_eq!(full.max_hop, Some(2));
         assert!(full.cascade_on_update);
         assert!(full.backward_references.is_empty());
-        assert_eq!(full.flags, Some(vec![9]));
+        assert_eq!(full_flags, Some(vec![9]));
     }
 
     #[test]
@@ -245,24 +247,26 @@ mod tests {
         assert!(over_limit.serialize(grove_version).is_err());
 
         // ...and 1 for references.
-        let Element::BidirectionalReference(mut reference) = bidi(None) else {
+        let Element::BidirectionalReference(mut reference, _) = bidi(None) else {
             unreachable!()
         };
         reference.backward_references = vec![backref(b"a"), backref(b"b")];
-        let over_ref = Element::BidirectionalReference(reference);
+        let over_ref = Element::BidirectionalReference(reference, None);
         assert!(over_ref.validate_backward_references_limits().is_err());
         assert!(over_ref.serialize(grove_version).is_err());
     }
 
     #[test]
     fn display_and_type_names_for_the_family() {
-        let bidi_with = Element::BidirectionalReference(BidirectionalReference {
-            forward_reference_path: sibling_ref(),
-            cascade_on_update: false,
-            max_hop: None,
-            backward_references: Vec::new(),
-            flags: Some(vec![7]),
-        });
+        let bidi_with = Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: sibling_ref(),
+                cascade_on_update: false,
+                max_hop: None,
+                backward_references: Vec::new(),
+            },
+            Some(vec![7]),
+        );
         let s = format!("{}", bidi_with);
         assert!(
             s.starts_with("BidirectionalReference(") && s.contains("flags"),
@@ -351,7 +355,7 @@ mod tests {
                 Some(b"me".as_slice()),
             )
             .unwrap();
-        let Element::BidirectionalReference(reference) = absolute else {
+        let Element::BidirectionalReference(reference, _) = absolute else {
             panic!("expected a bidirectional reference");
         };
         assert_eq!(
@@ -363,13 +367,17 @@ mod tests {
             ])
         );
         // An already-absolute forward path is returned unchanged.
-        let element = Element::BidirectionalReference(BidirectionalReference {
-            forward_reference_path: ReferencePathType::AbsolutePathReference(vec![b"x".to_vec()]),
-            cascade_on_update: false,
-            max_hop: None,
-            backward_references: Vec::new(),
-            flags: None,
-        });
+        let element = Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                    b"x".to_vec()
+                ]),
+                cascade_on_update: false,
+                max_hop: None,
+                backward_references: Vec::new(),
+            },
+            None,
+        );
         assert_eq!(
             element
                 .clone()

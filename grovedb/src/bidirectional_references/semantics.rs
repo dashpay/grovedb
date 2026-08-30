@@ -83,6 +83,21 @@ pub(crate) trait ChainStore {
 
     /// The grove version planning runs under.
     fn version(&self) -> &grovedb_version::version::GroveVersion;
+
+    /// The DECLARED final edge of a pending-but-not-yet-planned
+    /// bidirectional-reference write at the position, when the driver
+    /// knows of one (the batch preprocessor's deferred pass-2 ops). The
+    /// prospective component must be validated against these declarations
+    /// — a stored ancestor's budget may be raised, or its edge retargeted
+    /// away, by an op in the same unordered batch. Live flows have no
+    /// pending ops and use the default.
+    fn pending_reference_at(
+        &self,
+        _path: &[Vec<u8>],
+        _key: &[u8],
+    ) -> Option<(ReferencePathType, Option<u8>)> {
+        None
+    }
 }
 
 /// One mutation a plan requires. Mutations are ordered; drivers apply them
@@ -394,15 +409,55 @@ pub(crate) fn plan_reference_insertion(
                 .resolve_once(&current_path, &current_key, entry.inverted_reference)
                 .unwrap_add_cost(&mut cost)
             {
-                Ok(resolved)
-                    if referrer_points_back(
-                        &resolved.element,
-                        &resolved.path,
-                        &resolved.key,
-                        &current_path,
-                        &current_key,
-                    ) =>
-                {
+                Ok(resolved) => {
+                    // The ancestor edge that governs the PROSPECTIVE
+                    // component: a pending bidirectional-reference write
+                    // at the ancestor's position (an op in the same batch,
+                    // deferred to a later planning turn) supersedes the
+                    // stored edge — its declared budget may be raised, or
+                    // its edge retargeted away, in the same unordered
+                    // batch, and acceptance must not depend on op order.
+                    let effective_edge =
+                        match store.pending_reference_at(&resolved.path, &resolved.key) {
+                            Some((pending_forward, pending_max_hop)) => {
+                                let mut current_qualified = current_path.clone();
+                                current_qualified.push(current_key.clone());
+                                let still_points_back = path_from_reference_path_type(
+                                    pending_forward,
+                                    &resolved.path,
+                                    Some(&resolved.key),
+                                )
+                                .map(|qualified| qualified == current_qualified)
+                                .unwrap_or(false);
+                                if !still_points_back {
+                                    // The ancestor is being retargeted AWAY
+                                    // from this component; its budget no
+                                    // longer constrains it (the pending op is
+                                    // validated at its own turn).
+                                    break;
+                                }
+                                Some(pending_max_hop)
+                            }
+                            None => {
+                                if !referrer_points_back(
+                                    &resolved.element,
+                                    &resolved.path,
+                                    &resolved.key,
+                                    &current_path,
+                                    &current_key,
+                                ) {
+                                    // Dangling or stale entries end the live
+                                    // upstream chain.
+                                    break;
+                                }
+                                match resolved.element {
+                                    Element::BidirectionalReference(ref ancestor, _) => {
+                                        Some(ancestor.max_hop)
+                                    }
+                                    _ => None,
+                                }
+                            }
+                        };
                     // Each upstream ancestor's OWN declared budget must
                     // still admit its chain through the retargeted edge:
                     // from this ancestor the chain runs `upstream_hops`
@@ -412,8 +467,7 @@ pub(crate) fn plan_reference_insertion(
                     // B is retargeted onto a two-hop chain — reads
                     // through A would deterministically hit
                     // `ReferenceLimit`.
-                    if let Element::BidirectionalReference(ref ancestor, _) = resolved.element
-                        && let Some(declared) = ancestor.max_hop
+                    if let Some(Some(declared)) = effective_edge
                         && (declared as usize) < upstream_hops + downstream_hops
                     {
                         return Err(Error::BidirectionalReferenceRule(format!(
@@ -423,6 +477,8 @@ pub(crate) fn plan_reference_insertion(
                         )))
                         .wrap_with_cost(cost);
                     }
+                    // Registrations carry over on edge rewrites, so the
+                    // STORED referrer list continues the walk either way.
                     current_refs = resolved
                         .element
                         .backward_references()
@@ -431,7 +487,6 @@ pub(crate) fn plan_reference_insertion(
                     current_path = resolved.path;
                     current_key = resolved.key;
                 }
-                // Dangling or stale entries end the live upstream chain.
                 _ => break,
             }
         }

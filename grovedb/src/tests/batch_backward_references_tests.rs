@@ -1889,3 +1889,150 @@ fn batch_flagged_non_empty_subtree_deletion_is_refused() {
     .unwrap()
     .expect("an empty subtree deletes under the flag");
 }
+
+/// The prospective-component budget must validate against PENDING edges
+/// in the same unordered batch, not just stored state: a batch that
+/// retargets B onto a longer tail AND raises A's `max_hop` has a valid
+/// final state and must be accepted in either op order — and a batch
+/// that retargets A away from B frees B from A's budget entirely.
+#[test]
+fn batch_paired_upstream_updates_validate_against_pending_edges() {
+    let grove_version = GroveVersion::latest();
+    let a_with = |max_hop: u8| {
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"b".to_vec()),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: Some(max_hop),
+            },
+            None,
+        )
+    };
+    let build = || {
+        let db = make_test_grovedb(grove_version);
+        for (key, element) in [
+            (
+                b"c".as_slice(),
+                Element::new_item_allowing_bidirectional_references(b"c".to_vec()),
+            ),
+            (
+                b"e",
+                Element::new_item_allowing_bidirectional_references(b"e".to_vec()),
+            ),
+            (
+                b"f",
+                Element::new_item_allowing_bidirectional_references(b"f".to_vec()),
+            ),
+            (b"b", sibling_bidi(b"c", true)),
+            (b"d", sibling_bidi(b"e", true)),
+        ] {
+            db.insert(&[TEST_LEAF], key, element, None, None, grove_version)
+                .unwrap()
+                .unwrap();
+        }
+        db.insert(&[TEST_LEAF], b"a", a_with(2), None, None, grove_version)
+            .unwrap()
+            .unwrap();
+        db
+    };
+
+    // Retarget B onto d -> e (A now needs 3 hops) AND raise A to 3, in
+    // BOTH op orders: accepted, byte-identical to the live sequential
+    // twin (which must raise A first).
+    for flip in [false, true] {
+        let batch_db = build();
+        let live_db = build();
+        let mut ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"b".to_vec(),
+                sibling_bidi(b"d", true),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"a".to_vec(),
+                a_with(3),
+            ),
+        ];
+        if flip {
+            ops.reverse();
+        }
+        batch_db
+            .apply_batch(ops, batch_flag_on(), None, grove_version)
+            .unwrap()
+            .expect("the paired update is valid against A's PENDING budget (flip: {flip})");
+        live_db
+            .insert(&[TEST_LEAF], b"a", a_with(3), None, None, grove_version)
+            .unwrap()
+            .unwrap();
+        live_db
+            .insert(
+                &[TEST_LEAF],
+                b"b",
+                sibling_bidi(b"d", true),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        roots_match(&batch_db, &live_db, grove_version);
+    }
+
+    // Retargeting A AWAY from B in the same batch frees B from A's
+    // budget: accepted in both op orders too.
+    for flip in [false, true] {
+        let batch_db = build();
+        let a_away = Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"f".to_vec()),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: Some(2),
+            },
+            None,
+        );
+        let mut ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"b".to_vec(),
+                sibling_bidi(b"d", true),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"a".to_vec(),
+                a_away.clone(),
+            ),
+        ];
+        if flip {
+            ops.reverse();
+        }
+        batch_db
+            .apply_batch(ops, batch_flag_on(), None, grove_version)
+            .unwrap()
+            .expect("A detaches from B in the same batch; B's retarget is free (flip: {flip})");
+        assert!(batch_db
+            .verify_grovedb(None, true, true, grove_version)
+            .unwrap()
+            .is_empty());
+    }
+
+    // Control: retargeting B alone (stored A still declares 2) stays
+    // rejected.
+    let db = build();
+    assert!(matches!(
+        db.apply_batch(
+            vec![QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"b".to_vec(),
+                sibling_bidi(b"d", true),
+            )],
+            batch_flag_on(),
+            None,
+            grove_version,
+        )
+        .unwrap(),
+        Err(Error::BidirectionalReferenceRule(_))
+    ));
+}

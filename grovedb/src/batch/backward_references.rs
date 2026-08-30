@@ -102,6 +102,13 @@ pub(super) struct OverlayChainStore<'db, 'g> {
     /// staged parent does not exist there yet, and opening it would fail
     /// the whole (otherwise valid) batch.
     fresh_subtrees: RefCell<HashSet<Vec<Vec<u8>>>>,
+    /// DECLARED final edges of `BidirectionalReference` ops deferred to
+    /// pass 2 and not yet planned: the prospective component budget must
+    /// validate against these (a stored ancestor's budget may be raised,
+    /// or its edge retargeted away, in the same unordered batch). Entries
+    /// are removed as their ops get planned (or dissolve), after which the
+    /// overlay carries the authoritative staged state.
+    pending_references: RefCell<HashMap<Position, (ReferencePathType, Option<u8>)>>,
 }
 
 impl<'db, 'g> OverlayChainStore<'db, 'g> {
@@ -112,7 +119,25 @@ impl<'db, 'g> OverlayChainStore<'db, 'g> {
             version,
             overlay: RefCell::new(HashMap::new()),
             fresh_subtrees: RefCell::new(HashSet::new()),
+            pending_references: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Record the declared final edge of a pass-2 reference op.
+    fn stage_pending_reference(
+        &self,
+        position: Position,
+        forward: ReferencePathType,
+        max_hop: Option<u8>,
+    ) {
+        self.pending_references
+            .borrow_mut()
+            .insert(position, (forward, max_hop));
+    }
+
+    /// Remove a pending declaration once its op is planned or dissolves.
+    fn clear_pending_reference(&self, position: &Position) {
+        self.pending_references.borrow_mut().remove(position);
     }
 
     /// Stage the pending state of a position.
@@ -294,6 +319,17 @@ impl<'db, 'g> ChainStore for OverlayChainStore<'db, 'g> {
 
     fn version(&self) -> &GroveVersion {
         self.version
+    }
+
+    fn pending_reference_at(
+        &self,
+        path: &[Vec<u8>],
+        key: &[u8],
+    ) -> Option<(ReferencePathType, Option<u8>)> {
+        self.pending_references
+            .borrow()
+            .get(&(path.to_vec(), key.to_vec()))
+            .cloned()
     }
 }
 
@@ -659,7 +695,12 @@ pub(super) fn expand_backward_references_ops(
             | GroveOp::Patch { element, .. }
             | GroveOp::InsertIfNotExists { element, .. }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element } => {
-                if matches!(element, Element::BidirectionalReference(..)) {
+                if let Element::BidirectionalReference(reference, _) = element {
+                    expansion.store.stage_pending_reference(
+                        position.clone(),
+                        reference.forward_reference_path.clone(),
+                        reference.max_hop,
+                    );
                     bidi_op_indices.push(index);
                     continue;
                 }
@@ -931,7 +972,9 @@ pub(super) fn expand_backward_references_ops(
                     ))
                     .wrap_with_cost(cost);
                 }
-                // Writes nothing; the op dissolves.
+                // Writes nothing; the op dissolves — the STORED edge is
+                // authoritative again for prospective-component checks.
+                expansion.store.clear_pending_reference(&(path, key));
                 expansion.ops[index] = None;
                 continue;
             }
@@ -970,6 +1013,12 @@ pub(super) fn expand_backward_references_ops(
             .wrap_with_cost(cost);
         }
 
+        // The op is being planned NOW: its declaration graduates from
+        // "pending" — its own upstream walk must read the state around it,
+        // and after planning the overlay carries its staged element.
+        expansion
+            .store
+            .clear_pending_reference(&(path.clone(), key.clone()));
         let plan = cost_return_on_error!(
             &mut cost,
             plan_reference_insertion(&expansion.store, &path, &key, reference, reference_flags)
