@@ -1204,3 +1204,261 @@ fn batch_bidi_ops_keep_caller_authority_rules() {
         .unwrap()
         .is_empty());
 }
+
+// ─── Review round: merge restrictions + fresh subtrees ──────────────────
+
+/// An `InsertIfNotExists` over an EXISTING key writes nothing: a
+/// registration landing on that position must survive as a derived op
+/// instead of being folded into the op that never executes.
+#[test]
+fn batch_no_op_insert_if_not_exists_does_not_swallow_registration() {
+    use grovedb_merk::element::get::ElementFetchFromStorageExtensions;
+    use grovedb_path::SubtreePath;
+
+    let grove_version = GroveVersion::latest();
+    let build = || {
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            &[TEST_LEAF],
+            b"value",
+            Element::new_item_allowing_bidirectional_references(b"hello".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        db
+    };
+    let (batch_db, live_db) = (build(), build());
+
+    batch_db
+        .apply_batch(
+            vec![
+                QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"value".to_vec(),
+                    Element::new_item(b"loser".to_vec()),
+                ),
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"ref".to_vec(),
+                    sibling_bidi(b"value", true),
+                ),
+            ],
+            batch_flag_on(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+    // The live twin: the conditional insert is a no-op, then the reference.
+    live_db
+        .insert(
+            &[TEST_LEAF],
+            b"ref",
+            sibling_bidi(b"value", true),
+            flag_on(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+    // The registration must exist on the target.
+    let tx = batch_db.start_transaction();
+    let merk = batch_db
+        .open_transactional_merk_at_path(SubtreePath::from(&[TEST_LEAF]), &tx, None, grove_version)
+        .unwrap()
+        .unwrap();
+    let target = Element::get(&merk, b"value", true, grove_version)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        target.backward_references().unwrap().len(),
+        1,
+        "the registration must not be swallowed by the non-executing insert"
+    );
+    drop(merk);
+    drop(tx);
+
+    roots_match(&batch_db, &live_db, grove_version);
+}
+
+/// A propagation rewrite colliding with a LATER plain overwrite of the
+/// same position must be superseded by that overwrite — the caller's
+/// write wins, with the dereg bookkeeping its displacement requires —
+/// in either op order, matching sequential execution.
+#[test]
+fn batch_later_plain_overwrite_supersedes_propagation() {
+    let grove_version = GroveVersion::latest();
+
+    for flip in [false, true] {
+        let (batch_db, live_db) = twin_dbs_with_chain(grove_version);
+
+        let updated = Element::new_item_allowing_bidirectional_references(b"updated".to_vec());
+        let squatter = Element::new_item(b"squatter".to_vec());
+        let mut ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"value".to_vec(),
+                updated.clone(),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"r2".to_vec(),
+                squatter.clone(),
+            ),
+        ];
+        if flip {
+            ops.reverse();
+        }
+        batch_db
+            .apply_batch(ops, batch_flag_on(), None, grove_version)
+            .unwrap()
+            .unwrap();
+
+        // The live twin executes the same canonical order.
+        let live_ops: Vec<(&[u8], Element)> = if flip {
+            vec![(b"r2", squatter.clone()), (b"value", updated.clone())]
+        } else {
+            vec![(b"value", updated.clone()), (b"r2", squatter.clone())]
+        };
+        for (key, element) in live_ops {
+            live_db
+                .insert(&[TEST_LEAF], key, element, flag_on(), None, grove_version)
+                .unwrap()
+                .unwrap();
+        }
+
+        // The caller's plain overwrite must have landed.
+        assert_eq!(
+            batch_db
+                .get(&[TEST_LEAF], b"r2", None, grove_version)
+                .unwrap()
+                .unwrap(),
+            Element::new_item(b"squatter".to_vec()),
+            "the caller's overwrite must not be discarded by the propagation (flip: {flip})"
+        );
+        roots_match(&batch_db, &live_db, grove_version);
+    }
+}
+
+/// A flagged batch can create a subtree and populate it — with ordinary
+/// items, family items, and references — in the same batch: reads under
+/// the staged subtree resolve through the overlay, never committed
+/// storage (which does not hold the parent yet).
+///
+/// Exact root parity with a live sequential twin is NOT asserted here:
+/// batch-built and sequentially-built merks legitimately differ in tree
+/// shape when constructing a FRESH subtree (a long-standing property of
+/// plain unflagged batches too). The master root-parity invariant covers
+/// deltas on existing trees; fresh construction asserts semantic
+/// equivalence and order-insensitivity of the expansion instead.
+#[test]
+fn batch_populates_a_subtree_created_in_the_same_batch() {
+    use grovedb_merk::element::get::ElementFetchFromStorageExtensions;
+    use grovedb_path::SubtreePath;
+
+    let grove_version = GroveVersion::latest();
+    let sub_path = vec![TEST_LEAF.to_vec(), b"sub".to_vec()];
+    let nested_path = vec![TEST_LEAF.to_vec(), b"sub".to_vec(), b"nested".to_vec()];
+    let ops = || {
+        vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"sub".to_vec(),
+                Element::empty_tree(),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                sub_path.clone(),
+                b"plain".to_vec(),
+                Element::new_item(b"p".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                sub_path.clone(),
+                b"family".to_vec(),
+                Element::new_item_allowing_bidirectional_references(b"f".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                sub_path.clone(),
+                b"ref".to_vec(),
+                sibling_bidi(b"family", true),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                sub_path.clone(),
+                b"nested".to_vec(),
+                Element::empty_tree(),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                nested_path.clone(),
+                b"deep".to_vec(),
+                Element::new_item(b"d".to_vec()),
+            ),
+        ]
+    };
+
+    let batch_db = make_test_grovedb(grove_version);
+    batch_db
+        .apply_batch(ops(), batch_flag_on(), None, grove_version)
+        .unwrap()
+        .expect("a batch may create and populate a subtree under the flag");
+
+    // The expansion is order-insensitive: the reversed op order (children
+    // before their parent trees, reference before its target) produces the
+    // byte-identical root.
+    let reversed_db = make_test_grovedb(grove_version);
+    let mut reversed = ops();
+    reversed.reverse();
+    reversed_db
+        .apply_batch(reversed, batch_flag_on(), None, grove_version)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        batch_db.root_hash(None, grove_version).unwrap().unwrap(),
+        reversed_db.root_hash(None, grove_version).unwrap().unwrap(),
+        "op order must not change the outcome"
+    );
+
+    // The bookkeeping landed: the in-subtree registration exists and the
+    // reference resolves through the fresh subtree.
+    let tx = batch_db.start_transaction();
+    let merk = batch_db
+        .open_transactional_merk_at_path(
+            SubtreePath::from(&[TEST_LEAF, b"sub".as_slice()]),
+            &tx,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+    let family = Element::get(&merk, b"family", true, grove_version)
+        .unwrap()
+        .unwrap();
+    assert_eq!(family.backward_references().unwrap().len(), 1);
+    drop(merk);
+    drop(tx);
+    assert_eq!(
+        batch_db
+            .get(&[TEST_LEAF, b"sub".as_slice()], b"ref", None, grove_version)
+            .unwrap()
+            .unwrap(),
+        Element::new_item_allowing_bidirectional_references(b"f".to_vec()),
+    );
+    assert_eq!(
+        batch_db
+            .get(
+                &[TEST_LEAF, b"sub".as_slice(), b"nested".as_slice()],
+                b"deep",
+                None,
+                grove_version
+            )
+            .unwrap()
+            .unwrap(),
+        Element::new_item(b"d".to_vec()),
+    );
+    assert!(batch_db
+        .verify_grovedb(None, true, true, grove_version)
+        .unwrap()
+        .is_empty());
+}

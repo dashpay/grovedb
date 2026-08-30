@@ -239,7 +239,10 @@ fn fan_out_terms_activate_only_with_the_flag() {
     let unflagged_avg = average_case_estimate(family_op(), None, grove_version);
     assert!(flagged_avg.seek_count > unflagged_avg.seek_count);
 
-    // …and a plain-item op charges no fan-out even under the flag.
+    // …and a PLAIN-item op also charges the displaced-state fan-out under
+    // the flag: the estimator cannot see the stored element the write
+    // lands on, which may be a registered family element whose
+    // propagation/cascade the preprocessor must perform.
     let plain_op = vec![QualifiedGroveDbOp::insert_or_replace_op(
         vec![TEST_LEAF.to_vec()],
         b"value".to_vec(),
@@ -247,9 +250,120 @@ fn fan_out_terms_activate_only_with_the_flag() {
     )];
     let flagged_plain = worst_case_estimate(plain_op.clone(), batch_flag_on(), grove_version);
     let unflagged_plain = worst_case_estimate(plain_op, None, grove_version);
-    assert_eq!(
-        flagged_plain, unflagged_plain,
-        "plain element writes must not pick up fan-out terms"
+    assert!(
+        flagged_plain.seek_count > unflagged_plain.seek_count,
+        "plain writes must charge the displaced-state bound under the flag"
+    );
+}
+
+/// The reviewer-reported gap: a flagged PLAIN overwrite landing on a
+/// registered family element triggers real propagation work in
+/// preprocessing — the worst-case estimate must cover it.
+#[test]
+fn worst_case_estimate_covers_flagged_plain_overwrite_of_registered_target() {
+    let grove_version = GroveVersion::latest();
+    let db = db_with_chain(grove_version);
+
+    let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+        vec![TEST_LEAF.to_vec()],
+        b"value".to_vec(),
+        Element::new_item(b"plain".to_vec()),
+    )];
+    let estimate = worst_case_estimate(ops.clone(), batch_flag_on(), grove_version);
+    let actual = db
+        .apply_batch(ops, batch_flag_on(), None, grove_version)
+        .cost_as_result()
+        .expect("apply succeeds — the chain cascades");
+
+    assert!(
+        estimate.worse_or_eq_than(&actual),
+        "worst-case estimate {estimate:?} must cover the displaced-state work {actual:?}"
+    );
+}
+
+/// The registration entry stored on the target serializes the referrer's
+/// QUALIFIED ORIGIN path (an absolute inversion carries every segment): a
+/// deep origin pointing at a shallow target must still be covered by the
+/// worst-case added-bytes bound.
+#[test]
+fn worst_case_estimate_covers_deep_origin_registration_growth() {
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+
+    // An eight-level origin with 200-byte segment names.
+    let mut deep_path: Vec<Vec<u8>> = vec![TEST_LEAF.to_vec()];
+    for i in 0..7u8 {
+        let segment = vec![b'a' + i; 200];
+        let path_refs: Vec<&[u8]> = deep_path.iter().map(|p| p.as_slice()).collect();
+        db.insert(
+            path_refs.as_slice(),
+            &segment,
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        deep_path.push(segment);
+    }
+    db.insert(
+        &[TEST_LEAF],
+        b"value",
+        Element::new_item_allowing_bidirectional_references(b"hello".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+        deep_path.clone(),
+        b"ref".to_vec(),
+        Element::BidirectionalReference(BidirectionalReference {
+            forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec(),
+                b"value".to_vec(),
+            ]),
+            backward_references: Vec::new(),
+            cascade_on_update: true,
+            max_hop: None,
+            flags: None,
+        }),
+    )];
+
+    // Declare a layer for the op's path and every ancestor level the
+    // estimator bubbles through.
+    let mut paths = worst_case_layers();
+    let mut ancestor = Vec::new();
+    for segment in &deep_path {
+        ancestor.push(KeyInfo::KnownKey(segment.clone()));
+        paths.insert(KeyInfoPath(ancestor.clone()), MaxElementsNumber(4));
+    }
+    let estimate = GroveDb::estimated_case_operations_for_batch(
+        WorstCaseCostsType(paths),
+        ops.clone(),
+        batch_flag_on(),
+        |_cost, _old_flags, _new_flags| Ok(false),
+        |_flags, _removed_key_bytes, _removed_value_bytes| {
+            Ok((
+                grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval,
+                grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval,
+            ))
+        },
+        grove_version,
+    )
+    .cost_as_result()
+    .expect("expected worst case costs");
+    let actual = db
+        .apply_batch(ops, batch_flag_on(), None, grove_version)
+        .cost_as_result()
+        .expect("apply succeeds");
+
+    assert!(
+        estimate.worse_or_eq_than(&actual),
+        "worst-case estimate {estimate:?} must cover the deep-origin registration {actual:?}"
     );
 }
 

@@ -48,6 +48,10 @@ impl GroveOp {
     /// CostResult.
     fn average_case_cost(
         &self,
+        // The op's own path: sizes the inverted-registration growth bound
+        // (every `invert()` output is built from the origin's qualified
+        // path).
+        path: &KeyInfoPath,
         key: &KeyInfo,
         layer_element_estimates: &EstimatedLayerInformation,
         // The declared chunk power of the append-only tree this op targets
@@ -85,30 +89,28 @@ impl GroveOp {
                 return None;
             }
             match element {
-                Some(reference @ Element::BidirectionalReference(..)) => {
-                    // The registration entry appended to the target: the
-                    // inverted forward path (bounded by the reference's own
-                    // encoded size plus a key-sized re-anchoring term) and
-                    // the cascade flag with framing.
-                    let entry_bound = reference
-                        .serialized_size(grove_version)
-                        .map(|size| size as u32)
-                        .unwrap_or(0)
-                        .saturating_add(key.max_length() as u32)
-                        .saturating_add(16);
+                Some(Element::BidirectionalReference(..)) => {
+                    // The registration entry appended to the target: an
+                    // inverted path built from the referrer's qualified
+                    // origin (this op's path segments plus its key — an
+                    // absolute inversion serializes them all), the cascade
+                    // flag, and framing.
+                    let origin_bytes: u32 = path
+                        .0
+                        .iter()
+                        .map(|segment| 4 + segment.max_length() as u32)
+                        .sum::<u32>()
+                        .saturating_add(4 + key.max_length() as u32);
+                    let entry_bound = origin_bytes.saturating_add(16);
                     Some(super::BackwardReferencesFanOut::average_reference(
                         entry_bound,
                     ))
                 }
-                Some(
-                    Element::ItemWithBackwardsReferences(..)
-                    | Element::SumItemWithBackwardsReferences(..)
-                    | Element::ItemWithSumItemWithBackwardsReferences(..),
-                )
-                // A delete cannot see what it deletes; under the flag it
-                // may cascade, so it charges the item fan-out.
-                | None => Some(super::BackwardReferencesFanOut::average_item()),
-                Some(_) => None,
+                // The estimator cannot see the STORED element the op
+                // displaces (or deletes): any write can land on a
+                // registered family element needing propagation/cascade
+                // work, so every write charges the typical item shape.
+                Some(_) | None => Some(super::BackwardReferencesFanOut::average_item()),
             }
         };
         let with_fan_out = |base: CostResult<(), Error>,
@@ -1055,6 +1057,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             cost_return_on_error!(
                 &mut cost,
                 op.average_case_cost(
+                    path,
                     &key,
                     layer_element_estimates,
                     append_tree_chunk_power,
@@ -2156,11 +2159,27 @@ mod tests {
         // The V4+ model requires the tree's chunk power (normally read from
         // the tree's own declared layer); an undeclared dispatch errors.
         assert!(op
-            .average_case_cost(&key, &layer_info, None, false, false, grove_version)
+            .average_case_cost(
+                &KeyInfoPath(vec![]),
+                &key,
+                &layer_info,
+                None,
+                false,
+                false,
+                grove_version
+            )
             .cost_as_result()
             .is_err());
         let cost = op
-            .average_case_cost(&key, &layer_info, Some(10), false, false, grove_version)
+            .average_case_cost(
+                &KeyInfoPath(vec![]),
+                &key,
+                &layer_info,
+                Some(10),
+                false,
+                false,
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected cost for commitment tree insert");
         // CommitmentTreeInsert includes frontier I/O and buffer writes plus
@@ -2207,7 +2226,15 @@ mod tests {
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
         let cost = op
-            .average_case_cost(&key, &layer_info, None, false, false, grove_version)
+            .average_case_cost(
+                &KeyInfoPath(vec![]),
+                &key,
+                &layer_info,
+                None,
+                false,
+                false,
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected cost for mmr tree append");
         // MmrTreeAppend includes parent replace cost plus MMR node I/O.
@@ -2248,7 +2275,15 @@ mod tests {
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
         let cost = op
-            .average_case_cost(&key, &layer_info, None, false, false, grove_version)
+            .average_case_cost(
+                &KeyInfoPath(vec![]),
+                &key,
+                &layer_info,
+                None,
+                false,
+                false,
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected cost for bulk append");
         // BulkAppend includes parent replace cost plus buffer write + running
@@ -2284,7 +2319,15 @@ mod tests {
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
         let cost = op
-            .average_case_cost(&key, &layer_info, Some(4), false, false, grove_version)
+            .average_case_cost(
+                &KeyInfoPath(vec![]),
+                &key,
+                &layer_info,
+                Some(4),
+                false,
+                false,
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected cost for private document store insert");
         // PrivateDocumentStoreInsert mirrors BulkAppend: parent replace cost
@@ -2312,16 +2355,32 @@ mod tests {
             entry: vec![42u8; 128],
         };
         let cost_large = op_large
-            .average_case_cost(&key, &layer_info, Some(4), false, false, grove_version)
+            .average_case_cost(
+                &KeyInfoPath(vec![]),
+                &key,
+                &layer_info,
+                Some(4),
+                false,
+                false,
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected cost for larger entry");
 
         // Undeclared layer must fail loudly rather than silently guessing a
         // chunk power, matching the CommitmentTreeInsert contract.
         assert!(
-            op.average_case_cost(&key, &layer_info, None, false, false, grove_version)
-                .cost_as_result()
-                .is_err(),
+            op.average_case_cost(
+                &KeyInfoPath(vec![]),
+                &key,
+                &layer_info,
+                None,
+                false,
+                false,
+                grove_version
+            )
+            .cost_as_result()
+            .is_err(),
             "estimation without a declared PrivateDocumentStore layer must error"
         );
 
@@ -2330,11 +2389,27 @@ mod tests {
         // smaller amortized compaction share — the hash figure is exactly
         // the model's plus the compaction bound plus the three roots.
         let small = op
-            .average_case_cost(&key, &layer_info, Some(2), false, false, grove_version)
+            .average_case_cost(
+                &KeyInfoPath(vec![]),
+                &key,
+                &layer_info,
+                Some(2),
+                false,
+                false,
+                grove_version,
+            )
             .cost_as_result()
             .expect("cost at chunk_power 2");
         let big = op
-            .average_case_cost(&key, &layer_info, Some(10), false, false, grove_version)
+            .average_case_cost(
+                &KeyInfoPath(vec![]),
+                &key,
+                &layer_info,
+                Some(10),
+                false,
+                false,
+                grove_version,
+            )
             .cost_as_result()
             .expect("cost at chunk_power 10");
         let own_hashes = |chunk_power: u8| {
@@ -2381,7 +2456,15 @@ mod tests {
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
         let cost = op
-            .average_case_cost(&key, &layer_info, None, false, false, grove_version)
+            .average_case_cost(
+                &KeyInfoPath(vec![]),
+                &key,
+                &layer_info,
+                None,
+                false,
+                false,
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected cost for dense tree insert");
         // DenseTreeInsert includes parent replace cost plus value write and
@@ -2425,7 +2508,15 @@ mod tests {
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
         let cost = op
-            .average_case_cost(&key, &layer_info, None, false, false, grove_version)
+            .average_case_cost(
+                &KeyInfoPath(vec![]),
+                &key,
+                &layer_info,
+                None,
+                false,
+                false,
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected cost for replace non-merk tree root");
         // ReplaceNonMerkTreeRoot delegates to average_case_merk_replace_tree.
@@ -2460,7 +2551,15 @@ mod tests {
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
         let cost = op
-            .average_case_cost(&key, &layer_info, None, false, false, grove_version)
+            .average_case_cost(
+                &KeyInfoPath(vec![]),
+                &key,
+                &layer_info,
+                None,
+                false,
+                false,
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected cost for insert non-merk tree");
         // InsertNonMerkTree delegates to average_case_merk_insert_tree.
@@ -2509,9 +2608,17 @@ mod tests {
                 not_summed,
                 not_counted_or_summed,
             };
-            op.average_case_cost(&key, &layer_info, None, false, false, grove_version)
-                .cost_as_result()
-                .expect("expected cost for InsertTreeWithRootHash")
+            op.average_case_cost(
+                &KeyInfoPath(vec![]),
+                &key,
+                &layer_info,
+                None,
+                false,
+                false,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected cost for InsertTreeWithRootHash")
         };
         let bare = cost_for(false, false, false);
         let nc = cost_for(true, false, false);
@@ -2563,9 +2670,17 @@ mod tests {
                 meta: NonMerkTreeMeta::MmrTree { mmr_size: 50 },
                 non_counted,
             };
-            op.average_case_cost(&key, &layer_info, None, false, false, grove_version)
-                .cost_as_result()
-                .expect("expected cost for InsertNonMerkTree")
+            op.average_case_cost(
+                &KeyInfoPath(vec![]),
+                &key,
+                &layer_info,
+                None,
+                false,
+                false,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected cost for InsertNonMerkTree")
         };
         let bare = cost_for(false);
         let nc = cost_for(true);
@@ -2602,7 +2717,15 @@ mod tests {
             axes: vec![(0u8, [0xEFu8; 32], Some(b"srk".to_vec()))],
         };
         let cost_count = op_count
-            .average_case_cost(&key, &layer_info, None, false, false, grove_version)
+            .average_case_cost(
+                &KeyInfoPath(vec![]),
+                &key,
+                &layer_info,
+                None,
+                false,
+                false,
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected average case cost for Count cidx replace");
         assert!(cost_count.seek_count > 0 || cost_count.hash_node_calls > 0);
@@ -2614,7 +2737,15 @@ mod tests {
             axes: vec![(0u8, [8u8; 32], None)],
         };
         let cost_pcount = op_pcount
-            .average_case_cost(&key, &layer_info, None, false, true, grove_version)
+            .average_case_cost(
+                &KeyInfoPath(vec![]),
+                &key,
+                &layer_info,
+                None,
+                false,
+                true,
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected average case cost for ProvableCount cidx replace (propagate)");
         assert!(
@@ -3269,13 +3400,29 @@ mod tests {
         };
 
         let arm_cost = op
-            .average_case_cost(&key, &layer_info, None, false, false, grove_version)
+            .average_case_cost(
+                &KeyInfoPath(vec![]),
+                &key,
+                &layer_info,
+                None,
+                false,
+                false,
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected V3 average case cost");
         // A declared chunk power must not change the V3 output — the
         // declared-layer machinery is part of the V4+ model only.
         let arm_cost_with_declared_chunk_power = op
-            .average_case_cost(&key, &layer_info, Some(4), false, false, grove_version)
+            .average_case_cost(
+                &KeyInfoPath(vec![]),
+                &key,
+                &layer_info,
+                Some(4),
+                false,
+                false,
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected V3 average case cost with declared chunk power");
         assert_eq!(arm_cost, arm_cost_with_declared_chunk_power);

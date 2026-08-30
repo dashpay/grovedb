@@ -43,6 +43,10 @@ use crate::{
 impl GroveOp {
     fn worst_case_cost(
         &self,
+        // The op's own path: sizes the inverted-registration growth bound
+        // (every `invert()` output is built from the origin's qualified
+        // path).
+        path: &KeyInfoPath,
         key: &KeyInfo,
         in_parent_tree_type: TreeType,
         worst_case_layer_element_estimates: &WorstCaseLayerInformation,
@@ -72,28 +76,28 @@ impl GroveOp {
                 return None;
             }
             match element {
-                Some(reference @ Element::BidirectionalReference(..)) => {
-                    // The registration entry appended to the target: the
-                    // inverted forward path (bounded by the reference's own
-                    // encoded size plus a key-sized re-anchoring term) and
-                    // the cascade flag with framing.
-                    let entry_bound = reference
-                        .serialized_size(grove_version)
-                        .map(|size| size as u32)
-                        .unwrap_or(0)
-                        .saturating_add(MERK_BIGGEST_KEY_SIZE)
-                        .saturating_add(16);
-                    Some(super::BackwardReferencesFanOut::worst_reference(entry_bound))
+                Some(Element::BidirectionalReference(..)) => {
+                    // The registration entry appended to the target: an
+                    // inverted path built from the referrer's qualified
+                    // origin (this op's path segments plus its key — an
+                    // absolute inversion serializes them all), the cascade
+                    // flag, and framing.
+                    let origin_bytes: u32 = path
+                        .0
+                        .iter()
+                        .map(|segment| 4 + segment.max_length() as u32)
+                        .sum::<u32>()
+                        .saturating_add(4 + key.max_length() as u32);
+                    let entry_bound = origin_bytes.saturating_add(16);
+                    Some(super::BackwardReferencesFanOut::worst_reference(
+                        entry_bound,
+                    ))
                 }
-                Some(
-                    Element::ItemWithBackwardsReferences(..)
-                    | Element::SumItemWithBackwardsReferences(..)
-                    | Element::ItemWithSumItemWithBackwardsReferences(..),
-                )
-                // A delete cannot see what it deletes; under the flag it
-                // may cascade, so it charges the full item fan-out.
-                | None => Some(super::BackwardReferencesFanOut::worst_item()),
-                Some(_) => None,
+                // The estimator cannot see the STORED element the op
+                // displaces (or deletes): any write can land on a
+                // registered family element whose propagation/cascade work
+                // is the full item bound.
+                Some(_) | None => Some(super::BackwardReferencesFanOut::worst_item()),
             }
         };
         let with_fan_out = |base: CostResult<(), Error>,
@@ -788,6 +792,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
             cost_return_on_error!(
                 &mut cost,
                 op.worst_case_cost(
+                    path,
                     &key,
                     TreeType::NormalTree,
                     worst_case_layer_element_estimates,
@@ -1450,6 +1455,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"tree_key".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
@@ -1475,6 +1481,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"tree_key".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
@@ -1499,6 +1506,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"mmr_key".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
@@ -1523,6 +1531,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"bulk_key".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
@@ -1546,6 +1555,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"pds_key".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
@@ -1581,6 +1591,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"dense_key".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
@@ -1608,6 +1619,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"nmerk_key".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
@@ -1631,6 +1643,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"nmerk_mmr".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(50),
@@ -1662,6 +1675,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"new_dense".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
@@ -1693,6 +1707,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"new_bulk".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
@@ -1728,6 +1743,7 @@ mod tests {
                 not_counted_or_summed,
             };
             op.worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
@@ -1783,6 +1799,7 @@ mod tests {
                 non_counted,
             };
             op.worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
@@ -1853,6 +1870,7 @@ mod tests {
         };
         let cost_count = op_count
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
@@ -1879,6 +1897,7 @@ mod tests {
         };
         let cost_pcount = op_pcount
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
@@ -1928,6 +1947,7 @@ mod tests {
 
         let arm_cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &layer_info,
@@ -1987,6 +2007,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"tree_key".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),

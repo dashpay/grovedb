@@ -51,14 +51,23 @@ pub(in crate::batch) fn wrapper_overhead_for(
 // the apply path's hard budgets (`MAX_BACKWARD_REFERENCES` = 32 entries
 // per item, 1 per reference; `MAX_REFERENCE_HOPS` = 10 per component):
 //
+// - The estimator cannot see the STORED element an op displaces, so
+//   EVERY overwrite-capable op and delete under the flag charges the
+//   displaced-state bound — a plain payload can land on a registered
+//   family element whose bookkeeping the preprocessor must perform.
 // - WORST case charges the full bound — an item's referrer graph is at
 //   most 32 chains of at most `MAX_REFERENCE_HOPS` nodes each, every one
-//   rewritten (or cascaded away); a reference insertion touches its
-//   target, its old target, and its single upstream chain.
+//   rewritten (or cascaded away); a reference insertion additionally
+//   touches its target, its old target, and its single upstream chain.
 // - AVERAGE case charges a small typical shape (one referrer chain of two
-//   for items, registration + removal + one propagation for references) —
-//   like the MMR model's trailing-ones average, this is a calibration
-//   constant, not a bound.
+//   for the displaced state, registration + removal + one propagation for
+//   references) — like the MMR model's trailing-ones average, this is a
+//   calibration constant, not a bound.
+// - A reference insertion's registration GROWS the target element by a
+//   `BackwardReference` entry: the inverted path re-anchors at the
+//   referrer's qualified position, so the bound is sized from the op's
+//   OWN path and key (every `invert()` output is built from subsets of
+//   the origin's qualified path plus small scalars).
 //
 // Each derived rewrite is charged as a node load + a node rewrite + a merk
 // propagation, all sized from the op's OWN declared layer — referrer
@@ -124,20 +133,22 @@ pub(in crate::batch) struct BackwardReferencesFanOut {
     pub propagations: u32,
     /// Node GROWTH from registering on the target: the target's element
     /// gains a `BackwardReference` entry (the inverted reference path plus
-    /// the cascade flag), which is added — not replaced — bytes. The
-    /// inverted path is the forward path re-anchored at the referrer's
-    /// qualified position, so it is bounded by the reference's own encoded
-    /// size plus a key-sized re-anchoring term (computed by the caller,
-    /// which sees the element and the key widths).
+    /// the cascade flag), which is added — not replaced — bytes. Every
+    /// `invert()` output is built from subsets of the referrer's qualified
+    /// origin path plus small scalars, so the caller sizes this bound from
+    /// the op's own path segments and key.
     pub registration_added_bytes: u32,
 }
 
 #[cfg(feature = "minimal")]
 impl BackwardReferencesFanOut {
-    /// The worst-case fan-out of an op carrying (or deleting) a
-    /// backward-references ITEM variant: every rewrite may live in its own
-    /// subtree, so each charges a propagation. Propagation rewrites and
-    /// cascade deletions never grow nodes.
+    /// The worst-case fan-out of any overwrite-capable op (or delete)
+    /// under the flag. The estimator cannot see the STORED element the op
+    /// displaces: a plain payload can still land on a registered family
+    /// element, whose propagation/cascade work is the full item bound —
+    /// so every write and delete charges it. Every rewrite may live in
+    /// its own subtree, so each charges a propagation. Propagation
+    /// rewrites and cascade deletions never grow nodes.
     pub(in crate::batch) fn worst_item() -> Self {
         Self {
             rewrites: BACKWARD_REFERENCES_WORST_ITEM_FAN_OUT,
@@ -147,18 +158,25 @@ impl BackwardReferencesFanOut {
         }
     }
 
-    /// The worst-case fan-out of a `BidirectionalReference` insertion.
+    /// The worst-case fan-out of a `BidirectionalReference` insertion:
+    /// its own registration/propagation terms PLUS the displaced-state
+    /// item bound (the reference can overwrite a registered family
+    /// element, cascading its referrers).
     pub(in crate::batch) fn worst_reference(registration_added_bytes: u32) -> Self {
         Self {
-            rewrites: BACKWARD_REFERENCES_WORST_REFERENCE_FAN_OUT,
-            resolution_loads: BACKWARD_REFERENCES_WORST_REFERENCE_RESOLUTION_LOADS,
-            propagations: BACKWARD_REFERENCES_WORST_REFERENCE_FAN_OUT,
+            rewrites: BACKWARD_REFERENCES_WORST_ITEM_FAN_OUT
+                + BACKWARD_REFERENCES_WORST_REFERENCE_FAN_OUT,
+            resolution_loads: BACKWARD_REFERENCES_WORST_ITEM_FAN_OUT
+                + BACKWARD_REFERENCES_WORST_REFERENCE_RESOLUTION_LOADS,
+            propagations: BACKWARD_REFERENCES_WORST_ITEM_FAN_OUT
+                + BACKWARD_REFERENCES_WORST_REFERENCE_FAN_OUT,
             registration_added_bytes,
         }
     }
 
-    /// The average-case fan-out of an op carrying (or deleting) a
-    /// backward-references ITEM variant.
+    /// The average-case fan-out of any overwrite-capable op (or delete)
+    /// under the flag: the displaced element is unseen, so every write
+    /// charges the typical item shape.
     pub(in crate::batch) fn average_item() -> Self {
         Self {
             rewrites: BACKWARD_REFERENCES_AVERAGE_ITEM_FAN_OUT,
@@ -168,11 +186,14 @@ impl BackwardReferencesFanOut {
         }
     }
 
-    /// The average-case fan-out of a `BidirectionalReference` insertion.
+    /// The average-case fan-out of a `BidirectionalReference` insertion:
+    /// reference terms plus the typical displaced-item shape.
     pub(in crate::batch) fn average_reference(registration_added_bytes: u32) -> Self {
         Self {
-            rewrites: BACKWARD_REFERENCES_AVERAGE_REFERENCE_FAN_OUT,
-            resolution_loads: BACKWARD_REFERENCES_AVERAGE_REFERENCE_RESOLUTION_LOADS,
+            rewrites: BACKWARD_REFERENCES_AVERAGE_ITEM_FAN_OUT
+                + BACKWARD_REFERENCES_AVERAGE_REFERENCE_FAN_OUT,
+            resolution_loads: BACKWARD_REFERENCES_AVERAGE_ITEM_FAN_OUT
+                + BACKWARD_REFERENCES_AVERAGE_REFERENCE_RESOLUTION_LOADS,
             propagations: 1,
             registration_added_bytes,
         }

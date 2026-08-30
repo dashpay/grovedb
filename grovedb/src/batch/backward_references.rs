@@ -50,7 +50,14 @@
 //! - `RefreshReference` on a position holding a bidirectional reference →
 //!   rejected (re-insert the reference through a flagged op instead);
 //! - registrations onto targets written in the same batch merge into the
-//!   target op's element — the one merge the design requires.
+//!   target op's element — but ONLY into an already-processed,
+//!   guaranteed-to-execute family write (`InsertIfNotExists` over an
+//!   existing key writes nothing and is dropped outright, so no rewrite
+//!   can be folded into an op that never lands);
+//! - a rewrite hitting a write op LATER in the canonical order is kept as
+//!   a derived op and superseded when that op's own turn comes — its
+//!   processing drops the pending derived op and plans the bookkeeping its
+//!   own overwrite requires, preserving sequential semantics.
 
 use std::{
     cell::RefCell,
@@ -89,6 +96,12 @@ pub(super) struct OverlayChainStore<'db, 'g> {
     /// Staged pending state: `Some(element)` = the batch writes this,
     /// `None` = the batch deletes the position. Absent = untouched.
     overlay: RefCell<HashMap<Position, Option<Element>>>,
+    /// Qualified paths of subtrees whose prospective content is defined by
+    /// the batch alone: a tree element written where committed storage held
+    /// no tree. Reads beneath them must not touch committed storage — the
+    /// staged parent does not exist there yet, and opening it would fail
+    /// the whole (otherwise valid) batch.
+    fresh_subtrees: RefCell<HashSet<Vec<Vec<u8>>>>,
 }
 
 impl<'db, 'g> OverlayChainStore<'db, 'g> {
@@ -98,12 +111,26 @@ impl<'db, 'g> OverlayChainStore<'db, 'g> {
             tx,
             version,
             overlay: RefCell::new(HashMap::new()),
+            fresh_subtrees: RefCell::new(HashSet::new()),
         }
     }
 
     /// Stage the pending state of a position.
     fn stage(&self, position: Position, element: Option<Element>) {
         self.overlay.borrow_mut().insert(position, element);
+    }
+
+    /// Record that the subtree at `qualified` is created by this batch with
+    /// no committed counterpart (fresh — its prospective content is only
+    /// what later ops stage under it).
+    fn stage_fresh_subtree(&self, qualified: Vec<Vec<u8>>) {
+        self.fresh_subtrees.borrow_mut().insert(qualified);
+    }
+
+    /// Whether `path` lies at or below a batch-created fresh subtree.
+    fn under_fresh_subtree(&self, path: &[Vec<u8>]) -> bool {
+        let fresh = self.fresh_subtrees.borrow();
+        (1..=path.len()).any(|i| fresh.contains(&path[..i]))
     }
 
     fn resolve_position(
@@ -140,6 +167,12 @@ impl<'db, 'g> ChainStore for OverlayChainStore<'db, 'g> {
             .cloned()
         {
             return Ok(staged).wrap_with_cost(OperationCost::default());
+        }
+        // Below a subtree this batch creates, committed storage has nothing
+        // — not even the parent tree. Everything that exists there is in
+        // the overlay (checked above).
+        if self.under_fresh_subtree(path) {
+            return Ok(None).wrap_with_cost(OperationCost::default());
         }
         let mut cost = OperationCost::default();
         let path_slices: Vec<&[u8]> = path.iter().map(|p| p.as_slice()).collect();
@@ -307,8 +340,15 @@ impl<'db, 'g> Expansion<'db, 'g> {
     }
 
     /// Apply a plan's mutations: stage each into the overlay and merge it
-    /// into the batch per the M4 conflict rules.
-    fn apply_mutations(&mut self, mutations: Vec<DerivedMutation>) -> CostResult<(), Error> {
+    /// into the batch per the M4 conflict rules. `current_index` is the
+    /// position in the canonical sequential order of the op whose plan
+    /// these mutations come from (`usize::MAX` in pass 2, where every
+    /// non-reference op has been processed).
+    fn apply_mutations(
+        &mut self,
+        mutations: Vec<DerivedMutation>,
+        current_index: usize,
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         for mutation in mutations {
             match mutation {
@@ -325,22 +365,48 @@ impl<'db, 'g> Expansion<'db, 'g> {
                         .get(&position)
                         .copied()
                         .filter(|i| self.ops[*i].is_some());
-                    if let Some(index) = retained_user_op {
-                        let user_op = self.ops[index].as_mut().expect("filtered above");
+                    // A rewrite may fold into the user op's payload ONLY
+                    // when that op has already been processed in the
+                    // canonical order, is guaranteed to execute, and holds
+                    // a family element the rewrite semantically extends
+                    // (op element + registration/cleanup). Everything else
+                    // stays a separate derived op:
+                    // - an unprocessed op (a later overwrite, or a pass-2
+                    //   BidirectionalReference) supersedes the rewrite when
+                    //   its own turn comes — folding would either discard
+                    //   the caller's payload or resurrect a write the
+                    //   caller replaced;
+                    // - conditional inserts that turned out not to execute
+                    //   are dropped at processing time, so a retained op
+                    //   here always writes.
+                    let mergeable_into_user_op = retained_user_op
+                        .filter(|&index| index < current_index)
+                        .filter(|&index| {
+                            let user_op = self.ops[index].as_ref().expect("retained above");
+                            match &user_op.op {
+                                GroveOp::InsertOrReplace {
+                                    element: op_element,
+                                }
+                                | GroveOp::Replace {
+                                    element: op_element,
+                                }
+                                | GroveOp::Patch {
+                                    element: op_element,
+                                    ..
+                                }
+                                | GroveOp::InsertIfNotExists {
+                                    element: op_element,
+                                    ..
+                                }
+                                | GroveOp::InsertWithKnownToNotAlreadyExist {
+                                    element: op_element,
+                                } => is_family_item(op_element),
+                                _ => false,
+                            }
+                        });
+                    if let Some(index) = mergeable_into_user_op {
+                        let user_op = self.ops[index].as_mut().expect("retained above");
                         match &mut user_op.op {
-                            // A registration or propagation rewrite landing
-                            // on a position whose element the batch itself
-                            // writes:
-                            // - an unprocessed BidirectionalReference op
-                            //   keeps the user's payload (its own planning
-                            //   will resolve everything freshly); the
-                            //   rewrite is staged as a derived op which
-                            //   that planning later replaces (or keeps, on
-                            //   an identical-edge no-op);
-                            // - a family-item write absorbs the rewrite:
-                            //   the mutation's element IS the op's element
-                            //   plus the registration/cleanup, so it
-                            //   replaces the op's payload in place.
                             GroveOp::InsertOrReplace {
                                 element: op_element,
                             }
@@ -357,39 +423,52 @@ impl<'db, 'g> Expansion<'db, 'g> {
                             }
                             | GroveOp::InsertWithKnownToNotAlreadyExist {
                                 element: op_element,
-                            } => {
-                                if matches!(op_element, Element::BidirectionalReference(..)) {
-                                    let node_value_hash = cost_return_on_error!(
-                                        &mut cost,
-                                        derived_node_value_hash(
-                                            &element,
-                                            end_hash,
-                                            self.store.version
-                                        )
-                                    );
-                                    self.derived.insert(
-                                        position.clone(),
-                                        QualifiedGroveDbOp {
-                                            path: KeyInfoPath::from_known_owned_path(path),
-                                            key: Some(KeyInfo::KnownKey(key)),
-                                            op: GroveOp::ReplaceBackwardReferenceFamilyMember {
-                                                element: element.clone(),
-                                                node_value_hash,
-                                            },
-                                        },
-                                    );
-                                } else {
-                                    *op_element = element.clone();
-                                }
-                            }
-                            _ => {
-                                return Err(Error::InvalidBatchOperation(
-                                    "a derived backward-references rewrite conflicts with \
-                                     another operation in the batch",
-                                ))
-                                .wrap_with_cost(cost);
-                            }
+                            } => *op_element = element.clone(),
+                            _ => unreachable!("filtered to family-write kinds above"),
                         }
+                        self.store.stage(position, Some(element));
+                    } else if let Some(index) = retained_user_op {
+                        // Retained but not mergeable: allowed only for
+                        // write kinds whose own processing supersedes this
+                        // rewrite (unprocessed writes and pass-2 reference
+                        // ops). Deletes and refreshes stay fail-closed.
+                        let user_op = self.ops[index].as_ref().expect("retained above");
+                        let (colliding_write, payload_is_bidi) = match &user_op.op {
+                            GroveOp::InsertOrReplace { element }
+                            | GroveOp::Replace { element }
+                            | GroveOp::Patch { element, .. }
+                            | GroveOp::InsertIfNotExists { element, .. }
+                            | GroveOp::InsertWithKnownToNotAlreadyExist { element } => {
+                                (true, matches!(element, Element::BidirectionalReference(..)))
+                            }
+                            _ => (false, false),
+                        };
+                        // A BidirectionalReference payload is processed in
+                        // pass 2 whatever its index, so it always counts as
+                        // still-to-come here.
+                        let processed = index < current_index && !payload_is_bidi;
+                        if !colliding_write || processed {
+                            return Err(Error::InvalidBatchOperation(
+                                "a derived backward-references rewrite conflicts with \
+                                 another operation in the batch",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        let node_value_hash = cost_return_on_error!(
+                            &mut cost,
+                            derived_node_value_hash(&element, end_hash, self.store.version)
+                        );
+                        self.derived.insert(
+                            position.clone(),
+                            QualifiedGroveDbOp {
+                                path: KeyInfoPath::from_known_owned_path(path),
+                                key: Some(KeyInfo::KnownKey(key)),
+                                op: GroveOp::ReplaceBackwardReferenceFamilyMember {
+                                    element: element.clone(),
+                                    node_value_hash,
+                                },
+                            },
+                        );
                         self.store.stage(position, Some(element));
                     } else {
                         let node_value_hash = cost_return_on_error!(
@@ -481,6 +560,45 @@ pub(super) fn expand_backward_references_ops(
     }
     expansion.ops = ops.into_iter().map(Some).collect();
 
+    // Fresh-subtree pre-scan: a tree written where committed storage holds
+    // no tree defines a subtree whose prospective content exists only in
+    // the overlay. Marked BEFORE any op processing — shallowest paths
+    // first, so a nested new tree sees its parent already marked — because
+    // the batch is unordered: an op under such a subtree may appear before
+    // the op creating it, and its previous-state read must not touch
+    // committed storage (the parent does not exist there).
+    let mut tree_write_positions: Vec<Position> = expansion
+        .ops
+        .iter()
+        .flatten()
+        .filter_map(|op| match &op.op {
+            GroveOp::InsertOrReplace { element }
+            | GroveOp::Replace { element }
+            | GroveOp::InsertIfNotExists { element, .. }
+            | GroveOp::InsertWithKnownToNotAlreadyExist { element }
+                if element.is_any_tree() =>
+            {
+                Expansion::op_position(op)
+            }
+            _ => None,
+        })
+        .collect();
+    tree_write_positions.sort_by_key(|(path, _)| path.len());
+    for (path, key) in tree_write_positions {
+        let previous_is_tree = if expansion.store.under_fresh_subtree(&path) {
+            false
+        } else {
+            cost_return_on_error!(&mut cost, expansion.store.element_at(&path, &key))
+                .map(|p| p.is_any_tree())
+                .unwrap_or(false)
+        };
+        if !previous_is_tree {
+            let mut qualified = path;
+            qualified.push(key);
+            expansion.store.stage_fresh_subtree(qualified);
+        }
+    }
+
     // Pass 1: every non-reference op in user order. Each op's effect is
     // staged into the overlay; item-family and bidi-position bookkeeping is
     // planned against DB-plus-overlay. `BidirectionalReference` ops are
@@ -561,13 +679,12 @@ pub(super) fn expand_backward_references_ops(
                             .wrap_with_cost(cost);
                         }
                         // InsertIfNotExists over an existing key writes
-                        // nothing. Drop the op so a later derived rewrite
-                        // of the position (e.g. a registration on the
-                        // stored element) doesn't collide with an op that
-                        // never lands.
-                        if is_family_item(&element) {
-                            expansion.ops[index] = None;
-                        }
+                        // nothing — for ANY payload. Drop the op entirely
+                        // so a later derived rewrite of the position (e.g.
+                        // a registration on the stored element) lands as a
+                        // derived op instead of being folded into an op
+                        // that never executes and silently swallowed.
+                        expansion.ops[index] = None;
                         continue;
                     }
                     if is_known_new && is_family_item(&element) {
@@ -593,6 +710,12 @@ pub(super) fn expand_backward_references_ops(
                     expansion
                         .store
                         .stage(position.clone(), Some(element.clone()));
+                    // This write comes LATER in the canonical order than
+                    // any derived rewrite already recorded for the
+                    // position (an earlier op's propagation): the write
+                    // supersedes it, and this op's own planning below
+                    // handles the bookkeeping the displaced element needs.
+                    expansion.derived.remove(&position);
                     if !previous_needs_bookkeeping {
                         continue;
                     }
@@ -613,7 +736,10 @@ pub(super) fn expand_backward_references_ops(
                             Some(element.clone())
                         )
                     );
-                    cost_return_on_error!(&mut cost, expansion.apply_mutations(plan.mutations));
+                    cost_return_on_error!(
+                        &mut cost,
+                        expansion.apply_mutations(plan.mutations, index)
+                    );
                 } else {
                     // Fresh insert: no bookkeeping (fresh family items get
                     // their empty authoritative list above).
@@ -638,7 +764,7 @@ pub(super) fn expand_backward_references_ops(
                     &mut cost,
                     plan_element_update(&expansion.store, &path, &key, previous, None)
                 );
-                cost_return_on_error!(&mut cost, expansion.apply_mutations(plan.mutations));
+                cost_return_on_error!(&mut cost, expansion.apply_mutations(plan.mutations, index));
             }
             GroveOp::RefreshReference {
                 reference_path_type,
@@ -793,7 +919,10 @@ pub(super) fn expand_backward_references_ops(
         expansion.ops[index] = None;
 
         if let Some(plan) = plan {
-            cost_return_on_error!(&mut cost, expansion.apply_mutations(plan.mutations));
+            cost_return_on_error!(
+                &mut cost,
+                expansion.apply_mutations(plan.mutations, usize::MAX)
+            );
         }
     }
 
