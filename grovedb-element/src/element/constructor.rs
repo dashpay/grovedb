@@ -131,13 +131,15 @@ impl Element {
     /// `backward_references` list is bookkeeping maintained by insertion —
     /// anything supplied here is overwritten by the write path.
     pub fn new_bidirectional_reference(reference_path: ReferencePathType) -> Self {
-        Element::BidirectionalReference(crate::bidirectional_reference::BidirectionalReference {
-            forward_reference_path: reference_path,
-            cascade_on_update: false,
-            max_hop: None,
-            backward_references: Vec::new(),
-            flags: None,
-        })
+        Element::BidirectionalReference(
+            crate::bidirectional_reference::BidirectionalReference {
+                forward_reference_path: reference_path,
+                cascade_on_update: false,
+                max_hop: None,
+                backward_references: Vec::new(),
+            },
+            None,
+        )
     }
 
     /// Set element to a bidirectional reference with every knob exposed. The
@@ -148,13 +150,15 @@ impl Element {
         cascade_on_update: bool,
         flags: Option<ElementFlags>,
     ) -> Self {
-        Element::BidirectionalReference(crate::bidirectional_reference::BidirectionalReference {
-            forward_reference_path: reference_path,
-            cascade_on_update,
-            max_hop,
-            backward_references: Vec::new(),
+        Element::BidirectionalReference(
+            crate::bidirectional_reference::BidirectionalReference {
+                forward_reference_path: reference_path,
+                cascade_on_update,
+                max_hop,
+                backward_references: Vec::new(),
+            },
             flags,
-        })
+        )
     }
 
     /// Set element to an item with sum value (no flags)

@@ -2156,10 +2156,13 @@ where
             // path) resolves through its forward path like any reference.
             Element::Reference(path, ..)
             | Element::ReferenceWithSumItem(path, ..)
-            | Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path: path,
-                ..
-            }) => {
+            | Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: path,
+                    ..
+                },
+                _,
+            ) => {
                 let path = cost_return_on_error_into_no_add!(
                     cost,
                     path_from_reference_qualified_path_type(path.clone(), qualified_path)
@@ -2267,7 +2270,7 @@ where
                         let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                         Ok(val_hash).wrap_with_cost(cost)
                     }
-                    Element::BidirectionalReference(reference) => {
+                    Element::BidirectionalReference(reference, _) => {
                         let path = cost_return_on_error_into_no_add!(
                             cost,
                             path_from_reference_qualified_path_type(
@@ -2383,7 +2386,7 @@ where
                         // backward-references flag the preprocessor converts
                         // these ops into the derived form, handled above;
                         // this arm keeps the dispatch total.)
-                        Element::BidirectionalReference(reference) => {
+                        Element::BidirectionalReference(reference, _) => {
                             let path = cost_return_on_error_into_no_add!(
                                 cost,
                                 path_from_reference_qualified_path_type(
@@ -2474,7 +2477,7 @@ where
                         let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                         Ok(val_hash).wrap_with_cost(cost)
                     }
-                    Element::BidirectionalReference(reference) => {
+                    Element::BidirectionalReference(reference, _) => {
                         let path = cost_return_on_error_into_no_add!(
                             cost,
                             path_from_reference_qualified_path_type(

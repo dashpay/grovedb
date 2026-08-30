@@ -115,7 +115,7 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
                 current_ref = ref_path;
                 hops_left -= 1;
             }
-            Element::BidirectionalReference(reference) => {
+            Element::BidirectionalReference(reference, _) => {
                 current_path = referred_path;
                 current_key = referred_key;
                 current_ref = reference.forward_reference_path;

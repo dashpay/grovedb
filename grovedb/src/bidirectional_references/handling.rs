@@ -229,6 +229,7 @@ pub(crate) fn process_bidirectional_reference_insertion<'b, B: AsRef<[u8]>>(
     path: SubtreePath<'b, B>,
     key: &[u8],
     reference: BidirectionalReference,
+    flags: Option<crate::element::ElementFlags>,
     options: Option<InsertOptions>,
 ) -> CostResult<(), Error> {
     let mut cost = Default::default();
@@ -236,7 +237,7 @@ pub(crate) fn process_bidirectional_reference_insertion<'b, B: AsRef<[u8]>>(
     let store = MerkCacheChainStore(merk_cache);
     let plan = cost_return_on_error!(
         &mut cost,
-        plan_reference_insertion(&store, &path.to_vec(), key, reference)
+        plan_reference_insertion(&store, &path.to_vec(), key, reference, flags)
     );
     let Some(plan) = plan else {
         // Identical logical edge: a true no-op.

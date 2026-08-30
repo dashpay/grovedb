@@ -138,7 +138,7 @@ fn insert_with_backward_references<'db, 'b, B: AsRef<[u8]>>(
     }
 
     match element {
-        Element::BidirectionalReference(reference) => {
+        Element::BidirectionalReference(reference, flags) => {
             cost_return_on_error!(
                 &mut cost,
                 process_bidirectional_reference_insertion(
@@ -146,6 +146,7 @@ fn insert_with_backward_references<'db, 'b, B: AsRef<[u8]>>(
                     path,
                     key,
                     reference,
+                    flags,
                     Some(options)
                 )
             );

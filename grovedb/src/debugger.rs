@@ -888,11 +888,11 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
                 element_flags,
             ))
         }
-        crate::Element::BidirectionalReference(reference) => {
+        crate::Element::BidirectionalReference(reference, flags) => {
             // Shown as its plain-reference shape.
             grovedbg_types::Element::Reference(reference_path_to_grovedbg(
                 reference.forward_reference_path,
-                reference.flags,
+                flags,
             ))
         }
         crate::Element::ReferenceWithSumItem(

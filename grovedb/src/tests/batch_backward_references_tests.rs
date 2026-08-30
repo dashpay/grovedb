@@ -32,13 +32,15 @@ fn batch_flag_on() -> Option<BatchApplyOptions> {
 }
 
 fn sibling_bidi(key: &[u8], cascade: bool) -> Element {
-    Element::BidirectionalReference(BidirectionalReference {
-        forward_reference_path: ReferencePathType::SiblingReference(key.to_vec()),
-        backward_references: Vec::new(),
-        cascade_on_update: cascade,
-        max_hop: None,
-        flags: None,
-    })
+    Element::BidirectionalReference(
+        BidirectionalReference {
+            forward_reference_path: ReferencePathType::SiblingReference(key.to_vec()),
+            backward_references: Vec::new(),
+            cascade_on_update: cascade,
+            max_hop: None,
+        },
+        None,
+    )
 }
 
 /// Two identical databases: TEST_LEAF holding a registered target chain
@@ -1168,7 +1170,7 @@ fn batch_bidi_ops_keep_caller_authority_rules() {
         cascade_on_update: true,
     };
     let mut reference = sibling_bidi(b"value", true);
-    if let Element::BidirectionalReference(inner) = &mut reference {
+    if let Element::BidirectionalReference(inner, _) = &mut reference {
         inner.backward_references.push(forged);
     }
     db.apply_batch(
@@ -1625,16 +1627,18 @@ fn batch_registration_depth_is_bounded() {
     .unwrap();
 
     let ref_to_value = || {
-        Element::BidirectionalReference(BidirectionalReference {
-            forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
-                TEST_LEAF.to_vec(),
-                b"value".to_vec(),
-            ]),
-            backward_references: Vec::new(),
-            cascade_on_update: true,
-            max_hop: None,
-            flags: None,
-        })
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    b"value".to_vec(),
+                ]),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: None,
+            },
+            None,
+        )
     };
 
     // One level beyond the bound: rejected in the batch and live flows.
@@ -1709,13 +1713,15 @@ fn batch_flags_mutation_on_derived_rewrite_fails_closed() {
         db.insert(
             &[TEST_LEAF],
             b"r1",
-            Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path: ReferencePathType::SiblingReference(b"value".to_vec()),
-                backward_references: Vec::new(),
-                cascade_on_update: true,
-                max_hop: None,
-                flags: Some(vec![1]),
-            }),
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"value".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: None,
+                },
+                Some(vec![1]),
+            ),
             None,
             None,
             grove_version,

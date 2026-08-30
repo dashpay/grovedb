@@ -39,13 +39,15 @@ fn batch_flag_on() -> Option<BatchApplyOptions> {
 }
 
 fn sibling_bidi(key: &[u8]) -> Element {
-    Element::BidirectionalReference(BidirectionalReference {
-        forward_reference_path: ReferencePathType::SiblingReference(key.to_vec()),
-        backward_references: Vec::new(),
-        cascade_on_update: true,
-        max_hop: None,
-        flags: None,
-    })
+    Element::BidirectionalReference(
+        BidirectionalReference {
+            forward_reference_path: ReferencePathType::SiblingReference(key.to_vec()),
+            backward_references: Vec::new(),
+            cascade_on_update: true,
+            max_hop: None,
+        },
+        None,
+    )
 }
 
 /// TEST_LEAF holding the registered chain `r2 -> r1 -> value`.
@@ -321,16 +323,18 @@ fn worst_case_estimate_covers_deep_origin_registration_growth() {
     let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
         deep_path.clone(),
         b"ref".to_vec(),
-        Element::BidirectionalReference(BidirectionalReference {
-            forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
-                TEST_LEAF.to_vec(),
-                b"value".to_vec(),
-            ]),
-            backward_references: Vec::new(),
-            cascade_on_update: true,
-            max_hop: None,
-            flags: None,
-        }),
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    b"value".to_vec(),
+                ]),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: None,
+            },
+            None,
+        ),
     )];
 
     // Declare a layer for the op's path and every ancestor level the
@@ -493,16 +497,18 @@ fn worst_case_estimate_covers_max_fan_out_deep_component() {
         db.insert(
             path_refs.as_slice(),
             b"ref",
-            Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
-                    TEST_LEAF.to_vec(),
-                    b"value".to_vec(),
-                ]),
-                backward_references: Vec::new(),
-                cascade_on_update: true,
-                max_hop: None,
-                flags: None,
-            }),
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                        TEST_LEAF.to_vec(),
+                        b"value".to_vec(),
+                    ]),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: None,
+                },
+                None,
+            ),
             None,
             None,
             grove_version,

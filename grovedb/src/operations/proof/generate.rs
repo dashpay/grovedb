@@ -2047,14 +2047,15 @@ impl GroveDb {
                         )
                         .expect("bidirectional references carry hashes");
                         reference_self_hash_override = Some(hashes.combined);
-                        let Element::BidirectionalReference(reference) = elem else {
+                        let Element::BidirectionalReference(reference, reference_flags) = elem
+                        else {
                             unreachable!("checked above");
                         };
                         bidi_max_hop = reference.max_hop;
                         Element::Reference(
                             reference.forward_reference_path,
                             reference.max_hop,
-                            reference.flags,
+                            reference_flags,
                         )
                     }
                     other => other,
@@ -2285,7 +2286,7 @@ impl GroveDb {
                                 .map_err(Error::from)
                         )
                         .expect("bidirectional references carry hashes");
-                        let Element::BidirectionalReference(reference) = elem.into_underlying()
+                        let Element::BidirectionalReference(reference, _) = elem.into_underlying()
                         else {
                             unreachable!("matched by the guard above");
                         };
@@ -2379,14 +2380,16 @@ impl GroveDb {
                                 )
                                 .expect("bidirectional references carry hashes");
                                 reference_self_hash_override = Some(hashes.combined);
-                                let Ok(Element::BidirectionalReference(reference)) = elem else {
+                                let Ok(Element::BidirectionalReference(reference, reference_flags)) =
+                                    elem
+                                else {
                                     unreachable!("checked above");
                                 };
                                 bidi_max_hop = reference.max_hop;
                                 Ok(Element::Reference(
                                     reference.forward_reference_path,
                                     reference.max_hop,
-                                    reference.flags,
+                                    reference_flags,
                                 ))
                             }
                             other => other,

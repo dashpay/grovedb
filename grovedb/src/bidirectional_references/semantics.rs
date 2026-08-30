@@ -162,7 +162,7 @@ pub(crate) fn referrer_points_back(
     expected_path: &[Vec<u8>],
     expected_key: &[u8],
 ) -> bool {
-    let Element::BidirectionalReference(reference) = origin_element else {
+    let Element::BidirectionalReference(reference, _) = origin_element else {
         return false;
     };
     let Ok(forward_qualified) = path_from_reference_path_type(
@@ -249,7 +249,8 @@ fn plan_remove_registration(
             }
             // Rewriting a bidirectional-reference target needs the end hash
             // its node commits to.
-            let end_hash = if let Element::BidirectionalReference(ref reference) = target_element {
+            let end_hash = if let Element::BidirectionalReference(ref reference, _) = target_element
+            {
                 Some(
                     cost_return_on_error!(
                         &mut cost,
@@ -286,6 +287,7 @@ pub(crate) fn plan_reference_insertion(
     path: &[Vec<u8>],
     key: &[u8],
     mut reference: BidirectionalReference,
+    flags: Option<crate::element::ElementFlags>,
 ) -> CostResult<Option<Plan>, Error> {
     let mut cost = Default::default();
     let mut plan = Plan::default();
@@ -294,13 +296,13 @@ pub(crate) fn plan_reference_insertion(
     // carried over onto the new element (registrations survive an edge
     // update), and re-inserting an identical edge must be a true no-op.
     let previous_value = cost_return_on_error!(&mut cost, store.element_at(path, key));
-    if let Some(Element::BidirectionalReference(ref old_ref)) = previous_value {
+    if let Some(Element::BidirectionalReference(ref old_ref, ref old_flags)) = previous_value {
         // Carry the existing referrer list over.
         reference.backward_references = old_ref.backward_references.clone();
         if old_ref.forward_reference_path == reference.forward_reference_path
             && old_ref.cascade_on_update == reference.cascade_on_update
             && old_ref.max_hop == reference.max_hop
-            && old_ref.flags == reference.flags
+            && *old_flags == flags
         {
             // Identical logical edge: nothing changed.
             return Ok(None).wrap_with_cost(cost);
@@ -410,7 +412,7 @@ pub(crate) fn plan_reference_insertion(
                     // B is retargeted onto a two-hop chain — reads
                     // through A would deterministically hit
                     // `ReferenceLimit`.
-                    if let Element::BidirectionalReference(ref ancestor) = resolved.element
+                    if let Element::BidirectionalReference(ref ancestor, _) = resolved.element
                         && let Some(declared) = ancestor.max_hop
                         && (declared as usize) < upstream_hops + downstream_hops
                     {
@@ -450,7 +452,7 @@ pub(crate) fn plan_reference_insertion(
     // computed from the pre-plan target would win over the registration
     // and strip the live edge entirely).
     let old_edge_same_target = match previous_value {
-        Some(Element::BidirectionalReference(ref old_ref)) => {
+        Some(Element::BidirectionalReference(ref old_ref, _)) => {
             let old_qualified = path_from_reference_path_type(
                 old_ref.forward_reference_path.clone(),
                 path,
@@ -483,7 +485,7 @@ pub(crate) fn plan_reference_insertion(
     };
     let mut target_element = target.element;
     if old_edge_same_target
-        && let Some(Element::BidirectionalReference(ref old_ref)) = previous_value
+        && let Some(Element::BidirectionalReference(ref old_ref, _)) = previous_value
         && let Some(old_inverted) = old_ref
             .forward_reference_path
             .clone()
@@ -517,14 +519,14 @@ pub(crate) fn plan_reference_insertion(
     plan.write_primary(
         path.to_vec(),
         key.to_vec(),
-        Element::BidirectionalReference(reference.clone()),
+        Element::BidirectionalReference(reference.clone(), flags.clone()),
         Some(target_value_hash),
     );
 
     match previous_value {
         // If previous value was another bidirectional reference, its
         // backward registration on the OLD target must be removed.
-        Some(Element::BidirectionalReference(old_reference)) => {
+        Some(Element::BidirectionalReference(old_reference, _)) => {
             // Same RESOLVED target (whatever the encoding): the old entry
             // was already replaced in place on the registration write
             // above, and a separate removal — planned from the pre-plan
@@ -554,7 +556,7 @@ pub(crate) fn plan_reference_insertion(
                     &mut plan,
                     path,
                     key,
-                    Element::BidirectionalReference(reference),
+                    Element::BidirectionalReference(reference, flags),
                     target_value_hash,
                 )
             );
@@ -631,7 +633,7 @@ pub(crate) fn plan_element_update(
             cost_return_on_error!(&mut cost, plan_cascade(store, &mut plan, path, key, old));
         }
         (
-            Element::BidirectionalReference(old_reference),
+            Element::BidirectionalReference(old_reference, _),
             Some(
                 new @ (Element::ItemWithBackwardsReferences(..)
                 | Element::SumItemWithBackwardsReferences(..)
@@ -660,7 +662,7 @@ pub(crate) fn plan_element_update(
                 )
             );
         }
-        (Element::BidirectionalReference(old_reference), _) => {
+        (Element::BidirectionalReference(old_reference, old_flags), _) => {
             // Overwrite with a non-compatible element (or deletion):
             // cascade the referrer chains away and remove the backward
             // registration from where the reference used to point.
@@ -671,7 +673,7 @@ pub(crate) fn plan_element_update(
                     &mut plan,
                     path,
                     key,
-                    Element::BidirectionalReference(old_reference.clone()),
+                    Element::BidirectionalReference(old_reference.clone(), old_flags.clone()),
                 )
             );
             cost_return_on_error!(
@@ -979,7 +981,7 @@ mod tests {
                     return Err(Error::CyclicReference).wrap_with_cost(Default::default());
                 }
                 match element {
-                    Element::BidirectionalReference(reference) => {
+                    Element::BidirectionalReference(reference, _) => {
                         current = (position.0, position.1, reference.forward_reference_path);
                     }
                     element => {
@@ -1011,7 +1013,6 @@ mod tests {
             backward_references: Vec::new(),
             cascade_on_update: cascade,
             max_hop: None,
-            flags: None,
         }
     }
 
@@ -1030,10 +1031,11 @@ mod tests {
             Element::new_item_allowing_bidirectional_references(b"v".to_vec()),
         );
 
-        let plan = plan_reference_insertion(&store, &leaf(), b"ref", sibling_bidi(b"target", true))
-            .unwrap()
-            .unwrap()
-            .expect("not an identical edge");
+        let plan =
+            plan_reference_insertion(&store, &leaf(), b"ref", sibling_bidi(b"target", true), None)
+                .unwrap()
+                .unwrap()
+                .expect("not an identical edge");
 
         assert_eq!(plan.mutations.len(), 2);
         let DerivedMutation::Write {
@@ -1079,11 +1081,11 @@ mod tests {
         store.put(
             &[LEAF],
             b"ref",
-            Element::BidirectionalReference(sibling_bidi(b"target", true)),
+            Element::BidirectionalReference(sibling_bidi(b"target", true), None),
         );
 
         assert!(
-            plan_reference_insertion(&store, &leaf(), b"ref", sibling_bidi(b"target", true))
+            plan_reference_insertion(&store, &leaf(), b"ref", sibling_bidi(b"target", true), None)
                 .unwrap()
                 .unwrap()
                 .is_none(),
@@ -1107,7 +1109,7 @@ mod tests {
         store.put(
             &[LEAF],
             b"ref",
-            Element::BidirectionalReference(sibling_bidi(b"target", true)),
+            Element::BidirectionalReference(sibling_bidi(b"target", true), None),
         );
 
         // Re-point the SAME target through an absolute-path encoding.
@@ -1119,9 +1121,8 @@ mod tests {
             backward_references: Vec::new(),
             cascade_on_update: true,
             max_hop: None,
-            flags: None,
         };
-        let plan = plan_reference_insertion(&store, &leaf(), b"ref", retarget)
+        let plan = plan_reference_insertion(&store, &leaf(), b"ref", retarget, None)
             .unwrap()
             .unwrap()
             .expect("a changed encoding is a real edge update");
@@ -1165,11 +1166,11 @@ mod tests {
             cascade_on_update: true,
         });
         store.put(&[LEAF], b"item", item.clone());
-        store.put(&[LEAF], b"r1", Element::BidirectionalReference(r1));
+        store.put(&[LEAF], b"r1", Element::BidirectionalReference(r1, None));
         store.put(
             &[LEAF],
             b"r2",
-            Element::BidirectionalReference(sibling_bidi(b"r1", true)),
+            Element::BidirectionalReference(sibling_bidi(b"r1", true), None),
         );
 
         let mut plan = Plan::default();
@@ -1201,7 +1202,7 @@ mod tests {
         store.put(
             &[LEAF],
             b"r1",
-            Element::BidirectionalReference(sibling_bidi(b"item", false)),
+            Element::BidirectionalReference(sibling_bidi(b"item", false), None),
         );
 
         let mut plan = Plan::default();
@@ -1227,7 +1228,7 @@ mod tests {
         store.put(
             &[LEAF],
             b"live",
-            Element::BidirectionalReference(sibling_bidi(b"item", true)),
+            Element::BidirectionalReference(sibling_bidi(b"item", true), None),
         );
         // `gone` is absent: a dangling entry to be lazily cleaned.
 
@@ -1277,7 +1278,7 @@ mod tests {
             store.put(
                 &[LEAF],
                 format!("t{i}").as_bytes(),
-                Element::BidirectionalReference(reference),
+                Element::BidirectionalReference(reference, None),
             );
         }
         let top = format!("t{}", MAX_REFERENCE_HOPS - 1);
@@ -1286,11 +1287,11 @@ mod tests {
             inverted_reference: ReferencePathType::SiblingReference(b"up2".to_vec()),
             cascade_on_update: true,
         });
-        store.put(&[LEAF], b"up", Element::BidirectionalReference(up));
+        store.put(&[LEAF], b"up", Element::BidirectionalReference(up, None));
         store.put(
             &[LEAF],
             b"up2",
-            Element::BidirectionalReference(sibling_bidi(b"up", true)),
+            Element::BidirectionalReference(sibling_bidi(b"up", true), None),
         );
 
         // Retarget the top of the chain (which carries the `up` referrer,
@@ -1299,7 +1300,8 @@ mod tests {
         // a changed option forces a real plan.
         let mut retarget = sibling_bidi(format!("t{}", MAX_REFERENCE_HOPS - 2).as_bytes(), true);
         retarget.cascade_on_update = false;
-        let result = plan_reference_insertion(&store, &leaf(), top.as_bytes(), retarget).unwrap();
+        let result =
+            plan_reference_insertion(&store, &leaf(), top.as_bytes(), retarget, None).unwrap();
         assert!(
             matches!(result, Err(Error::BidirectionalReferenceRule(ref m)) if m.contains("budget")),
             "got: {result:?}"

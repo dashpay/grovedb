@@ -2370,7 +2370,7 @@ impl GroveDb {
                 )
                 .unwrap();
             let reciprocal = match occupant {
-                Ok(Some(Element::BidirectionalReference(ref referrer))) => {
+                Ok(Some(Element::BidirectionalReference(ref referrer, _))) => {
                     path_from_reference_path_type(
                         referrer.forward_reference_path.clone(),
                         referrer_path,
@@ -2805,10 +2805,13 @@ impl GroveDb {
                 }
                 Element::Reference(ref reference_path, ..)
                 | Element::ReferenceWithSumItem(ref reference_path, ..)
-                | Element::BidirectionalReference(BidirectionalReference {
-                    forward_reference_path: ref reference_path,
-                    ..
-                }) => {
+                | Element::BidirectionalReference(
+                    BidirectionalReference {
+                        forward_reference_path: ref reference_path,
+                        ..
+                    },
+                    _,
+                ) => {
                     // Skip this whole check if we don't `verify_references`.
                     // `ReferenceWithSumItem` shares this verification path —
                     // the sum is hashed as part of the serialized value
@@ -2890,7 +2893,7 @@ impl GroveDb {
                         // a missing registration leaves a live edge with
                         // no reverse path for propagation or cascade to
                         // follow.
-                        if let Element::BidirectionalReference(ref reference) = element {
+                        if let Element::BidirectionalReference(ref reference, _) = element {
                             let target_qualified = path_from_reference_path_type(
                                 reference.forward_reference_path.clone(),
                                 &path.to_vec(),

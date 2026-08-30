@@ -2163,15 +2163,17 @@ mod tests {
                 .insert(
                     [TEST_LEAF].as_ref(),
                     key,
-                    Element::BidirectionalReference(BidirectionalReference {
-                        forward_reference_path: ReferencePathType::SiblingReference(
-                            target.to_vec(),
-                        ),
-                        backward_references: Vec::new(),
-                        cascade_on_update: true,
-                        max_hop: None,
-                        flags: None,
-                    }),
+                    Element::BidirectionalReference(
+                        BidirectionalReference {
+                            forward_reference_path: ReferencePathType::SiblingReference(
+                                target.to_vec(),
+                            ),
+                            backward_references: Vec::new(),
+                            cascade_on_update: true,
+                            max_hop: None,
+                        },
+                        None,
+                    ),
                     None,
                     None,
                     grove_version,

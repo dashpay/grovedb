@@ -363,7 +363,7 @@ pub enum Element {
     /// support for backward-reference propagation is not implemented yet).
     ///
     /// Discriminant 25.
-    BidirectionalReference(BidirectionalReference),
+    BidirectionalReference(BidirectionalReference, Option<ElementFlags>),
     /// An ordinary value that supports being targeted by bidirectional
     /// references: up to 32 backward references are carried ON the element
     /// and covered by the node hash through the two-layer scheme described
@@ -730,13 +730,15 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
-            Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path,
-                cascade_on_update,
-                max_hop,
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path,
+                    cascade_on_update,
+                    max_hop,
+                    ..
+                },
                 flags,
-                ..
-            }) => {
+            ) => {
                 write!(
                     f,
                     "BidirectionalReference({}, max_hop: {}, cascade: {}{})",
@@ -1097,7 +1099,10 @@ mod serde_impl {
             Option<ElementFlags>,
         ),
         PrivateDocumentStore(u64, u32, u8, Option<ElementFlags>),
-        BidirectionalReference(crate::bidirectional_reference::BidirectionalReference),
+        BidirectionalReference(
+            crate::bidirectional_reference::BidirectionalReference,
+            Option<ElementFlags>,
+        ),
         ItemWithBackwardsReferences(
             Vec<u8>,
             Vec<crate::bidirectional_reference::BackwardReference>,
@@ -1166,7 +1171,9 @@ mod serde_impl {
                 ElementShadow::PrivateDocumentStore(c, e, p, f) => {
                     Element::PrivateDocumentStore(c, e, p, f)
                 }
-                ElementShadow::BidirectionalReference(r) => Element::BidirectionalReference(r),
+                ElementShadow::BidirectionalReference(r, f) => {
+                    Element::BidirectionalReference(r, f)
+                }
                 ElementShadow::ItemWithBackwardsReferences(v, b, f) => {
                     Element::ItemWithBackwardsReferences(v, b, f)
                 }

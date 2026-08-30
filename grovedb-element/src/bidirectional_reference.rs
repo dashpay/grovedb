@@ -29,10 +29,7 @@
 
 use bincode::{Decode, Encode};
 
-use crate::{
-    element::{ElementFlags, MaxReferenceHop},
-    reference_path::ReferencePathType,
-};
+use crate::{element::MaxReferenceHop, reference_path::ReferencePathType};
 
 /// The maximum number of backward references an
 /// `ItemWithBackwardsReferences` / `SumItemWithBackwardsReferences` may
@@ -81,8 +78,6 @@ pub struct BidirectionalReference {
     /// at most [`MAX_BACKWARD_REFERENCES_ON_REFERENCE`] other bidirectional
     /// references). Excluded from the inner hash; see the module docs.
     pub backward_references: Vec<BackwardReference>,
-    /// Optional per-element metadata.
-    pub flags: Option<ElementFlags>,
 }
 
 /// Canonical serialization of a backward-references list (bincode, big

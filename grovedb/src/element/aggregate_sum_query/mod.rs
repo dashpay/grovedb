@@ -432,7 +432,7 @@ impl ElementAggregateSumQueryExtensions for Element {
                 | Element::ReferenceWithSumItem(ref_path, _, _, _) => ref_path,
                 // A bidirectional reference resolves through its forward
                 // path exactly like a plain reference.
-                Element::BidirectionalReference(reference) => {
+                Element::BidirectionalReference(reference, _) => {
                     source_budget = reference.max_hop.map(|m| m as usize);
                     reference.forward_reference_path
                 }
@@ -503,12 +503,12 @@ impl ElementAggregateSumQueryExtensions for Element {
                 let resolved = match resolved {
                     // An intermediate bidirectional reference continues the
                     // chain through its forward path like any reference.
-                    Element::BidirectionalReference(reference) => {
+                    Element::BidirectionalReference(reference, flags) => {
                         edge_cap = reference.max_hop.map(|m| m as usize);
                         Element::Reference(
                             reference.forward_reference_path,
                             reference.max_hop,
-                            reference.flags,
+                            flags,
                         )
                     }
                     other => other,

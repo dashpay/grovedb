@@ -31,7 +31,7 @@ impl Visualize for Element {
                     drawer = f.visualize(drawer)?;
                 }
             }
-            Element::BidirectionalReference(reference) => {
+            Element::BidirectionalReference(reference, flags) => {
                 drawer.write(
                     format!(
                         "bidi_ref: [forward: {}, cascade: {}, max_hop: {}, backrefs: {}]",
@@ -44,7 +44,7 @@ impl Visualize for Element {
                     )
                     .as_bytes(),
                 )?;
-                if let Some(f) = &reference.flags
+                if let Some(f) = flags
                     && !f.is_empty()
                 {
                     drawer = f.visualize(drawer)?;

@@ -14,7 +14,7 @@ For this purpose, several new `Element` variants were introduced:
 pub enum Element {
     ...
     /// A reference to an object by its path — discriminant 25
-    BidirectionalReference(BidirectionalReference),
+    BidirectionalReference(BidirectionalReference, Option<ElementFlags>),
     /// An ordinary value that can be targeted by bidirectional references —
     /// discriminant 26
     ItemWithBackwardsReferences(Vec<u8>, Vec<BackwardReference>, Option<ElementFlags>),
@@ -36,7 +36,6 @@ pub struct BidirectionalReference {
     pub cascade_on_update: CascadeOnUpdate,
     pub max_hop: MaxReferenceHop,
     pub backward_references: Vec<BackwardReference>,
-    pub flags: Option<ElementFlags>,
 }
 
 pub struct BackwardReference {

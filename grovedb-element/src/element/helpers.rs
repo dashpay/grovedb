@@ -284,7 +284,7 @@ impl Element {
         match self.into_underlying() {
             Element::Reference(value, ..) => Ok(value),
             Element::ReferenceWithSumItem(value, ..) => Ok(value),
-            Element::BidirectionalReference(reference) => Ok(reference.forward_reference_path),
+            Element::BidirectionalReference(reference, _) => Ok(reference.forward_reference_path),
             _ => Err(ElementError::WrongElementType("expected a reference")),
         }
     }
@@ -718,7 +718,7 @@ impl Element {
             | Element::ItemWithBackwardsReferences(_, _, flags)
             | Element::SumItemWithBackwardsReferences(_, _, flags)
             | Element::ItemWithSumItemWithBackwardsReferences(_, _, _, flags) => flags,
-            Element::BidirectionalReference(reference) => &reference.flags,
+            Element::BidirectionalReference(_, flags) => flags,
             // PCPSIT's flags are the trailing field after `axes`.
             Element::ProvableCountProvableSumIndexedTree(_, _, _, _, flags) => flags,
             Element::NonCounted(inner)
@@ -755,7 +755,7 @@ impl Element {
             | Element::ItemWithBackwardsReferences(_, _, flags)
             | Element::SumItemWithBackwardsReferences(_, _, flags)
             | Element::ItemWithSumItemWithBackwardsReferences(_, _, _, flags) => flags,
-            Element::BidirectionalReference(reference) => reference.flags,
+            Element::BidirectionalReference(_, flags) => flags,
             // PCPSIT's flags are the trailing field after `axes`.
             Element::ProvableCountProvableSumIndexedTree(_, _, _, _, flags) => flags,
             Element::NonCounted(inner)
@@ -792,7 +792,7 @@ impl Element {
             | Element::ItemWithBackwardsReferences(_, _, flags)
             | Element::SumItemWithBackwardsReferences(_, _, flags)
             | Element::ItemWithSumItemWithBackwardsReferences(_, _, _, flags) => flags,
-            Element::BidirectionalReference(reference) => &mut reference.flags,
+            Element::BidirectionalReference(_, flags) => flags,
             Element::ProvableCountProvableSumIndexedTree(_, _, _, _, flags) => flags,
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
@@ -828,7 +828,7 @@ impl Element {
             | Element::ItemWithBackwardsReferences(_, _, flags)
             | Element::SumItemWithBackwardsReferences(_, _, flags)
             | Element::ItemWithSumItemWithBackwardsReferences(_, _, _, flags) => *flags = new_flags,
-            Element::BidirectionalReference(reference) => reference.flags = new_flags,
+            Element::BidirectionalReference(_, flags) => *flags = new_flags,
             Element::ProvableCountProvableSumIndexedTree(_, _, _, _, flags) => *flags = new_flags,
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
@@ -964,7 +964,7 @@ impl Element {
                     }
                 }
             }
-            Element::BidirectionalReference(ref reference) => {
+            Element::BidirectionalReference(ref reference, ref flags) => {
                 match reference.forward_reference_path {
                     ReferencePathType::AbsolutePathReference(..) => self,
                     _ => {
@@ -978,7 +978,7 @@ impl Element {
                         let mut reference = reference.clone();
                         reference.forward_reference_path =
                             ReferencePathType::AbsolutePathReference(absolute_path);
-                        Element::BidirectionalReference(reference)
+                        Element::BidirectionalReference(reference, flags.clone())
                     }
                 }
             }
@@ -2188,7 +2188,7 @@ impl Element {
             Element::ItemWithBackwardsReferences(_, refs, _)
             | Element::SumItemWithBackwardsReferences(_, refs, _)
             | Element::ItemWithSumItemWithBackwardsReferences(_, _, refs, _) => Some(refs),
-            Element::BidirectionalReference(reference) => Some(&reference.backward_references),
+            Element::BidirectionalReference(reference, _) => Some(&reference.backward_references),
             _ => None,
         }
     }
@@ -2201,7 +2201,9 @@ impl Element {
             Element::ItemWithBackwardsReferences(_, refs, _)
             | Element::SumItemWithBackwardsReferences(_, refs, _)
             | Element::ItemWithSumItemWithBackwardsReferences(_, _, refs, _) => Some(refs),
-            Element::BidirectionalReference(reference) => Some(&mut reference.backward_references),
+            Element::BidirectionalReference(reference, _) => {
+                Some(&mut reference.backward_references)
+            }
             _ => None,
         }
     }
@@ -2244,7 +2246,7 @@ impl Element {
                     ));
                 }
             }
-            Element::BidirectionalReference(reference)
+            Element::BidirectionalReference(reference, _)
                 if reference.backward_references.len()
                     > crate::MAX_BACKWARD_REFERENCES_ON_REFERENCE =>
             {

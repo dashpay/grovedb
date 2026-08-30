@@ -68,20 +68,22 @@ pub(crate) fn make_tree_with_bidi_references(version: &GroveVersion) -> TempGrov
     db.insert(
         &[b"deep_leaf".as_ref(), b"deep_node_2", b"deeper_3"],
         b"ref4",
-        Element::BidirectionalReference(BidirectionalReference {
-            forward_reference_path: ReferencePathType::UpstreamRootHeightReference(
-                1,
-                vec![
-                    b"deep_node_1".to_vec(),
-                    b"deeper_2".to_vec(),
-                    b"key5".to_vec(),
-                ],
-            ),
-            backward_references: Vec::new(),
-            cascade_on_update: true,
-            max_hop: None,
-            flags: None,
-        }),
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::UpstreamRootHeightReference(
+                    1,
+                    vec![
+                        b"deep_node_1".to_vec(),
+                        b"deeper_2".to_vec(),
+                        b"key5".to_vec(),
+                    ],
+                ),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: None,
+            },
+            None,
+        ),
         None,
         Some(&transaction),
         version,
@@ -92,20 +94,22 @@ pub(crate) fn make_tree_with_bidi_references(version: &GroveVersion) -> TempGrov
     db.insert(
         &[b"deep_leaf".as_ref(), b"deep_node_1", b"deeper_1"],
         b"ref3",
-        Element::BidirectionalReference(BidirectionalReference {
-            forward_reference_path: ReferencePathType::UpstreamRootHeightReference(
-                1,
-                vec![
-                    b"deep_node_2".to_vec(),
-                    b"deeper_3".to_vec(),
-                    b"ref4".to_vec(),
-                ],
-            ),
-            backward_references: Vec::new(),
-            cascade_on_update: true,
-            max_hop: None,
-            flags: None,
-        }),
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::UpstreamRootHeightReference(
+                    1,
+                    vec![
+                        b"deep_node_2".to_vec(),
+                        b"deeper_3".to_vec(),
+                        b"ref4".to_vec(),
+                    ],
+                ),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: None,
+            },
+            None,
+        ),
         None,
         Some(&transaction),
         version,
@@ -116,18 +120,20 @@ pub(crate) fn make_tree_with_bidi_references(version: &GroveVersion) -> TempGrov
     db.insert(
         &[ANOTHER_TEST_LEAF, b"innertree2"],
         b"ref2",
-        Element::BidirectionalReference(BidirectionalReference {
-            forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
-                b"deep_leaf".to_vec(),
-                b"deep_node_1".to_vec(),
-                b"deeper_1".to_vec(),
-                b"ref3".to_vec(),
-            ]),
-            backward_references: Vec::new(),
-            cascade_on_update: true,
-            max_hop: None,
-            flags: None,
-        }),
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                    b"deep_leaf".to_vec(),
+                    b"deep_node_1".to_vec(),
+                    b"deeper_1".to_vec(),
+                    b"ref3".to_vec(),
+                ]),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: None,
+            },
+            None,
+        ),
         None,
         Some(&transaction),
         version,
@@ -138,17 +144,19 @@ pub(crate) fn make_tree_with_bidi_references(version: &GroveVersion) -> TempGrov
     db.insert(
         &[TEST_LEAF, b"innertree"],
         b"ref",
-        Element::BidirectionalReference(BidirectionalReference {
-            forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
-                ANOTHER_TEST_LEAF.to_vec(),
-                b"innertree2".to_vec(),
-                b"ref2".to_vec(),
-            ]),
-            backward_references: Vec::new(),
-            cascade_on_update: true,
-            max_hop: None,
-            flags: None,
-        }),
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                    ANOTHER_TEST_LEAF.to_vec(),
+                    b"innertree2".to_vec(),
+                    b"ref2".to_vec(),
+                ]),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: None,
+            },
+            None,
+        ),
         None,
         Some(&transaction),
         version,

@@ -267,7 +267,7 @@ impl<'db, 'g> ChainStore for OverlayChainStore<'db, 'g> {
                 return Err(Error::CyclicReference).wrap_with_cost(cost);
             }
             match element {
-                Element::BidirectionalReference(reference) => {
+                Element::BidirectionalReference(reference, _) => {
                     current = (position.0, position.1, reference.forward_reference_path);
                 }
                 Element::Reference(reference_path, ..)
@@ -900,15 +900,15 @@ pub(super) fn expand_backward_references_ops(
             continue;
         };
 
-        let reference = match &op_kind {
+        let (reference, reference_flags) = match &op_kind {
             GroveOp::InsertOrReplace { element }
             | GroveOp::Replace { element }
             | GroveOp::InsertIfNotExists { element, .. }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element } => {
-                let Element::BidirectionalReference(reference) = element else {
+                let Element::BidirectionalReference(reference, flags) = element else {
                     unreachable!("collected as a bidirectional-reference op");
                 };
-                reference.clone()
+                (reference.clone(), flags.clone())
             }
             GroveOp::Patch { .. } => {
                 return Err(Error::NotSupported(
@@ -972,7 +972,7 @@ pub(super) fn expand_backward_references_ops(
 
         let plan = cost_return_on_error!(
             &mut cost,
-            plan_reference_insertion(&expansion.store, &path, &key, reference)
+            plan_reference_insertion(&expansion.store, &path, &key, reference, reference_flags)
         );
 
         // The op is consumed either way: an identical edge dissolves (any
@@ -1030,7 +1030,7 @@ fn order_reference_ops_targets_first(
             | GroveOp::Patch { element, .. }
             | GroveOp::InsertIfNotExists { element, .. }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element } => match element {
-                Element::BidirectionalReference(reference) => Some(reference),
+                Element::BidirectionalReference(reference, _) => Some(reference),
                 _ => None,
             },
             _ => None,

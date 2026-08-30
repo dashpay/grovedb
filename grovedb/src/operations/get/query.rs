@@ -99,12 +99,12 @@ impl GroveDb {
                     // no extra arm.
                     let mut bidirectional_edge_budget = None;
                     let element = match element.into_underlying() {
-                        Element::BidirectionalReference(reference) => {
+                        Element::BidirectionalReference(reference, flags) => {
                             bidirectional_edge_budget = reference.max_hop;
                             Element::Reference(
                                 reference.forward_reference_path,
                                 reference.max_hop,
-                                reference.flags,
+                                flags,
                             )
                         }
                         other => other,
@@ -256,13 +256,9 @@ where {
         // returned.
         let mut bidirectional_edge_budget = None;
         let element = match element {
-            Element::BidirectionalReference(reference) => {
+            Element::BidirectionalReference(reference, flags) => {
                 bidirectional_edge_budget = reference.max_hop;
-                Element::Reference(
-                    reference.forward_reference_path,
-                    reference.max_hop,
-                    reference.flags,
-                )
+                Element::Reference(reference.forward_reference_path, reference.max_hop, flags)
             }
             other => other,
         };
@@ -430,12 +426,12 @@ where {
                     // reference element itself is never returned from here.
                     let mut bidirectional_edge_budget = None;
                     let element = match element {
-                        Element::BidirectionalReference(reference) => {
+                        Element::BidirectionalReference(reference, flags) => {
                             bidirectional_edge_budget = reference.max_hop;
                             Element::Reference(
                                 reference.forward_reference_path,
                                 reference.max_hop,
-                                reference.flags,
+                                flags,
                             )
                         }
                         other => other,
@@ -578,12 +574,12 @@ where {
                     // reference element itself is never returned from here.
                     let mut bidirectional_edge_budget = None;
                     let element = match element {
-                        Element::BidirectionalReference(reference) => {
+                        Element::BidirectionalReference(reference, flags) => {
                             bidirectional_edge_budget = reference.max_hop;
                             Element::Reference(
                                 reference.forward_reference_path,
                                 reference.max_hop,
-                                reference.flags,
+                                flags,
                             )
                         }
                         other => other,
@@ -1186,12 +1182,12 @@ where {
                     // reference element itself is never returned from here.
                     let mut bidirectional_edge_budget = None;
                     let element = match element {
-                        Element::BidirectionalReference(reference) => {
+                        Element::BidirectionalReference(reference, flags) => {
                             bidirectional_edge_budget = reference.max_hop;
                             Element::Reference(
                                 reference.forward_reference_path,
                                 reference.max_hop,
-                                reference.flags,
+                                flags,
                             )
                         }
                         other => other,

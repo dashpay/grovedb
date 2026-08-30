@@ -4933,13 +4933,15 @@ mod general_tests {
         db.insert(
             &[TEST_LEAF],
             b"refc",
-            Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path: ReferencePathType::SiblingReference(b"value".to_vec()),
-                backward_references: Vec::new(),
-                cascade_on_update: true,
-                max_hop: None,
-                flags: None,
-            }),
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"value".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: None,
+                },
+                None,
+            ),
             Some(InsertOptions {
                 propagate_backward_references: true,
                 ..Default::default()
@@ -4953,13 +4955,15 @@ mod general_tests {
         db.insert(
             &[TEST_LEAF],
             b"refb",
-            Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path: ReferencePathType::SiblingReference(b"refc".to_vec()),
-                backward_references: Vec::new(),
-                cascade_on_update: true,
-                max_hop: None,
-                flags: None,
-            }),
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"refc".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: None,
+                },
+                None,
+            ),
             Some(InsertOptions {
                 propagate_backward_references: true,
                 ..Default::default()
@@ -4973,13 +4977,15 @@ mod general_tests {
         db.insert(
             &[TEST_LEAF],
             b"refa",
-            Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path: ReferencePathType::SiblingReference(b"refb".to_vec()),
-                backward_references: Vec::new(),
-                cascade_on_update: true,
-                max_hop: None,
-                flags: None,
-            }),
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"refb".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: None,
+                },
+                None,
+            ),
             Some(InsertOptions {
                 propagate_backward_references: true,
                 ..Default::default()
@@ -5029,13 +5035,15 @@ mod general_tests {
         let elements = [
             Element::new_item_allowing_bidirectional_references(b"v".to_vec()),
             Element::new_sum_item_allowing_bidirectional_references(1),
-            Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path: ReferencePathType::SiblingReference(b"x".to_vec()),
-                backward_references: Vec::new(),
-                cascade_on_update: true,
-                max_hop: None,
-                flags: None,
-            }),
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"x".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: None,
+                },
+                None,
+            ),
         ];
 
         for element in elements {
@@ -5060,13 +5068,15 @@ mod general_tests {
         let elements = [
             Element::new_item_allowing_bidirectional_references(b"v".to_vec()),
             Element::new_sum_item_allowing_bidirectional_references(1),
-            Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path: ReferencePathType::SiblingReference(b"x".to_vec()),
-                backward_references: Vec::new(),
-                cascade_on_update: true,
-                max_hop: None,
-                flags: None,
-            }),
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"x".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: None,
+                },
+                None,
+            ),
         ];
 
         for element in elements {

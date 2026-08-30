@@ -23,13 +23,15 @@ fn flag_on() -> Option<InsertOptions> {
 }
 
 fn sibling_bidi(key: &[u8], cascade: bool) -> Element {
-    Element::BidirectionalReference(BidirectionalReference {
-        forward_reference_path: ReferencePathType::SiblingReference(key.to_vec()),
-        backward_references: Vec::new(),
-        cascade_on_update: cascade,
-        max_hop: None,
-        flags: None,
-    })
+    Element::BidirectionalReference(
+        BidirectionalReference {
+            forward_reference_path: ReferencePathType::SiblingReference(key.to_vec()),
+            backward_references: Vec::new(),
+            cascade_on_update: cascade,
+            max_hop: None,
+        },
+        None,
+    )
 }
 
 /// A test_leaf with one item-with-backwards-references under `value`.
@@ -801,13 +803,15 @@ fn sum_queries_resolve_backward_references_sum_items() {
     db.insert(
         &[TEST_LEAF, b"sums"],
         b"one_hop",
-        Element::BidirectionalReference(BidirectionalReference {
-            forward_reference_path: ReferencePathType::SiblingReference(b"s2".to_vec()),
-            backward_references: Vec::new(),
-            cascade_on_update: true,
-            max_hop: Some(1),
-            flags: None,
-        }),
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"s2".to_vec()),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: Some(1),
+            },
+            None,
+        ),
         None,
         None,
         grove_version,
@@ -827,13 +831,15 @@ fn sum_queries_resolve_backward_references_sum_items() {
     db.insert(
         &[TEST_LEAF, b"sums"],
         b"one_hop",
-        Element::BidirectionalReference(BidirectionalReference {
-            forward_reference_path: ReferencePathType::SiblingReference(b"s2".to_vec()),
-            backward_references: Vec::new(),
-            cascade_on_update: true,
-            max_hop: Some(1),
-            flags: None,
-        }),
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"s2".to_vec()),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: Some(1),
+            },
+            None,
+        ),
         None,
         None,
         grove_version,
@@ -851,13 +857,15 @@ fn sum_queries_resolve_backward_references_sum_items() {
 
     // …while a one-hop edge whose chain needs two hops is rejected at the
     // WRITE now (dead edges never persist)…
-    let capped_at_chain = Element::BidirectionalReference(BidirectionalReference {
-        forward_reference_path: ReferencePathType::SiblingReference(b"rs".to_vec()),
-        backward_references: Vec::new(),
-        cascade_on_update: true,
-        max_hop: Some(1),
-        flags: None,
-    });
+    let capped_at_chain = Element::BidirectionalReference(
+        BidirectionalReference {
+            forward_reference_path: ReferencePathType::SiblingReference(b"rs".to_vec()),
+            backward_references: Vec::new(),
+            cascade_on_update: true,
+            max_hop: Some(1),
+        },
+        None,
+    );
     assert!(matches!(
         db.insert(
             &[TEST_LEAF, b"sums"],
@@ -887,13 +895,15 @@ fn sum_queries_resolve_backward_references_sum_items() {
     db.insert(
         &[TEST_LEAF, b"sums"],
         b"capped",
-        Element::BidirectionalReference(BidirectionalReference {
-            forward_reference_path: ReferencePathType::SiblingReference(b"s3".to_vec()),
-            backward_references: Vec::new(),
-            cascade_on_update: true,
-            max_hop: Some(1),
-            flags: None,
-        }),
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"s3".to_vec()),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: Some(1),
+            },
+            None,
+        ),
         None,
         None,
         grove_version,
@@ -1531,13 +1541,13 @@ fn proofs_dereference_bidirectional_references_in_aggregate_parents() {
                 (sibling_bidi(b"target", true), target)
             }
             (None, Some(forward)) => {
-                let Element::BidirectionalReference(mut reference) = sibling_bidi(b"x", true)
+                let Element::BidirectionalReference(mut reference, _) = sibling_bidi(b"x", true)
                 else {
                     unreachable!()
                 };
                 reference.forward_reference_path = forward;
                 (
-                    Element::BidirectionalReference(reference),
+                    Element::BidirectionalReference(reference, None),
                     Element::new_item_allowing_bidirectional_references(b"external".to_vec()),
                 )
             }
@@ -2360,13 +2370,15 @@ fn query_surfaces_resolve_every_terminal_shape_through_references() {
     db.insert(
         &[TEST_LEAF],
         b"r_bsum",
-        Element::BidirectionalReference(BidirectionalReference {
-            forward_reference_path: into_sums(b"bsum"),
-            backward_references: Vec::new(),
-            cascade_on_update: true,
-            max_hop: None,
-            flags: None,
-        }),
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: into_sums(b"bsum"),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: None,
+            },
+            None,
+        ),
         None,
         None,
         grove_version,
@@ -2607,16 +2619,18 @@ fn same_target_retarget_with_different_encoding_keeps_the_registration() {
     db.insert(
         &[TEST_LEAF],
         b"ref",
-        Element::BidirectionalReference(BidirectionalReference {
-            forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
-                TEST_LEAF.to_vec(),
-                b"value".to_vec(),
-            ]),
-            backward_references: Vec::new(),
-            cascade_on_update: true,
-            max_hop: None,
-            flags: None,
-        }),
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    b"value".to_vec(),
+                ]),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: None,
+            },
+            None,
+        ),
         None,
         Some(&tx),
         grove_version,
@@ -2711,14 +2725,14 @@ fn caller_supplied_referrer_lists_are_discarded_on_insert() {
     )
     .unwrap()
     .unwrap();
-    let Element::BidirectionalReference(mut reference) = sibling_bidi(b"target", true) else {
+    let Element::BidirectionalReference(mut reference, _) = sibling_bidi(b"target", true) else {
         unreachable!()
     };
     reference.backward_references = vec![forged];
     db.insert(
         &[TEST_LEAF],
         b"planted_ref",
-        Element::BidirectionalReference(reference),
+        Element::BidirectionalReference(reference, None),
         None,
         Some(&tx),
         grove_version,
@@ -2921,13 +2935,15 @@ fn per_edge_max_hop_is_enforced_on_reads() {
         db.insert(
             &[TEST_LEAF],
             b"head",
-            Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path: ReferencePathType::SiblingReference(b"mid".to_vec()),
-                backward_references: Vec::new(),
-                cascade_on_update: true,
-                max_hop: Some(1),
-                flags: None,
-            }),
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"mid".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: Some(1),
+                },
+                None,
+            ),
             None,
             None,
             grove_version,
@@ -2952,13 +2968,17 @@ fn per_edge_max_hop_is_enforced_on_reads() {
     db.insert(
         &[TEST_LEAF],
         b"head",
-        Element::BidirectionalReference(BidirectionalReference {
-            forward_reference_path: ReferencePathType::SiblingReference(b"mid_evolved".to_vec()),
-            backward_references: Vec::new(),
-            cascade_on_update: true,
-            max_hop: Some(1),
-            flags: None,
-        }),
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(
+                    b"mid_evolved".to_vec(),
+                ),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: Some(1),
+            },
+            None,
+        ),
         None,
         None,
         grove_version,
@@ -3009,13 +3029,15 @@ fn per_edge_max_hop_is_enforced_on_reads() {
     db.insert(
         &[TEST_LEAF],
         b"mid2",
-        Element::BidirectionalReference(BidirectionalReference {
-            forward_reference_path: ReferencePathType::SiblingReference(b"value".to_vec()),
-            backward_references: Vec::new(),
-            cascade_on_update: true,
-            max_hop: Some(1),
-            flags: None,
-        }),
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"value".to_vec()),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: Some(1),
+            },
+            None,
+        ),
         None,
         None,
         grove_version,
@@ -3066,13 +3088,15 @@ fn per_edge_max_hop_is_enforced_on_reads() {
         .insert(
             &[TEST_LEAF],
             b"mid3",
-            Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path: ReferencePathType::SiblingReference(b"mid_a".to_vec()),
-                backward_references: Vec::new(),
-                cascade_on_update: true,
-                max_hop: Some(1),
-                flags: None,
-            }),
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"mid_a".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: Some(1),
+                },
+                None,
+            ),
             None,
             None,
             grove_version,
@@ -3486,13 +3510,15 @@ fn bidi_insert_rejects_undersized_max_hop() {
         db.insert(
             &[TEST_LEAF],
             b"dead",
-            Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path: ReferencePathType::SiblingReference(b"value".to_vec()),
-                backward_references: Vec::new(),
-                cascade_on_update: true,
-                max_hop: Some(0),
-                flags: None,
-            }),
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"value".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: Some(0),
+                },
+                None,
+            ),
             None,
             None,
             grove_version,
@@ -3505,13 +3531,15 @@ fn bidi_insert_rejects_undersized_max_hop() {
     db.insert(
         &[TEST_LEAF],
         b"alive",
-        Element::BidirectionalReference(BidirectionalReference {
-            forward_reference_path: ReferencePathType::SiblingReference(b"value".to_vec()),
-            backward_references: Vec::new(),
-            cascade_on_update: true,
-            max_hop: Some(1),
-            flags: None,
-        }),
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"value".to_vec()),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: Some(1),
+            },
+            None,
+        ),
         None,
         None,
         grove_version,
@@ -3525,13 +3553,17 @@ fn bidi_insert_rejects_undersized_max_hop() {
             vec![crate::batch::QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"dead2".to_vec(),
-                Element::BidirectionalReference(BidirectionalReference {
-                    forward_reference_path: ReferencePathType::SiblingReference(b"alive".to_vec()),
-                    backward_references: Vec::new(),
-                    cascade_on_update: true,
-                    max_hop: Some(1),
-                    flags: None,
-                }),
+                Element::BidirectionalReference(
+                    BidirectionalReference {
+                        forward_reference_path: ReferencePathType::SiblingReference(
+                            b"alive".to_vec()
+                        ),
+                        backward_references: Vec::new(),
+                        cascade_on_update: true,
+                        max_hop: Some(1),
+                    },
+                    None,
+                ),
             )],
             Some(crate::batch::BatchApplyOptions {
                 propagate_backward_references: true,
@@ -3566,13 +3598,15 @@ fn proof_generation_respects_bidi_max_hop() {
     db.insert(
         &[TEST_LEAF],
         b"head",
-        Element::BidirectionalReference(BidirectionalReference {
-            forward_reference_path: ReferencePathType::SiblingReference(b"mid".to_vec()),
-            backward_references: Vec::new(),
-            cascade_on_update: true,
-            max_hop: Some(1),
-            flags: None,
-        }),
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"mid".to_vec()),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: Some(1),
+            },
+            None,
+        ),
         None,
         None,
         grove_version,
@@ -3754,13 +3788,15 @@ fn retarget_rejects_upstream_max_hop_violation() {
         db.insert(
             &[TEST_LEAF],
             b"a",
-            Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path: ReferencePathType::SiblingReference(b"b".to_vec()),
-                backward_references: Vec::new(),
-                cascade_on_update: true,
-                max_hop: Some(2),
-                flags: None,
-            }),
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"b".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: Some(2),
+                },
+                None,
+            ),
             None,
             None,
             grove_version,

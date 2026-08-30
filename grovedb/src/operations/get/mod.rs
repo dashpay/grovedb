@@ -108,11 +108,14 @@ impl GroveDb {
             // A bidirectional reference's declared `max_hop` bounds the
             // whole resolution, exactly like the query surfaces (plain
             // references keep their historical global-budget behavior).
-            Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path: reference_path,
-                max_hop,
-                ..
-            }) => {
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: reference_path,
+                    max_hop,
+                    ..
+                },
+                _,
+            ) => {
                 let path_owned = cost_return_on_error_into!(
                     &mut cost,
                     path_from_reference_path_type(reference_path, &path.to_vec(), Some(key))
@@ -221,7 +224,7 @@ impl GroveDb {
                             .wrap_with_cost(OperationCost::default())
                     )
                 }
-                Element::BidirectionalReference(reference) => {
+                Element::BidirectionalReference(reference, _) => {
                     // Per-edge budget: this edge's declaration caps however
                     // much of the global budget remains. The fetch of THIS
                     // node is already paid for (the decrement below), and
