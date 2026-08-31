@@ -270,13 +270,15 @@ impl GroveDb {
             // module docs.
             Element::BidirectionalReference(..)
             | Element::ItemWithBackwardsReferences(..)
-            | Element::SumItemWithBackwardsReferences(..) => {
+            | Element::SumItemWithBackwardsReferences(..)
+            | Element::ItemWithSumItemWithBackwardsReferences(..) => {
                 // Backward-references elements activate with `GROVE_V4`;
                 // this v0 arm is selected by `GROVE_V1` / `GROVE_V2` where
                 // they must not exist. Fail closed.
                 return Err(Error::NotSupported(
                     "backward-references elements (BidirectionalReference, \
-                     ItemWithBackwardsReferences, SumItemWithBackwardsReferences) require \
+                     ItemWithBackwardsReferences, SumItemWithBackwardsReferences, \
+             ItemWithSumItemWithBackwardsReferences) require \
                      GROVE_V4+"
                         .to_owned(),
                 ))

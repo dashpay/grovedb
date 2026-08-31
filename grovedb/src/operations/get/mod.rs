@@ -91,11 +91,7 @@ impl GroveDb {
         .into_underlying()
         {
             Element::Reference(reference_path, ..)
-            | Element::ReferenceWithSumItem(reference_path, ..)
-            | Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path: reference_path,
-                ..
-            }) => {
+            | Element::ReferenceWithSumItem(reference_path, ..) => {
                 let path_owned = cost_return_on_error_into!(
                     &mut cost,
                     path_from_reference_path_type(reference_path, &path.to_vec(), Some(key))
@@ -109,7 +105,32 @@ impl GroveDb {
                 )
                 .add_cost(cost)
             }
-            other => Ok(other).wrap_with_cost(cost),
+            // A bidirectional reference's declared `max_hop` bounds the
+            // whole resolution, exactly like the query surfaces (plain
+            // references keep their historical global-budget behavior).
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: reference_path,
+                    max_hop,
+                    ..
+                },
+                _,
+            ) => {
+                let path_owned = cost_return_on_error_into!(
+                    &mut cost,
+                    path_from_reference_path_type(reference_path, &path.to_vec(), Some(key))
+                        .wrap_with_cost(OperationCost::default())
+                );
+                self.follow_reference_with_max_hop(
+                    path_owned.as_slice().into(),
+                    max_hop,
+                    allow_cache,
+                    transaction,
+                    grove_version,
+                )
+                .add_cost(cost)
+            }
+            other => Ok(other.stripped_of_backward_references()).wrap_with_cost(cost),
         }
     }
 
@@ -132,9 +153,28 @@ impl GroveDb {
                 .follow_reference
         );
 
+        self.follow_reference_with_max_hop(path, None, allow_cache, transaction, grove_version)
+    }
+
+    /// [`Self::follow_reference`] with the FIRST edge's declared `max_hop`
+    /// applied on top of the global budget. Mid-chain bidirectional edges
+    /// additionally cap the remaining budget with their own declarations, so
+    /// a chain never resolves through more hops than any of its
+    /// bidirectional members allow.
+    pub(crate) fn follow_reference_with_max_hop<B: AsRef<[u8]>>(
+        &self,
+        path: SubtreePath<B>,
+        max_hop: Option<u8>,
+        allow_cache: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
 
-        let mut hops_left = MAX_REFERENCE_HOPS;
+        let mut hops_left = max_hop
+            .map(|m| m as usize)
+            .unwrap_or(MAX_REFERENCE_HOPS)
+            .min(MAX_REFERENCE_HOPS);
         let mut current_element;
         let mut visited = HashSet::new();
         // TODO, still have to do because of references handling
@@ -177,18 +217,39 @@ impl GroveDb {
             // irrelevant to chain destination.
             match current_element.into_underlying() {
                 Element::Reference(reference_path, ..)
-                | Element::ReferenceWithSumItem(reference_path, ..)
-                | Element::BidirectionalReference(BidirectionalReference {
-                    forward_reference_path: reference_path,
-                    ..
-                }) => {
+                | Element::ReferenceWithSumItem(reference_path, ..) => {
                     current_path = cost_return_on_error_into!(
                         &mut cost,
                         path_from_reference_qualified_path_type(reference_path, &current_path)
                             .wrap_with_cost(OperationCost::default())
                     )
                 }
-                other => return Ok(other).wrap_with_cost(cost),
+                Element::BidirectionalReference(reference, _) => {
+                    // Per-edge budget: this edge's declaration caps however
+                    // much of the global budget remains. The fetch of THIS
+                    // node is already paid for (the decrement below), and
+                    // the edge's budget counts hops from here on — so cap
+                    // at `edge_budget + 1`, leaving exactly `edge_budget`
+                    // further fetches. An edge declaring `max_hop: 1` may
+                    // reach its direct target but no reference beyond it.
+                    if let Some(edge_budget) = reference.max_hop {
+                        hops_left = hops_left.min(edge_budget as usize + 1);
+                    }
+                    current_path = cost_return_on_error_into!(
+                        &mut cost,
+                        path_from_reference_qualified_path_type(
+                            reference.forward_reference_path,
+                            &current_path
+                        )
+                        .wrap_with_cost(OperationCost::default())
+                    )
+                }
+                other => {
+                    // The referrer list is internal bookkeeping; public
+                    // reads return the logical (stripped) form, matching
+                    // what proofs carry.
+                    return Ok(other.stripped_of_backward_references()).wrap_with_cost(cost);
+                }
             }
             hops_left -= 1;
         }
@@ -239,6 +300,7 @@ impl GroveDb {
             tx.as_ref(),
             grove_version,
         )
+        .map_ok(|element| element.stripped_of_backward_references())
     }
 
     /// Get Element at specified path and key
@@ -290,6 +352,7 @@ impl GroveDb {
             tx.as_ref(),
             grove_version,
         )
+        .map_ok(|element| element.map(|e| e.stripped_of_backward_references()))
     }
 
     /// Get tree item without following references

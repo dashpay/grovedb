@@ -2,15 +2,24 @@
 //!
 //! # Dangling References
 //!
-//! GroveDB does **not** track backward (incoming) references. When an element
-//! is deleted, any existing [`Reference`](crate::Element::Reference) elements
-//! that point to it become *dangling*. Attempting to follow a dangling
-//! reference will return
+//! For ordinary [`Reference`](crate::Element::Reference) elements, GroveDB
+//! does **not** track backward (incoming) references. When an element is
+//! deleted, any existing references that point to it become *dangling*.
+//! Attempting to follow a dangling reference will return
 //! [`Error::CorruptedReferencePathKeyNotFound`](crate::Error::CorruptedReferencePathKeyNotFound)
 //! rather than incorrect data, so the failure mode is safe.
 //!
-//! Callers are responsible for ensuring that all references to an element are
-//! removed before (or atomically with) the deletion of that element.
+//! Callers are responsible for ensuring that all ordinary references to an
+//! element are removed before (or atomically with) the deletion of that
+//! element.
+//!
+//! The exception is the opt-in bidirectional-references machinery
+//! (`GROVE_V4`+): deleting with
+//! [`DeleteOptions::propagate_backward_references`] set cascades any
+//! [`BidirectionalReference`](crate::Element::BidirectionalReference)
+//! chains that point at the deleted element (each affected reference must
+//! allow `cascade_on_update`, otherwise the delete errors instead). See
+//! `adr/bidirectional_references.md`.
 
 #[cfg(feature = "estimated_costs")]
 mod average_case;
@@ -128,13 +137,18 @@ impl GroveDb {
     ///
     /// # Dangling references
     ///
-    /// This operation does **not** check for incoming references. If other
+    /// Without [`DeleteOptions::propagate_backward_references`], this
+    /// operation does **not** check for incoming references. If other
     /// elements hold [`Reference`](crate::Element::Reference) paths that point
     /// to the deleted element, those references become dangling. Following a
     /// dangling reference will return
     /// [`Error::CorruptedReferencePathKeyNotFound`](crate::Error::CorruptedReferencePathKeyNotFound),
     /// not incorrect data. Callers must manage reference lifecycle and remove
-    /// or update any references to this element before deleting it.
+    /// or update any ordinary references to this element before deleting it.
+    ///
+    /// With the flag set (`GROVE_V4`+), bidirectional references pointing at
+    /// the deleted element are cascade-deleted instead — see the
+    /// [module-level documentation](self).
     pub fn delete<'b, B, P>(
         &self,
         path: P,
@@ -193,10 +207,13 @@ impl GroveDb {
     ///
     /// # Dangling references
     ///
-    /// This operation does **not** check for incoming references. Any
-    /// [`Reference`](crate::Element::Reference) elements elsewhere in the
-    /// database that point to elements within the cleared subtree will become
-    /// dangling. See the [module-level documentation](self) for details.
+    /// This operation does **not** check for incoming references (it has no
+    /// backward-references propagation option). Any
+    /// [`Reference`](crate::Element::Reference) or
+    /// [`BidirectionalReference`](crate::Element::BidirectionalReference)
+    /// elements elsewhere in the database that point to elements within the
+    /// cleared subtree will become dangling. See the
+    /// [module-level documentation](self) for details.
     pub fn clear_subtree<'b, B, P>(
         &self,
         path: P,
@@ -2358,5 +2375,39 @@ mod tests {
             .unwrap(),
             Err(Error::PathParentLayerNotFound(_))
         ));
+
+        // Commit and re-check against persisted state: the cascade must
+        // survive the transaction boundary, the whole graph must verify,
+        // and proofs over surviving data must check out against the new
+        // root hash.
+        db.commit_transaction(transaction).unwrap().unwrap();
+
+        assert!(matches!(
+            db.get(&[TEST_LEAF, b"innertree"], b"ref", None, version)
+                .unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ));
+        assert!(db
+            .verify_grovedb(None, true, true, version)
+            .unwrap()
+            .is_empty());
+
+        let mut query = crate::Query::new();
+        query.insert_all();
+        let path_query =
+            crate::PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query);
+        let proof = db
+            .prove_query(&path_query, None, version)
+            .unwrap()
+            .expect("should prove after cascade deletion");
+        let (proved_root, results) = crate::GroveDb::verify_query(&proof, &path_query, version)
+            .expect("proof should verify");
+        assert_eq!(
+            proved_root,
+            db.root_hash(None, version).unwrap().unwrap(),
+            "proved root must match the committed root"
+        );
+        // innertree originally held key1..key3 plus the now-cascaded `ref`.
+        assert_eq!(results.len(), 3);
     }
 }

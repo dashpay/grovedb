@@ -15,7 +15,7 @@ To demonstrate the problem, let’s consider a scenario where there is an only k
 under the subtree `[a,b]`. One actor updates this key with a new value while another actor
 performs an insertion at a different location:
 
-```
+```text
 Actor 1:                                      Actor 2:
                                               - load subtree [a,b] with root -- c
 - under subtree [a,b] key c insert value x,
@@ -46,11 +46,11 @@ transaction if none is provided. To facilitate this, `crate::utils::TxRef` was i
 
 `TxRef` wraps a transactions provided from user if any, otherwise starts a new one. The
 rest of the GroveDB internals are unaware of the transaction source and uses what `TxRef`
-provied to them with `TxRef::as_ref` method.
+provided to them with `TxRef::as_ref` method.
 
-In case the transaction was started internally it shall be commited internally as well,
+In case the transaction was started internally it shall be committed internally as well,
 for that purpose `TxRef::commit_local` is used, that will commit the transaction if it is
-ineed "local" or is no-operation if the transaction is passed by user, leaving it to the
+indeed "local" or is no-operation if the transaction is passed by user, leaving it to the
 user to decide what to do with it.
 
 ## Level 2: RocksDB Batches
@@ -58,7 +58,7 @@ user to decide what to do with it.
 _Not to be confused with GroveDB batches!_
 
 In general, if an operation fails, it doesn't necessarily mean that the entire transaction
-should be aborted, unless it came into an inconsisent state. At least, this is not the
+should be aborted, unless it came into an inconsistent state. At least, this is not the
 desired behavior in GroveDB, as it is used in Dash Platform: a transaction should live
 for the duration of a block, with operations happening seamlessly -- even those that
 may fail.
@@ -71,7 +71,7 @@ the entire transaction, as it will only abort the batch, leaving the transaction
 untouched.
 
 To apply the `StorageBatch` with these deferred operations onto a running transaction,
-`Storage::commit_multi_context_match` is used, where the main implementation of `Storage`
+`Storage::commit_multi_context_batch` is used, where the main implementation of `Storage`
 in our case is `RocksDbStorage`.
 
 ## Level 3: GroveDB Batches

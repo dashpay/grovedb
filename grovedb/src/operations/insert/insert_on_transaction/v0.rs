@@ -28,15 +28,14 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
     grove_version: &GroveVersion,
 ) -> CostResult<(), Error> {
     // Fail closed: the backward-references family activates with GROVE_V4.
-    if matches!(
-        element,
-        Element::BidirectionalReference(..)
-            | Element::ItemWithBackwardsReferences(..)
-            | Element::SumItemWithBackwardsReferences(..)
-    ) {
+    // Checked on the underlying element so a hand-built wrapper
+    // (`NonCounted(ItemWithBackwardsReferences)`, which no constructor
+    // produces) cannot slip past the gate into the shipped insert body.
+    if element.underlying().supports_backward_references() {
         return Err(Error::NotSupported(
             "backward-references elements (BidirectionalReference, \
-             ItemWithBackwardsReferences, SumItemWithBackwardsReferences) require GROVE_V4+"
+             ItemWithBackwardsReferences, SumItemWithBackwardsReferences, \
+             ItemWithSumItemWithBackwardsReferences) require GROVE_V4+"
                 .to_owned(),
         ))
         .wrap_with_cost(Default::default());

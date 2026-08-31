@@ -3124,18 +3124,18 @@ fn test_cyclic_reference_detected_in_aggregate_sum_query() {
         merk.for_merk(|m| {
             ref_a
                 .insert_reference(m, b"ref_a", NULL_HASH, None, grove_version)
-                .unwrap()
-                .expect("should insert ref_a at merk level");
-            grovedb_costs::CostsExt::wrap_with_cost(Ok::<_, crate::Error>(()), Default::default())
-        });
+                .map_err(crate::Error::MerkError)
+        })
+        .unwrap()
+        .expect("should insert ref_a at merk level");
 
         merk.for_merk(|m| {
             ref_b
                 .insert_reference(m, b"ref_b", NULL_HASH, None, grove_version)
-                .unwrap()
-                .expect("should insert ref_b at merk level");
-            grovedb_costs::CostsExt::wrap_with_cost(Ok::<_, crate::Error>(()), Default::default())
-        });
+                .map_err(crate::Error::MerkError)
+        })
+        .unwrap()
+        .expect("should insert ref_b at merk level");
 
         drop(merk);
 
@@ -3197,10 +3197,10 @@ fn test_self_referencing_element_detected_in_aggregate_sum_query() {
         merk.for_merk(|m| {
             ref_self
                 .insert_reference(m, b"ref_self", NULL_HASH, None, grove_version)
-                .unwrap()
-                .expect("should insert ref_self at merk level");
-            grovedb_costs::CostsExt::wrap_with_cost(Ok::<_, crate::Error>(()), Default::default())
-        });
+                .map_err(crate::Error::MerkError)
+        })
+        .unwrap()
+        .expect("should insert ref_self at merk level");
 
         drop(merk);
 

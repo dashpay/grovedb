@@ -69,9 +69,7 @@ impl ElementCostPrivateExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(..) => Ok(DENSE_TREE_COST_SIZE),
             Element::SumTree(..) => Ok(SUM_TREE_COST_SIZE),
             Element::BigSumTree(..) => Ok(BIG_SUM_TREE_COST_SIZE),
-            Element::SumItem(..)
-            | Element::ItemWithSumItem(..)
-            | Element::SumItemWithBackwardsReferences(..) => Ok(SUM_ITEM_COST_SIZE),
+            Element::SumItem(..) | Element::ItemWithSumItem(..) => Ok(SUM_ITEM_COST_SIZE),
             Element::CountTree(..) => Ok(COUNT_TREE_COST_SIZE),
             Element::CountSumTree(..) => Ok(COUNT_SUM_TREE_COST_SIZE),
             Element::ProvableCountTree(..) => Ok(COUNT_TREE_COST_SIZE),
@@ -327,7 +325,7 @@ impl ElementCostExtensions for Element {
                     key_len, value_len, node_type,
                 )
             }
-            Element::SumItem(.., flags) | Element::SumItemWithBackwardsReferences(.., flags) => {
+            Element::SumItem(.., flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
@@ -370,7 +368,7 @@ impl ElementCostExtensions for Element {
                 flags_len + flags_len.required_space() as u32
             });
         match self.underlying() {
-            Element::SumItem(..) | Element::SumItemWithBackwardsReferences(..) => Some(cost),
+            Element::SumItem(..) => Some(cost),
             Element::ItemWithSumItem(item, ..) => {
                 let item_len = item.len() as u32;
                 Some(cost + item_len + item_len.required_space() as u32)
@@ -439,9 +437,7 @@ impl ElementCostExtensions for Element {
             Element::ProvableSumIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableCountIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableCountProvableSumIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
-            Element::SumItem(..) | Element::SumItemWithBackwardsReferences(..) => {
-                Some(SpecializedValueDefinedCost(cost))
-            }
+            Element::SumItem(..) => Some(SpecializedValueDefinedCost(cost)),
             Element::ItemWithSumItem(item, ..) => {
                 let item_len = item.len() as u32;
                 Some(SpecializedValueDefinedCost(

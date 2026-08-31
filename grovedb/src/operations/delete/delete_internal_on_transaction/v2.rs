@@ -19,7 +19,8 @@
 //! bidirectional references).
 
 use grovedb_costs::{
-    cost_return_on_error, storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt,
+    cost_return_on_error, cost_return_on_error_no_add, storage_cost::removal::StorageRemovedBytes,
+    CostResult, CostsExt,
 };
 use grovedb_merk::{
     element::{delete::ElementDeleteFromStorageExtensions, get::ElementFetchFromStorageExtensions},
@@ -108,16 +109,29 @@ impl GroveDb {
         let mut subtree_to_delete_from =
             cost_return_on_error!(&mut cost, cache.get_merk(path.derive_owned()));
 
+        let subtree_to_delete_from_type = cost_return_on_error!(
+            &mut cost,
+            subtree_to_delete_from.for_merk(|m| Ok(m.tree_type).wrap_with_cost(Default::default()))
+        );
+
+        // Guard on the CONTAINING Merk's type, before even looking the key
+        // up: deleting a row out of an indexed-tree primary through this
+        // generic flow would strand its mirrored secondary state. (The
+        // separate check further down guards the case where the deleted
+        // element is itself a specialized/indexed tree.)
+        cost_return_on_error_no_add!(
+            cost,
+            crate::operations::indexed_tree::reject_generic_write_into_indexed_primary(
+                subtree_to_delete_from_type,
+                "delete with propagate_backward_references",
+            )
+        );
+
         let element = cost_return_on_error!(
             &mut cost,
             subtree_to_delete_from.for_merk(|m| {
                 Element::get(m, key, true, grove_version).map_err(Error::MerkError)
             })
-        );
-
-        let subtree_to_delete_from_type = cost_return_on_error!(
-            &mut cost,
-            subtree_to_delete_from.for_merk(|m| Ok(m.tree_type).wrap_with_cost(Default::default()))
         );
 
         if element.is_any_tree() {
@@ -169,7 +183,12 @@ impl GroveDb {
                 let visitor = GroveVisitor::new(
                     &self.db,
                     transaction,
-                    DeletionVisitor::new(&cache, options.propagate_backward_references, true),
+                    DeletionVisitor::new(
+                        &cache,
+                        options.propagate_backward_references,
+                        true,
+                        sectioned_removal,
+                    ),
                     true,
                     grove_version,
                 );
@@ -259,6 +278,7 @@ impl GroveDb {
                     path.derive_owned(),
                     key,
                     grovedb_merk::element::insert::Delta { new: None, old },
+                    sectioned_removal,
                 )
             );
 
@@ -277,27 +297,32 @@ impl GroveDb {
 /// when and how we do modifications inside of the deletion implementation,
 /// we're good as long as we do nothing outside of the cache, then finalize
 /// it, and only then merge with the final deletion batches.
-struct DeletionVisitor<'c, 'db, 'b, B: AsRef<[u8]>> {
+struct DeletionVisitor<'c, 'db, 'b, 's, B: AsRef<[u8]>> {
     propagate_backward_references: bool,
     allow_deleting_subtrees: bool,
     cache: &'c MerkCache<'db, 'b, B>,
+    /// The caller's removal-accounting policy, applied to every referrer a
+    /// cascade deletes on the way.
+    sectioned_removal: bidirectional_references::SectionedRemovalFn<'s>,
 }
 
-impl<'c, 'db, 'b, B: AsRef<[u8]>> DeletionVisitor<'c, 'db, 'b, B> {
+impl<'c, 'db, 'b, 's, B: AsRef<[u8]>> DeletionVisitor<'c, 'db, 'b, 's, B> {
     fn new(
         cache: &'c MerkCache<'db, 'b, B>,
         propagate_backward_references: bool,
         allow_deleting_subtrees: bool,
+        sectioned_removal: bidirectional_references::SectionedRemovalFn<'s>,
     ) -> Self {
         Self {
             propagate_backward_references,
             allow_deleting_subtrees,
             cache,
+            sectioned_removal,
         }
     }
 }
 
-impl<'b, B: AsRef<[u8]>> Visit<'b, B> for DeletionVisitor<'_, '_, 'b, B> {
+impl<'b, B: AsRef<[u8]>> Visit<'b, B> for DeletionVisitor<'_, '_, 'b, '_, B> {
     fn visit_merk(&mut self, _path: SubtreePathBuilder<'b, B>) -> CostResult<bool, Error> {
         Ok(false).wrap_with_cost(Default::default())
     }
@@ -324,6 +349,22 @@ impl<'b, B: AsRef<[u8]>> Visit<'b, B> for DeletionVisitor<'_, '_, 'b, B> {
             // with a report.
             return Ok(true).wrap_with_cost(cost);
         } else {
+            // The same fail-closed rule the directly selected element gets:
+            // a specialized data tree's contents are not Merk elements (the
+            // recursive sweep cannot even decode them), and clearing an
+            // indexed primary here would strand its secondary namespaces.
+            // Refuse the whole flagged deletion; the caller deletes those
+            // subtrees without the flag first.
+            if element.underlying().uses_non_merk_data_storage()
+                || element.underlying().is_indexed_tree()
+            {
+                return Err(Error::NotSupported(
+                    "a descendant specialized data tree or indexed tree blocks deletion with \
+                     propagate_backward_references set; delete it without the flag first"
+                        .to_owned(),
+                ))
+                .wrap_with_cost(cost);
+            }
             cost_return_on_error!(&mut cost, storage.delete(key, None).map_err(Into::into));
         }
 
@@ -334,6 +375,7 @@ impl<'b, B: AsRef<[u8]>> Visit<'b, B> for DeletionVisitor<'_, '_, 'b, B> {
                 element,
                 Element::ItemWithBackwardsReferences(..)
                     | Element::SumItemWithBackwardsReferences(..)
+                    | Element::ItemWithSumItemWithBackwardsReferences(..)
                     | Element::BidirectionalReference(..)
             )
         {
@@ -349,7 +391,8 @@ impl<'b, B: AsRef<[u8]>> Visit<'b, B> for DeletionVisitor<'_, '_, 'b, B> {
                     grovedb_merk::element::insert::Delta {
                         new: None,
                         old: Some(element)
-                    }
+                    },
+                    &mut *self.sectioned_removal,
                 )
             );
         }

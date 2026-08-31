@@ -49,7 +49,6 @@ tokio = { workspace = true, features = [
 tower-http = { workspace = true, optional = true }
 zip-extensions = { version = "0.13.0", optional = true }
 serde = { workspace = true, optional = true }
-bitvec = { workspace = true, optional = true }
 
 [dev-dependencies]
 grovedb-epoch-based-storage-flags = { version = "5.0.1", path = "../grovedb-epoch-based-storage-flags" }
@@ -92,7 +91,6 @@ proof_debug = ["grovedb-merk/proof_debug"]
 serde = ["dep:serde", "grovedb-merk/serde", "grovedb-query/serde", "indexmap/serde"]
 full = ["grovedb-merk/full", "minimal"]
 minimal = [
-    "bitvec",
     "grovedb-merk/minimal",
     "grovedb-commitment-tree",
     "grovedb-commitment-tree/server",

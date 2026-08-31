@@ -190,6 +190,7 @@ mod tests {
                 Node::KVDigest(k, _) => k.clone(),
                 Node::KVDigestCount(k, ..) => k.clone(),
                 Node::KVRefValueHash(k, ..) => k.clone(),
+                Node::KVBackwardsReferencesValueHash(k, ..) => k.clone(),
                 Node::KVRefValueHashCount(k, ..) => k.clone(),
                 Node::KVSum(k, ..) => k.clone(),
                 Node::KVDigestSum(k, ..) => k.clone(),

@@ -308,6 +308,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
                 taken_handle: taken_handle_ref
                     .as_ref()
                     .expect("`Box` contents are never null"),
+                batch: &self.batch,
             }
         })
         .wrap_with_cost(cost)
@@ -347,6 +348,11 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
                 let mut parent_merk = match self.get_merk(parent_path).unwrap_add_cost(&mut cost) {
                     Ok(merk) => merk,
                     Err(Error::MerkCacheSubtreeDeleted(_)) => continue,
+                    // The parent element is already gone from ITS parent (a
+                    // recursive deletion removed it without marking every
+                    // descendant in this cache) — same situation as the
+                    // explicit deleted marker above, so propagate nothing.
+                    Err(Error::PathKeyNotFound(_)) => continue,
                     Err(e) => return Err(e).wrap_with_cost(cost),
                 };
 
@@ -378,6 +384,9 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
 pub(crate) struct MerkHandle<'db, 'c> {
     merk: *mut Subtree<'db>,
     taken_handle: &'c Cell<bool>,
+    /// The cache's shared batch, so every `for_merk` call can mark itself
+    /// as a new operation (see [`StorageBatch::next_operation`]).
+    batch: &'c StorageBatch,
 }
 
 impl<'db> MerkHandle<'db, '_> {
@@ -401,6 +410,14 @@ impl<'db> MerkHandle<'db, '_> {
         }
 
         self.taken_handle.set(true);
+
+        // Every closure is one Merk operation sharing the cache's batch.
+        // Marking the boundary lets a later operation's delete supersede an
+        // earlier operation's put of the same key (a cascade deleting a node
+        // that the preceding delete's rebalancing just rewrote), while the
+        // put-wins rule Merk's rebalancing relies on still holds within the
+        // operation.
+        self.batch.next_operation();
 
         // SAFETY: here we want to have `&mut` reference to Merk out of a pointer, there
         // is a checklist for that:

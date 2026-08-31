@@ -23,7 +23,10 @@
 
 use grovedb_costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt};
 use grovedb_merk::{
-    element::{costs::ElementCostExtensions, insert::ElementInsertToStorageExtensions},
+    element::{
+        costs::ElementCostExtensions, get::ElementFetchFromStorageExtensions,
+        insert::ElementInsertToStorageExtensions,
+    },
     tree::NULL_HASH,
 };
 use grovedb_path::SubtreePath;
@@ -33,7 +36,8 @@ use grovedb_version::version::GroveVersion;
 use super::super::InsertOptions;
 use crate::{
     bidirectional_references::{
-        process_bidirectional_reference_insertion, process_update_element_with_backward_references,
+        basic_sectioned_removal, process_bidirectional_reference_insertion,
+        process_update_element_with_backward_references,
     },
     merk_cache::MerkCache,
     reference_path::follow_reference,
@@ -50,6 +54,20 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
     batch: &StorageBatch,
     grove_version: &GroveVersion,
 ) -> CostResult<(), Error> {
+    // Backward-references elements are never wrapped: the wrappers'
+    // constructors refuse them and deserialization rejects the shape, so a
+    // hand-built `NonCounted(family)` must not reach either route below
+    // (the plain route would store bytes no reader accepts).
+    if element.is_wrapped() && element.underlying().supports_backward_references() {
+        return Err(Error::InvalidInput(
+            "backward-references elements (BidirectionalReference, \
+             ItemWithBackwardsReferences, SumItemWithBackwardsReferences, \
+             ItemWithSumItemWithBackwardsReferences) cannot be wrapped in NonCounted / \
+             NotSummed / NotCountedOrSummed",
+        ))
+        .wrap_with_cost(Default::default());
+    }
+
     // A bidirectional reference must always register itself in its target's
     // meta storage, flag or no flag; everything else opts into the
     // backward-references flow via the flag.
@@ -135,7 +153,7 @@ fn insert_with_backward_references<'db, 'b, B: AsRef<[u8]>>(
     }
 
     match element {
-        Element::BidirectionalReference(reference) => {
+        Element::BidirectionalReference(reference, flags) => {
             cost_return_on_error!(
                 &mut cost,
                 process_bidirectional_reference_insertion(
@@ -143,6 +161,7 @@ fn insert_with_backward_references<'db, 'b, B: AsRef<[u8]>>(
                     path,
                     key,
                     reference,
+                    flags,
                     Some(options)
                 )
             );
@@ -184,7 +203,8 @@ fn insert_with_backward_references<'db, 'b, B: AsRef<[u8]>>(
                     subtree_to_insert_into.clone(),
                     path.derive_owned(),
                     key,
-                    delta
+                    delta,
+                    &mut basic_sectioned_removal()
                 )
             );
         }
@@ -225,7 +245,8 @@ fn insert_with_backward_references<'db, 'b, B: AsRef<[u8]>>(
                     subtree_to_insert_into.clone(),
                     path.derive_owned(),
                     key,
-                    delta
+                    delta,
+                    &mut basic_sectioned_removal()
                 )
             );
         }
@@ -255,7 +276,40 @@ fn insert_with_backward_references<'db, 'b, B: AsRef<[u8]>>(
         | Element::SumItem(..)
         | Element::ItemWithSumItem(..)
         | Element::ItemWithBackwardsReferences(..)
-        | Element::SumItemWithBackwardsReferences(..) => {
+        | Element::SumItemWithBackwardsReferences(..)
+        | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+            // A backward-references element's referrer list is bookkeeping
+            // this flow maintains: carry the stored list over onto the new
+            // element so an update never silently drops registrations (and
+            // so the changed/unchanged comparison reflects the LOGICAL
+            // value, the referrer lists being equal on both sides).
+            let mut element = element;
+            if element.supports_backward_references() {
+                let previous = cost_return_on_error!(
+                    &mut cost,
+                    subtree_to_insert_into.for_merk(|m| {
+                        Element::get_optional(m, key, true, grove_version).map_err(Error::MerkError)
+                    })
+                );
+                if let Some(refs) = element.backward_references_mut() {
+                    // The stored list is authoritative; whatever the caller
+                    // supplied is not theirs to claim — forged entries would
+                    // later let cascades and propagations follow arbitrary
+                    // inverted paths.
+                    *refs = previous
+                        .as_ref()
+                        .and_then(|p| p.backward_references())
+                        .map(|p| p.to_vec())
+                        .unwrap_or_default();
+                }
+                // The carried-over referrers must fit the capacity the new
+                // element declares (checked before the write so the refusal
+                // is the family rule, not a serialization failure).
+                cost_return_on_error_no_add!(
+                    cost,
+                    crate::bidirectional_references::check_carried_referrers_fit(&element)
+                );
+            }
             let delta = cost_return_on_error!(
                 &mut cost,
                 subtree_to_insert_into.for_merk(|m| {
@@ -276,7 +330,8 @@ fn insert_with_backward_references<'db, 'b, B: AsRef<[u8]>>(
                     subtree_to_insert_into.clone(),
                     path.derive_owned(),
                     key,
-                    delta
+                    delta,
+                    &mut basic_sectioned_removal()
                 )
             );
         }
