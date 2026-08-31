@@ -98,8 +98,9 @@ pub(crate) fn path_query_push_v0(
                 // v0: decrement even when the emptiness was caused by offset
                 // skipping rows that matched — the issue #690 behaviour,
                 // frozen for GROVE_V1..GROVE_V3. [`super::v1`] (GROVE_V4+)
-                // adds a `skipped == 0` guard here; that guard is the only
-                // difference between the two files.
+                // adds a `skipped == 0` guard here, and also serves
+                // per-instance limits and reconciles descents by consumed
+                // budget — see the module docs.
                 if sub_elements.is_empty() && decrease_limit_on_range_with_no_sub_elements {
                     *limit = limit.saturating_sub(1);
                 } else {

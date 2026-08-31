@@ -6,7 +6,7 @@
 //! subtree ("top k per parent"), composing with the global
 //! `SizedQuery::limit` by `min`. Served on trusted reads under
 //! `GROVE_V4` (`path_query_methods.per_instance_query_limits`,
-//! `element.path_query_push` v2); everything else — older grove
+//! `element.path_query_push` v1); everything else — older grove
 //! versions, proofs, merges, read-mode/aggregate/count-offset shapes —
 //! fails closed.
 

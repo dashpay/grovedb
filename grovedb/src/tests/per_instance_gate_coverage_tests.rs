@@ -1,8 +1,6 @@
 //! Gate and dispatch coverage for per-instance limits (`Query::limit`)
-//! beyond the engine-semantics tests: the historical `path_query_push`
-//! v1 arm stays exercised (no shipping grove version selects it now
-//! that `GROVE_V4` maps to v2), the shape/validator rejects fire, and
-//! the public `query_item` wrapper keeps its limit/offset contract.
+//! beyond the engine-semantics tests: the shape/validator rejects fire
+//! and the public `query_item` wrapper keeps its limit/offset contract.
 
 use grovedb_version::version::GroveVersion;
 
@@ -50,58 +48,6 @@ fn populate(db: &TempGroveDb, grove_version: &GroveVersion) {
             .expect("insert item");
         }
     }
-}
-
-fn subquery_path_query() -> PathQuery {
-    let mut query = Query::new_range_full();
-    query.set_subquery(Query::new_range_full());
-    PathQuery::new(vec![DOCS.to_vec()], SizedQuery::new(query, Some(4), None))
-}
-
-#[test]
-fn path_query_push_v1_dispatch_arm_still_serves_plain_queries() {
-    // GROVE_V4 maps `element.path_query_push` to v2, so the historical
-    // v1 intermediate is unreachable from any shipping version table —
-    // pin it through a doctored version so its accounting (the
-    // issue-#690 guard without consumed-based reconciliation) stays
-    // exercised and comparable.
-    let real = GroveVersion::latest();
-    let db = make_test_grovedb(real);
-    populate(&db, real);
-
-    let mut v1_doctored = real.clone();
-    v1_doctored.grovedb_versions.element.path_query_push = 1;
-
-    let (v2_result, v2_skipped) = db
-        .query_raw(
-            &subquery_path_query(),
-            true,
-            true,
-            true,
-            QueryResultType::QueryPathKeyElementTrioResultType,
-            None,
-            real,
-        )
-        .unwrap()
-        .expect("v2 read");
-    let (v1_result, v1_skipped) = db
-        .query_raw(
-            &subquery_path_query(),
-            true,
-            true,
-            true,
-            QueryResultType::QueryPathKeyElementTrioResultType,
-            None,
-            &v1_doctored,
-        )
-        .unwrap()
-        .expect("v1 read");
-    assert_eq!(v1_skipped, v2_skipped);
-    assert_eq!(
-        v1_result.to_path_key_elements(),
-        v2_result.to_path_key_elements(),
-        "for plain single-level subqueries v1 and v2 agree"
-    );
 }
 
 #[test]

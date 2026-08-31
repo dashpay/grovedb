@@ -959,10 +959,12 @@ mod tests {
 
     /// The two grove versions on either side of the `element.path_query_push`
     /// gate: GROVE_V3 selects the frozen v0 implementation, GROVE_V4 (latest)
-    /// selects v1. The implementations differ only in the offset-consumed
-    /// empty-subquery limit accounting (issue #690), so every other
-    /// `path_query_push` branch must produce identical results under both —
-    /// the tests below assert that equivalence branch by branch.
+    /// selects v1. The implementations differ in the offset-consumed
+    /// empty-subquery limit accounting (issue #690), in serving per-instance
+    /// limits, and in reconciling descents by consumed budget — none of which
+    /// these fixtures exercise, so every other `path_query_push` branch must
+    /// produce identical results under both; the tests below assert that
+    /// equivalence branch by branch.
     fn path_query_push_gate_versions() -> [&'static GroveVersion; 2] {
         let v3 = &grovedb_version::version::GROVE_VERSIONS[2];
         let v4 = GroveVersion::latest();
@@ -1158,7 +1160,7 @@ mod tests {
                 },
             )) => {
                 assert_eq!(method, "path_query_push");
-                assert_eq!(known_versions, vec![0, 1, 2]);
+                assert_eq!(known_versions, vec![0, 1]);
                 assert_eq!(received, 99);
             }
             other => panic!("expected UnknownVersionMismatch, got {other:?}"),

@@ -275,11 +275,11 @@ impl ElementQueryExtensions for Element {
     /// Push arguments to path query
     ///
     /// Version dispatch — see the `path_query_push` module: v0 is the legacy
-    /// limit/offset accounting frozen for `GROVE_V1`..`GROVE_V3`; v1 no
-    /// longer charges the outer limit for subqueries emptied by offset
-    /// skips (issue #690); v2 (`GROVE_V4`+) carries v1's fix, serves
-    /// per-instance limits (`Query::limit`) and reconciles descents by
-    /// total consumed budget instead of returned rows.
+    /// limit/offset accounting frozen for `GROVE_V1`..`GROVE_V3`; v1
+    /// (`GROVE_V4`+) no longer charges the outer limit for subqueries
+    /// emptied by offset skips (issue #690), serves per-instance limits
+    /// (`Query::limit`) and reconciles descents by total consumed budget
+    /// instead of returned rows.
     fn path_query_push(
         args: PathQueryPushArgs,
         grove_version: &GroveVersion,
@@ -287,11 +287,10 @@ impl ElementQueryExtensions for Element {
         match grove_version.grovedb_versions.element.path_query_push {
             0 => crate::element::path_query_push::path_query_push_v0(args, grove_version),
             1 => crate::element::path_query_push::path_query_push_v1(args, grove_version),
-            2 => crate::element::path_query_push::path_query_push_v2(args, grove_version),
             version => Err(Error::VersionError(
                 grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
                     method: "path_query_push".to_string(),
-                    known_versions: vec![0, 1, 2],
+                    known_versions: vec![0, 1],
                     received: version,
                 },
             ))

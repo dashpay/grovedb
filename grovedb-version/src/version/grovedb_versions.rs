@@ -65,7 +65,7 @@ pub struct GroveDBPathQueryMethodVersions {
     ///   *serving*, so a query built ahead of activation fails closed
     ///   instead of running with its caps silently ignored.
     /// - `1` (GROVE_V4+): trusted reads serve per-instance limits (the
-    ///   `element.path_query_push` v2 engine); proofs reject until the
+    ///   `element.path_query_push` v1 engine); proofs reject until the
     ///   V1 prover/verifier learn the accounting.
     pub per_instance_query_limits: FeatureVersion,
 }
