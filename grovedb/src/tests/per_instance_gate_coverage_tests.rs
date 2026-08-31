@@ -452,3 +452,121 @@ fn public_query_item_wrapper_keeps_the_limit_offset_contract() {
         "query_item must reject a per-instance cap on the queried node"
     );
 }
+
+#[test]
+fn query_item_preflights_the_entire_query() {
+    use grovedb_merk::proofs::query::QueryItem;
+
+    use crate::{element::query::ElementQueryExtensions, query_result_type::QueryResultElement};
+
+    // A per-instance limit hiding in an unmatched conditional branch:
+    // without the recursive preflight, acceptance depended on database
+    // contents (rejected only once stored data made the branch match).
+    let legacy_version = &grovedb_version::version::GROVE_VERSIONS[2];
+    assert_eq!(legacy_version.protocol_version, 3);
+    let db = make_test_grovedb(legacy_version);
+    populate(&db, legacy_version);
+
+    let mut hidden = Query::new_range_full();
+    hidden.limit = Some(1);
+    let mut query = Query::new_range_full();
+    query.add_conditional_subquery(QueryItem::Key(b"zz".to_vec()), None, Some(hidden));
+    let sized_query = SizedQuery::new(query, None, None);
+
+    let mut results: Vec<QueryResultElement> = Vec::new();
+    let mut limit = None;
+    let mut offset = None;
+    let path: [&[u8]; 2] = [DOCS, b"p1"];
+    let result = Element::query_item(
+        &db.db,
+        &QueryItem::RangeFull(..),
+        &mut results,
+        &path,
+        &sized_query,
+        None,
+        &mut limit,
+        &mut offset,
+        Default::default(),
+        QueryResultType::QueryKeyElementPairResultType,
+        |args, grove_version| {
+            use grovedb_costs::CostsExt;
+            Element::basic_push(args, grove_version)
+                .wrap_with_cost(grovedb_costs::OperationCost::default())
+        },
+        legacy_version,
+    );
+    assert!(
+        matches!(result.unwrap(), Err(Error::NotSupported(_))),
+        "query_item must preflight limits in unmatched branches too"
+    );
+}
+
+#[test]
+fn unknown_push_engine_is_rejected_independently_of_data() {
+    // capability = 1 with an unknown engine selector must be a typed
+    // version error even when the query matches nothing — previously a
+    // limited missing-key query returned Ok(empty) because the
+    // dispatcher was never reached, making validation data-dependent.
+    let real = GroveVersion::latest();
+    let db = make_test_grovedb(real);
+    populate(&db, real);
+
+    let mut missing_sub = Query::new_range_full();
+    missing_sub.limit = Some(1);
+    let mut missing = Query::new_single_key(b"no-such-key".to_vec());
+    missing.set_subquery(missing_sub);
+    let path_query = PathQuery::new(vec![DOCS.to_vec()], SizedQuery::new(missing, None, None));
+
+    let mut unknown_engine = real.clone();
+    unknown_engine.grovedb_versions.element.path_query_push = 2;
+    let result = db.query_raw(
+        &path_query,
+        true,
+        true,
+        true,
+        QueryResultType::QueryPathKeyElementTrioResultType,
+        None,
+        &unknown_engine,
+    );
+    assert!(
+        matches!(result.unwrap(), Err(Error::VersionError(_))),
+        "an unknown engine selector must be rejected up front"
+    );
+}
+
+#[test]
+fn subordinate_method_version_slots_still_gate_the_internal_walk() {
+    // The internal helpers are entered directly by the engines, so
+    // their subordinate slots must be validated inside them — a
+    // future/replay table bumping a slot must not silently run today's
+    // semantics.
+    let real = GroveVersion::latest();
+    let db = make_test_grovedb(real);
+    populate(&db, real);
+
+    let mut query = Query::new_range_full();
+    query.set_subquery(Query::new_range_full());
+    let path_query = PathQuery::new(vec![DOCS.to_vec()], SizedQuery::new(query, Some(2), None));
+
+    for doctor in [
+        (|v: &mut GroveVersion| v.grovedb_versions.element.query_item = 1) as fn(&mut GroveVersion),
+        |v| v.grovedb_versions.element.get_query_apply_function = 1,
+        |v| v.grovedb_versions.element.get_path_query = 1,
+    ] {
+        let mut doctored = real.clone();
+        doctor(&mut doctored);
+        let result = db.query_raw(
+            &path_query,
+            true,
+            true,
+            true,
+            QueryResultType::QueryPathKeyElementTrioResultType,
+            None,
+            &doctored,
+        );
+        assert!(
+            matches!(result.unwrap(), Err(Error::VersionError(_))),
+            "a bumped subordinate slot must reject, not run today's semantics"
+        );
+    }
+}

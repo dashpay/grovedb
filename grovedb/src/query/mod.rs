@@ -1622,11 +1622,29 @@ pub(crate) fn reject_unserved_instance_limits_in_query(
                 .to_string(),
         )),
         1 => {
-            if grove_version.grovedb_versions.element.path_query_push == 0 {
-                return Err(Error::CorruptedCodeExecution(
-                    "grove version table serves per-instance limits but selects the v0 \
-                     path_query_push engine, which cannot account for them",
-                ));
+            // The engine selector is validated exactly: the dispatcher
+            // supports [0, 1], so an unknown future value must be a
+            // typed version error here too — otherwise a limited query
+            // that happens to match no data would silently succeed
+            // while the same table errors once data matches, making
+            // version validation data-dependent.
+            match grove_version.grovedb_versions.element.path_query_push {
+                0 => {
+                    return Err(Error::CorruptedCodeExecution(
+                        "grove version table serves per-instance limits but selects the v0 \
+                         path_query_push engine, which cannot account for them",
+                    ));
+                }
+                1 => {}
+                version => {
+                    return Err(Error::VersionError(
+                        grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                            method: "path_query_push".to_string(),
+                            known_versions: vec![0, 1],
+                            received: version,
+                        },
+                    ));
+                }
             }
             if query.has_zero_instance_limit_anywhere() {
                 return Err(Error::InvalidQuery(

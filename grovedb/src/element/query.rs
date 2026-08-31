@@ -376,15 +376,27 @@ impl ElementQueryExtensions for Element {
             grove_version.grovedb_versions.element.query_item
         );
 
-        // This legacy signature threads only the global limit/offset
-        // pair, and a per-instance budget cannot ride it: the budget is
-        // per node *instance*, while this entry point is called once
-        // per item — re-seeding a fresh cap per item would silently
-        // change what the cap means. The engine's own walk seeds the
-        // instance budget in `get_query_apply_function_internal`; a
-        // direct caller whose queried node carries its own cap fails
-        // closed here instead of having the cap ignored. (Caps on
-        // subqueries BELOW this node are served through the descent.)
+        // Whole-query preflight, exactly like the other public Element
+        // wrappers: a per-instance limit hiding in an unmatched
+        // conditional branch would otherwise make acceptance depend on
+        // database contents (rejected only once stored data makes the
+        // branch match during descent).
+        if let Err(e) = crate::query::reject_unserved_instance_limits_in_query(
+            &sized_query.query,
+            grove_version,
+        ) {
+            return Err(e).wrap_with_cost(OperationCost::default());
+        }
+        // Additionally, this legacy signature threads only the global
+        // limit/offset pair, and a per-instance budget cannot ride it:
+        // the budget is per node *instance*, while this entry point is
+        // called once per item — re-seeding a fresh cap per item would
+        // silently change what the cap means. The engine's own walk
+        // seeds the instance budget in
+        // `get_query_apply_function_internal`; a direct caller whose
+        // queried node carries its own cap fails closed here instead of
+        // having the cap ignored. (Caps on subqueries BELOW this node
+        // are served through the descent.)
         if sized_query.query.limit.is_some() {
             return Err(Error::NotSupported(
                 "ElementQueryExtensions::query_item does not serve a per-instance limit \
@@ -485,6 +497,12 @@ pub(crate) fn query_item_internal(
     use grovedb_storage::Storage;
 
     use crate::util::{compat, TxRef};
+
+    // Subordinate slot check — see `get_query_apply_function_internal`.
+    check_grovedb_v0_with_cost!(
+        "query_item",
+        grove_version.grovedb_versions.element.query_item
+    );
 
     let mut cost = OperationCost::default();
     let tx = TxRef::new(storage, transaction);
@@ -674,6 +692,19 @@ pub(crate) fn get_query_apply_function_internal(
     add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
     grove_version: &GroveVersion,
 ) -> CostResult<(QueryResultElements, u16, u16), Error> {
+    // The subordinate method-version slot holds for the internal body
+    // exactly as it did when the public wrapper was the only entry —
+    // the engines recurse through here directly, and a future/replay
+    // version table bumping the slot must not silently run today's
+    // semantics.
+    check_grovedb_v0_with_cost!(
+        "get_query_apply_function",
+        grove_version
+            .grovedb_versions
+            .element
+            .get_query_apply_function
+    );
+
     let mut cost = OperationCost::default();
 
     // Per-instance limits are serving-gated: grove versions whose
@@ -698,12 +729,27 @@ pub(crate) fn get_query_apply_function_internal(
                 .wrap_with_cost(cost);
             }
             1 => {
-                if grove_version.grovedb_versions.element.path_query_push == 0 {
-                    return Err(Error::CorruptedCodeExecution(
-                        "grove version table serves per-instance limits but selects the v0 \
-                         path_query_push engine, which cannot account for them",
-                    ))
-                    .wrap_with_cost(cost);
+                // Exact-match the engine selector — see
+                // `reject_unserved_instance_limits_in_query`.
+                match grove_version.grovedb_versions.element.path_query_push {
+                    0 => {
+                        return Err(Error::CorruptedCodeExecution(
+                            "grove version table serves per-instance limits but selects the v0 \
+                             path_query_push engine, which cannot account for them",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                    1 => {}
+                    version => {
+                        return Err(Error::VersionError(
+                            grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                                method: "path_query_push".to_string(),
+                                known_versions: vec![0, 1],
+                                received: version,
+                            },
+                        ))
+                        .wrap_with_cost(cost);
+                    }
                 }
                 if instance_limit == 0 {
                     return Err(Error::InvalidQuery(
@@ -805,6 +851,12 @@ pub(crate) fn get_path_query_internal(
     transaction: TransactionArg,
     grove_version: &GroveVersion,
 ) -> CostResult<(QueryResultElements, u16, u16), Error> {
+    // Subordinate slot check — see `get_query_apply_function_internal`.
+    check_grovedb_v0_with_cost!(
+        "get_path_query",
+        grove_version.grovedb_versions.element.get_path_query
+    );
+
     let path_slices = path_query
         .path
         .iter()
