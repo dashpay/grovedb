@@ -10,6 +10,7 @@
 - [The Storage Layer](storage-layer.md)
 - [The Proof System](proof-system.md)
 - [The Query System](query-system.md)
+- [Per-Instance Query Limits](per-instance-limits.md)
 - [The Unified PathQuery](unified-path-query.md)
 - [Aggregate Sum Queries](aggregate-sum-queries.md)
 - [Aggregate Count Queries](aggregate-count-queries.md)

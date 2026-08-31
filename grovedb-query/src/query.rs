@@ -28,10 +28,12 @@ pub struct Query {
     /// # Known limitation
     ///
     /// Parent tree results added by this flag do **not** currently count
-    /// against `SizedQuery::limit`. A query with `limit = 10` may return
-    /// more than 10 results when this flag is active, because the limit
-    /// only governs child-level results. This will be resolved in a future
-    /// redesign that introduces per-level limits.
+    /// against `SizedQuery::limit` or the per-instance [`limit`](Self::limit).
+    /// A query with `limit = 10` may return more than 10 results when this
+    /// flag is active, because the budgets only govern child-level results.
+    /// Fixing this requires charging the prover at exactly the points the
+    /// verifier pushes parent rows, across every descent flavor — tracked
+    /// as follow-up work to the per-instance limits feature.
     ///
     /// # Absence-proof verification
     ///

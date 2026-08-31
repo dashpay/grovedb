@@ -27,12 +27,18 @@ pub struct Query {
     pub conditional_subquery_branches: Option<IndexMap<QueryItem, SubqueryBranch>>,
     pub left_to_right: bool,                // Iteration direction
     pub add_parent_tree_on_subquery: bool,  // Include parent tree element in results (v2)
+    pub read_mode: Option<Box<ReadMode>>,   // Axis / sum-budget read — see The Unified PathQuery
+    pub limit: Option<u16>,                 // Per-instance cap — see Per-Instance Query Limits
 }
 ```
 
 > **`add_parent_tree_on_subquery`** (v2): When `true`, the parent tree element (e.g.,
 > a CountTree or SumTree) is included in query results alongside its children's values.
 > This lets you retrieve both aggregate values and individual elements in one query.
+
+> **`limit`** (GROVE_V4): a cap applied **per execution instance** of the query
+> node — "top k per parent" — composing with `SizedQuery::limit` by `min`.
+> See [Per-Instance Query Limits](per-instance-limits.md).
 
 ## QueryItems — What to Select
 
@@ -172,6 +178,11 @@ When combined with `left_to_right: false`, the iteration is reversed:
     Result: [H, G, F]
 ```
 
+`SizedQuery::limit` is one **global** budget shared by the whole
+traversal. To cap each subquery instance separately — "top k per
+parent" — use the per-instance `Query::limit` alongside it; see
+[Per-Instance Query Limits](per-instance-limits.md).
+
 ## Query Merging
 
 Multiple PathQueries can be merged into a single query for efficiency. The merge
@@ -183,6 +194,12 @@ algorithm finds common path prefixes and combines query items:
 
     Merged:  path=["users"], query=items=[Key("alice"), Key("bob")]
 ```
+
+Inputs with a `SizedQuery::offset` never merge. Inputs with limits merge
+from `GROVE_V4` by *lifting* each input's global limit onto its own merged
+branch as a per-instance cap — see
+[Per-Instance Query Limits](per-instance-limits.md#merging--the-lift);
+before V4 they are refused.
 
 
 ## Beyond key selection
