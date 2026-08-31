@@ -7,7 +7,7 @@
 //! subtree ("top k per parent"), composing with the global
 //! `SizedQuery::limit` by `min`. Served under `GROVE_V4`
 //! (`path_query_methods.per_instance_query_limits`) on trusted reads
-//! (`element.path_query_push` v2), V1 proofs, and merges
+//! (`element.path_query_push` v1), V1 proofs, and merges
 //! (`path_query_methods.merge` v2 lifts a merged input's global limit
 //! onto its exclusive branch). Everything else — older grove versions,
 //! V0 proofs, absence-proof assembly, colliding merges,

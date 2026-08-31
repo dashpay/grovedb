@@ -275,11 +275,11 @@ impl ElementQueryExtensions for Element {
     /// Push arguments to path query
     ///
     /// Version dispatch — see the `path_query_push` module: v0 is the legacy
-    /// limit/offset accounting frozen for `GROVE_V1`..`GROVE_V3`; v1 no
-    /// longer charges the outer limit for subqueries emptied by offset
-    /// skips (issue #690); v2 (`GROVE_V4`+) carries v1's fix, serves
-    /// per-instance limits (`Query::limit`) and reconciles descents by
-    /// total consumed budget instead of returned rows.
+    /// limit/offset accounting frozen for `GROVE_V1`..`GROVE_V3`; v1
+    /// (`GROVE_V4`+) no longer charges the outer limit for subqueries
+    /// emptied by offset skips (issue #690), serves per-instance limits
+    /// (`Query::limit`) and reconciles descents by total consumed budget
+    /// instead of returned rows.
     fn path_query_push(
         args: PathQueryPushArgs,
         grove_version: &GroveVersion,
@@ -287,11 +287,10 @@ impl ElementQueryExtensions for Element {
         match grove_version.grovedb_versions.element.path_query_push {
             0 => crate::element::path_query_push::path_query_push_v0(args, grove_version),
             1 => crate::element::path_query_push::path_query_push_v1(args, grove_version),
-            2 => crate::element::path_query_push::path_query_push_v2(args, grove_version),
             version => Err(Error::VersionError(
                 grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
                     method: "path_query_push".to_string(),
-                    known_versions: vec![0, 1, 2],
+                    known_versions: vec![0, 1],
                     received: version,
                 },
             ))
@@ -357,6 +356,25 @@ impl ElementQueryExtensions for Element {
             "query_item",
             grove_version.grovedb_versions.element.query_item
         );
+
+        // This legacy signature threads only the global limit/offset
+        // pair, and a per-instance budget cannot ride it: the budget is
+        // per node *instance*, while this entry point is called once
+        // per item — re-seeding a fresh cap per item would silently
+        // change what the cap means. The engine's own walk seeds the
+        // instance budget in `get_query_apply_function_internal`; a
+        // direct caller whose queried node carries its own cap fails
+        // closed here instead of having the cap ignored. (Caps on
+        // subqueries BELOW this node are served through the descent.)
+        if sized_query.query.limit.is_some() {
+            return Err(Error::NotSupported(
+                "ElementQueryExtensions::query_item does not serve a per-instance limit \
+                 (Query::limit) on the queried node itself — use get_query_apply_function or \
+                 get_path_query"
+                    .to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        }
 
         let mut budget = QueryBudget::new(*limit, None, *offset);
         let result = query_item_internal(
