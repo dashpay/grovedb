@@ -127,8 +127,14 @@ pub(crate) fn path_query_push_v1(
                 *global = global.saturating_sub(child_consumed);
             }
             // Instance chain: result rows only, unless empty-subtree
-            // charges were opted in.
-            let instance_charge = if decrease_instance_limits_on_range_with_no_sub_elements {
+            // charges were opted in — the instance flag is subordinate
+            // to the governing empty-range flag per the `QueryOptions`
+            // contract, and `child_consumed` can carry the
+            // unconditional absent-terminal global charges even when
+            // the governing flag is off.
+            let instance_charge = if decrease_limit_on_range_with_no_sub_elements
+                && decrease_instance_limits_on_range_with_no_sub_elements
+            {
                 child_consumed
             } else {
                 child_rows
@@ -204,13 +210,18 @@ pub(crate) fn path_query_push_v1(
                     }
                     budget.charge_row();
                 } else {
-                    // The terminal was absent. v1 charges the limit
-                    // unconditionally here; v1 keeps the global charge
-                    // (it bounds walks across many missing terminals)
-                    // but classes it with the empty-subtree charges for
-                    // the instance chain: no row was produced.
+                    // The terminal was absent. v0 charges the limit
+                    // unconditionally here and v1 keeps that global
+                    // charge (it bounds walks across many missing
+                    // terminals), but classes it with the empty-subtree
+                    // charges for the instance chain: no row was
+                    // produced, and per the `QueryOptions` contract the
+                    // instance flag is subordinate — it has no effect
+                    // unless the governing empty-range charging flag is
+                    // on too.
                     budget.charge_empty_subtree(
-                        decrease_instance_limits_on_range_with_no_sub_elements,
+                        decrease_limit_on_range_with_no_sub_elements
+                            && decrease_instance_limits_on_range_with_no_sub_elements,
                     );
                 }
             } else if let Some(offset) = budget.offset.as_mut() {

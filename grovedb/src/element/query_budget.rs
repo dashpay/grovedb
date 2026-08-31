@@ -13,7 +13,7 @@
 //!
 //! `consumed` is the frame's report back to its parent: everything this
 //! frame's subtree charged against the global budget — result rows plus
-//! empty-subtree charges. The v2 `path_query_push` engine reconciles
+//! empty-subtree charges. The v1 `path_query_push` engine reconciles
 //! the parent's global budget by `consumed` (matching the prover's
 //! shared-counter accounting), and the instance chain by rows only —
 //! unless [`QueryOptions::decrease_instance_limits_on_range_with_no_sub_elements`]

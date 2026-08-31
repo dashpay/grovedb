@@ -429,8 +429,9 @@ fn three_level_query(global: Option<u16>) -> PathQuery {
 
 #[test]
 fn nested_empty_subtree_charges_reach_the_global_budget() {
-    // v2 reconciles descents by consumed budget, so an empty-subtree
-    // charge two levels down reaches the global counter — matching the
+    // The v1 engine reconciles descents by consumed budget, so an
+    // empty-subtree charge two levels down reaches the global counter
+    // — matching the
     // prover's shared-counter accounting. m1 consumes 3 (two rows from
     // a_full, then one charge for z_empty), so a global budget of 3 is
     // exhausted before m2 is walked.

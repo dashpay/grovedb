@@ -112,6 +112,16 @@ impl GroveDb {
         // (verify_query_with_options, verify_query_raw,
         // verify_query_get_parent_tree_info_with_options).
 
+        // Query-shape gates run BEFORE the proof bytes are decoded: the
+        // canonical decoder admits envelopes up to 256 MiB, and a query
+        // this verifier cannot serve should refuse without paying for
+        // (or error-shadowing) that parse. `verify_proof_internal`
+        // re-checks as defense in depth.
+        query.reject_unserved_per_instance_limits(grove_version)?;
+        if options.absence_proofs_for_non_existing_searched_keys {
+            query.reject_per_instance_limits("absence-proof verification")?;
+        }
+
         let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         let (root_hash, _, result) =
@@ -156,6 +166,12 @@ impl GroveDb {
             ));
         }
 
+        // Pre-decode query-shape gate — see `verify_query_with_options`.
+        query.reject_unserved_per_instance_limits(grove_version)?;
+        if options.absence_proofs_for_non_existing_searched_keys {
+            query.reject_per_instance_limits("absence-proof verification")?;
+        }
+
         let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         let (root_hash, tree_feature_type, result) =
@@ -184,6 +200,9 @@ impl GroveDb {
                 .proof
                 .verify_query_raw
         );
+        // Pre-decode query-shape gate — see `verify_query_with_options`.
+        query.reject_unserved_per_instance_limits(grove_version)?;
+
         let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         let (root_hash, _, result) = Self::verify_proof_raw_internal(
