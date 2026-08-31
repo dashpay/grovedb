@@ -44,10 +44,13 @@ pub struct Query {
     pub add_parent_tree_on_subquery: bool,
     /// How this node reads the tree its (sub)path names. `None` is
     /// plain key selection — all pre-existing behavior, byte-identical
-    /// on the wire (the encoding version byte stays `1`). `Some(_)`
-    /// switches the node to an axis-ordered or sum-budget read and
-    /// bumps the node's encoding version byte to `2`, which decoders
-    /// that predate read modes reject — fail-closed by construction.
+    /// on the wire. `Some(_)` switches the node to an axis-ordered or
+    /// sum-budget read and bumps the node's encoding to the lowest
+    /// version that can carry its optional fields: version `2` when
+    /// the read mode is the only one present, version `3` (with both
+    /// flags set) when a per-instance [`limit`](Self::limit) rides
+    /// along. Decoders that predate the respective version reject it —
+    /// fail-closed by construction.
     ///
     /// Placement rules (which items/branches may accompany a read mode,
     /// where in a `PathQuery` it may appear) are enforced by
@@ -62,10 +65,15 @@ pub struct Query {
     /// read-mode path and keeps `Query` cheap to clone, which the
     /// engine does constantly. It is invisible on the wire and in
     /// serde: `Box<T>` encodes exactly as `T`.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
+    ///
+    /// Serde note: the field is always serialized (as an `Option`), so
+    /// positional, non-self-describing serde formats round-trip; only
+    /// *deserialization* tolerates its absence (`default`), which is
+    /// what keeps pre-field self-describing payloads (JSON without the
+    /// key) decodable. `skip_serializing_if` must NOT be added here —
+    /// a skipped field has no presence tag in positional formats, so
+    /// every field after it shifts and the payload decodes wrongly.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub read_mode: Option<Box<ReadMode>>,
     /// Per-instance result limit for this query node.
     ///
@@ -93,10 +101,11 @@ pub struct Query {
     /// fail closed, and on the wire a query carrying a per-instance
     /// limit anywhere encodes that node as version 3, which decoders
     /// that predate the field reject.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
+    ///
+    /// Serde note: always serialized, absence tolerated only on
+    /// deserialization — see [`read_mode`](Self::read_mode) for why
+    /// `skip_serializing_if` must not be added.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub limit: Option<u16>,
 }
 

@@ -204,6 +204,17 @@ impl ElementQueryExtensions for Element {
                 .get_query_apply_function
         );
 
+        // Whole-query preflight: the per-frame checks inside the walk
+        // only see nodes the walk reaches, so a per-instance limit in
+        // an unmatched conditional branch would slip past them —
+        // validate everything once at this public boundary.
+        if let Err(e) = crate::query::reject_unserved_instance_limits_in_query(
+            &sized_query.query,
+            grove_version,
+        ) {
+            return Err(e).wrap_with_cost(OperationCost::default());
+        }
+
         get_query_apply_function_internal(
             storage,
             path,
@@ -232,6 +243,14 @@ impl ElementQueryExtensions for Element {
             "get_path_query",
             grove_version.grovedb_versions.element.get_path_query
         );
+
+        // Whole-query preflight — see `get_query_apply_function`.
+        if let Err(e) = crate::query::reject_unserved_instance_limits_in_query(
+            &path_query.query.query,
+            grove_version,
+        ) {
+            return Err(e).wrap_with_cost(OperationCost::default());
+        }
 
         get_path_query_internal(
             storage,
@@ -641,7 +660,7 @@ pub(crate) fn query_item_internal(
 /// node's own `Query::limit` to seed the frame's instance budget.
 /// Returns `(elements, skipped, consumed)` where `consumed` is
 /// everything this frame's subtree charged against the global budget —
-/// result rows plus empty-subtree charges — which the v2
+/// result rows plus empty-subtree charges — which the v1
 /// `path_query_push` engine uses to reconcile the parent frame.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn get_query_apply_function_internal(
@@ -659,30 +678,50 @@ pub(crate) fn get_query_apply_function_internal(
 
     // Per-instance limits are serving-gated: grove versions whose
     // engines don't account for them must fail closed rather than run
-    // the query with its caps silently ignored. The zero cap is
-    // rejected outright — a node that may select nothing is a
-    // malformed query, not an empty result. Checking only this node's
-    // own `limit` keeps the check O(1) per frame; deeper caps are
-    // caught by their own frames before they could take effect.
+    // the query with its caps silently ignored. This is the O(1)
+    // per-frame mirror of `reject_unserved_instance_limits_in_query`
+    // (which public entry points run recursively, once, up front):
+    // exact capability-slot validation, engine coherence, and the
+    // zero-cap rejection, scoped to this node's own `limit`.
     if let Some(instance_limit) = sized_query.query.limit {
-        if grove_version
+        match grove_version
             .grovedb_versions
             .path_query_methods
             .per_instance_query_limits
-            == 0
         {
-            return Err(Error::NotSupported(
-                "per-instance query limits (Query::limit) require a grove version that serves \
-                 them"
-                    .to_string(),
-            ))
-            .wrap_with_cost(cost);
-        }
-        if instance_limit == 0 {
-            return Err(Error::InvalidQuery(
-                "Query::limit must be at least 1 when set",
-            ))
-            .wrap_with_cost(cost);
+            0 => {
+                return Err(Error::NotSupported(
+                    "per-instance query limits (Query::limit) require a grove version that \
+                     serves them"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+            1 => {
+                if grove_version.grovedb_versions.element.path_query_push == 0 {
+                    return Err(Error::CorruptedCodeExecution(
+                        "grove version table serves per-instance limits but selects the v0 \
+                         path_query_push engine, which cannot account for them",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                if instance_limit == 0 {
+                    return Err(Error::InvalidQuery(
+                        "Query::limit must be at least 1 when set",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+            }
+            version => {
+                return Err(Error::VersionError(
+                    grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                        method: "per_instance_query_limits".to_string(),
+                        known_versions: vec![0, 1],
+                        received: version,
+                    },
+                ))
+                .wrap_with_cost(cost);
+            }
         }
     }
 
