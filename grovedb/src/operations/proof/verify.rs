@@ -112,6 +112,13 @@ impl GroveDb {
         // (verify_query_with_options, verify_query_raw,
         // verify_query_get_parent_tree_info_with_options).
 
+        // Query-shape gates run BEFORE the proof bytes are decoded: the
+        // canonical decoder admits envelopes up to 256 MiB, and a query
+        // this verifier cannot serve should refuse without paying for
+        // (or error-shadowing) that parse. `verify_proof_internal`
+        // re-checks as defense in depth.
+        query.reject_per_instance_limits("proof verification")?;
+
         let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         let (root_hash, _, result) =
@@ -156,6 +163,9 @@ impl GroveDb {
             ));
         }
 
+        // Pre-decode query-shape gate — see `verify_query_with_options`.
+        query.reject_per_instance_limits("proof verification")?;
+
         let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         let (root_hash, tree_feature_type, result) =
@@ -184,6 +194,9 @@ impl GroveDb {
                 .proof
                 .verify_query_raw
         );
+        // Pre-decode query-shape gate — see `verify_query_with_options`.
+        query.reject_per_instance_limits("proof verification")?;
+
         let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         let (root_hash, _, result) = Self::verify_proof_raw_internal(
@@ -218,6 +231,12 @@ impl GroveDb {
         // query as key selection and accepting a proof about the wrong
         // thing.
         query.reject_unserved_read_mode()?;
+
+        // Per-instance limit gate: the verifier's limit accounting is a
+        // single shared counter and does not (yet) express per-instance
+        // caps. Fail closed rather than accepting a proof over a result
+        // set the caps would have shrunk.
+        query.reject_per_instance_limits("proof verification")?;
 
         // Offset gate centralized in `apply_count_offset_envelope_gate`:
         // V0 envelopes reject any non-zero offset (V0 is a shipped
@@ -359,8 +378,10 @@ impl GroveDb {
         options: VerifyOptions,
         grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, Option<TreeFeatureType>, ProvedPathKeyValues), Error> {
-        // Same fail-closed read-mode gate as `verify_proof_internal`.
+        // Same fail-closed read-mode and per-instance-limit gates as
+        // `verify_proof_internal`.
         query.reject_unserved_read_mode()?;
+        query.reject_per_instance_limits("proof verification")?;
 
         // Same V0-rejects / V1-relaxes envelope gate as
         // `verify_proof_internal` — see `apply_count_offset_envelope_gate`.

@@ -44,10 +44,13 @@ pub struct Query {
     pub add_parent_tree_on_subquery: bool,
     /// How this node reads the tree its (sub)path names. `None` is
     /// plain key selection — all pre-existing behavior, byte-identical
-    /// on the wire (the encoding version byte stays `1`). `Some(_)`
-    /// switches the node to an axis-ordered or sum-budget read and
-    /// bumps the node's encoding version byte to `2`, which decoders
-    /// that predate read modes reject — fail-closed by construction.
+    /// on the wire. `Some(_)` switches the node to an axis-ordered or
+    /// sum-budget read and bumps the node's encoding to the lowest
+    /// version that can carry its optional fields: version `2` when
+    /// the read mode is the only one present, version `3` (with both
+    /// flags set) when a per-instance [`limit`](Self::limit) rides
+    /// along. Decoders that predate the respective version reject it —
+    /// fail-closed by construction.
     ///
     /// Placement rules (which items/branches may accompany a read mode,
     /// where in a `PathQuery` it may appear) are enforced by
@@ -62,21 +65,75 @@ pub struct Query {
     /// read-mode path and keeps `Query` cheap to clone, which the
     /// engine does constantly. It is invisible on the wire and in
     /// serde: `Box<T>` encodes exactly as `T`.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
+    ///
+    /// Serde note: the field is always serialized (as an `Option`), so
+    /// positional, non-self-describing serde formats round-trip; only
+    /// *deserialization* tolerates its absence (`default`), which is
+    /// what keeps pre-field self-describing payloads (JSON without the
+    /// key) decodable. `skip_serializing_if` must NOT be added here —
+    /// a skipped field has no presence tag in positional formats, so
+    /// every field after it shifts and the payload decodes wrongly.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub read_mode: Option<Box<ReadMode>>,
+    /// Per-instance result limit for this query node.
+    ///
+    /// Unlike `SizedQuery::limit` — one global budget shared by the
+    /// whole traversal — this cap is **per execution instance**: the
+    /// query node runs once for every parent key it is reached under
+    /// (via a default or conditional subquery branch), and each of
+    /// those runs gets a fresh budget of `limit` result rows for
+    /// everything originating in that instance's subtree (its own
+    /// pushed elements plus all descendant results). That is what
+    /// expresses "top k per parent": a parent selecting many keys with
+    /// a subquery whose `limit` is `Some(k)` returns at most `k` rows
+    /// under *each* matched key instead of `k` rows in total.
+    ///
+    /// Caps compose by `min`: an instance's effective budget is the
+    /// smaller of its own `limit` and whatever remains of every
+    /// enclosing budget (ancestor instances and the global
+    /// `SizedQuery::limit`). On the root query node — which executes
+    /// exactly once — this field is therefore equivalent to
+    /// `SizedQuery::limit`, and setting both means the smaller wins.
+    ///
+    /// `Some(0)` is rejected by every serving entry point (a node that
+    /// may select nothing is a malformed query, not an empty result).
+    /// Serving is version-gated (`GROVE_V4`+); older grove versions
+    /// fail closed, and on the wire a query carrying a per-instance
+    /// limit anywhere encodes that node as version 3, which decoders
+    /// that predate the field reject.
+    ///
+    /// Serde note: always serialized, absence tolerated only on
+    /// deserialization — see [`read_mode`](Self::read_mode) for why
+    /// `skip_serializing_if` must not be added.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub limit: Option<u16>,
 }
+
+/// Version-3 `Query` encoding flags byte: the node carries a read mode.
+const QUERY_V3_FLAG_READ_MODE: u8 = 0b0000_0001;
+/// Version-3 `Query` encoding flags byte: the node carries a
+/// per-instance limit. A version-3 node always has this flag set —
+/// a node without a per-instance limit encodes as version 1 or 2.
+const QUERY_V3_FLAG_INSTANCE_LIMIT: u8 = 0b0000_0010;
+const QUERY_V3_KNOWN_FLAGS: u8 = QUERY_V3_FLAG_READ_MODE | QUERY_V3_FLAG_INSTANCE_LIMIT;
 
 impl Encode for Query {
     fn encode<E: bincode::enc::Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
-        // Version byte. Queries without a read mode — everything that
-        // was expressible before read modes existed — keep encoding as
-        // version 1, byte-for-byte. Only a node that actually carries a
-        // read mode bumps to 2, so old decoders fail closed on exactly
-        // the queries they cannot execute and on nothing else.
-        if self.read_mode.is_some() {
+        // Version byte — always the lowest version that can represent
+        // this node, so every already-expressible query keeps its exact
+        // historical bytes and old decoders fail closed on exactly the
+        // queries they cannot execute and on nothing else:
+        // 1 = plain (pre-read-mode layout, byte-for-byte), 2 = carries
+        // a read mode, 3 = carries a per-instance limit (flags byte
+        // says whether a read mode rides along).
+        if self.limit.is_some() {
+            3u8.encode(encoder)?;
+            let mut flags = QUERY_V3_FLAG_INSTANCE_LIMIT;
+            if self.read_mode.is_some() {
+                flags |= QUERY_V3_FLAG_READ_MODE;
+            }
+            flags.encode(encoder)?;
+        } else if self.read_mode.is_some() {
             2u8.encode(encoder)?;
         } else {
             1u8.encode(encoder)?;
@@ -111,10 +168,17 @@ impl Encode for Query {
 
         self.add_parent_tree_on_subquery.encode(encoder)?;
 
-        // Version 2 appends the read mode. No presence flag: the
-        // version byte already says it's there.
+        // Versions 2 and 3 append the read mode when present. No
+        // per-field presence flag: the version byte (v2) or the flags
+        // byte (v3) already says it's there.
         if let Some(read_mode) = &self.read_mode {
             read_mode.encode(encoder)?;
+        }
+
+        // Version 3 appends the per-instance limit last; its presence
+        // is what selected version 3 in the first place.
+        if let Some(limit) = self.limit {
+            limit.encode(encoder)?;
         }
 
         Ok(())
@@ -145,9 +209,27 @@ impl Query {
             ));
         }
         let version = u8::decode(decoder)?;
-        if version != 1 && version != 2 {
+        if version != 1 && version != 2 && version != 3 {
             return Err(DecodeError::Other("unsupported Query encoding version"));
         }
+        // Version 3 carries a flags byte right after the version. The
+        // instance-limit flag must be set (a node without one encodes
+        // as version 1 or 2 — the encoding is canonical), and unknown
+        // flag bits fail closed.
+        let flags = if version == 3 {
+            let flags = u8::decode(decoder)?;
+            if flags & !QUERY_V3_KNOWN_FLAGS != 0 {
+                return Err(DecodeError::Other("unknown Query version 3 flags"));
+            }
+            if flags & QUERY_V3_FLAG_INSTANCE_LIMIT == 0 {
+                return Err(DecodeError::Other(
+                    "non-canonical Query version 3 encoding: no per-instance limit",
+                ));
+            }
+            flags
+        } else {
+            0
+        };
         let items_len = u64::decode(decoder)? as usize;
         if items_len > MAX_QUERY_ITEMS {
             return Err(DecodeError::Other("query items length exceeds maximum"));
@@ -180,10 +262,17 @@ impl Query {
         let left_to_right = bool::decode(decoder)?;
         let add_parent_tree_on_subquery = bool::decode(decoder)?;
 
-        // Version 2 carries a read mode; version 1 never does. No
-        // presence flag — the version byte is the flag.
-        let read_mode = if version == 2 {
+        // Version 2 always carries a read mode; version 3 carries one
+        // when its flags byte says so; version 1 never does.
+        let read_mode = if version == 2 || flags & QUERY_V3_FLAG_READ_MODE != 0 {
             Some(Box::new(ReadMode::decode(decoder)?))
+        } else {
+            None
+        };
+
+        // Version 3 always carries the per-instance limit last.
+        let limit = if version == 3 {
+            Some(u16::decode(decoder)?)
         } else {
             None
         };
@@ -195,6 +284,7 @@ impl Query {
             left_to_right,
             add_parent_tree_on_subquery,
             read_mode,
+            limit,
         })
     }
 
@@ -208,9 +298,25 @@ impl Query {
             ));
         }
         let version = u8::borrow_decode(decoder)?;
-        if version != 1 && version != 2 {
+        if version != 1 && version != 2 && version != 3 {
             return Err(DecodeError::Other("unsupported Query encoding version"));
         }
+        // See `decode_with_depth`: version 3 = flags byte, canonical,
+        // unknown bits fail closed.
+        let flags = if version == 3 {
+            let flags = u8::borrow_decode(decoder)?;
+            if flags & !QUERY_V3_KNOWN_FLAGS != 0 {
+                return Err(DecodeError::Other("unknown Query version 3 flags"));
+            }
+            if flags & QUERY_V3_FLAG_INSTANCE_LIMIT == 0 {
+                return Err(DecodeError::Other(
+                    "non-canonical Query version 3 encoding: no per-instance limit",
+                ));
+            }
+            flags
+        } else {
+            0
+        };
         let items_len = u64::borrow_decode(decoder)? as usize;
         if items_len > MAX_QUERY_ITEMS {
             return Err(DecodeError::Other("query items length exceeds maximum"));
@@ -243,9 +349,17 @@ impl Query {
         let left_to_right = bool::borrow_decode(decoder)?;
         let add_parent_tree_on_subquery = bool::borrow_decode(decoder)?;
 
-        // Version 2 carries a read mode; version 1 never does.
-        let read_mode = if version == 2 {
+        // Version 2 always carries a read mode; version 3 carries one
+        // when its flags byte says so; version 1 never does.
+        let read_mode = if version == 2 || flags & QUERY_V3_FLAG_READ_MODE != 0 {
             Some(Box::new(ReadMode::borrow_decode(decoder)?))
+        } else {
+            None
+        };
+
+        // Version 3 always carries the per-instance limit last.
+        let limit = if version == 3 {
+            Some(u16::borrow_decode(decoder)?)
         } else {
             None
         };
@@ -257,6 +371,7 @@ impl Query {
             left_to_right,
             add_parent_tree_on_subquery,
             read_mode,
+            limit,
         })
     }
 }
@@ -306,7 +421,43 @@ impl fmt::Display for Query {
         if let Some(read_mode) = &self.read_mode {
             writeln!(f, "  read_mode: {read_mode},")?;
         }
+        if let Some(limit) = self.limit {
+            writeln!(f, "  limit: {limit},")?;
+        }
         write!(f, "}}")
+    }
+}
+
+impl Query {
+    /// Whether this query — or any subquery below it, default or
+    /// conditional — carries a per-instance [`limit`](Self::limit).
+    /// Entry points that don't serve per-instance limits use this to
+    /// fail closed instead of silently running the query with the caps
+    /// ignored.
+    pub fn has_instance_limit_anywhere(&self) -> bool {
+        self.any_instance_limit(|limit| limit.is_some())
+    }
+
+    /// Whether any per-instance limit in this query tree is `Some(0)`.
+    /// A node that may select nothing is a malformed query, not an
+    /// empty result; serving entry points reject it.
+    pub fn has_zero_instance_limit_anywhere(&self) -> bool {
+        self.any_instance_limit(|limit| limit == Some(0))
+    }
+
+    fn any_instance_limit(&self, predicate: fn(Option<u16>) -> bool) -> bool {
+        let branch_matches = |branch: &SubqueryBranch| {
+            branch
+                .subquery
+                .as_deref()
+                .is_some_and(|subquery| subquery.any_instance_limit(predicate))
+        };
+        predicate(self.limit)
+            || branch_matches(&self.default_subquery_branch)
+            || self
+                .conditional_subquery_branches
+                .as_ref()
+                .is_some_and(|branches| branches.values().any(branch_matches))
     }
 }
 
@@ -542,6 +693,7 @@ impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
             left_to_right: true,
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         }
     }
 }
@@ -653,7 +805,7 @@ mod tests {
     fn query_decode_rejects_invalid_version() {
         // Craft a payload with an invalid version byte
         let mut payload = Vec::new();
-        payload.push(3u8); // invalid version (only versions 1 and 2 are supported)
+        payload.push(4u8); // invalid version (only versions 1..=3 are supported)
                            // Add some dummy data after
         payload.extend_from_slice(&[0; 20]);
 

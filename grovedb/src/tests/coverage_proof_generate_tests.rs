@@ -158,6 +158,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 },
                 limit,
                 offset: None,

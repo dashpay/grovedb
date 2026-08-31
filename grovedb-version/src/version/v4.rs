@@ -55,13 +55,17 @@
 //!   Gated because terminal keys shape the absence-proof result set assembled
 //!   by verifiers and the `query_keys_optional` result set.
 //!
-//! - `element.path_query_push: 1` — the trusted (non-proof) query walk no
-//!   longer charges the outer limit for a subquery whose matches were
-//!   entirely consumed by `offset` (issue #690): an empty inner result eats
-//!   a limit slot only when nothing was skipped. V1..V3 keep the legacy
-//!   accounting, where e.g. `limit=2, offset=1` can return a single element.
-//!   Proof generation rejects non-zero offsets and never runs this path, so
-//!   only trusted-read result sets are gated.
+//! - `element.path_query_push: 1` — the trusted (non-proof) query walk
+//!   serves per-instance limits (`Query::limit`, "top k per parent") and
+//!   reconciles subquery descents by total *consumed* budget (rows plus
+//!   empty-subtree charges) instead of returned rows only, aligning the
+//!   read path's global-limit accounting with the prover's shared-counter
+//!   accounting for nested empty subtrees. It also fixes issue #690: an
+//!   empty inner result eats a limit slot only when nothing was skipped.
+//!   V1..V3 keep the legacy v0 accounting, where e.g. `limit=2,
+//!   offset=1` can return a single element. Proof generation rejects
+//!   non-zero offsets and never runs this path, so only trusted-read
+//!   result sets are gated.
 //!
 //! - `path_query_methods.merge: 1` — `PathQuery::merge` requires every input
 //!   to agree on `left_to_right` (typed error on conflict) and propagates the
@@ -77,6 +81,16 @@
 //!   with `NotSupported` at every entry point — those versions also reject
 //!   the version-2 `Query` wire encoding outright, so the slot's `0` value
 //!   is the in-process mirror of that fail-closed decode.
+//!
+//! - `path_query_methods.per_instance_query_limits: 1` — per-instance
+//!   limits (`Query::limit`: a fresh result budget per execution instance
+//!   of a query node, alongside the global `SizedQuery::limit`) are served
+//!   on trusted reads. Proofs still reject them until the V1
+//!   prover/verifier learn the accounting. V1..V3 reject any query
+//!   carrying one with `NotSupported` at every entry point — those
+//!   versions also reject the version-3 `Query` wire encoding outright,
+//!   so the slot's `0` value is the in-process mirror of that fail-closed
+//!   decode.
 //!
 //! - `apply_batch.keyless_op_cost_dispatch: 1` — keyless append-only ops
 //!   (`CommitmentTreeInsert`, `MmrTreeAppend`, `BulkAppend`,
@@ -250,8 +264,11 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             get_aggregate_sum_query_apply_function: 0,
             // Bumped from 0 → 1: v1 no longer decrements the outer limit when
             // a subquery's emptiness was caused by offset skips rather than a
-            // true no-match (issue #690). v0 keeps the legacy accounting for
-            // shipped grove versions.
+            // true no-match (issue #690), serves per-instance limits
+            // (`Query::limit`) and reconciles subquery descents by total
+            // consumed budget (rows plus empty-subtree charges) instead of
+            // returned rows only — see the module-level doc above. v0 keeps
+            // the legacy accounting for shipped grove versions.
             path_query_push: 1,
             aggregate_sum_path_query_push: 0,
             query_item: 0,
@@ -417,6 +434,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             query_items_at_path: 0,
             should_add_parent_tree_at_path: 0,
             unified_read_mode: 1,
+            per_instance_query_limits: 1, // Query::limit served on trusted reads (V4+)
         },
         replication: GroveDBReplicationVersions {
             get_subtrees_metadata: 0,

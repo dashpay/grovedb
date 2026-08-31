@@ -109,6 +109,13 @@ impl GroveDb {
         prove_options: Option<ProveOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<GroveDBProof, Error> {
+        // Per-instance limit gate: the provers' limit accounting is a
+        // single shared counter and does not (yet) express per-instance
+        // caps. Fail closed rather than proving a result set the caps
+        // would have shrunk.
+        if let Err(e) = path_query.reject_per_instance_limits("proof generation") {
+            return Err(e).wrap_with_cost(OperationCost::default());
+        }
         // Read-mode dispatch. Axis shapes are served by the V1 envelope
         // — validated here (classify runs the full shape grammar) and
         // gated below once `prove_version` is known. Sum-budget shapes

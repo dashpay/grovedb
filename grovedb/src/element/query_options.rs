@@ -18,6 +18,15 @@ pub struct QueryOptions {
     /// not exist. When false, a missing intermediate tree is silently treated
     /// as empty.
     pub error_if_intermediate_path_tree_not_present: bool,
+    /// Whether the empty-subtree charges governed by
+    /// `decrease_limit_on_range_with_no_sub_elements` also consume
+    /// per-instance budgets (`Query::limit`). By default (`false`) those
+    /// charges consume only the global `SizedQuery::limit` — the budget
+    /// whose exhaustion bounds a walk across many empty subtrees — and
+    /// per-instance caps count result rows only. Has no effect on a
+    /// query without per-instance limits, and no effect when
+    /// `decrease_limit_on_range_with_no_sub_elements` is off.
+    pub decrease_instance_limits_on_range_with_no_sub_elements: bool,
 }
 
 impl fmt::Display for QueryOptions {
@@ -35,6 +44,11 @@ impl fmt::Display for QueryOptions {
             "  error_if_intermediate_path_tree_not_present: {}",
             self.error_if_intermediate_path_tree_not_present
         )?;
+        writeln!(
+            f,
+            "  decrease_instance_limits_on_range_with_no_sub_elements: {}",
+            self.decrease_instance_limits_on_range_with_no_sub_elements
+        )?;
         write!(f, "}}")
     }
 }
@@ -46,6 +60,7 @@ impl Default for QueryOptions {
             allow_cache: true,
             decrease_limit_on_range_with_no_sub_elements: true,
             error_if_intermediate_path_tree_not_present: true,
+            decrease_instance_limits_on_range_with_no_sub_elements: false,
         }
     }
 }

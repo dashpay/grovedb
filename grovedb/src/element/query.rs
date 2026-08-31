@@ -15,7 +15,10 @@ use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageConte
 use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
 
 use crate::{
-    element::{path_query_push_args::PathQueryPushArgs, query_options::QueryOptions},
+    element::{
+        path_query_push_args::PathQueryPushArgs, query_budget::QueryBudget,
+        query_options::QueryOptions,
+    },
     operations::proof::util::path_as_slices_hex_to_ascii,
     query_result_type::{
         Path, QueryResultElement, QueryResultElements, QueryResultType,
@@ -201,68 +204,29 @@ impl ElementQueryExtensions for Element {
                 .get_query_apply_function
         );
 
-        let mut cost = OperationCost::default();
-
-        let mut results = Vec::new();
-
-        let mut limit = sized_query.limit;
-        let original_offset = sized_query.offset;
-        let mut offset = original_offset;
-
-        if sized_query.query.left_to_right {
-            for item in sized_query.query.iter() {
-                cost_return_on_error!(
-                    &mut cost,
-                    Self::query_item(
-                        storage,
-                        item,
-                        &mut results,
-                        path,
-                        sized_query,
-                        transaction,
-                        &mut limit,
-                        &mut offset,
-                        query_options,
-                        result_type,
-                        add_element_function,
-                        grove_version,
-                    )
-                );
-                if limit == Some(0) {
-                    break;
-                }
-            }
-        } else {
-            for item in sized_query.query.rev_iter() {
-                cost_return_on_error!(
-                    &mut cost,
-                    Self::query_item(
-                        storage,
-                        item,
-                        &mut results,
-                        path,
-                        sized_query,
-                        transaction,
-                        &mut limit,
-                        &mut offset,
-                        query_options,
-                        result_type,
-                        add_element_function,
-                        grove_version,
-                    )
-                );
-                if limit == Some(0) {
-                    break;
-                }
-            }
+        // Whole-query preflight: the per-frame checks inside the walk
+        // only see nodes the walk reaches, so a per-instance limit in
+        // an unmatched conditional branch would slip past them —
+        // validate everything once at this public boundary.
+        if let Err(e) = crate::query::reject_unserved_instance_limits_in_query(
+            &sized_query.query,
+            grove_version,
+        ) {
+            return Err(e).wrap_with_cost(OperationCost::default());
         }
 
-        let skipped = if let Some(original_offset_unwrapped) = original_offset {
-            original_offset_unwrapped - offset.unwrap()
-        } else {
-            0
-        };
-        Ok((QueryResultElements::from_elements(results), skipped)).wrap_with_cost(cost)
+        get_query_apply_function_internal(
+            storage,
+            path,
+            sized_query,
+            None,
+            query_options,
+            result_type,
+            transaction,
+            add_element_function,
+            grove_version,
+        )
+        .map_ok(|(elements, skipped, _consumed)| (elements, skipped))
     }
 
     /// Returns a vector of elements excluding trees, and the number of skipped
@@ -280,21 +244,24 @@ impl ElementQueryExtensions for Element {
             grove_version.grovedb_versions.element.get_path_query
         );
 
-        let path_slices = path_query
-            .path
-            .iter()
-            .map(|x| x.as_slice())
-            .collect::<Vec<_>>();
-        Element::get_query_apply_function(
+        // Whole-query preflight — see `get_query_apply_function`.
+        if let Err(e) = crate::query::reject_unserved_instance_limits_in_query(
+            &path_query.query.query,
+            grove_version,
+        ) {
+            return Err(e).wrap_with_cost(OperationCost::default());
+        }
+
+        get_path_query_internal(
             storage,
-            path_slices.as_slice(),
-            &path_query.query,
+            path_query,
+            None,
             query_options,
             result_type,
             transaction,
-            Element::path_query_push,
             grove_version,
         )
+        .map_ok(|(elements, skipped, _consumed)| (elements, skipped))
     }
 
     /// Returns a vector of elements, and the number of skipped elements
@@ -329,7 +296,9 @@ impl ElementQueryExtensions for Element {
     /// Version dispatch — see the `path_query_push` module: v0 is the legacy
     /// limit/offset accounting frozen for `GROVE_V1`..`GROVE_V3`; v1
     /// (`GROVE_V4`+) no longer charges the outer limit for subqueries
-    /// emptied by offset skips (issue #690).
+    /// emptied by offset skips (issue #690), serves per-instance limits
+    /// (`Query::limit`) and reconciles descents by total consumed budget
+    /// instead of returned rows.
     fn path_query_push(
         args: PathQueryPushArgs,
         grove_version: &GroveVersion,
@@ -402,182 +371,48 @@ impl ElementQueryExtensions for Element {
         add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        use grovedb_storage::Storage;
-
-        use crate::util::{compat, TxRef};
-
         check_grovedb_v0_with_cost!(
             "query_item",
             grove_version.grovedb_versions.element.query_item
         );
 
-        let mut cost = OperationCost::default();
-        let tx = TxRef::new(storage, transaction);
-
-        let subtree_path: SubtreePath<_> = path.into();
-
-        if !item.is_range() {
-            // this is a query on a key
-            if let QueryItem::Key(key) = item {
-                let subtree_res = compat::merk_optional_tx(
-                    storage,
-                    subtree_path,
-                    tx.as_ref(),
-                    None,
-                    grove_version,
-                );
-
-                if subtree_res.value().is_err()
-                    && !matches!(subtree_res.value(), Err(Error::PathParentLayerNotFound(..)))
-                {
-                    // simulating old macro's behavior by letting this particular kind of error to
-                    // pass and to short circuit with the rest
-                    return subtree_res.map_ok(|_| ());
-                }
-
-                let element_res = subtree_res
-                    .flat_map_ok(|subtree| {
-                        Element::get(&subtree, key, query_options.allow_cache, grove_version)
-                            .add_context(format!("path is {}", path_as_slices_hex_to_ascii(path)))
-                            .map_err(|e| e.into())
-                    })
-                    .unwrap_add_cost(&mut cost);
-
-                match element_res {
-                    Ok(element) => {
-                        let (subquery_path, subquery) =
-                            Self::subquery_paths_and_value_for_sized_query(sized_query, key);
-                        match add_element_function(
-                            PathQueryPushArgs {
-                                storage,
-                                transaction,
-                                key: Some(key.as_slice()),
-                                element,
-                                path,
-                                subquery_path,
-                                subquery,
-                                left_to_right: sized_query.query.left_to_right,
-                                query_options,
-                                result_type,
-                                results,
-                                limit,
-                                offset,
-                            },
-                            grove_version,
-                        )
-                        .unwrap_add_cost(&mut cost)
-                        {
-                            Ok(_) => Ok(()),
-                            Err(e) => {
-                                if !query_options.error_if_intermediate_path_tree_not_present {
-                                    match e {
-                                        Error::PathParentLayerNotFound(_) => Ok(()),
-                                        _ => Err(e),
-                                    }
-                                } else {
-                                    Err(e)
-                                }
-                            }
-                        }
-                    }
-                    Err(Error::PathKeyNotFound(_)) => Ok(()),
-                    Err(e) => {
-                        if !query_options.error_if_intermediate_path_tree_not_present {
-                            match e {
-                                Error::PathParentLayerNotFound(_) => Ok(()),
-                                _ => Err(e),
-                            }
-                        } else {
-                            Err(e)
-                        }
-                    }
-                }
-            } else {
-                Err(Error::InternalError(
-                    "QueryItem must be a Key if not a range".to_string(),
-                ))
-            }
-        } else {
-            // this is a query on a range
-            let ctx = storage
-                .get_transactional_storage_context(subtree_path, None, tx.as_ref())
-                .unwrap_add_cost(&mut cost);
-
-            let mut iter = ctx.raw_iter();
-
-            item.seek_for_iter(&mut iter, sized_query.query.left_to_right)
-                .unwrap_add_cost(&mut cost);
-
-            while item
-                .iter_is_valid_for_type(&iter, *limit, None, sized_query.query.left_to_right)
-                .unwrap_add_cost(&mut cost)
-            {
-                let value_bytes =
-                    iter.value()
-                        .unwrap_add_cost(&mut cost)
-                        .ok_or(Error::CorruptedData(
-                            "expected iterator value but got None".to_string(),
-                        ));
-                let element = cost_return_on_error_into_no_add!(
-                    cost,
-                    Element::raw_decode(
-                        cost_return_on_error_no_add!(cost, value_bytes),
-                        grove_version
-                    )
-                );
-                let key = iter
-                    .key()
-                    .unwrap_add_cost(&mut cost)
-                    .ok_or(Error::CorruptedData(
-                        "expected iterator key but got None".to_string(),
-                    ));
-                let key = cost_return_on_error_no_add!(cost, key);
-                let (subquery_path, subquery) =
-                    Self::subquery_paths_and_value_for_sized_query(sized_query, key);
-                let result_with_cost = add_element_function(
-                    PathQueryPushArgs {
-                        storage,
-                        transaction,
-                        key: Some(key),
-                        element,
-                        path,
-                        subquery_path,
-                        subquery,
-                        left_to_right: sized_query.query.left_to_right,
-                        query_options,
-                        result_type,
-                        results,
-                        limit,
-                        offset,
-                    },
-                    grove_version,
-                );
-                let result = result_with_cost.unwrap_add_cost(&mut cost);
-                match result {
-                    Ok(x) => x,
-                    Err(e) => {
-                        if !query_options.error_if_intermediate_path_tree_not_present {
-                            match e {
-                                Error::PathKeyNotFound(_) | Error::PathParentLayerNotFound(_) => (),
-                                _ => return Err(e).wrap_with_cost(cost),
-                            }
-                        } else {
-                            return Err(e).wrap_with_cost(cost);
-                        }
-                    }
-                }
-                if sized_query.query.left_to_right {
-                    iter.next().unwrap_add_cost(&mut cost);
-                } else {
-                    iter.prev().unwrap_add_cost(&mut cost);
-                }
-                cost.seek_count += 1;
-            }
-            Ok(())
+        // This legacy signature threads only the global limit/offset
+        // pair, and a per-instance budget cannot ride it: the budget is
+        // per node *instance*, while this entry point is called once
+        // per item — re-seeding a fresh cap per item would silently
+        // change what the cap means. The engine's own walk seeds the
+        // instance budget in `get_query_apply_function_internal`; a
+        // direct caller whose queried node carries its own cap fails
+        // closed here instead of having the cap ignored. (Caps on
+        // subqueries BELOW this node are served through the descent.)
+        if sized_query.query.limit.is_some() {
+            return Err(Error::NotSupported(
+                "ElementQueryExtensions::query_item does not serve a per-instance limit \
+                 (Query::limit) on the queried node itself — use get_query_apply_function or \
+                 get_path_query"
+                    .to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
         }
-        .wrap_with_cost(cost)
-    }
 
+        let mut budget = QueryBudget::new(*limit, None, *offset);
+        let result = query_item_internal(
+            storage,
+            item,
+            results,
+            path,
+            sized_query,
+            transaction,
+            &mut budget,
+            query_options,
+            result_type,
+            add_element_function,
+            grove_version,
+        );
+        *limit = budget.global;
+        *offset = budget.offset;
+        result
+    }
     fn basic_push(args: PathQueryPushArgs, grove_version: &GroveVersion) -> Result<(), Error> {
         check_grovedb_v0!(
             "basic_push",
@@ -591,14 +426,13 @@ impl ElementQueryExtensions for Element {
             element,
             result_type,
             results,
-            limit,
-            offset,
+            budget,
             ..
         } = args;
 
         let element = element.convert_if_reference_to_absolute_reference(path, key)?;
 
-        if offset.unwrap_or(0) == 0 {
+        if budget.offset.unwrap_or(0) == 0 {
             match result_type {
                 QueryElementResultType => {
                     results.push(QueryResultElement::ElementResultItem(element));
@@ -624,14 +458,369 @@ impl ElementQueryExtensions for Element {
                     )));
                 }
             }
-            if let Some(limit) = limit {
-                *limit = limit.saturating_sub(1);
-            }
-        } else if let Some(offset) = offset {
+            budget.charge_row();
+        } else if let Some(offset) = budget.offset.as_mut() {
             *offset = offset.saturating_sub(1);
         }
         Ok(())
     }
+}
+
+/// The body of [`ElementQueryExtensions::query_item`], threading the
+/// frame's [`QueryBudget`] instead of bare limit/offset counters.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn query_item_internal(
+    storage: &RocksDbStorage,
+    item: &QueryItem,
+    results: &mut Vec<QueryResultElement>,
+    path: &[&[u8]],
+    sized_query: &SizedQuery,
+    transaction: TransactionArg,
+    budget: &mut QueryBudget,
+    query_options: QueryOptions,
+    result_type: QueryResultType,
+    add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
+    grove_version: &GroveVersion,
+) -> CostResult<(), Error> {
+    use grovedb_storage::Storage;
+
+    use crate::util::{compat, TxRef};
+
+    let mut cost = OperationCost::default();
+    let tx = TxRef::new(storage, transaction);
+
+    let subtree_path: SubtreePath<_> = path.into();
+
+    if !item.is_range() {
+        // this is a query on a key
+        if let QueryItem::Key(key) = item {
+            let subtree_res =
+                compat::merk_optional_tx(storage, subtree_path, tx.as_ref(), None, grove_version);
+
+            if subtree_res.value().is_err()
+                && !matches!(subtree_res.value(), Err(Error::PathParentLayerNotFound(..)))
+            {
+                // simulating old macro's behavior by letting this particular kind of error to
+                // pass and to short circuit with the rest
+                return subtree_res.map_ok(|_| ());
+            }
+
+            let element_res = subtree_res
+                .flat_map_ok(|subtree| {
+                    Element::get(&subtree, key, query_options.allow_cache, grove_version)
+                        .add_context(format!("path is {}", path_as_slices_hex_to_ascii(path)))
+                        .map_err(|e| e.into())
+                })
+                .unwrap_add_cost(&mut cost);
+
+            match element_res {
+                Ok(element) => {
+                    let (subquery_path, subquery) =
+                        Element::subquery_paths_and_value_for_sized_query(sized_query, key);
+                    match add_element_function(
+                        PathQueryPushArgs {
+                            storage,
+                            transaction,
+                            key: Some(key.as_slice()),
+                            element,
+                            path,
+                            subquery_path,
+                            subquery,
+                            left_to_right: sized_query.query.left_to_right,
+                            query_options,
+                            result_type,
+                            results,
+                            budget,
+                        },
+                        grove_version,
+                    )
+                    .unwrap_add_cost(&mut cost)
+                    {
+                        Ok(_) => Ok(()),
+                        Err(e) => {
+                            if !query_options.error_if_intermediate_path_tree_not_present {
+                                match e {
+                                    Error::PathParentLayerNotFound(_) => Ok(()),
+                                    _ => Err(e),
+                                }
+                            } else {
+                                Err(e)
+                            }
+                        }
+                    }
+                }
+                Err(Error::PathKeyNotFound(_)) => Ok(()),
+                Err(e) => {
+                    if !query_options.error_if_intermediate_path_tree_not_present {
+                        match e {
+                            Error::PathParentLayerNotFound(_) => Ok(()),
+                            _ => Err(e),
+                        }
+                    } else {
+                        Err(e)
+                    }
+                }
+            }
+        } else {
+            Err(Error::InternalError(
+                "QueryItem must be a Key if not a range".to_string(),
+            ))
+        }
+    } else {
+        // this is a query on a range
+        let ctx = storage
+            .get_transactional_storage_context(subtree_path, None, tx.as_ref())
+            .unwrap_add_cost(&mut cost);
+
+        let mut iter = ctx.raw_iter();
+
+        item.seek_for_iter(&mut iter, sized_query.query.left_to_right)
+            .unwrap_add_cost(&mut cost);
+
+        while item
+            .iter_is_valid_for_type(
+                &iter,
+                budget.effective_limit(),
+                None,
+                sized_query.query.left_to_right,
+            )
+            .unwrap_add_cost(&mut cost)
+        {
+            let value_bytes = iter
+                .value()
+                .unwrap_add_cost(&mut cost)
+                .ok_or(Error::CorruptedData(
+                    "expected iterator value but got None".to_string(),
+                ));
+            let element = cost_return_on_error_into_no_add!(
+                cost,
+                Element::raw_decode(
+                    cost_return_on_error_no_add!(cost, value_bytes),
+                    grove_version
+                )
+            );
+            let key = iter
+                .key()
+                .unwrap_add_cost(&mut cost)
+                .ok_or(Error::CorruptedData(
+                    "expected iterator key but got None".to_string(),
+                ));
+            let key = cost_return_on_error_no_add!(cost, key);
+            let (subquery_path, subquery) =
+                Element::subquery_paths_and_value_for_sized_query(sized_query, key);
+            let result_with_cost = add_element_function(
+                PathQueryPushArgs {
+                    storage,
+                    transaction,
+                    key: Some(key),
+                    element,
+                    path,
+                    subquery_path,
+                    subquery,
+                    left_to_right: sized_query.query.left_to_right,
+                    query_options,
+                    result_type,
+                    results,
+                    budget,
+                },
+                grove_version,
+            );
+            let result = result_with_cost.unwrap_add_cost(&mut cost);
+            match result {
+                Ok(x) => x,
+                Err(e) => {
+                    if !query_options.error_if_intermediate_path_tree_not_present {
+                        match e {
+                            Error::PathKeyNotFound(_) | Error::PathParentLayerNotFound(_) => (),
+                            _ => return Err(e).wrap_with_cost(cost),
+                        }
+                    } else {
+                        return Err(e).wrap_with_cost(cost);
+                    }
+                }
+            }
+            if sized_query.query.left_to_right {
+                iter.next().unwrap_add_cost(&mut cost);
+            } else {
+                iter.prev().unwrap_add_cost(&mut cost);
+            }
+            cost.seek_count += 1;
+        }
+        Ok(())
+    }
+    .wrap_with_cost(cost)
+}
+
+/// The body of [`ElementQueryExtensions::get_query_apply_function`] —
+/// one frame of the trusted query walk.
+///
+/// `inherited_instance_limit` is the enclosing frame's remaining
+/// per-instance budget (`None` at the root and everywhere on queries
+/// without per-instance limits); it is `min`-combined with this query
+/// node's own `Query::limit` to seed the frame's instance budget.
+/// Returns `(elements, skipped, consumed)` where `consumed` is
+/// everything this frame's subtree charged against the global budget —
+/// result rows plus empty-subtree charges — which the v1
+/// `path_query_push` engine uses to reconcile the parent frame.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn get_query_apply_function_internal(
+    storage: &RocksDbStorage,
+    path: &[&[u8]],
+    sized_query: &SizedQuery,
+    inherited_instance_limit: Option<u16>,
+    query_options: QueryOptions,
+    result_type: QueryResultType,
+    transaction: TransactionArg,
+    add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
+    grove_version: &GroveVersion,
+) -> CostResult<(QueryResultElements, u16, u16), Error> {
+    let mut cost = OperationCost::default();
+
+    // Per-instance limits are serving-gated: grove versions whose
+    // engines don't account for them must fail closed rather than run
+    // the query with its caps silently ignored. This is the O(1)
+    // per-frame mirror of `reject_unserved_instance_limits_in_query`
+    // (which public entry points run recursively, once, up front):
+    // exact capability-slot validation, engine coherence, and the
+    // zero-cap rejection, scoped to this node's own `limit`.
+    if let Some(instance_limit) = sized_query.query.limit {
+        match grove_version
+            .grovedb_versions
+            .path_query_methods
+            .per_instance_query_limits
+        {
+            0 => {
+                return Err(Error::NotSupported(
+                    "per-instance query limits (Query::limit) require a grove version that \
+                     serves them"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+            1 => {
+                if grove_version.grovedb_versions.element.path_query_push == 0 {
+                    return Err(Error::CorruptedCodeExecution(
+                        "grove version table serves per-instance limits but selects the v0 \
+                         path_query_push engine, which cannot account for them",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                if instance_limit == 0 {
+                    return Err(Error::InvalidQuery(
+                        "Query::limit must be at least 1 when set",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+            }
+            version => {
+                return Err(Error::VersionError(
+                    grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                        method: "per_instance_query_limits".to_string(),
+                        known_versions: vec![0, 1],
+                        received: version,
+                    },
+                ))
+                .wrap_with_cost(cost);
+            }
+        }
+    }
+
+    let mut results = Vec::new();
+
+    let original_offset = sized_query.offset;
+    let mut budget = QueryBudget::new(
+        sized_query.limit,
+        QueryBudget::min_caps(inherited_instance_limit, sized_query.query.limit),
+        original_offset,
+    );
+
+    if sized_query.query.left_to_right {
+        for item in sized_query.query.iter() {
+            cost_return_on_error!(
+                &mut cost,
+                query_item_internal(
+                    storage,
+                    item,
+                    &mut results,
+                    path,
+                    sized_query,
+                    transaction,
+                    &mut budget,
+                    query_options,
+                    result_type,
+                    add_element_function,
+                    grove_version,
+                )
+            );
+            if budget.is_exhausted() {
+                break;
+            }
+        }
+    } else {
+        for item in sized_query.query.rev_iter() {
+            cost_return_on_error!(
+                &mut cost,
+                query_item_internal(
+                    storage,
+                    item,
+                    &mut results,
+                    path,
+                    sized_query,
+                    transaction,
+                    &mut budget,
+                    query_options,
+                    result_type,
+                    add_element_function,
+                    grove_version,
+                )
+            );
+            if budget.is_exhausted() {
+                break;
+            }
+        }
+    }
+
+    let skipped = if let Some(original_offset_unwrapped) = original_offset {
+        original_offset_unwrapped - budget.offset.unwrap()
+    } else {
+        0
+    };
+    Ok((
+        QueryResultElements::from_elements(results),
+        skipped,
+        budget.consumed,
+    ))
+    .wrap_with_cost(cost)
+}
+
+/// The body of [`ElementQueryExtensions::get_path_query`], carrying the
+/// per-instance budget chain — see
+/// [`get_query_apply_function_internal`].
+pub(crate) fn get_path_query_internal(
+    storage: &RocksDbStorage,
+    path_query: &PathQuery,
+    inherited_instance_limit: Option<u16>,
+    query_options: QueryOptions,
+    result_type: QueryResultType,
+    transaction: TransactionArg,
+    grove_version: &GroveVersion,
+) -> CostResult<(QueryResultElements, u16, u16), Error> {
+    let path_slices = path_query
+        .path
+        .iter()
+        .map(|x| x.as_slice())
+        .collect::<Vec<_>>();
+    get_query_apply_function_internal(
+        storage,
+        path_slices.as_slice(),
+        &path_query.query,
+        inherited_instance_limit,
+        query_options,
+        result_type,
+        transaction,
+        Element::path_query_push,
+        grove_version,
+    )
 }
 
 #[cfg(test)]

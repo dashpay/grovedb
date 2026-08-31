@@ -251,6 +251,12 @@ impl PathQuery {
                 "read-mode queries may not set add_parent_tree_on_subquery",
             ));
         }
+        if query.has_instance_limit_anywhere() {
+            return Err(Error::InvalidQuery(
+                "read-mode queries may not carry per-instance limits (Query::limit) — the read \
+                 mode carries its own entry caps",
+            ));
+        }
 
         match query.read_mode.as_deref() {
             // Shape: single-path axis read. The axis query is the whole

@@ -53,6 +53,21 @@ pub struct GroveDBPathQueryMethodVersions {
     /// at which the two sides can disagree about whether a read-mode
     /// shape exists.
     pub unified_read_mode: FeatureVersion,
+    /// Serving gate for per-instance query limits (`Query::limit` —
+    /// a fresh result budget for each execution instance of a query
+    /// node, i.e. "top k per parent", alongside the global
+    /// `SizedQuery::limit`).
+    ///
+    /// - `0` (GROVE_V1..=V3): any `PathQuery` carrying a per-instance
+    ///   limit anywhere is rejected with `NotSupported` at every read /
+    ///   prove / verify entry point. The field itself still encodes and
+    ///   decodes (`Query` encoding version 3) — the gate is about
+    ///   *serving*, so a query built ahead of activation fails closed
+    ///   instead of running with its caps silently ignored.
+    /// - `1` (GROVE_V4+): trusted reads serve per-instance limits (the
+    ///   `element.path_query_push` v1 engine); proofs reject until the
+    ///   V1 prover/verifier learn the accounting.
+    pub per_instance_query_limits: FeatureVersion,
 }
 
 /// Method versions for the standalone indexed-axis query family — the
