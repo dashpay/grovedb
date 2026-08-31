@@ -844,3 +844,600 @@ fn make_empty_grovedb_smoke_for_instance_limit_defaults() {
         .unwrap()
         .expect("plain queries still prove");
 }
+
+#[test]
+fn instance_cap_does_not_truncate_the_parent_walk_in_proofs() {
+    // A parent layer's merk walk must not be truncated by an instance
+    // cap: the cap budgets descendant ROWS, and an empty first child
+    // consumes none of it, so a later populated child still owes rows.
+    // With the cap wrongly applied to the parent walk, the proof
+    // carried only `a_empty` and verified to zero rows while the
+    // trusted read returned `b_full/k0`.
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    use crate::tests::common::EMPTY_PATH;
+    db.insert(
+        EMPTY_PATH,
+        DOCS,
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert docs tree");
+    db.insert(
+        [DOCS].as_ref(),
+        b"a_empty",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert empty child");
+    db.insert(
+        [DOCS].as_ref(),
+        b"b_full",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert full child");
+    db.insert(
+        [DOCS, b"b_full".as_slice()].as_ref(),
+        b"k0",
+        Element::new_item(vec![0]),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert item");
+
+    let mut root = Query::new_range_full();
+    root.set_subquery(Query::new_range_full());
+    root.limit = Some(1);
+    let path_query = PathQuery::new(vec![DOCS.to_vec()], SizedQuery::new(root, None, None));
+
+    let rows = assert_proved_matches_trusted_read(&db, &path_query, grove_version);
+    assert_eq!(rows, 1, "the populated later sibling still owes its row");
+}
+
+/// Builds `PathQuery` selecting `tree_key` under `path` and descending
+/// with `inner` — the shape the non-Merk (MMR / BulkAppend / Dense)
+/// proof layers are reached through.
+fn non_merk_child_query(tree_key: &[u8], inner: Query) -> PathQuery {
+    let mut root = Query::new_single_key(tree_key.to_vec());
+    root.set_subquery(inner);
+    PathQuery::new(vec![], SizedQuery::new(root, None, None))
+}
+
+#[test]
+fn non_merk_children_honor_their_own_instance_caps_in_proofs() {
+    // The non-Merk proof adapters bypass the recursive frame creation,
+    // so the lower query's own `Query::limit` must be min-composed on
+    // both sides; without it the verifier returned every selected row.
+    let grove_version = GroveVersion::latest();
+    use crate::tests::common::EMPTY_PATH;
+
+    // Dense tree: 10 entries, child cap 3.
+    let db = make_test_grovedb(grove_version);
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(4),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+    for i in 0..10u16 {
+        db.dense_tree_insert(
+            EMPTY_PATH,
+            b"dense",
+            format!("v_{i}").into_bytes(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("dense insert");
+    }
+    let mut inner = Query::new();
+    inner.insert_range_inclusive(0u16.to_be_bytes().to_vec()..=9u16.to_be_bytes().to_vec());
+    inner.limit = Some(3);
+    let path_query = non_merk_child_query(b"dense", inner);
+    let proof = db
+        .prove_query(&path_query, None, grove_version)
+        .unwrap()
+        .expect("prove dense with child cap");
+    let (_, result_set) =
+        crate::GroveDb::verify_query(&proof, &path_query, grove_version).expect("verify");
+    assert_eq!(result_set.len(), 3, "dense child cap must bound rows");
+
+    // BulkAppendTree: 3 entries, child cap 1 (the reported repro).
+    let db = make_test_grovedb(grove_version);
+    db.insert(
+        EMPTY_PATH,
+        b"bulk",
+        Element::empty_bulk_append_tree(2).expect("valid chunk power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk tree");
+    for i in 0..3u8 {
+        db.bulk_append(EMPTY_PATH, b"bulk", vec![i], None, grove_version)
+            .unwrap()
+            .expect("bulk append");
+    }
+    let mut inner = Query::new();
+    inner.insert_range(0u64.to_be_bytes().to_vec()..3u64.to_be_bytes().to_vec());
+    inner.limit = Some(1);
+    let path_query = non_merk_child_query(b"bulk", inner);
+    let proof = db
+        .prove_query(&path_query, None, grove_version)
+        .unwrap()
+        .expect("prove bulk with child cap");
+    let (_, result_set) =
+        crate::GroveDb::verify_query(&proof, &path_query, grove_version).expect("verify");
+    assert_eq!(result_set.len(), 1, "bulk child cap must bound rows");
+
+    // MmrTree: 3 leaves, child cap 1.
+    let db = make_test_grovedb(grove_version);
+    db.insert(
+        EMPTY_PATH,
+        b"mmr",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert mmr tree");
+    for i in 0..3u8 {
+        db.mmr_tree_append(EMPTY_PATH, b"mmr", vec![i], None, grove_version)
+            .unwrap()
+            .expect("mmr append");
+    }
+    let mut inner = Query::new();
+    inner.insert_range_inclusive(0u64.to_be_bytes().to_vec()..=2u64.to_be_bytes().to_vec());
+    inner.limit = Some(1);
+    let path_query = non_merk_child_query(b"mmr", inner);
+    let proof = db
+        .prove_query(&path_query, None, grove_version)
+        .unwrap()
+        .expect("prove mmr with child cap");
+    let (_, result_set) =
+        crate::GroveDb::verify_query(&proof, &path_query, grove_version).expect("verify");
+    assert_eq!(result_set.len(), 1, "mmr child cap must bound rows");
+}
+
+#[test]
+fn empty_bulk_child_range_with_active_cap_does_not_underflow() {
+    // A bulk child query whose positions all sit at or past the stored
+    // count clamps its range empty; with an active cap the layer's
+    // accounting subtracted `0 - start` and panicked in debug builds.
+    let grove_version = GroveVersion::latest();
+    use crate::tests::common::EMPTY_PATH;
+    let db = make_test_grovedb(grove_version);
+    db.insert(
+        EMPTY_PATH,
+        b"bulk",
+        Element::empty_bulk_append_tree(2).expect("valid chunk power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk tree");
+    for i in 0..3u8 {
+        db.bulk_append(EMPTY_PATH, b"bulk", vec![i], None, grove_version)
+            .unwrap()
+            .expect("bulk append");
+    }
+    let mut inner = Query::new();
+    inner.insert_range(5u64.to_be_bytes().to_vec()..8u64.to_be_bytes().to_vec());
+    let mut path_query = non_merk_child_query(b"bulk", inner);
+    path_query.query.limit = Some(2);
+    let proof = db
+        .prove_query(&path_query, None, grove_version)
+        .unwrap()
+        .expect("an empty child range must prove, not underflow");
+    let (_, result_set) =
+        crate::GroveDb::verify_query(&proof, &path_query, grove_version).expect("verify");
+    assert!(result_set.is_empty(), "nothing stored in the range");
+}
+
+#[test]
+fn merge_refuses_limited_branch_overlapping_the_root_selection() {
+    // A grafted conditional overrides the merged root's default/
+    // terminal semantics for its key — if a root-landing input already
+    // selects that key, proceeding would silently drop its
+    // contribution.
+    let grove_version = GroveVersion::latest();
+
+    let mut root_query = Query::new_single_key(DOCS.to_vec());
+    root_query.set_subquery(Query::new_single_key(b"root-only".to_vec()));
+    let at_root = PathQuery::new_unsized(vec![], root_query);
+
+    let limited = PathQuery::new(
+        vec![DOCS.to_vec()],
+        SizedQuery::new(Query::new_single_key(b"limited".to_vec()), Some(1), None),
+    );
+
+    let result = PathQuery::merge(vec![&at_root, &limited], grove_version);
+    assert!(
+        matches!(&result, Err(Error::NotSupported(message)) if message.contains("collide")),
+        "root-selection overlap must be a collision, got {result:?}"
+    );
+}
+
+#[test]
+fn merge_acceptance_is_independent_of_input_order() {
+    // A disjoint limited branch must not change whether an unrelated
+    // limit-free overlap merges: limit-free branches merge first (full
+    // machinery), limited grafts come last, so every permutation
+    // derives the same query.
+    let grove_version = GroveVersion::latest();
+
+    let mut root_query = Query::new_single_key(DOCS.to_vec());
+    root_query.set_subquery(Query::new_single_key(b"root-only".to_vec()));
+    let at_root = PathQuery::new_unsized(vec![], root_query);
+
+    let overlapping = PathQuery::new_unsized(
+        vec![DOCS.to_vec()],
+        Query::new_single_key(b"also-docs".to_vec()),
+    );
+
+    let disjoint_limited = PathQuery::new(
+        vec![b"other".to_vec()],
+        SizedQuery::new(Query::new_single_key(b"x".to_vec()), Some(1), None),
+    );
+
+    let merged_a = PathQuery::merge(
+        vec![&at_root, &overlapping, &disjoint_limited],
+        grove_version,
+    )
+    .expect("limit-free overlap must merge regardless of the disjoint limited branch");
+    let merged_b = PathQuery::merge(
+        vec![&at_root, &disjoint_limited, &overlapping],
+        grove_version,
+    )
+    .expect("the permutation must merge identically");
+    assert_eq!(merged_a, merged_b, "permutations must derive one query");
+}
+
+#[test]
+fn descending_child_caps_keep_the_last_positions() {
+    // The specialized adapters must order rows by the query direction
+    // before the cap applies: a descending cap keeps the LAST
+    // positions, not the first ascending ones.
+    let grove_version = GroveVersion::latest();
+    use crate::tests::common::EMPTY_PATH;
+
+    let make_desc_inner = |upper: u64| {
+        let mut inner = Query::new_with_direction(false);
+        inner.insert_range_inclusive(0u64.to_be_bytes().to_vec()..=upper.to_be_bytes().to_vec());
+        inner.limit = Some(1);
+        inner
+    };
+
+    // BulkAppendTree.
+    let db = make_test_grovedb(grove_version);
+    db.insert(
+        EMPTY_PATH,
+        b"bulk",
+        Element::empty_bulk_append_tree(2).expect("valid chunk power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk tree");
+    for i in 0..3u8 {
+        db.bulk_append(EMPTY_PATH, b"bulk", vec![i], None, grove_version)
+            .unwrap()
+            .expect("bulk append");
+    }
+    let path_query = non_merk_child_query(b"bulk", make_desc_inner(2));
+    let proof = db
+        .prove_query(&path_query, None, grove_version)
+        .unwrap()
+        .expect("prove");
+    let (_, result_set) =
+        crate::GroveDb::verify_query(&proof, &path_query, grove_version).expect("verify");
+    assert_eq!(result_set.len(), 1);
+    assert_eq!(
+        result_set[0].1,
+        2u64.to_be_bytes().to_vec(),
+        "descending bulk cap must keep the last position"
+    );
+
+    // MmrTree.
+    let db = make_test_grovedb(grove_version);
+    db.insert(
+        EMPTY_PATH,
+        b"mmr",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert mmr tree");
+    for i in 0..3u8 {
+        db.mmr_tree_append(EMPTY_PATH, b"mmr", vec![i], None, grove_version)
+            .unwrap()
+            .expect("mmr append");
+    }
+    let path_query = non_merk_child_query(b"mmr", make_desc_inner(2));
+    let proof = db
+        .prove_query(&path_query, None, grove_version)
+        .unwrap()
+        .expect("prove");
+    let (_, result_set) =
+        crate::GroveDb::verify_query(&proof, &path_query, grove_version).expect("verify");
+    assert_eq!(result_set.len(), 1);
+    assert_eq!(
+        result_set[0].1,
+        2u64.to_be_bytes().to_vec(),
+        "descending mmr cap must keep the last leaf"
+    );
+
+    // DenseAppendOnlyFixedSizeTree (u16 position keys).
+    let db = make_test_grovedb(grove_version);
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(4),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+    for i in 0..3u16 {
+        db.dense_tree_insert(
+            EMPTY_PATH,
+            b"dense",
+            format!("v_{i}").into_bytes(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("dense insert");
+    }
+    let mut inner = Query::new_with_direction(false);
+    inner.insert_range_inclusive(0u16.to_be_bytes().to_vec()..=2u16.to_be_bytes().to_vec());
+    inner.limit = Some(1);
+    let path_query = non_merk_child_query(b"dense", inner);
+    let proof = db
+        .prove_query(&path_query, None, grove_version)
+        .unwrap()
+        .expect("prove");
+    let (_, result_set) =
+        crate::GroveDb::verify_query(&proof, &path_query, grove_version).expect("verify");
+    assert_eq!(result_set.len(), 1);
+    assert_eq!(
+        result_set[0].1,
+        2u16.to_be_bytes().to_vec(),
+        "descending dense cap must keep the last position"
+    );
+
+    // CommitmentTree (delegates to the BulkAppend machinery).
+    let db = make_test_grovedb(grove_version);
+    db.insert(
+        EMPTY_PATH,
+        b"ct",
+        Element::empty_commitment_tree(11).expect("valid chunk power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert commitment tree");
+    for i in 0..3u8 {
+        let mut cmx = [0u8; 32];
+        cmx[0] = i;
+        cmx[31] &= 0x7f;
+        let mut rho = [0u8; 32];
+        rho[0] = i;
+        rho[1] = 0xB0;
+        let mut cv_net = [0u8; 32];
+        cv_net[0] = i;
+        cv_net[1] = 0xCC;
+        let mut enc_data = [0u8; 104];
+        enc_data[0] = i;
+        let mut epk = [0u8; 32];
+        epk[0] = i;
+        let mut out_ct = [0u8; 80];
+        out_ct[0] = i;
+        let ciphertext = grovedb_commitment_tree::TransmittedNoteCiphertext::<
+            grovedb_commitment_tree::DashMemo,
+        >::from_parts(
+            epk,
+            grovedb_commitment_tree::NoteBytesData(enc_data),
+            out_ct,
+        );
+        db.commitment_tree_insert(
+            EMPTY_PATH,
+            b"ct",
+            cmx,
+            rho,
+            cv_net,
+            ciphertext,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("commitment tree insert");
+    }
+    let path_query = non_merk_child_query(b"ct", make_desc_inner(2));
+    let proof = db
+        .prove_query(&path_query, None, grove_version)
+        .unwrap()
+        .expect("prove");
+    let (_, result_set) =
+        crate::GroveDb::verify_query(&proof, &path_query, grove_version).expect("verify");
+    assert_eq!(result_set.len(), 1);
+    assert_eq!(
+        result_set[0].1,
+        2u64.to_be_bytes().to_vec(),
+        "descending commitment-tree cap must keep the last position"
+    );
+}
+
+#[test]
+fn sparse_bulk_queries_charge_matched_rows_not_the_span() {
+    // Stored/requested positions 0 and 100 under a global limit of 3:
+    // charging the bounding span exhausted the prover's budget and
+    // omitted the later sibling's layer, which the verifier — charging
+    // per matching row — then rejected as missing.
+    let grove_version = GroveVersion::latest();
+    use crate::tests::common::EMPTY_PATH;
+    let db = make_test_grovedb(grove_version);
+    db.insert(
+        EMPTY_PATH,
+        b"a_bulk",
+        Element::empty_bulk_append_tree(2).expect("valid chunk power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk tree");
+    for i in 0..101u8 {
+        db.bulk_append(EMPTY_PATH, b"a_bulk", vec![i], None, grove_version)
+            .unwrap()
+            .expect("bulk append");
+    }
+    db.insert(
+        EMPTY_PATH,
+        b"z_tree",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert sibling tree");
+    db.insert(
+        [b"z_tree".as_slice()].as_ref(),
+        b"row",
+        Element::new_item(vec![9]),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert sibling row");
+
+    let mut sparse = Query::new();
+    sparse.insert_key(0u64.to_be_bytes().to_vec());
+    sparse.insert_key(100u64.to_be_bytes().to_vec());
+    // Conditional routing: the bulk child gets the sparse position
+    // query; the sibling tree descends into its rows.
+    let mut root = Query::new();
+    root.insert_key(b"a_bulk".to_vec());
+    root.insert_key(b"z_tree".to_vec());
+    root.add_conditional_subquery(
+        grovedb_query::QueryItem::Key(b"a_bulk".to_vec()),
+        None,
+        Some(sparse),
+    );
+    root.add_conditional_subquery(
+        grovedb_query::QueryItem::Key(b"z_tree".to_vec()),
+        None,
+        Some(Query::new_range_full()),
+    );
+    let path_query = PathQuery::new(vec![], SizedQuery::new(root, Some(3), None));
+
+    let proof = db
+        .prove_query(&path_query, None, grove_version)
+        .unwrap()
+        .expect("prove");
+    let (_, result_set) = crate::GroveDb::verify_query(&proof, &path_query, grove_version)
+        .expect("the honest proof must verify — budgets stay in sync");
+    assert_eq!(
+        result_set.len(),
+        3,
+        "two sparse bulk rows plus the sibling row"
+    );
+}
+
+#[test]
+fn empty_parents_are_reported_when_parent_inclusion_is_requested() {
+    // With add_parent_tree_on_subquery, empty and non-empty matched
+    // parents must behave alike: both parent rows are reported (parent
+    // rows stay uncharged — the documented limitation on the flag).
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    use crate::tests::common::EMPTY_PATH;
+    db.insert(
+        EMPTY_PATH,
+        DOCS,
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert docs tree");
+    db.insert(
+        [DOCS].as_ref(),
+        b"e_empty",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert empty child");
+    db.insert(
+        [DOCS].as_ref(),
+        b"full",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert full child");
+    db.insert(
+        [DOCS, b"full".as_slice()].as_ref(),
+        b"k0",
+        Element::new_item(vec![0]),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert item");
+
+    let mut root = Query::new_range_full();
+    root.set_subquery(Query::new_range_full());
+    root.add_parent_tree_on_subquery = true;
+    let path_query = PathQuery::new(vec![DOCS.to_vec()], SizedQuery::new(root, None, None));
+
+    let proof = db
+        .prove_query(&path_query, None, grove_version)
+        .unwrap()
+        .expect("prove");
+    let (_, result_set) =
+        crate::GroveDb::verify_query(&proof, &path_query, grove_version).expect("verify");
+    let keys: Vec<&[u8]> = result_set
+        .iter()
+        .map(|(_, key, _)| key.as_slice())
+        .collect();
+    assert!(
+        keys.contains(&b"e_empty".as_slice()),
+        "the empty matched parent must be reported, got keys {keys:?}"
+    );
+    assert!(keys.contains(&b"full".as_slice()));
+    assert!(keys.contains(&b"k0".as_slice()));
+}

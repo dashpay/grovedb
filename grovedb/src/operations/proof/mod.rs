@@ -229,6 +229,21 @@ impl V1LimitState {
         self.consumed_total += 1;
     }
 
+    /// The effective budget for a specialized (non-Merk) lower layer:
+    /// the tighter of the global budget, the enclosing frame's
+    /// instance budget, and the lower query's own per-instance cap.
+    /// The adapters bypass recursive frame creation, so prover and
+    /// verifier both derive the lower budget through this single
+    /// helper — a divergence here would silently split their
+    /// accounting.
+    pub(crate) fn effective_lower_layer_limit(
+        &self,
+        frame_instance: Option<u16>,
+        lower_instance_limit: Option<u16>,
+    ) -> Option<u16> {
+        self.effective_layer_limit(Self::min_caps(frame_instance, lower_instance_limit))
+    }
+
     /// The budget a single layer's merk walk may still produce under —
     /// the tighter of the global budget and the frame's instance
     /// budget.
