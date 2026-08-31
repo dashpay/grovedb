@@ -358,6 +358,25 @@ impl ElementQueryExtensions for Element {
             grove_version.grovedb_versions.element.query_item
         );
 
+        // This legacy signature threads only the global limit/offset
+        // pair, and a per-instance budget cannot ride it: the budget is
+        // per node *instance*, while this entry point is called once
+        // per item — re-seeding a fresh cap per item would silently
+        // change what the cap means. The engine's own walk seeds the
+        // instance budget in `get_query_apply_function_internal`; a
+        // direct caller whose queried node carries its own cap fails
+        // closed here instead of having the cap ignored. (Caps on
+        // subqueries BELOW this node are served through the descent.)
+        if sized_query.query.limit.is_some() {
+            return Err(Error::NotSupported(
+                "ElementQueryExtensions::query_item does not serve a per-instance limit \
+                 (Query::limit) on the queried node itself — use get_query_apply_function or \
+                 get_path_query"
+                    .to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        }
+
         let mut budget = QueryBudget::new(*limit, None, *offset);
         let result = query_item_internal(
             storage,

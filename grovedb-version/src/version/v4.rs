@@ -266,6 +266,10 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             // a subquery's emptiness was caused by offset skips rather than a
             // true no-match (issue #690). v0 keeps the legacy accounting for
             // shipped grove versions.
+            // Bumped from 1 → 2: v2 serves per-instance limits
+            // (`Query::limit`) and reconciles subquery descents by total
+            // consumed budget (rows plus empty-subtree charges) instead of
+            // returned rows only — see the module-level doc above.
             path_query_push: 2,
             aggregate_sum_path_query_push: 0,
             query_item: 0,

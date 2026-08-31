@@ -229,4 +229,35 @@ fn public_query_item_wrapper_keeps_the_limit_offset_contract() {
     assert_eq!(results.len(), 2, "limit rows after the offset skip");
     assert_eq!(limit, Some(0), "consumed budget is written back");
     assert_eq!(offset, Some(0), "consumed offset is written back");
+
+    // A queried node carrying its own per-instance cap fails closed:
+    // this legacy signature cannot thread an instance budget (it is
+    // called per item, and the budget is per node instance).
+    let mut capped = Query::new_range_full();
+    capped.limit = Some(1);
+    let capped_sized = SizedQuery::new(capped, None, None);
+    let mut limit = None;
+    let mut offset = None;
+    let result = Element::query_item(
+        &db.db,
+        &QueryItem::RangeFull(..),
+        &mut results,
+        &path,
+        &capped_sized,
+        None,
+        &mut limit,
+        &mut offset,
+        Default::default(),
+        QueryResultType::QueryKeyElementPairResultType,
+        |args, grove_version| {
+            use grovedb_costs::CostsExt;
+            Element::basic_push(args, grove_version)
+                .wrap_with_cost(grovedb_costs::OperationCost::default())
+        },
+        grove_version,
+    );
+    assert!(
+        matches!(result.unwrap(), Err(Error::NotSupported(_))),
+        "query_item must reject a per-instance cap on the queried node"
+    );
 }
