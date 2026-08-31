@@ -151,6 +151,8 @@ pub struct Query {
     pub conditional_subquery_branches: Option<IndexMap<QueryItem, SubqueryBranch>>,
     pub left_to_right: bool,
     pub add_parent_tree_on_subquery: bool,  // New in v2
+    pub read_mode: Option<Box<ReadMode>>,   // Axis / sum-budget reads (GROVE_V4)
+    pub limit: Option<u16>,                 // Per-instance cap (GROVE_V4)
 }
 ```
 
@@ -159,6 +161,9 @@ pub struct Query {
 - Subqueries based on element types
 - Left-to-right or right-to-left traversal
 - Pagination with limit/offset
+- **Per-instance limits**: `Query::limit` gives each execution instance of a
+  query node a fresh result budget ("top k per parent"), composing with the
+  global `SizedQuery::limit` by `min` (GROVE_V4)
 - **Parent tree inclusion**: When `add_parent_tree_on_subquery` is true, the parent tree element itself is included in query results when performing subqueries
 
 **Query Items**:
