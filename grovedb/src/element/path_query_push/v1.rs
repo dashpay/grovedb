@@ -51,8 +51,7 @@ pub(crate) fn path_query_push_v1(
         query_options,
         result_type,
         results,
-        limit,
-        offset,
+        budget,
     } = args;
 
     let tx = TxRef::new(storage, transaction);
@@ -78,7 +77,7 @@ pub(crate) fn path_query_push_v1(
                 path_vec.extend(subquery_path.iter().map(|k| k.as_slice()));
             }
 
-            let inner_query = SizedQuery::new(subquery, *limit, *offset);
+            let inner_query = SizedQuery::new(subquery, budget.global, budget.offset);
             let path_vec_owned = path_vec.iter().map(|x| x.to_vec()).collect();
             let inner_path_query = PathQuery::new(path_vec_owned, inner_query);
 
@@ -94,7 +93,7 @@ pub(crate) fn path_query_push_v1(
                 )
             );
 
-            if let Some(limit) = limit {
+            if let Some(limit) = budget.global.as_mut() {
                 // v1: the `skipped == 0` guard is THE change gated by
                 // `element.path_query_push` (GROVE_V4+, issue #690) — the
                 // only difference from [`super::v0`]. An empty inner result
@@ -112,12 +111,12 @@ pub(crate) fn path_query_push_v1(
                     *limit = limit.saturating_sub(sub_elements.len().min(u16::MAX as usize) as u16);
                 }
             }
-            if let Some(offset) = offset {
+            if let Some(offset) = budget.offset.as_mut() {
                 *offset = offset.saturating_sub(skipped);
             }
             results.append(&mut sub_elements.elements);
         } else if let Some(subquery_path) = subquery_path {
-            if offset.unwrap_or(0) == 0 {
+            if budget.offset.unwrap_or(0) == 0 {
                 if let Some((subquery_path_last_key, subquery_path_front_keys)) =
                     &subquery_path.split_last()
                 {
@@ -193,10 +192,10 @@ pub(crate) fn path_query_push_v1(
                     .wrap_with_cost(cost);
                 };
 
-                if let Some(limit) = limit {
+                if let Some(limit) = budget.global.as_mut() {
                     *limit = limit.saturating_sub(1);
                 }
-            } else if let Some(offset) = offset {
+            } else if let Some(offset) = budget.offset.as_mut() {
                 *offset = offset.saturating_sub(1);
             }
         } else if allow_get_raw {
@@ -215,8 +214,7 @@ pub(crate) fn path_query_push_v1(
                         query_options,
                         result_type,
                         results,
-                        limit,
-                        offset,
+                        budget,
                     },
                     grove_version
                 )
@@ -245,8 +243,7 @@ pub(crate) fn path_query_push_v1(
                     query_options,
                     result_type,
                     results,
-                    limit,
-                    offset,
+                    budget,
                 },
                 grove_version
             )

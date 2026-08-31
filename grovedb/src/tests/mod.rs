@@ -28,6 +28,7 @@ mod commitment_tree_cost_bound_tests;
 mod commitment_tree_tests;
 mod coverage_round7_tests;
 mod non_merk_integrity_audit_tests;
+mod per_instance_limit_tests;
 mod private_document_store_tests;
 // NOTE: the former `count_indexed_tree_tests` (~12.3k LOC) was written
 // against the now-removed non-provable `Element::CountIndexedTree` and was
@@ -4717,6 +4718,7 @@ mod general_tests {
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 },
                 limit: None,
                 offset: None,

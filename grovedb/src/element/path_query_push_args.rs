@@ -8,7 +8,7 @@ use grovedb_merk::proofs::{
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 
 use crate::{
-    element::query_options::QueryOptions,
+    element::{query_budget::QueryBudget, query_options::QueryOptions},
     operations::proof::util::hex_to_ascii,
     query_result_type::{QueryResultElement, QueryResultType},
     TransactionArg,
@@ -30,8 +30,7 @@ where
     pub query_options: QueryOptions,
     pub result_type: QueryResultType,
     pub results: &'a mut Vec<QueryResultElement>,
-    pub limit: &'a mut Option<u16>,
-    pub offset: &'a mut Option<u16>,
+    pub budget: &'a mut QueryBudget,
 }
 
 fn format_query(query: &Query, indent: usize) -> String {
@@ -143,8 +142,7 @@ where
                 .collect::<Vec<_>>()
                 .join(", ")
         )?;
-        writeln!(f, "  limit: {:?}", self.limit)?;
-        writeln!(f, "  offset: {:?}", self.offset)?;
+        writeln!(f, "  budget: {}", self.budget)?;
         write!(f, "}}")
     }
 }

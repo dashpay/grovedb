@@ -219,6 +219,12 @@ impl GroveDb {
         // thing.
         query.reject_unserved_read_mode()?;
 
+        // Per-instance limit gate: the verifier's limit accounting is a
+        // single shared counter and does not (yet) express per-instance
+        // caps. Fail closed rather than accepting a proof over a result
+        // set the caps would have shrunk.
+        query.reject_per_instance_limits("proof verification")?;
+
         // Offset gate centralized in `apply_count_offset_envelope_gate`:
         // V0 envelopes reject any non-zero offset (V0 is a shipped
         // wire format that never supported `SizedQuery::offset`);
@@ -359,8 +365,10 @@ impl GroveDb {
         options: VerifyOptions,
         grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, Option<TreeFeatureType>, ProvedPathKeyValues), Error> {
-        // Same fail-closed read-mode gate as `verify_proof_internal`.
+        // Same fail-closed read-mode and per-instance-limit gates as
+        // `verify_proof_internal`.
         query.reject_unserved_read_mode()?;
+        query.reject_per_instance_limits("proof verification")?;
 
         // Same V0-rejects / V1-relaxes envelope gate as
         // `verify_proof_internal` — see `apply_count_offset_envelope_gate`.

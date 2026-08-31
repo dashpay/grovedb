@@ -36,6 +36,21 @@ impl SubqueryBranch {
         carries(self) || carries(other)
     }
 
+    /// Whether either side of a branch merge carries a per-instance
+    /// limit anywhere in its subquery. Merging nodes field by field
+    /// cannot say whose cap the merged node should keep — the caps
+    /// bound *different* result sets — so the public entry points
+    /// refuse rather than conflate them.
+    fn branch_merge_carries_instance_limit(&self, other: &Self) -> bool {
+        let carries = |branch: &Self| {
+            branch
+                .subquery
+                .as_deref()
+                .is_some_and(|subquery| subquery.has_instance_limit_anywhere())
+        };
+        carries(self) || carries(other)
+    }
+
     /// Merges two subquery branches, combining their subquery paths and
     /// subqueries. When paths differ, creates conditional subqueries to
     /// preserve both branches.
@@ -49,6 +64,12 @@ impl SubqueryBranch {
         if self.branch_merge_carries_read_mode(other) {
             return Err(crate::error::Error::NotSupported(
                 "can not merge subquery branches carrying read modes (axis / sum-budget reads)"
+                    .to_string(),
+            ));
+        }
+        if self.branch_merge_carries_instance_limit(other) {
+            return Err(crate::error::Error::NotSupported(
+                "can not merge subquery branches carrying per-instance limits (Query::limit)"
                     .to_string(),
             ));
         }
@@ -309,6 +330,21 @@ impl Query {
             return Err(crate::error::Error::NotSupported(
                 "can not merge a default subquery branch carrying a read mode (axis / \
                  sum-budget read)"
+                    .to_string(),
+            ));
+        }
+        let carries_limit = |branch: &SubqueryBranch| {
+            branch
+                .subquery
+                .as_deref()
+                .is_some_and(|subquery| subquery.has_instance_limit_anywhere())
+        };
+        if carries_limit(&self.default_subquery_branch)
+            || carries_limit(&other_default_subquery_branch)
+        {
+            return Err(crate::error::Error::NotSupported(
+                "can not merge a default subquery branch carrying a per-instance limit \
+                 (Query::limit)"
                     .to_string(),
             ));
         }
@@ -586,6 +622,11 @@ impl Query {
                         .to_string(),
                 ));
             }
+            if query.has_instance_limit_anywhere() {
+                return Err(crate::error::Error::NotSupported(
+                    "cannot merge queries carrying per-instance limits (Query::limit)".to_string(),
+                ));
+            }
         }
         Ok(Self::merge_multiple_unchecked(queries))
     }
@@ -610,16 +651,16 @@ impl Query {
 
     /// The merge body, private. The `_unchecked` family is the whole
     /// recursive machinery; the invariant that keeps it sound is that
-    /// **every** public entry point rejects read modes before calling
-    /// in — the whole-query merges (`merge_multiple`,
-    /// `merge_multiple_directional`, `merge_with`) and the branch
-    /// merges alike (`SubqueryBranch::merge`,
+    /// **every** public entry point rejects read modes and per-instance
+    /// limits before calling in — the whole-query merges
+    /// (`merge_multiple`, `merge_multiple_directional`, `merge_with`)
+    /// and the branch merges alike (`SubqueryBranch::merge`,
     /// `merge_default_subquery_branch`,
     /// `merge_conditional_boxed_subquery`,
     /// `merge_conditional_subquery_branches_with_new_at_query_item`).
-    /// A new public wrapper that skips the check reintroduces the
+    /// A new public wrapper that skips the checks reintroduces the
     /// silent-drop bug, because these bodies destructure `read_mode`
-    /// away by design.
+    /// and `limit` away by design.
     fn merge_multiple_unchecked(mut queries: Vec<Query>) -> Self {
         if queries.is_empty() {
             return Query::new();
@@ -634,8 +675,10 @@ impl Query {
                 conditional_subquery_branches,
                 left_to_right: _,
                 add_parent_tree_on_subquery,
-                // Checked by the public wrappers; read-mode-free here.
+                // Checked by the public wrappers; read-mode-free and
+                // instance-limit-free here.
                 read_mode: _,
+                limit: _,
             } = query;
             // Preserve add_parent_tree_on_subquery if any query requests it
             if add_parent_tree_on_subquery {
@@ -688,6 +731,11 @@ impl Query {
                 "cannot merge queries carrying read modes (axis / sum-budget reads)".to_string(),
             ));
         }
+        if self.has_instance_limit_anywhere() || other.has_instance_limit_anywhere() {
+            return Err(crate::error::Error::NotSupported(
+                "cannot merge queries carrying per-instance limits (Query::limit)".to_string(),
+            ));
+        }
         self.merge_with_unchecked(other);
         Ok(())
     }
@@ -700,8 +748,10 @@ impl Query {
             conditional_subquery_branches,
             left_to_right: _,
             add_parent_tree_on_subquery,
-            // Checked by the public wrappers; read-mode-free here.
+            // Checked by the public wrappers; read-mode-free and
+            // instance-limit-free here.
             read_mode: _,
+            limit: _,
         } = other;
         // Preserve add_parent_tree_on_subquery if either query requests it
         if add_parent_tree_on_subquery {
@@ -766,6 +816,18 @@ impl Query {
                     .to_string(),
             ));
         }
+        if self.has_instance_limit_anywhere()
+            || subquery_branch_merging_in
+                .subquery
+                .as_deref()
+                .is_some_and(|subquery| subquery.has_instance_limit_anywhere())
+        {
+            return Err(crate::error::Error::NotSupported(
+                "can not merge a conditional subquery branch carrying a per-instance limit \
+                 (Query::limit)"
+                    .to_string(),
+            ));
+        }
         self.merge_conditional_boxed_subquery_unchecked(
             query_item_merging_in,
             subquery_branch_merging_in,
@@ -825,6 +887,29 @@ impl Query {
             return Err(crate::error::Error::NotSupported(
                 "can not merge a conditional subquery branch carrying a read mode (axis / \
                  sum-budget read)"
+                    .to_string(),
+            ));
+        }
+        let existing_carries_limit =
+            conditional_subquery_branches
+                .as_ref()
+                .is_some_and(|branches| {
+                    branches.values().any(|branch| {
+                        branch
+                            .subquery
+                            .as_deref()
+                            .is_some_and(|subquery| subquery.has_instance_limit_anywhere())
+                    })
+                });
+        if existing_carries_limit
+            || subquery_branch_merging_in
+                .subquery
+                .as_deref()
+                .is_some_and(|subquery| subquery.has_instance_limit_anywhere())
+        {
+            return Err(crate::error::Error::NotSupported(
+                "can not merge a conditional subquery branch carrying a per-instance limit \
+                 (Query::limit)"
                     .to_string(),
             ));
         }

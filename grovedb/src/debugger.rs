@@ -752,6 +752,7 @@ fn query_to_grovedb(query: Query) -> crate::Query {
         // it cannot express aggregate items), so debugger-issued
         // queries are always plain key selection.
         read_mode: None,
+        limit: None,
     }
 }
 
