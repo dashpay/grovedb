@@ -69,7 +69,7 @@ pub(super) fn merge_v1(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
                     // The input lands at the merged root, where its
                     // query body merges with the other root-level
                     // inputs — budgets cannot blend, so limits are
-                    // refused here even under v2.
+                    // refused here.
                     if carries_limits {
                         return Err(Error::NotSupported(
                             "can not merge a limited path query that lands at the merged root: \
@@ -120,13 +120,14 @@ pub(super) fn merge_v1(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
         let mut subquery_path =
             subquery_path.ok_or(Error::CorruptedCodeExecution("subquery path must exist"))?;
         let key = subquery_path.remove(0); // must exist
-                                           // Whether the merged root's own selection already covers this
-                                           // branch's key — assessed BEFORE the branch's item is inserted
-                                           // (the graft's own `Key` would otherwise always match). A
-                                           // grafted conditional overrides the root query's default/
-                                           // terminal semantics for that key, so when limits are in play
-                                           // this is a collision, not a graft: proceeding would silently
-                                           // drop the root input's contribution for the key.
+
+        // Whether the merged root's own selection already covers this
+        // branch's key — assessed BEFORE the branch's item is inserted
+        // (the graft's own `Key` would otherwise always match). A
+        // grafted conditional overrides the root query's default/
+        // terminal semantics for that key, so when limits are in play
+        // this is a collision, not a graft: proceeding would silently
+        // drop the root input's contribution for the key.
         let overlaps_root_selection = merged_query
             .items
             .iter()
