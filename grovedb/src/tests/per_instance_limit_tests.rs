@@ -1,13 +1,17 @@
 //! Per-instance query limits (`Query::limit`) — trusted-read engine
-//! semantics and the fail-closed gates.
+//! semantics, V1 proof round-trips, merge lifting, and the fail-closed
+//! gates.
 //!
 //! A per-instance limit gives each execution instance of a query node a
 //! fresh result budget for everything originating in that instance's
 //! subtree ("top k per parent"), composing with the global
-//! `SizedQuery::limit` by `min`. Served on trusted reads under
-//! `GROVE_V4` (`path_query_methods.per_instance_query_limits`,
-//! `element.path_query_push` v1); everything else — older grove
-//! versions, proofs, merges, read-mode/aggregate/count-offset shapes —
+//! `SizedQuery::limit` by `min`. Served under `GROVE_V4`
+//! (`path_query_methods.per_instance_query_limits`) on trusted reads
+//! (`element.path_query_push` v1), V1 proofs, and merges
+//! (`path_query_methods.merge` v1 lifts a merged input's global limit
+//! onto its exclusive branch). Everything else — older grove versions,
+//! V0 proofs, absence-proof assembly, colliding merges,
+//! read-mode/aggregate/count-offset shapes, terminal-keys projections —
 //! fails closed.
 
 use grovedb_version::version::GroveVersion;
@@ -561,47 +565,266 @@ fn zero_instance_limits_are_rejected() {
     );
 }
 
-#[test]
-fn proofs_fail_closed_on_instance_limits() {
-    let grove_version = GroveVersion::latest();
-    let db = make_test_grovedb(grove_version);
-    populate_parents(&db, &[b"p1", b"p2"], 3, grove_version);
-
-    let limited = top_k_query(2, None, None);
-    let result = db.prove_query(&limited, None, grove_version);
-    assert!(
-        matches!(result.unwrap(), Err(Error::NotSupported(_))),
-        "the prover does not serve per-instance limits yet"
+/// Prove `path_query`, verify it, and require the verified result set
+/// to equal the trusted read's — the same differential oracle the
+/// coverage proof tests use, applied to instance-capped queries.
+fn assert_proved_matches_trusted_read(
+    db: &TempGroveDb,
+    path_query: &PathQuery,
+    grove_version: &GroveVersion,
+) -> usize {
+    let proof = db
+        .prove_query(path_query, None, grove_version)
+        .unwrap()
+        .expect("proving should succeed");
+    let (proved_root, proved_result) =
+        crate::GroveDb::verify_query(&proof, path_query, grove_version)
+            .expect("verifying should succeed");
+    assert_eq!(
+        proved_root,
+        db.root_hash(None, grove_version).unwrap().unwrap(),
+        "verified root must be the database root"
     );
 
-    // The verifier rejects the query shape too — even against a proof
-    // generated for an unlimited query.
-    let unlimited_sub = Query::new_range_full();
-    let mut unlimited = Query::new_range_full();
-    unlimited.set_subquery(unlimited_sub);
-    let unlimited_query =
-        PathQuery::new(vec![DOCS.to_vec()], SizedQuery::new(unlimited, None, None));
-    let proof = db
-        .prove_query(&unlimited_query, None, grove_version)
-        .unwrap()
-        .expect("proving the unlimited query should work");
-    let result = crate::GroveDb::verify_query(&proof, &limited, grove_version);
+    let (trusted, _) = run(db, path_query, grove_version);
+    let proved_rows: Vec<(Vec<Vec<u8>>, Vec<u8>)> = proved_result
+        .iter()
+        .map(|(path, key, _)| (path.clone(), key.clone()))
+        .collect();
+    assert_eq!(
+        proved_rows, trusted,
+        "proved result set must match the trusted read"
+    );
     assert!(
-        matches!(result, Err(Error::NotSupported(_))),
-        "the verifier does not serve per-instance limits yet"
+        proved_result
+            .iter()
+            .all(|(_, _, element)| element.is_some()),
+        "every proved row should carry its element"
+    );
+    proved_result.len()
+}
+
+#[test]
+fn proofs_serve_top_k_per_parent() {
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    populate_parents(&db, &[b"p1", b"p2", b"p3"], 5, grove_version);
+
+    // Top 2 per parent, unlimited globally: 6 rows.
+    let rows = assert_proved_matches_trusted_read(&db, &top_k_query(2, None, None), grove_version);
+    assert_eq!(rows, 6);
+
+    // Global cap composes: 5 rows.
+    let rows =
+        assert_proved_matches_trusted_read(&db, &top_k_query(2, Some(5), None), grove_version);
+    assert_eq!(rows, 5);
+
+    // Instance caps wider than the data: everything comes back.
+    let rows = assert_proved_matches_trusted_read(&db, &top_k_query(50, None, None), grove_version);
+    assert_eq!(rows, 15);
+}
+
+#[test]
+fn proofs_serve_conditional_branch_caps() {
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    populate_parents(&db, &[b"p1", b"p2", b"p3"], 5, grove_version);
+
+    let mut conditional_sub = Query::new_range_full();
+    conditional_sub.limit = Some(1);
+    let mut default_sub = Query::new_range_full();
+    default_sub.limit = Some(2);
+    let mut query = Query::new_range_full();
+    query.set_subquery(default_sub);
+    query.add_conditional_subquery(
+        grovedb_query::QueryItem::Key(b"p1".to_vec()),
+        None,
+        Some(conditional_sub),
+    );
+    let path_query = PathQuery::new(vec![DOCS.to_vec()], SizedQuery::new(query, None, None));
+
+    let rows = assert_proved_matches_trusted_read(&db, &path_query, grove_version);
+    assert_eq!(rows, 5, "1 from p1 plus 2 each from p2 and p3");
+}
+
+#[test]
+fn proofs_serve_ancestor_caps_across_levels() {
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    populate_mixed_mid_level(&db, false, grove_version);
+
+    // Mid-level instances capped at 1: each mid contributes only the
+    // first row of its full child.
+    let leaf = Query::new_range_full();
+    let mut mid = Query::new_range_full();
+    mid.set_subquery(leaf);
+    mid.limit = Some(1);
+    let mut root = Query::new_range_full();
+    root.set_subquery(mid);
+    let path_query = PathQuery::new(vec![DOCS.to_vec()], SizedQuery::new(root, None, None));
+
+    let rows = assert_proved_matches_trusted_read(&db, &path_query, grove_version);
+    assert_eq!(rows, 2);
+}
+
+#[test]
+fn proofs_serve_reverse_direction_instance_caps() {
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    populate_parents(&db, &[b"p1", b"p2"], 4, grove_version);
+
+    let mut sub = Query::new_with_direction(false);
+    sub.insert_all();
+    sub.limit = Some(2);
+    let mut query = Query::new_with_direction(false);
+    query.insert_all();
+    query.set_subquery(sub);
+    let path_query = PathQuery::new(vec![DOCS.to_vec()], SizedQuery::new(query, None, None));
+
+    let rows = assert_proved_matches_trusted_read(&db, &path_query, grove_version);
+    assert_eq!(rows, 4, "last 2 of each parent, in reverse order");
+}
+
+#[test]
+fn verifying_with_a_different_instance_cap_than_proved_is_rejected() {
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    populate_parents(&db, &[b"p1", b"p2"], 5, grove_version);
+
+    // A proof built for wider caps carries more rows than the tighter
+    // query's budget admits — the per-layer over-delivery check must
+    // reject it rather than silently truncate.
+    let wide_proof = db
+        .prove_query(&top_k_query(4, None, None), None, grove_version)
+        .unwrap()
+        .expect("proving should succeed");
+    let result =
+        crate::GroveDb::verify_query(&wide_proof, &top_k_query(2, None, None), grove_version);
+    assert!(
+        result.is_err(),
+        "a wide-cap proof must not verify under a tighter cap"
     );
 }
 
 #[test]
-fn merges_refuse_instance_limits() {
+fn absence_proof_verification_still_rejects_instance_limits() {
     let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    populate_parents(&db, &[b"p1"], 3, grove_version);
+
+    // Which keys an instance-capped walk returns is data-dependent, so
+    // the absence projection would report keys beyond a cap as absent.
+    let mut limited = top_k_query(2, None, None);
+    limited.query.limit = Some(10); // absence mode requires a global limit
+    let proof = db
+        .prove_query(&limited, None, grove_version)
+        .unwrap()
+        .expect("proving should succeed");
+    let result = crate::GroveDb::verify_query_with_absence_proof(&proof, &limited, grove_version);
+    assert!(
+        matches!(result, Err(Error::NotSupported(_))),
+        "absence-proof verification must reject per-instance limits"
+    );
+}
+
+#[test]
+fn pre_v4_grove_versions_reject_instance_limit_proofs() {
+    let legacy_version = &grovedb_version::version::GROVE_VERSIONS[2];
+    assert_eq!(legacy_version.protocol_version, 3);
+    let db = make_test_grovedb(legacy_version);
+    populate_parents(&db, &[b"p1"], 3, legacy_version);
+
+    let result = db.prove_query(&top_k_query(2, None, None), None, legacy_version);
+    assert!(
+        matches!(result.unwrap(), Err(Error::NotSupported(_))),
+        "GROVE_V3 must reject proving per-instance limits"
+    );
+}
+
+#[test]
+fn merge_lifts_limits_onto_exclusive_branches_and_round_trips() {
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    populate_parents(&db, &[b"p1", b"p2"], 4, grove_version);
+    use crate::tests::common::EMPTY_PATH;
+    db.insert(
+        EMPTY_PATH,
+        b"other",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert other tree");
+    db.insert(
+        [b"other".as_slice()].as_ref(),
+        b"x",
+        Element::new_item(vec![9]),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert other item");
+
+    // An instance-capped input and an unrelated plain input merge onto
+    // exclusive branches; the merged query proves, verifies, and
+    // matches the trusted read.
     let limited = top_k_query(2, None, None);
     let other = PathQuery::new_unsized(
         vec![b"other".to_vec()],
         Query::new_single_key(b"x".to_vec()),
     );
-    let result = PathQuery::merge(vec![&limited, &other], grove_version);
-    assert!(matches!(result, Err(Error::NotSupported(_))));
+    let merged = PathQuery::merge(vec![&limited, &other], grove_version)
+        .expect("exclusive-branch limits merge under GROVE_V4");
+    let rows = assert_proved_matches_trusted_read(&db, &merged, grove_version);
+    assert_eq!(rows, 5, "2 per docs parent plus the one other row");
+
+    // A GLOBAL limit on an input is lifted to its branch's instance cap
+    // — the merged read returns that input's first 3 rows plus the
+    // other input's row.
+    let mut globally_limited = top_k_query(50, None, None);
+    globally_limited.query.limit = Some(3);
+    let merged = PathQuery::merge(vec![&globally_limited, &other], grove_version)
+        .expect("global limits lift under GROVE_V4");
+    assert_eq!(merged.query.limit, None, "the merged query stays unsized");
+    let rows = assert_proved_matches_trusted_read(&db, &merged, grove_version);
+    assert_eq!(rows, 4, "3 lifted rows from docs plus the other row");
+}
+
+#[test]
+fn merge_still_refuses_colliding_and_root_landing_limits() {
+    let grove_version = GroveVersion::latest();
+
+    // Two limited inputs whose branches collide at the same first key
+    // (the third, unrelated input keeps the common path above them, so
+    // both land as sub-level branches under `docs`).
+    let colliding_a = top_k_query(2, None, None);
+    let colliding_b = top_k_query(3, None, None);
+    let other = PathQuery::new_unsized(
+        vec![b"other".to_vec()],
+        Query::new_single_key(b"x".to_vec()),
+    );
+    let result = PathQuery::merge(vec![&colliding_a, &colliding_b, &other], grove_version);
+    assert!(
+        matches!(&result, Err(Error::NotSupported(message)) if message.contains("collide")),
+        "colliding limited branches must be refused, got {result:?}"
+    );
+
+    // A limited input whose whole path is the common path lands at the
+    // merged root, where budgets cannot blend.
+    let at_root = PathQuery::new(
+        vec![DOCS.to_vec()],
+        SizedQuery::new(Query::new_range_full(), Some(2), None),
+    );
+    let deeper =
+        PathQuery::new_unsized(vec![DOCS.to_vec(), b"p1".to_vec()], Query::new_range_full());
+    let result = PathQuery::merge(vec![&at_root, &deeper], grove_version);
+    assert!(
+        matches!(&result, Err(Error::NotSupported(message)) if message.contains("merged root")),
+        "root-landing limited inputs must be refused, got {result:?}"
+    );
 }
 
 #[test]

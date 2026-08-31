@@ -117,7 +117,10 @@ impl GroveDb {
         // this verifier cannot serve should refuse without paying for
         // (or error-shadowing) that parse. `verify_proof_internal`
         // re-checks as defense in depth.
-        query.reject_per_instance_limits("proof verification")?;
+        query.reject_unserved_per_instance_limits(grove_version)?;
+        if options.absence_proofs_for_non_existing_searched_keys {
+            query.reject_per_instance_limits("absence-proof verification")?;
+        }
 
         let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
@@ -164,7 +167,10 @@ impl GroveDb {
         }
 
         // Pre-decode query-shape gate — see `verify_query_with_options`.
-        query.reject_per_instance_limits("proof verification")?;
+        query.reject_unserved_per_instance_limits(grove_version)?;
+        if options.absence_proofs_for_non_existing_searched_keys {
+            query.reject_per_instance_limits("absence-proof verification")?;
+        }
 
         let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
@@ -195,7 +201,7 @@ impl GroveDb {
                 .verify_query_raw
         );
         // Pre-decode query-shape gate — see `verify_query_with_options`.
-        query.reject_per_instance_limits("proof verification")?;
+        query.reject_unserved_per_instance_limits(grove_version)?;
 
         let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
@@ -232,11 +238,17 @@ impl GroveDb {
         // thing.
         query.reject_unserved_read_mode()?;
 
-        // Per-instance limit gate: the verifier's limit accounting is a
-        // single shared counter and does not (yet) express per-instance
-        // caps. Fail closed rather than accepting a proof over a result
-        // set the caps would have shrunk.
-        query.reject_per_instance_limits("proof verification")?;
+        // Per-instance limit gate: served by the V1 verifier from
+        // GROVE_V4; older grove versions fail closed, and zero caps are
+        // rejected as malformed. Absence-proof assembly stays rejected
+        // regardless: its terminal-keys projection reports every
+        // expected key the proof did not carry as absent, and which
+        // keys an instance-capped walk carries is data-dependent — keys
+        // beyond a cap would masquerade as proven-absent.
+        query.reject_unserved_per_instance_limits(grove_version)?;
+        if options.absence_proofs_for_non_existing_searched_keys {
+            query.reject_per_instance_limits("absence-proof verification")?;
+        }
 
         // Offset gate centralized in `apply_count_offset_envelope_gate`:
         // V0 envelopes reject any non-zero offset (V0 is a shipped
@@ -249,6 +261,9 @@ impl GroveDb {
 
         match proof {
             GroveDBProof::V0(proof_v0) => {
+                // The V0 verifier is a frozen wire format whose limit
+                // accounting predates per-instance caps.
+                query.reject_per_instance_limits("the V0 verifier")?;
                 Self::verify_proof_v0_internal(proof_v0, query, options, grove_version)
             }
             GroveDBProof::V1(proof_v1) => {
@@ -381,7 +396,10 @@ impl GroveDb {
         // Same fail-closed read-mode and per-instance-limit gates as
         // `verify_proof_internal`.
         query.reject_unserved_read_mode()?;
-        query.reject_per_instance_limits("proof verification")?;
+        query.reject_unserved_per_instance_limits(grove_version)?;
+        if options.absence_proofs_for_non_existing_searched_keys {
+            query.reject_per_instance_limits("absence-proof verification")?;
+        }
 
         // Same V0-rejects / V1-relaxes envelope gate as
         // `verify_proof_internal` — see `apply_count_offset_envelope_gate`.
@@ -389,6 +407,9 @@ impl GroveDb {
 
         match proof {
             GroveDBProof::V0(proof_v0) => {
+                // See `verify_proof_internal`: V0 predates per-instance
+                // caps.
+                query.reject_per_instance_limits("the V0 verifier")?;
                 Self::verify_proof_raw_internal_v0(proof_v0, query, options, grove_version)
             }
             GroveDBProof::V1(proof_v1) => {
@@ -441,7 +462,7 @@ impl GroveDb {
         let prove_options = ProveOptions::default();
 
         let mut result = Vec::new();
-        let mut limit = query.query.limit;
+        let mut limit_state = super::V1LimitState::new(query.query.limit);
         let mut last_tree_feature_type = None;
         // This entry point serves key-selection queries only (read-mode
         // queries are gated out before reaching it), so axis outcomes
@@ -452,7 +473,8 @@ impl GroveDb {
             &proof.root_layer.lower_layers,
             &prove_options,
             query,
-            &mut limit,
+            &mut limit_state,
+            None,
             &[],
             &mut result,
             &mut axis_outcomes,
@@ -513,7 +535,7 @@ impl GroveDb {
             include_empty_trees_in_result: false,
         };
         let mut result = Vec::new();
-        let mut limit = query.query.limit;
+        let mut limit_state = super::V1LimitState::new(query.query.limit);
         let mut last_tree_feature_type = None;
         let mut axis_outcomes = Vec::new();
         let root_hash = Self::verify_layer_proof_v1(
@@ -521,7 +543,8 @@ impl GroveDb {
             &proof.root_layer.lower_layers,
             &prove_options,
             query,
-            &mut limit,
+            &mut limit_state,
+            None,
             &[],
             &mut result,
             &mut axis_outcomes,
@@ -542,7 +565,7 @@ impl GroveDb {
         let prove_options = ProveOptions::default();
 
         let mut result = Vec::new();
-        let mut limit = query.query.limit;
+        let mut limit_state = super::V1LimitState::new(query.query.limit);
         let mut last_tree_feature_type = None;
         // Key-selection-only entry point; see verify_proof_v1_internal.
         let mut axis_outcomes = Vec::new();
@@ -551,7 +574,8 @@ impl GroveDb {
             &proof.root_layer.lower_layers,
             &prove_options,
             query,
-            &mut limit,
+            &mut limit_state,
+            None,
             &[],
             &mut result,
             &mut axis_outcomes,
@@ -1383,7 +1407,8 @@ impl GroveDb {
         lower_layers: &BTreeMap<Vec<u8>, LayerProof>,
         prove_options: &ProveOptions,
         query: &PathQuery,
-        limit_left: &mut Option<u16>,
+        limit_state: &mut super::V1LimitState,
+        inherited_instance: Option<u16>,
         current_path: &[&[u8]],
         result: &mut Vec<T>,
         axis_outcomes: &mut Vec<AxisWalkOutcome>,
@@ -1417,15 +1442,26 @@ impl GroveDb {
         // hash so the parent layer's `combine_hash(H(value),
         // lower_hash)` chain check matches.
         if current_path.len() == query.path.len() && query.has_non_zero_offset() {
-            return Self::run_count_offset_layer_dispatch(
+            // Count-offset queries reject per-instance limits, so the
+            // effective budget here is just the global one; the temp
+            // keeps the dispatch's own accounting and reports the
+            // consumed slots back through the shared state.
+            let mut count_offset_limit = limit_state.effective_layer_limit(inherited_instance);
+            let count_offset_before = count_offset_limit;
+            let dispatch_result = Self::run_count_offset_layer_dispatch(
                 query,
                 merk_proof_bytes,
                 lower_layers.is_empty(),
                 current_path,
-                limit_left,
+                &mut count_offset_limit,
                 result,
                 grove_version,
             );
+            let consumed = count_offset_before
+                .unwrap_or(0)
+                .saturating_sub(count_offset_limit.unwrap_or(0));
+            limit_state.charge_rows(consumed);
+            return dispatch_result;
         }
 
         let internal_query = query
@@ -1439,6 +1475,12 @@ impl GroveDb {
                     .join("/"),
                 query
             )))?;
+
+        // This frame's per-instance budget — fresh for this subtree,
+        // bounded by every enclosing cap; `None` throughout on queries
+        // without per-instance limits. Mirrors `prove_subqueries_v1`.
+        let mut frame_instance =
+            super::V1LimitState::min_caps(inherited_instance, internal_query.instance_limit);
 
         // Which direction this layer's op stream is encoded in.
         //
@@ -1497,7 +1539,7 @@ impl GroveDb {
         let (root_hash, merk_result) = level_query
             .execute_proof(
                 merk_proof_bytes,
-                *limit_left,
+                limit_state.effective_layer_limit(frame_instance),
                 left_to_right,
                 PROOF_VERSION_LATEST, // V1 proof: strict mode rejects items in value hash nodes
             )
@@ -1513,9 +1555,9 @@ impl GroveDb {
 
         if merk_result.result_set.is_empty() {
             if prove_options.decrease_limit_on_empty_sub_query_result {
-                limit_left
-                    .iter_mut()
-                    .for_each(|limit| *limit = limit.saturating_sub(1));
+                // Global budget only — empty-layer charges bound
+                // traversal work, per-instance budgets bound rows.
+                limit_state.charge_empty_layer();
             }
         } else {
             for proved_key_value in merk_result.result_set {
@@ -1719,10 +1761,8 @@ impl GroveDb {
                                         path_key_optional_value
                                             .try_into_versioned(grove_version)?,
                                     );
-                                    limit_left
-                                        .iter_mut()
-                                        .for_each(|limit| *limit = limit.saturating_sub(1));
-                                    if limit_left == &Some(0) {
+                                    limit_state.charge_row_with_instance(&mut frame_instance);
+                                    if limit_state.is_exhausted(frame_instance) {
                                         break;
                                     }
                                 } else {
@@ -1773,12 +1813,14 @@ impl GroveDb {
                                     // deep-copied `lower_layers` at every
                                     // nesting level — memory an untrusted peer
                                     // could multiply by nesting depth.
+                                    let rows_before_descent = limit_state.consumed_rows;
                                     let primary_root_hash = Self::verify_layer_proof_v1(
                                         &cidx_bytes[32..],
                                         &lower_layer.lower_layers,
                                         prove_options,
                                         query,
-                                        limit_left,
+                                        limit_state,
+                                        frame_instance,
                                         &path,
                                         result,
                                         axis_outcomes,
@@ -1787,6 +1829,11 @@ impl GroveDb {
                                         current_depth + 1,
                                         grove_version,
                                     )?;
+                                    super::V1LimitState::settle_instance_after_descent(
+                                        &mut frame_instance,
+                                        rows_before_descent,
+                                        limit_state.consumed_rows,
+                                    );
 
                                     let combined_root_hash = combine_hash_three(
                                         value_hash(value_bytes).value(),
@@ -1807,7 +1854,7 @@ impl GroveDb {
                                             ),
                                         ));
                                     }
-                                    if limit_left == &Some(0) {
+                                    if limit_state.is_exhausted(frame_instance) {
                                         break;
                                     }
                                 }
@@ -1916,6 +1963,7 @@ impl GroveDb {
                                     // contents — every lower-layer flavour
                                     // computes its root independently of the
                                     // query, which only ever selects rows.
+                                    let rows_before_descent = limit_state.consumed_rows;
                                     let lower_hash = match &lower_layer.merk_proof {
                                         ProofBytes::Merk(_) => {
                                             // A sum-budget layer must carry
@@ -1941,7 +1989,8 @@ impl GroveDb {
                                                     &lower_layer.lower_layers,
                                                     prove_options,
                                                     query,
-                                                    limit_left,
+                                                    limit_state,
+                                                    frame_instance,
                                                     &path,
                                                     result,
                                                     axis_outcomes,
@@ -1971,51 +2020,90 @@ impl GroveDb {
                                                 grove_version,
                                             )?
                                         }
-                                        ProofBytes::MMR(mmr_bytes) => Self::verify_mmr_lower_layer(
-                                            mmr_bytes,
-                                            &element,
-                                            &path,
-                                            limit_left,
-                                            result,
-                                            query,
-                                            has_query_below,
-                                            grove_version,
-                                        )?,
+                                        ProofBytes::MMR(mmr_bytes) => {
+                                            let mut non_merk_effective =
+                                                limit_state.effective_layer_limit(frame_instance);
+                                            let non_merk_before = non_merk_effective;
+                                            let lower_hash = Self::verify_mmr_lower_layer(
+                                                mmr_bytes,
+                                                &element,
+                                                &path,
+                                                &mut non_merk_effective,
+                                                result,
+                                                query,
+                                                has_query_below,
+                                                grove_version,
+                                            )?;
+                                            limit_state.charge_rows(
+                                                non_merk_before.unwrap_or(0).saturating_sub(
+                                                    non_merk_effective.unwrap_or(0),
+                                                ),
+                                            );
+                                            lower_hash
+                                        }
                                         ProofBytes::BulkAppendTree(bulk_bytes) => {
-                                            Self::verify_bulk_append_lower_layer(
+                                            let mut non_merk_effective =
+                                                limit_state.effective_layer_limit(frame_instance);
+                                            let non_merk_before = non_merk_effective;
+                                            let lower_hash = Self::verify_bulk_append_lower_layer(
                                                 bulk_bytes,
                                                 &element,
                                                 &path,
-                                                limit_left,
+                                                &mut non_merk_effective,
                                                 result,
                                                 query,
                                                 has_query_below,
                                                 grove_version,
-                                            )?
+                                            )?;
+                                            limit_state.charge_rows(
+                                                non_merk_before.unwrap_or(0).saturating_sub(
+                                                    non_merk_effective.unwrap_or(0),
+                                                ),
+                                            );
+                                            lower_hash
                                         }
                                         ProofBytes::DenseTree(dense_bytes) => {
-                                            Self::verify_dense_tree_lower_layer(
+                                            let mut non_merk_effective =
+                                                limit_state.effective_layer_limit(frame_instance);
+                                            let non_merk_before = non_merk_effective;
+                                            let lower_hash = Self::verify_dense_tree_lower_layer(
                                                 dense_bytes,
                                                 &element,
                                                 &path,
-                                                limit_left,
+                                                &mut non_merk_effective,
                                                 result,
                                                 query,
                                                 has_query_below,
                                                 grove_version,
-                                            )?
+                                            )?;
+                                            limit_state.charge_rows(
+                                                non_merk_before.unwrap_or(0).saturating_sub(
+                                                    non_merk_effective.unwrap_or(0),
+                                                ),
+                                            );
+                                            lower_hash
                                         }
                                         ProofBytes::CommitmentTree(ct_bytes) => {
-                                            Self::verify_commitment_tree_lower_layer(
-                                                ct_bytes,
-                                                &element,
-                                                &path,
-                                                limit_left,
-                                                result,
-                                                query,
-                                                has_query_below,
-                                                grove_version,
-                                            )?
+                                            let mut non_merk_effective =
+                                                limit_state.effective_layer_limit(frame_instance);
+                                            let non_merk_before = non_merk_effective;
+                                            let lower_hash =
+                                                Self::verify_commitment_tree_lower_layer(
+                                                    ct_bytes,
+                                                    &element,
+                                                    &path,
+                                                    &mut non_merk_effective,
+                                                    result,
+                                                    query,
+                                                    has_query_below,
+                                                    grove_version,
+                                                )?;
+                                            limit_state.charge_rows(
+                                                non_merk_before.unwrap_or(0).saturating_sub(
+                                                    non_merk_effective.unwrap_or(0),
+                                                ),
+                                            );
+                                            lower_hash
                                         }
                                         ProofBytes::CountIndexedTree(_)
                                         | ProofBytes::IndexedTreeTerminal(_)
@@ -2035,6 +2123,12 @@ impl GroveDb {
                                             ));
                                         }
                                     };
+
+                                    super::V1LimitState::settle_instance_after_descent(
+                                        &mut frame_instance,
+                                        rows_before_descent,
+                                        limit_state.consumed_rows,
+                                    );
 
                                     let combined_root_hash =
                                         combine_hash(value_hash(value_bytes).value(), &lower_hash)
@@ -2074,12 +2168,10 @@ impl GroveDb {
                                             path_key_optional_value
                                                 .try_into_versioned(grove_version)?,
                                         );
-                                        limit_left
-                                            .iter_mut()
-                                            .for_each(|limit| *limit = limit.saturating_sub(1));
+                                        limit_state.charge_row_with_instance(&mut frame_instance);
                                     }
 
-                                    if limit_left == &Some(0) {
+                                    if limit_state.is_exhausted(frame_instance) {
                                         break;
                                     }
                                 }
@@ -2256,10 +2348,8 @@ impl GroveDb {
                                 proved_key_value,
                             );
                         result.push(path_key_optional_value.try_into_versioned(grove_version)?);
-                        limit_left
-                            .iter_mut()
-                            .for_each(|limit| *limit = limit.saturating_sub(1));
-                        if limit_left == &Some(0) {
+                        limit_state.charge_row_with_instance(&mut frame_instance);
+                        if limit_state.is_exhausted(frame_instance) {
                             break;
                         }
                     } else if element.is_non_empty_tree()

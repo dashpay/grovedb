@@ -64,9 +64,14 @@ pub struct GroveDBPathQueryMethodVersions {
     ///   decodes (`Query` encoding version 3) — the gate is about
     ///   *serving*, so a query built ahead of activation fails closed
     ///   instead of running with its caps silently ignored.
-    /// - `1` (GROVE_V4+): trusted reads serve per-instance limits (the
-    ///   `element.path_query_push` v1 engine); proofs reject until the
-    ///   V1 prover/verifier learn the accounting.
+    /// - `1` (GROVE_V4+): trusted reads (the `element.path_query_push`
+    ///   v1 engine), V1 proofs, and merges (which lift a merged input's
+    ///   global limit onto its exclusive branch) serve per-instance
+    ///   limits. Absence-proof assembly and the terminal-keys
+    ///   projections keep rejecting them at every version — which keys
+    ///   an instance-capped walk carries is data-dependent, so their
+    ///   expected-key projections would report keys beyond a cap as
+    ///   falsely absent.
     pub per_instance_query_limits: FeatureVersion,
 }
 
