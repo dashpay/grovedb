@@ -111,8 +111,27 @@ pub(super) fn merge_v1(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
     let mut merged_query = Query::merge_multiple_directional(queries_for_common_path_this_level)
         .map_err(|e| Error::NotSupported(e.to_string()))?;
 
-    // add conditional subqueries
-    for sub_path_query in queries_for_common_path_sub_level {
+    // Add conditional subqueries in a canonical order: every
+    // limit-free branch first (through the full merge machinery, which
+    // is still limit-free at that point), then the limit-carrying
+    // branches as exclusive grafts. Without the partition, acceptance
+    // would depend on input order — a disjoint limited branch
+    // processed early would force a later limit-free overlap onto the
+    // graft path and refuse it. The partition is deterministic (stable
+    // over input order), and the verifier re-runs the same merge, so
+    // both sides derive the identical query.
+    let carries_limits = |branch: &SubqueryBranch| {
+        branch
+            .subquery
+            .as_deref()
+            .is_some_and(|subquery| subquery.has_instance_limit_anywhere())
+    };
+    let (limited_branches, unlimited_branches): (Vec<SubqueryBranch>, Vec<SubqueryBranch>) =
+        queries_for_common_path_sub_level
+            .into_iter()
+            .partition(&carries_limits);
+
+    for sub_path_query in unlimited_branches {
         let SubqueryBranch {
             subquery_path,
             subquery,
@@ -120,18 +139,6 @@ pub(super) fn merge_v1(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
         let mut subquery_path =
             subquery_path.ok_or(Error::CorruptedCodeExecution("subquery path must exist"))?;
         let key = subquery_path.remove(0); // must exist
-
-        // Whether the merged root's own selection already covers this
-        // branch's key — assessed BEFORE the branch's item is inserted
-        // (the graft's own `Key` would otherwise always match). A
-        // grafted conditional overrides the root query's default/
-        // terminal semantics for that key, so when limits are in play
-        // this is a collision, not a graft: proceeding would silently
-        // drop the root input's contribution for the key.
-        let overlaps_root_selection = merged_query
-            .items
-            .iter()
-            .any(|item| item.contains(key.as_slice()));
         merged_query.insert_item(QueryItem::Key(key.clone()));
         let rest_of_path = if subquery_path.is_empty() {
             None
@@ -142,43 +149,59 @@ pub(super) fn merge_v1(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
             subquery_path: rest_of_path,
             subquery,
         };
-        let limits_in_play = merged_query.has_instance_limit_anywhere()
-            || subquery_branch
-                .subquery
-                .as_deref()
-                .is_some_and(|subquery| subquery.has_instance_limit_anywhere());
-        if limits_in_play {
-            // Budgets never blend: a limit-carrying branch (lifted or
-            // authored) merges only as an exclusive graft. Any overlap
-            // — with an existing conditional, or with the merged root's
-            // own selection for this key — would need the two sides'
-            // bodies (and budgets) merged, which is refused by design.
-            let collides = overlaps_root_selection
-                || merged_query
-                    .conditional_subquery_branches
-                    .as_ref()
-                    .is_some_and(|branches| {
-                        branches.keys().any(|item| item.contains(key.as_slice()))
-                    });
-            if collides {
-                return Err(Error::NotSupported(format!(
-                    "can not merge limited path queries whose branches collide at key {}; \
-                     remove the limits or merge the colliding queries separately",
-                    hex_to_ascii(&key),
-                )));
-            }
-            merged_query.add_conditional_subquery(
-                QueryItem::Key(key),
-                subquery_branch.subquery_path,
-                subquery_branch.subquery.map(|subquery| *subquery),
-            );
-        } else {
-            // See v0: read modes are rejected in the prelude; propagate
-            // rather than discard if one ever reaches here.
-            merged_query
-                .merge_conditional_boxed_subquery(QueryItem::Key(key), subquery_branch)
-                .map_err(|e| Error::NotSupported(e.to_string()))?;
+        // See v0: read modes are rejected in the prelude; propagate
+        // rather than discard if one ever reaches here. The merged
+        // query is still limit-free in this phase, so the machinery's
+        // blanket instance-limit gate cannot misfire.
+        merged_query
+            .merge_conditional_boxed_subquery(QueryItem::Key(key), subquery_branch)
+            .map_err(|e| Error::NotSupported(e.to_string()))?;
+    }
+
+    for sub_path_query in limited_branches {
+        let SubqueryBranch {
+            subquery_path,
+            subquery,
+        } = sub_path_query;
+        let mut subquery_path =
+            subquery_path.ok_or(Error::CorruptedCodeExecution("subquery path must exist"))?;
+        let key = subquery_path.remove(0); // must exist
+
+        // Budgets never blend: a limit-carrying branch merges only as
+        // an exclusive graft. Overlap with the merged root's own
+        // selection (assessed BEFORE this branch's item is inserted —
+        // the graft's own `Key` would otherwise always match) or with
+        // any already-merged conditional would need the two sides'
+        // bodies — and budgets — merged, which is refused by design.
+        // Only the actually colliding structures are consulted, so a
+        // disjoint limited branch cannot change another branch's
+        // acceptance.
+        let collides = merged_query
+            .items
+            .iter()
+            .any(|item| item.contains(key.as_slice()))
+            || merged_query
+                .conditional_subquery_branches
+                .as_ref()
+                .is_some_and(|branches| branches.keys().any(|item| item.contains(key.as_slice())));
+        if collides {
+            return Err(Error::NotSupported(format!(
+                "can not merge limited path queries whose branches collide at key {}; \
+                 remove the limits or merge the colliding queries separately",
+                hex_to_ascii(&key),
+            )));
         }
+        merged_query.insert_item(QueryItem::Key(key.clone()));
+        let rest_of_path = if subquery_path.is_empty() {
+            None
+        } else {
+            Some(subquery_path)
+        };
+        merged_query.add_conditional_subquery(
+            QueryItem::Key(key),
+            rest_of_path,
+            subquery.map(|subquery| *subquery),
+        );
     }
 
     // The agreed direction travels to the merged root (it would

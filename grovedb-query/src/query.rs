@@ -936,21 +936,28 @@ mod tests {
 /// broke as fields were appended (`serde(default)` cannot turn EOF
 /// into an omitted field), and a self-describing reader from *before*
 /// a field silently ignored its unknown key — turning a bounded query
-/// into an unlimited one. This module mirrors the bincode codec's
-/// versioning instead:
+/// into an unlimited one, or a read-mode query into plain key
+/// selection. This module mirrors the bincode codec's versioning
+/// instead:
 ///
 /// - **Non-self-describing formats** (`!is_human_readable`, e.g.
-///   serde-bincode): a fixed layout with a leading `version` integer
-///   and every field always present, so the format round-trips and a
-///   reader from another generation fails at the layout instead of
-///   misreading.
+///   serde-bincode): a framed layout — a leading `MAGIC` sentinel,
+///   then a version integer, then every field always present. A
+///   plain `version: u8` alone would NOT fail closed: the released
+///   unframed layout begins with the `items` vector length, so a
+///   legacy reader would consume a small version byte as a length and
+///   reinterpret the remaining fields as query items. The magic
+///   decodes there as an absurd items length instead, which errors —
+///   and this reader requires the magic exactly, so released payloads
+///   error cleanly here too (positional layouts carry no
+///   self-description to migrate on).
 /// - **Self-describing formats** (`is_human_readable`, e.g. JSON):
-///   versions 1 and 2 keep the flat, pre-limit map layout (plus a
-///   `version` key old readers ignore), preserving interop for every
-///   query an old reader can serve. Version 3 — the limit-bearing
-///   form old readers *cannot* serve — nests its fields under a
-///   `body` key, so an old reader hard-fails on the missing flat
-///   fields instead of silently dropping the limit.
+///   version 1 — the only content the **released** derived layout can
+///   serve — keeps the flat map layout (plus a `version` key old
+///   readers ignore). Versions 2 and 3 (read-mode- and limit-bearing
+///   forms) nest their fields under a `body` key, so an old reader
+///   hard-fails on the missing flat fields instead of silently
+///   dropping the read mode or the limit.
 ///
 /// Decoding validates canonicality exactly like bincode: the version
 /// must be the lowest that can represent the contents.
@@ -988,9 +995,17 @@ mod query_serde {
         Ok(())
     }
 
-    /// Fixed positional layout — every field always present.
+    /// The positional frame sentinel. Chosen so a legacy unframed
+    /// reader, which decodes the leading bytes as its `items` vector
+    /// length, sees an absurd length and errors instead of
+    /// reinterpreting the payload.
+    const POSITIONAL_MAGIC: u64 = u64::from_be_bytes(*b"grvquery");
+
+    /// Framed positional layout — magic, version, then every field
+    /// always present.
     #[derive(Serialize)]
     struct PositionalRef<'a> {
+        magic: u64,
         version: u8,
         items: &'a Vec<QueryItem>,
         default_subquery_branch: &'a SubqueryBranch,
@@ -1004,6 +1019,7 @@ mod query_serde {
     #[derive(Deserialize)]
     #[serde(rename = "Query")]
     struct PositionalOwned {
+        magic: u64,
         version: u8,
         items: Vec<QueryItem>,
         default_subquery_branch: SubqueryBranch,
@@ -1014,7 +1030,8 @@ mod query_serde {
         limit: Option<u16>,
     }
 
-    /// The nested body of the human-readable version-3 form.
+    /// The nested body of the human-readable version-2 and version-3
+    /// forms.
     #[derive(Serialize, Deserialize)]
     struct BodyOwned {
         items: Vec<QueryItem>,
@@ -1023,7 +1040,7 @@ mod query_serde {
         left_to_right: bool,
         add_parent_tree_on_subquery: bool,
         read_mode: Option<Box<ReadMode>>,
-        limit: u16,
+        limit: Option<u16>,
     }
 
     #[derive(Serialize)]
@@ -1034,7 +1051,7 @@ mod query_serde {
         left_to_right: bool,
         add_parent_tree_on_subquery: bool,
         read_mode: &'a Option<Box<ReadMode>>,
-        limit: u16,
+        limit: &'a Option<u16>,
     }
 
     impl Serialize for Query {
@@ -1042,6 +1059,7 @@ mod query_serde {
             let version = wire_version(self.read_mode.is_some(), self.limit.is_some());
             if !serializer.is_human_readable() {
                 return PositionalRef {
+                    magic: POSITIONAL_MAGIC,
                     version,
                     items: &self.items,
                     default_subquery_branch: &self.default_subquery_branch,
@@ -1055,7 +1073,11 @@ mod query_serde {
             }
             use serde::ser::SerializeStruct;
             match version {
-                3 => {
+                2 | 3 => {
+                    // Both non-released forms nest: the released
+                    // derived reader ignores unknown flat keys, so
+                    // either feature would silently vanish in a flat
+                    // map.
                     let mut state = serializer.serialize_struct("Query", 2)?;
                     state.serialize_field("version", &version)?;
                     state.serialize_field(
@@ -1067,29 +1089,9 @@ mod query_serde {
                             left_to_right: self.left_to_right,
                             add_parent_tree_on_subquery: self.add_parent_tree_on_subquery,
                             read_mode: &self.read_mode,
-                            limit: self.limit.expect("version 3 iff limit is present"),
+                            limit: &self.limit,
                         },
                     )?;
-                    state.end()
-                }
-                2 => {
-                    let mut state = serializer.serialize_struct("Query", 7)?;
-                    state.serialize_field("version", &version)?;
-                    state.serialize_field("items", &self.items)?;
-                    state.serialize_field(
-                        "default_subquery_branch",
-                        &self.default_subquery_branch,
-                    )?;
-                    state.serialize_field(
-                        "conditional_subquery_branches",
-                        &self.conditional_subquery_branches,
-                    )?;
-                    state.serialize_field("left_to_right", &self.left_to_right)?;
-                    state.serialize_field(
-                        "add_parent_tree_on_subquery",
-                        &self.add_parent_tree_on_subquery,
-                    )?;
-                    state.serialize_field("read_mode", &self.read_mode)?;
                     state.end()
                 }
                 _ => {
@@ -1181,11 +1183,20 @@ mod query_serde {
                     || read_mode.is_some()
                 {
                     return Err(de::Error::custom(
-                        "a version-3 Query nests every field under `body`; flat fields may \
-                         not accompany it",
+                        "a version-2 or version-3 Query nests every field under `body`; flat \
+                         fields may not accompany it",
                     ));
                 }
-                validate_canonical::<A::Error>(version, body.read_mode.is_some(), true)?;
+                validate_canonical::<A::Error>(
+                    version,
+                    body.read_mode.is_some(),
+                    body.limit.is_some(),
+                )?;
+                if version < 2 {
+                    return Err(de::Error::custom(
+                        "a nested Query body requires version 2 or 3",
+                    ));
+                }
                 return Ok(Query {
                     items: body.items,
                     default_subquery_branch: body.default_subquery_branch,
@@ -1193,15 +1204,29 @@ mod query_serde {
                     left_to_right: body.left_to_right,
                     add_parent_tree_on_subquery: body.add_parent_tree_on_subquery,
                     read_mode: body.read_mode,
-                    limit: Some(body.limit),
+                    limit: body.limit,
                 });
             }
 
+            // The flat layout carries neither a read mode nor a limit
+            // (both bump the query to the nested form); a `read_mode`
+            // key in a flat map is refused rather than accepted, since
+            // the released reader would drop it silently and the two
+            // generations must not diverge on the same payload. A
+            // missing `version` key is the released pre-versioning
+            // layout — accepted for compatibility.
+            if read_mode
+                .as_ref()
+                .is_some_and(|read_mode| read_mode.is_some())
+            {
+                return Err(de::Error::custom(
+                    "a flat Query map may not carry a read mode; read-mode queries nest under \
+                     `body` (version 2)",
+                ));
+            }
             let read_mode = read_mode.unwrap_or(None);
-            // A missing `version` key is the pre-versioning flat layout
-            // — accepted for compatibility; it can never carry a limit.
             if let Some(version) = version {
-                validate_canonical::<A::Error>(version, read_mode.is_some(), false)?;
+                validate_canonical::<A::Error>(version, false, false)?;
             }
             Ok(Query {
                 items: items.ok_or_else(|| de::Error::missing_field("items"))?,
@@ -1222,6 +1247,12 @@ mod query_serde {
         fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Query, D::Error> {
             if !deserializer.is_human_readable() {
                 let wire = PositionalOwned::deserialize(deserializer)?;
+                if wire.magic != POSITIONAL_MAGIC {
+                    return Err(de::Error::custom(
+                        "positional Query payload does not carry the framed layout's magic \
+                         sentinel",
+                    ));
+                }
                 validate_canonical::<D::Error>(
                     wire.version,
                     wire.read_mode.is_some(),

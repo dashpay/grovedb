@@ -2418,17 +2418,16 @@ impl GroveDb {
                                 // frame creation, so the lower query's own
                                 // per-instance cap must be min-composed here —
                                 // the verifier derives the identical value.
-                                let lower_instance = super::V1LimitState::min_caps(
-                                    frame_instance,
-                                    cost_return_on_error_no_add!(
-                                        cost,
-                                        path_query
-                                            .query_items_at_path(&lower_path, grove_version)
-                                    )
-                                    .and_then(|lower_query| lower_query.instance_limit),
-                                );
-                                let mut non_merk_effective =
-                                    limit_state.effective_layer_limit(lower_instance);
+                                let mut non_merk_effective = limit_state
+                                    .effective_lower_layer_limit(
+                                        frame_instance,
+                                        cost_return_on_error_no_add!(
+                                            cost,
+                                            path_query
+                                                .query_items_at_path(&lower_path, grove_version)
+                                        )
+                                        .and_then(|lower_query| lower_query.instance_limit),
+                                    );
                                 let non_merk_before = non_merk_effective;
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
@@ -2466,17 +2465,16 @@ impl GroveDb {
                                 // frame creation, so the lower query's own
                                 // per-instance cap must be min-composed here —
                                 // the verifier derives the identical value.
-                                let lower_instance = super::V1LimitState::min_caps(
-                                    frame_instance,
-                                    cost_return_on_error_no_add!(
-                                        cost,
-                                        path_query
-                                            .query_items_at_path(&lower_path, grove_version)
-                                    )
-                                    .and_then(|lower_query| lower_query.instance_limit),
-                                );
-                                let mut non_merk_effective =
-                                    limit_state.effective_layer_limit(lower_instance);
+                                let mut non_merk_effective = limit_state
+                                    .effective_lower_layer_limit(
+                                        frame_instance,
+                                        cost_return_on_error_no_add!(
+                                            cost,
+                                            path_query
+                                                .query_items_at_path(&lower_path, grove_version)
+                                        )
+                                        .and_then(|lower_query| lower_query.instance_limit),
+                                    );
                                 let non_merk_before = non_merk_effective;
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
@@ -2519,17 +2517,16 @@ impl GroveDb {
                                 // frame creation, so the lower query's own
                                 // per-instance cap must be min-composed here —
                                 // the verifier derives the identical value.
-                                let lower_instance = super::V1LimitState::min_caps(
-                                    frame_instance,
-                                    cost_return_on_error_no_add!(
-                                        cost,
-                                        path_query
-                                            .query_items_at_path(&lower_path, grove_version)
-                                    )
-                                    .and_then(|lower_query| lower_query.instance_limit),
-                                );
-                                let mut non_merk_effective =
-                                    limit_state.effective_layer_limit(lower_instance);
+                                let mut non_merk_effective = limit_state
+                                    .effective_lower_layer_limit(
+                                        frame_instance,
+                                        cost_return_on_error_no_add!(
+                                            cost,
+                                            path_query
+                                                .query_items_at_path(&lower_path, grove_version)
+                                        )
+                                        .and_then(|lower_query| lower_query.instance_limit),
+                                    );
                                 let non_merk_before = non_merk_effective;
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
@@ -2568,17 +2565,16 @@ impl GroveDb {
                                 // frame creation, so the lower query's own
                                 // per-instance cap must be min-composed here —
                                 // the verifier derives the identical value.
-                                let lower_instance = super::V1LimitState::min_caps(
-                                    frame_instance,
-                                    cost_return_on_error_no_add!(
-                                        cost,
-                                        path_query
-                                            .query_items_at_path(&lower_path, grove_version)
-                                    )
-                                    .and_then(|lower_query| lower_query.instance_limit),
-                                );
-                                let mut non_merk_effective =
-                                    limit_state.effective_layer_limit(lower_instance);
+                                let mut non_merk_effective = limit_state
+                                    .effective_lower_layer_limit(
+                                        frame_instance,
+                                        cost_return_on_error_no_add!(
+                                            cost,
+                                            path_query
+                                                .query_items_at_path(&lower_path, grove_version)
+                                        )
+                                        .and_then(|lower_query| lower_query.instance_limit),
+                                    );
                                 let non_merk_before = non_merk_effective;
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
@@ -3635,8 +3631,11 @@ impl GroveDb {
                 })
         );
 
-        // Convert query items to a position range
-        let (start, end) = cost_return_on_error_no_add!(
+        // Validate that the items convert to a position range. The
+        // bounding span itself is no longer used here: the proof
+        // generator derives its own range from the query, and the row
+        // charge below counts semantic matches rather than the span.
+        let (_start, _end) = cost_return_on_error_no_add!(
             cost,
             Self::query_items_to_range(&sub_query.items, total_count)
         );
@@ -3676,17 +3675,20 @@ impl GroveDb {
                 .map_err(|e| Error::CorruptedData(format!("{}", e)))
         );
 
-        // Update limit: count individual values in the queried range.
-        // The range can be empty relative to the stored entries — e.g.
-        // a query whose positions all sit at or past `total_count`
-        // clamps `end` below `start` — in which case nothing was
-        // consumed; a plain subtraction here underflowed (panicking in
-        // debug, charging ~u16::MAX rows in release).
+        // Update limit: charge the rows the query semantically matches,
+        // exactly as the verifier does — NOT the width of the bounding
+        // proof range. A sparse query (say positions 0 and 100) proves
+        // a wide range but returns two rows; charging the span
+        // desynchronizes the shared budget and makes the verifier
+        // reject honest proofs for later layers. This also charges
+        // zero for a range that is empty relative to the stored
+        // entries (a plain span subtraction underflowed there).
         if let Some(limit) = overall_limit.as_mut() {
-            let count = end
-                .min(total_count)
-                .saturating_sub(start)
-                .min(u16::MAX as u64) as u16;
+            let matched = cost_return_on_error_no_add!(
+                cost,
+                Self::expand_query_to_u64_positions(&sub_query.items, total_count)
+            );
+            let count = matched.len().min(u16::MAX as usize) as u16;
             *limit = limit.saturating_sub(count);
         }
 

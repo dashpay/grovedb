@@ -2044,16 +2044,15 @@ impl GroveDb {
                                             // the lower query's own per-instance
                                             // cap — these adapters bypass the
                                             // recursive frame creation.
-                                            let lower_instance = super::V1LimitState::min_caps(
-                                                frame_instance,
-                                                query
-                                                    .query_items_at_path(&path, grove_version)?
-                                                    .and_then(|lower_query| {
-                                                        lower_query.instance_limit
-                                                    }),
-                                            );
-                                            let mut non_merk_effective =
-                                                limit_state.effective_layer_limit(lower_instance);
+                                            let mut non_merk_effective = limit_state
+                                                .effective_lower_layer_limit(
+                                                    frame_instance,
+                                                    query
+                                                        .query_items_at_path(&path, grove_version)?
+                                                        .and_then(|lower_query| {
+                                                            lower_query.instance_limit
+                                                        }),
+                                                );
                                             let non_merk_before = non_merk_effective;
                                             let lower_hash = Self::verify_mmr_lower_layer(
                                                 mmr_bytes,
@@ -2077,16 +2076,15 @@ impl GroveDb {
                                             // the lower query's own per-instance
                                             // cap — these adapters bypass the
                                             // recursive frame creation.
-                                            let lower_instance = super::V1LimitState::min_caps(
-                                                frame_instance,
-                                                query
-                                                    .query_items_at_path(&path, grove_version)?
-                                                    .and_then(|lower_query| {
-                                                        lower_query.instance_limit
-                                                    }),
-                                            );
-                                            let mut non_merk_effective =
-                                                limit_state.effective_layer_limit(lower_instance);
+                                            let mut non_merk_effective = limit_state
+                                                .effective_lower_layer_limit(
+                                                    frame_instance,
+                                                    query
+                                                        .query_items_at_path(&path, grove_version)?
+                                                        .and_then(|lower_query| {
+                                                            lower_query.instance_limit
+                                                        }),
+                                                );
                                             let non_merk_before = non_merk_effective;
                                             let lower_hash = Self::verify_bulk_append_lower_layer(
                                                 bulk_bytes,
@@ -2110,16 +2108,15 @@ impl GroveDb {
                                             // the lower query's own per-instance
                                             // cap — these adapters bypass the
                                             // recursive frame creation.
-                                            let lower_instance = super::V1LimitState::min_caps(
-                                                frame_instance,
-                                                query
-                                                    .query_items_at_path(&path, grove_version)?
-                                                    .and_then(|lower_query| {
-                                                        lower_query.instance_limit
-                                                    }),
-                                            );
-                                            let mut non_merk_effective =
-                                                limit_state.effective_layer_limit(lower_instance);
+                                            let mut non_merk_effective = limit_state
+                                                .effective_lower_layer_limit(
+                                                    frame_instance,
+                                                    query
+                                                        .query_items_at_path(&path, grove_version)?
+                                                        .and_then(|lower_query| {
+                                                            lower_query.instance_limit
+                                                        }),
+                                                );
                                             let non_merk_before = non_merk_effective;
                                             let lower_hash = Self::verify_dense_tree_lower_layer(
                                                 dense_bytes,
@@ -2143,16 +2140,15 @@ impl GroveDb {
                                             // the lower query's own per-instance
                                             // cap — these adapters bypass the
                                             // recursive frame creation.
-                                            let lower_instance = super::V1LimitState::min_caps(
-                                                frame_instance,
-                                                query
-                                                    .query_items_at_path(&path, grove_version)?
-                                                    .and_then(|lower_query| {
-                                                        lower_query.instance_limit
-                                                    }),
-                                            );
-                                            let mut non_merk_effective =
-                                                limit_state.effective_layer_limit(lower_instance);
+                                            let mut non_merk_effective = limit_state
+                                                .effective_lower_layer_limit(
+                                                    frame_instance,
+                                                    query
+                                                        .query_items_at_path(&path, grove_version)?
+                                                        .and_then(|lower_query| {
+                                                            lower_query.instance_limit
+                                                        }),
+                                                );
                                             let non_merk_before = non_merk_effective;
                                             let lower_hash =
                                                 Self::verify_commitment_tree_lower_layer(
@@ -2424,10 +2420,25 @@ impl GroveDb {
                         && internal_query.has_subquery_or_matching_in_path_on_key(key)
                     {
                         // An EMPTY tree a subquery matches: an empty
-                        // child, not a result row. Mirror the prover's
-                        // charge exactly — global budget only (it
-                        // bounds walks across many empty children),
-                        // per-instance budgets count result rows.
+                        // child, not a result row. When the governing
+                        // query asks for parent-tree inclusion, the
+                        // matched parent is still reported — empty and
+                        // non-empty parents must behave alike — and,
+                        // like every parent-tree row, it does not
+                        // consume a budget slot (the documented
+                        // known limitation on the flag).
+                        if query.should_add_parent_tree_at_path(current_path, grove_version)? {
+                            let path_key_optional_value =
+                                ProvedPathKeyOptionalValue::from_proved_key_value(
+                                    path.iter().map(|p| p.to_vec()).collect(),
+                                    proved_key_value.clone(),
+                                );
+                            result.push(path_key_optional_value.try_into_versioned(grove_version)?);
+                        }
+                        // Mirror the prover's charge exactly — global
+                        // budget only (it bounds walks across many
+                        // empty children), per-instance budgets count
+                        // result rows.
                         limit_state.charge_empty_layer();
                         if limit_state.is_exhausted(frame_instance) {
                             break;
@@ -2577,7 +2588,13 @@ impl GroveDb {
             ));
         }
 
-        // Add each verified leaf to the result set
+        // Add each verified leaf to the result set, following the query
+        // direction so a cap keeps the intended end of the range.
+        let mut verified_leaves = verified_leaves;
+        verified_leaves.sort_by_key(|(leaf_index, _)| *leaf_index);
+        if !sub_query.left_to_right {
+            verified_leaves.reverse();
+        }
         for (leaf_index, value) in verified_leaves {
             let key = leaf_index.to_be_bytes().to_vec();
             let element = Element::new_item(value);
@@ -2682,9 +2699,16 @@ impl GroveDb {
         let (start, end) = Self::extract_range_from_query_items(&sub_query.items)?;
         let end = end.min(proof_result.total_count);
 
-        let values = proof_result
+        let mut values = proof_result
             .values_in_range(start, end)
             .map_err(|e| Error::CorruptedData(format!("{}", e)))?;
+        // Result rows follow the query direction; the cap below then
+        // keeps the LAST positions for a descending query instead of
+        // truncating to the first ascending ones.
+        values.sort_by_key(|(position, _)| *position);
+        if !sub_query.left_to_right {
+            values.reverse();
+        }
 
         // Completeness: every position the query expects must be present in
         // the proof values. Build the expected set and check coverage.
@@ -2862,6 +2886,13 @@ impl GroveDb {
             .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
 
         // Add each verified entry to the result set
+        // Follow the query direction so a cap keeps the intended end of
+        // the range.
+        let mut verified_entries = verified_entries;
+        verified_entries.sort_by_key(|(position, _)| *position);
+        if !sub_query.left_to_right {
+            verified_entries.reverse();
+        }
         for (position, value) in verified_entries {
             let key = position.to_be_bytes().to_vec();
             let elem = Element::new_item(value);
@@ -3035,7 +3066,7 @@ impl GroveDb {
     /// Expand query items (with BE u64 keys) into a set of individual positions
     /// bounded by `count`. Used for completeness checking in non-Merk
     /// verifiers.
-    fn expand_query_to_u64_positions(
+    pub(crate) fn expand_query_to_u64_positions(
         items: &[grovedb_merk::proofs::query::QueryItem],
         count: u64,
     ) -> Result<BTreeSet<u64>, Error> {
