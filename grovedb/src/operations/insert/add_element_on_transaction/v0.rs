@@ -268,6 +268,20 @@ impl GroveDb {
             // inserted via `Op::Put` here (NOT the layered-subtree arm above) to
             // preserve the grovedb v4.1.0 / protocol-v11 consensus root — see the
             // module docs.
+            Element::BidirectionalReference(..)
+            | Element::ItemWithBackwardsReferences(..)
+            | Element::SumItemWithBackwardsReferences(..) => {
+                // Backward-references elements activate with `GROVE_V4`;
+                // this v0 arm is selected by `GROVE_V1` / `GROVE_V2` where
+                // they must not exist. Fail closed.
+                return Err(Error::NotSupported(
+                    "backward-references elements (BidirectionalReference, \
+                     ItemWithBackwardsReferences, SumItemWithBackwardsReferences) require \
+                     GROVE_V4+"
+                        .to_owned(),
+                ))
+                .wrap_with_cost(cost);
+            }
             Element::Item(..)
             | Element::SumItem(..)
             | Element::ItemWithSumItem(..)

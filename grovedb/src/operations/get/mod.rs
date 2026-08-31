@@ -23,6 +23,7 @@ use grovedb_path::SubtreePath;
 use grovedb_storage::StorageContext;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
+use crate::bidirectional_references::BidirectionalReference;
 use crate::{
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
     util::TxRef,
@@ -90,7 +91,11 @@ impl GroveDb {
         .into_underlying()
         {
             Element::Reference(reference_path, ..)
-            | Element::ReferenceWithSumItem(reference_path, ..) => {
+            | Element::ReferenceWithSumItem(reference_path, ..)
+            | Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path: reference_path,
+                ..
+            }) => {
                 let path_owned = cost_return_on_error_into!(
                     &mut cost,
                     path_from_reference_path_type(reference_path, &path.to_vec(), Some(key))
@@ -172,7 +177,11 @@ impl GroveDb {
             // irrelevant to chain destination.
             match current_element.into_underlying() {
                 Element::Reference(reference_path, ..)
-                | Element::ReferenceWithSumItem(reference_path, ..) => {
+                | Element::ReferenceWithSumItem(reference_path, ..)
+                | Element::BidirectionalReference(BidirectionalReference {
+                    forward_reference_path: reference_path,
+                    ..
+                }) => {
                     current_path = cost_return_on_error_into!(
                         &mut cost,
                         path_from_reference_qualified_path_type(reference_path, &current_path)

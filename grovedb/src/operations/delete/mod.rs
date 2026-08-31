@@ -91,6 +91,13 @@ pub struct DeleteOptions {
     pub base_root_storage_is_free: bool,
     /// Validate tree at path exists
     pub validate_tree_at_path_exists: bool,
+    /// Propagate updates to elements with backward references. This enables
+    /// bidirectional-reference bookkeeping for this call: deletions of
+    /// backward-references elements cascade along the reference chains
+    /// (each affected reference must allow `cascade_on_update`, otherwise
+    /// the operation errors). Opt-in per call because the checks require an
+    /// extra fetch on every delete. Requires `GROVE_V4`+.
+    pub propagate_backward_references: bool,
 }
 
 #[cfg(feature = "minimal")]
@@ -101,6 +108,7 @@ impl Default for DeleteOptions {
             deleting_non_empty_trees_returns_error: true,
             base_root_storage_is_free: true,
             validate_tree_at_path_exists: false,
+            propagate_backward_references: false,
         }
     }
 }
@@ -732,11 +740,14 @@ mod tests {
     use grovedb_version::version::{v3::GROVE_V3, GroveVersion};
     use pretty_assertions::assert_eq;
 
+    use grovedb_path::SubtreePath;
+
     use crate::{
         operations::delete::{delete_up_tree::DeleteUpTreeOptions, ClearOptions, DeleteOptions},
         reference_path::ReferencePathType,
         tests::{
-            common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF,
+            common::{make_tree_with_bidi_references, EMPTY_PATH},
+            make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF,
         },
         Element, Error,
     };
@@ -2255,5 +2266,97 @@ mod tests {
             "expected CorruptedReferencePathKeyNotFound, got {:?}",
             err
         );
+    }
+
+    #[test]
+    fn delete_item_with_backward_references() {
+        // Deletion of an item with backward references shall trigger cascade
+        // deletions if the flag is set
+        let version = GroveVersion::latest();
+        let db = make_tree_with_bidi_references(version);
+
+        assert!(db
+            .get(&[TEST_LEAF, b"innertree"], b"ref", None, version)
+            .unwrap()
+            .is_ok());
+
+        db.delete(
+            &[b"deep_leaf".as_ref(), b"deep_node_1", b"deeper_2"],
+            b"key5",
+            Some(DeleteOptions {
+                allow_deleting_non_empty_trees: false,
+                deleting_non_empty_trees_returns_error: true,
+                base_root_storage_is_free: true,
+                validate_tree_at_path_exists: true,
+                propagate_backward_references: true,
+            }),
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(matches!(
+            db.get(&[TEST_LEAF, b"innertree"], b"ref", None, version)
+                .unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn recursive_deletion_with_bidirectional_references() {
+        // The purpose of this test is to check if bidirectional references
+        // chain propagation works properly when a part of it happens to be
+        // under a recursive deletion effect.
+        // The expected result is that references inside test_leaf and
+        // another_test_leaf shall be deleted as well; those that happened
+        // to be inside of deep_leaf are gone with the deleted subtree.
+
+        let version = GroveVersion::latest();
+
+        let db = make_tree_with_bidi_references(version);
+
+        let transaction = db.start_transaction();
+
+        // Perform recursive deletion:
+        db.delete(
+            SubtreePath::empty(),
+            b"deep_leaf",
+            Some(DeleteOptions {
+                allow_deleting_non_empty_trees: true,
+                deleting_non_empty_trees_returns_error: false,
+                base_root_storage_is_free: true,
+                validate_tree_at_path_exists: true,
+                propagate_backward_references: true,
+            }),
+            Some(&transaction),
+            version,
+        )
+        .unwrap()
+        .unwrap();
+
+        // Outside of deletion area:
+        assert!(matches!(
+            db.get(
+                &[TEST_LEAF, b"innertree"],
+                b"ref",
+                Some(&transaction),
+                version
+            )
+            .unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ));
+
+        // Inside:
+        assert!(matches!(
+            db.get(
+                &[b"deep_leaf".as_ref(), b"deep_node_1", b"deeper_1"],
+                b"ref3",
+                Some(&transaction),
+                version
+            )
+            .unwrap(),
+            Err(Error::PathParentLayerNotFound(_))
+        ));
     }
 }

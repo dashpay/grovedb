@@ -42,6 +42,9 @@ pub mod clear;
 pub mod committer;
 /// Getting values by key from a Merk tree.
 pub mod get;
+/// Metadata (non-authenticated KV) access for Merk trees, cached in memory
+/// alongside uncommitted tree state.
+mod meta;
 /// Opening and loading a Merk tree from storage.
 pub mod open;
 /// Generating Merkle proofs for queries against a Merk tree.
@@ -56,7 +59,7 @@ pub mod source;
 
 use std::{
     cell::Cell,
-    collections::{BTreeMap, BTreeSet, LinkedList},
+    collections::{BTreeMap, BTreeSet, HashMap, LinkedList},
     fmt,
 };
 
@@ -299,6 +302,10 @@ pub struct Merk<S> {
     pub storage: S,
     /// How this Merk is managed: standalone, base, or layered under a parent.
     pub merk_type: MerkType,
+    /// Metadata storage cache. Like uncommitted tree state, meta KV writes
+    /// live in memory until the surrounding batch commits, so reads must
+    /// see them.
+    meta_cache: HashMap<Vec<u8>, Option<Vec<u8>>>,
     /// The kind of data this tree holds (normal, sum, count, etc.).
     pub tree_type: TreeType,
 }

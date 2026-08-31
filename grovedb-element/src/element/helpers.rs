@@ -102,7 +102,8 @@ impl Element {
             | Element::ProvableCountSumTree(_, _, sum_value, _)
             | Element::ProvableSumTree(_, sum_value, _)
             | Element::ProvableCountProvableSumTree(_, _, sum_value, _)
-            | Element::ReferenceWithSumItem(_, _, sum_value, _) => *sum_value,
+            | Element::ReferenceWithSumItem(_, _, sum_value, _)
+            | Element::SumItemWithBackwardsReferences(sum_value, _) => *sum_value,
             // PSIT mirrors ProvableSumTree's contribution shape.
             Element::ProvableSumIndexedTree(_, _, sum_value, _) => *sum_value,
             // PCPSIT mirrors ProvableCountProvableSumTree.
@@ -153,7 +154,8 @@ impl Element {
             | Element::ItemWithSumItem(_, sum_value, _)
             | Element::SumTree(_, sum_value, _)
             | Element::ProvableSumTree(_, sum_value, _)
-            | Element::ReferenceWithSumItem(_, _, sum_value, _) => (1, *sum_value),
+            | Element::ReferenceWithSumItem(_, _, sum_value, _)
+            | Element::SumItemWithBackwardsReferences(sum_value, _) => (1, *sum_value),
             Element::CountTree(_, count_value, _) => (*count_value, 0),
             Element::CountSumTree(_, count_value, sum_value, _)
             | Element::ProvableCountSumTree(_, count_value, sum_value, _)
@@ -187,7 +189,8 @@ impl Element {
             | Element::ProvableCountSumTree(_, _, sum_value, _)
             | Element::ProvableSumTree(_, sum_value, _)
             | Element::ProvableCountProvableSumTree(_, _, sum_value, _)
-            | Element::ReferenceWithSumItem(_, _, sum_value, _) => *sum_value as i128,
+            | Element::ReferenceWithSumItem(_, _, sum_value, _)
+            | Element::SumItemWithBackwardsReferences(sum_value, _) => *sum_value as i128,
             Element::ProvableSumIndexedTree(_, _, sum_value, _) => *sum_value as i128,
             Element::ProvableCountProvableSumIndexedTree(_, _, sum_value, _, _) => {
                 *sum_value as i128
@@ -205,6 +208,7 @@ impl Element {
             Element::SumItem(value, _) => Ok(*value),
             Element::ItemWithSumItem(_, value, _) => Ok(*value),
             Element::ReferenceWithSumItem(_, _, value, _) => Ok(*value),
+            Element::SumItemWithBackwardsReferences(value, _) => Ok(*value),
             _ => Err(ElementError::WrongElementType("expected a sum item")),
         }
     }
@@ -217,6 +221,7 @@ impl Element {
             Element::SumItem(value, _) => Ok(value),
             Element::ItemWithSumItem(_, value, _) => Ok(value),
             Element::ReferenceWithSumItem(_, _, value, _) => Ok(value),
+            Element::SumItemWithBackwardsReferences(value, _) => Ok(value),
             _ => Err(ElementError::WrongElementType("expected a sum item")),
         }
     }
@@ -245,6 +250,7 @@ impl Element {
         match self.underlying() {
             Element::Item(value, _) => Ok(value),
             Element::ItemWithSumItem(value, ..) => Ok(value),
+            Element::ItemWithBackwardsReferences(value, _) => Ok(value),
             _ => Err(ElementError::WrongElementType("expected an item")),
         }
     }
@@ -255,6 +261,7 @@ impl Element {
         match self.into_underlying() {
             Element::Item(value, _) => Ok(value),
             Element::ItemWithSumItem(value, ..) => Ok(value),
+            Element::ItemWithBackwardsReferences(value, _) => Ok(value),
             _ => Err(ElementError::WrongElementType("expected an item")),
         }
     }
@@ -266,6 +273,7 @@ impl Element {
         match self.into_underlying() {
             Element::Reference(value, ..) => Ok(value),
             Element::ReferenceWithSumItem(value, ..) => Ok(value),
+            Element::BidirectionalReference(reference) => Ok(reference.forward_reference_path),
             _ => Err(ElementError::WrongElementType("expected a reference")),
         }
     }
@@ -537,7 +545,9 @@ impl Element {
     pub fn is_reference(&self) -> bool {
         matches!(
             self.underlying(),
-            Element::Reference(..) | Element::ReferenceWithSumItem(..)
+            Element::Reference(..)
+                | Element::ReferenceWithSumItem(..)
+                | Element::BidirectionalReference(..)
         )
     }
 
@@ -553,7 +563,11 @@ impl Element {
     pub fn is_any_item(&self) -> bool {
         matches!(
             self.underlying(),
-            Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..)
+            Element::Item(..)
+                | Element::SumItem(..)
+                | Element::ItemWithSumItem(..)
+                | Element::ItemWithBackwardsReferences(..)
+                | Element::SumItemWithBackwardsReferences(..)
         )
     }
 
@@ -575,7 +589,9 @@ impl Element {
     pub fn is_sum_item(&self) -> bool {
         matches!(
             self.underlying(),
-            Element::SumItem(..) | Element::ItemWithSumItem(..)
+            Element::SumItem(..)
+                | Element::ItemWithSumItem(..)
+                | Element::SumItemWithBackwardsReferences(..)
         )
     }
 
@@ -607,6 +623,7 @@ impl Element {
             Element::SumItem(..)
                 | Element::ItemWithSumItem(..)
                 | Element::ReferenceWithSumItem(..)
+                | Element::SumItemWithBackwardsReferences(..)
                 | Element::SumTree(..)
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
@@ -676,7 +693,10 @@ impl Element {
             | Element::PrivateDocumentStore(.., flags)
             | Element::ProvableSumIndexedTree(.., flags)
             | Element::ProvableCountIndexedTree(.., flags)
-            | Element::ReferenceWithSumItem(.., flags) => flags,
+            | Element::ReferenceWithSumItem(.., flags)
+            | Element::ItemWithBackwardsReferences(_, flags)
+            | Element::SumItemWithBackwardsReferences(_, flags) => flags,
+            Element::BidirectionalReference(reference) => &reference.flags,
             // PCPSIT's flags are the trailing field after `axes`.
             Element::ProvableCountProvableSumIndexedTree(_, _, _, _, flags) => flags,
             Element::NonCounted(inner)
@@ -709,7 +729,10 @@ impl Element {
             | Element::PrivateDocumentStore(.., flags)
             | Element::ProvableSumIndexedTree(.., flags)
             | Element::ProvableCountIndexedTree(.., flags)
-            | Element::ReferenceWithSumItem(.., flags) => flags,
+            | Element::ReferenceWithSumItem(.., flags)
+            | Element::ItemWithBackwardsReferences(_, flags)
+            | Element::SumItemWithBackwardsReferences(_, flags) => flags,
+            Element::BidirectionalReference(reference) => reference.flags,
             // PCPSIT's flags are the trailing field after `axes`.
             Element::ProvableCountProvableSumIndexedTree(_, _, _, _, flags) => flags,
             Element::NonCounted(inner)
@@ -742,7 +765,10 @@ impl Element {
             | Element::PrivateDocumentStore(.., flags)
             | Element::ProvableSumIndexedTree(.., flags)
             | Element::ProvableCountIndexedTree(.., flags)
-            | Element::ReferenceWithSumItem(.., flags) => flags,
+            | Element::ReferenceWithSumItem(.., flags)
+            | Element::ItemWithBackwardsReferences(_, flags)
+            | Element::SumItemWithBackwardsReferences(_, flags) => flags,
+            Element::BidirectionalReference(reference) => &mut reference.flags,
             Element::ProvableCountProvableSumIndexedTree(_, _, _, _, flags) => flags,
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
@@ -774,7 +800,10 @@ impl Element {
             | Element::PrivateDocumentStore(.., flags)
             | Element::ProvableSumIndexedTree(.., flags)
             | Element::ProvableCountIndexedTree(.., flags)
-            | Element::ReferenceWithSumItem(.., flags) => *flags = new_flags,
+            | Element::ReferenceWithSumItem(.., flags)
+            | Element::ItemWithBackwardsReferences(_, flags)
+            | Element::SumItemWithBackwardsReferences(_, flags) => *flags = new_flags,
+            Element::BidirectionalReference(reference) => reference.flags = new_flags,
             Element::ProvableCountProvableSumIndexedTree(_, _, _, _, flags) => *flags = new_flags,
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
@@ -907,6 +936,24 @@ impl Element {
                             sum_value,
                             flags.clone(),
                         )
+                    }
+                }
+            }
+            Element::BidirectionalReference(ref reference) => {
+                match reference.forward_reference_path {
+                    ReferencePathType::AbsolutePathReference(..) => self,
+                    _ => {
+                        // Mirror the Reference arm: rebuild the forward path
+                        // as absolute, preserving every other field.
+                        let absolute_path = path_from_reference_path_type(
+                            reference.forward_reference_path.clone(),
+                            path,
+                            key,
+                        )?;
+                        let mut reference = reference.clone();
+                        reference.forward_reference_path =
+                            ReferencePathType::AbsolutePathReference(absolute_path);
+                        Element::BidirectionalReference(reference)
                     }
                 }
             }

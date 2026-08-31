@@ -136,6 +136,8 @@
 #[cfg(feature = "minimal")]
 pub mod batch;
 #[cfg(feature = "minimal")]
+mod bidirectional_references;
+#[cfg(feature = "minimal")]
 mod checkpoints;
 #[cfg(feature = "grovedbg")]
 pub mod debugger;
@@ -172,6 +174,8 @@ use std::sync::Arc;
 #[cfg(feature = "minimal")]
 use std::{collections::HashMap, option::Option::None, path::Path};
 
+#[cfg(feature = "minimal")]
+use bidirectional_references::BidirectionalReference;
 #[cfg(feature = "grovedbg")]
 use debugger::start_visualizer;
 #[cfg(any(feature = "minimal", feature = "verify"))]
@@ -625,17 +629,10 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Vec<u8>>, Error> {
-        let mut cost = OperationCost {
-            ..Default::default()
-        };
-
         let tx = TxRef::new(&self.db, transaction);
 
-        let root_merk =
-            cost_return_on_error!(&mut cost, self.open_root_merk(tx.as_ref(), grove_version));
-
-        let root_key = root_merk.root_key();
-        Ok(root_key).wrap_with_cost(cost)
+        self.open_root_merk(tx.as_ref(), grove_version)
+            .map_ok(|merk| merk.root_key())
     }
 
     /// Returns root hash of GroveDb.
@@ -2650,7 +2647,11 @@ impl GroveDb {
                         )?);
                     }
                 }
-                Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
+                Element::Item(..)
+                | Element::SumItem(..)
+                | Element::ItemWithSumItem(..)
+                | Element::ItemWithBackwardsReferences(..)
+                | Element::SumItemWithBackwardsReferences(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
@@ -2674,11 +2675,17 @@ impl GroveDb {
                     }
                 }
                 Element::Reference(ref reference_path, ..)
-                | Element::ReferenceWithSumItem(ref reference_path, ..) => {
+                | Element::ReferenceWithSumItem(ref reference_path, ..)
+                | Element::BidirectionalReference(BidirectionalReference {
+                    forward_reference_path: ref reference_path,
+                    ..
+                }) => {
                     // Skip this whole check if we don't `verify_references`.
                     // `ReferenceWithSumItem` shares this verification path —
                     // the sum is hashed as part of the serialized value
                     // bytes, so the combined-hash check below is identical.
+                    // `BidirectionalReference` likewise: its forward path is
+                    // followed exactly like a plain reference's.
                     if !verify_references {
                         continue;
                     }

@@ -260,7 +260,15 @@ impl GroveDb {
                     )
                 );
             }
-            Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
+            Element::Item(..)
+            | Element::SumItem(..)
+            | Element::ItemWithSumItem(..)
+            | Element::ItemWithBackwardsReferences(..)
+            | Element::SumItemWithBackwardsReferences(..) => {
+                // The backward-references item variants store exactly like
+                // their plain counterparts; the backward-reference
+                // bookkeeping only runs when the caller opts in via
+                // `propagate_backward_references` (routed before this call).
                 cost_return_on_error_into!(
                     &mut cost,
                     element.insert(
@@ -270,6 +278,19 @@ impl GroveDb {
                         grove_version
                     )
                 );
+            }
+            Element::BidirectionalReference(..) => {
+                // Inserting a bidirectional reference must register its
+                // backward reference in the target's meta storage, which
+                // only the `MerkCache`-based flow performs
+                // (`insert_on_transaction` v1 routes it there before ever
+                // reaching this function). Fail closed.
+                return Err(Error::NotSupported(
+                    "bidirectional references can only be inserted through the \
+                     backward-references insertion flow (GROVE_V4+)"
+                        .to_owned(),
+                ))
+                .wrap_with_cost(cost);
             }
             Element::ProvableCountIndexedTree(primary, secondary, count_value, _) => {
                 let (primary_root_hash, secondary_root_hash) = if primary.is_none()

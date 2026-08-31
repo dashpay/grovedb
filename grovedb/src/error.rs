@@ -57,6 +57,10 @@ pub enum Error {
     #[error("corrupted referenced path key not found: {0}")]
     CorruptedReferencePathParentLayerNotFound(String),
 
+    /// Bidirectional references rule was violated
+    #[error("bidirectional reference rule violation: {0}")]
+    BidirectionalReferenceRule(String),
+
     /// The invalid parent layer path represents a logical error from the client
     /// library
     #[error("invalid parent layer path: {0}")]
@@ -89,6 +93,10 @@ pub enum Error {
     #[error("data corruption error: {0}")]
     /// Corrupted data
     CorruptedData(String),
+
+    /// Accessing a subtree that was marked deleted inside a `MerkCache`
+    #[error("merk cache, accessing deleted subtree: {0}")]
+    MerkCacheSubtreeDeleted(&'static str),
 
     #[error("data storage error: {0}")]
     /// Corrupted storage

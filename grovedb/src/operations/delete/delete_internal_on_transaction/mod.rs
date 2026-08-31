@@ -33,11 +33,18 @@
 //! The two implementations differ ONLY in that non-empty-child-tree branch;
 //! everything else is identical. See [v0] / [v1].
 //!
+//! * **[v2]** — `GROVE_V4`+ with backward-references support. A router:
+//!   calls without `DeleteOptions::propagate_backward_references` run the
+//!   exact v1 body (identical root hashes and costs); calls with the flag
+//!   run a `MerkCache`-based flow that cascades backward-reference chains.
+//!
 //! [v0]: self::v0
 //! [v1]: self::v1
+//! [v2]: self::v2
 
 mod v0;
 mod v1;
+mod v2;
 
 use grovedb_costs::{
     storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt, OperationCost,
@@ -97,10 +104,19 @@ impl GroveDb {
                 batch,
                 grove_version,
             ),
+            2 => self.delete_internal_on_transaction_v2(
+                path,
+                key,
+                options,
+                transaction,
+                sectioned_removal,
+                batch,
+                grove_version,
+            ),
             version => Err(
                 grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
                     method: "delete_internal_on_transaction".to_string(),
-                    known_versions: vec![0, 1],
+                    known_versions: vec![0, 1, 2],
                     received: version,
                 }
                 .into(),
