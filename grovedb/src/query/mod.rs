@@ -791,35 +791,13 @@ impl PathQuery {
     }
 
     /// Fail-closed gate for queries carrying per-instance limits
-    /// ([`Query::limit`]): rejected when the grove version predates
-    /// serving them (`path_query_methods.per_instance_query_limits`),
-    /// and a zero cap is rejected outright — a node that may select
-    /// nothing is a malformed query, not an empty result.
+    /// ([`Query::limit`]) — see
+    /// [`reject_unserved_instance_limits_in_query`].
     pub(crate) fn reject_unserved_per_instance_limits(
         &self,
         grove_version: &GroveVersion,
     ) -> Result<(), Error> {
-        if !self.has_instance_limits() {
-            return Ok(());
-        }
-        if grove_version
-            .grovedb_versions
-            .path_query_methods
-            .per_instance_query_limits
-            == 0
-        {
-            return Err(Error::NotSupported(
-                "per-instance query limits (Query::limit) require a grove version that serves \
-                 them"
-                    .to_string(),
-            ));
-        }
-        if self.query.query.has_zero_instance_limit_anywhere() {
-            return Err(Error::InvalidQuery(
-                "Query::limit must be at least 1 when set",
-            ));
-        }
-        Ok(())
+        reject_unserved_instance_limits_in_query(&self.query.query, grove_version)
     }
 
     /// Fail-closed gate for entry points that never serve per-instance
@@ -1714,6 +1692,67 @@ impl HasSubquery<'_> {
                 .any(|query_item| query_item.contains(key)),
             HasSubquery::Always => true,
         }
+    }
+}
+
+/// The whole-query serving gate for per-instance limits
+/// ([`Query::limit`]), shared by every entry point that walks a query:
+///
+/// - the capability slot
+///   (`path_query_methods.per_instance_query_limits`) is validated
+///   **exactly** — `0` fails closed with `NotSupported`, an unknown
+///   future value is a typed `VersionError` instead of silently running
+///   today's semantics;
+/// - when serving, the version table must also be **coherent**: it has
+///   to select a read engine that accounts for instance budgets
+///   (`element.path_query_push >= 1`) — a doctored or future table that
+///   serves the capability but selects the v0 engine would otherwise
+///   silently drop ancestor budgets;
+/// - a zero cap anywhere is rejected outright — a node that may select
+///   nothing is a malformed query, not an empty result.
+///
+/// Queries without instance limits pass untouched. The per-frame O(1)
+/// check inside the read walk mirrors this as defense in depth for
+/// nodes the walk actually reaches; this recursive form is what public
+/// entry points run once up front, so limits hiding in unmatched
+/// conditional branches cannot slip past the frame checks.
+pub(crate) fn reject_unserved_instance_limits_in_query(
+    query: &Query,
+    grove_version: &GroveVersion,
+) -> Result<(), Error> {
+    if !query.has_instance_limit_anywhere() {
+        return Ok(());
+    }
+    match grove_version
+        .grovedb_versions
+        .path_query_methods
+        .per_instance_query_limits
+    {
+        0 => Err(Error::NotSupported(
+            "per-instance query limits (Query::limit) require a grove version that serves them"
+                .to_string(),
+        )),
+        1 => {
+            if grove_version.grovedb_versions.element.path_query_push == 0 {
+                return Err(Error::CorruptedCodeExecution(
+                    "grove version table serves per-instance limits but selects the v0 \
+                     path_query_push engine, which cannot account for them",
+                ));
+            }
+            if query.has_zero_instance_limit_anywhere() {
+                return Err(Error::InvalidQuery(
+                    "Query::limit must be at least 1 when set",
+                ));
+            }
+            Ok(())
+        }
+        version => Err(Error::VersionError(
+            grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                method: "per_instance_query_limits".to_string(),
+                known_versions: vec![0, 1],
+                received: version,
+            },
+        )),
     }
 }
 

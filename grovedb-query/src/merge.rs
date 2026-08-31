@@ -333,14 +333,19 @@ impl Query {
                     .to_string(),
             ));
         }
-        let carries_limit = |branch: &SubqueryBranch| {
-            branch
+        // The whole receiver is checked, not just its default branch:
+        // when the two defaults' subquery paths diverge, the unchecked
+        // body PROMOTES a default into a conditional and merges it with
+        // an already-existing conditional branch — so a per-instance
+        // limit sitting on an existing conditional (e.g. `Key(k)` when
+        // the receiver default's path is `[k]`) would be conflated with
+        // the incoming default's result set if only the defaults were
+        // scanned.
+        if self.has_instance_limit_anywhere()
+            || other_default_subquery_branch
                 .subquery
                 .as_deref()
                 .is_some_and(|subquery| subquery.has_instance_limit_anywhere())
-        };
-        if carries_limit(&self.default_subquery_branch)
-            || carries_limit(&other_default_subquery_branch)
         {
             return Err(crate::error::Error::NotSupported(
                 "can not merge a default subquery branch carrying a per-instance limit \
