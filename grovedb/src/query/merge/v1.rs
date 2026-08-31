@@ -120,6 +120,17 @@ pub(super) fn merge_v1(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
         let mut subquery_path =
             subquery_path.ok_or(Error::CorruptedCodeExecution("subquery path must exist"))?;
         let key = subquery_path.remove(0); // must exist
+                                           // Whether the merged root's own selection already covers this
+                                           // branch's key — assessed BEFORE the branch's item is inserted
+                                           // (the graft's own `Key` would otherwise always match). A
+                                           // grafted conditional overrides the root query's default/
+                                           // terminal semantics for that key, so when limits are in play
+                                           // this is a collision, not a graft: proceeding would silently
+                                           // drop the root input's contribution for the key.
+        let overlaps_root_selection = merged_query
+            .items
+            .iter()
+            .any(|item| item.contains(key.as_slice()));
         merged_query.insert_item(QueryItem::Key(key.clone()));
         let rest_of_path = if subquery_path.is_empty() {
             None
@@ -138,13 +149,16 @@ pub(super) fn merge_v1(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
         if limits_in_play {
             // Budgets never blend: a limit-carrying branch (lifted or
             // authored) merges only as an exclusive graft. Any overlap
-            // with an existing conditional would need the two branches'
-            // bodies — and budgets — merged, which is refused by
-            // design.
-            let collides = merged_query
-                .conditional_subquery_branches
-                .as_ref()
-                .is_some_and(|branches| branches.keys().any(|item| item.contains(key.as_slice())));
+            // — with an existing conditional, or with the merged root's
+            // own selection for this key — would need the two sides'
+            // bodies (and budgets) merged, which is refused by design.
+            let collides = overlaps_root_selection
+                || merged_query
+                    .conditional_subquery_branches
+                    .as_ref()
+                    .is_some_and(|branches| {
+                        branches.keys().any(|item| item.contains(key.as_slice()))
+                    });
             if collides {
                 return Err(Error::NotSupported(format!(
                     "can not merge limited path queries whose branches collide at key {}; \

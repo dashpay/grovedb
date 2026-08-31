@@ -1536,10 +1536,29 @@ impl GroveDb {
             ..Default::default()
         };
 
+        // Mirror of the prover's per-layer limit rule: a pure terminal
+        // layer (no subquery branches) runs under the tighter of the
+        // global and instance budgets — its merk rows ARE result rows.
+        // A layer with subquery branches runs under the global budget
+        // only: the instance chain budgets descendant ROWS, not
+        // children, and must not truncate which children appear (an
+        // empty child consumes no instance budget, so a later populated
+        // child may still owe rows). Prover and verifier must derive
+        // the identical value here or honest proofs fail the
+        // more-data-than-limit check.
+        let layer_limit = if matches!(
+            internal_query.has_subquery,
+            crate::query::HasSubquery::NoSubquery
+        ) {
+            limit_state.effective_layer_limit(frame_instance)
+        } else {
+            limit_state.global
+        };
+
         let (root_hash, merk_result) = level_query
             .execute_proof(
                 merk_proof_bytes,
-                limit_state.effective_layer_limit(frame_instance),
+                layer_limit,
                 left_to_right,
                 PROOF_VERSION_LATEST, // V1 proof: strict mode rejects items in value hash nodes
             )
@@ -2021,8 +2040,20 @@ impl GroveDb {
                                             )?
                                         }
                                         ProofBytes::MMR(mmr_bytes) => {
+                                            // Mirror of the prover: min-compose
+                                            // the lower query's own per-instance
+                                            // cap — these adapters bypass the
+                                            // recursive frame creation.
+                                            let lower_instance = super::V1LimitState::min_caps(
+                                                frame_instance,
+                                                query
+                                                    .query_items_at_path(&path, grove_version)?
+                                                    .and_then(|lower_query| {
+                                                        lower_query.instance_limit
+                                                    }),
+                                            );
                                             let mut non_merk_effective =
-                                                limit_state.effective_layer_limit(frame_instance);
+                                                limit_state.effective_layer_limit(lower_instance);
                                             let non_merk_before = non_merk_effective;
                                             let lower_hash = Self::verify_mmr_lower_layer(
                                                 mmr_bytes,
@@ -2042,8 +2073,20 @@ impl GroveDb {
                                             lower_hash
                                         }
                                         ProofBytes::BulkAppendTree(bulk_bytes) => {
+                                            // Mirror of the prover: min-compose
+                                            // the lower query's own per-instance
+                                            // cap — these adapters bypass the
+                                            // recursive frame creation.
+                                            let lower_instance = super::V1LimitState::min_caps(
+                                                frame_instance,
+                                                query
+                                                    .query_items_at_path(&path, grove_version)?
+                                                    .and_then(|lower_query| {
+                                                        lower_query.instance_limit
+                                                    }),
+                                            );
                                             let mut non_merk_effective =
-                                                limit_state.effective_layer_limit(frame_instance);
+                                                limit_state.effective_layer_limit(lower_instance);
                                             let non_merk_before = non_merk_effective;
                                             let lower_hash = Self::verify_bulk_append_lower_layer(
                                                 bulk_bytes,
@@ -2063,8 +2106,20 @@ impl GroveDb {
                                             lower_hash
                                         }
                                         ProofBytes::DenseTree(dense_bytes) => {
+                                            // Mirror of the prover: min-compose
+                                            // the lower query's own per-instance
+                                            // cap — these adapters bypass the
+                                            // recursive frame creation.
+                                            let lower_instance = super::V1LimitState::min_caps(
+                                                frame_instance,
+                                                query
+                                                    .query_items_at_path(&path, grove_version)?
+                                                    .and_then(|lower_query| {
+                                                        lower_query.instance_limit
+                                                    }),
+                                            );
                                             let mut non_merk_effective =
-                                                limit_state.effective_layer_limit(frame_instance);
+                                                limit_state.effective_layer_limit(lower_instance);
                                             let non_merk_before = non_merk_effective;
                                             let lower_hash = Self::verify_dense_tree_lower_layer(
                                                 dense_bytes,
@@ -2084,8 +2139,20 @@ impl GroveDb {
                                             lower_hash
                                         }
                                         ProofBytes::CommitmentTree(ct_bytes) => {
+                                            // Mirror of the prover: min-compose
+                                            // the lower query's own per-instance
+                                            // cap — these adapters bypass the
+                                            // recursive frame creation.
+                                            let lower_instance = super::V1LimitState::min_caps(
+                                                frame_instance,
+                                                query
+                                                    .query_items_at_path(&path, grove_version)?
+                                                    .and_then(|lower_query| {
+                                                        lower_query.instance_limit
+                                                    }),
+                                            );
                                             let mut non_merk_effective =
-                                                limit_state.effective_layer_limit(frame_instance);
+                                                limit_state.effective_layer_limit(lower_instance);
                                             let non_merk_before = non_merk_effective;
                                             let lower_hash =
                                                 Self::verify_commitment_tree_lower_layer(
@@ -2349,6 +2416,19 @@ impl GroveDb {
                             );
                         result.push(path_key_optional_value.try_into_versioned(grove_version)?);
                         limit_state.charge_row_with_instance(&mut frame_instance);
+                        if limit_state.is_exhausted(frame_instance) {
+                            break;
+                        }
+                    } else if element.is_any_tree()
+                        && !element.is_non_empty_tree()
+                        && internal_query.has_subquery_or_matching_in_path_on_key(key)
+                    {
+                        // An EMPTY tree a subquery matches: an empty
+                        // child, not a result row. Mirror the prover's
+                        // charge exactly — global budget only (it
+                        // bounds walks across many empty children),
+                        // per-instance budgets count result rows.
+                        limit_state.charge_empty_layer();
                         if limit_state.is_exhausted(frame_instance) {
                             break;
                         }

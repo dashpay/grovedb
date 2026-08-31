@@ -1855,8 +1855,21 @@ impl GroveDb {
 
         let limit = if path.len() < path_query.path.len() {
             None
-        } else {
+        } else if matches!(query.has_subquery, crate::query::HasSubquery::NoSubquery) {
+            // Pure terminal layer: its merk rows ARE the result rows,
+            // so the tighter of the global and instance budgets bounds
+            // what the merk walk needs to emit.
             limit_state.effective_layer_limit(frame_instance)
+        } else {
+            // The layer has subquery branches: the instance chain
+            // budgets descendant ROWS, not children, so it must not
+            // truncate which children the merk walk emits — an empty
+            // child consumes no instance budget, and a later populated
+            // child may still owe rows. Only the global budget (whose
+            // empty-layer charge keeps it aligned with truncation)
+            // bounds this walk; instance caps bound each descent's own
+            // layers and stop further descents via `done_with_results`.
+            limit_state.global
         };
 
         // Aggregate-count short-circuit (v1 path). Same validation contract
@@ -2401,8 +2414,21 @@ impl GroveDb {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
+                                // The non-Merk adapters bypass the recursive
+                                // frame creation, so the lower query's own
+                                // per-instance cap must be min-composed here —
+                                // the verifier derives the identical value.
+                                let lower_instance = super::V1LimitState::min_caps(
+                                    frame_instance,
+                                    cost_return_on_error_no_add!(
+                                        cost,
+                                        path_query
+                                            .query_items_at_path(&lower_path, grove_version)
+                                    )
+                                    .and_then(|lower_query| lower_query.instance_limit),
+                                );
                                 let mut non_merk_effective =
-                                    limit_state.effective_layer_limit(frame_instance);
+                                    limit_state.effective_layer_limit(lower_instance);
                                 let non_merk_before = non_merk_effective;
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
@@ -2436,8 +2462,21 @@ impl GroveDb {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
+                                // The non-Merk adapters bypass the recursive
+                                // frame creation, so the lower query's own
+                                // per-instance cap must be min-composed here —
+                                // the verifier derives the identical value.
+                                let lower_instance = super::V1LimitState::min_caps(
+                                    frame_instance,
+                                    cost_return_on_error_no_add!(
+                                        cost,
+                                        path_query
+                                            .query_items_at_path(&lower_path, grove_version)
+                                    )
+                                    .and_then(|lower_query| lower_query.instance_limit),
+                                );
                                 let mut non_merk_effective =
-                                    limit_state.effective_layer_limit(frame_instance);
+                                    limit_state.effective_layer_limit(lower_instance);
                                 let non_merk_before = non_merk_effective;
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
@@ -2476,8 +2515,21 @@ impl GroveDb {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
+                                // The non-Merk adapters bypass the recursive
+                                // frame creation, so the lower query's own
+                                // per-instance cap must be min-composed here —
+                                // the verifier derives the identical value.
+                                let lower_instance = super::V1LimitState::min_caps(
+                                    frame_instance,
+                                    cost_return_on_error_no_add!(
+                                        cost,
+                                        path_query
+                                            .query_items_at_path(&lower_path, grove_version)
+                                    )
+                                    .and_then(|lower_query| lower_query.instance_limit),
+                                );
                                 let mut non_merk_effective =
-                                    limit_state.effective_layer_limit(frame_instance);
+                                    limit_state.effective_layer_limit(lower_instance);
                                 let non_merk_before = non_merk_effective;
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
@@ -2512,8 +2564,21 @@ impl GroveDb {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
+                                // The non-Merk adapters bypass the recursive
+                                // frame creation, so the lower query's own
+                                // per-instance cap must be min-composed here —
+                                // the verifier derives the identical value.
+                                let lower_instance = super::V1LimitState::min_caps(
+                                    frame_instance,
+                                    cost_return_on_error_no_add!(
+                                        cost,
+                                        path_query
+                                            .query_items_at_path(&lower_path, grove_version)
+                                    )
+                                    .and_then(|lower_query| lower_query.instance_limit),
+                                );
                                 let mut non_merk_effective =
-                                    limit_state.effective_layer_limit(frame_instance);
+                                    limit_state.effective_layer_limit(lower_instance);
                                 let non_merk_before = non_merk_effective;
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
@@ -3361,7 +3426,24 @@ impl GroveDb {
                             | Ok(Element::CommitmentTree(..))
                                 if !done_with_results =>
                             {
-                                limit_state.charge_row_with_instance(&mut frame_instance);
+                                if query.has_subquery_or_matching_in_path_on_key(key) {
+                                    // A subquery matches but the tree is
+                                    // empty: an empty CHILD, not a result
+                                    // row. The charge bounds walks across
+                                    // many empty children (the trusted
+                                    // read's empty-subquery charge is its
+                                    // twin) and so hits the global budget
+                                    // only — per-instance budgets count
+                                    // result rows. The verifier mirrors
+                                    // this exactly; the aggregate-carrier
+                                    // empty hosts never reach this arm
+                                    // (their descent arms match first).
+                                    limit_state.charge_empty_layer();
+                                } else {
+                                    // The empty tree itself is the queried
+                                    // result row.
+                                    limit_state.charge_row_with_instance(&mut frame_instance);
+                                }
                                 has_a_result_at_level |= true;
                             }
 
@@ -3594,9 +3676,17 @@ impl GroveDb {
                 .map_err(|e| Error::CorruptedData(format!("{}", e)))
         );
 
-        // Update limit: count individual values in the queried range
+        // Update limit: count individual values in the queried range.
+        // The range can be empty relative to the stored entries — e.g.
+        // a query whose positions all sit at or past `total_count`
+        // clamps `end` below `start` — in which case nothing was
+        // consumed; a plain subtraction here underflowed (panicking in
+        // debug, charging ~u16::MAX rows in release).
         if let Some(limit) = overall_limit.as_mut() {
-            let count = (end.min(total_count) - start).min(u16::MAX as u64) as u16;
+            let count = end
+                .min(total_count)
+                .saturating_sub(start)
+                .min(u16::MAX as u64) as u16;
             *limit = limit.saturating_sub(count);
         }
 
