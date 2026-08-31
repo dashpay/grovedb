@@ -109,11 +109,10 @@ impl GroveDb {
         prove_options: Option<ProveOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<GroveDBProof, Error> {
-        // Per-instance limit gate: the provers' limit accounting is a
-        // single shared counter and does not (yet) express per-instance
-        // caps. Fail closed rather than proving a result set the caps
-        // would have shrunk.
-        if let Err(e) = path_query.reject_per_instance_limits("proof generation") {
+        // Per-instance limit gate: served by the V1 prover from
+        // GROVE_V4; older grove versions fail closed, and zero caps are
+        // rejected as malformed.
+        if let Err(e) = path_query.reject_unserved_per_instance_limits(grove_version) {
             return Err(e).wrap_with_cost(OperationCost::default());
         }
         // Read-mode dispatch. Axis shapes are served by the V1 envelope
@@ -277,7 +276,15 @@ impl GroveDb {
         }
 
         match prove_version {
-            0 => self.prove_query_non_serialized_v0(path_query, prove_options, grove_version),
+            0 => {
+                // The V0 prover is a frozen wire format whose limit
+                // accounting predates per-instance caps; a grove
+                // version that selects it can never serve them.
+                if let Err(e) = path_query.reject_per_instance_limits("the V0 prover") {
+                    return Err(e).wrap_with_cost(OperationCost::default());
+                }
+                self.prove_query_non_serialized_v0(path_query, prove_options, grove_version)
+            }
             1 => self.prove_query_non_serialized_v1(path_query, prove_options, grove_version),
             version => Err(Error::VersionError(
                 grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
@@ -1636,7 +1643,7 @@ impl GroveDb {
             .wrap_with_cost(cost);
         }
 
-        let mut limit = path_query.query.limit;
+        let mut limit_state = super::V1LimitState::new(path_query.query.limit);
 
         let root_layer = cost_return_on_error!(
             &mut cost,
@@ -1644,7 +1651,8 @@ impl GroveDb {
                 &snapshot_transaction,
                 vec![],
                 path_query,
-                &mut limit,
+                &mut limit_state,
+                None,
                 &prove_options,
                 0,
                 grove_version
@@ -1784,12 +1792,22 @@ impl GroveDb {
 
     /// V1 version of prove_subqueries that returns `LayerProof` and handles
     /// MmrTree/BulkAppendTree elements with type-specific proofs.
+    ///
+    /// `inherited_instance` is the remaining budget of the enclosing
+    /// per-instance limit chain (`Query::limit`) — `None` above the
+    /// query root and everywhere on queries without per-instance
+    /// limits. Each frame `min`-combines it with its own layer query's
+    /// limit; every result row this subtree charges is reported through
+    /// `limit_state.consumed_rows`, from which the caller settles its
+    /// own frame budget.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prove_subqueries_v1(
         &self,
         transaction: &Transaction,
         path: Vec<&[u8]>,
         path_query: &PathQuery,
-        overall_limit: &mut Option<u16>,
+        limit_state: &mut super::V1LimitState,
+        inherited_instance: Option<u16>,
         prove_options: &ProveOptions,
         current_depth: usize,
         grove_version: &GroveVersion,
@@ -1819,6 +1837,12 @@ impl GroveDb {
                 })
         );
 
+        // This frame's per-instance budget: fresh for this subtree,
+        // bounded by every enclosing cap. `None` throughout on queries
+        // without per-instance limits.
+        let mut frame_instance =
+            super::V1LimitState::min_caps(inherited_instance, query.instance_limit);
+
         let subtree = cost_return_on_error!(
             &mut cost,
             self.open_transactional_merk_at_path(
@@ -1832,7 +1856,7 @@ impl GroveDb {
         let limit = if path.len() < path_query.path.len() {
             None
         } else {
-            *overall_limit
+            limit_state.effective_layer_limit(frame_instance)
         };
 
         // Aggregate-count short-circuit (v1 path). Same validation contract
@@ -2074,9 +2098,13 @@ impl GroveDb {
             let mut serialized = Vec::with_capacity(128);
             encode_into(prove_result.ops.iter(), &mut serialized);
             // Apply consumed limit slots to the outer accounting.
-            if let Some(outer_limit) = overall_limit.as_mut() {
-                let returned_u16: u16 = prove_result.returned.min(u16::MAX as u64) as u16;
-                *outer_limit = outer_limit.saturating_sub(returned_u16);
+            // (Count-offset queries reject per-instance limits, so
+            // `frame_instance` is always `None` here — charged anyway
+            // for uniformity.)
+            let returned_u16: u16 = prove_result.returned.min(u16::MAX as u64) as u16;
+            limit_state.charge_rows(returned_u16);
+            if let Some(instance) = frame_instance.as_mut() {
+                *instance = instance.saturating_sub(returned_u16);
             }
             return Ok(LayerProof {
                 merk_proof: ProofBytes::Merk(serialized),
@@ -2134,7 +2162,7 @@ impl GroveDb {
         let mut done_with_results = false;
 
         for op in merk_proof.proof.iter_mut() {
-            done_with_results |= overall_limit == &Some(0);
+            done_with_results |= limit_state.is_exhausted(frame_instance);
             // Mirror generate.rs's first ref-rewriting loop — preserve
             // ProvableSumTree special nodes too, plus the dual-axis
             // KVCountSum used by ProvableCountProvableSumTree (PCPS)
@@ -2275,9 +2303,7 @@ impl GroveDb {
                                         value_hash(value).unwrap_add_cost(&mut cost),
                                     )
                                 };
-                                if let Some(limit) = overall_limit.as_mut() {
-                                    *limit -= 1;
-                                }
+                                limit_state.charge_row_with_instance(&mut frame_instance);
                                 has_a_result_at_level |= true;
                             }
                             Ok(Element::Item(..))
@@ -2288,9 +2314,7 @@ impl GroveDb {
                                 if !should_preserve_node_type {
                                     *node = Node::KV(key.to_owned(), value.to_owned());
                                 }
-                                if let Some(limit) = overall_limit.as_mut() {
-                                    *limit -= 1;
-                                }
+                                limit_state.charge_row_with_instance(&mut frame_instance);
                                 has_a_result_at_level |= true;
                             }
 
@@ -2377,18 +2401,28 @@ impl GroveDb {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
+                                let mut non_merk_effective =
+                                    limit_state.effective_layer_limit(frame_instance);
+                                let non_merk_before = non_merk_effective;
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
                                     self.generate_mmr_layer_proof(
                                         &lower_path,
                                         path_query,
                                         mmr_size,
-                                        overall_limit,
+                                        &mut non_merk_effective,
                                         transaction,
                                         grove_version,
                                     )
                                 );
 
+                                let non_merk_rows = non_merk_before
+                                    .unwrap_or(0)
+                                    .saturating_sub(non_merk_effective.unwrap_or(0));
+                                limit_state.charge_rows(non_merk_rows);
+                                if let Some(instance) = frame_instance.as_mut() {
+                                    *instance = instance.saturating_sub(non_merk_rows);
+                                }
                                 has_a_result_at_level |= true;
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
@@ -2402,6 +2436,9 @@ impl GroveDb {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
+                                let mut non_merk_effective =
+                                    limit_state.effective_layer_limit(frame_instance);
+                                let non_merk_before = non_merk_effective;
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
                                     self.generate_bulk_append_layer_proof(
@@ -2410,12 +2447,19 @@ impl GroveDb {
                                         [0u8; 32], // unused parameter
                                         total_count,
                                         chunk_power,
-                                        overall_limit,
+                                        &mut non_merk_effective,
                                         transaction,
                                         grove_version,
                                     )
                                 );
 
+                                let non_merk_rows = non_merk_before
+                                    .unwrap_or(0)
+                                    .saturating_sub(non_merk_effective.unwrap_or(0));
+                                limit_state.charge_rows(non_merk_rows);
+                                if let Some(instance) = frame_instance.as_mut() {
+                                    *instance = instance.saturating_sub(non_merk_rows);
+                                }
                                 has_a_result_at_level |= true;
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
@@ -2432,6 +2476,9 @@ impl GroveDb {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
+                                let mut non_merk_effective =
+                                    limit_state.effective_layer_limit(frame_instance);
+                                let non_merk_before = non_merk_effective;
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
                                     self.generate_dense_tree_layer_proof(
@@ -2439,12 +2486,19 @@ impl GroveDb {
                                         path_query,
                                         dense_count,
                                         dense_height,
-                                        overall_limit,
+                                        &mut non_merk_effective,
                                         transaction,
                                         grove_version,
                                     )
                                 );
 
+                                let non_merk_rows = non_merk_before
+                                    .unwrap_or(0)
+                                    .saturating_sub(non_merk_effective.unwrap_or(0));
+                                limit_state.charge_rows(non_merk_rows);
+                                if let Some(instance) = frame_instance.as_mut() {
+                                    *instance = instance.saturating_sub(non_merk_rows);
+                                }
                                 has_a_result_at_level |= true;
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
@@ -2458,6 +2512,9 @@ impl GroveDb {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
+                                let mut non_merk_effective =
+                                    limit_state.effective_layer_limit(frame_instance);
+                                let non_merk_before = non_merk_effective;
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
                                     self.generate_commitment_tree_layer_proof(
@@ -2465,12 +2522,19 @@ impl GroveDb {
                                         path_query,
                                         total_count,
                                         chunk_power,
-                                        overall_limit,
+                                        &mut non_merk_effective,
                                         transaction,
                                         grove_version,
                                     )
                                 );
 
+                                let non_merk_rows = non_merk_before
+                                    .unwrap_or(0)
+                                    .saturating_sub(non_merk_effective.unwrap_or(0));
+                                limit_state.charge_rows(non_merk_rows);
+                                if let Some(instance) = frame_instance.as_mut() {
+                                    *instance = instance.saturating_sub(non_merk_rows);
+                                }
                                 has_a_result_at_level |= true;
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
@@ -2621,14 +2685,16 @@ impl GroveDb {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
-                                let previous_limit = *overall_limit;
+                                let previous_consumed_rows = limit_state.consumed_rows;
+                                let previous_consumed_total = limit_state.consumed_total;
 
                                 let mut layer_proof = cost_return_on_error!(
                                     &mut cost,
                                     self.prove_subqueries_v1(transaction,
                                         lower_path.clone(),
                                         path_query,
-                                        overall_limit,
+                                        limit_state,
+                                        frame_instance,
                                         prove_options,
                                         current_depth + 1,
                                         grove_version,
@@ -2684,7 +2750,12 @@ impl GroveDb {
                                 layer_proof.merk_proof =
                                     crate::operations::proof::ProofBytes::CountIndexedTree(wrapped);
 
-                                if previous_limit != *overall_limit {
+                                super::V1LimitState::settle_instance_after_descent(
+                                    &mut frame_instance,
+                                    previous_consumed_rows,
+                                    limit_state.consumed_rows,
+                                );
+                                if previous_consumed_total != limit_state.consumed_total {
                                     has_a_result_at_level |= true;
                                 }
                                 lower_layers.insert(key.clone(), layer_proof);
@@ -2733,14 +2804,16 @@ impl GroveDb {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
-                                let previous_limit = *overall_limit;
+                                let previous_consumed_rows = limit_state.consumed_rows;
+                                let previous_consumed_total = limit_state.consumed_total;
 
                                 let mut layer_proof = cost_return_on_error!(
                                     &mut cost,
                                     self.prove_subqueries_v1(transaction,
                                         lower_path.clone(),
                                         path_query,
-                                        overall_limit,
+                                        limit_state,
+                                        frame_instance,
                                         prove_options,
                                         current_depth + 1,
                                         grove_version,
@@ -2794,7 +2867,12 @@ impl GroveDb {
                                 layer_proof.merk_proof =
                                     crate::operations::proof::ProofBytes::CountIndexedTree(wrapped);
 
-                                if previous_limit != *overall_limit {
+                                super::V1LimitState::settle_instance_after_descent(
+                                    &mut frame_instance,
+                                    previous_consumed_rows,
+                                    limit_state.consumed_rows,
+                                );
+                                if previous_consumed_total != limit_state.consumed_total {
                                     has_a_result_at_level |= true;
                                 }
                                 lower_layers.insert(key.clone(), layer_proof);
@@ -2837,14 +2915,16 @@ impl GroveDb {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
-                                let previous_limit = *overall_limit;
+                                let previous_consumed_rows = limit_state.consumed_rows;
+                                let previous_consumed_total = limit_state.consumed_total;
 
                                 let mut layer_proof = cost_return_on_error!(
                                     &mut cost,
                                     self.prove_subqueries_v1(transaction,
                                         lower_path.clone(),
                                         path_query,
-                                        overall_limit,
+                                        limit_state,
+                                        frame_instance,
                                         prove_options,
                                         current_depth + 1,
                                         grove_version,
@@ -2914,7 +2994,12 @@ impl GroveDb {
                                 layer_proof.merk_proof =
                                     crate::operations::proof::ProofBytes::CountIndexedTree(wrapped);
 
-                                if previous_limit != *overall_limit {
+                                super::V1LimitState::settle_instance_after_descent(
+                                    &mut frame_instance,
+                                    previous_consumed_rows,
+                                    limit_state.consumed_rows,
+                                );
+                                if previous_consumed_total != limit_state.consumed_total {
                                     has_a_result_at_level |= true;
                                 }
                                 lower_layers.insert(key.clone(), layer_proof);
@@ -2936,21 +3021,28 @@ impl GroveDb {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
-                                let previous_limit = *overall_limit;
+                                let previous_consumed_rows = limit_state.consumed_rows;
+                                let previous_consumed_total = limit_state.consumed_total;
 
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
                                     self.prove_subqueries_v1(transaction,
                                         lower_path,
                                         path_query,
-                                        overall_limit,
+                                        limit_state,
+                                        frame_instance,
                                         prove_options,
                                         current_depth + 1,
                                         grove_version,
                                     )
                                 );
 
-                                if previous_limit != *overall_limit {
+                                super::V1LimitState::settle_instance_after_descent(
+                                    &mut frame_instance,
+                                    previous_consumed_rows,
+                                    limit_state.consumed_rows,
+                                );
+                                if previous_consumed_total != limit_state.consumed_total {
                                     has_a_result_at_level |= true;
                                 }
                                 lower_layers.insert(key.clone(), layer_proof);
@@ -2998,9 +3090,7 @@ impl GroveDb {
                                     )
                                 );
 
-                                if let Some(limit) = overall_limit.as_mut() {
-                                    *limit -= 1;
-                                }
+                                limit_state.charge_row_with_instance(&mut frame_instance);
                                 has_a_result_at_level |= true;
                             }
 
@@ -3054,9 +3144,7 @@ impl GroveDb {
                                     child_root_hash,
                                 );
 
-                                if let Some(limit) = overall_limit.as_mut() {
-                                    *limit -= 1;
-                                }
+                                limit_state.charge_row_with_instance(&mut frame_instance);
                                 has_a_result_at_level |= true;
                             }
                             // Non-empty indexed tree that is itself a result,
@@ -3122,9 +3210,7 @@ impl GroveDb {
 
                                 // The verifier pushes this element as a result
                                 // and decrements, so account for it here too.
-                                if let Some(limit) = overall_limit.as_mut() {
-                                    *limit -= 1;
-                                }
+                                limit_state.charge_row_with_instance(&mut frame_instance);
                                 has_a_result_at_level |= true;
                             }
 
@@ -3143,21 +3229,28 @@ impl GroveDb {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
-                                let previous_limit = *overall_limit;
+                                let previous_consumed_rows = limit_state.consumed_rows;
+                                let previous_consumed_total = limit_state.consumed_total;
 
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
                                     self.prove_subqueries_v1(transaction,
                                         lower_path,
                                         path_query,
-                                        overall_limit,
+                                        limit_state,
+                                        frame_instance,
                                         prove_options,
                                         current_depth + 1,
                                         grove_version,
                                     )
                                 );
 
-                                if previous_limit != *overall_limit {
+                                super::V1LimitState::settle_instance_after_descent(
+                                    &mut frame_instance,
+                                    previous_consumed_rows,
+                                    limit_state.consumed_rows,
+                                );
+                                if previous_consumed_total != limit_state.consumed_total {
                                     has_a_result_at_level |= true;
                                 }
                                 lower_layers.insert(key.clone(), layer_proof);
@@ -3180,21 +3273,28 @@ impl GroveDb {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
-                                let previous_limit = *overall_limit;
+                                let previous_consumed_rows = limit_state.consumed_rows;
+                                let previous_consumed_total = limit_state.consumed_total;
 
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
                                     self.prove_subqueries_v1(transaction,
                                         lower_path,
                                         path_query,
-                                        overall_limit,
+                                        limit_state,
+                                        frame_instance,
                                         prove_options,
                                         current_depth + 1,
                                         grove_version,
                                     )
                                 );
 
-                                if previous_limit != *overall_limit {
+                                super::V1LimitState::settle_instance_after_descent(
+                                    &mut frame_instance,
+                                    previous_consumed_rows,
+                                    limit_state.consumed_rows,
+                                );
+                                if previous_consumed_total != limit_state.consumed_total {
                                     has_a_result_at_level |= true;
                                 }
                                 lower_layers.insert(key.clone(), layer_proof);
@@ -3212,21 +3312,28 @@ impl GroveDb {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
-                                let previous_limit = *overall_limit;
+                                let previous_consumed_rows = limit_state.consumed_rows;
+                                let previous_consumed_total = limit_state.consumed_total;
 
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
                                     self.prove_subqueries_v1(transaction,
                                         lower_path,
                                         path_query,
-                                        overall_limit,
+                                        limit_state,
+                                        frame_instance,
                                         prove_options,
                                         current_depth + 1,
                                         grove_version,
                                     )
                                 );
 
-                                if previous_limit != *overall_limit {
+                                super::V1LimitState::settle_instance_after_descent(
+                                    &mut frame_instance,
+                                    previous_consumed_rows,
+                                    limit_state.consumed_rows,
+                                );
+                                if previous_consumed_total != limit_state.consumed_total {
                                     has_a_result_at_level |= true;
                                 }
                                 lower_layers.insert(key.clone(), layer_proof);
@@ -3254,9 +3361,7 @@ impl GroveDb {
                             | Ok(Element::CommitmentTree(..))
                                 if !done_with_results =>
                             {
-                                if let Some(limit) = overall_limit.as_mut() {
-                                    *limit -= 1;
-                                }
+                                limit_state.charge_row_with_instance(&mut frame_instance);
                                 has_a_result_at_level |= true;
                             }
 
@@ -3306,9 +3411,11 @@ impl GroveDb {
         if !has_a_result_at_level
             && !done_with_results
             && prove_options.decrease_limit_on_empty_sub_query_result
-            && let Some(limit) = overall_limit.as_mut()
         {
-            *limit -= 1;
+            // Empty-layer charges hit the global budget only — they
+            // bound traversal work across many empty subtrees, while
+            // per-instance budgets bound result rows.
+            limit_state.charge_empty_layer();
         }
 
         let mut serialized_merk_proof = Vec::with_capacity(1024);

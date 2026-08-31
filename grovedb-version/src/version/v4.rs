@@ -67,12 +67,18 @@
 //!   non-zero offsets and never runs this path, so only trusted-read
 //!   result sets are gated.
 //!
-//! - `path_query_methods.merge: 1` — `PathQuery::merge` requires every input
+//! - `path_query_methods.merge: 2` — `PathQuery::merge` requires every input
 //!   to agree on `left_to_right` (typed error on conflict) and propagates the
-//!   shared direction to the merged root. V1..V3 keep the long-standing
-//!   silent behavior (input directions dropped; sub-level merges take the
-//!   synthesized default). Gated because merged queries feed proofs and both
-//!   sides must re-derive the identical merged query.
+//!   shared direction to the merged root (the v1 behavior), and additionally
+//!   merges limited path queries by *lifting*: an input's global
+//!   `SizedQuery::limit` becomes its merged branch's per-instance cap
+//!   (`Query::limit`) — exact, because the branch instance executes once —
+//!   and per-instance limits ride along on their branches. Limits merge only
+//!   as exclusive grafts: a limited input landing at the merged root, or two
+//!   colliding limited branches, are refused with typed errors. V1..V3 keep
+//!   the long-standing behavior (all limits refused; input directions
+//!   dropped). Gated because merged queries feed proofs and both sides must
+//!   re-derive the identical merged query.
 //!
 //! - `path_query_methods.unified_read_mode: 1` — `PathQuery` read modes
 //!   (axis-ordered and sum-budget reads carried in `Query::read_mode`) are
@@ -427,7 +433,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
         aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions { merge: 0 },
         path_query_methods: GroveDBPathQueryMethodVersions {
             terminal_keys: 1, // per-item conditional resolution (V4+), see issue #689
-            merge: 1,         // direction-aware merge: agreement required and propagated (V4+)
+            merge: 2,         // v1 direction agreement + v2 per-instance limit lifting (V4+)
             query_items_at_path: 0,
             should_add_parent_tree_at_path: 0,
             unified_read_mode: 1,
