@@ -1067,11 +1067,11 @@ impl PathQuery {
     /// rooted at their common path prefix.
     ///
     /// Behavior is version-gated on `path_query_methods.merge` — see
-    /// the [`merge`](crate::query::merge) module for the v0/v1/v2
-    /// semantics (direction handling and, from v2, limit lifting). The
-    /// checks below are version-independent: an empty input is
-    /// malformed, read-mode queries have no merge semantics at any
-    /// version, and a single input merges to itself.
+    /// the [`merge`](crate::query::merge) module for the v0/v1
+    /// semantics (direction handling and, from `GROVE_V4`'s v1, limit
+    /// lifting). The checks below are version-independent: an empty
+    /// input is malformed, read-mode queries have no merge semantics at
+    /// any version, and a single input merges to itself.
     pub fn merge(
         mut path_queries: Vec<&PathQuery>,
         grove_version: &GroveVersion,

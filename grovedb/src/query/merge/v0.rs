@@ -27,7 +27,7 @@ pub(super) fn merge_v0(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
             ));
         }
         // Limits never merge here: a merged limit would silently mean
-        // something different than either input asked for. (Merge v2
+        // something different than either input asked for. (Merge v1
         // lifts them instead.)
         if path_query.query.limit.is_some() {
             return Err(Error::NotSupported(

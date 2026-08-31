@@ -383,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_refuses_offsets_at_every_version_and_lifts_limits_from_v2() {
+    fn merge_refuses_offsets_at_every_version_and_lifts_limits_from_v4() {
         use crate::SizedQuery;
 
         // Offsets never merge — a merged offset would silently mean
@@ -405,8 +405,8 @@ mod tests {
             }
         }
 
-        // Limits: refused wholesale before merge v2 (GROVE_V3 and
-        // earlier keep the long-standing behavior)…
+        // Limits: refused wholesale before GROVE_V4 (V3 and earlier
+        // keep the long-standing behavior)…
         let plain = directional_query(b"a", true);
         let mut query = Query::new();
         query.insert_item(QueryItem::RangeFull(..));
@@ -418,11 +418,11 @@ mod tests {
             other => panic!("merging a limit must be refused pre-v2, got {other:?}"),
         }
 
-        // …and lifted from v2 (GROVE_V4): the input's global budget
+        // …and lifted from GROVE_V4 (merge v1): the input's global budget
         // becomes its exclusive branch's per-instance cap, and the
         // merged query itself is unsized.
         let merged = PathQuery::merge(vec![&plain, &with_limit], GroveVersion::latest())
-            .expect("merge v2 lifts an exclusive-branch limit");
+            .expect("merge v1 (GROVE_V4) lifts an exclusive-branch limit");
         assert_eq!(merged.query.limit, None);
         let branches = merged
             .query

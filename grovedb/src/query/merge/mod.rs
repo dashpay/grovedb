@@ -13,19 +13,21 @@
 //!   (sub-level inputs end up under a synthesized root whose direction
 //!   is the default), and any input carrying a limit or offset is
 //!   refused.
-//! * **[v1]** — direction-aware: every input must agree on
-//!   `left_to_right` (typed error on conflict) and the shared direction
-//!   propagates to the merged root. Limits and offsets are still
-//!   refused.
-//! * **[v2]** — `GROVE_V4`+. Carries v1's direction rules and
-//!   additionally merges *limited* path queries by lifting: an input's
-//!   global `SizedQuery::limit` becomes its merged branch's
-//!   per-instance cap (`Query::limit`) — exact, because the branch
-//!   instance executes exactly once — and authored per-instance limits
-//!   ride along on their branches. Budgets never blend, so limits merge
-//!   only as exclusive grafts: a limited input landing at the merged
-//!   root, or two limited branches colliding on a key, are refused with
-//!   typed errors. Offsets are still refused.
+//! * **[v1]** — `GROVE_V4`+. Direction-aware: every input must agree
+//!   on `left_to_right` (typed error on conflict) and the shared
+//!   direction propagates to the merged root. It also merges *limited*
+//!   path queries by lifting: an input's global `SizedQuery::limit`
+//!   becomes its merged branch's per-instance cap (`Query::limit`) —
+//!   exact, because the branch instance executes exactly once — and
+//!   authored per-instance limits ride along on their branches.
+//!   Budgets never blend, so limits merge only as exclusive grafts: a
+//!   limited input landing at the merged root, or two limited branches
+//!   colliding on a key, are refused with typed errors. Offsets are
+//!   still refused.
+//!
+//!   (An intermediate carrying only the direction rules was once gated
+//!   here for `GROVE_V4`; since no grove version ever shipped it, it
+//!   was folded into v1 rather than kept as a dead dispatch arm.)
 //!
 //! The version-independent prelude (empty-input rejection, the
 //! read-mode refusal, and the single-input shortcut) lives in
@@ -34,11 +36,9 @@
 //!
 //! [v0]: self::v0
 //! [v1]: self::v1
-//! [v2]: self::v2
 
 mod v0;
 mod v1;
-mod v2;
 
 use grovedb_version::version::GroveVersion;
 
@@ -50,11 +50,11 @@ use crate::{Error, PathQuery};
 /// short-circuit (a single input, or a read-mode refusal).
 pub(crate) fn validate_version(grove_version: &GroveVersion) -> Result<(), Error> {
     match grove_version.grovedb_versions.path_query_methods.merge {
-        0 | 1 | 2 => Ok(()),
+        0 | 1 => Ok(()),
         version => Err(Error::VersionError(
             grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
                 method: "merge".to_string(),
-                known_versions: vec![0, 1, 2],
+                known_versions: vec![0, 1],
                 received: version,
             },
         )),
@@ -70,11 +70,10 @@ pub(crate) fn merge(
     match grove_version.grovedb_versions.path_query_methods.merge {
         0 => v0::merge_v0(path_queries),
         1 => v1::merge_v1(path_queries),
-        2 => v2::merge_v2(path_queries),
         version => Err(Error::VersionError(
             grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
                 method: "merge".to_string(),
-                known_versions: vec![0, 1, 2],
+                known_versions: vec![0, 1],
                 received: version,
             },
         )),

@@ -64,8 +64,8 @@ result.
 
 ## Merging — the lift
 
-Merging limited path queries used to be refused outright. From merge v2
-(`path_query_methods.merge = 2`), `PathQuery::merge` merges them by
+Merging limited path queries used to be refused outright. From
+`GROVE_V4` (`path_query_methods.merge = 1`), `PathQuery::merge` merges them by
 **lifting**: a merged input's global `SizedQuery::limit` becomes its
 branch-root query's `Query::limit`. The lift is exact, because the
 branch instance executes exactly once (its path is a concrete key

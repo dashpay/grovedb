@@ -8,7 +8,7 @@
 //! `SizedQuery::limit` by `min`. Served under `GROVE_V4`
 //! (`path_query_methods.per_instance_query_limits`) on trusted reads
 //! (`element.path_query_push` v1), V1 proofs, and merges
-//! (`path_query_methods.merge` v2 lifts a merged input's global limit
+//! (`path_query_methods.merge` v1 lifts a merged input's global limit
 //! onto its exclusive branch). Everything else — older grove versions,
 //! V0 proofs, absence-proof assembly, colliding merges,
 //! read-mode/aggregate/count-offset shapes, terminal-keys projections —
@@ -777,7 +777,7 @@ fn merge_lifts_limits_onto_exclusive_branches_and_round_trips() {
         Query::new_single_key(b"x".to_vec()),
     );
     let merged = PathQuery::merge(vec![&limited, &other], grove_version)
-        .expect("exclusive-branch limits merge from v2");
+        .expect("exclusive-branch limits merge under GROVE_V4");
     let rows = assert_proved_matches_trusted_read(&db, &merged, grove_version);
     assert_eq!(rows, 5, "2 per docs parent plus the one other row");
 
@@ -787,7 +787,7 @@ fn merge_lifts_limits_onto_exclusive_branches_and_round_trips() {
     let mut globally_limited = top_k_query(50, None, None);
     globally_limited.query.limit = Some(3);
     let merged = PathQuery::merge(vec![&globally_limited, &other], grove_version)
-        .expect("global limits lift from v2");
+        .expect("global limits lift under GROVE_V4");
     assert_eq!(merged.query.limit, None, "the merged query stays unsized");
     let rows = assert_proved_matches_trusted_read(&db, &merged, grove_version);
     assert_eq!(rows, 4, "3 lifted rows from docs plus the other row");
