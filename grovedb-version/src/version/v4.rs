@@ -55,14 +55,14 @@
 //!   Gated because terminal keys shape the absence-proof result set assembled
 //!   by verifiers and the `query_keys_optional` result set.
 //!
-//! - `element.path_query_push: 2` — the trusted (non-proof) query walk
+//! - `element.path_query_push: 1` — the trusted (non-proof) query walk
 //!   serves per-instance limits (`Query::limit`, "top k per parent") and
 //!   reconciles subquery descents by total *consumed* budget (rows plus
 //!   empty-subtree charges) instead of returned rows only, aligning the
 //!   read path's global-limit accounting with the prover's shared-counter
-//!   accounting for nested empty subtrees. Carries v1's fix (issue #690):
-//!   an empty inner result eats a limit slot only when nothing was
-//!   skipped. V1..V3 keep the legacy v0 accounting, where e.g. `limit=2,
+//!   accounting for nested empty subtrees. It also fixes issue #690: an
+//!   empty inner result eats a limit slot only when nothing was skipped.
+//!   V1..V3 keep the legacy v0 accounting, where e.g. `limit=2,
 //!   offset=1` can return a single element. Proof generation rejects
 //!   non-zero offsets and never runs this path, so only trusted-read
 //!   result sets are gated.
@@ -270,9 +270,12 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             get_aggregate_sum_query_apply_function: 0,
             // Bumped from 0 → 1: v1 no longer decrements the outer limit when
             // a subquery's emptiness was caused by offset skips rather than a
-            // true no-match (issue #690). v0 keeps the legacy accounting for
-            // shipped grove versions.
-            path_query_push: 2,
+            // true no-match (issue #690), serves per-instance limits
+            // (`Query::limit`) and reconciles subquery descents by total
+            // consumed budget (rows plus empty-subtree charges) instead of
+            // returned rows only — see the module-level doc above. v0 keeps
+            // the legacy accounting for shipped grove versions.
+            path_query_push: 1,
             aggregate_sum_path_query_push: 0,
             query_item: 0,
             basic_push: 0,
