@@ -105,17 +105,18 @@ fn capability_slot_is_validated_exactly_and_for_engine_coherence() {
 
 #[test]
 fn limited_query_verification_rejects_before_decoding_the_proof() {
-    let grove_version = GroveVersion::latest();
-
     let mut limited_sub = Query::new_range_full();
     limited_sub.limit = Some(1);
     let mut limited = Query::new_range_full();
     limited.set_subquery(limited_sub);
     let path_query = PathQuery::new(vec![DOCS.to_vec()], SizedQuery::new(limited, None, None));
 
-    // An empty (undecodable) proof plus an unsupported limited query:
-    // the query-shape gate must win over the proof-decode error, so no
-    // parsing budget is spent on a request that can never be served.
+    // An empty (undecodable) proof plus a limited query a given mode
+    // cannot serve: the query-shape gate must win over the proof-decode
+    // error, so no parsing budget is spent on a request that can never
+    // be served. Pre-V4, limited queries are unserved entirely…
+    let legacy_version = &grovedb_version::version::GROVE_VERSIONS[2];
+    assert_eq!(legacy_version.protocol_version, 3);
     let result = crate::GroveDb::verify_query_with_options(
         &[],
         &path_query,
@@ -124,16 +125,35 @@ fn limited_query_verification_rejects_before_decoding_the_proof() {
             verify_proof_succinctness: true,
             include_empty_trees_in_result: false,
         },
-        grove_version,
+        legacy_version,
     );
     assert!(
         matches!(result, Err(Error::NotSupported(_))),
         "the limited-query gate must fire before proof decoding, got {result:?}"
     );
-    let result = crate::GroveDb::verify_query_raw(&[], &path_query, grove_version);
+    let result = crate::GroveDb::verify_query_raw(&[], &path_query, legacy_version);
     assert!(
         matches!(result, Err(Error::NotSupported(_))),
         "verify_query_raw must gate before decoding too, got {result:?}"
+    );
+
+    // …and at latest, absence-proof assembly still cannot serve them.
+    let grove_version = GroveVersion::latest();
+    let mut absence_query = path_query.clone();
+    absence_query.query.limit = Some(10); // absence mode requires a global limit
+    let result = crate::GroveDb::verify_query_with_options(
+        &[],
+        &absence_query,
+        grovedb_merk::proofs::query::VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: true,
+            verify_proof_succinctness: true,
+            include_empty_trees_in_result: false,
+        },
+        grove_version,
+    );
+    assert!(
+        matches!(result, Err(Error::NotSupported(_))),
+        "the absence-mode gate must fire before proof decoding, got {result:?}"
     );
 }
 

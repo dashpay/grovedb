@@ -152,6 +152,115 @@ impl Default for ProveOptions {
     }
 }
 
+/// Shared limit accounting for the V1 prover and verifier walks.
+///
+/// The **global** budget (`SizedQuery::limit`) stays one counter shared
+/// by the whole walk, exactly as before; the two consumption counters
+/// are what let a frame observe how much a lower layer charged — which
+/// the old code inferred by diffing the `Option<u16>` itself, a test
+/// that goes blind when the global limit is `None` (possible once
+/// per-instance limits exist without a global one).
+///
+/// - `consumed_rows` counts result rows only — what per-instance
+///   budgets (`Query::limit`) are settled from.
+/// - `consumed_total` additionally counts empty-layer charges
+///   (`decrease_limit_on_empty_sub_query_result`) — the
+///   "did anything at all move" signal that decides whether a layer
+///   itself is charged as empty. Empty-layer charges never consume
+///   per-instance budgets: they bound traversal work, and the caps
+///   bound result rows.
+///
+/// Per-instance budgets themselves are frame-local values
+/// (`min(inherited remaining, the layer query's own limit)`), not part
+/// of this struct — each recursion frame derives and settles its own.
+#[derive(Debug)]
+pub(crate) struct V1LimitState {
+    /// Remaining global budget; `None` = unlimited.
+    pub global: Option<u16>,
+    /// Result rows charged so far across the whole walk.
+    pub consumed_rows: u64,
+    /// Rows plus empty-layer charges across the whole walk.
+    pub consumed_total: u64,
+}
+
+impl V1LimitState {
+    pub(crate) fn new(global: Option<u16>) -> Self {
+        V1LimitState {
+            global,
+            consumed_rows: 0,
+            consumed_total: 0,
+        }
+    }
+
+    /// `min` over two optional caps, treating `None` as unlimited —
+    /// how an inherited instance budget combines with a layer query's
+    /// own `Query::limit`.
+    pub(crate) fn min_caps(a: Option<u16>, b: Option<u16>) -> Option<u16> {
+        match (a, b) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, b) => b,
+        }
+    }
+
+    /// Charge `n` result rows against the global budget.
+    pub(crate) fn charge_rows(&mut self, n: u16) {
+        if let Some(global) = self.global.as_mut() {
+            *global = global.saturating_sub(n);
+        }
+        self.consumed_rows += n as u64;
+        self.consumed_total += n as u64;
+    }
+
+    /// Charge one result row against the global budget and the current
+    /// frame's per-instance budget.
+    pub(crate) fn charge_row_with_instance(&mut self, frame_instance: &mut Option<u16>) {
+        self.charge_rows(1);
+        if let Some(instance) = frame_instance.as_mut() {
+            *instance = instance.saturating_sub(1);
+        }
+    }
+
+    /// Charge one empty-layer slot: global budget only.
+    pub(crate) fn charge_empty_layer(&mut self) {
+        if let Some(global) = self.global.as_mut() {
+            *global = global.saturating_sub(1);
+        }
+        self.consumed_total += 1;
+    }
+
+    /// The budget a single layer's merk walk may still produce under —
+    /// the tighter of the global budget and the frame's instance
+    /// budget.
+    pub(crate) fn effective_layer_limit(&self, frame_instance: Option<u16>) -> Option<u16> {
+        match (self.global, frame_instance) {
+            (Some(global), Some(instance)) => Some(global.min(instance)),
+            (Some(global), None) => Some(global),
+            (None, instance) => instance,
+        }
+    }
+
+    /// Whether the walk must stop producing results in the current
+    /// frame.
+    pub(crate) fn is_exhausted(&self, frame_instance: Option<u16>) -> bool {
+        self.global == Some(0) || frame_instance == Some(0)
+    }
+
+    /// Settle a frame's instance budget after a lower layer returned:
+    /// the rows the descent consumed come out of the enclosing
+    /// instance budget too.
+    pub(crate) fn settle_instance_after_descent(
+        frame_instance: &mut Option<u16>,
+        rows_before: u64,
+        rows_after: u64,
+    ) {
+        if let Some(instance) = frame_instance.as_mut() {
+            let delta = rows_after.saturating_sub(rows_before).min(u16::MAX as u64) as u16;
+            *instance = instance.saturating_sub(delta);
+        }
+    }
+}
+
 /// A single layer of a legacy (v0) GroveDB proof containing only merk proofs.
 ///
 /// Uses a custom `Decode` implementation that enforces [`MAX_PROOF_DEPTH`]

@@ -383,12 +383,11 @@ mod tests {
     }
 
     #[test]
-    fn merge_refuses_limits_and_offsets_at_every_merge_version() {
+    fn merge_refuses_offsets_at_every_version_and_lifts_limits_from_v2() {
         use crate::SizedQuery;
 
-        // Both refusals predate the version gate and must survive it —
-        // a merged limit/offset would silently mean something different
-        // than either input asked for.
+        // Offsets never merge — a merged offset would silently mean
+        // something different than either input asked for.
         for version in [&GROVE_VERSIONS[2], GroveVersion::latest()] {
             let plain = directional_query(b"a", true);
 
@@ -404,16 +403,45 @@ mod tests {
                 }
                 other => panic!("merging an offset must be refused, got {other:?}"),
             }
-
-            let with_limit =
-                PathQuery::new(vec![b"b".to_vec()], SizedQuery::new(query, Some(2), None));
-            match PathQuery::merge(vec![&plain, &with_limit], version) {
-                Err(Error::NotSupported(message)) => {
-                    assert!(message.contains("limit"), "got: {message}")
-                }
-                other => panic!("merging a limit must be refused, got {other:?}"),
-            }
         }
+
+        // Limits: refused wholesale before merge v2 (GROVE_V3 and
+        // earlier keep the long-standing behavior)…
+        let plain = directional_query(b"a", true);
+        let mut query = Query::new();
+        query.insert_item(QueryItem::RangeFull(..));
+        let with_limit = PathQuery::new(vec![b"b".to_vec()], SizedQuery::new(query, Some(2), None));
+        match PathQuery::merge(vec![&plain, &with_limit], &GROVE_VERSIONS[2]) {
+            Err(Error::NotSupported(message)) => {
+                assert!(message.contains("limit"), "got: {message}")
+            }
+            other => panic!("merging a limit must be refused pre-v2, got {other:?}"),
+        }
+
+        // …and lifted from v2 (GROVE_V4): the input's global budget
+        // becomes its exclusive branch's per-instance cap, and the
+        // merged query itself is unsized.
+        let merged = PathQuery::merge(vec![&plain, &with_limit], GroveVersion::latest())
+            .expect("merge v2 lifts an exclusive-branch limit");
+        assert_eq!(merged.query.limit, None);
+        let branches = merged
+            .query
+            .query
+            .conditional_subquery_branches
+            .as_ref()
+            .expect("merged query must carry conditional branches");
+        let lifted = branches
+            .get(&QueryItem::Key(b"b".to_vec()))
+            .expect("the limited input keeps its own branch");
+        assert_eq!(
+            lifted
+                .subquery
+                .as_ref()
+                .expect("branch carries the input query")
+                .limit,
+            Some(2),
+            "the global limit is lifted onto the branch-root query"
+        );
     }
 
     #[test]

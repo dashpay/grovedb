@@ -1068,11 +1068,11 @@ impl PathQuery {
         grove_version: &GroveVersion,
     ) -> Result<Self, Error> {
         let merge_version = grove_version.grovedb_versions.path_query_methods.merge;
-        if merge_version > 1 {
+        if merge_version > 2 {
             return Err(Error::VersionError(
                 grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
                     method: "merge".to_string(),
-                    known_versions: vec![0, 1],
+                    known_versions: vec![0, 1, 2],
                     received: merge_version,
                 },
             ));
@@ -1134,23 +1134,43 @@ impl PathQuery {
                     "can not merge pathqueries with offsets".to_string(),
                 ));
             }
-            if path_query.query.limit.is_some() {
-                return Err(Error::NotSupported(
-                    "can not merge pathqueries with limits, consider setting the limit after the \
-                     merge"
-                        .to_string(),
-                ));
-            }
-            if path_query.has_instance_limits() {
-                return Err(Error::NotSupported(
-                    "can not merge pathqueries carrying per-instance limits (Query::limit)"
-                        .to_string(),
-                ));
+            let carries_limits =
+                path_query.query.limit.is_some() || path_query.has_instance_limits();
+            if merge_version < 2 {
+                // Pre-v2 (V1..V3): limits never merge. A merged limit
+                // would silently mean something different than either
+                // input asked for.
+                if path_query.query.limit.is_some() {
+                    return Err(Error::NotSupported(
+                        "can not merge pathqueries with limits, consider setting the limit after \
+                         the merge"
+                            .to_string(),
+                    ));
+                }
+                if path_query.has_instance_limits() {
+                    return Err(Error::NotSupported(
+                        "can not merge pathqueries carrying per-instance limits (Query::limit)"
+                            .to_string(),
+                    ));
+                }
             }
             path_query
                 .to_subquery_branch_with_offset_start_index(next_index)
-                .and_then(|unsized_path_query| {
+                .and_then(|mut unsized_path_query| {
                     if unsized_path_query.subquery_path.is_none() {
+                        // The input lands at the merged root, where its
+                        // query body merges with the other root-level
+                        // inputs — budgets cannot blend, so limits are
+                        // refused here even under v2.
+                        if carries_limits {
+                            return Err(Error::NotSupported(
+                                "can not merge a limited path query that lands at the merged \
+                                 root: its budget would have to blend with the other queries' \
+                                 result sets; give it a longer path of its own or set the limit \
+                                 after the merge"
+                                    .to_string(),
+                            ));
+                        }
                         queries_for_common_path_this_level.push(
                             *unsized_path_query
                                 .subquery
@@ -1159,6 +1179,25 @@ impl PathQuery {
                                 ))?,
                         );
                     } else {
+                        // v2 lift: an input's global budget becomes its
+                        // branch-root query's per-instance cap. Exact,
+                        // because the branch instance executes exactly
+                        // once (its path is a concrete key chain), so
+                        // "at most N rows from this whole input" and
+                        // "at most N rows per instance" coincide.
+                        if merge_version >= 2
+                            && let Some(global) = path_query.query.limit
+                        {
+                            let subquery = unsized_path_query.subquery.as_deref_mut().ok_or(
+                                Error::CorruptedCodeExecution(
+                                    "subquery must exist on a sub-level merge branch",
+                                ),
+                            )?;
+                            subquery.limit = Some(match subquery.limit {
+                                Some(own) => own.min(global),
+                                None => global,
+                            });
+                        }
                         queries_for_common_path_sub_level.push(unsized_path_query);
                     }
                     Ok(())
@@ -1197,14 +1236,46 @@ impl PathQuery {
                 subquery_path: rest_of_path,
                 subquery,
             };
-            // The read-mode gate at the top of `merge` already rejected
-            // any input carrying one, so this cannot fire today —
-            // propagate rather than discard, so a future path that
-            // reaches here with a read mode surfaces it instead of
-            // silently dropping the mode.
-            merged_query
-                .merge_conditional_boxed_subquery(QueryItem::Key(key), subquery_branch)
-                .map_err(|e| Error::NotSupported(e.to_string()))?;
+            let limits_in_play = merge_version >= 2
+                && (merged_query.has_instance_limit_anywhere()
+                    || subquery_branch
+                        .subquery
+                        .as_deref()
+                        .is_some_and(|subquery| subquery.has_instance_limit_anywhere()));
+            if limits_in_play {
+                // Budgets never blend: a limit-carrying branch (lifted
+                // or authored) merges only as an exclusive graft. Any
+                // overlap with an existing conditional would need the
+                // two branches' bodies — and budgets — merged, which is
+                // refused by design.
+                let collides = merged_query
+                    .conditional_subquery_branches
+                    .as_ref()
+                    .is_some_and(|branches| {
+                        branches.keys().any(|item| item.contains(key.as_slice()))
+                    });
+                if collides {
+                    return Err(Error::NotSupported(format!(
+                        "can not merge limited path queries whose branches collide at key {}; \
+                         remove the limits or merge the colliding queries separately",
+                        crate::operations::proof::util::hex_to_ascii(&key),
+                    )));
+                }
+                merged_query.add_conditional_subquery(
+                    QueryItem::Key(key),
+                    subquery_branch.subquery_path,
+                    subquery_branch.subquery.map(|subquery| *subquery),
+                );
+            } else {
+                // The read-mode gate at the top of `merge` already rejected
+                // any input carrying one, so this cannot fire today —
+                // propagate rather than discard, so a future path that
+                // reaches here with a read mode surfaces it instead of
+                // silently dropping the mode.
+                merged_query
+                    .merge_conditional_boxed_subquery(QueryItem::Key(key), subquery_branch)
+                    .map_err(|e| Error::NotSupported(e.to_string()))?;
+            }
         }
 
         // V4+: the agreed direction travels to the merged root (it
@@ -1792,6 +1863,11 @@ pub struct SinglePathSubquery<'a> {
     /// *generation* keeps using `left_to_right` verbatim, so proof
     /// bytes are unaffected.
     pub synthesized_path_component: bool,
+    /// The resolved query node's per-instance limit ([`Query::limit`]).
+    /// `None` on synthesized path components — a one-key level selects
+    /// that key or nothing, and the enclosing instance chain passes
+    /// through it unchanged.
+    pub instance_limit: Option<u16>,
 }
 
 impl fmt::Display for SinglePathSubquery<'_> {
@@ -1852,6 +1928,7 @@ impl<'a> SinglePathSubquery<'a> {
             left_to_right: true,
             in_path,
             synthesized_path_component: true,
+            instance_limit: None,
         }
     }
 
@@ -1875,6 +1952,7 @@ impl<'a> SinglePathSubquery<'a> {
             left_to_right: query.left_to_right,
             in_path: None,
             synthesized_path_component: false,
+            instance_limit: query.limit,
         }
     }
 }
@@ -2630,6 +2708,7 @@ mod tests {
                     left_to_right: true,
                     in_path: Some(Cow::Borrowed(&root_path_key_2)),
                     synthesized_path_component: true,
+                    instance_limit: None,
                 }
             );
         }
@@ -2651,6 +2730,7 @@ mod tests {
                     left_to_right: true,
                     in_path: None,
                     synthesized_path_component: false,
+                    instance_limit: None,
                 }
             );
         }
@@ -2675,6 +2755,7 @@ mod tests {
                     left_to_right: true,
                     in_path: Some(Cow::Borrowed(&subquery_path_key_1)),
                     synthesized_path_component: true,
+                    instance_limit: None,
                 }
             );
         }
@@ -2700,6 +2781,7 @@ mod tests {
                     left_to_right: true,
                     in_path: Some(Cow::Borrowed(&subquery_path_key_2)),
                     synthesized_path_component: true,
+                    instance_limit: None,
                 }
             );
         }
@@ -2727,6 +2809,7 @@ mod tests {
                     left_to_right: true,
                     in_path: None,
                     synthesized_path_component: false,
+                    instance_limit: None,
                 }
             );
         }
@@ -2754,6 +2837,7 @@ mod tests {
                     left_to_right: true,
                     in_path: None,
                     synthesized_path_component: true,
+                    instance_limit: None,
                 }
             );
         }
@@ -2804,6 +2888,7 @@ mod tests {
                     left_to_right: true,
                     in_path: None,
                     synthesized_path_component: false,
+                    instance_limit: None,
                 }
             );
         }
@@ -2825,6 +2910,7 @@ mod tests {
                     // There should be no path: we are at the end of the path
                     in_path: None,
                     synthesized_path_component: true,
+                    instance_limit: None,
                 }
             );
         }
@@ -2881,6 +2967,7 @@ mod tests {
                     left_to_right: true,
                     in_path: Some(Cow::Borrowed(&zero_vec)),
                     synthesized_path_component: true,
+                    instance_limit: None,
                 }
             );
         }
@@ -2996,6 +3083,7 @@ mod tests {
                     left_to_right: true,
                     in_path: None,
                     synthesized_path_component: false,
+                    instance_limit: None,
                 }
             );
         }
@@ -3015,6 +3103,7 @@ mod tests {
                     left_to_right: true,
                     in_path: Some(Cow::Borrowed(&identity_id)),
                     synthesized_path_component: true,
+                    instance_limit: None,
                 }
             );
         }
@@ -3036,6 +3125,7 @@ mod tests {
                     left_to_right: true,
                     in_path: None,
                     synthesized_path_component: false,
+                    instance_limit: None,
                 }
             );
         }
@@ -3055,6 +3145,7 @@ mod tests {
                     left_to_right: true,
                     in_path: None,
                     synthesized_path_component: false,
+                    instance_limit: None,
                 }
             );
         }
