@@ -363,16 +363,22 @@ pub enum Element {
     /// support for backward-reference propagation is not implemented yet).
     ///
     /// Discriminant 25.
-    BidirectionalReference(BidirectionalReference),
+    BidirectionalReference(BidirectionalReference, Option<ElementFlags>),
     /// An ordinary value that supports being targeted by bidirectional
-    /// references: up to 32 backward references are tracked for it in the
-    /// subtree's meta storage. Behaves like `Item` in every other way.
+    /// references: up to 32 backward references are carried ON the element
+    /// and covered by the node hash through the two-layer scheme described
+    /// in [`crate::bidirectional_reference`]. Behaves like `Item` in every
+    /// other way; readers and proofs see the stripped (inner) form.
     ///
     /// May not be wrapped in the aggregation wrappers and is rejected by
     /// `apply_batch` (same reason as `BidirectionalReference`).
     ///
     /// Discriminant 26.
-    ItemWithBackwardsReferences(Vec<u8>, Option<ElementFlags>),
+    ItemWithBackwardsReferences(
+        Vec<u8>,
+        Vec<crate::bidirectional_reference::BackwardReference>,
+        Option<ElementFlags>,
+    ),
     /// A signed integer value that can be totaled in a sum tree AND supports
     /// being targeted by bidirectional references. Behaves like `SumItem`
     /// in every other way.
@@ -381,7 +387,29 @@ pub enum Element {
     /// `apply_batch` (same reason as `BidirectionalReference`).
     ///
     /// Discriminant 27.
-    SumItemWithBackwardsReferences(SumValue, Option<ElementFlags>),
+    SumItemWithBackwardsReferences(
+        SumValue,
+        Vec<crate::bidirectional_reference::BackwardReference>,
+        Option<ElementFlags>,
+    ),
+    /// An item that simultaneously carries an explicit `SumValue` (like
+    /// `ItemWithSumItem`) AND supports being targeted by bidirectional
+    /// references. The sum contributes to sum-bearing parents exactly as
+    /// `ItemWithSumItem`'s does; the referrer list is carried ON the
+    /// element and covered by the node hash through the two-layer scheme
+    /// described in [`crate::bidirectional_reference`]. Readers and proofs
+    /// see the stripped (inner) form.
+    ///
+    /// May not be wrapped in the aggregation wrappers and is rejected by
+    /// `apply_batch` (same reason as `BidirectionalReference`).
+    ///
+    /// Discriminant 28.
+    ItemWithSumItemWithBackwardsReferences(
+        Vec<u8>,
+        SumValue,
+        Vec<crate::bidirectional_reference::BackwardReference>,
+        Option<ElementFlags>,
+    ),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -702,13 +730,15 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
-            Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path,
-                cascade_on_update,
-                max_hop,
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path,
+                    cascade_on_update,
+                    max_hop,
+                    ..
+                },
                 flags,
-                ..
-            }) => {
+            ) => {
                 write!(
                     f,
                     "BidirectionalReference({}, max_hop: {}, cascade: {}{})",
@@ -720,7 +750,7 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
-            Element::ItemWithBackwardsReferences(data, flags) => {
+            Element::ItemWithBackwardsReferences(data, _, flags) => {
                 write!(
                     f,
                     "ItemWithBackwardsReferences({}{})",
@@ -730,10 +760,21 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
-            Element::SumItemWithBackwardsReferences(sum_value, flags) => {
+            Element::SumItemWithBackwardsReferences(sum_value, _, flags) => {
                 write!(
                     f,
                     "SumItemWithBackwardsReferences({}{})",
+                    sum_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::ItemWithSumItemWithBackwardsReferences(data, sum_value, _, flags) => {
+                write!(
+                    f,
+                    "ItemWithSumItemWithBackwardsReferences({}, {}{})",
+                    hex_to_ascii(data),
                     sum_value,
                     flags
                         .as_ref()
@@ -781,6 +822,9 @@ impl Element {
             Element::ItemWithBackwardsReferences(..) => ElementType::ItemWithBackwardsReferences,
             Element::SumItemWithBackwardsReferences(..) => {
                 ElementType::SumItemWithBackwardsReferences
+            }
+            Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                ElementType::ItemWithSumItemWithBackwardsReferences
             }
             Element::NonCounted(inner) => match inner.element_type() {
                 ElementType::Item => ElementType::NonCountedItem,
@@ -917,11 +961,13 @@ impl Element {
                     Element::BidirectionalReference(..)
                         | Element::ItemWithBackwardsReferences(..)
                         | Element::SumItemWithBackwardsReferences(..)
+                        | Element::ItemWithSumItemWithBackwardsReferences(..)
                 ) {
                     return Err(crate::error::ElementError::InvalidInput(
                         "NonCounted cannot wrap backward-references elements \
                          (BidirectionalReference, ItemWithBackwardsReferences, \
-                         SumItemWithBackwardsReferences)",
+                         SumItemWithBackwardsReferences, \
+                         ItemWithSumItemWithBackwardsReferences)",
                     ));
                 }
             }
@@ -1053,9 +1099,26 @@ mod serde_impl {
             Option<ElementFlags>,
         ),
         PrivateDocumentStore(u64, u32, u8, Option<ElementFlags>),
-        BidirectionalReference(crate::bidirectional_reference::BidirectionalReference),
-        ItemWithBackwardsReferences(Vec<u8>, Option<ElementFlags>),
-        SumItemWithBackwardsReferences(SumValue, Option<ElementFlags>),
+        BidirectionalReference(
+            crate::bidirectional_reference::BidirectionalReference,
+            Option<ElementFlags>,
+        ),
+        ItemWithBackwardsReferences(
+            Vec<u8>,
+            Vec<crate::bidirectional_reference::BackwardReference>,
+            Option<ElementFlags>,
+        ),
+        SumItemWithBackwardsReferences(
+            SumValue,
+            Vec<crate::bidirectional_reference::BackwardReference>,
+            Option<ElementFlags>,
+        ),
+        ItemWithSumItemWithBackwardsReferences(
+            Vec<u8>,
+            SumValue,
+            Vec<crate::bidirectional_reference::BackwardReference>,
+            Option<ElementFlags>,
+        ),
     }
 
     impl From<ElementShadow> for Element {
@@ -1108,12 +1171,17 @@ mod serde_impl {
                 ElementShadow::PrivateDocumentStore(c, e, p, f) => {
                     Element::PrivateDocumentStore(c, e, p, f)
                 }
-                ElementShadow::BidirectionalReference(r) => Element::BidirectionalReference(r),
-                ElementShadow::ItemWithBackwardsReferences(v, f) => {
-                    Element::ItemWithBackwardsReferences(v, f)
+                ElementShadow::BidirectionalReference(r, f) => {
+                    Element::BidirectionalReference(r, f)
                 }
-                ElementShadow::SumItemWithBackwardsReferences(v, f) => {
-                    Element::SumItemWithBackwardsReferences(v, f)
+                ElementShadow::ItemWithBackwardsReferences(v, b, f) => {
+                    Element::ItemWithBackwardsReferences(v, b, f)
+                }
+                ElementShadow::SumItemWithBackwardsReferences(v, b, f) => {
+                    Element::SumItemWithBackwardsReferences(v, b, f)
+                }
+                ElementShadow::ItemWithSumItemWithBackwardsReferences(v, sv, b, f) => {
+                    Element::ItemWithSumItemWithBackwardsReferences(v, sv, b, f)
                 }
             }
         }
@@ -1134,6 +1202,9 @@ mod serde_impl {
             // every ingress — including this external-tooling codec.
             element
                 .validate_private_document_store_config()
+                .map_err(D::Error::custom)?;
+            element
+                .validate_backward_references_limits()
                 .map_err(D::Error::custom)?;
             Ok(element)
         }
@@ -1170,6 +1241,20 @@ mod serde_impl {
                 Element::Item(b"abc".to_vec(), None),
                 Element::SumTree(Some(b"r".to_vec()), 42, None),
                 Element::PrivateDocumentStore(9, 64, 4, Some(vec![1])),
+                Element::BidirectionalReference(
+                    crate::bidirectional_reference::BidirectionalReference {
+                        forward_reference_path:
+                            crate::reference_path::ReferencePathType::SiblingReference(
+                                b"t".to_vec(),
+                            ),
+                        backward_references: Vec::new(),
+                        cascade_on_update: true,
+                        max_hop: Some(4),
+                    },
+                    Some(vec![7]),
+                ),
+                Element::ItemWithBackwardsReferences(b"v".to_vec(), Vec::new(), None),
+                Element::SumItemWithBackwardsReferences(-9, Vec::new(), Some(vec![1])),
                 Element::new_non_counted(Element::Item(b"x".to_vec(), None)).unwrap(),
                 Element::new_not_summed(Element::SumTree(None, 100, None)).unwrap(),
                 Element::new_not_counted_or_summed(Element::CountSumTree(None, 3, 100, None))

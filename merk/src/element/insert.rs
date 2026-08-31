@@ -13,7 +13,7 @@ use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 use crate::{
     element::{
         costs::ElementCostExtensions, exists::ElementExistsInStorageExtensions,
-        get::ElementFetchFromStorageExtensions, tree_type::ElementTreeTypeExtensions,
+        get::ElementFetchFromStorageExtensions, tree_type::ElementTreeTypeExtensions, ElementExt,
     },
     tree_type::TreeType,
     BatchEntry, CryptoHash, Error, Merk, MerkOptions, Op, TreeFeatureType,
@@ -289,6 +289,20 @@ impl ElementInsertToStorageExtensions for Element {
                 "cannot add sum item to non sum tree",
             ));
         }
+        if self.supports_backward_references()
+            && matches!(
+                tree_type,
+                TreeType::ProvableCountTree
+                    | TreeType::ProvableCountSumTree
+                    | TreeType::ProvableSumTree
+                    | TreeType::ProvableCountProvableSumTree
+            )
+        {
+            return Err(Error::InvalidInputError(
+                "backward-references elements may not live in Provable* aggregate trees: their \
+                 combined value hash has no aggregate-carrying proof-node variant yet",
+            ));
+        }
         Ok(())
     }
 
@@ -309,6 +323,48 @@ impl ElementInsertToStorageExtensions for Element {
 
         let merk_feature_type =
             cost_return_on_error_into_default!(self.get_feature_type(merk.tree_type));
+        if matches!(self, Element::BidirectionalReference(..)) {
+            return Err(Error::InvalidInputError(
+                "a bidirectional reference must be written through insert_reference with its \
+                 resolved target hash",
+            ))
+            .wrap_with_cost(Default::default());
+        }
+        let mut cost = Default::default();
+        // Backward-references items: the node value hash is combined from
+        // the stripped serialization plus the backward-references hash, so
+        // it is supplied fully computed.
+        let backward_references_hashes = cost_return_on_error!(
+            &mut cost,
+            self.backward_references_hashes(grove_version)
+                .map_err(Error::from)
+        );
+        if let Some(hashes) = backward_references_hashes {
+            let batch_operations = [(
+                key,
+                Op::PutWithProvidedValueHash(serialized, hashes.combined, merk_feature_type),
+            )];
+            let tree_type = merk.tree_type;
+            return merk
+                .apply_with_specialized_costs::<_, Vec<u8>>(
+                    &batch_operations,
+                    &[],
+                    options,
+                    &|key, value| {
+                        Self::specialized_costs_for_key_value(
+                            key,
+                            value,
+                            tree_type.inner_node_type(),
+                            grove_version,
+                        )
+                        .map_err(|e| Error::ClientCorruptionError(e.to_string()))
+                    },
+                    Some(&Element::value_defined_cost_for_serialized_value),
+                    grove_version,
+                )
+                .map_err(|e| Error::CorruptedData(e.to_string()))
+                .add_cost(cost);
+        }
         // Use is_sum_item() (which looks through NonCounted) so that a
         // NonCounted(SumItem(..)) takes the same specialized cost path as a
         // bare SumItem(..).
@@ -618,6 +674,49 @@ impl ElementInsertToStorageExtensions for Element {
                 .wrap_with_cost(OperationCost::default())
         );
 
+        // A bidirectional reference's node value hash combines THREE
+        // inputs: its stripped serialization, the resolved target hash,
+        // and its own backward-references hash. Supply it fully computed.
+        if matches!(self, Element::BidirectionalReference(..)) {
+            let hashes = cost_return_on_error!(
+                &mut cost,
+                self.backward_references_hashes(grove_version)
+                    .map_err(Error::from)
+            )
+            .expect("bidirectional references carry backward references");
+            // Nested combine keeps the existing KVRefValueHash* wire
+            // binding valid: the proof carries
+            // self_combined = combine(inner, backrefs) opaquely and the
+            // verifier recomputes combine(self_combined, H(stripped
+            // target)) — exactly this value hash.
+            let value_hash = crate::tree::hash::combine_hash(&hashes.combined, &referenced_value)
+                .unwrap_add_cost(&mut cost);
+            let batch_operations = [(
+                key,
+                Op::PutWithProvidedValueHash(serialized, value_hash, merk_feature_type),
+            )];
+            let tree_type = merk.tree_type;
+            return merk
+                .apply_with_specialized_costs::<_, Vec<u8>>(
+                    &batch_operations,
+                    &[],
+                    options,
+                    &|key, value| {
+                        Self::specialized_costs_for_key_value(
+                            key,
+                            value,
+                            tree_type.inner_node_type(),
+                            grove_version,
+                        )
+                        .map_err(|e| Error::ClientCorruptionError(e.to_string()))
+                    },
+                    Some(&Element::value_defined_cost_for_serialized_value),
+                    grove_version,
+                )
+                .map_err(|e| Error::CorruptedData(e.to_string()))
+                .add_cost(cost);
+        }
+
         let batch_operations = [(
             key,
             Op::PutCombinedReference(serialized, referenced_value, merk_feature_type),
@@ -650,6 +749,8 @@ impl ElementInsertToStorageExtensions for Element {
         options: Option<MerkOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<Delta<'_>, Error> {
+        use crate::tree::hash::{combine_hash, value_hash};
+
         let mut cost = OperationCost::default();
 
         // Read through the Merk tree so uncommitted in-memory writes made
@@ -664,7 +765,43 @@ impl ElementInsertToStorageExtensions for Element {
             old: previous_element,
         };
 
-        if delta.has_changed() {
+        // The element bytes are only half of what the node commits to: a
+        // reference node's stored value hash is
+        // combine(H(element bytes), referenced_value). An unchanged element
+        // whose target hash moved (e.g. re-inserting a plain reference whose
+        // target was updated) must still be rewritten, or the stored
+        // commitment goes stale.
+        let commitment_changed = if !delta.has_changed() {
+            let stored = cost_return_on_error!(
+                &mut cost,
+                Self::get_value_hash(merk, key, true, grove_version)
+            );
+            let expected = if matches!(self, Element::BidirectionalReference(..)) {
+                let hashes = cost_return_on_error!(
+                    &mut cost,
+                    self.backward_references_hashes(grove_version)
+                        .map_err(Error::from)
+                )
+                .expect("bidirectional references carry backward references");
+                crate::tree::hash::combine_hash(&hashes.combined, &referenced_value)
+                    .unwrap_add_cost(&mut cost)
+            } else {
+                let serialized = cost_return_on_error_no_add!(
+                    cost,
+                    self.serialize(grove_version).map_err(Error::from)
+                );
+                combine_hash(
+                    &value_hash(&serialized).unwrap_add_cost(&mut cost),
+                    &referenced_value,
+                )
+                .unwrap_add_cost(&mut cost)
+            };
+            stored != Some(expected)
+        } else {
+            false
+        };
+
+        if delta.has_changed() || commitment_changed {
             cost_return_on_error!(
                 &mut cost,
                 self.insert_reference(merk, key, referenced_value, options, grove_version)
@@ -693,6 +830,8 @@ impl ElementInsertToStorageExtensions for Element {
             0 => {}
         );
 
+        use crate::tree::hash::{combine_hash, value_hash};
+
         let mut cost = OperationCost::default();
 
         // Read through the Merk tree so uncommitted in-memory writes made
@@ -707,7 +846,30 @@ impl ElementInsertToStorageExtensions for Element {
             old: previous_element,
         };
 
-        if delta.has_changed() {
+        // A subtree node's stored value hash is
+        // combine(H(element bytes), subtree_root_hash); an unchanged element
+        // with a moved child root must still be rewritten. See the analogous
+        // check in `insert_reference_if_changed_value`.
+        let commitment_changed = if !delta.has_changed() {
+            let stored = cost_return_on_error!(
+                &mut cost,
+                Self::get_value_hash(merk, key, true, grove_version)
+            );
+            let serialized = cost_return_on_error_no_add!(
+                cost,
+                self.serialize(grove_version).map_err(Error::from)
+            );
+            let expected = combine_hash(
+                &value_hash(&serialized).unwrap_add_cost(&mut cost),
+                &subtree_root_hash,
+            )
+            .unwrap_add_cost(&mut cost);
+            stored != Some(expected)
+        } else {
+            false
+        };
+
+        if delta.has_changed() || commitment_changed {
             cost_return_on_error!(
                 &mut cost,
                 self.insert_subtree(merk, key, subtree_root_hash, options, grove_version)
@@ -1976,5 +2138,196 @@ mod tests {
             Op::ReplaceLayeredCountIndexedReference(..) => {}
             other => panic!("expected ReplaceLayered, got: {:?}", other),
         }
+    }
+
+    #[test]
+    fn delta_has_changed_matrix() {
+        let a = Element::new_item(b"a".to_vec());
+        let b = Element::new_item(b"b".to_vec());
+
+        assert!(!Delta {
+            new: None,
+            old: None
+        }
+        .has_changed());
+        assert!(Delta {
+            new: Some(&a),
+            old: None
+        }
+        .has_changed());
+        assert!(Delta {
+            new: None,
+            old: Some(a.clone())
+        }
+        .has_changed());
+        assert!(!Delta {
+            new: Some(&a),
+            old: Some(a.clone())
+        }
+        .has_changed());
+        assert!(Delta {
+            new: Some(&b),
+            old: Some(a)
+        }
+        .has_changed());
+    }
+
+    #[test]
+    fn insert_reference_if_changed_value_skips_and_writes() {
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
+
+        let reference = Element::new_reference(
+            grovedb_element::reference_path::ReferencePathType::AbsolutePathReference(vec![
+                b"somewhere".to_vec(),
+            ]),
+        );
+
+        // Fresh insert: no previous value, write happens.
+        let delta = reference
+            .insert_reference_if_changed_value(&mut merk, b"r", [7; 32], None, grove_version)
+            .unwrap()
+            .expect("fresh reference insert");
+        assert!(delta.has_changed());
+        assert_eq!(delta.old, None);
+
+        // Same element again: previous value equal, write skipped.
+        let delta = reference
+            .insert_reference_if_changed_value(&mut merk, b"r", [7; 32], None, grove_version)
+            .unwrap()
+            .expect("idempotent reference insert");
+        assert!(!delta.has_changed());
+        assert_eq!(delta.old, Some(reference.clone()));
+
+        // Different element: write happens and old value is returned.
+        let other = Element::new_reference(
+            grovedb_element::reference_path::ReferencePathType::AbsolutePathReference(vec![
+                b"elsewhere".to_vec(),
+            ]),
+        );
+        let delta = other
+            .insert_reference_if_changed_value(&mut merk, b"r", [7; 32], None, grove_version)
+            .unwrap()
+            .expect("replacing reference insert");
+        assert!(delta.has_changed());
+        assert_eq!(delta.old, Some(reference));
+    }
+
+    #[test]
+    fn insert_subtree_if_changed_skips_and_writes() {
+        use crate::tree::hash::NULL_HASH;
+
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
+
+        let tree = Element::empty_tree();
+
+        let delta = tree
+            .insert_subtree_if_changed(&mut merk, b"t", NULL_HASH, None, grove_version)
+            .unwrap()
+            .expect("fresh subtree insert");
+        assert!(delta.has_changed());
+        assert_eq!(delta.old, None);
+
+        let delta = tree
+            .insert_subtree_if_changed(&mut merk, b"t", NULL_HASH, None, grove_version)
+            .unwrap()
+            .expect("idempotent subtree insert");
+        assert!(!delta.has_changed());
+        assert_eq!(delta.old, Some(tree.clone()));
+
+        let sum_tree = Element::empty_sum_tree();
+        let delta = sum_tree
+            .insert_subtree_if_changed(&mut merk, b"t", NULL_HASH, None, grove_version)
+            .unwrap()
+            .expect("replacing subtree insert");
+        assert!(delta.has_changed());
+        assert_eq!(delta.old, Some(tree));
+    }
+
+    #[test]
+    fn insert_reference_if_changed_value_heals_moved_commitment() {
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
+
+        let reference = Element::new_reference(
+            grovedb_element::reference_path::ReferencePathType::AbsolutePathReference(vec![
+                b"somewhere".to_vec(),
+            ]),
+        );
+
+        reference
+            .insert_reference_if_changed_value(&mut merk, b"r", [7; 32], None, grove_version)
+            .unwrap()
+            .expect("fresh insert");
+        let stored_before = Element::get_value_hash(&merk, b"r", true, grove_version)
+            .unwrap()
+            .unwrap()
+            .expect("hash present");
+
+        // Same element, different referenced hash: the element-wise delta is
+        // unchanged but the commitment moved — the write must still happen.
+        let delta = reference
+            .insert_reference_if_changed_value(&mut merk, b"r", [8; 32], None, grove_version)
+            .unwrap()
+            .expect("healing insert");
+        assert!(!delta.has_changed());
+        let stored_after = Element::get_value_hash(&merk, b"r", true, grove_version)
+            .unwrap()
+            .unwrap()
+            .expect("hash present");
+        assert_ne!(stored_before, stored_after);
+
+        // Same element AND same referenced hash: nothing to do, hash stable.
+        reference
+            .insert_reference_if_changed_value(&mut merk, b"r", [8; 32], None, grove_version)
+            .unwrap()
+            .expect("no-op insert");
+        assert_eq!(
+            Element::get_value_hash(&merk, b"r", true, grove_version)
+                .unwrap()
+                .unwrap(),
+            Some(stored_after)
+        );
+    }
+
+    #[test]
+    fn insert_subtree_if_changed_heals_moved_root_hash() {
+        use crate::tree::hash::NULL_HASH;
+
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
+
+        let tree = Element::empty_tree();
+        tree.insert_subtree_if_changed(&mut merk, b"t", NULL_HASH, None, grove_version)
+            .unwrap()
+            .expect("fresh insert");
+        let stored_before = Element::get_value_hash(&merk, b"t", true, grove_version)
+            .unwrap()
+            .unwrap()
+            .expect("hash present");
+
+        // Unchanged element, moved child root: must rewrite.
+        let delta = tree
+            .insert_subtree_if_changed(&mut merk, b"t", [9; 32], None, grove_version)
+            .unwrap()
+            .expect("healing insert");
+        assert!(!delta.has_changed());
+        let stored_after = Element::get_value_hash(&merk, b"t", true, grove_version)
+            .unwrap()
+            .unwrap()
+            .expect("hash present");
+        assert_ne!(stored_before, stored_after);
+
+        // Same element AND same child root: nothing to do, hash stable.
+        tree.insert_subtree_if_changed(&mut merk, b"t", [9; 32], None, grove_version)
+            .unwrap()
+            .expect("no-op insert");
+        assert_eq!(
+            Element::get_value_hash(&merk, b"t", true, grove_version)
+                .unwrap()
+                .unwrap(),
+            Some(stored_after)
+        );
     }
 }

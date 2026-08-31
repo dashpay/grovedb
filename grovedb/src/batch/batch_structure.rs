@@ -226,7 +226,8 @@ where
                 | GroveOp::InsertIfNotExists { element, .. }
                 | GroveOp::InsertOrReplace { element }
                 | GroveOp::Replace { element }
-                | GroveOp::Patch { element, .. } => {
+                | GroveOp::Patch { element, .. }
+                | GroveOp::ReplaceBackwardReferenceFamilyMember { element, .. } => {
                     if let Some(tree_type) = element.tree_type() {
                         cost_return_on_error!(
                             &mut cost,

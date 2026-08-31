@@ -55,6 +55,7 @@ impl Element {
                 Element::BidirectionalReference(..)
                     | Element::ItemWithBackwardsReferences(..)
                     | Element::SumItemWithBackwardsReferences(..)
+                    | Element::ItemWithSumItemWithBackwardsReferences(..)
             )
         {
             return Err(ElementError::CorruptedData(
@@ -98,6 +99,14 @@ impl Element {
         if let Err(e) = self.validate_private_document_store_config() {
             return Err(ElementError::CorruptedData(format!(
                 "invalid private document store config: {}",
+                e
+            )));
+        }
+        // The backward-references budgets bound worst-case propagation cost;
+        // an over-limit list must never reach disk.
+        if let Err(e) = self.validate_backward_references_limits() {
+            return Err(ElementError::CorruptedData(format!(
+                "invalid backward references: {}",
                 e
             )));
         }
@@ -185,6 +194,7 @@ impl Element {
                 Element::BidirectionalReference(..)
                     | Element::ItemWithBackwardsReferences(..)
                     | Element::SumItemWithBackwardsReferences(..)
+                    | Element::ItemWithSumItemWithBackwardsReferences(..)
             )
         {
             return Err(ElementError::CorruptedData(
@@ -231,6 +241,12 @@ impl Element {
         if let Err(e) = elem.validate_private_document_store_config() {
             return Err(ElementError::CorruptedData(format!(
                 "deserialized private document store with invalid config: {}",
+                e
+            )));
+        }
+        if let Err(e) = elem.validate_backward_references_limits() {
+            return Err(ElementError::CorruptedData(format!(
+                "deserialized element with invalid backward references: {}",
                 e
             )));
         }
@@ -407,8 +423,8 @@ mod tests {
         let bidi = Element::new_bidirectional_reference(
             crate::reference_path::ReferencePathType::AbsolutePathReference(vec![b"a".to_vec()]),
         );
-        let item = Element::ItemWithBackwardsReferences(b"v".to_vec(), None);
-        let sum_item = Element::SumItemWithBackwardsReferences(7, None);
+        let item = Element::ItemWithBackwardsReferences(b"v".to_vec(), Vec::new(), None);
+        let sum_item = Element::SumItemWithBackwardsReferences(7, Vec::new(), None);
 
         assert_eq!(bidi.serialize(grove_version).unwrap()[0], 25);
         assert_eq!(item.serialize(grove_version).unwrap()[0], 26);
@@ -437,8 +453,8 @@ mod tests {
                     vec![b"a".to_vec()],
                 ),
             ),
-            Element::ItemWithBackwardsReferences(b"v".to_vec(), None),
-            Element::SumItemWithBackwardsReferences(7, None),
+            Element::ItemWithBackwardsReferences(b"v".to_vec(), Vec::new(), None),
+            Element::SumItemWithBackwardsReferences(7, Vec::new(), None),
         ];
 
         for inner in inners {

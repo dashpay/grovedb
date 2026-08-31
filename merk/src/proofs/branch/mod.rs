@@ -113,6 +113,7 @@ impl TrunkQueryResult {
         match node {
             Node::KV(key, _)
             | Node::KVValueHash(key, ..)
+            | Node::KVBackwardsReferencesValueHash(key, ..)
             | Node::KVValueHashFeatureType(key, ..)
             | Node::KVValueHashFeatureTypeWithChildHash(key, ..)
             | Node::KVDigest(key, _)
@@ -389,6 +390,7 @@ impl BranchQueryResult {
         match node {
             Node::KV(key, _)
             | Node::KVValueHash(key, ..)
+            | Node::KVBackwardsReferencesValueHash(key, ..)
             | Node::KVValueHashFeatureType(key, ..)
             | Node::KVValueHashFeatureTypeWithChildHash(key, ..)
             | Node::KVDigest(key, _)

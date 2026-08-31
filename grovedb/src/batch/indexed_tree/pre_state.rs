@@ -87,6 +87,7 @@ fn validate_indexed_child_ops(
             // internally derived rather than caller-claimed.
             GroveOp::Delete
             | GroveOp::DeleteTree(..)
+            | GroveOp::ReplaceBackwardReferenceFamilyMember { .. }
             | GroveOp::ReplaceTreeRootKey { .. }
             | GroveOp::InsertTreeWithRootHash { .. }
             | GroveOp::ReplaceNonMerkTreeRoot { .. }

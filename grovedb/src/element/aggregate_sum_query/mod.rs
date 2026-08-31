@@ -420,9 +420,22 @@ impl ElementAggregateSumQueryExtensions for Element {
             // `ReferenceWithSumItem` is also a reference and resolves the
             // same way; its carried sum is a parent-aggregation property
             // and does not affect the chain destination.
+            // A source bidirectional edge's declared `max_hop` bounds the
+            // whole resolution (plain references keep their historical
+            // global-budget behavior). `source_budget` counts fetches
+            // allowed from the source; the loop's `hops_left` counts
+            // reference edges followed BEYOND the direct target, hence the
+            // `- 1` below.
+            let mut source_budget: Option<usize> = None;
             let ref_path = match element {
                 Element::Reference(ref_path, _, _)
                 | Element::ReferenceWithSumItem(ref_path, _, _, _) => ref_path,
+                // A bidirectional reference resolves through its forward
+                // path exactly like a plain reference.
+                Element::BidirectionalReference(reference, _) => {
+                    source_budget = reference.max_hop.map(|m| m as usize);
+                    reference.forward_reference_path
+                }
                 _ => {
                     return Err(Error::InternalError(
                         "expected a reference after conversion".to_string(),
@@ -430,6 +443,9 @@ impl ElementAggregateSumQueryExtensions for Element {
                     .wrap_with_cost(cost);
                 }
             };
+            if source_budget == Some(0) {
+                return Err(Error::ReferenceLimit).wrap_with_cost(cost);
+            }
 
             let mut current_qualified_path = match ref_path {
                 ReferencePathType::AbsolutePathReference(path) => path,
@@ -442,7 +458,10 @@ impl ElementAggregateSumQueryExtensions for Element {
             };
 
             let tx = TxRef::new(args.storage, args.transaction);
-            let mut hops_left = MAX_AGGREGATE_REFERENCE_HOPS;
+            let mut hops_left = source_budget
+                .map(|budget| budget - 1)
+                .unwrap_or(MAX_AGGREGATE_REFERENCE_HOPS)
+                .min(MAX_AGGREGATE_REFERENCE_HOPS);
             let mut visited: HashSet<Vec<Vec<u8>>> = HashSet::new();
 
             loop {
@@ -476,14 +495,35 @@ impl ElementAggregateSumQueryExtensions for Element {
                         .map_err(|e| e.into())
                 );
 
+                // An intermediate bidirectional edge's declaration caps the
+                // remaining budget: after following its own edge, at most
+                // `max_hop - 1` further reference hops remain. Plain
+                // references carry no per-edge cap here.
+                let mut edge_cap: Option<usize> = None;
+                let resolved = match resolved {
+                    // An intermediate bidirectional reference continues the
+                    // chain through its forward path like any reference.
+                    Element::BidirectionalReference(reference, flags) => {
+                        edge_cap = reference.max_hop.map(|m| m as usize);
+                        Element::Reference(
+                            reference.forward_reference_path,
+                            reference.max_hop,
+                            flags,
+                        )
+                    }
+                    other => other,
+                };
                 match resolved {
                     // Both reference variants continue the chain.
                     Element::Reference(next_ref_path, _, _)
                     | Element::ReferenceWithSumItem(next_ref_path, _, _, _) => {
-                        if hops_left == 0 {
+                        if hops_left == 0 || edge_cap == Some(0) {
                             return Err(Error::ReferenceLimit).wrap_with_cost(cost);
                         }
                         hops_left -= 1;
+                        if let Some(cap) = edge_cap {
+                            hops_left = hops_left.min(cap - 1);
+                        }
                         current_qualified_path = cost_return_on_error_into_no_add!(
                             cost,
                             path_from_reference_qualified_path_type(
@@ -792,8 +832,10 @@ impl ElementAggregateSumQueryExtensions for Element {
         // of element this aggregator should accept (suppress the count
         // contribution while still totaling the sum).
         let value = match element.into_underlying() {
-            Element::SumItem(value, _) => value,
-            Element::ItemWithSumItem(_, value, _) => value,
+            Element::SumItem(value, _)
+            | Element::ItemWithSumItem(_, value, _)
+            | Element::SumItemWithBackwardsReferences(value, _, _)
+            | Element::ItemWithSumItemWithBackwardsReferences(_, value, _, _) => value,
             _ => return Err(Error::InvalidInput("Only sum items are allowed")),
         };
 

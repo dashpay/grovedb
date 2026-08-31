@@ -347,6 +347,11 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
                 let mut parent_merk = match self.get_merk(parent_path).unwrap_add_cost(&mut cost) {
                     Ok(merk) => merk,
                     Err(Error::MerkCacheSubtreeDeleted(_)) => continue,
+                    // The parent element is already gone from ITS parent (a
+                    // recursive deletion removed it without marking every
+                    // descendant in this cache) — same situation as the
+                    // explicit deleted marker above, so propagate nothing.
+                    Err(Error::PathKeyNotFound(_)) => continue,
                     Err(e) => return Err(e).wrap_with_cost(cost),
                 };
 

@@ -23,7 +23,10 @@
 
 use grovedb_costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt};
 use grovedb_merk::{
-    element::{costs::ElementCostExtensions, insert::ElementInsertToStorageExtensions},
+    element::{
+        costs::ElementCostExtensions, get::ElementFetchFromStorageExtensions,
+        insert::ElementInsertToStorageExtensions,
+    },
     tree::NULL_HASH,
 };
 use grovedb_path::SubtreePath;
@@ -135,7 +138,7 @@ fn insert_with_backward_references<'db, 'b, B: AsRef<[u8]>>(
     }
 
     match element {
-        Element::BidirectionalReference(reference) => {
+        Element::BidirectionalReference(reference, flags) => {
             cost_return_on_error!(
                 &mut cost,
                 process_bidirectional_reference_insertion(
@@ -143,6 +146,7 @@ fn insert_with_backward_references<'db, 'b, B: AsRef<[u8]>>(
                     path,
                     key,
                     reference,
+                    flags,
                     Some(options)
                 )
             );
@@ -255,7 +259,33 @@ fn insert_with_backward_references<'db, 'b, B: AsRef<[u8]>>(
         | Element::SumItem(..)
         | Element::ItemWithSumItem(..)
         | Element::ItemWithBackwardsReferences(..)
-        | Element::SumItemWithBackwardsReferences(..) => {
+        | Element::SumItemWithBackwardsReferences(..)
+        | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+            // A backward-references element's referrer list is bookkeeping
+            // this flow maintains: carry the stored list over onto the new
+            // element so an update never silently drops registrations (and
+            // so the changed/unchanged comparison reflects the LOGICAL
+            // value, the referrer lists being equal on both sides).
+            let mut element = element;
+            if element.supports_backward_references() {
+                let previous = cost_return_on_error!(
+                    &mut cost,
+                    subtree_to_insert_into.for_merk(|m| {
+                        Element::get_optional(m, key, true, grove_version).map_err(Error::MerkError)
+                    })
+                );
+                if let Some(refs) = element.backward_references_mut() {
+                    // The stored list is authoritative; whatever the caller
+                    // supplied is not theirs to claim — forged entries would
+                    // later let cascades and propagations follow arbitrary
+                    // inverted paths.
+                    *refs = previous
+                        .as_ref()
+                        .and_then(|p| p.backward_references())
+                        .map(|p| p.to_vec())
+                        .unwrap_or_default();
+                }
+            }
             let delta = cost_return_on_error!(
                 &mut cost,
                 subtree_to_insert_into.for_merk(|m| {

@@ -41,6 +41,212 @@ pub(in crate::batch) fn wrapper_overhead_for(
     }
 }
 
+// ── Backward-references fan-out estimation model ────────────────────────
+//
+// Under `BatchApplyOptions::propagate_backward_references` (GROVE_V4+), a
+// single op can expand into derived operations in OTHER subtrees:
+// registering on a target, rewriting every referrer chain with a new end
+// hash, cascading deletions through referrer chains. The estimator cannot
+// see the stored referrer graph, so the models charge counts derived from
+// the apply path's hard budgets (`MAX_BACKWARD_REFERENCES` = 32 entries
+// per item, 1 per reference; `MAX_REFERENCE_HOPS` = 10 per component):
+//
+// - The estimator cannot see the STORED element an op displaces, so
+//   EVERY overwrite-capable op and delete under the flag charges the
+//   displaced-state bound — a plain payload can land on a registered
+//   family element whose bookkeeping the preprocessor must perform.
+// - WORST case charges the full bound — an item's referrer graph is at
+//   most 32 chains of at most `MAX_REFERENCE_HOPS` nodes each, every one
+//   rewritten (or cascaded away); a reference insertion additionally
+//   touches its target, its old target, and its single upstream chain.
+// - AVERAGE case charges a small typical shape (one referrer chain of two
+//   for the displaced state, registration + removal + one propagation for
+//   references) — like the MMR model's trailing-ones average, this is a
+//   calibration constant, not a bound.
+// - A reference insertion's registration GROWS the target element by a
+//   `BackwardReference` entry: the inverted path re-anchors at the
+//   referrer's qualified position, so the bound is sized from the op's
+//   OWN path and key (every `invert()` output is built from subsets of
+//   the origin's qualified path plus small scalars).
+//
+// Each derived rewrite is charged as a node load + a node rewrite + a merk
+// propagation, all sized from the op's OWN declared layer — referrer
+// subtrees are not GroveDB-declarable here, so the model assumes the
+// component's nodes are shaped like the declared layer. Callers must
+// declare a layer that dominates every Merk in the component — the
+// referrer subtrees AND their ancestor Merks (whose in-Merk propagation
+// the ancestor walk below charges from the same declared shape).
+//
+// Each derived propagation additionally charges the GROVE-DEPTH ancestor
+// walk of its foreign subtree: registration enforces
+// `MAX_BACKWARD_REFERENCES_GROVE_DEPTH` on every bidirectional-edge
+// position, so the worst model charges exactly that many ancestor levels
+// per propagation (without the registration bound this walk would be
+// unboundable — a referrer parked arbitrarily deep would out-cost any
+// fixed estimate). Each level is a full step of the actual bubbling: the
+// parent-Merk open, the changed tree element's biggest-node rewrite, and
+// that Merk's own worst-case propagation to its root.
+
+/// Worst-case number of derived node rewrites (or cascade deletions) an
+/// overwrite/delete of a backward-references ITEM can trigger: every entry
+/// heads a referrer chain bounded by the component hop budget.
+#[cfg(feature = "minimal")]
+pub(in crate::batch) const BACKWARD_REFERENCES_WORST_ITEM_FAN_OUT: u32 =
+    grovedb_element::MAX_BACKWARD_REFERENCES as u32
+        * crate::operations::get::MAX_REFERENCE_HOPS as u32;
+
+/// Worst-case number of derived node rewrites a bidirectional-reference
+/// insertion can trigger: the registration on the new target, the
+/// registration removal on the old target, and the upstream propagation
+/// along the reference's single referrer chain.
+#[cfg(feature = "minimal")]
+pub(in crate::batch) const BACKWARD_REFERENCES_WORST_REFERENCE_FAN_OUT: u32 =
+    2 + (crate::operations::get::MAX_REFERENCE_HOPS as u32 - 1);
+
+/// Worst-case number of chain-resolution element loads a
+/// bidirectional-reference insertion performs (the new and the old forward
+/// chains, each bounded by the hop budget).
+#[cfg(feature = "minimal")]
+pub(in crate::batch) const BACKWARD_REFERENCES_WORST_REFERENCE_RESOLUTION_LOADS: u32 =
+    2 * crate::operations::get::MAX_REFERENCE_HOPS as u32;
+
+/// Average-case derived rewrites for an ITEM overwrite/delete: one
+/// referrer chain of two.
+#[cfg(feature = "minimal")]
+pub(in crate::batch) const BACKWARD_REFERENCES_AVERAGE_ITEM_FAN_OUT: u32 = 2;
+
+/// Average-case derived rewrites for a reference insertion: the
+/// registration, one superseded-registration removal, one propagation.
+#[cfg(feature = "minimal")]
+pub(in crate::batch) const BACKWARD_REFERENCES_AVERAGE_REFERENCE_FAN_OUT: u32 = 3;
+
+/// Average-case chain-resolution loads for a reference insertion.
+#[cfg(feature = "minimal")]
+pub(in crate::batch) const BACKWARD_REFERENCES_AVERAGE_REFERENCE_RESOLUTION_LOADS: u32 = 4;
+
+/// Average-case ancestor levels a derived foreign-subtree propagation
+/// walks (worst case charges the full
+/// `MAX_BACKWARD_REFERENCES_GROVE_DEPTH` registration bound).
+#[cfg(feature = "minimal")]
+pub(in crate::batch) const BACKWARD_REFERENCES_AVERAGE_ANCESTOR_LEVELS: u32 = 2;
+
+/// Hash calls per derived family rewrite: stripped value hash, referrer-
+/// list hash, the two-layer combine, the end-hash combine, the kv digest
+/// and the node hash.
+#[cfg(feature = "minimal")]
+pub(in crate::batch) const BACKWARD_REFERENCES_REWRITE_HASH_CALLS: u32 = 6;
+
+/// Merge `unit × times` into `cost` with saturating arithmetic. The
+/// worst-case ancestor-walk bound can exceed the u32 cost domain
+/// (hundreds of derived propagations × the full registration depth ×
+/// biggest-node in-Merk propagation); any REAL batch's actual cost must
+/// itself fit that domain, so a saturated estimate still dominates every
+/// actual — while ordinary `+=` would panic on overflow in debug builds.
+#[cfg(feature = "minimal")]
+pub(in crate::batch) fn add_saturating_scaled(
+    cost: &mut OperationCost,
+    unit: &OperationCost,
+    times: u64,
+) {
+    let clamp_u32 = |value: u64| -> u32 { value.min(u32::MAX as u64) as u32 };
+    let scale_u32 = |base: u32, unit: u32| -> u32 {
+        clamp_u32(base as u64 + (unit as u64).saturating_mul(times).min(u32::MAX as u64))
+    };
+    cost.seek_count = scale_u32(cost.seek_count, unit.seek_count);
+    cost.hash_node_calls = scale_u32(cost.hash_node_calls, unit.hash_node_calls);
+    cost.storage_cost.added_bytes =
+        scale_u32(cost.storage_cost.added_bytes, unit.storage_cost.added_bytes);
+    cost.storage_cost.replaced_bytes = scale_u32(
+        cost.storage_cost.replaced_bytes,
+        unit.storage_cost.replaced_bytes,
+    );
+    cost.storage_loaded_bytes = cost
+        .storage_loaded_bytes
+        .saturating_add(unit.storage_loaded_bytes.saturating_mul(times));
+}
+
+/// The derived fan-out shape of a batch op under the backward-references
+/// flag: how many derived node rewrites, chain-resolution loads, and
+/// subtree propagations to charge.
+#[cfg(feature = "minimal")]
+#[derive(Clone, Copy)]
+pub(in crate::batch) struct BackwardReferencesFanOut {
+    /// Derived node rewrites (registrations, propagation rewrites, cascade
+    /// deletions), each charged as load + rewrite.
+    pub rewrites: u32,
+    /// Chain-resolution element loads (no writes).
+    pub resolution_loads: u32,
+    /// Distinct referrer subtrees whose merk root paths re-propagate.
+    pub propagations: u32,
+    /// Node GROWTH from registering on the target: the target's element
+    /// gains a `BackwardReference` entry (the inverted reference path plus
+    /// the cascade flag), which is added — not replaced — bytes. Every
+    /// `invert()` output is built from subsets of the referrer's qualified
+    /// origin path plus small scalars, so the caller sizes this bound from
+    /// the op's own path segments and key.
+    pub registration_added_bytes: u32,
+}
+
+#[cfg(feature = "minimal")]
+impl BackwardReferencesFanOut {
+    /// The worst-case fan-out of any overwrite-capable op (or delete)
+    /// under the flag. The estimator cannot see the STORED element the op
+    /// displaces: a plain payload can still land on a registered family
+    /// element, whose propagation/cascade work is the full item bound —
+    /// so every write and delete charges it. Every rewrite may live in
+    /// its own subtree, so each charges a propagation. Propagation
+    /// rewrites and cascade deletions never grow nodes.
+    pub(in crate::batch) fn worst_item() -> Self {
+        Self {
+            rewrites: BACKWARD_REFERENCES_WORST_ITEM_FAN_OUT,
+            resolution_loads: BACKWARD_REFERENCES_WORST_ITEM_FAN_OUT,
+            propagations: BACKWARD_REFERENCES_WORST_ITEM_FAN_OUT,
+            registration_added_bytes: 0,
+        }
+    }
+
+    /// The worst-case fan-out of a `BidirectionalReference` insertion:
+    /// its own registration/propagation terms PLUS the displaced-state
+    /// item bound (the reference can overwrite a registered family
+    /// element, cascading its referrers).
+    pub(in crate::batch) fn worst_reference(registration_added_bytes: u32) -> Self {
+        Self {
+            rewrites: BACKWARD_REFERENCES_WORST_ITEM_FAN_OUT
+                + BACKWARD_REFERENCES_WORST_REFERENCE_FAN_OUT,
+            resolution_loads: BACKWARD_REFERENCES_WORST_ITEM_FAN_OUT
+                + BACKWARD_REFERENCES_WORST_REFERENCE_RESOLUTION_LOADS,
+            propagations: BACKWARD_REFERENCES_WORST_ITEM_FAN_OUT
+                + BACKWARD_REFERENCES_WORST_REFERENCE_FAN_OUT,
+            registration_added_bytes,
+        }
+    }
+
+    /// The average-case fan-out of any overwrite-capable op (or delete)
+    /// under the flag: the displaced element is unseen, so every write
+    /// charges the typical item shape.
+    pub(in crate::batch) fn average_item() -> Self {
+        Self {
+            rewrites: BACKWARD_REFERENCES_AVERAGE_ITEM_FAN_OUT,
+            resolution_loads: BACKWARD_REFERENCES_AVERAGE_ITEM_FAN_OUT,
+            propagations: 1,
+            registration_added_bytes: 0,
+        }
+    }
+
+    /// The average-case fan-out of a `BidirectionalReference` insertion:
+    /// reference terms plus the typical displaced-item shape.
+    pub(in crate::batch) fn average_reference(registration_added_bytes: u32) -> Self {
+        Self {
+            rewrites: BACKWARD_REFERENCES_AVERAGE_ITEM_FAN_OUT
+                + BACKWARD_REFERENCES_AVERAGE_REFERENCE_FAN_OUT,
+            resolution_loads: BACKWARD_REFERENCES_AVERAGE_ITEM_FAN_OUT
+                + BACKWARD_REFERENCES_AVERAGE_REFERENCE_RESOLUTION_LOADS,
+            propagations: 1,
+            registration_added_bytes,
+        }
+    }
+}
+
 // ── CommitmentTreeInsert estimation model ───────────────────────────────
 //
 // Every constant below is an UPPER BOUND, not an average. Downstream

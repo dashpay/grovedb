@@ -33,10 +33,12 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
         Element::BidirectionalReference(..)
             | Element::ItemWithBackwardsReferences(..)
             | Element::SumItemWithBackwardsReferences(..)
+            | Element::ItemWithSumItemWithBackwardsReferences(..)
     ) {
         return Err(Error::NotSupported(
             "backward-references elements (BidirectionalReference, \
-             ItemWithBackwardsReferences, SumItemWithBackwardsReferences) require GROVE_V4+"
+             ItemWithBackwardsReferences, SumItemWithBackwardsReferences, \
+             ItemWithSumItemWithBackwardsReferences) require GROVE_V4+"
                 .to_owned(),
         ))
         .wrap_with_cost(Default::default());

@@ -99,6 +99,17 @@
 //!   admission bound: raising it ungated would make already-committed
 //!   shield transitions re-validate as under-funded and brick sync.
 //!
+//! - `operations.average_case.average_case_backward_references_fan_out: 1`
+//!   and `operations.worst_case.worst_case_backward_references_fan_out: 1`
+//!   — batch estimation charges the backward-references family's derived
+//!   fan-out (registration, chain propagation, cascade deletion), bounded
+//!   by the apply path's budgets (≤32 referrers per item, ≤10-hop chains,
+//!   1 referrer per reference), and models the internal
+//!   `ReplaceBackwardReferenceFamilyMember` op. V1..V3 keep estimating the
+//!   family as plain elements (their apply path rejects it in batches, so
+//!   the legacy figures were never admission-relevant) — preserved for
+//!   replay.
+//!
 //! - `bulk_append_tree_versions.cost.append_storage_accounting: 1` and
 //!   `commitment_tree_versions.cost.frontier_save_storage_accounting: 1` —
 //!   the append-only family (`BulkAppendTree`, `CommitmentTree`,
@@ -392,6 +403,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 add_average_case_get_raw_tree_cost: 0,
                 add_average_case_get_cost: 0,
                 average_case_commitment_tree_insert: 1,
+                average_case_backward_references_fan_out: 1,
             },
             worst_case: GroveDBOperationsWorstCaseVersions {
                 add_worst_case_get_merk_at_path: 0,
@@ -407,6 +419,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 add_worst_case_get_raw_cost: 0,
                 add_worst_case_get_cost: 0,
                 worst_case_commitment_tree_insert: 1,
+                worst_case_backward_references_fan_out: 1,
             },
             // PrivateDocumentStore activates in GROVE_V4.
             private_document_store: GroveDBOperationsPrivateDocumentStoreVersions {

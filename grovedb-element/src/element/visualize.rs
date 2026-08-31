@@ -31,10 +31,26 @@ impl Visualize for Element {
                     drawer = f.visualize(drawer)?;
                 }
             }
-            Element::BidirectionalReference(..) => {
-                drawer.write(b"bidi_ref")?;
+            Element::BidirectionalReference(reference, flags) => {
+                drawer.write(
+                    format!(
+                        "bidi_ref: [forward: {}, cascade: {}, max_hop: {}, backrefs: {}]",
+                        reference.forward_reference_path,
+                        reference.cascade_on_update,
+                        reference
+                            .max_hop
+                            .map_or("None".to_string(), |h| h.to_string()),
+                        reference.backward_references.len(),
+                    )
+                    .as_bytes(),
+                )?;
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
+                }
             }
-            Element::ItemWithBackwardsReferences(value, flags) => {
+            Element::ItemWithBackwardsReferences(value, _, flags) => {
                 drawer.write(b"item_with_backwards_references: ")?;
                 drawer = value.visualize(drawer)?;
 
@@ -44,8 +60,19 @@ impl Visualize for Element {
                     drawer = f.visualize(drawer)?;
                 }
             }
-            Element::SumItemWithBackwardsReferences(value, flags) => {
+            Element::SumItemWithBackwardsReferences(value, _, flags) => {
                 drawer.write(format!("sum_item_with_backwards_references: {value}").as_bytes())?;
+
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
+                }
+            }
+            Element::ItemWithSumItemWithBackwardsReferences(value, sum_value, _, flags) => {
+                drawer.write(b"item_with_sum_item_with_backwards_references: ")?;
+                drawer = value.visualize(drawer)?;
+                drawer.write(format!(", sum: {sum_value}").as_bytes())?;
 
                 if let Some(f) = flags
                     && !f.is_empty()
@@ -331,6 +358,60 @@ impl fmt::Debug for Element {
 #[cfg(test)]
 mod tests {
     use grovedb_visualize::to_hex;
+
+    #[test]
+    fn visualize_backward_references_family() {
+        let render = |e: &Element| {
+            let mut out = Vec::new();
+            let drawer = Drawer::new(&mut out);
+            e.visualize(drawer).expect("visualize IO error");
+            String::from_utf8_lossy(&out).into_owned()
+        };
+
+        let bidi = Element::BidirectionalReference(
+            crate::BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"t".to_vec()),
+                cascade_on_update: true,
+                max_hop: Some(3),
+                backward_references: Vec::new(),
+            },
+            Some(vec![1]),
+        );
+        let s = render(&bidi);
+        assert!(
+            s.starts_with("bidi_ref: [") && s.contains("cascade: true") && s.contains("max_hop: 3"),
+            "got: {s}"
+        );
+
+        let bidi_plain = Element::BidirectionalReference(
+            crate::BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"t".to_vec()),
+                cascade_on_update: false,
+                max_hop: None,
+                backward_references: Vec::new(),
+            },
+            None,
+        );
+        assert!(render(&bidi_plain).contains("max_hop: None"));
+
+        let item = Element::ItemWithBackwardsReferences(b"v".to_vec(), Vec::new(), Some(vec![2]));
+        let s = render(&item);
+        assert!(
+            s.starts_with("item_with_backwards_references: "),
+            "got: {s}"
+        );
+        let item_plain = Element::ItemWithBackwardsReferences(b"v".to_vec(), Vec::new(), None);
+        render(&item_plain);
+
+        let sum = Element::SumItemWithBackwardsReferences(-7, Vec::new(), Some(vec![3]));
+        let s = render(&sum);
+        assert!(
+            s.starts_with("sum_item_with_backwards_references: -7"),
+            "got: {s}"
+        );
+        let sum_plain = Element::SumItemWithBackwardsReferences(-7, Vec::new(), None);
+        render(&sum_plain);
+    }
 
     use super::*;
     use crate::reference_path::ReferencePathType;

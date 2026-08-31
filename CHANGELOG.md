@@ -8,17 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Bidirectional references (#345): three new `Element` variants —
+- Bidirectional references (#345): four new `Element` variants —
   `BidirectionalReference` (discriminant 25), `ItemWithBackwardsReferences`
-  (26), and `SumItemWithBackwardsReferences` (27) — plus a
+  (26), `SumItemWithBackwardsReferences` (27), and
+  `ItemWithSumItemWithBackwardsReferences` (28, the `ItemWithSumItem`
+  twin) — plus a
   backward-references subsystem that keeps reference chains consistent:
   updating a referenced element propagates the new hash along every chain,
   and deleting/overwriting it cascades the chains away (each affected
   reference must opt in via `cascade_on_update`). Opt-in per call through
   the new `propagate_backward_references` flag on `InsertOptions` /
-  `DeleteOptions`. Requires `GROVE_V4`; earlier versions and all batch
-  entry points reject the new variants (fail closed). See
-  `adr/bidirectional_references.md`.
+  `DeleteOptions`. The referrer list is stored on the element itself under a
+  two-layer hash (`combine(inner, backrefs)`), so registering a referrer
+  never re-hashes what existing referrers committed to; public reads return
+  the stripped element, and proofs authenticate these elements through the
+  new `Node::KVBackwardsReferencesValueHash` wire node whose value hash the
+  verifier recomputes. Requires `GROVE_V4`; earlier versions, V0 proofs, and
+  `Provable*` aggregate parents reject the new variants (fail closed).
+  `apply_batch` supports the whole family when the batch opts in via
+  `BatchApplyOptions::propagate_backward_references`: a preprocessing pass
+  expands the batch into the derived registration/propagation/cascade
+  operations the live flagged flow performs (shared semantic core, so batch
+  and non-batch execution produce byte-identical root hashes), including
+  references whose targets are created in the same batch; conflicting
+  combinations (a reference plus its target's deletion, a cascade hitting
+  another op's position, `RefreshReference` on a bidirectional reference)
+  fail closed. Average/worst-case batch estimation charges the derived
+  fan-out on `GROVE_V4` (bounded: ≤32 referrers per item, ≤10-hop chains, 1
+  referrer per reference) while pre-V4 estimation stays byte-stable for
+  replay. See `adr/bidirectional_references.md`.
 - **BREAKING**: Added `add_parent_tree_on_subquery` feature to PathQuery (#379)
   - New field in `Query` struct: `add_parent_tree_on_subquery: bool`
   - When set to `true`, parent tree elements (like CountTree or SumTree) are included in query results when performing subqueries

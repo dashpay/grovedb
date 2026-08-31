@@ -73,6 +73,14 @@ pub struct BatchApplyOptions {
     /// At what height do we want to pause applying batch operations
     /// Most of the time this should be not set
     pub batch_pause_height: Option<u8>,
+    /// Opt into backward-references bookkeeping for this batch: ops
+    /// carrying the backward-references family (`BidirectionalReference`
+    /// and the three backward-references item variants) become valid, and
+    /// the batch expands into the derived registration / propagation /
+    /// cascade operations the live flagged flow would perform — including
+    /// references whose targets are created in the same batch. See
+    /// `batch::backward_references` for the expansion and conflict rules.
+    pub propagate_backward_references: bool,
 }
 
 #[cfg(feature = "minimal")]
@@ -84,6 +92,7 @@ impl Default for BatchApplyOptions {
             disable_operation_consistency_check: false,
             base_root_storage_is_free: true,
             batch_pause_height: None,
+            propagate_backward_references: false,
         }
     }
 }
@@ -97,7 +106,7 @@ impl BatchApplyOptions {
             validate_insertion_does_not_override_tree: self
                 .validate_insertion_does_not_override_tree,
             base_root_storage_is_free: self.base_root_storage_is_free,
-            propagate_backward_references: false,
+            propagate_backward_references: self.propagate_backward_references,
         }
     }
 
@@ -108,7 +117,11 @@ impl BatchApplyOptions {
             deleting_non_empty_trees_returns_error: true,
             base_root_storage_is_free: self.base_root_storage_is_free,
             validate_tree_at_path_exists: false,
-            propagate_backward_references: false,
+            // Forwarded like `as_insert_options` does: a batch that opts
+            // into backward-references bookkeeping keeps its deletes
+            // flagged too, so registered targets cascade instead of
+            // silently dangling.
+            propagate_backward_references: self.propagate_backward_references,
         }
     }
 
