@@ -4,6 +4,7 @@ pub mod aggregate_sum_path_query;
 pub(crate) mod axis_lowering;
 mod grove_branch_query_result;
 mod grove_trunk_query_result;
+pub(crate) mod merge;
 mod path_branch_chunk_query;
 mod path_trunk_chunk_query;
 pub(crate) mod shape;
@@ -1063,20 +1064,22 @@ impl PathQuery {
     }
 
     /// Combines multiple path queries into one equivalent path query
+    /// rooted at their common path prefix.
+    ///
+    /// Behavior is version-gated on `path_query_methods.merge` — see
+    /// the [`merge`](crate::query::merge) module for the v0/v1/v2
+    /// semantics (direction handling and, from v2, limit lifting). The
+    /// checks below are version-independent: an empty input is
+    /// malformed, read-mode queries have no merge semantics at any
+    /// version, and a single input merges to itself.
     pub fn merge(
         mut path_queries: Vec<&PathQuery>,
         grove_version: &GroveVersion,
     ) -> Result<Self, Error> {
-        let merge_version = grove_version.grovedb_versions.path_query_methods.merge;
-        if merge_version > 2 {
-            return Err(Error::VersionError(
-                grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
-                    method: "merge".to_string(),
-                    known_versions: vec![0, 1, 2],
-                    received: merge_version,
-                },
-            ));
-        }
+        // An unknown merge version fails closed before anything else —
+        // even for inputs the version-independent checks below would
+        // short-circuit.
+        merge::validate_version(grove_version)?;
         if path_queries.is_empty() {
             return Err(Error::InvalidInput(
                 "merge function requires at least 1 path query",
@@ -1100,192 +1103,7 @@ impl PathQuery {
             return Ok(path_queries.remove(0).clone());
         }
 
-        // Direction handling, version-gated. `merge` slot 0 (V1..V3)
-        // keeps the long-standing behavior: input directions are
-        // silently dropped (sub-level inputs end up under a synthesized
-        // root whose direction is the default). Slot 1 (V4+) requires
-        // every input to agree and propagates the shared direction to
-        // the merged root. Merged queries feed proofs and the verifier
-        // re-runs the same merge with the same grove version, so both
-        // sides stay in agreement at every version.
-        let shared_direction = path_queries[0].query.query.left_to_right;
-        if merge_version >= 1
-            && path_queries
-                .iter()
-                .any(|path_query| path_query.query.query.left_to_right != shared_direction)
-        {
-            return Err(Error::NotSupported(
-                "can not merge path queries with conflicting directions (left_to_right \
-                 differs); align the directions before merging"
-                    .to_string(),
-            ));
-        }
-
-        let (common_path, next_index) = PathQuery::get_common_path(&path_queries);
-
-        let mut queries_for_common_path_this_level: Vec<Query> = vec![];
-
-        let mut queries_for_common_path_sub_level: Vec<SubqueryBranch> = vec![];
-
-        // convert all the paths after the common path to queries
-        path_queries.into_iter().try_for_each(|path_query| {
-            if path_query.query.offset.is_some() {
-                return Err(Error::NotSupported(
-                    "can not merge pathqueries with offsets".to_string(),
-                ));
-            }
-            let carries_limits =
-                path_query.query.limit.is_some() || path_query.has_instance_limits();
-            if merge_version < 2 {
-                // Pre-v2 (V1..V3): limits never merge. A merged limit
-                // would silently mean something different than either
-                // input asked for.
-                if path_query.query.limit.is_some() {
-                    return Err(Error::NotSupported(
-                        "can not merge pathqueries with limits, consider setting the limit after \
-                         the merge"
-                            .to_string(),
-                    ));
-                }
-                if path_query.has_instance_limits() {
-                    return Err(Error::NotSupported(
-                        "can not merge pathqueries carrying per-instance limits (Query::limit)"
-                            .to_string(),
-                    ));
-                }
-            }
-            path_query
-                .to_subquery_branch_with_offset_start_index(next_index)
-                .and_then(|mut unsized_path_query| {
-                    if unsized_path_query.subquery_path.is_none() {
-                        // The input lands at the merged root, where its
-                        // query body merges with the other root-level
-                        // inputs — budgets cannot blend, so limits are
-                        // refused here even under v2.
-                        if carries_limits {
-                            return Err(Error::NotSupported(
-                                "can not merge a limited path query that lands at the merged \
-                                 root: its budget would have to blend with the other queries' \
-                                 result sets; give it a longer path of its own or set the limit \
-                                 after the merge"
-                                    .to_string(),
-                            ));
-                        }
-                        queries_for_common_path_this_level.push(
-                            *unsized_path_query
-                                .subquery
-                                .ok_or(Error::CorruptedCodeExecution(
-                                    "subquery must exist when subquery_path is none in merge",
-                                ))?,
-                        );
-                    } else {
-                        // v2 lift: an input's global budget becomes its
-                        // branch-root query's per-instance cap. Exact,
-                        // because the branch instance executes exactly
-                        // once (its path is a concrete key chain), so
-                        // "at most N rows from this whole input" and
-                        // "at most N rows per instance" coincide.
-                        if merge_version >= 2
-                            && let Some(global) = path_query.query.limit
-                        {
-                            let subquery = unsized_path_query.subquery.as_deref_mut().ok_or(
-                                Error::CorruptedCodeExecution(
-                                    "subquery must exist on a sub-level merge branch",
-                                ),
-                            )?;
-                            subquery.limit = Some(match subquery.limit {
-                                Some(own) => own.min(global),
-                                None => global,
-                            });
-                        }
-                        queries_for_common_path_sub_level.push(unsized_path_query);
-                    }
-                    Ok(())
-                })
-        })?;
-
-        // Version-gated direction handling. The `merge` slot's `0`
-        // (V1..V3) keeps the long-standing silent first-wins behavior;
-        // `1` (V4+) requires every merged query to agree on
-        // `left_to_right` and propagates it, erroring on conflict —
-        // merged queries feed proofs, and the verifier re-runs the same
-        // merge with the same grove version, so both sides stay in
-        // agreement at every version.
-        let mut merged_query = match merge_version {
-            0 => Query::merge_multiple(queries_for_common_path_this_level)
-                .map_err(|e| Error::NotSupported(e.to_string()))?,
-            _ => Query::merge_multiple_directional(queries_for_common_path_this_level)
-                .map_err(|e| Error::NotSupported(e.to_string()))?,
-        };
-        // add conditional subqueries
-        for sub_path_query in queries_for_common_path_sub_level {
-            let SubqueryBranch {
-                subquery_path,
-                subquery,
-            } = sub_path_query;
-            let mut subquery_path =
-                subquery_path.ok_or(Error::CorruptedCodeExecution("subquery path must exist"))?;
-            let key = subquery_path.remove(0); // must exist
-            merged_query.insert_item(QueryItem::Key(key.clone()));
-            let rest_of_path = if subquery_path.is_empty() {
-                None
-            } else {
-                Some(subquery_path)
-            };
-            let subquery_branch = SubqueryBranch {
-                subquery_path: rest_of_path,
-                subquery,
-            };
-            let limits_in_play = merge_version >= 2
-                && (merged_query.has_instance_limit_anywhere()
-                    || subquery_branch
-                        .subquery
-                        .as_deref()
-                        .is_some_and(|subquery| subquery.has_instance_limit_anywhere()));
-            if limits_in_play {
-                // Budgets never blend: a limit-carrying branch (lifted
-                // or authored) merges only as an exclusive graft. Any
-                // overlap with an existing conditional would need the
-                // two branches' bodies — and budgets — merged, which is
-                // refused by design.
-                let collides = merged_query
-                    .conditional_subquery_branches
-                    .as_ref()
-                    .is_some_and(|branches| {
-                        branches.keys().any(|item| item.contains(key.as_slice()))
-                    });
-                if collides {
-                    return Err(Error::NotSupported(format!(
-                        "can not merge limited path queries whose branches collide at key {}; \
-                         remove the limits or merge the colliding queries separately",
-                        crate::operations::proof::util::hex_to_ascii(&key),
-                    )));
-                }
-                merged_query.add_conditional_subquery(
-                    QueryItem::Key(key),
-                    subquery_branch.subquery_path,
-                    subquery_branch.subquery.map(|subquery| *subquery),
-                );
-            } else {
-                // The read-mode gate at the top of `merge` already rejected
-                // any input carrying one, so this cannot fire today —
-                // propagate rather than discard, so a future path that
-                // reaches here with a read mode surfaces it instead of
-                // silently dropping the mode.
-                merged_query
-                    .merge_conditional_boxed_subquery(QueryItem::Key(key), subquery_branch)
-                    .map_err(|e| Error::NotSupported(e.to_string()))?;
-            }
-        }
-
-        // V4+: the agreed direction travels to the merged root (it
-        // would otherwise be lost whenever the inputs land at a sub
-        // level under a synthesized root query).
-        if merge_version >= 1 {
-            merged_query.left_to_right = shared_direction;
-        }
-
-        Ok(PathQuery::new_unsized(common_path, merged_query))
+        merge::merge(path_queries, grove_version)
     }
 
     /// Given a set of path queries, this returns an array of path keys that are
