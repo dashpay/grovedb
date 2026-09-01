@@ -248,6 +248,11 @@ use grovedb_storage::{Storage, StorageContext};
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "minimal")]
 use grovedb_visualize::DebugByteVectors;
+/// Telemetry counts from one `flush_pending_prefix_drops` pass — re-exported
+/// so hosts can name the flat-drop reclamation report without reaching into
+/// `operations::delete`.
+#[cfg(feature = "minimal")]
+pub use operations::delete::PendingPrefixDropsReport;
 /// The unified read dispatch's result types. `operations::get` is
 /// crate-private, so without this re-export `run_path_query` would be
 /// callable from outside the crate but its return type unnameable.

@@ -179,6 +179,32 @@ pub struct GroveDBOperationsVersions {
     pub average_case: GroveDBOperationsAverageCaseVersions,
     pub worst_case: GroveDBOperationsWorstCaseVersions,
     pub private_document_store: GroveDBOperationsPrivateDocumentStoreVersions,
+    pub flat_drop: GroveDBOperationsFlatDropVersions,
+}
+
+/// Version slots for the flat-subtree drop family (issue #848): O(1)
+/// removal of a populated subtree that is declared to contain no child
+/// subtrees, with storage reclaimed by DB-level range tombstones driven
+/// from a durable redo record.
+///
+/// Like [`GroveDBOperationsPrivateDocumentStoreVersions`], these slots are
+/// **capability gates**, not implementation selectors: slot value `0`
+/// means the operation is unavailable and fails closed with a
+/// version-mismatch error; `1` means the v1 implementation is active.
+/// `GROVE_V1`..`GROVE_V3` hold every slot at `0`; `GROVE_V4` flips them to
+/// `1`.
+///
+/// `GroveDb::flush_pending_prefix_drops` is deliberately ungated: it only
+/// reclaims storage for redo records that a gated operation already
+/// created, never touches the root hash, and is a no-op when no records
+/// exist.
+#[derive(Clone, Debug, Default)]
+pub struct GroveDBOperationsFlatDropVersions {
+    /// The standalone `GroveDb::drop_flat_subtree` operation.
+    pub drop_flat_subtree: FeatureVersion,
+    /// The `SubelementsDeletionBehavior::DropFlat` behavior on batch
+    /// `DeleteTree` ops.
+    pub batch_delete_tree_drop_flat: FeatureVersion,
 }
 
 /// Version slots for the PrivateDocumentStore operation family.

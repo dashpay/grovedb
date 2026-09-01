@@ -61,6 +61,7 @@ mod direct_insert_indexed_tests;
 mod error_display_tests;
 mod estimated_costs_average_case_tests;
 mod estimated_costs_worst_case_tests;
+mod flat_drop_tests;
 mod get_cost_estimator_tests;
 mod grove_query_result_tests;
 mod indexed_axis_keys_only_read_tests;
