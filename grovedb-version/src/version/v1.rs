@@ -11,7 +11,7 @@ use crate::version::{
         GroveDBOperationsInsertVersions, GroveDBOperationsPrivateDocumentStoreVersions,
         GroveDBOperationsProofVersions, GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
-        GroveDBReplicationVersions, GroveDBVersions,
+        GroveDBReplicationVersions, GroveDBStorageCostVersions, GroveDBVersions,
     },
     merk_versions::{
         MerkAverageCaseCostsVersions, MerkBatchVersions, MerkProofVersions, MerkVersions,
@@ -238,6 +238,9 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
             should_add_parent_tree_at_path: 0,
             unified_read_mode: 0,
             per_instance_query_limits: 0,
+        },
+        storage_costs: GroveDBStorageCostVersions {
+            add_basic_storage_removal_to_sectioned_storage_removal: 0,
         },
         replication: GroveDBReplicationVersions {
             get_subtrees_metadata: 0,

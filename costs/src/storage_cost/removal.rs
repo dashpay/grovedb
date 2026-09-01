@@ -28,6 +28,7 @@
 
 use std::{
     borrow::BorrowMut,
+    cell::Cell,
     cmp::Ordering,
     collections::BTreeMap,
     ops::{Add, AddAssign},
@@ -60,6 +61,118 @@ pub enum StorageRemovedBytes {
     SectionedStorageRemoval(StorageRemovalPerEpochByIdentifier),
 }
 
+// Version selector for the basic-into-sectioned storage-removal arithmetic.
+//
+// Why a thread-local instead of an explicit parameter: the version-sensitive
+// combination happens inside the `Add`/`AddAssign` operator overloads for
+// `StorageRemovedBytes`, which are reached through `StorageCost` and
+// `OperationCost` aggregation at hundreds of version-less call sites (every
+// `add_cost` / `cost_return_on_error!`). Those operator signatures cannot carry
+// a `grove_version`, and `grovedb-costs` does not depend on `grovedb-version`.
+// The version is only known at the GroveDB apply / delete / batch entry points,
+// which install a guard ([`use_basic_sectioned_removal_addition_version`] /
+// [`with_basic_sectioned_removal_addition_version`]) for the duration of the
+// operation.
+//
+// The default is `0` (legacy / shipped v1..v3 behavior). That default is the safe
+// one: an un-guarded caller reproduces historical behavior rather than silently
+// "upgrading" to the fixed arithmetic and diverging from the rest of the
+// network. Only an explicit guard set from a v4+ context enables the fix.
+//
+// Note: this selector only affects the three historically-buggy arms. The
+// `Sectioned += Basic` arm was always correct and bypasses the selector
+// entirely (see [`AddAssign`]).
+thread_local! {
+    static BASIC_SECTIONED_REMOVAL_ADDITION_VERSION: Cell<u16> = const { Cell::new(0) };
+}
+
+/// Guard that restores the previous storage-removal arithmetic version when
+/// dropped.
+pub struct BasicSectionedRemovalAdditionVersionGuard {
+    previous_version: u16,
+}
+
+impl Drop for BasicSectionedRemovalAdditionVersionGuard {
+    fn drop(&mut self) {
+        BASIC_SECTIONED_REMOVAL_ADDITION_VERSION.with(|current_version| {
+            current_version.set(self.previous_version);
+        });
+    }
+}
+
+/// Use a storage-removal arithmetic version until the returned guard is
+/// dropped.
+pub fn use_basic_sectioned_removal_addition_version(
+    version: u16,
+) -> BasicSectionedRemovalAdditionVersionGuard {
+    let previous_version = BASIC_SECTIONED_REMOVAL_ADDITION_VERSION
+        .with(|current_version| current_version.replace(version));
+    BasicSectionedRemovalAdditionVersionGuard { previous_version }
+}
+
+/// Run storage-removal arithmetic using a specific version.
+pub fn with_basic_sectioned_removal_addition_version<T>(version: u16, f: impl FnOnce() -> T) -> T {
+    let _guard = use_basic_sectioned_removal_addition_version(version);
+    f()
+}
+
+fn basic_sectioned_removal_addition_version() -> u16 {
+    BASIC_SECTIONED_REMOVAL_ADDITION_VERSION.with(Cell::get)
+}
+
+/// Correct behavior: fold the basic removal into the default identifier's
+/// `UNKNOWN_EPOCH` entry while preserving the rest of the default section. Used
+/// unconditionally for the always-correct `Sectioned += Basic` arm, and for the
+/// fixed (v4+) path of the three historically-buggy arms.
+fn add_basic_removal_to_sectioned_map(
+    map: &mut StorageRemovalPerEpochByIdentifier,
+    removed_bytes: u32,
+) {
+    let epoch_map = map.entry(Identifier::default()).or_default();
+    let old_value = epoch_map.remove(UNKNOWN_EPOCH).unwrap_or_default();
+    epoch_map.insert(UNKNOWN_EPOCH, old_value.saturating_add(removed_bytes));
+}
+
+/// Buggy shipped (v1..v3) behavior, preserved verbatim for replay
+/// compatibility: when the default identifier already exists it is removed,
+/// mutated, and then **dropped** instead of reinserted, losing the rest of the
+/// default section. Only reachable through the legacy (v0) path of the three
+/// historically-buggy arms.
+fn legacy_add_basic_removal_to_sectioned_map(
+    map: &mut StorageRemovalPerEpochByIdentifier,
+    removed_bytes: u32,
+) {
+    let default = Identifier::default();
+    if let std::collections::btree_map::Entry::Vacant(e) = map.entry(default) {
+        let mut new_map = IntMap::new();
+        new_map.insert(UNKNOWN_EPOCH, removed_bytes);
+        e.insert(new_map);
+    } else {
+        let mut old_section_map = map.remove(&default).unwrap_or_default();
+        if let Some(old_value) = old_section_map.remove(UNKNOWN_EPOCH) {
+            old_section_map.insert(UNKNOWN_EPOCH, old_value.saturating_add(removed_bytes));
+        } else {
+            old_section_map.insert(UNKNOWN_EPOCH, removed_bytes);
+        }
+    }
+}
+
+/// Version-selecting helper for the three historically-buggy arms only
+/// (Add: Basic+Sectioned, Add: Sectioned+Basic, AddAssign: Basic+=Sectioned).
+/// v0 keeps the buggy shipped behavior; v4+ uses the corrected behavior. The
+/// always-correct `Sectioned += Basic` arm must NOT use this — it calls
+/// [`add_basic_removal_to_sectioned_map`] directly.
+fn add_basic_removal_to_sectioned_map_for_current_version(
+    map: &mut StorageRemovalPerEpochByIdentifier,
+    removed_bytes: u32,
+) {
+    if basic_sectioned_removal_addition_version() >= 1 {
+        add_basic_removal_to_sectioned_map(map, removed_bytes);
+    } else {
+        legacy_add_basic_removal_to_sectioned_map(map, removed_bytes);
+    }
+}
+
 impl Add for StorageRemovedBytes {
     type Output = Self;
 
@@ -74,38 +187,14 @@ impl Add for StorageRemovedBytes {
                 NoStorageRemoval => BasicStorageRemoval(s),
                 BasicStorageRemoval(r) => BasicStorageRemoval(s.saturating_add(r)),
                 SectionedStorageRemoval(mut map) => {
-                    let default = Identifier::default();
-                    if let std::collections::btree_map::Entry::Vacant(e) = map.entry(default) {
-                        let mut new_map = IntMap::new();
-                        new_map.insert(UNKNOWN_EPOCH, s);
-                        e.insert(new_map);
-                    } else {
-                        let mut old_section_map = map.remove(&default).unwrap_or_default();
-                        if let Some(old_value) = old_section_map.remove(UNKNOWN_EPOCH) {
-                            old_section_map.insert(UNKNOWN_EPOCH, old_value.saturating_add(s));
-                        } else {
-                            old_section_map.insert(UNKNOWN_EPOCH, s);
-                        }
-                    }
+                    add_basic_removal_to_sectioned_map_for_current_version(&mut map, s);
                     SectionedStorageRemoval(map)
                 }
             },
             SectionedStorageRemoval(mut smap) => match rhs {
                 NoStorageRemoval => SectionedStorageRemoval(smap),
                 BasicStorageRemoval(r) => {
-                    let default = Identifier::default();
-                    if let std::collections::btree_map::Entry::Vacant(e) = smap.entry(default) {
-                        let mut new_map = IntMap::new();
-                        new_map.insert(UNKNOWN_EPOCH, r);
-                        e.insert(new_map);
-                    } else {
-                        let mut old_section_map = smap.remove(&default).unwrap_or_default();
-                        if let Some(old_value) = old_section_map.remove(UNKNOWN_EPOCH) {
-                            old_section_map.insert(UNKNOWN_EPOCH, old_value.saturating_add(r));
-                        } else {
-                            old_section_map.insert(UNKNOWN_EPOCH, r);
-                        }
-                    }
+                    add_basic_removal_to_sectioned_map_for_current_version(&mut smap, r);
                     SectionedStorageRemoval(smap)
                 }
                 SectionedStorageRemoval(rmap) => {
@@ -144,40 +233,22 @@ impl AddAssign for StorageRemovedBytes {
                 NoStorageRemoval => {}
                 BasicStorageRemoval(r) => *s = s.saturating_add(r),
                 SectionedStorageRemoval(mut map) => {
-                    let default = Identifier::default();
-                    if let Some(mut old_int_map) = map.remove(&default) {
-                        if old_int_map.contains_key(UNKNOWN_EPOCH) {
-                            let old_value = old_int_map.remove(UNKNOWN_EPOCH).unwrap_or_default();
-                            old_int_map.insert(UNKNOWN_EPOCH, old_value.saturating_add(*s));
-                        } else {
-                            old_int_map.insert(UNKNOWN_EPOCH, *s);
-                        }
-                    } else {
-                        let mut new_map = IntMap::new();
-                        new_map.insert(UNKNOWN_EPOCH, *s);
-                        map.insert(default, new_map);
-                    }
+                    add_basic_removal_to_sectioned_map_for_current_version(&mut map, *s);
                     *self = SectionedStorageRemoval(map)
                 }
             },
             SectionedStorageRemoval(smap) => match rhs {
                 NoStorageRemoval => {}
                 BasicStorageRemoval(r) => {
-                    let default = Identifier::default();
-                    let map_to_insert = if let Some(mut old_int_map) = smap.remove(&default) {
-                        if old_int_map.contains_key(UNKNOWN_EPOCH) {
-                            let old_value = old_int_map.remove(UNKNOWN_EPOCH).unwrap_or_default();
-                            old_int_map.insert(UNKNOWN_EPOCH, old_value.saturating_add(r));
-                        } else {
-                            old_int_map.insert(UNKNOWN_EPOCH, r);
-                        }
-                        old_int_map
-                    } else {
-                        let mut new_map = IntMap::new();
-                        new_map.insert(UNKNOWN_EPOCH, r);
-                        new_map
-                    };
-                    smap.insert(default, map_to_insert);
+                    // `Sectioned += Basic` reinserted the default section
+                    // correctly in EVERY shipped version, so it is intentionally
+                    // NOT version-gated — always use the default-section-
+                    // preserving helper. The three historically-buggy arms
+                    // (Add: Basic+Sectioned, Add: Sectioned+Basic, AddAssign:
+                    // Basic+=Sectioned) are gated; this one was never broken, so
+                    // routing it through the version selector would *regress*
+                    // shipped v1..v3 output (drop the default section under v0).
+                    add_basic_removal_to_sectioned_map(smap, r);
                 }
                 SectionedStorageRemoval(rmap) => {
                     rmap.into_iter().for_each(|(identifier, mut int_map_b)| {

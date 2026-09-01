@@ -7,8 +7,19 @@ pub struct GroveDBVersions {
     pub operations: GroveDBOperationsVersions,
     pub aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions,
     pub path_query_methods: GroveDBPathQueryMethodVersions,
+    pub storage_costs: GroveDBStorageCostVersions,
     pub replication: GroveDBReplicationVersions,
     pub query_limits: GroveDBQueryLimits,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct GroveDBStorageCostVersions {
+    /// `StorageRemovedBytes` addition between basic and sectioned removals.
+    ///
+    /// Version 0 preserves the legacy behavior where adding basic removal
+    /// bytes to an existing default section can drop that default section.
+    /// Version 1 reinserts the updated default section.
+    pub add_basic_storage_removal_to_sectioned_storage_removal: FeatureVersion,
 }
 
 #[derive(Clone, Debug)]
