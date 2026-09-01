@@ -61,6 +61,7 @@ use crate::{
 };
 
 const BLAKE_BLOCK_LEN: usize = 64;
+const OVERLONG_PATH_PREFIX_DOMAIN: &[u8] = b"grovedb:overlong-path-prefix:v1";
 pub type SubtreePrefix = [u8; 32];
 
 fn blake_block_count(len: usize) -> usize {
@@ -399,18 +400,28 @@ impl RocksDbStorage {
     where
         B: AsRef<[u8]>,
     {
-        let segments_iter = path.into_reverse_iter();
-        let mut segments_count: usize = 0;
+        let segments = path.into_reverse_iter().collect::<Vec<_>>();
+        let segments_count = segments.len();
+
+        if segments
+            .iter()
+            .any(|segment| segment.len() > u8::MAX as usize)
+        {
+            let mut res = Vec::from(OVERLONG_PATH_PREFIX_DOMAIN);
+            res.extend(segments_count.encode_var_vec());
+            for segment in segments {
+                res.extend(segment.len().encode_var_vec());
+                res.extend_from_slice(segment);
+            }
+            return (res, segments_count);
+        }
+
         let mut res = Vec::new();
         let mut lengths = Vec::new();
 
-        for s in segments_iter {
-            segments_count += 1;
+        for s in segments {
             res.extend_from_slice(s);
-            lengths.push(u8::try_from(s.len()).expect(
-                "path segment length must not exceed 255 bytes; \
-                 this is enforced at insert time via validate_key_length",
-            ));
+            lengths.push(s.len() as u8);
         }
 
         // Note: this uses native-endian encoding. Changing to big-endian would
@@ -1432,13 +1443,23 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "path segment length must not exceed 255 bytes")]
-    fn test_build_prefix_rejects_oversized_segment() {
+    fn test_build_prefix_handles_oversized_segment_without_panicking() {
         let oversized_key = vec![0xABu8; 256];
         let path: &[&[u8]] = &[&oversized_key];
-        // Previously this would silently truncate the length to 0 (256 as u8 == 0),
-        // causing different paths to hash to the same prefix (collision).
-        let _ = RocksDbStorage::build_prefix(path.as_ref().into());
+        let prefix = RocksDbStorage::build_prefix(path.as_ref().into()).unwrap();
+        assert_ne!(prefix, SubtreePrefix::default());
+    }
+
+    #[test]
+    fn test_build_prefix_valid_segments_unchanged_at_length_limit() {
+        let max_key = vec![0xABu8; u8::MAX as usize];
+        let path: &[&[u8]] = &[&max_key];
+
+        let (body, segments_count) = RocksDbStorage::build_prefix_body(path.as_ref().into());
+
+        assert_eq!(segments_count, 1);
+        assert_eq!(body.len(), max_key.len() + std::mem::size_of::<usize>() + 1);
+        assert_eq!(body.last(), Some(&u8::MAX));
     }
 
     #[test]
