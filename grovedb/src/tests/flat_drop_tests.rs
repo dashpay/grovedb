@@ -618,4 +618,136 @@ mod tests {
         assert_eq!(data_namespace_key_count(&db, primary_prefix), 0);
         assert_eq!(data_namespace_key_count(&db, count_secondary), 0);
     }
+
+    #[test]
+    fn apply_operations_without_batching_routes_drop_flat() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        seed_flat_tree(&db, b"flat", 12, grove_version);
+        let prefix = prefix_of(&[TEST_LEAF, b"flat"]);
+
+        let ops = vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![TEST_LEAF.to_vec()],
+            b"flat".to_vec(),
+            TreeType::NormalTree,
+            SubelementsDeletionBehavior::DropFlat,
+        )];
+        db.apply_operations_without_batching(ops, None, None, grove_version)
+            .unwrap()
+            .expect("apply without batching");
+
+        assert!(matches!(
+            db.get_raw([TEST_LEAF].as_ref().into(), b"flat", None, grove_version)
+                .unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ));
+        assert_grove_verifies(&db, grove_version);
+        // The routed drop_flat_subtree owned its transaction, so
+        // reclamation already ran.
+        assert_eq!(data_namespace_key_count(&db, prefix), 0);
+        assert!(!record_exists(&db, prefix));
+    }
+
+    // ── Estimated costs ─────────────────────────────────────────────────
+
+    /// Both batch estimators must dominate the actual cost of a `DropFlat`
+    /// batch in every dimension — the estimate is the admission bound
+    /// downstream, so an under-estimate would reject already-affordable
+    /// state transitions (or admit under-funded ones).
+    #[cfg(feature = "estimated_costs")]
+    #[test]
+    fn estimates_dominate_actual_for_drop_flat() {
+        use std::collections::HashMap;
+
+        use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
+        use grovedb_merk::estimated_costs::{
+            average_case_costs::{
+                EstimatedLayerCount::EstimatedLevel, EstimatedLayerInformation,
+                EstimatedLayerSizes::AllSubtrees, EstimatedSumTrees::NoSumTrees,
+            },
+            worst_case_costs::WorstCaseLayerInformation::MaxElementsNumber,
+        };
+
+        use crate::{
+            batch::{
+                estimated_costs::EstimatedCostsType::{AverageCaseCostsType, WorstCaseCostsType},
+                KeyInfoPath,
+            },
+            GroveDb,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        seed_flat_tree(&db, b"flat", 5, grove_version);
+
+        let ops = vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![TEST_LEAF.to_vec()],
+            b"flat".to_vec(),
+            TreeType::NormalTree,
+            SubelementsDeletionBehavior::DropFlat,
+        )];
+
+        let mut average_paths = HashMap::new();
+        average_paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: EstimatedLevel(2, false),
+                estimated_layer_sizes: AllSubtrees(32, NoSumTrees, None),
+            },
+        );
+        average_paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![TEST_LEAF.to_vec()]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: EstimatedLevel(4, false),
+                estimated_layer_sizes: AllSubtrees(32, NoSumTrees, None),
+            },
+        );
+        let average = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(average_paths),
+            ops.clone(),
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("average case estimate");
+
+        let mut worst_paths = HashMap::new();
+        worst_paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(4));
+        worst_paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![TEST_LEAF.to_vec()]),
+            MaxElementsNumber(4),
+        );
+        let worst = GroveDb::estimated_case_operations_for_batch(
+            WorstCaseCostsType(worst_paths),
+            ops.clone(),
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("worst case estimate");
+
+        let actual = db
+            .apply_batch(ops, None, None, grove_version)
+            .cost_as_result()
+            .expect("apply batch");
+
+        assert!(
+            average.worse_or_eq_than(&actual),
+            "average-case estimate must dominate actual;\nestimated {average:?}\nactual {actual:?}",
+        );
+        assert!(
+            worst.worse_or_eq_than(&actual),
+            "worst-case estimate must dominate actual;\nestimated {worst:?}\nactual {actual:?}",
+        );
+    }
 }
