@@ -1302,8 +1302,10 @@ impl GroveDb {
                 continue;
             }
             let value = match element.into_underlying() {
-                Element::SumItem(value, _) => value,
-                Element::ItemWithSumItem(_, value, _) => value,
+                Element::SumItem(value, _)
+                | Element::ItemWithSumItem(_, value, _)
+                | Element::SumItemWithBackwardsReferences(value, _, _)
+                | Element::ItemWithSumItemWithBackwardsReferences(_, value, _, _) => value,
                 _ => {
                     return Err(Error::InvalidProof(
                         query.clone(),
@@ -2253,7 +2255,11 @@ impl GroveDb {
                             | Element::Item(..)
                             | Element::ItemWithSumItem(..)
                             | Element::Reference(..)
-                            | Element::ReferenceWithSumItem(..) => {
+                            | Element::ReferenceWithSumItem(..)
+                            | Element::BidirectionalReference(..)
+                            | Element::ItemWithBackwardsReferences(..)
+                            | Element::SumItemWithBackwardsReferences(..)
+                            | Element::ItemWithSumItemWithBackwardsReferences(..) => {
                                 return Err(Error::InvalidProof(
                                     query.clone(),
                                     "V1 proof has lower layer for a non-tree element.".to_string(),
@@ -3476,7 +3482,11 @@ impl GroveDb {
                             | Element::Item(..)
                             | Element::ItemWithSumItem(..)
                             | Element::Reference(..)
-                            | Element::ReferenceWithSumItem(..) => {
+                            | Element::ReferenceWithSumItem(..)
+                            | Element::BidirectionalReference(..)
+                            | Element::ItemWithBackwardsReferences(..)
+                            | Element::SumItemWithBackwardsReferences(..)
+                            | Element::ItemWithSumItemWithBackwardsReferences(..) => {
                                 return Err(Error::InvalidProof(
                                     query.clone(),
                                     "Proof has lower layer for a non Tree.".to_string(),
@@ -4690,6 +4700,7 @@ impl GroveDb {
         match node {
             Node::KV(key, value)
             | Node::KVValueHash(key, value, ..)
+            | Node::KVBackwardsReferencesValueHash(key, value, ..)
             | Node::KVValueHashFeatureType(key, value, ..)
             | Node::KVValueHashFeatureTypeWithChildHash(key, value, ..)
             | Node::KVCount(key, value, ..)

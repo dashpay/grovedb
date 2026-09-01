@@ -1,0 +1,283 @@
+# Bidirectional references
+
+GroveDB has supported references since its first release; however, the consistency between
+references and the data they refer to is only guaranteed at the moment they are inserted.
+Subsequent updates to the data do not propagate to the references pointing to it, which
+can lead to diverged hashes or references pointing to deleted items.
+
+If the lack of consistency between references and data becomes a problem for a part of the
+application using GroveDB, it can choose to use bidirectional references instead.
+
+For this purpose, several new `Element` variants were introduced:
+
+```rust
+pub enum Element {
+    ...
+    /// A reference to an object by its path — discriminant 25
+    BidirectionalReference(BidirectionalReference, Option<ElementFlags>),
+    /// An ordinary value that can be targeted by bidirectional references —
+    /// discriminant 26
+    ItemWithBackwardsReferences(Vec<u8>, Vec<BackwardReference>, Option<ElementFlags>),
+    /// Signed integer value that can be totaled in a sum tree and targeted
+    /// by bidirectional references — discriminant 27
+    SumItemWithBackwardsReferences(SumValue, Vec<BackwardReference>, Option<ElementFlags>),
+    /// Item carrying an explicit sum value (like `ItemWithSumItem`) that can
+    /// be targeted by bidirectional references — discriminant 28
+    ItemWithSumItemWithBackwardsReferences(
+        Vec<u8>,
+        SumValue,
+        Vec<BackwardReference>,
+        Option<ElementFlags>,
+    ),
+}
+
+pub struct BidirectionalReference {
+    pub forward_reference_path: ReferencePathType,
+    pub cascade_on_update: CascadeOnUpdate,
+    pub max_hop: MaxReferenceHop,
+    pub backward_references: Vec<BackwardReference>,
+}
+
+pub struct BackwardReference {
+    /// Inverted path leading back to the referrer.
+    pub inverted_reference: ReferencePathType,
+    pub cascade_on_update: bool,
+}
+```
+
+These items are counterparts of existing ones: items, sum items, and regular references.
+A regular item with ordinary references does not propagate updates back to the reference
+chain origin. When such behavior is required, a different type of element should be used.
+Moreover, these types are incompatible, which will be discussed in the "Rules" section.
+
+Additionally, a new flag was added to `InsertOptions` and `DeleteOptions`
+called `propagate_backward_references` (`ClearOptions` support is deferred —
+see the limitations below). Since propagation incurs a cost, starting with the
+checks required to determine whether it should be performed, bidirectional references are
+optional and must be explicitly enabled.
+
+Even when a user inserts something unrelated to the bidirectional references feature,
+a check must still be performed to determine whether the insertion overwrites an item
+with backward references. If it does, this could trigger a cascade deletion or fail with
+an error if cascade deletion is not allowed in the bidirectional references parameters.
+However, propagation must be enabled from the start for this check to take place at all.
+Fetching the previous item on every modification introduces additional overhead, which
+would be unfair to applications that do not use this feature or for database sections that
+do not require it. To address this, the flag was introduced.
+
+## Versioning and scope
+
+The whole feature activates with **`GROVE_V4`**: the four element variants
+are rejected by earlier protocol versions (fail closed), `GROVE_V4` selects
+`insert_on_transaction` v1 and `delete_internal_on_transaction` v2 — both
+behaviour-preserving routers whose flag-less calls run the previous
+version's body byte-for-byte.
+
+Current limitations (fail closed, lift as needed):
+
+- The four variants may not be wrapped in the aggregation wrappers
+  (`NonCounted` / `NotSummed` / `NotCountedOrSummed`).
+- `apply_batch` supports the family when the batch opts in via
+  `BatchApplyOptions::propagate_backward_references` (see the batching
+  section under Implementation); batches without the flag — and partial
+  batches, which have no expansion support — reject ops carrying the
+  family. A flagged batch also refuses to delete a NON-EMPTY subtree:
+  its descendants may hold bidirectional-reference participants whose
+  external registrations, cascade consents, and surviving referrers the
+  batch engine's wholesale clearing would skip — use the live flagged
+  delete (which walks descendants with full bookkeeping) or empty the
+  subtree first. Unflagged ops that DELETE or OVERWRITE an existing
+  backward-references participant are still admitted, exactly like any
+  other unflagged write: consistency is forfeited at that point. A
+  backward reference left dangling this way is tolerated — later flagged
+  propagations and cascades skip it and lazily clear its slot — but
+  `verify_grovedb` reports the affected references until the chain is
+  rewritten through flagged operations.
+- `clear_subtree` has no `propagate_backward_references` option yet; use
+  `delete` with the flag for cascade-aware removal.
+- Under the flag, insert supports items, references, and empty plain-Merk
+  trees; delete supports plain Merk subtrees. The specialized data trees
+  (commitment / MMR / bulk-append / dense / private document store) and
+  indexed trees are rejected with the flag set — none of their contents
+  can be targeted by bidirectional references, so insert/delete them
+  without the flag.
+
+## Rules
+
+Next, we’ll go over the rules and limitations for using bidirectional references.
+
+Note that for the rules to apply, the `propagate_backward_references` flag needs to be
+set.
+
+An 'Element with backward references' refers to `ItemWithBackwardsReferences`,
+`SumItemWithBackwardsReferences`, `ItemWithSumItemWithBackwardsReferences`, and
+`BidirectionalReference`, as all these types contain a list of backward references
+associated with them.
+
+- __Only elements with backward references can be targets of bidirectional references.__
+Trying to create a bidirectional reference to a regular item will result in an error. And
+just like regular references, bidirectional references cannot point to subtrees.
+- __A (Sum)Item with backward references can be referenced by up to 32 bidirectional
+references.__ This limit exists due to implementation constraints and to ensure worst-case
+costs remain predictable—without a limit, estimating these costs would not be possible.
+- __A bidirectional reference's declared `max_hop` must admit its own chain at
+insertion.__ Public reads enforce the declared budget deterministically, so an edge whose
+chain is already longer than its declaration would never resolve; the write path rejects
+such dead edges instead of persisting them. (An edge can still fall out of budget later —
+e.g. its target is overwritten into a plain reference through an unflagged write — and
+reads then return `ReferenceLimit`.)
+- __Both ends of a bidirectional edge must sit at most 32 subtree levels deep__
+(`MAX_BACKWARD_REFERENCES_GROVE_DEPTH`, enforced at registration). Every later derived
+write — propagation rewrite, cascade deletion, registration cleanup — lands at one of the
+edge's positions, and cost estimation charges up to this many ancestor updates per derived
+foreign-subtree propagation; without the bound, a referrer parked arbitrarily deep would
+make its propagation cost exceed any fixed estimate.
+- __A bidirectional reference can be referenced by another bidirectional reference, but
+no more than 1.__ This limitation was introduced for the same reason as before: to keep
+propagation costs predictable. By restricting chains to one reference per bidirectional
+reference, we ensure that an item with up to 32 bidirectional references (each containing
+no more than 10 links) can be traced without branching into more paths, allowing us to
+predict and manage the worst-case update costs.
+- __If an element with backward references is updated with another element with backward
+references, hash propagation happens.__ All bidirectional references across all chains
+shall update their hashes using the new one of the updated item. If the updated item is
+a new bidirectional reference itself, it will follow the chain forward first to get the
+value hash that will be used for propagation.
+- __If an element can no longer be targeted (for example, updated to an item with no
+backward references support or deleted entirely), a cascade deletion of bidirectional
+references occurs.__ This requires the `cascade_on_update` setting for each affected
+bidirectional reference. If this setting is not enabled, an error will be raised,
+preventing the operation from completing successfully.
+
+## Implementation
+
+### Batching
+
+`apply_batch` supports the whole family when the batch sets
+`BatchApplyOptions::propagate_backward_references` (GROVE_V4+, riding the
+same activation as the live flagged flow). A preprocessing pass
+(`batch::backward_references`) expands the user's operations into the
+derived operations the live flow would perform, planned by the SAME
+semantic core (`bidirectional_references::semantics`) the `MerkCache`
+driver uses, so live and batched semantics cannot drift. The master
+invariant, enforced by tests: for any logical operation set, batch and
+non-batch execution produce byte-identical root hashes.
+
+The expansion simulates one canonical sequential order over an overlay of
+pending position states (pre-batch DB state plus the batch's staged
+effects): first every non-reference op in user order, then every
+`BidirectionalReference` op in topological order — targets before their
+referrers. This makes references to targets created in the same batch
+work regardless of op order, lets whole chains be created in one batch,
+and validates the hop/component budgets against the prospective
+post-batch state. Derived writes execute through the internal
+`GroveOp::ReplaceBackwardReferenceFamilyMember` (rejected when supplied by
+callers), which installs the fully-combined node value hash; user
+reference ops are themselves converted into that form (an identical-edge
+re-insert converts into nothing, mirroring the live no-op), and
+registrations onto targets written in the same batch merge into the
+target op's element.
+
+Conflicts fail closed with specified errors: a reference inserted in the
+same batch that deletes its target; a cascade deleting a position another
+op touches; a propagation rewrite hitting a user delete; and
+`RefreshReference` on a position holding a bidirectional reference.
+
+Estimated costs (average and worst case) model the derived fan-out on
+GROVE_V4+ under the batch flag, bounded by the budgets above (≤32
+referrers per item, ≤10-hop chains, 1 referrer per reference); pre-V4
+estimation is preserved byte-for-byte for replay of historical admission
+decisions.
+
+Bidirectional references are optional for each call to GroveDB's public API, and a flag is
+used to enable their functionality for that specific call. Essentially, when the flag is
+present, it modifies the regular execution process in two ways:
+
+1. Modifications (both writes and deletions) will fetch the data being updated.
+2. If the fetched item is an element with backward references, control is passed to the
+   `bidirectional_references` module in the GroveDB root for post-processing. This occurs for
+   bidirectional reference insertion regardless of whether the flag is set.
+
+Quite a lot happens behind this "post-processing," and we'll go into the details shortly.
+
+### On-element storage and two-layer hashing
+
+The referrer list lives directly on the element: each of the four variants carries a
+`Vec<BackwardReference>`. Registering or removing a referrer rewrites the TARGET element's
+bytes — but a naive design would then re-hash the target's value, changing the very hash
+every existing referrer has committed to, and each registration would trigger a cascade of
+propagations across all other referrers.
+
+To avoid that, elements with backward references use a two-layer hash:
+
+```text
+inner_hash    = H(serialize(element with backward_references = []))   // the LOGICAL hash
+backrefs_hash = H(serialize(backward_references))
+node value_hash:
+  (Sum)ItemWithBackwardsReferences  = combine(inner_hash, backrefs_hash)
+  BidirectionalReference            = combine(combine(inner_hash, backrefs_hash), end_hash)
+```
+
+where `end_hash` for a bidirectional reference is the hash of what it transitively points
+at, and `combine` is the existing two-input node-hash combinator.
+
+Every reference in a chain (ordinary or bidirectional) commits to the target's *logical*
+(`inner`) hash — the hash of the stripped serialization. This rule binds every write
+path, including `apply_batch`: a batch-inserted plain reference that terminates on (or
+chains through) a backward-references element commits the stripped hash, never the
+node's combined hash. Registering another referrer on a
+target changes only `backrefs_hash`, so the target's own node re-hashes (and propagates up
+its subtree as usual), while every referrer that already points at it keeps its stored
+node hash bit-for-bit. Cascaded hash propagation only happens when the *payload* — the
+logical hash — actually changes.
+
+Public reads (`get`, `get_raw`, query results, proved results) return the STRIPPED
+element: the referrer list is internal bookkeeping and never crosses the API boundary.
+Internal flows (propagation, cascade deletion, `verify_grovedb`) read the full element at
+the merk level.
+
+Since the referrer list is ordinary element data, state sync and chunk restore carry it
+for free — no side-channel storage has to be reconstructed.
+
+### Proofs
+
+Because the node's `value_hash` is no longer `H(value_bytes)`, a plain `KVValueHash` proof
+node cannot authenticate these elements. A dedicated proof node kind ships the stripped
+payload plus the 32-byte referrer-list hash:
+
+```text
+Node::KVBackwardsReferencesValueHash(key, stripped_value_bytes, backrefs_hash)
+```
+
+The verifier RECOMPUTES `combine(H(stripped_value_bytes), backrefs_hash)` as the node's
+value hash — the payload bytes are bound by the recomputation rather than trusted, and
+tampering with either the payload or the referrer-list hash breaks the root-hash chain.
+The verifier also rejects backward-references elements smuggled inside plain `KVValueHash`
+/ `KVValueHashFeatureType` nodes, and the node kind itself is rejected in V0 proofs
+(V0 is a frozen wire format). Bidirectional references resolve through the existing
+`KVRefValueHash` mechanics with `combine(inner, backrefs)` as the carried self-hash.
+
+One consequence: elements with backward references are rejected inside `Provable*`
+aggregate trees (`ProvableCountTree`, `ProvableSumTree`, `ProvableCountSumTree`,
+`ProvableCountProvableSumTree`) — their proof nodes carry aggregate data in shapes that
+have no backward-references twin. Plain `SumTree` / `CountTree` parents work.
+
+### Propagation
+
+Previous read: [Merk cache](./merk_cache.md).
+
+Deletion or an update of an element with backward references triggers a cascade hash
+update or a deletion, both of which alter the state of affected subtrees, leading to
+regular hash propagation to ancestor subtrees up to the GroveDB root. In short, operations
+with the required flag enabled can trigger updates across several subtrees simultaneously.
+
+Thus, there are two ongoing propagations:
+
+1. Backward references chain hash propagation / cascade deletion.
+2. Regular hash propagation of subtrees.
+
+It is possible that a reference propagation could impact a subtree that is also affected
+by regular propagation from one of its descendants. This is difficult to predict. Since
+these propagations happen at different steps, they can result in multiple Merk openings
+causing issues. To manage this, caching becomes mandatory. This led to the introduction of
+`MerkCache`, which has become a crucial component for handling bidirectional references.

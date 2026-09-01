@@ -1106,6 +1106,12 @@ fn node_to_string(node: &Node) -> Result<String, fmt::Error> {
             element_hex_to_ascii(value)?,
             hex::encode(value_hash)
         ),
+        Node::KVBackwardsReferencesValueHash(key, value, backrefs_hash) => format!(
+            "KVBackwardsReferencesValueHash({}, {}, HASH[{}])",
+            hex_to_ascii(key),
+            element_hex_to_ascii(value)?,
+            hex::encode(backrefs_hash)
+        ),
         Node::KVDigest(key, value_hash) => format!(
             "KVDigest({}, HASH[{}])",
             hex_to_ascii(key),

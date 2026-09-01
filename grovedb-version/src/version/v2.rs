@@ -62,6 +62,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             insert_if_not_exists: 0,
             insert_if_not_exists_into_batch_operations: 0,
             insert_if_changed_value: 0,
+            insert_subtree_if_changed: 0,
             insert_if_changed_value_into_batch_operations: 0,
             insert_reference: 0,
             insert_reference_into_batch_operations: 0,
@@ -91,6 +92,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 get: 0,
                 get_caching_optional: 0,
                 follow_reference: 0,
+                ref_path_follow_reference: 0,
                 get_raw: 0,
                 get_raw_caching_optional: 0,
                 get_raw_optional: 0,
@@ -111,9 +113,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             insert: GroveDBOperationsInsertVersions {
                 insert: 0,
                 insert_on_transaction: 0,
-                insert_without_transaction: 0,
                 add_element_on_transaction: 0,
-                add_element_without_transaction: 0,
                 insert_if_not_exists: 0,
                 insert_if_not_exists_return_existing_element: 0,
                 insert_if_changed_value: 0,
@@ -126,7 +126,6 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 delete_if_empty_tree_with_sectional_storage_function: 0,
                 delete_operation_for_delete_internal: 0,
                 delete_internal_on_transaction: 0,
-                delete_internal_without_transaction: 0,
                 average_case_delete_operation_for_delete: 0,
                 worst_case_delete_operation_for_delete: 0,
             },
@@ -199,6 +198,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 add_average_case_get_raw_tree_cost: 0,
                 add_average_case_get_cost: 0,
                 average_case_commitment_tree_insert: 0,
+                average_case_backward_references_fan_out: 0,
             },
             worst_case: GroveDBOperationsWorstCaseVersions {
                 add_worst_case_get_merk_at_path: 0,
@@ -214,6 +214,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 add_worst_case_get_raw_cost: 0,
                 add_worst_case_get_cost: 0,
                 worst_case_commitment_tree_insert: 0,
+                worst_case_backward_references_fan_out: 0,
             },
             // PrivateDocumentStore is unavailable before GROVE_V4: every
             // slot is 0 and the operations fail closed.

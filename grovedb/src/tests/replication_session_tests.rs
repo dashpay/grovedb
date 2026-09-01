@@ -2131,4 +2131,69 @@ mod tests {
             "got: {err:?}"
         );
     }
+
+    /// A populated bidirectional-reference graph round-trips through state
+    /// sync: the chunk producer emits a `BidirectionalReference` stored in
+    /// a normal tree as a `KVValueHash` node (via the `KvRefValueHash`
+    /// mapping), which the restorer must accept under the plain-reference
+    /// trust model — its value hash embeds the resolved end-of-chain hash,
+    /// which is not locally derivable. The item variants restore through
+    /// the recompute-checked `KVValueHashFeatureType` path.
+    #[test]
+    fn state_sync_populated_bidirectional_reference_graph_round_trip() {
+        use crate::{
+            bidirectional_references::BidirectionalReference, reference_path::ReferencePathType,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"value",
+                Element::new_item_allowing_bidirectional_references(b"hello".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        for (key, target) in [(b"r1".as_slice(), b"value".as_slice()), (b"r2", b"r1")] {
+            source
+                .insert(
+                    [TEST_LEAF].as_ref(),
+                    key,
+                    Element::BidirectionalReference(
+                        BidirectionalReference {
+                            forward_reference_path: ReferencePathType::SiblingReference(
+                                target.to_vec(),
+                            ),
+                            backward_references: Vec::new(),
+                            cascade_on_update: true,
+                            max_hop: None,
+                        },
+                        None,
+                    ),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .unwrap();
+        }
+
+        let source_root_hash = source.root_hash(None, grove_version).unwrap().unwrap();
+        let dest = sync_source_to_destination(&source, grove_version);
+        assert_eq!(
+            source_root_hash,
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+            "destination root hash should match source after full sync"
+        );
+        assert!(
+            dest.verify_grovedb(None, true, true, grove_version)
+                .unwrap()
+                .is_empty(),
+            "the restored graph must verify, referrer lists included"
+        );
+    }
 }

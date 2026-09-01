@@ -241,6 +241,7 @@ pub struct GroveDBOperationsGetVersions {
     pub get: FeatureVersion,
     pub get_caching_optional: FeatureVersion,
     pub follow_reference: FeatureVersion,
+    pub ref_path_follow_reference: FeatureVersion,
     pub follow_reference_once: FeatureVersion,
     pub get_raw: FeatureVersion,
     pub get_raw_caching_optional: FeatureVersion,
@@ -398,6 +399,20 @@ pub struct GroveDBOperationsAverageCaseVersions {
     ///   full ommer cascade, dense-buffer recompute, and epoch compaction
     ///   (issue #812).
     pub average_case_commitment_tree_insert: FeatureVersion,
+    /// Cost model for backward-references family ops in batch estimation.
+    ///
+    /// - `0` (V1..V3): the family is estimated like plain elements with no
+    ///   derived fan-out, and `ReplaceBackwardReferenceFamilyMember` is
+    ///   refused. Matches those versions' apply path, which rejects the
+    ///   family in batches, so historical admission decisions replay
+    ///   byte-identically.
+    /// - `1` (V4+): family-carrying ops and (under
+    ///   `BatchApplyOptions::propagate_backward_references`) deletes charge
+    ///   the derived registration / propagation / cascade fan-out, bounded
+    ///   by the apply path's budgets (≤32 referrers per item, ≤10-hop
+    ///   chains, 1 referrer per reference), and the derived op itself gets
+    ///   a real model.
+    pub average_case_backward_references_fan_out: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -425,15 +440,18 @@ pub struct GroveDBOperationsWorstCaseVersions {
     ///   full ommer cascade, dense-buffer recompute, and epoch compaction
     ///   (issue #812).
     pub worst_case_commitment_tree_insert: FeatureVersion,
+    /// Cost model for backward-references family ops in batch estimation.
+    /// Same contract as
+    /// `GroveDBOperationsAverageCaseVersions::average_case_backward_references_fan_out`,
+    /// with the worst-case bounds charged in full.
+    pub worst_case_backward_references_fan_out: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct GroveDBOperationsInsertVersions {
     pub insert: FeatureVersion,
     pub insert_on_transaction: FeatureVersion,
-    pub insert_without_transaction: FeatureVersion,
     pub add_element_on_transaction: FeatureVersion,
-    pub add_element_without_transaction: FeatureVersion,
     pub insert_if_not_exists: FeatureVersion,
     pub insert_if_not_exists_return_existing_element: FeatureVersion,
     pub insert_if_changed_value: FeatureVersion,
@@ -448,7 +466,6 @@ pub struct GroveDBOperationsDeleteVersions {
     pub delete_if_empty_tree_with_sectional_storage_function: FeatureVersion,
     pub delete_operation_for_delete_internal: FeatureVersion,
     pub delete_internal_on_transaction: FeatureVersion,
-    pub delete_internal_without_transaction: FeatureVersion,
     pub average_case_delete_operation_for_delete: FeatureVersion,
     pub worst_case_delete_operation_for_delete: FeatureVersion,
 }
@@ -503,6 +520,7 @@ pub struct GroveDBElementMethodVersions {
     pub insert_if_not_exists: FeatureVersion,
     pub insert_if_not_exists_into_batch_operations: FeatureVersion,
     pub insert_if_changed_value: FeatureVersion,
+    pub insert_subtree_if_changed: FeatureVersion,
     pub insert_if_changed_value_into_batch_operations: FeatureVersion,
     pub insert_reference: FeatureVersion,
     pub insert_reference_into_batch_operations: FeatureVersion,

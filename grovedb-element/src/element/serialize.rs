@@ -49,6 +49,19 @@ impl Element {
                 "NonCounted cannot wrap another wrapper".to_string(),
             ));
         }
+        if let Element::NonCounted(inner) = self
+            && matches!(
+                **inner,
+                Element::BidirectionalReference(..)
+                    | Element::ItemWithBackwardsReferences(..)
+                    | Element::SumItemWithBackwardsReferences(..)
+                    | Element::ItemWithSumItemWithBackwardsReferences(..)
+            )
+        {
+            return Err(ElementError::CorruptedData(
+                "NonCounted cannot wrap backward-references elements".to_string(),
+            ));
+        }
         if let Element::NotSummed(inner) = self {
             match **inner {
                 Element::SumTree(..)
@@ -86,6 +99,14 @@ impl Element {
         if let Err(e) = self.validate_private_document_store_config() {
             return Err(ElementError::CorruptedData(format!(
                 "invalid private document store config: {}",
+                e
+            )));
+        }
+        // The backward-references budgets bound worst-case propagation cost;
+        // an over-limit list must never reach disk.
+        if let Err(e) = self.validate_backward_references_limits() {
+            return Err(ElementError::CorruptedData(format!(
+                "invalid backward references: {}",
                 e
             )));
         }
@@ -167,6 +188,19 @@ impl Element {
                 "deserialized NonCounted wrapping another wrapper".to_string(),
             ));
         }
+        if let Element::NonCounted(inner) = &elem
+            && matches!(
+                **inner,
+                Element::BidirectionalReference(..)
+                    | Element::ItemWithBackwardsReferences(..)
+                    | Element::SumItemWithBackwardsReferences(..)
+                    | Element::ItemWithSumItemWithBackwardsReferences(..)
+            )
+        {
+            return Err(ElementError::CorruptedData(
+                "deserialized NonCounted wrapping a backward-references element".to_string(),
+            ));
+        }
         if let Element::NotSummed(inner) = &elem {
             match **inner {
                 Element::SumTree(..)
@@ -207,6 +241,12 @@ impl Element {
         if let Err(e) = elem.validate_private_document_store_config() {
             return Err(ElementError::CorruptedData(format!(
                 "deserialized private document store with invalid config: {}",
+                e
+            )));
+        }
+        if let Err(e) = elem.validate_backward_references_limits() {
+            return Err(ElementError::CorruptedData(format!(
+                "deserialized element with invalid backward references: {}",
                 e
             )));
         }
@@ -370,6 +410,68 @@ mod tests {
                 matches!(&err, ElementError::CorruptedData(message) if message.contains("did not consume all bytes")),
                 "unexpected error: {err:?}"
             );
+        }
+    }
+
+    /// The backward-references family occupies wire discriminants 25/26/27
+    /// (bincode variant indices, append-only). Pin them: a reorder of the
+    /// enum would silently change the on-disk format.
+    #[test]
+    fn backward_references_family_wire_discriminants_are_pinned() {
+        let grove_version = GroveVersion::latest();
+
+        let bidi = Element::new_bidirectional_reference(
+            crate::reference_path::ReferencePathType::AbsolutePathReference(vec![b"a".to_vec()]),
+        );
+        let item = Element::ItemWithBackwardsReferences(b"v".to_vec(), Vec::new(), None);
+        let sum_item = Element::SumItemWithBackwardsReferences(7, Vec::new(), None);
+
+        assert_eq!(bidi.serialize(grove_version).unwrap()[0], 25);
+        assert_eq!(item.serialize(grove_version).unwrap()[0], 26);
+        assert_eq!(sum_item.serialize(grove_version).unwrap()[0], 27);
+
+        // And they round-trip.
+        for element in [bidi, item, sum_item] {
+            let bytes = element.serialize(grove_version).unwrap();
+            assert_eq!(
+                Element::deserialize(&bytes, grove_version).unwrap(),
+                element
+            );
+        }
+    }
+
+    /// `NonCounted` may not wrap the backward-references family — enforced
+    /// at construction, serialization, AND deserialization (fail closed
+    /// symmetric in both directions).
+    #[test]
+    fn non_counted_rejects_backward_references_family() {
+        let grove_version = GroveVersion::latest();
+
+        let inners = [
+            Element::new_bidirectional_reference(
+                crate::reference_path::ReferencePathType::AbsolutePathReference(
+                    vec![b"a".to_vec()],
+                ),
+            ),
+            Element::ItemWithBackwardsReferences(b"v".to_vec(), Vec::new(), None),
+            Element::SumItemWithBackwardsReferences(7, Vec::new(), None),
+        ];
+
+        for inner in inners {
+            // Constructor refuses.
+            assert!(Element::new_non_counted(inner.clone()).is_err());
+
+            // A hand-built wrapper refuses to serialize.
+            let wrapped = Element::NonCounted(Box::new(inner.clone()));
+            assert!(wrapped.serialize(grove_version).is_err());
+
+            // Hand-built wire bytes refuse to deserialize.
+            let mut bytes = vec![15u8];
+            bytes.extend(inner.serialize(grove_version).unwrap());
+            assert!(Element::deserialize(&bytes, grove_version).is_err());
+
+            // The type-classifier guard also rejects the pair.
+            assert!(crate::ElementType::from_serialized_value(&bytes).is_err());
         }
     }
 }

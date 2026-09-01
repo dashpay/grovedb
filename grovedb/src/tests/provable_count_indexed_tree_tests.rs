@@ -1552,6 +1552,7 @@ mod tests {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: false,
             base_root_storage_is_free: true,
+            propagate_backward_references: false,
         };
         db.insert(
             [TEST_LEAF].as_ref(),
@@ -1608,6 +1609,7 @@ mod tests {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: false,
             base_root_storage_is_free: true,
+            propagate_backward_references: false,
         };
         let res = db
             .insert([TEST_LEAF].as_ref(), b"pcit", tampered, Some(opts), None, v)
@@ -1907,6 +1909,7 @@ mod tests {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: false,
             base_root_storage_is_free: true,
+            propagate_backward_references: false,
         });
         let result = db
             .insert(

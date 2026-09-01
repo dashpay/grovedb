@@ -159,7 +159,8 @@ impl QueryProofVerify for Query {
             let mut execute_node = |key: &Vec<u8>,
                                     value: Option<&Vec<u8>>,
                                     value_hash: CryptoHash,
-                                    child_hash_verified: bool|
+                                    child_hash_verified: bool,
+                                    plain_trusted_value: bool|
              -> Result<_, Error> {
                 while let Some(item) = query.peek() {
                     // get next item in query
@@ -213,6 +214,7 @@ impl QueryProofVerify for Query {
                                 Some(Node::KVDigestSum(..)) => {}
                                 Some(Node::KVRefValueHash(..)) => {}
                                 Some(Node::KVValueHash(..)) => {}
+                                Some(Node::KVBackwardsReferencesValueHash(..)) => {}
                                 Some(Node::KVValueHashFeatureType(..)) => {}
                                 Some(Node::KVValueHashFeatureTypeWithChildHash(..)) => {}
                                 Some(Node::KVRefValueHashCount(..)) => {}
@@ -255,6 +257,7 @@ impl QueryProofVerify for Query {
                                 Some(Node::KVDigestSum(..)) => {}
                                 Some(Node::KVRefValueHash(..)) => {}
                                 Some(Node::KVValueHash(..)) => {}
+                                Some(Node::KVBackwardsReferencesValueHash(..)) => {}
                                 Some(Node::KVValueHashFeatureType(..)) => {}
                                 Some(Node::KVValueHashFeatureTypeWithChildHash(..)) => {}
                                 Some(Node::KVRefValueHashCount(..)) => {}
@@ -312,6 +315,29 @@ impl QueryProofVerify for Query {
                     // this push matches the queried item
                     if query_item.contains(key) {
                         if let Some(val) = value {
+                            // Terminal downgrade guard (V1 strict): the V4
+                            // prover rewrites every bidirectional-reference
+                            // node — result or filler — into a
+                            // KVRefValueHash* node whose target bytes are
+                            // bound by recomputation. One arriving as a plain
+                            // trusted-value result is therefore a
+                            // downgraded/forged node whose bytes ride unbound
+                            // on the carried hash. (Plain references can
+                            // legitimately appear raw in mixed-level V1
+                            // proofs and keep their long-standing handling.)
+                            if plain_trusted_value
+                                && proof_version >= 1
+                                && matches!(
+                                    ElementType::from_serialized_value(val).map(|et| et.base()),
+                                    Ok(ElementType::BidirectionalReference)
+                                )
+                            {
+                                return Err(Error::InvalidProofError(
+                                    "bidirectional-reference elements must be dereferenced \
+                                     into KVRefValueHash-family nodes in proof results"
+                                        .to_string(),
+                                ));
+                            }
                             if let Some(limit) = current_limit {
                                 if limit == 0 {
                                     return Err(Error::InvalidProofError(format!(
@@ -365,7 +391,7 @@ impl QueryProofVerify for Query {
                     {
                         println!("Processing KV node");
                     }
-                    execute_node(key, Some(value), value_hash(value).unwrap(), false)?;
+                    execute_node(key, Some(value), value_hash(value).unwrap(), false, false)?;
                 }
                 Node::KVValueHash(key, value, value_hash) => {
                     #[cfg(feature = "proof_debug")]
@@ -390,36 +416,76 @@ impl QueryProofVerify for Query {
                                 "KVValueHash node must not contain an item element".to_string(),
                             ));
                         }
+                        // Backward-references elements must come through
+                        // KVBackwardsReferencesValueHash, whose combined
+                        // hash is RECOMPUTED — as a KVValueHash the value
+                        // bytes would ride unbound on the carried hash.
+                        if matches!(
+                            element_type.base(),
+                            ElementType::ItemWithBackwardsReferences
+                                | ElementType::SumItemWithBackwardsReferences
+                                | ElementType::ItemWithSumItemWithBackwardsReferences
+                        ) {
+                            return Err(Error::InvalidProofError(
+                                "KVValueHash node must not contain a backward-references \
+                                 element; use KVBackwardsReferencesValueHash"
+                                    .to_string(),
+                            ));
+                        }
                     }
-                    execute_node(key, Some(value), *value_hash, false)?;
+                    execute_node(key, Some(value), *value_hash, false, true)?;
                 }
                 Node::KVDigest(key, value_hash) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVDigest node");
                     }
-                    execute_node(key, None, *value_hash, false)?;
+                    execute_node(key, None, *value_hash, false, false)?;
                 }
                 Node::KVDigestCount(key, value_hash, _count) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVDigestCount node");
                     }
-                    execute_node(key, None, *value_hash, false)?;
+                    execute_node(key, None, *value_hash, false, false)?;
                 }
                 Node::KVRefValueHash(key, value, value_hash) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVRefValueHash node");
                     }
-                    execute_node(key, Some(value), *value_hash, false)?;
+                    execute_node(key, Some(value), *value_hash, false, false)?;
+                }
+                Node::KVBackwardsReferencesValueHash(key, value, backrefs_hash) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVBackwardsReferencesValueHash node");
+                    }
+                    // The node kind was introduced with GROVE_V4 / V1
+                    // envelopes; a V0 proof carrying it would be accepted
+                    // here but rejected by every released verifier.
+                    if proof_version == 0 {
+                        return Err(Error::InvalidProofError(
+                            "KVBackwardsReferencesValueHash nodes are not allowed in V0 proofs"
+                                .to_string(),
+                        ));
+                    }
+                    // The node's combined hash is recomputed from the
+                    // stripped payload bytes it carries, so the bytes are
+                    // bound; the result set receives the stripped element.
+                    let combined = value_hash(value)
+                        .unwrap()
+                        .wrap_with_cost(Default::default())
+                        .flat_map(|inner| crate::tree::hash::combine_hash(&inner, backrefs_hash))
+                        .unwrap();
+                    execute_node(key, Some(value), combined, false, false)?;
                 }
                 Node::KVCount(key, value, _count) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVCount node");
                     }
-                    execute_node(key, Some(value), value_hash(value).unwrap(), false)?;
+                    execute_node(key, Some(value), value_hash(value).unwrap(), false, false)?;
                 }
                 Node::KVValueHashFeatureType(key, value, value_hash, _feature_type) => {
                     #[cfg(feature = "proof_debug")]
@@ -442,15 +508,28 @@ impl QueryProofVerify for Query {
                                     .to_string(),
                             ));
                         }
+                        // Same rationale as the KVValueHash guard above.
+                        if matches!(
+                            element_type.base(),
+                            ElementType::ItemWithBackwardsReferences
+                                | ElementType::SumItemWithBackwardsReferences
+                                | ElementType::ItemWithSumItemWithBackwardsReferences
+                        ) {
+                            return Err(Error::InvalidProofError(
+                                "KVValueHashFeatureType node must not contain a \
+                                 backward-references element"
+                                    .to_string(),
+                            ));
+                        }
                     }
-                    execute_node(key, Some(value), *value_hash, false)?;
+                    execute_node(key, Some(value), *value_hash, false, true)?;
                 }
                 Node::KVRefValueHashCount(key, value, value_hash, _count) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVRefValueHashCount node");
                     }
-                    execute_node(key, Some(value), *value_hash, false)?;
+                    execute_node(key, Some(value), *value_hash, false, false)?;
                 }
                 Node::KVValueHashFeatureTypeWithChildHash(
                     key,
@@ -496,7 +575,7 @@ impl QueryProofVerify for Query {
                             hex::encode(node_value_hash)
                         )));
                     }
-                    execute_node(key, Some(value), *node_value_hash, true)?;
+                    execute_node(key, Some(value), *node_value_hash, true, false)?;
                 }
                 Node::Hash(_)
                 | Node::KVHash(_)
@@ -558,42 +637,42 @@ impl QueryProofVerify for Query {
                     {
                         println!("Processing KVSum node");
                     }
-                    execute_node(key, Some(value), value_hash(value).unwrap(), false)?;
+                    execute_node(key, Some(value), value_hash(value).unwrap(), false, false)?;
                 }
                 Node::KVDigestSum(key, value_hash, _sum) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVDigestSum node");
                     }
-                    execute_node(key, None, *value_hash, false)?;
+                    execute_node(key, None, *value_hash, false, false)?;
                 }
                 Node::KVRefValueHashSum(key, value, value_hash, _sum) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVRefValueHashSum node");
                     }
-                    execute_node(key, Some(value), *value_hash, false)?;
+                    execute_node(key, Some(value), *value_hash, false, false)?;
                 }
                 Node::KVCountSum(key, value, _count, _sum) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVCountSum node");
                     }
-                    execute_node(key, Some(value), value_hash(value).unwrap(), false)?;
+                    execute_node(key, Some(value), value_hash(value).unwrap(), false, false)?;
                 }
                 Node::KVDigestCountSum(key, value_hash, _count, _sum) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVDigestCountSum node");
                     }
-                    execute_node(key, None, *value_hash, false)?;
+                    execute_node(key, None, *value_hash, false, false)?;
                 }
                 Node::KVRefValueHashCountSum(key, value, value_hash, _count, _sum) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVRefValueHashCountSum node");
                     }
-                    execute_node(key, Some(value), *value_hash, false)?;
+                    execute_node(key, Some(value), *value_hash, false, false)?;
                 }
             }
 
@@ -624,6 +703,7 @@ impl QueryProofVerify for Query {
                     Some(Node::KVDigestCount(..)) => {}
                     Some(Node::KVRefValueHash(..)) => {}
                     Some(Node::KVValueHash(..)) => {}
+                    Some(Node::KVBackwardsReferencesValueHash(..)) => {}
                     Some(Node::KVCount(..)) => {}
                     Some(Node::KVValueHashFeatureType(..)) => {}
                     Some(Node::KVValueHashFeatureTypeWithChildHash(..)) => {}

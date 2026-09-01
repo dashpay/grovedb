@@ -13,6 +13,8 @@ mod aggregate_sum_carrier_query_tests;
 mod aggregate_sum_query_tests;
 mod append_family_cost_bound_tests;
 mod append_storage_accounting_tests;
+mod batch_backward_references_cost_tests;
+mod batch_backward_references_tests;
 mod batch_coverage_tests;
 mod batch_delete_tree_tests;
 mod batch_indexed_fresh_create_tests;
@@ -21,6 +23,7 @@ mod batch_indexed_overwrite_tests;
 mod batch_indexed_tree_tests;
 mod batch_rejection_tests;
 mod batch_unit_tests;
+mod bidirectional_references_tests;
 mod bulk_append_tree_tests;
 mod checkpoint_tests;
 mod chunk_branch_proof_tests;
@@ -1148,9 +1151,13 @@ mod general_tests {
     use grovedb_merk::{
         element::get::ElementFetchFromStorageExtensions, proofs::query::SubqueryBranch,
     };
+    use operations::insert::InsertOptions;
 
     use super::*;
-    use crate::element::elements_iterator::ElementIteratorExtensions;
+    use crate::{
+        bidirectional_references::BidirectionalReference,
+        element::elements_iterator::ElementIteratorExtensions,
+    };
 
     #[test]
     fn test_init() {
@@ -4904,5 +4911,192 @@ mod general_tests {
             .verify_grovedb(None, true, false, grove_version)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn test_verify_bidirectional_references_dont_corrupt() {
+        // As opposed to regular references, bidirectional references with the
+        // propagation flag keep the reference chain hashes consistent when
+        // the target is updated:
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let transaction = db.start_transaction();
+
+        db.insert(
+            &[TEST_LEAF],
+            b"value",
+            Element::new_item_allowing_bidirectional_references(b"hello".to_vec()),
+            None,
+            Some(&transaction),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        db.insert(
+            &[TEST_LEAF],
+            b"refc",
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"value".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: None,
+                },
+                None,
+            ),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            Some(&transaction),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        db.insert(
+            &[TEST_LEAF],
+            b"refb",
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"refc".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: None,
+                },
+                None,
+            ),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            Some(&transaction),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        db.insert(
+            &[TEST_LEAF],
+            b"refa",
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"refb".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: None,
+                },
+                None,
+            ),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            Some(&transaction),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(db
+            .verify_grovedb(Some(&transaction), true, true, grove_version)
+            .unwrap()
+            .is_empty());
+
+        // "Breaking" things there:
+        db.insert(
+            &[TEST_LEAF],
+            b"value",
+            Element::new_item_allowing_bidirectional_references(b"not hello >:(".to_vec()),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            Some(&transaction),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        // But they're not broken!
+        assert!(db
+            .verify_grovedb(Some(&transaction), true, true, grove_version)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// Fail-closed gating: the backward-references element family requires
+    /// GROVE_V4. Under GROVE_V3 (live in production) every insert path
+    /// rejects them.
+    #[test]
+    fn backward_references_elements_rejected_before_v4() {
+        use grovedb_version::version::v3::GROVE_V3;
+
+        let db = make_test_grovedb(GroveVersion::latest());
+
+        let elements = [
+            Element::new_item_allowing_bidirectional_references(b"v".to_vec()),
+            Element::new_sum_item_allowing_bidirectional_references(1),
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"x".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: None,
+                },
+                None,
+            ),
+        ];
+
+        for element in elements {
+            assert!(
+                matches!(
+                    db.insert(&[TEST_LEAF], b"k", element.clone(), None, None, &GROVE_V3)
+                        .unwrap(),
+                    Err(Error::NotSupported(_))
+                ),
+                "expected NotSupported under GROVE_V3 for {element:?}"
+            );
+        }
+    }
+
+    /// Fail-closed: batches perform no backward-references bookkeeping, so
+    /// every batch entry point rejects ops carrying the element family.
+    #[test]
+    fn backward_references_elements_rejected_in_batches() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let elements = [
+            Element::new_item_allowing_bidirectional_references(b"v".to_vec()),
+            Element::new_sum_item_allowing_bidirectional_references(1),
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"x".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: None,
+                },
+                None,
+            ),
+        ];
+
+        for element in elements {
+            let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"k".to_vec(),
+                element.clone(),
+            )];
+            assert!(
+                matches!(
+                    db.apply_batch(ops, None, None, grove_version).unwrap(),
+                    Err(Error::NotSupported(_))
+                ),
+                "expected NotSupported in batch for {element:?}"
+            );
+        }
     }
 }

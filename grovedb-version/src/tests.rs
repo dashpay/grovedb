@@ -516,6 +516,8 @@ fn delete_internal_on_transaction_is_legacy_until_v4() {
     // Reusing the already-open parent Merk for non-empty child tree deletes
     // (issue #686) activates at GROVE_V4; v1-v3 are live in production and
     // must keep the legacy reopen labeled with the child's tree type.
+    // GROVE_V4 selects v2: the backward-references router, whose flag-less
+    // calls run the exact v1 (parent-reuse) body.
     for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3] {
         assert_eq!(
             v.grovedb_versions
@@ -531,8 +533,32 @@ fn delete_internal_on_transaction_is_legacy_until_v4() {
             .operations
             .delete
             .delete_internal_on_transaction,
+        2
+    );
+}
+
+#[test]
+fn backward_references_flows_activate_at_v4() {
+    // The backward-references feature (PR #345) gates on GROVE_V4: the
+    // insert router (v1), the delete router (v2, above), and the
+    // element-level insert_if_changed_value Merk-read variant (v1). All
+    // shipped versions stay at 0.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3] {
+        assert_eq!(
+            v.grovedb_versions.operations.insert.insert_on_transaction,
+            0
+        );
+        assert_eq!(v.grovedb_versions.element.insert_if_changed_value, 0);
+    }
+    assert_eq!(
+        GROVE_V4
+            .grovedb_versions
+            .operations
+            .insert
+            .insert_on_transaction,
         1
     );
+    assert_eq!(GROVE_V4.grovedb_versions.element.insert_if_changed_value, 1);
 }
 
 #[test]

@@ -137,6 +137,17 @@
 //!   admission bound: raising it ungated would make already-committed
 //!   shield transitions re-validate as under-funded and brick sync.
 //!
+//! - `operations.average_case.average_case_backward_references_fan_out: 1`
+//!   and `operations.worst_case.worst_case_backward_references_fan_out: 1`
+//!   — batch estimation charges the backward-references family's derived
+//!   fan-out (registration, chain propagation, cascade deletion), bounded
+//!   by the apply path's budgets (≤32 referrers per item, ≤10-hop chains,
+//!   1 referrer per reference), and models the internal
+//!   `ReplaceBackwardReferenceFamilyMember` op. V1..V3 keep estimating the
+//!   family as plain elements (their apply path rejects it in batches, so
+//!   the legacy figures were never admission-relevant) — preserved for
+//!   replay.
+//!
 //! - `bulk_append_tree_versions.cost.append_storage_accounting: 1` and
 //!   `commitment_tree_versions.cost.frontier_save_storage_accounting: 1` —
 //!   the append-only family (`BulkAppendTree`, `CommitmentTree`,
@@ -273,7 +284,10 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             insert_into_batch_operations: 0,
             insert_if_not_exists: 0,
             insert_if_not_exists_into_batch_operations: 0,
-            insert_if_changed_value: 0,
+            // v1: reads the previous value through the Merk tree (sees
+            // uncommitted MerkCache state) instead of committed storage.
+            insert_if_changed_value: 1,
+            insert_subtree_if_changed: 0,
             insert_if_changed_value_into_batch_operations: 0,
             insert_reference: 0,
             insert_reference_into_batch_operations: 0,
@@ -310,6 +324,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 get: 0,
                 get_caching_optional: 0,
                 follow_reference: 0,
+                ref_path_follow_reference: 0,
                 get_raw: 0,
                 get_raw_caching_optional: 0,
                 get_raw_optional: 0,
@@ -329,14 +344,15 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             },
             insert: GroveDBOperationsInsertVersions {
                 insert: 0,
-                insert_on_transaction: 0,
-                insert_without_transaction: 0,
+                // v1: backward-references router. Calls that neither insert a
+                // BidirectionalReference nor set
+                // propagate_backward_references run the exact v0 body.
+                insert_on_transaction: 1,
                 // v1: non-batch insert writes CountSumTree / ProvableCountTree /
                 // ProvableCountSumTree as layered subtrees, consistent with the
                 // batch path. GROVE_V1 / GROVE_V2 keep v0 (Op::Put) to preserve
                 // the protocol-v11 consensus root (testnet block 245,344).
                 add_element_on_transaction: 1,
-                add_element_without_transaction: 0,
                 insert_if_not_exists: 0,
                 insert_if_not_exists_return_existing_element: 0,
                 insert_if_changed_value: 0,
@@ -353,8 +369,9 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 // with the child's tree type (issue #686). v0 (GROVE_V1..V3)
                 // keeps the legacy reopen byte-for-byte for replay
                 // compatibility.
-                delete_internal_on_transaction: 1,
-                delete_internal_without_transaction: 0,
+                // v2: backward-references router on top of v1 — flag-less
+                // calls run the exact v1 body.
+                delete_internal_on_transaction: 2,
                 average_case_delete_operation_for_delete: 0,
                 worst_case_delete_operation_for_delete: 0,
             },
@@ -427,6 +444,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 add_average_case_get_raw_tree_cost: 0,
                 add_average_case_get_cost: 0,
                 average_case_commitment_tree_insert: 1,
+                average_case_backward_references_fan_out: 1,
             },
             worst_case: GroveDBOperationsWorstCaseVersions {
                 add_worst_case_get_merk_at_path: 0,
@@ -442,6 +460,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 add_worst_case_get_raw_cost: 0,
                 add_worst_case_get_cost: 0,
                 worst_case_commitment_tree_insert: 1,
+                worst_case_backward_references_fan_out: 1,
             },
             // PrivateDocumentStore activates in GROVE_V4.
             private_document_store: GroveDBOperationsPrivateDocumentStoreVersions {

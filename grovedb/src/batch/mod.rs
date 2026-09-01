@@ -1,5 +1,6 @@
 //! Apply multiple GroveDB operations atomically.
 
+mod backward_references;
 mod batch_structure;
 
 /// Indexed-tree helpers for the batch apply pipeline (pre-apply
@@ -57,6 +58,7 @@ use grovedb_costs::{
     },
     CostResult, CostsExt, OperationCost,
 };
+use grovedb_element::ElementType;
 use grovedb_merk::{
     element::{
         costs::ElementCostExtensions, delete::ElementDeleteFromStorageExtensions,
@@ -91,6 +93,7 @@ pub use crate::batch::batch_structure::{OpsByLevelPath, OpsByPath};
 use crate::batch::estimated_costs::EstimatedCostsType;
 use crate::{
     batch::{batch_structure::BatchStructure, mode::BatchRunMode},
+    bidirectional_references::BidirectionalReference,
     element::{MaxReferenceHop, SumValue},
     operations::{delete::DeleteOptions, get::MAX_REFERENCE_HOPS, proof::util::hex_to_ascii},
     reference_path::{
@@ -519,6 +522,21 @@ pub enum GroveOp {
     /// `reference_path_type`, `max_reference_hop`, and `flags` are
     /// used only for the average / worst case cost models in
     /// untrusted mode.
+    /// INTERNAL — derived by the backward-references batch preprocessor,
+    /// never accepted from callers. Writes `element` with the explicitly
+    /// provided node value hash, already combined per the family's
+    /// two-layer scheme: a referrer rewrite carries
+    /// `combine(element_combined, end_hash)`, a lazy referrer-list cleanup
+    /// carries the cleaned element's own combined hash.
+    #[non_exhaustive]
+    ReplaceBackwardReferenceFamilyMember {
+        /// The full family element to store (referrer lists included).
+        element: Element,
+        /// The node value hash the write installs.
+        node_value_hash: CryptoHash,
+    },
+    /// Re-resolves and rewrites a stored reference's value hash. See
+    /// [`RefreshReferenceMode`] for the per-variant contract.
     RefreshReference {
         /// The reference path written under trusted variants. Under
         /// untrusted variants the on-disk path is preserved; this
@@ -606,6 +624,7 @@ impl GroveOp {
             GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. } => 17,
             GroveOp::InsertAggregateIndexedTreeRootKeys { .. } => 18,
             GroveOp::PrivateDocumentStoreInsert { .. } => 19,
+            GroveOp::ReplaceBackwardReferenceFamilyMember { .. } => 20,
         }
     }
 
@@ -637,6 +656,7 @@ impl GroveOp {
             // key; delete removes it. All require secondary mirror.
             GroveOp::InsertWithKnownToNotAlreadyExist { .. }
             | GroveOp::InsertIfNotExists { .. }
+            | GroveOp::ReplaceBackwardReferenceFamilyMember { .. }
             | GroveOp::InsertOrReplace { .. }
             | GroveOp::Replace { .. }
             | GroveOp::Patch { .. }
@@ -693,6 +713,7 @@ impl GroveOp {
         match self {
             GroveOp::InsertWithKnownToNotAlreadyExist { .. }
             | GroveOp::InsertIfNotExists { .. }
+            | GroveOp::ReplaceBackwardReferenceFamilyMember { .. }
             | GroveOp::InsertOrReplace { .. }
             | GroveOp::Replace { .. }
             | GroveOp::Patch { .. }
@@ -985,6 +1006,14 @@ impl fmt::Debug for QualifiedGroveDbOp {
                     reference_path_type, max_reference_hop, mode_render, non_counted,
                 )
             }
+            GroveOp::ReplaceBackwardReferenceFamilyMember {
+                element,
+                node_value_hash,
+            } => format!(
+                "Replace Backward-Reference Family Member {:?} (value hash {})",
+                element,
+                hex::encode(node_value_hash)
+            ),
             GroveOp::Delete => "Delete".to_string(),
             GroveOp::DeleteTree(tree_type, check) => {
                 format!("Delete Tree {} ({:?})", tree_type, check)
@@ -1980,9 +2009,9 @@ where
                 )),
             };
 
-            let referenced_element_value_hash_opt = cost_return_on_error!(
+            let referenced_value_and_hash_opt = cost_return_on_error!(
                 &mut cost,
-                merk.get_value_hash(
+                merk.get_value_and_value_hash(
                     key.as_ref(),
                     true,
                     Some(Element::value_defined_cost_for_serialized_value),
@@ -1991,9 +2020,9 @@ where
                 .map_err(|e| Error::CorruptedData(e.to_string()))
             );
 
-            let referenced_element_value_hash = cost_return_on_error!(
+            let (referenced_value, referenced_element_value_hash) = cost_return_on_error!(
                 &mut cost,
-                referenced_element_value_hash_opt
+                referenced_value_and_hash_opt
                     .ok_or({
                         let reference_string = reference_path
                             .iter()
@@ -2008,6 +2037,48 @@ where
                     })
                     .wrap_with_cost(OperationCost::default())
             );
+
+            // One exception to the read-the-stored-hash shortcut: a
+            // backward-references item terminal stores the COMBINED
+            // (inner ‖ backrefs) hash, while every reference in a chain
+            // commits to the target's LOGICAL (stripped) hash — otherwise
+            // registering a referrer would ripple through chains. Sniff the
+            // type from the serialized bytes and recompute for that family
+            // only; everything else keeps the fast path unchanged.
+            if ElementType::from_serialized_value(&referenced_value)
+                .map(|et| et.is_backward_references_item())
+                .unwrap_or(false)
+            {
+                let element = cost_return_on_error_into_no_add!(
+                    cost,
+                    Element::deserialize(&referenced_value, grove_version)
+                );
+                let serialized = cost_return_on_error_into_no_add!(
+                    cost,
+                    element
+                        .stripped_of_backward_references()
+                        .serialize(grove_version)
+                );
+                let logical_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                return Ok(logical_hash).wrap_with_cost(cost);
+            }
+            // A bidirectional reference here means the declared hop budget
+            // ran out one hop short of a terminal: its stored hash is the
+            // COMBINED reference hash, never the terminal logical hash a
+            // dependent reference commits to. Fail closed rather than bake
+            // a hash that verify_grovedb will report as corrupt. (Plain
+            // references keep the long-standing documented contract: an
+            // ill-formed hop-1 chain surfaces at verification instead.)
+            if matches!(
+                ElementType::from_serialized_value(&referenced_value).map(|et| et.base()),
+                Ok(ElementType::BidirectionalReference)
+            ) {
+                return Err(Error::InvalidBatchOperation(
+                    "reference hop budget exhausted on a bidirectional reference; the chain \
+                     needs at least one more hop to reach its terminal",
+                ))
+                .wrap_with_cost(cost);
+            }
 
             return Ok(referenced_element_value_hash).wrap_with_cost(cost);
         }
@@ -2222,9 +2293,36 @@ where
                 let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                 Ok(val_hash).wrap_with_cost(cost)
             }
-            // Both reference variants follow the same chain-resolution path
-            // to compute their effective value hash.
-            Element::Reference(path, ..) | Element::ReferenceWithSumItem(path, ..) => {
+            // A chain terminal with backward references: every reference in
+            // a chain commits to the target's LOGICAL (stripped) hash — the
+            // referrer list is excluded so registrations never ripple
+            // through chains. (These elements reject aggregation wrappers,
+            // so the outer element IS the underlying one.)
+            Element::ItemWithBackwardsReferences(..)
+            | Element::SumItemWithBackwardsReferences(..)
+            | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                let serialized = cost_return_on_error_into_no_add!(
+                    cost,
+                    element
+                        .stripped_of_backward_references()
+                        .serialize(grove_version)
+                );
+                let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                Ok(val_hash).wrap_with_cost(cost)
+            }
+            // All reference variants follow the same chain-resolution path
+            // to compute their effective value hash. A pre-existing
+            // `BidirectionalReference` (inserted through the non-batch
+            // path) resolves through its forward path like any reference.
+            Element::Reference(path, ..)
+            | Element::ReferenceWithSumItem(path, ..)
+            | Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: path,
+                    ..
+                },
+                _,
+            ) => {
                 let path = cost_return_on_error_into_no_add!(
                     cost,
                     path_from_reference_qualified_path_type(path.clone(), qualified_path)
@@ -2315,6 +2413,46 @@ where
         if let Some(op) = ops_by_qualified_paths.get(qualified_path) {
             // the path is being modified, inserted or deleted in the batch of operations
             match op {
+                // A derived backward-references rewrite: dependent chains
+                // commit to the LOGICAL (stripped) hash of item terminals
+                // and follow bidirectional references through their forward
+                // path, exactly like the on-disk dispatch below.
+                GroveOp::ReplaceBackwardReferenceFamilyMember { element, .. } => match element {
+                    Element::ItemWithBackwardsReferences(..)
+                    | Element::SumItemWithBackwardsReferences(..)
+                    | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                        let serialized = cost_return_on_error_into_no_add!(
+                            cost,
+                            element
+                                .stripped_of_backward_references()
+                                .serialize(grove_version)
+                        );
+                        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                        Ok(val_hash).wrap_with_cost(cost)
+                    }
+                    Element::BidirectionalReference(reference, _) => {
+                        let path = cost_return_on_error_into_no_add!(
+                            cost,
+                            path_from_reference_qualified_path_type(
+                                reference.forward_reference_path.clone(),
+                                qualified_path
+                            )
+                        );
+                        self.follow_reference_get_value_hash(
+                            path.as_slice(),
+                            ops_by_qualified_paths,
+                            recursions_allowed - 1,
+                            flags_update,
+                            split_removal_bytes,
+                            visited,
+                            grove_version,
+                        )
+                    }
+                    _ => Err(Error::CorruptedCodeExecution(
+                        "derived backward-references op carries a non-family element",
+                    ))
+                    .wrap_with_cost(cost),
+                },
                 GroveOp::ReplaceTreeRootKey { .. }
                 | GroveOp::InsertTreeWithRootHash { .. }
                 | GroveOp::ReplaceNonMerkTreeRoot { .. }
@@ -2384,6 +2522,91 @@ where
                                 }
                             }
                         }
+                        // A pending write of a chain terminal with backward
+                        // references: dependent references commit to the
+                        // LOGICAL (stripped) hash — the referrer list is
+                        // excluded so registrations never ripple through
+                        // chains. (These elements reject aggregation
+                        // wrappers, so the outer element IS the underlying
+                        // one.)
+                        Element::ItemWithBackwardsReferences(..)
+                        | Element::SumItemWithBackwardsReferences(..)
+                        | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                            // Referrers commit to the LOGICAL (stripped)
+                            // hash — and, exactly like the `Item` arm above,
+                            // the hash must reflect the flags the APPLY path
+                            // will actually write, so storage flags go
+                            // through the same old-flags merge over the
+                            // stripped shape.
+                            let stripped = element.stripped_of_backward_references();
+                            let serialized = cost_return_on_error_into_no_add!(
+                                cost,
+                                stripped.serialize(grove_version)
+                            );
+                            if element.get_flags().is_none() {
+                                let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                                Ok(val_hash).wrap_with_cost(cost)
+                            } else {
+                                let mut new_element = stripped.clone();
+                                let (key, reference_path) = qualified_path
+                                    .split_last()
+                                    .expect("path validated non-empty above");
+                                let serialized_element_result = cost_return_on_error!(
+                                    &mut cost,
+                                    self.get_and_deserialize_referenced_element(
+                                        key,
+                                        reference_path,
+                                        grove_version
+                                    )
+                                );
+                                if let Some((old_element, old_serialized_element, is_in_sum_tree)) =
+                                    serialized_element_result
+                                {
+                                    let value_hash = cost_return_on_error!(
+                                        &mut cost,
+                                        Self::process_old_element_flags(
+                                            key,
+                                            &serialized,
+                                            &mut new_element,
+                                            old_element,
+                                            &old_serialized_element,
+                                            is_in_sum_tree,
+                                            flags_update,
+                                            split_removal_bytes,
+                                            grove_version,
+                                        )
+                                    );
+                                    Ok(value_hash).wrap_with_cost(cost)
+                                } else {
+                                    let value_hash =
+                                        value_hash(&serialized).unwrap_add_cost(&mut cost);
+                                    Ok(value_hash).wrap_with_cost(cost)
+                                }
+                            }
+                        }
+                        // A pending bidirectional reference resolves through
+                        // its forward path like any reference. (Under the
+                        // backward-references flag the preprocessor converts
+                        // these ops into the derived form, handled above;
+                        // this arm keeps the dispatch total.)
+                        Element::BidirectionalReference(reference, _) => {
+                            let path = cost_return_on_error_into_no_add!(
+                                cost,
+                                path_from_reference_qualified_path_type(
+                                    reference.forward_reference_path.clone(),
+                                    qualified_path
+                                )
+                            );
+                            self.follow_reference_get_value_hash(
+                                path.as_slice(),
+                                ops_by_qualified_paths,
+                                recursions_allowed - 1,
+                                flags_update,
+                                split_removal_bytes,
+                                visited,
+                                grove_version,
+                            )
+                        }
                         // Both reference variants follow the same chain.
                         Element::Reference(path, ..) | Element::ReferenceWithSumItem(path, ..) => {
                             let path = cost_return_on_error_into_no_add!(
@@ -2440,6 +2663,40 @@ where
                         );
                         let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                         Ok(val_hash).wrap_with_cost(cost)
+                    }
+                    // Same chain-hash convention as the InsertOrReplace
+                    // group above: item terminals commit the stripped
+                    // logical hash; a pending bidirectional reference
+                    // resolves through its forward path.
+                    Element::ItemWithBackwardsReferences(..)
+                    | Element::SumItemWithBackwardsReferences(..)
+                    | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                        let serialized = cost_return_on_error_into_no_add!(
+                            cost,
+                            element
+                                .stripped_of_backward_references()
+                                .serialize(grove_version)
+                        );
+                        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                        Ok(val_hash).wrap_with_cost(cost)
+                    }
+                    Element::BidirectionalReference(reference, _) => {
+                        let path = cost_return_on_error_into_no_add!(
+                            cost,
+                            path_from_reference_qualified_path_type(
+                                reference.forward_reference_path.clone(),
+                                qualified_path
+                            )
+                        );
+                        self.follow_reference_get_value_hash(
+                            path.as_slice(),
+                            ops_by_qualified_paths,
+                            recursions_allowed - 1,
+                            flags_update,
+                            split_removal_bytes,
+                            visited,
+                            grove_version,
+                        )
                     }
                     Element::Reference(path, ..) | Element::ReferenceWithSumItem(path, ..) => {
                         let path = cost_return_on_error_into_no_add!(
@@ -2677,6 +2934,49 @@ where
         let mut batch_operations: Vec<(Vec<u8>, Op)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {
+                // Derived by the backward-references preprocessor: write the
+                // full element with its precomputed combined node value hash
+                // (the two-layer scheme's combine for items; for referrer
+                // rewrites additionally combined with the resolved end
+                // hash).
+                GroveOp::ReplaceBackwardReferenceFamilyMember {
+                    element,
+                    node_value_hash,
+                } => {
+                    use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
+                    // The same host-tree rules as direct insertion apply:
+                    // notably, backward-references ITEM variants are not
+                    // representable in Provable* aggregate hosts (no proof
+                    // node binds both their combined value hash and the
+                    // aggregate), so a derived rewrite may not create that
+                    // combination either.
+                    cost_return_on_error_into!(
+                        &mut cost,
+                        element
+                            .validate_insertable_into(in_tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    let serialized = cost_return_on_error_into!(
+                        &mut cost,
+                        element
+                            .serialize(grove_version)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    let merk_feature_type = cost_return_on_error_into!(
+                        &mut cost,
+                        element
+                            .get_feature_type(in_tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    batch_operations.push((
+                        key_info.get_key(),
+                        Op::PutWithProvidedValueHash(
+                            serialized,
+                            node_value_hash,
+                            merk_feature_type,
+                        ),
+                    ));
+                }
                 op_ref @ (GroveOp::InsertWithKnownToNotAlreadyExist { .. }
                 | GroveOp::InsertIfNotExists { .. }
                 | GroveOp::InsertOrReplace { .. }
@@ -3316,6 +3616,96 @@ where
                                     grove_version,
                                 )
                             );
+                        }
+                        // Unreachable backstop: unflagged batches reject
+                        // bidirectional-reference ops at every entry point,
+                        // and under the flag the preprocessor converts them
+                        // into `ReplaceBackwardReferenceFamilyMember` (a
+                        // reference's node hash needs its resolved end hash,
+                        // which this generic path does not carry).
+                        Element::BidirectionalReference(..) => {
+                            return Err(Error::NotSupported(
+                                "BidirectionalReference ops must go through the \
+                                 backward-references batch preprocessor"
+                                    .to_owned(),
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        // Backward-references items store their COMBINED
+                        // (stripped ‖ referrer-list) hash; the preprocessor
+                        // has already replaced the caller-supplied referrer
+                        // list with the stored one.
+                        Element::ItemWithBackwardsReferences(..)
+                        | Element::SumItemWithBackwardsReferences(..)
+                        | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                            // Same guard the live `Element::insert` applies:
+                            // the family's combined value hash has no
+                            // aggregate-carrying proof-node variant, so
+                            // Provable* aggregate parents refuse it.
+                            {
+                                use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
+                                cost_return_on_error_into!(
+                                    &mut cost,
+                                    element
+                                        .validate_insertable_into(in_tree_type)
+                                        .wrap_with_cost(OperationCost::default())
+                                );
+                            }
+                            let merk_feature_type = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(in_tree_type)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            if is_insert_if_not_exists
+                                || batch_apply_options.validate_insertion_does_not_override
+                            {
+                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                                let exists = cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.element_at_key_already_exists(
+                                        merk,
+                                        key_info.as_slice(),
+                                        grove_version
+                                    )
+                                );
+                                if exists
+                                    && (error_if_exists
+                                        || batch_apply_options.validate_insertion_does_not_override)
+                                {
+                                    return Err(Error::InvalidBatchOperation(
+                                        "attempting to insert element that already exists",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+                                if exists {
+                                    // InsertIfNotExists over an existing key
+                                    // writes nothing.
+                                    continue;
+                                }
+                            }
+                            let serialized = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .serialize(grove_version)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            let hashes = {
+                                use grovedb_merk::element::ElementExt;
+                                cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.backward_references_hashes(grove_version)
+                                )
+                                .expect("backward-references elements carry hashes")
+                            };
+                            batch_operations.push((
+                                key_info.get_key(),
+                                Op::PutWithProvidedValueHash(
+                                    serialized,
+                                    hashes.combined,
+                                    merk_feature_type,
+                                ),
+                            ));
                         }
                         Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                             let merk_feature_type = cost_return_on_error_into!(
@@ -4754,6 +5144,16 @@ impl GroveDb {
                                                         .wrap_with_cost(cost);
                                                     }
                                                 }
+                                                GroveOp::ReplaceBackwardReferenceFamilyMember {
+                                                    ..
+                                                } => {
+                                                    return Err(Error::InvalidBatchOperation(
+                                                        "backward-references family members are \
+                                                         not trees and cannot receive child \
+                                                         propagation",
+                                                    ))
+                                                    .wrap_with_cost(cost);
+                                                }
                                                 GroveOp::RefreshReference { .. } => {
                                                     return Err(Error::InvalidBatchOperation(
                                                         "insertion of element under a refreshed \
@@ -5037,6 +5437,13 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         for op in ops.into_iter() {
             match op.op {
+                GroveOp::ReplaceBackwardReferenceFamilyMember { .. } => {
+                    return Err(Error::NotSupported(
+                        "derived backward-references ops cannot be applied without batching"
+                            .to_owned(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
                 GroveOp::InsertOrReplace { element } | GroveOp::Replace { element } => {
                     // TODO: paths in batches is something to think about
                     let path_slices: Vec<&[u8]> =
@@ -5190,6 +5597,11 @@ impl GroveDb {
                             .as_ref()
                             .is_none_or(|o| o.base_root_storage_is_free),
                         validate_tree_at_path_exists: false,
+                        // Same decision as `as_delete_options`: the batch's
+                        // opt-in extends to its deletes.
+                        propagate_backward_references: options
+                            .as_ref()
+                            .is_some_and(|o| o.propagate_backward_references),
                     };
                     cost_return_on_error!(
                         &mut cost,
@@ -5934,6 +6346,56 @@ impl GroveDb {
         Ok(scan).wrap_with_cost(cost)
     }
 
+    /// Backward-references family elements are only valid in batches that
+    /// opt into the bookkeeping via
+    /// `BatchApplyOptions::propagate_backward_references` (GROVE_V4+),
+    /// where the preprocessor expands them into the derived operations the
+    /// live flagged flow performs. Everywhere else (`allow_family` false:
+    /// unflagged batches, partial batches, partial-batch add-on ops) they
+    /// fail closed — the pipeline would otherwise silently produce
+    /// inconsistent backward-reference state (a `BidirectionalReference`
+    /// whose target never learns about it).
+    fn reject_backward_references_elements_in_batch(
+        ops: &[QualifiedGroveDbOp],
+        allow_family: bool,
+    ) -> Result<(), Error> {
+        for op in ops {
+            // The derived write op is internal to the preprocessor; a
+            // caller supplying one could install arbitrary value hashes.
+            if matches!(op.op, GroveOp::ReplaceBackwardReferenceFamilyMember { .. }) {
+                return Err(Error::NotSupported(
+                    "ReplaceBackwardReferenceFamilyMember is derived internally and cannot be \
+                     supplied in a batch"
+                        .to_owned(),
+                ));
+            }
+            let element = match &op.op {
+                GroveOp::InsertWithKnownToNotAlreadyExist { element }
+                | GroveOp::InsertIfNotExists { element, .. }
+                | GroveOp::InsertOrReplace { element }
+                | GroveOp::Replace { element }
+                | GroveOp::Patch { element, .. } => element,
+                _ => continue,
+            };
+            match element {
+                Element::BidirectionalReference(..)
+                | Element::ItemWithBackwardsReferences(..)
+                | Element::SumItemWithBackwardsReferences(..)
+                | Element::ItemWithSumItemWithBackwardsReferences(..)
+                    if !allow_family =>
+                {
+                    return Err(Error::NotSupported(
+                        "backward-references family elements require \
+                         BatchApplyOptions::propagate_backward_references (GROVE_V4+)"
+                            .to_owned(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     /// Applies batch of operations on GroveDB
     pub fn apply_batch_with_element_flags_update(
         &self,
@@ -5986,6 +6448,56 @@ impl GroveDb {
                 .wrap_with_cost(cost);
             }
         }
+
+        // Backward-references bookkeeping is a per-batch opt-in, and rides
+        // the same activation as the live flagged flow (`GROVE_V4`+, where
+        // `insert_on_transaction` dispatches to v1).
+        let backward_references_enabled = batch_apply_options
+            .as_ref()
+            .map(|options| options.propagate_backward_references)
+            .unwrap_or(false)
+            && grove_version
+                .grovedb_versions
+                .operations
+                .insert
+                .insert_on_transaction
+                >= 1;
+        cost_return_on_error_no_add!(
+            cost,
+            Self::reject_backward_references_elements_in_batch(&ops, backward_references_enabled)
+        );
+        let ops = if backward_references_enabled {
+            let ops = cost_return_on_error!(
+                &mut cost,
+                backward_references::expand_backward_references_ops(
+                    self,
+                    &tx,
+                    ops,
+                    batch_apply_options
+                        .as_ref()
+                        .map(|options| options.validate_insertion_does_not_override)
+                        .unwrap_or_default(),
+                    grove_version
+                )
+            );
+            // The expansion merges derived mutations into the batch under
+            // the M4 conflict rules and errors on everything ambiguous, so
+            // the expanded set should always be consistent; this re-check
+            // is a backstop against expansion bugs.
+            if check_batch_operation_consistency {
+                let consistency_result = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+                if !consistency_result.is_empty() {
+                    return Err(Error::InvalidBatchOperation(
+                        "derived backward-references operations conflict with the batch's own \
+                         operations",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+            }
+            ops
+        } else {
+            ops
+        };
 
         cost_return_on_error!(
             &mut cost,
@@ -6431,6 +6943,11 @@ impl GroveDb {
             }
         }
 
+        cost_return_on_error_no_add!(
+            cost,
+            Self::reject_backward_references_elements_in_batch(&ops, false)
+        );
+
         cost_return_on_error!(
             &mut cost,
             indexed_tree::reject_indexed_overwrite_with_descendants(
@@ -6612,6 +7129,14 @@ impl GroveDb {
                 .wrap_with_cost(cost);
             }
         }
+
+        // The callback is caller-provided, so add-on ops get the same
+        // backward-references gate the initial ops got — otherwise an op
+        // carrying the family would only fail deep inside execution.
+        cost_return_on_error_no_add!(
+            cost,
+            Self::reject_backward_references_elements_in_batch(&new_operations, false)
+        );
 
         // we are trying to finalize
         batch_apply_options.batch_pause_height = None;
@@ -7165,6 +7690,7 @@ mod tests {
                     disable_operation_consistency_check: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    propagate_backward_references: false,
                 }),
                 None,
                 grove_version
@@ -7770,6 +8296,7 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    propagate_backward_references: false,
                 }),
                 None,
                 grove_version
@@ -7811,6 +8338,7 @@ mod tests {
                     validate_insertion_does_not_override: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    propagate_backward_references: false,
                 }),
                 None,
                 grove_version
@@ -7844,6 +8372,7 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    propagate_backward_references: false,
                 }),
                 None,
                 grove_version
