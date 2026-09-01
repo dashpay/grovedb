@@ -14,7 +14,10 @@
 //! - draining is idempotent, resumable after a simulated crash, and
 //!   refuses to tombstone a re-created (live) path — leaking instead of
 //!   destroying;
-//! - both entry points fail closed before `GROVE_V4`.
+//! - both entry points fail closed before `GROVE_V4`;
+//! - absence of the dropped element is provable against the post-drop root
+//!   hash, and references into the dropped subtree dangle with the typed
+//!   corrupted-reference error rather than resolving to stale data.
 
 mod tests {
     use grovedb_costs::OperationCost;
@@ -646,6 +649,104 @@ mod tests {
         // reclamation already ran.
         assert_eq!(data_namespace_key_count(&db, prefix), 0);
         assert!(!record_exists(&db, prefix));
+    }
+
+    // ── Proofs and references ───────────────────────────────────────────
+
+    #[test]
+    fn drop_flat_subtree_absence_is_provable() {
+        use grovedb_merk::proofs::Query;
+
+        use crate::{GroveDb, PathQuery};
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        seed_flat_tree(&db, b"flat", 25, grove_version);
+
+        let mut query = Query::new();
+        query.insert_key(b"flat".to_vec());
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+        // Sanity: before the drop the same query proves one result.
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove before drop");
+        let (hash, result_set) =
+            GroveDb::verify_query_raw(&proof, &path_query, grove_version).expect("verify");
+        assert_eq!(hash, db.root_hash(None, grove_version).unwrap().unwrap());
+        assert_eq!(result_set.len(), 1);
+
+        db.drop_flat_subtree([TEST_LEAF].as_ref(), b"flat", None, grove_version)
+            .unwrap()
+            .expect("drop");
+
+        // The dropped element's absence is provable against the new root
+        // hash: an empty result set whose proof verifies.
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove after drop");
+        let (hash, result_set) =
+            GroveDb::verify_query_raw(&proof, &path_query, grove_version).expect("verify");
+        assert_eq!(hash, db.root_hash(None, grove_version).unwrap().unwrap());
+        assert!(
+            result_set.is_empty(),
+            "dropped key must prove absent, got {result_set:?}"
+        );
+    }
+
+    #[test]
+    fn references_into_a_dropped_subtree_dangle_with_typed_errors() {
+        use crate::{reference_path::ReferencePathType, tests::ANOTHER_TEST_LEAF};
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        seed_flat_tree(&db, b"flat", 5, grove_version);
+
+        db.insert(
+            [ANOTHER_TEST_LEAF].as_ref(),
+            b"ref",
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec(),
+                b"flat".to_vec(),
+                b"key_00000001".to_vec(),
+            ])),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert reference");
+
+        // Sanity: the reference resolves before the drop.
+        assert_eq!(
+            db.get([ANOTHER_TEST_LEAF].as_ref(), b"ref", None, grove_version)
+                .unwrap()
+                .expect("follow reference before drop"),
+            Element::new_item(b"value_bytes_0000".to_vec())
+        );
+
+        db.drop_flat_subtree([TEST_LEAF].as_ref(), b"flat", None, grove_version)
+            .unwrap()
+            .expect("drop");
+
+        // The reference now dangles: following it returns the typed
+        // corrupted-reference error (the target's parent layer is gone),
+        // never stale data. Managing such references is the caller's
+        // responsibility, exactly as with `delete`.
+        let followed = db
+            .get([ANOTHER_TEST_LEAF].as_ref(), b"ref", None, grove_version)
+            .unwrap();
+        assert!(
+            matches!(
+                followed,
+                Err(Error::CorruptedReferencePathParentLayerNotFound(_)
+                    | Error::CorruptedReferencePathKeyNotFound(_)
+                    | Error::CorruptedReferencePathNotFound(_))
+            ),
+            "expected a typed dangling-reference error, got {followed:?}"
+        );
     }
 
     // ── Estimated costs ─────────────────────────────────────────────────
