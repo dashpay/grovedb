@@ -97,6 +97,25 @@
 //!   so the slot's `0` value is the in-process mirror of that fail-closed
 //!   decode.
 //!
+//! - `operations.flat_drop.drop_flat_subtree: 1` and
+//!   `operations.flat_drop.batch_delete_tree_drop_flat: 1` — the
+//!   flat-subtree drop family (issue #848): `GroveDb::drop_flat_subtree`
+//!   and the `SubelementsDeletionBehavior::DropFlat` batch behavior remove
+//!   a populated subtree's element from its parent Merk in O(1) —
+//!   no emptiness check, no content sweep — and stage the subtree's
+//!   storage prefixes (primary plus, for indexed primaries, all three
+//!   axis secondaries) in a durable redo record committed atomically with
+//!   the delete. Reclamation happens outside consensus via DB-level range
+//!   tombstones (immediately when GroveDB owns the transaction, at the
+//!   next `flush_pending_prefix_drops` otherwise) and never contributes
+//!   to the operation's returned cost. The caller declares the subtree
+//!   contains no child subtrees; a false declaration leaks the children's
+//!   storage (unreachable, invisible to hashes/proofs/sync) but never
+//!   corrupts state. V1..V3 hold both slots at 0 and fail closed. Gated
+//!   because the drop's cost class (O(1) versus O(contents)) and the
+//!   accepted/rejected outcome for non-empty trees are both
+//!   consensus-observable.
+//!
 //! - `apply_batch.keyless_op_cost_dispatch: 1` — keyless append-only ops
 //!   (`CommitmentTreeInsert`, `MmrTreeAppend`, `BulkAppend`,
 //!   `DenseTreeInsert`) reach the cost dispatch in the estimated-cost batch
@@ -199,10 +218,10 @@ use crate::version::{
     grovedb_versions::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
-        GroveDBOperationsDeleteVersions, GroveDBOperationsGetVersions,
-        GroveDBOperationsIndexedAxisVersions, GroveDBOperationsInsertVersions,
-        GroveDBOperationsPrivateDocumentStoreVersions, GroveDBOperationsProofVersions,
-        GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
+        GroveDBOperationsDeleteVersions, GroveDBOperationsFlatDropVersions,
+        GroveDBOperationsGetVersions, GroveDBOperationsIndexedAxisVersions,
+        GroveDBOperationsInsertVersions, GroveDBOperationsPrivateDocumentStoreVersions,
+        GroveDBOperationsProofVersions, GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
         GroveDBReplicationVersions, GroveDBVersions,
     },
@@ -430,6 +449,11 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 insert: 1,
                 get_value: 1,
                 count: 1,
+            },
+            // Flat-subtree drop (issue #848) activates in GROVE_V4.
+            flat_drop: GroveDBOperationsFlatDropVersions {
+                drop_flat_subtree: 1,
+                batch_delete_tree_drop_flat: 1,
             },
         },
         aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions { merge: 0 },

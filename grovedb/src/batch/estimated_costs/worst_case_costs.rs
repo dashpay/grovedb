@@ -638,6 +638,18 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         }
 
         for (key, op) in ops_at_path_by_key.into_iter() {
+            // A flat drop additionally stages a redo record (issue #848);
+            // charged here because the record's size depends on the op's
+            // full path, which the per-op dispatch below does not see.
+            if let GroveOp::DeleteTree(
+                tree_type,
+                crate::batch::SubelementsDeletionBehavior::DropFlat,
+            ) = &op
+            {
+                crate::operations::delete::flat_drop::add_flat_drop_record_put_estimate(
+                    &mut cost, path, &key, tree_type,
+                );
+            }
             cost_return_on_error!(
                 &mut cost,
                 op.worst_case_cost(

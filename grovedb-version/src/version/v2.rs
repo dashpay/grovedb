@@ -6,10 +6,10 @@ use crate::version::{
     grovedb_versions::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
-        GroveDBOperationsDeleteVersions, GroveDBOperationsGetVersions,
-        GroveDBOperationsIndexedAxisVersions, GroveDBOperationsInsertVersions,
-        GroveDBOperationsPrivateDocumentStoreVersions, GroveDBOperationsProofVersions,
-        GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
+        GroveDBOperationsDeleteVersions, GroveDBOperationsFlatDropVersions,
+        GroveDBOperationsGetVersions, GroveDBOperationsIndexedAxisVersions,
+        GroveDBOperationsInsertVersions, GroveDBOperationsPrivateDocumentStoreVersions,
+        GroveDBOperationsProofVersions, GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
         GroveDBReplicationVersions, GroveDBVersions,
     },
@@ -222,6 +222,12 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 insert: 0,
                 get_value: 0,
                 count: 0,
+            },
+            // Flat-subtree drop (issue #848) is unavailable before
+            // GROVE_V4: every slot is 0 and the operations fail closed.
+            flat_drop: GroveDBOperationsFlatDropVersions {
+                drop_flat_subtree: 0,
+                batch_delete_tree_drop_flat: 0,
             },
         },
         aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions { merge: 0 },

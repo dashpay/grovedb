@@ -252,6 +252,8 @@ use grovedb_visualize::DebugByteVectors;
 /// crate-private, so without this re-export `run_path_query` would be
 /// callable from outside the crate but its return type unnameable.
 #[cfg(feature = "minimal")]
+pub use operations::delete::PendingPrefixDropsReport;
+#[cfg(feature = "minimal")]
 pub use operations::get::{AxisAggregateValue, PathQueryRun};
 // Gated on `minimal` alone, matching `operations::indexed_tree` itself: the
 // only APIs that produce an `IndexedTopKPage` are the paginated indexed-axis

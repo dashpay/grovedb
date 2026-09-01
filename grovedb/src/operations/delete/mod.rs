@@ -20,6 +20,11 @@ mod average_case;
 mod delete_internal_on_transaction;
 #[cfg(feature = "minimal")]
 mod delete_up_tree;
+/// Flat-subtree drop (issue #848): O(1) removal of a populated subtree
+/// declared to contain no child subtrees, with storage reclaimed outside
+/// consensus via range tombstones driven from durable redo records.
+#[cfg(feature = "minimal")]
+pub mod flat_drop;
 #[cfg(feature = "estimated_costs")]
 mod worst_case;
 
@@ -28,6 +33,8 @@ use std::collections::{BTreeSet, HashMap};
 
 #[cfg(feature = "minimal")]
 pub use delete_up_tree::DeleteUpTreeOptions;
+#[cfg(feature = "minimal")]
+pub use flat_drop::PendingPrefixDropsReport;
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add,

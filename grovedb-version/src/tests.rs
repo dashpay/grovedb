@@ -96,6 +96,26 @@ fn private_document_store_slots_are_gated_to_v4() {
 }
 
 #[test]
+fn flat_drop_slots_are_gated_to_v4() {
+    // The flat-subtree drop family (issue #848) fails closed on every
+    // released version: all slots must be 0 on V1..V3 and 1 on V4.
+    // Changing a V1..V3 value would retroactively enable an O(1) drop of
+    // populated subtrees on a live protocol version — a consensus break.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3] {
+        let flat_drop = &v.grovedb_versions.operations.flat_drop;
+        assert_eq!(flat_drop.drop_flat_subtree, 0, "v{}", v.protocol_version);
+        assert_eq!(
+            flat_drop.batch_delete_tree_drop_flat, 0,
+            "v{}",
+            v.protocol_version
+        );
+    }
+    let flat_drop = &GROVE_V4.grovedb_versions.operations.flat_drop;
+    assert_eq!(flat_drop.drop_flat_subtree, 1);
+    assert_eq!(flat_drop.batch_delete_tree_drop_flat, 1);
+}
+
+#[test]
 fn grove_versions_ordered_by_protocol_version() {
     for window in GROVE_VERSIONS.windows(2) {
         assert!(window[0].protocol_version < window[1].protocol_version);

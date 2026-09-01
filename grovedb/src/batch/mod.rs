@@ -73,7 +73,10 @@ use grovedb_merk::{
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
-    rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch, StorageContext,
+    rocksdb_storage::{
+        pending_prefix_drops_namespace, PendingPrefixDropRecord, PrefixedRocksDbTransactionContext,
+    },
+    Storage, StorageBatch, StorageContext,
 };
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 use grovedb_visualize::{Drawer, Visualize};
@@ -122,6 +125,22 @@ pub enum SubelementsDeletionBehavior {
     /// Check emptiness. If the subtree is non-empty, silently skip this
     /// `DeleteTree` operation (no error, no deletion).
     Skip,
+    /// Flat-subtree drop (issue #848, `GROVE_V4`+): delete the tree
+    /// element from its parent Merk unconditionally — no emptiness check,
+    /// no content sweep, O(1) in the subtree's size — and stage the
+    /// subtree's storage prefixes (primary plus, for indexed primaries,
+    /// all three axis secondaries) in a durable redo record committed
+    /// atomically with the batch. Storage is reclaimed outside consensus
+    /// by DB-level range tombstones: immediately after the commit when
+    /// GroveDB owns the transaction, at the caller's next
+    /// `flush_pending_prefix_drops` otherwise.
+    ///
+    /// The caller declares the subtree contains **no child subtrees**; a
+    /// false declaration leaks the children's storage (unreachable,
+    /// invisible to hashes/proofs/sync) but never corrupts state. The
+    /// dropped path must not be re-created before its record drains. See
+    /// `operations::delete::flat_drop` for the full contract.
+    DropFlat,
 }
 
 /// Metadata for non-Merk tree types, carrying tree-type-specific state
@@ -1690,6 +1709,7 @@ fn classify_captured_delete_trees(
     non_merk_delete_paths: &mut Vec<Vec<Vec<u8>>>,
     merk_delete_paths: &mut Vec<Vec<Vec<u8>>>,
     cidx_primary_delete_paths: &mut Vec<Vec<Vec<u8>>>,
+    flat_drop_records: &mut Vec<(Vec<Vec<u8>>, TreeType)>,
 ) {
     for (qualified_path, actual_tree_type) in captures {
         // Ops the pre-scan did not register (e.g. add-on DeleteTree ops
@@ -1724,6 +1744,14 @@ fn classify_captured_delete_trees(
                     }
                     merk_delete_paths.push(qualified_path);
                 }
+            }
+            SubelementsDeletionBehavior::DropFlat => {
+                // No in-batch storage cleanup at all: the drop stages a
+                // durable redo record instead, and reclamation happens
+                // outside consensus via range tombstones. The ACTUAL type
+                // decides whether the record also dooms the per-axis
+                // secondary prefixes.
+                flat_drop_records.push((qualified_path, actual_tree_type));
             }
         }
     }
@@ -5078,6 +5106,24 @@ impl GroveDb {
                             .as_ref()
                             .ok_or(Error::InvalidBatchOperation("delete op is missing a key"))
                     );
+                    // DropFlat is its own operation, not a DeleteOptions
+                    // mapping: the O(1) flat drop with staged storage
+                    // reclamation (issue #848).
+                    if matches!(
+                        subelements_deletion_behavior,
+                        SubelementsDeletionBehavior::DropFlat
+                    ) {
+                        cost_return_on_error!(
+                            &mut cost,
+                            self.drop_flat_subtree(
+                                path_slices.as_slice(),
+                                key.as_slice(),
+                                transaction,
+                                grove_version
+                            )
+                        );
+                        continue;
+                    }
                     // Map the per-op enum to the lower-level DeleteOptions.
                     // DontCheckWithNoCleanup and DeleteChildren both set
                     // allow_deleting_non_empty_trees = true because the
@@ -5442,6 +5488,48 @@ impl GroveDb {
         }
     }
 
+    /// Stage one pending-prefix-drop redo record per captured
+    /// `DeleteTree(_, DropFlat)` deletion into `storage_batch`, so the
+    /// records commit atomically with the batch (issue #848). The ACTUAL
+    /// stored tree type decides whether the record also dooms the per-axis
+    /// secondary prefixes. Reclamation happens after the commit, outside
+    /// consensus — see `operations::delete::flat_drop`.
+    fn stage_flat_drop_records<'db>(
+        &'db self,
+        flat_drop_records: &[(Vec<Vec<u8>>, TreeType)],
+        storage_batch: &'db StorageBatch,
+        tx: &'db Transaction,
+        cost: &mut OperationCost,
+    ) -> Result<(), Error> {
+        for (qualified_path, actual_tree_type) in flat_drop_records {
+            let subtree_path: SubtreePath<Vec<u8>> = qualified_path.as_slice().into();
+            let doomed_prefixes = crate::operations::delete::flat_drop::doomed_prefixes_for_drop(
+                subtree_path,
+                actual_tree_type.is_indexed_primary(),
+                cost,
+            );
+            let record = PendingPrefixDropRecord {
+                primary_prefix: doomed_prefixes[0],
+                path: qualified_path.clone(),
+                doomed_prefixes,
+            };
+            let record_value = record.encode().map_err(Error::StorageError)?;
+            let namespace_ctx = self
+                .db
+                .get_transactional_storage_context_by_subtree_prefix(
+                    *pending_prefix_drops_namespace(),
+                    Some(storage_batch),
+                    tx,
+                )
+                .unwrap_add_cost(cost);
+            namespace_ctx
+                .put_meta(record.primary_prefix, &record_value, None)
+                .unwrap_add_cost(cost)
+                .map_err(Error::StorageError)?;
+        }
+        Ok(())
+    }
+
     /// Pre-apply scan over a batch's `DeleteTree` ops, shared by
     /// `apply_batch_with_element_flags_update` and
     /// `apply_partial_batch_with_element_flags_update`.
@@ -5484,12 +5572,33 @@ impl GroveDb {
                 let mut child_path = op.path.to_path();
                 child_path.push(key.as_slice().to_vec());
 
+                // Capability gate for the flat-drop behavior (issue #848):
+                // fails closed on every version whose slot is not the
+                // active v1 implementation — V1..V3 hold it at 0.
+                if matches!(
+                    subelements_deletion_behavior,
+                    SubelementsDeletionBehavior::DropFlat
+                ) {
+                    cost_return_on_error_no_add!(
+                        cost,
+                        crate::operations::delete::flat_drop::check_flat_drop_enabled(
+                            "apply_batch DeleteTree(DropFlat)",
+                            grove_version
+                                .grovedb_versions
+                                .operations
+                                .flat_drop
+                                .batch_delete_tree_drop_flat,
+                        )
+                    );
+                }
+
                 if capture_actual_types {
                     scan.delete_tree_behaviors
                         .insert(child_path.clone(), *subelements_deletion_behavior);
                     match subelements_deletion_behavior {
                         SubelementsDeletionBehavior::DontCheckWithNoCleanup
-                        | SubelementsDeletionBehavior::DeleteChildren => {
+                        | SubelementsDeletionBehavior::DeleteChildren
+                        | SubelementsDeletionBehavior::DropFlat => {
                             // Nothing to check pre-apply; cleanup paths come
                             // from the captured actual types after apply.
                         }
@@ -5595,12 +5704,13 @@ impl GroveDb {
                                         scan.skipped_delete_paths.insert(child_path);
                                     }
                                     SubelementsDeletionBehavior::DontCheckWithNoCleanup
-                                    | SubelementsDeletionBehavior::DeleteChildren => {
+                                    | SubelementsDeletionBehavior::DeleteChildren
+                                    | SubelementsDeletionBehavior::DropFlat => {
                                         return Err(Error::CorruptedCodeExecution(
                                             "batch delete: DontCheckWithNoCleanup / \
-                                             DeleteChildren behaviors are handled before the \
-                                             non-empty-tree check and must not reach this \
-                                             match arm",
+                                             DeleteChildren / DropFlat behaviors are handled \
+                                             before the non-empty-tree check and must not \
+                                             reach this match arm",
                                         ))
                                         .wrap_with_cost(cost);
                                     }
@@ -5638,6 +5748,18 @@ impl GroveDb {
                     SubelementsDeletionBehavior::DeleteChildren => {
                         // No emptiness check, but still perform post-apply
                         // storage cleanup to remove child subtree storage.
+                    }
+                    SubelementsDeletionBehavior::DropFlat => {
+                        // Unreachable: the capability gate above rejects
+                        // DropFlat whenever `batch_delete_tree_drop_flat`
+                        // is not active, and every version that activates
+                        // it also has `delete_tree_cleanup_type_source >=
+                        // 1`, which routes ops through the capture branch
+                        // instead of this released V1..V3 path.
+                        return Err(Error::CorruptedCodeExecution(
+                            "batch delete: DropFlat behavior reached the V1..V3 scan path",
+                        ))
+                        .wrap_with_cost(cost);
                     }
                     SubelementsDeletionBehavior::Error | SubelementsDeletionBehavior::Skip => {
                         let is_empty = if tree_type.uses_non_merk_data_storage() {
@@ -5730,18 +5852,20 @@ impl GroveDb {
                                     scan.skipped_delete_paths.insert(child_path);
                                     continue;
                                 }
-                                // DontCheckWithNoCleanup / DeleteChildren never
-                                // reach the emptiness-check block above (they
-                                // either skip the check or delete children
-                                // unconditionally). Return a graceful error
-                                // rather than panicking if that invariant is
-                                // ever broken.
+                                // DontCheckWithNoCleanup / DeleteChildren /
+                                // DropFlat never reach the emptiness-check
+                                // block above (they either skip the check or
+                                // delete children unconditionally). Return a
+                                // graceful error rather than panicking if
+                                // that invariant is ever broken.
                                 SubelementsDeletionBehavior::DontCheckWithNoCleanup
-                                | SubelementsDeletionBehavior::DeleteChildren => {
+                                | SubelementsDeletionBehavior::DeleteChildren
+                                | SubelementsDeletionBehavior::DropFlat => {
                                     return Err(Error::CorruptedCodeExecution(
                                         "batch delete: DontCheckWithNoCleanup / DeleteChildren \
-                                         behaviors are handled before the non-empty-tree check \
-                                         and must not reach this match arm",
+                                         / DropFlat behaviors are handled before the \
+                                         non-empty-tree check and must not reach this match \
+                                         arm",
                                     ))
                                     .wrap_with_cost(cost);
                                 }
@@ -5960,12 +6084,26 @@ impl GroveDb {
         // the apply into the cleanup lists (no-op on V1..V3, where the
         // captures are empty and the lists were already built pre-apply from
         // the declared types).
+        let mut flat_drop_records: Vec<(Vec<Vec<u8>>, TreeType)> = Vec::new();
         classify_captured_delete_trees(
             deleted_tree_actual_types,
             &delete_tree_behaviors,
             &mut non_merk_delete_paths,
             &mut merk_delete_paths,
             &mut cidx_primary_delete_paths,
+            &mut flat_drop_records,
+        );
+
+        // Stage flat-drop redo records so they commit atomically with the
+        // batch (issue #848); their storage reclaims after the commit.
+        cost_return_on_error_no_add!(
+            cost,
+            self.stage_flat_drop_records(
+                &flat_drop_records,
+                &storage_batch,
+                tx.as_ref(),
+                &mut cost,
+            )
         );
 
         // Clean up data storage for deleted non-Merk trees.
@@ -6173,7 +6311,19 @@ impl GroveDb {
         //     );
         // }
 
-        tx.commit_local().wrap_with_cost(cost)
+        let owns_tx = tx.is_owned();
+        cost_return_on_error_no_add!(cost, tx.commit_local());
+
+        // Reclaim flat-drop storage right away when this call owns the
+        // just-committed transaction. Best-effort: on failure the redo
+        // records persist and the next flush retries (issue #848). When
+        // the caller owns the transaction, records stay invisible until
+        // the caller commits, and the host flushes afterwards.
+        if owns_tx && !flat_drop_records.is_empty() {
+            let _ = self.flush_pending_prefix_drops(grove_version);
+        }
+
+        Ok(()).wrap_with_cost(cost)
     }
 
     /// Applies a partial batch of operations on GroveDB
@@ -6469,6 +6619,7 @@ impl GroveDb {
 
         // V4+: fold captures from BOTH applies into the cleanup lists
         // (no-op on V1..V3). The overwrite-cleanup paths are unioned below.
+        let mut flat_drop_records: Vec<(Vec<Vec<u8>>, TreeType)> = Vec::new();
         classify_captured_delete_trees(
             partial_deleted_tree_actual_types
                 .into_iter()
@@ -6478,6 +6629,19 @@ impl GroveDb {
             &mut non_merk_delete_paths,
             &mut merk_delete_paths,
             &mut cidx_primary_delete_paths,
+            &mut flat_drop_records,
+        );
+
+        // Stage flat-drop redo records so they commit atomically with the
+        // batch (issue #848); their storage reclaims after the commit.
+        cost_return_on_error_no_add!(
+            cost,
+            self.stage_flat_drop_records(
+                &flat_drop_records,
+                &continue_storage_batch,
+                tx.as_ref(),
+                &mut cost,
+            )
         );
 
         // Clean up data storage for deleted non-Merk trees.
@@ -6674,7 +6838,17 @@ impl GroveDb {
             partial_rekey_churn_bytes.saturating_add(continue_rekey_churn_bytes),
         );
 
-        tx.commit_local().wrap_with_cost(cost)
+        let owns_tx = tx.is_owned();
+        cost_return_on_error_no_add!(cost, tx.commit_local());
+
+        // Reclaim flat-drop storage right away when this call owns the
+        // just-committed transaction (see apply_batch_with_element_flags
+        // _update; issue #848).
+        if owns_tx && !flat_drop_records.is_empty() {
+            let _ = self.flush_pending_prefix_drops(grove_version);
+        }
+
+        Ok(()).wrap_with_cost(cost)
     }
 
     #[cfg(feature = "estimated_costs")]
