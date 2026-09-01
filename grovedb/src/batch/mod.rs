@@ -105,25 +105,65 @@ use crate::{
 /// This enum is attached to each `DeleteTree` operation individually,
 /// replacing the old batch-level `allow_deleting_non_empty_trees` /
 /// `deleting_non_empty_trees_returns_error` flags on `BatchApplyOptions`.
+///
+/// The variants differ along two axes — whether emptiness is checked at
+/// apply time, and what happens to the subtree's storage:
+///
+/// | variant | assumes | emptiness check | contents' storage |
+/// |---|---|---|---|
+/// | `DontCheckWithNoCleanup` | already empty | skipped (proven earlier) | none exist |
+/// | `Error` | may be non-empty | yes → error | delete only proceeds when empty; defensive sweep |
+/// | `Skip` | may be non-empty | yes → skip op | delete only proceeds when empty; defensive sweep |
+/// | `DeleteChildren` | may be non-empty | skipped | cleaned up recursively, O(contents) |
+/// | `DropFlat` | populated, **no child subtrees** | skipped | range-tombstoned via redo record, O(1) |
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum SubelementsDeletionBehavior {
-    /// Do not check whether the subtree is empty before deleting, and skip
-    /// post-apply storage cleanup. The tree element is removed from the
-    /// parent Merk unconditionally but no child subtree storage is cleared.
-    /// Callers use this when they have already ensured the subtree is empty
-    /// and want to avoid the I/O cost of both the emptiness check and the
-    /// cleanup phase.
+    /// **Assumes the subtree is already empty.** Skips the apply-time
+    /// emptiness check and the post-apply storage cleanup: the tree
+    /// element is removed from the parent Merk unconditionally, and no
+    /// child storage is touched — because for an empty tree there is
+    /// nothing to clean, skipping is free, not a feature.
+    ///
+    /// This is an I/O optimization for callers that have *just proven*
+    /// emptiness, not a way to abandon contents. The canonical producer is
+    /// GroveDB's own op generation (`delete_operation_for_delete_internal`,
+    /// reached via `delete_operations_for_delete_up_tree_while_empty`),
+    /// which emits this variant only inside its `is_empty` branch — a
+    /// check that also counts same-batch deletes as removed and same-batch
+    /// inserts as making the tree non-empty. The window between that check
+    /// and apply is covered by `verify_consistency_of_operations` (on by
+    /// default), which rejects batches inserting under a deleted path.
+    ///
+    /// Misuse — applying this to a tree that still has contents — removes
+    /// the element anyway and silently orphans the contents' storage:
+    /// unreachable, un-tracked (nothing records the abandoned prefix), and
+    /// permanently leaked, with the stale bytes poisoning the identical
+    /// re-derived prefix if the path is ever re-created. To deliberately
+    /// drop a *populated* tree, use [`Self::DropFlat`] (no child subtrees,
+    /// O(1), storage reclaimed) or [`Self::DeleteChildren`] (recursive
+    /// cleanup, O(contents)).
+    ///
+    /// One exception to "touches no child storage": an indexed primary
+    /// still gets its per-axis secondary namespaces swept, because those
+    /// live outside the primary's prefix and can hold stale rows even when
+    /// the primary is empty. On an empty tree that sweep is a no-op.
+    ///
+    /// Note the non-batching path (`apply_operations_without_batching`)
+    /// maps this to `allow_deleting_non_empty_trees: true`, i.e. a full
+    /// recursive delete — the no-cleanup semantics only hold on the real
+    /// batch path.
     DontCheckWithNoCleanup,
-    /// Check emptiness. If the subtree is non-empty, return
-    /// `Error::DeletingNonEmptyTree`.
+    /// Check emptiness at apply time. If the subtree is non-empty, return
+    /// `Error::DeletingNonEmptyTree` and fail the batch.
     Error,
     /// Do not check whether the subtree is empty before deleting, but
     /// still perform post-apply storage cleanup to remove the child
-    /// subtree's storage (and any nested subtrees). Use this when the
-    /// subtree may contain children that should be recursively cleaned up.
+    /// subtree's storage (and any nested subtrees), walking the structure
+    /// via `find_subtrees` — O(contents). Use this when the subtree may
+    /// contain children that should be recursively cleaned up.
     DeleteChildren,
-    /// Check emptiness. If the subtree is non-empty, silently skip this
-    /// `DeleteTree` operation (no error, no deletion).
+    /// Check emptiness at apply time. If the subtree is non-empty,
+    /// silently skip this `DeleteTree` operation (no error, no deletion).
     Skip,
     /// Flat-subtree drop (issue #848, `GROVE_V4`+): delete the tree
     /// element from its parent Merk unconditionally — no emptiness check,
@@ -140,6 +180,11 @@ pub enum SubelementsDeletionBehavior {
     /// invisible to hashes/proofs/sync) but never corrupts state. The
     /// dropped path must not be re-created before its record drains. See
     /// `operations::delete::flat_drop` for the full contract.
+    ///
+    /// This is the only variant whose contract permits contents: unlike
+    /// [`Self::DontCheckWithNoCleanup`] ("already empty, skip the
+    /// redundant check"), `DropFlat` means "full, drop it anyway — and
+    /// physically reclaim the storage, tracked and crash-safe".
     DropFlat,
 }
 
