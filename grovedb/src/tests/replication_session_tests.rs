@@ -13,24 +13,33 @@ mod tests {
         Element, GroveDb,
     };
 
-    /// Optional in-flight mutation of a commitment tree page:
+    /// Optional in-flight mutation of a non-Merk entry-replay page:
     /// `(more, aux, entries) -> (more, aux, entries)`. Used by tamper tests.
-    type CtPageMutator<'a> =
+    type NonMerkPageMutator<'a> =
         &'a dyn Fn(bool, Vec<u8>, Vec<Vec<u8>>) -> (bool, Vec<u8>, Vec<Vec<u8>>);
+
+    /// Optional in-flight mutation of one whole per-subtree chunk payload:
+    /// `(tree_type, global_chunk_id, payload) -> payload`. Used by the
+    /// indexed-tree tamper tests, which need to rewrite header pages and
+    /// Merk chunks rather than entry-replay pages.
+    type GlobalChunkMutator<'a> =
+        &'a dyn Fn(grovedb_merk::tree_type::TreeType, &[u8], Vec<u8>) -> Vec<u8>;
 
     /// The single sync driver behind every test in this file: checkpoint the
     /// source (the standard replication pattern — the tutorial does the
-    /// same), run the fetch/apply loop with the given subtree batch size,
-    /// optionally mutating commitment tree pages in flight, verify
-    /// completion, and commit the session.
-    fn run_sync(
+    /// same), run the fetch/apply loop with the given subtree batch size
+    /// and state sync protocol version, optionally mutating chunk payloads
+    /// in flight, verify completion, and commit the session.
+    fn run_sync_with_version(
         source: &TempGroveDb,
         grove_version: &GroveVersion,
         subtrees_batch_size: usize,
-        mutate_ct_page: Option<CtPageMutator>,
+        mutate_page: Option<NonMerkPageMutator>,
+        mutate_global: Option<GlobalChunkMutator>,
+        version: u16,
     ) -> Result<TempGroveDb, crate::Error> {
         use crate::replication::{
-            non_merk_sync::{decode_non_merk_page, encode_non_merk_page},
+            non_merk_sync::{decode_non_merk_page, encode_non_merk_page, supports_entry_replay},
             utils::{decode_global_chunk_id, pack_nested_bytes, unpack_nested_bytes},
         };
 
@@ -48,28 +57,20 @@ mod tests {
 
         let dest = make_empty_grovedb();
 
-        let mut session = dest.start_snapshot_syncing(
-            app_hash,
-            subtrees_batch_size,
-            CURRENT_STATE_SYNC_VERSION,
-            grove_version,
-        )?;
+        let mut session =
+            dest.start_snapshot_syncing(app_hash, subtrees_batch_size, version, grove_version)?;
 
         // Use a queue-based approach as shown in the tutorial
         let mut chunk_queue: VecDeque<Vec<u8>> = VecDeque::new();
         chunk_queue.push_back(app_hash.to_vec());
 
         while let Some(chunk_id) = chunk_queue.pop_front() {
-            let mut chunk_data = checkpoint_db.fetch_chunk(
-                chunk_id.as_slice(),
-                None,
-                CURRENT_STATE_SYNC_VERSION,
-                grove_version,
-            )?;
+            let mut chunk_data =
+                checkpoint_db.fetch_chunk(chunk_id.as_slice(), None, version, grove_version)?;
 
-            if let Some(mutate) = mutate_ct_page {
-                // Mirror apply_chunk's unpacking to find commitment tree
-                // pages and run them through the mutator.
+            if mutate_page.is_some() || mutate_global.is_some() {
+                // Mirror apply_chunk's unpacking to find the per-subtree
+                // payloads and run them through the mutators.
                 let global_ids: Vec<Vec<u8>> = if chunk_id.as_slice() == app_hash.as_slice() {
                     vec![chunk_id.clone()]
                 } else {
@@ -80,31 +81,29 @@ mod tests {
                 let mut mutated_globals = Vec::with_capacity(global_data.len());
                 for (gid, gdata) in global_ids.iter().zip(global_data) {
                     let (_, _, tree_type, _) = decode_global_chunk_id(gid, &app_hash)?;
-                    if matches!(
-                        tree_type,
-                        grovedb_merk::tree_type::TreeType::CommitmentTree(_)
-                    ) {
-                        let pages = unpack_nested_bytes(&gdata)?;
-                        let mut mutated_pages = Vec::with_capacity(pages.len());
-                        for page in pages {
-                            let (more, aux, entries) = decode_non_merk_page(&page)?;
-                            let (more, aux, entries) = mutate(more, aux, entries);
-                            mutated_pages.push(encode_non_merk_page(more, aux, entries)?);
+                    let mut gdata = gdata;
+                    if let Some(mutate) = mutate_page {
+                        if supports_entry_replay(tree_type) {
+                            let pages = unpack_nested_bytes(&gdata)?;
+                            let mut mutated_pages = Vec::with_capacity(pages.len());
+                            for page in pages {
+                                let (more, aux, entries) = decode_non_merk_page(&page)?;
+                                let (more, aux, entries) = mutate(more, aux, entries);
+                                mutated_pages.push(encode_non_merk_page(more, aux, entries)?);
+                            }
+                            gdata = pack_nested_bytes(mutated_pages)?;
                         }
-                        mutated_globals.push(pack_nested_bytes(mutated_pages)?);
-                    } else {
-                        mutated_globals.push(gdata);
                     }
+                    if let Some(mutate) = mutate_global {
+                        gdata = mutate(tree_type, gid, gdata);
+                    }
+                    mutated_globals.push(gdata);
                 }
                 chunk_data = pack_nested_bytes(mutated_globals)?;
             }
 
-            let more_ids = session.apply_chunk(
-                chunk_id.as_slice(),
-                &chunk_data,
-                CURRENT_STATE_SYNC_VERSION,
-                grove_version,
-            )?;
+            let more_ids =
+                session.apply_chunk(chunk_id.as_slice(), &chunk_data, version, grove_version)?;
 
             chunk_queue.extend(more_ids);
         }
@@ -117,6 +116,24 @@ mod tests {
 
         dest.commit_session(session, grove_version)?;
         Ok(dest)
+    }
+
+    /// [`run_sync_with_version`] at `CURRENT_STATE_SYNC_VERSION` without a
+    /// global-chunk mutator.
+    fn run_sync(
+        source: &TempGroveDb,
+        grove_version: &GroveVersion,
+        subtrees_batch_size: usize,
+        mutate_page: Option<NonMerkPageMutator>,
+    ) -> Result<TempGroveDb, crate::Error> {
+        run_sync_with_version(
+            source,
+            grove_version,
+            subtrees_batch_size,
+            mutate_page,
+            None,
+            CURRENT_STATE_SYNC_VERSION,
+        )
     }
 
     /// Helper: perform a full state sync from source to destination,
@@ -634,6 +651,124 @@ mod tests {
         );
     }
 
+    /// Atomicity across discovery batches (issue #775): with a batch size
+    /// of 1, earlier subtrees complete (and cross a batch boundary) before
+    /// a later chunk fails. Nothing may be persisted by the failed sync —
+    /// every restored subtree must stay inside the session transaction and
+    /// roll back when the session is dropped.
+    #[test]
+    fn failed_chunk_after_batched_sync_rolls_back_all_restored_subtrees() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"sub",
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert subtree");
+        source
+            .insert(
+                [TEST_LEAF, b"sub"].as_ref(),
+                b"nested",
+                Element::new_item(b"value".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert nested item");
+
+        let source_hash = source
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get source hash");
+
+        let dest = make_empty_grovedb();
+        let empty_dest_hash = dest
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get empty destination hash");
+        let mut session = dest
+            .start_snapshot_syncing(source_hash, 1, CURRENT_STATE_SYNC_VERSION, grove_version)
+            .expect("should start snapshot syncing");
+
+        let root_chunk_data = source
+            .fetch_chunk(
+                source_hash.as_slice(),
+                None,
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )
+            .expect("should fetch root chunk");
+        let next_chunk_ids = session
+            .apply_chunk(
+                source_hash.as_slice(),
+                &root_chunk_data,
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )
+            .expect("should apply root chunk");
+        assert!(
+            !next_chunk_ids.is_empty(),
+            "root chunk should discover child subtree chunks"
+        );
+
+        // Even before the failure, nothing of the root subtree may be
+        // visible outside the session transaction.
+        assert_eq!(
+            dest.root_hash(None, grove_version)
+                .unwrap()
+                .expect("should get destination hash mid-sync"),
+            empty_dest_hash,
+            "in-flight sync must not persist restored subtrees"
+        );
+
+        let next_chunk_id = next_chunk_ids.first().expect("expected next chunk id");
+        let mut corrupt_chunk_data = source
+            .fetch_chunk(
+                next_chunk_id.as_slice(),
+                None,
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )
+            .expect("should fetch child chunk");
+        let last_byte = corrupt_chunk_data
+            .last_mut()
+            .expect("chunk data should not be empty");
+        *last_byte ^= 0xFF;
+
+        let err = session
+            .apply_chunk(
+                next_chunk_id.as_slice(),
+                &corrupt_chunk_data,
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )
+            .expect_err("corrupt child chunk should fail");
+        let err_msg = format!("{err:?}");
+        assert!(
+            err_msg.contains("Unable to finalize Merk")
+                || err_msg.contains("Unable to process incoming chunk")
+                || err_msg.contains("Unable to decode incoming chunk")
+                || err_msg.contains("Corrupted"),
+            "unexpected error: {err:?}"
+        );
+        drop(session);
+        assert_eq!(
+            dest.root_hash(None, grove_version)
+                .unwrap()
+                .expect("should get destination hash after failed sync"),
+            empty_dest_hash,
+            "failed sync must not persist any restored subtree"
+        );
+    }
+
     #[test]
     fn sync_with_empty_subtree_succeeds() {
         let grove_version = GroveVersion::latest();
@@ -679,11 +814,191 @@ mod tests {
         assert_eq!(source_hash, dest_hash);
     }
 
+    /// The other end of the empty-payload check: an entirely empty grove
+    /// is the one case where the ROOT subtree legitimately answers with
+    /// no chunk at all. Its restorer carries the `app_hash` directly
+    /// rather than a parent binding, so the empty-tree commitment it must
+    /// match is the bare `NULL_HASH` — a case the ordinary
+    /// `combine_hash(H(element), NULL_HASH)` form would reject.
+    #[test]
+    fn sync_of_an_entirely_empty_grove_succeeds() {
+        let grove_version = GroveVersion::latest();
+        let source = make_empty_grovedb();
+        let dest = run_sync(&source, grove_version, 64, None).expect("empty grove should sync");
+
+        assert_eq!(
+            source.root_hash(None, grove_version).unwrap().unwrap(),
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+        );
+    }
+
+    /// Byzantine-source coverage for the empty-payload path.
+    ///
+    /// An empty per-subtree payload is the honest wire signal for a
+    /// subtree that really is empty: the source finds `is_empty_tree()`
+    /// and sends no chunk. Nothing is applied for it, so no chunk is ever
+    /// verified against the hash the parent committed to.
+    ///
+    /// A source that answers "empty" for a POPULATED subtree must
+    /// therefore be rejected right at completion. Nothing downstream can
+    /// catch it: the restored Merk's root hash is NULL either way, and
+    /// the final GroveDB root-hash check cannot see it — the parent Merk
+    /// already stores the source-committed combined child hash, and the
+    /// root hash is never re-derived from the child's actual contents.
+    /// Left unchecked, a byzantine source silently nulls out any subtree
+    /// (and everything below it) and still commits a "verified" restore.
+    #[test]
+    fn state_sync_empty_payload_for_a_populated_subtree_is_rejected() {
+        use grovedb_storage::rocksdb_storage::RocksDbStorage;
+
+        use crate::replication::utils::{
+            decode_global_chunk_id, pack_nested_bytes, unpack_nested_bytes,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"child",
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert child subtree");
+        for i in 0..8u32 {
+            source
+                .insert(
+                    [TEST_LEAF, b"child"].as_ref(),
+                    &i.to_be_bytes(),
+                    Element::new_item(vec![i as u8; 32]),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("should insert item into child");
+        }
+        // A grandchild, so a successful hollowing-out would also erase a
+        // whole branch rather than a single subtree's leaves.
+        source
+            .insert(
+                [TEST_LEAF, b"child"].as_ref(),
+                b"grandchild",
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert grandchild subtree");
+
+        let source_hash = source
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get source hash");
+
+        // The subtree the byzantine source will claim is empty.
+        let victim_path: &[&[u8]] = &[TEST_LEAF, b"child"];
+        let victim_prefix = RocksDbStorage::build_prefix(victim_path.into()).unwrap();
+
+        let dest = make_empty_grovedb();
+        let empty_dest_hash = dest
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get empty destination hash");
+        let mut session = dest
+            .start_snapshot_syncing(source_hash, 64, CURRENT_STATE_SYNC_VERSION, grove_version)
+            .expect("should start snapshot syncing");
+
+        let mut chunk_queue: VecDeque<Vec<u8>> = VecDeque::new();
+        chunk_queue.push_back(source_hash.to_vec());
+
+        let mut hollowed_out = false;
+        let mut apply_error = None;
+        while let Some(chunk_id) = chunk_queue.pop_front() {
+            let chunk_data = source
+                .fetch_chunk(
+                    chunk_id.as_slice(),
+                    None,
+                    CURRENT_STATE_SYNC_VERSION,
+                    grove_version,
+                )
+                .expect("should fetch chunk");
+
+            // Replace the victim's payload with exactly what the source
+            // emits for a genuinely empty Merk: one empty local chunk.
+            let global_ids: Vec<Vec<u8>> = if chunk_id.as_slice() == source_hash.as_slice() {
+                vec![chunk_id.clone()]
+            } else {
+                unpack_nested_bytes(&chunk_id).expect("should unpack chunk ids")
+            };
+            let global_data =
+                unpack_nested_bytes(&chunk_data).expect("should unpack chunk payloads");
+            assert_eq!(global_ids.len(), global_data.len());
+            let mut mutated = Vec::with_capacity(global_data.len());
+            for (gid, gdata) in global_ids.iter().zip(global_data) {
+                let (prefix, ..) =
+                    decode_global_chunk_id(gid, &source_hash).expect("should decode chunk id");
+                if prefix == victim_prefix {
+                    hollowed_out = true;
+                    mutated.push(pack_nested_bytes(vec![vec![]]).expect("should pack empty chunk"));
+                } else {
+                    mutated.push(gdata);
+                }
+            }
+            let chunk_data = pack_nested_bytes(mutated).expect("should repack payloads");
+
+            match session.apply_chunk(
+                chunk_id.as_slice(),
+                &chunk_data,
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            ) {
+                Ok(more_ids) => chunk_queue.extend(more_ids),
+                Err(e) => {
+                    apply_error = Some(e);
+                    break;
+                }
+            }
+        }
+
+        assert!(
+            hollowed_out,
+            "the test never reached the victim subtree, so it proves nothing"
+        );
+        let err = apply_error.expect(
+            "an empty payload for a populated subtree must be rejected while applying chunks",
+        );
+        assert!(
+            format!("{err}").contains("empty payload for a subtree"),
+            "unexpected error: {err}"
+        );
+
+        drop(session);
+        assert_eq!(
+            dest.root_hash(None, grove_version)
+                .unwrap()
+                .expect("should get destination hash after the rejected sync"),
+            empty_dest_hash,
+            "a rejected sync must leave the destination untouched"
+        );
+    }
+
     #[test]
     fn is_sync_completed_returns_false_before_any_sync() {
         let grove_version = GroveVersion::latest();
         let dest = make_empty_grovedb();
-        let session = crate::replication::MultiStateSyncSession::new(&dest, [0u8; 32], 64);
+        let session = crate::replication::MultiStateSyncSession::new(
+            &dest,
+            [0u8; 32],
+            64,
+            CURRENT_STATE_SYNC_VERSION,
+            crate::replication::RestoreCommitMode::Atomic,
+        );
         assert!(
             !session.is_sync_completed(),
             "is_sync_completed should return false when no sync has ever started"
@@ -726,7 +1041,13 @@ mod tests {
         let dest = make_empty_grovedb();
 
         // Create a session that has never synced any chunks
-        let session = crate::replication::MultiStateSyncSession::new(&dest, [0xAB; 32], 64);
+        let session = crate::replication::MultiStateSyncSession::new(
+            &dest,
+            [0xAB; 32],
+            64,
+            CURRENT_STATE_SYNC_VERSION,
+            crate::replication::RestoreCommitMode::Atomic,
+        );
 
         // commit() should reject because the session is incomplete
         let err = dest
@@ -740,204 +1061,6 @@ mod tests {
             ),
             other => panic!("expected CorruptedData, got: {:?}", other),
         }
-    }
-
-    // ---------- Indexed-tree state-sync rejection ----------
-    //
-    // State sync cannot yet handle indexed trees: their primaries commit a
-    // three-input `combine_hash_three` (the restorer only knows the
-    // two-input combine), and their axis secondary namespaces are never
-    // enumerated during discovery. Rather than failing midway with an
-    // opaque "chunk doesn't match expected root hash", both the source
-    // side (`fetch_chunk`) and the target side (discovery in
-    // `discover_new_subtrees_metadata`) now reject up-front with a
-    // descriptive `Error::NotSupported`.
-
-    fn assert_not_supported_indexed(err: &crate::Error, context: &str) {
-        let msg = format!("{err:?}");
-        assert!(
-            matches!(err, crate::Error::NotSupported(_)),
-            "{context}: expected Error::NotSupported, got: {msg}"
-        );
-        assert!(
-            msg.contains("indexed"),
-            "{context}: error should mention indexed trees, got: {msg}"
-        );
-    }
-
-    /// Drive the full source->destination sync loop (mirroring
-    /// `sync_source_to_destination`) but return the first error instead of
-    /// panicking, so the test can assert on it.
-    fn try_sync_source_to_destination(
-        source: &TempGroveDb,
-        grove_version: &GroveVersion,
-    ) -> Result<(), crate::Error> {
-        run_sync(source, grove_version, 64, None).map(|_| ())
-    }
-
-    #[test]
-    fn state_sync_rejects_populated_pcit_up_front() {
-        let grove_version = GroveVersion::latest();
-        let source = make_test_grovedb(grove_version);
-
-        source
-            .insert(
-                [TEST_LEAF].as_ref(),
-                b"pcit",
-                Element::empty_provable_count_indexed_tree(),
-                None,
-                None,
-                grove_version,
-            )
-            .unwrap()
-            .expect("create PCIT");
-        // Children enter EMPTY and are populated so their counts are
-        // DERIVED. All state sync needs is a populated PCIT; how the
-        // aggregate was produced is irrelevant to the rejection.
-        for (k, c) in &[(b"a" as &[u8], 3u64), (b"b" as &[u8], 7u64)] {
-            source
-                .insert_into_count_indexed_tree(
-                    [TEST_LEAF, b"pcit"].as_ref(),
-                    k,
-                    Element::empty_provable_count_tree(),
-                    None,
-                    grove_version,
-                )
-                .unwrap()
-                .expect("insert PCIT entry");
-            for i in 0..*c {
-                source
-                    .insert(
-                        [TEST_LEAF, b"pcit", k].as_ref(),
-                        &i.to_be_bytes(),
-                        Element::new_item(vec![]),
-                        None,
-                        None,
-                        grove_version,
-                    )
-                    .unwrap()
-                    .expect("derive PCIT entry count");
-            }
-        }
-
-        let err = try_sync_source_to_destination(&source, grove_version)
-            .expect_err("state sync of a DB containing a populated PCIT must fail up-front");
-        assert_not_supported_indexed(&err, "PCIT sync");
-    }
-
-    #[test]
-    fn state_sync_rejects_populated_psit_up_front() {
-        let grove_version = GroveVersion::latest();
-        let source = make_test_grovedb(grove_version);
-
-        source
-            .insert(
-                [TEST_LEAF].as_ref(),
-                b"psit",
-                Element::empty_provable_sum_indexed_tree(),
-                None,
-                None,
-                grove_version,
-            )
-            .unwrap()
-            .expect("create PSIT");
-        for (k, s) in &[(b"a" as &[u8], 4i64), (b"b" as &[u8], -2i64)] {
-            source
-                .insert_into_provable_sum_indexed_tree(
-                    [TEST_LEAF, b"psit"].as_ref(),
-                    k,
-                    Element::new_sum_item(*s),
-                    None,
-                    grove_version,
-                )
-                .unwrap()
-                .expect("insert PSIT entry");
-        }
-
-        let err = try_sync_source_to_destination(&source, grove_version)
-            .expect_err("state sync of a DB containing a populated PSIT must fail up-front");
-        assert_not_supported_indexed(&err, "PSIT sync");
-    }
-
-    #[test]
-    fn fetch_chunk_source_side_rejects_indexed_tree_chunk() {
-        // Directly exercise the source-side `fetch_chunk` rejection: build
-        // the global chunk id for the PCIT subtree's own prefix and ask
-        // the source to produce it. The source must reject with
-        // NotSupported rather than emitting a chunk.
-        use crate::replication::utils::{encode_global_chunk_id, pack_nested_bytes};
-
-        let grove_version = GroveVersion::latest();
-        let source = make_test_grovedb(grove_version);
-
-        source
-            .insert(
-                [TEST_LEAF].as_ref(),
-                b"pcit",
-                Element::empty_provable_count_indexed_tree(),
-                None,
-                None,
-                grove_version,
-            )
-            .unwrap()
-            .expect("create PCIT");
-        // Empty child plus one item inside it: a non-empty PCIT whose
-        // count is DERIVED, which is all fetch_chunk needs to reject.
-        source
-            .insert_into_count_indexed_tree(
-                [TEST_LEAF, b"pcit"].as_ref(),
-                b"a",
-                Element::empty_provable_count_tree(),
-                None,
-                grove_version,
-            )
-            .unwrap()
-            .expect("insert PCIT entry");
-        source
-            .insert(
-                [TEST_LEAF, b"pcit", b"a"].as_ref(),
-                b"row",
-                Element::new_item(b"v".to_vec()),
-                None,
-                None,
-                grove_version,
-            )
-            .unwrap()
-            .expect("derive PCIT entry count");
-
-        // Read the PCIT element to get its root key and confirm tree type.
-        let tx = source.start_transaction();
-        let (merk, root_key, tree_type, _element) = source
-            .open_merk_for_replication([TEST_LEAF, b"pcit"].as_ref().into(), &tx, grove_version)
-            .expect("open pcit merk for replication");
-        drop(merk);
-        assert!(
-            tree_type.is_indexed_primary(),
-            "sanity: opened tree must be an indexed primary, got {tree_type:?}"
-        );
-
-        let pcit_path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
-        let prefix = grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(
-            pcit_path.as_ref().into(),
-        )
-        .unwrap();
-        let global_chunk_id =
-            encode_global_chunk_id(prefix, root_key, tree_type, vec![]).expect("encode chunk id");
-        // fetch_chunk unpacks its input as nested bytes when the length
-        // differs from the root-hash length, then decodes each element as
-        // a global chunk id. Pack the single id the same way the wire
-        // protocol does.
-        let packed = pack_nested_bytes(vec![global_chunk_id]).expect("pack chunk id");
-
-        let err = source
-            .fetch_chunk(
-                packed.as_slice(),
-                Some(&tx),
-                CURRENT_STATE_SYNC_VERSION,
-                grove_version,
-            )
-            .expect_err("source-side fetch_chunk of an indexed tree must be rejected");
-        assert_not_supported_indexed(&err, "source-side fetch_chunk");
     }
 
     fn assert_not_supported_append_only(err: &crate::Error, context: &str) {
@@ -1075,10 +1198,10 @@ mod tests {
         );
     }
 
-    /// A peer speaking the pre-#785 protocol requests an append-only
-    /// subtree the old way — with no page cursor in the global chunk id.
-    /// The source must reject that request descriptively instead of trying
-    /// (and opaquely failing) to build a Merk chunk producer.
+    /// An append-only subtree request must carry a page cursor in the
+    /// global chunk id. The source must reject a cursor-less request
+    /// descriptively instead of trying (and opaquely failing) to build a
+    /// Merk chunk producer.
     #[test]
     fn fetch_chunk_rejects_append_only_request_without_page_cursor() {
         use crate::replication::utils::{encode_global_chunk_id, pack_nested_bytes};
@@ -1125,7 +1248,7 @@ mod tests {
         let prefix =
             grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(ct_path.as_ref().into())
                 .unwrap();
-        // No nested chunk ids — the shape an old peer would send.
+        // No nested chunk ids — a malformed, cursor-less request.
         let global_chunk_id =
             encode_global_chunk_id(prefix, root_key, tree_type, vec![]).expect("encode chunk id");
         let packed = pack_nested_bytes(vec![global_chunk_id]).expect("pack chunk id");
@@ -1245,10 +1368,10 @@ mod tests {
         );
     }
 
-    /// `PrivateDocumentStore` also uses non-Merk data storage but has no
-    /// entry-replay arm yet. An EMPTY one must keep syncing through the
-    /// ordinary Merk path (exactly as before the append-only work), and the
-    /// restored store must be usable afterwards.
+    /// An EMPTY `PrivateDocumentStore` syncs through the entry-replay path
+    /// with a single empty page; verification reduces to the
+    /// config-parametrized empty state root, and the restored store must be
+    /// usable afterwards.
     #[test]
     fn state_sync_empty_private_document_store_round_trip() {
         let grove_version = GroveVersion::latest();
@@ -1295,14 +1418,12 @@ mod tests {
         );
     }
 
-    /// A POPULATED `PrivateDocumentStore` cannot be transferred yet: the
-    /// target rejects it descriptively at discovery (never a silent
-    /// truncation to an empty store), and the source rejects a chunk request
-    /// for it descriptively too.
+    /// Full state-sync round trip for a POPULATED `PrivateDocumentStore`
+    /// (issues #783 / #784). Uses chunk_power 2 (epoch of 4) with 10
+    /// fixed-size documents so the payload spans two compacted chunk blobs
+    /// AND the current buffer.
     #[test]
-    fn state_sync_rejects_populated_private_document_store_up_front() {
-        use crate::replication::utils::{encode_global_chunk_id, pack_nested_bytes};
-
+    fn state_sync_populated_private_document_store_round_trip() {
         let grove_version = GroveVersion::latest();
         let source = make_test_grovedb(grove_version);
 
@@ -1317,51 +1438,178 @@ mod tests {
             )
             .unwrap()
             .expect("insert private document store");
+        // A sibling item so the parent subtree holds mixed content.
         source
-            .private_document_store_insert(
+            .insert(
                 [TEST_LEAF].as_ref(),
-                b"docs",
-                vec![1u8; 16],
+                b"sibling",
+                Element::new_item(b"item next to the docs".to_vec()),
+                None,
                 None,
                 grove_version,
             )
             .unwrap()
-            .expect("insert document");
+            .expect("insert sibling item");
 
-        let err = try_sync_source_to_destination(&source, grove_version)
-            .expect_err("state sync of a DB containing a populated PDS must fail up-front");
-        let msg = format!("{err:?}");
-        assert!(
-            matches!(err, crate::Error::NotSupported(_)) && msg.contains("populated"),
-            "target-side: expected descriptive NotSupported, got: {msg}"
+        for i in 0u8..10 {
+            source
+                .private_document_store_insert(
+                    [TEST_LEAF].as_ref(),
+                    b"docs",
+                    vec![i; 16],
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert document");
+        }
+
+        let dest = sync_source_to_destination(&source, grove_version);
+
+        assert_eq!(
+            source.root_hash(None, grove_version).unwrap().unwrap(),
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+            "app hash must match"
         );
 
-        // Source side: the Merk-path request shape for this subtree.
-        let tx = source.start_transaction();
-        let (merk, root_key, tree_type, _element) = source
-            .open_merk_for_replication([TEST_LEAF, b"docs"].as_ref().into(), &tx, grove_version)
-            .expect("open pds merk for replication");
-        drop(merk);
-        let pds_path: &[&[u8]] = &[TEST_LEAF, b"docs"];
-        let prefix = grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(
-            pds_path.as_ref().into(),
-        )
-        .unwrap();
-        let global_chunk_id =
-            encode_global_chunk_id(prefix, root_key, tree_type, vec![]).expect("encode chunk id");
-        let packed = pack_nested_bytes(vec![global_chunk_id]).expect("pack chunk id");
-        let err = source
-            .fetch_chunk(
-                packed.as_slice(),
-                Some(&tx),
-                CURRENT_STATE_SYNC_VERSION,
+        // Every document survives, both in the compacted chunks (positions
+        // 0..8) and in the buffer (positions 8..10).
+        for pos in 0u64..10 {
+            let source_value = source
+                .private_document_store_get_value(
+                    [TEST_LEAF].as_ref(),
+                    b"docs",
+                    pos,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("source document")
+                .expect("source document present");
+            let dest_value = dest
+                .private_document_store_get_value(
+                    [TEST_LEAF].as_ref(),
+                    b"docs",
+                    pos,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("dest document")
+                .expect("dest document present");
+            assert_eq!(source_value, dest_value, "document {pos} must match");
+        }
+
+        // The destination passes a full integrity check.
+        let dest_issues = dest
+            .verify_grovedb(None, true, false, grove_version)
+            .expect("dest verify_grovedb should run");
+        assert!(
+            dest_issues.is_empty(),
+            "destination must verify clean, got: {:?}",
+            dest_issues
+        );
+
+        // The restored store is fully usable for future writes: appending
+        // the same document on both sides keeps the states identical.
+        for db in [&source, &dest] {
+            db.private_document_store_insert(
+                [TEST_LEAF].as_ref(),
+                b"docs",
+                vec![42u8; 16],
+                None,
                 grove_version,
             )
-            .expect_err("populated PDS chunk request must be rejected");
-        let msg = format!("{err:?}");
+            .unwrap()
+            .expect("post-sync document insert");
+        }
+        assert_eq!(
+            source.root_hash(None, grove_version).unwrap().unwrap(),
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+            "post-sync inserts must produce identical states"
+        );
+    }
+
+    /// Byzantine-source coverage for `PrivateDocumentStore` pages: a
+    /// flipped document byte, a wrong-sized document, and a dropped
+    /// document must all fail the sync instead of committing corrupt
+    /// state. The wrong-size case is rejected at replay time by the
+    /// committed `entry_size` from the target's hash-verified element,
+    /// before the finalize-time state-root check even runs.
+    #[test]
+    fn state_sync_private_document_store_tampered_pages_rejected() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"docs",
+                Element::empty_private_document_store(16, 2).expect("valid config"),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert private document store");
+        for i in 0u8..6 {
+            source
+                .private_document_store_insert(
+                    [TEST_LEAF].as_ref(),
+                    b"docs",
+                    vec![i; 16],
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert document");
+        }
+
+        // Sanity: with the identity mutation the sync completes.
+        try_sync_with_page_mutation(&source, grove_version, &|more, aux, entries| {
+            (more, aux, entries)
+        })
+        .expect("un-tampered sync must succeed");
+
+        // 1. Flip one byte of one document: the replayed payload no longer
+        //    hashes to the bound state root.
+        let err = try_sync_with_page_mutation(&source, grove_version, &|more, aux, mut entries| {
+            if let Some(first) = entries.first_mut() {
+                first[0] ^= 0x01;
+            }
+            (more, aux, entries)
+        })
+        .expect_err("flipped document byte must be rejected");
         assert!(
-            matches!(err, crate::Error::NotSupported(_)) && msg.contains("populated"),
-            "source-side: expected descriptive NotSupported, got: {msg}"
+            format!("{err:?}").contains("state root mismatch after replay"),
+            "expected state-root rejection, got: {err:?}"
+        );
+
+        // 2. A document of the wrong size: rejected by the committed
+        //    entry_size before anything is written.
+        let err = try_sync_with_page_mutation(&source, grove_version, &|more, aux, mut entries| {
+            if let Some(first) = entries.first_mut() {
+                first.push(0xAB);
+            }
+            (more, aux, entries)
+        })
+        .expect_err("wrong-sized document must be rejected");
+        assert!(
+            format!("{err:?}").contains("cannot replay private document store entries"),
+            "expected entry-size rejection, got: {err:?}"
+        );
+
+        // 3. Drop the last document while still claiming the page is final.
+        let err = try_sync_with_page_mutation(&source, grove_version, &|more, aux, mut entries| {
+            if !more {
+                entries.pop();
+            }
+            (more, aux, entries)
+        })
+        .expect_err("dropped document must be rejected");
+        assert!(
+            format!("{err:?}").contains("replay incomplete"),
+            "expected incomplete-replay rejection, got: {err:?}"
         );
     }
 
@@ -1631,14 +1879,14 @@ mod tests {
         assert!(dest_issues.is_empty(), "got: {:?}", dest_issues);
     }
 
-    /// Drive the full sync loop while mutating the wire bytes of commitment
-    /// tree pages. Every mutation must be rejected before the session can
-    /// complete — the target recomputes the state root from the replayed
-    /// payload and checks it against the parent binding.
-    fn try_sync_with_ct_page_mutation(
+    /// Drive the full sync loop while mutating the wire bytes of non-Merk
+    /// entry-replay pages. Every mutation must be rejected before the
+    /// session can complete — the target recomputes the state root from the
+    /// replayed payload and checks it against the parent binding.
+    fn try_sync_with_page_mutation(
         source: &TempGroveDb,
         grove_version: &GroveVersion,
-        mutate_page: CtPageMutator,
+        mutate_page: NonMerkPageMutator,
     ) -> Result<(), crate::Error> {
         run_sync(source, grove_version, 64, Some(mutate_page)).map(|_| ())
     }
@@ -1679,28 +1927,27 @@ mod tests {
         }
 
         // Sanity: with the identity mutation the sync completes.
-        try_sync_with_ct_page_mutation(&source, grove_version, &|more, aux, entries| {
+        try_sync_with_page_mutation(&source, grove_version, &|more, aux, entries| {
             (more, aux, entries)
         })
         .expect("un-tampered sync must succeed");
 
         // 1. Flip one byte of one entry: the replayed payload no longer
         //    hashes to the bound state root.
-        let err =
-            try_sync_with_ct_page_mutation(&source, grove_version, &|more, aux, mut entries| {
-                if let Some(first) = entries.first_mut() {
-                    first[0] ^= 0x01;
-                }
-                (more, aux, entries)
-            })
-            .expect_err("flipped entry byte must be rejected");
+        let err = try_sync_with_page_mutation(&source, grove_version, &|more, aux, mut entries| {
+            if let Some(first) = entries.first_mut() {
+                first[0] ^= 0x01;
+            }
+            (more, aux, entries)
+        })
+        .expect_err("flipped entry byte must be rejected");
         assert!(
             format!("{err:?}").contains("state root mismatch after replay"),
             "expected state-root rejection, got: {err:?}"
         );
 
         // 2. Strip the frontier from the first page.
-        let err = try_sync_with_ct_page_mutation(&source, grove_version, &|more, _aux, entries| {
+        let err = try_sync_with_page_mutation(&source, grove_version, &|more, _aux, entries| {
             (more, Vec::new(), entries)
         })
         .expect_err("stripped frontier must be rejected");
@@ -1711,15 +1958,14 @@ mod tests {
 
         // 3. Tamper with the frontier bytes: the recomputed sinsemilla root
         //    diverges from the one bound into ct_state.
-        let err =
-            try_sync_with_ct_page_mutation(&source, grove_version, &|more, mut aux, entries| {
-                if !aux.is_empty() {
-                    let last = aux.len() - 1;
-                    aux[last] ^= 0x01;
-                }
-                (more, aux, entries)
-            })
-            .expect_err("tampered frontier must be rejected");
+        let err = try_sync_with_page_mutation(&source, grove_version, &|more, mut aux, entries| {
+            if !aux.is_empty() {
+                let last = aux.len() - 1;
+                aux[last] ^= 0x01;
+            }
+            (more, aux, entries)
+        })
+        .expect_err("tampered frontier must be rejected");
         let msg = format!("{err:?}");
         assert!(
             msg.contains("state root mismatch after replay")
@@ -1730,14 +1976,13 @@ mod tests {
         );
 
         // 4. Drop the last entry while still claiming the page is final.
-        let err =
-            try_sync_with_ct_page_mutation(&source, grove_version, &|more, aux, mut entries| {
-                if !more {
-                    entries.pop();
-                }
-                (more, aux, entries)
-            })
-            .expect_err("dropped entry must be rejected");
+        let err = try_sync_with_page_mutation(&source, grove_version, &|more, aux, mut entries| {
+            if !more {
+                entries.pop();
+            }
+            (more, aux, entries)
+        })
+        .expect_err("dropped entry must be rejected");
         assert!(
             format!("{err:?}").contains("replay incomplete"),
             "expected incomplete-replay rejection, got: {err:?}"
@@ -1784,21 +2029,20 @@ mod tests {
         }
 
         // Padded frontier: decodes to the genuine frontier, different bytes.
-        let err =
-            try_sync_with_ct_page_mutation(&source, grove_version, &|more, mut aux, entries| {
-                if !aux.is_empty() {
-                    aux.push(0x00);
-                }
-                (more, aux, entries)
-            })
-            .expect_err("padded frontier must be rejected");
+        let err = try_sync_with_page_mutation(&source, grove_version, &|more, mut aux, entries| {
+            if !aux.is_empty() {
+                aux.push(0x00);
+            }
+            (more, aux, entries)
+        })
+        .expect_err("padded frontier must be rejected");
         assert!(
             format!("{err:?}").contains("not canonically encoded"),
             "expected canonical-encoding rejection, got: {err:?}"
         );
 
         // Garbage that does not decode at all is rejected too.
-        let err = try_sync_with_ct_page_mutation(&source, grove_version, &|more, aux, entries| {
+        let err = try_sync_with_page_mutation(&source, grove_version, &|more, aux, entries| {
             let aux = if aux.is_empty() {
                 aux
             } else {
@@ -1837,7 +2081,7 @@ mod tests {
 
         // `[0x00]` is the canonical serialization of an EMPTY frontier: a
         // perfectly well-formed value that still must not be accepted.
-        let err = try_sync_with_ct_page_mutation(&source, grove_version, &|more, _aux, entries| {
+        let err = try_sync_with_page_mutation(&source, grove_version, &|more, _aux, entries| {
             (more, vec![0x00], entries)
         })
         .expect_err("planted frontier on an empty commitment tree must be rejected");
@@ -1923,7 +2167,8 @@ mod tests {
             .expect("dense insert");
 
         // Same sync loop as the shared driver but with subtrees_batch_size
-        // of 1, exercising set_new_transaction between subtrees.
+        // of 1, exercising the discovery-pacing batch boundary between
+        // subtrees.
         let dest = run_sync(&source, grove_version, 1, None)
             .expect("state sync with batch size 1 should succeed");
 
@@ -2130,5 +2375,866 @@ mod tests {
             format!("{err:?}").contains("after the final page"),
             "got: {err:?}"
         );
+    }
+
+    // ---------- Indexed-tree state sync ----------
+
+    /// Shared assertions for a completed indexed round trip: identical app
+    /// hash, a clean full integrity check (which re-derives every axis
+    /// secondary against its primary), and — via the caller's closure —
+    /// identical post-sync writes on both sides.
+    fn assert_indexed_round_trip(
+        source: &TempGroveDb,
+        dest: &TempGroveDb,
+        grove_version: &GroveVersion,
+        post_sync_write: impl Fn(&TempGroveDb),
+    ) {
+        assert_eq!(
+            source.root_hash(None, grove_version).unwrap().unwrap(),
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+            "app hash must match after indexed sync"
+        );
+        let dest_issues = dest
+            .verify_grovedb(None, true, false, grove_version)
+            .expect("dest verify_grovedb should run");
+        assert!(
+            dest_issues.is_empty(),
+            "destination must verify clean, got: {:?}",
+            dest_issues
+        );
+        for db in [source, dest] {
+            post_sync_write(db);
+        }
+        assert_eq!(
+            source.root_hash(None, grove_version).unwrap().unwrap(),
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+            "post-sync writes must produce identical states"
+        );
+    }
+
+    /// Full round trip for a populated `ProvableCountIndexedTree` whose
+    /// entries are themselves subtrees — exercising both the axis
+    /// secondary transfer and subtree discovery recursion into the
+    /// primary's children.
+    #[test]
+    fn state_sync_populated_pcit_round_trip() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcit",
+                Element::empty_provable_count_indexed_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create PCIT");
+        for (k, c) in &[(b"a" as &[u8], 3u64), (b"b" as &[u8], 7u64)] {
+            source
+                .insert_into_count_indexed_tree(
+                    [TEST_LEAF, b"pcit"].as_ref(),
+                    k,
+                    Element::empty_provable_count_tree(),
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert PCIT entry");
+            for i in 0..*c {
+                source
+                    .insert(
+                        [TEST_LEAF, b"pcit", k].as_ref(),
+                        &i.to_be_bytes(),
+                        Element::new_item(vec![i as u8]),
+                        None,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("derive PCIT entry count");
+            }
+        }
+
+        let dest = run_sync_with_version(
+            &source,
+            grove_version,
+            64,
+            None,
+            None,
+            CURRENT_STATE_SYNC_VERSION,
+        )
+        .expect("sync of a populated PCIT should succeed");
+
+        assert_indexed_round_trip(&source, &dest, grove_version, |db| {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"pcit"].as_ref(),
+                b"c",
+                Element::empty_provable_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("post-sync PCIT insert");
+        });
+    }
+
+    /// Full round trip for a populated `ProvableSumIndexedTree`.
+    #[test]
+    fn state_sync_populated_psit_round_trip() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"psit",
+                Element::empty_provable_sum_indexed_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create PSIT");
+        for (k, s) in &[
+            (b"a" as &[u8], 4i64),
+            (b"b" as &[u8], -2i64),
+            (b"c" as &[u8], 10i64),
+        ] {
+            source
+                .insert_into_provable_sum_indexed_tree(
+                    [TEST_LEAF, b"psit"].as_ref(),
+                    k,
+                    Element::new_sum_item(*s),
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert PSIT entry");
+        }
+
+        let dest = run_sync_with_version(
+            &source,
+            grove_version,
+            64,
+            None,
+            None,
+            CURRENT_STATE_SYNC_VERSION,
+        )
+        .expect("sync of a populated PSIT should succeed");
+
+        assert_indexed_round_trip(&source, &dest, grove_version, |db| {
+            db.insert_into_provable_sum_indexed_tree(
+                [TEST_LEAF, b"psit"].as_ref(),
+                b"d",
+                Element::new_sum_item(21),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("post-sync PSIT insert");
+        });
+    }
+
+    /// Full round trip for a three-axis (count + sum + avg)
+    /// `ProvableCountProvableSumIndexedTree` — one primary plus three axis
+    /// secondaries in one group. Runs with the default batch size AND with
+    /// `subtrees_batch_size` of 1, which forces the group's secondaries
+    /// through the discovery-pacing parking path.
+    #[test]
+    fn state_sync_pcpsit_three_axes_round_trip() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        let axes: Vec<(u8, Option<Vec<u8>>)> = vec![(0, None), (1, None), (2, None)];
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcpsit",
+                Element::empty_provable_count_provable_sum_indexed_tree(axes)
+                    .expect("canonical axes"),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create PCPSIT");
+        for (k, s) in &[
+            (b"a" as &[u8], 5i64),
+            (b"b" as &[u8], -3i64),
+            (b"c" as &[u8], 12i64),
+            (b"d" as &[u8], 0i64),
+        ] {
+            source
+                .insert_into_provable_count_provable_sum_indexed_tree(
+                    [TEST_LEAF, b"pcpsit"].as_ref(),
+                    k,
+                    Element::new_item_with_sum_item(b"v".to_vec(), *s),
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert PCPSIT entry");
+        }
+
+        for batch_size in [64usize, 1] {
+            let dest = run_sync_with_version(
+                &source,
+                grove_version,
+                batch_size,
+                None,
+                None,
+                CURRENT_STATE_SYNC_VERSION,
+            )
+            .unwrap_or_else(|e| {
+                panic!("sync of a 3-axis PCPSIT (batch {batch_size}) failed: {e:?}")
+            });
+            assert_eq!(
+                source.root_hash(None, grove_version).unwrap().unwrap(),
+                dest.root_hash(None, grove_version).unwrap().unwrap(),
+                "app hash must match (batch {batch_size})"
+            );
+            let dest_issues = dest
+                .verify_grovedb(None, true, false, grove_version)
+                .expect("dest verify_grovedb should run");
+            assert!(
+                dest_issues.is_empty(),
+                "batch {batch_size}: destination must verify clean, got: {:?}",
+                dest_issues
+            );
+        }
+
+        // Post-sync usability on the default-batch destination.
+        let dest = run_sync_with_version(
+            &source,
+            grove_version,
+            64,
+            None,
+            None,
+            CURRENT_STATE_SYNC_VERSION,
+        )
+        .expect("sync should succeed");
+        assert_indexed_round_trip(&source, &dest, grove_version, |db| {
+            db.insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                b"e",
+                Element::new_item_with_sum_item(b"w".to_vec(), 7),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("post-sync PCPSIT insert");
+        });
+    }
+
+    /// A NESTED indexed tree: a PCPSIT entry that is itself a populated
+    /// PCPSIT. The outer group's primary transfer must discover the inner
+    /// indexed child and open a second group for it.
+    #[test]
+    fn state_sync_nested_indexed_tree_round_trip() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        let axes: Vec<(u8, Option<Vec<u8>>)> = vec![(0, None), (1, None)];
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"outer",
+                Element::empty_provable_count_provable_sum_indexed_tree(axes.clone())
+                    .expect("canonical axes"),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create outer PCPSIT");
+        source
+            .insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, b"outer"].as_ref(),
+                b"plain",
+                Element::new_item_with_sum_item(b"v".to_vec(), 3),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert plain outer entry");
+        source
+            .insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, b"outer"].as_ref(),
+                b"inner",
+                Element::empty_provable_count_provable_sum_indexed_tree(axes)
+                    .expect("canonical axes"),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert nested PCPSIT");
+        for (k, s) in &[(b"x" as &[u8], 8i64), (b"y" as &[u8], -1i64)] {
+            source
+                .insert_into_provable_count_provable_sum_indexed_tree(
+                    [TEST_LEAF, b"outer", b"inner"].as_ref(),
+                    k,
+                    Element::new_item_with_sum_item(b"n".to_vec(), *s),
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert nested entry");
+        }
+
+        let dest = run_sync_with_version(
+            &source,
+            grove_version,
+            64,
+            None,
+            None,
+            CURRENT_STATE_SYNC_VERSION,
+        )
+        .expect("sync of a nested indexed tree should succeed");
+
+        assert_indexed_round_trip(&source, &dest, grove_version, |db| {
+            db.insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, b"outer", b"inner"].as_ref(),
+                b"z",
+                Element::new_item_with_sum_item(b"n".to_vec(), 2),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("post-sync nested insert");
+        });
+    }
+
+    /// Empty indexed trees of all three variants round trip: the primary
+    /// is empty, every configured axis secondary is empty (contributing
+    /// `NULL_HASH` to the binding), and the joint verification still runs.
+    #[test]
+    fn state_sync_empty_indexed_trees_round_trip() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcit_empty",
+                Element::empty_provable_count_indexed_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create empty PCIT");
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"psit_empty",
+                Element::empty_provable_sum_indexed_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create empty PSIT");
+        let axes: Vec<(u8, Option<Vec<u8>>)> = vec![(0, None), (1, None), (2, None)];
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcpsit_empty",
+                Element::empty_provable_count_provable_sum_indexed_tree(axes)
+                    .expect("canonical axes"),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create empty PCPSIT");
+
+        let dest = run_sync_with_version(
+            &source,
+            grove_version,
+            64,
+            None,
+            None,
+            CURRENT_STATE_SYNC_VERSION,
+        )
+        .expect("sync of empty indexed trees should succeed");
+
+        assert_indexed_round_trip(&source, &dest, grove_version, |db| {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"pcit_empty"].as_ref(),
+                b"a",
+                Element::empty_provable_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("post-sync insert into previously empty PCIT");
+        });
+    }
+
+    /// Builds a small populated PSIT source for the tamper tests below.
+    fn tamper_test_psit_source(grove_version: &GroveVersion) -> TempGroveDb {
+        let source = make_test_grovedb(grove_version);
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"psit",
+                Element::empty_provable_sum_indexed_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create PSIT");
+        for (k, s) in &[(b"a" as &[u8], 4i64), (b"b" as &[u8], -2i64)] {
+            source
+                .insert_into_provable_sum_indexed_tree(
+                    [TEST_LEAF, b"psit"].as_ref(),
+                    k,
+                    Element::new_sum_item(*s),
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert PSIT entry");
+        }
+        source
+    }
+
+    /// Rewrites an indexed header page payload through `mutate`, leaving
+    /// any other payload untouched. The header page is the only indexed
+    /// primary payload of shape `pack([pack([header, root_chunk_ops])])`.
+    fn mutate_indexed_header_page(
+        gdata: Vec<u8>,
+        mutate: impl Fn(Vec<u8>, Vec<u8>) -> (Vec<u8>, Vec<u8>),
+    ) -> Vec<u8> {
+        use crate::replication::{
+            indexed_sync::IndexedHeader,
+            utils::{pack_nested_bytes, unpack_nested_bytes},
+        };
+        let Ok(locals) = unpack_nested_bytes(&gdata) else {
+            return gdata;
+        };
+        if locals.len() != 1 {
+            return gdata;
+        }
+        let Ok(sections) = unpack_nested_bytes(&locals[0]) else {
+            return gdata;
+        };
+        if sections.len() != 2 || IndexedHeader::decode(&sections[0]).is_err() {
+            return gdata;
+        }
+        let [header_bytes, ops]: [Vec<u8>; 2] = sections.try_into().expect("checked length");
+        let (header_bytes, ops) = mutate(header_bytes, ops);
+        pack_nested_bytes(vec![
+            pack_nested_bytes(vec![header_bytes, ops]).expect("repack payload")
+        ])
+        .expect("repack global")
+    }
+
+    /// A header whose primary root hash was tampered with must be rejected
+    /// as soon as the bundled root chunk fails verification against it —
+    /// the sync never gets to commit.
+    #[test]
+    fn state_sync_indexed_tampered_header_rejected() {
+        let grove_version = GroveVersion::latest();
+        let source = tamper_test_psit_source(grove_version);
+
+        let err = run_sync_with_version(
+            &source,
+            grove_version,
+            64,
+            None,
+            Some(&|tree_type, _gid: &[u8], gdata: Vec<u8>| {
+                if !tree_type.is_indexed_primary() {
+                    return gdata;
+                }
+                mutate_indexed_header_page(gdata, |mut header_bytes, ops| {
+                    // Flip one byte of the primary root hash.
+                    header_bytes[0] ^= 0x01;
+                    (header_bytes, ops)
+                })
+            }),
+            CURRENT_STATE_SYNC_VERSION,
+        )
+        .map(|_| ())
+        .expect_err("tampered indexed header must be rejected");
+        assert!(
+            format!("{err:?}").contains("Unable to process indexed primary root chunk"),
+            "expected root-chunk rejection against the tampered header, got: {err:?}"
+        );
+    }
+
+    /// A CONSISTENT byzantine lie — the header claims an empty primary
+    /// (NULL root hash) and serves no root chunk, so every per-chunk check
+    /// passes trivially — must still be caught by the unconditional
+    /// finalize-time joint verification against the parent binding. This
+    /// pins the security boundary: the header is a hint, never trusted.
+    #[test]
+    fn state_sync_indexed_lying_empty_header_rejected() {
+        use grovedb_merk::tree::hash::NULL_HASH;
+
+        let grove_version = GroveVersion::latest();
+        let source = tamper_test_psit_source(grove_version);
+
+        let err = run_sync_with_version(
+            &source,
+            grove_version,
+            64,
+            None,
+            Some(&|tree_type, _gid: &[u8], gdata: Vec<u8>| {
+                use crate::replication::{
+                    indexed_sync::IndexedHeader,
+                    utils::{pack_nested_bytes, unpack_nested_bytes},
+                };
+                // The lie must be CONSISTENT: the secondary's chunks are
+                // served empty too, so its empty-restore NULL_HASH check
+                // passes and nothing fails before the joint verification.
+                if matches!(
+                    tree_type,
+                    grovedb_merk::tree_type::TreeType::ProvableCountProvableSumTree
+                ) {
+                    let locals = unpack_nested_bytes(&gdata).expect("unpack secondary payload");
+                    return pack_nested_bytes(vec![Vec::new(); locals.len()])
+                        .expect("repack empty secondary payload");
+                }
+                if !tree_type.is_indexed_primary() {
+                    return gdata;
+                }
+                mutate_indexed_header_page(gdata, |header_bytes, _ops| {
+                    let mut header =
+                        IndexedHeader::decode(&header_bytes).expect("checked decodable");
+                    header.primary_root_hash = NULL_HASH;
+                    for (_, hash) in header.axes.iter_mut() {
+                        *hash = NULL_HASH;
+                    }
+                    // Empty root chunk: "nothing to restore".
+                    (header.encode(), Vec::new())
+                })
+            }),
+            CURRENT_STATE_SYNC_VERSION,
+        )
+        .map(|_| ())
+        .expect_err("a consistently lying empty header must be rejected");
+        assert!(
+            format!("{err:?}").contains("failed joint verification"),
+            "expected the finalize-time joint check to reject, got: {err:?}"
+        );
+    }
+
+    /// A tampered axis-secondary chunk must be rejected by per-chunk
+    /// verification against the (honest) header's secondary root hash.
+    #[test]
+    fn state_sync_indexed_tampered_secondary_chunk_rejected() {
+        let grove_version = GroveVersion::latest();
+        let source = tamper_test_psit_source(grove_version);
+
+        let err = run_sync_with_version(
+            &source,
+            grove_version,
+            64,
+            None,
+            Some(&|tree_type, _gid: &[u8], mut gdata: Vec<u8>| {
+                // The PSIT fixture's only ProvableCountProvableSumTree
+                // payloads are its sum-axis secondary chunks.
+                if matches!(
+                    tree_type,
+                    grovedb_merk::tree_type::TreeType::ProvableCountProvableSumTree
+                ) {
+                    if let Some(last) = gdata.last_mut() {
+                        *last ^= 0xFF;
+                    }
+                }
+                gdata
+            }),
+            CURRENT_STATE_SYNC_VERSION,
+        )
+        .map(|_| ())
+        .expect_err("tampered secondary chunk must be rejected");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("Unable to process incoming chunk")
+                || msg.contains("Unable to decode incoming chunk"),
+            "expected per-chunk rejection of the tampered secondary, got: {msg}"
+        );
+    }
+
+    // ---------- Aggregate-tree round trips ----------
+    //
+    // One state-sync round trip per aggregate-carrying Merk tree type.
+    // The Provable* variants bake their aggregates into every node hash,
+    // so these also pin the finalize-time aggregate rewrite in the Merk
+    // restorer (chunk proof nodes carry subtree AGGREGATES, not own
+    // values); the plain variants pin correct link aggregate_data on the
+    // restored tree, which `verify_grovedb`'s aggregate audit checks.
+
+    /// Build `[TEST_LEAF, name]` as `tree_element`, fill it with
+    /// `children`, sync, and require: identical app hash, a clean
+    /// destination integrity check, and identical post-sync writes.
+    fn aggregate_tree_round_trip(
+        name: &[u8],
+        tree_element: Element,
+        children: &[(&[u8], Element)],
+    ) {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                name,
+                tree_element,
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert aggregate tree");
+        for (key, element) in children {
+            source
+                .insert(
+                    [TEST_LEAF, name].as_ref(),
+                    key,
+                    element.clone(),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert child");
+        }
+
+        let dest = sync_source_to_destination(&source, grove_version);
+
+        assert_eq!(
+            source.root_hash(None, grove_version).unwrap().unwrap(),
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+            "app hash must match for {:?}",
+            String::from_utf8_lossy(name)
+        );
+        let dest_issues = dest
+            .verify_grovedb(None, true, false, grove_version)
+            .expect("dest verify_grovedb should run");
+        assert!(
+            dest_issues.is_empty(),
+            "{:?}: destination must verify clean, got: {:?}",
+            String::from_utf8_lossy(name),
+            dest_issues
+        );
+
+        // The restored tree stays writable and both sides evolve
+        // identically.
+        let (_, post_element) = &children[0];
+        for db in [&source, &dest] {
+            db.insert(
+                [TEST_LEAF, name].as_ref(),
+                b"post_sync",
+                post_element.clone(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("post-sync insert");
+        }
+        assert_eq!(
+            source.root_hash(None, grove_version).unwrap().unwrap(),
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+            "post-sync writes must produce identical states for {:?}",
+            String::from_utf8_lossy(name)
+        );
+    }
+
+    fn sum_children() -> Vec<(&'static [u8], Element)> {
+        vec![
+            (b"a", Element::new_sum_item(4)),
+            (b"b", Element::new_sum_item(-2)),
+            (b"c", Element::new_sum_item(10)),
+            (b"d", Element::new_sum_item(0)),
+            (b"e", Element::new_sum_item(-7)),
+        ]
+    }
+
+    fn item_children() -> Vec<(&'static [u8], Element)> {
+        vec![
+            (b"a", Element::new_item(b"one".to_vec())),
+            (b"b", Element::new_item(b"two".to_vec())),
+            (b"c", Element::new_item(b"three".to_vec())),
+            (b"d", Element::new_item(b"four".to_vec())),
+            (b"e", Element::new_item(b"five".to_vec())),
+        ]
+    }
+
+    #[test]
+    fn state_sync_sum_tree_round_trip() {
+        aggregate_tree_round_trip(b"sum", Element::empty_sum_tree(), &sum_children());
+    }
+
+    #[test]
+    fn state_sync_big_sum_tree_round_trip() {
+        aggregate_tree_round_trip(b"big_sum", Element::empty_big_sum_tree(), &sum_children());
+    }
+
+    #[test]
+    fn state_sync_count_tree_round_trip() {
+        aggregate_tree_round_trip(b"count", Element::empty_count_tree(), &item_children());
+    }
+
+    #[test]
+    fn state_sync_count_sum_tree_round_trip() {
+        aggregate_tree_round_trip(
+            b"count_sum",
+            Element::empty_count_sum_tree(),
+            &sum_children(),
+        );
+    }
+
+    #[test]
+    fn state_sync_provable_sum_tree_round_trip() {
+        aggregate_tree_round_trip(
+            b"provable_sum",
+            Element::empty_provable_sum_tree(),
+            &sum_children(),
+        );
+    }
+
+    #[test]
+    fn state_sync_provable_count_tree_round_trip() {
+        aggregate_tree_round_trip(
+            b"provable_count",
+            Element::empty_provable_count_tree(),
+            &item_children(),
+        );
+    }
+
+    #[test]
+    fn state_sync_provable_count_sum_tree_round_trip() {
+        aggregate_tree_round_trip(
+            b"provable_count_sum",
+            Element::empty_provable_count_sum_tree(),
+            &sum_children(),
+        );
+    }
+
+    #[test]
+    fn state_sync_provable_count_provable_sum_tree_round_trip() {
+        aggregate_tree_round_trip(
+            b"pcps",
+            Element::empty_provable_count_provable_sum_tree(),
+            &sum_children(),
+        );
+    }
+
+    /// A deep (6-level), many-subtree hierarchy with mixed tree types at
+    /// every level, synced with a small batch size so discovery pacing
+    /// crosses batch boundaries repeatedly.
+    #[test]
+    fn state_sync_deep_hierarchy_round_trip() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        // Level 1..=5 under TEST_LEAF: lvl1/lvl2/lvl3/lvl4/lvl5, each
+        // level carrying two sibling subtrees and a couple of items.
+        let mut path: Vec<Vec<u8>> = vec![TEST_LEAF.to_vec()];
+        for level in 1u8..=5 {
+            let path_refs: Vec<&[u8]> = path.iter().map(|p| p.as_slice()).collect();
+            let level_key = format!("lvl{level}").into_bytes();
+
+            // The spine subtree the next level nests into.
+            source
+                .insert(
+                    path_refs.as_slice(),
+                    &level_key,
+                    Element::empty_tree(),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert spine subtree");
+            // A sibling aggregate subtree with content.
+            let sibling_key = format!("side{level}").into_bytes();
+            source
+                .insert(
+                    path_refs.as_slice(),
+                    &sibling_key,
+                    Element::empty_sum_tree(),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert sibling sum tree");
+            let mut sibling_path = path.clone();
+            sibling_path.push(sibling_key);
+            let sibling_refs: Vec<&[u8]> = sibling_path.iter().map(|p| p.as_slice()).collect();
+            for i in 0u8..3 {
+                source
+                    .insert(
+                        sibling_refs.as_slice(),
+                        &[i],
+                        Element::new_sum_item(i64::from(i) * i64::from(level)),
+                        None,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("insert sibling sum item");
+            }
+            // Items alongside the subtrees.
+            source
+                .insert(
+                    path_refs.as_slice(),
+                    format!("item{level}").as_bytes(),
+                    Element::new_item(vec![level; 8]),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert level item");
+
+            path.push(level_key);
+        }
+        // A leaf item at the deepest level (6 levels below the root).
+        let path_refs: Vec<&[u8]> = path.iter().map(|p| p.as_slice()).collect();
+        source
+            .insert(
+                path_refs.as_slice(),
+                b"deep_leaf",
+                Element::new_item(b"bottom".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert deepest item");
+
+        // Small batch size: discovery must park and resume repeatedly.
+        let dest = run_sync_with_version(
+            &source,
+            grove_version,
+            2,
+            None,
+            None,
+            CURRENT_STATE_SYNC_VERSION,
+        )
+        .expect("deep hierarchy sync should succeed");
+
+        assert_eq!(
+            source.root_hash(None, grove_version).unwrap().unwrap(),
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+        );
+        let deep = dest
+            .get(path_refs.as_slice(), b"deep_leaf", None, grove_version)
+            .unwrap()
+            .expect("deepest item must be readable on destination");
+        assert_eq!(deep, Element::new_item(b"bottom".to_vec()));
+        let dest_issues = dest
+            .verify_grovedb(None, true, false, grove_version)
+            .expect("dest verify_grovedb should run");
+        assert!(dest_issues.is_empty(), "got: {:?}", dest_issues);
     }
 }

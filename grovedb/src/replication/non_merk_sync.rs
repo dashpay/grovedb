@@ -1,7 +1,8 @@
 //! State-sync support for the non-Merk append-only tree family
 //! (`CommitmentTree`, `MmrTree`, `BulkAppendTree`,
-//! `DenseAppendOnlyFixedSizeTree`) — see
-//! <https://github.com/dashpay/grovedb/issues/785>.
+//! `DenseAppendOnlyFixedSizeTree`, `PrivateDocumentStore`) — see
+//! <https://github.com/dashpay/grovedb/issues/785> (and #783 / #784 for
+//! `PrivateDocumentStore`).
 //!
 //! These tree types keep an always-empty Merk (`root_key = None`) and store
 //! their payload as raw non-Element entries in the subtree's data namespace,
@@ -47,10 +48,11 @@
 //!   size cap still bounds the single-entry case (entries have no
 //!   protocol-level maximum size).
 //!
-//! `PrivateDocumentStore` also uses non-Merk data storage but has no
-//! entry-replay arm yet (issues #783 / #784): a populated one is rejected
-//! with a descriptive `NotSupported` on both sides, an empty one syncs
-//! through the ordinary Merk path exactly as before.
+//! `PrivateDocumentStore` replays through [`PrivateDocumentStore::append`]
+//! (issues #783 / #784), so the committed `entry_size` from the target's
+//! hash-verified element is enforced on every replayed entry, and the
+//! config-binding state root is recomputed and checked at finalize like
+//! every other type in the family.
 
 use grovedb_bulk_append_tree::{deserialize_chunk_blob, BulkAppendTree};
 use grovedb_commitment_tree::{CommitmentFrontier, COMMITMENT_TREE_DATA_KEY};
@@ -63,6 +65,7 @@ use grovedb_merkle_mountain_range::{
     leaf_to_pos, mmr_size_to_leaf_count, MMRStoreReadOps, MmrNode, MmrStore, MMR,
 };
 use grovedb_path::SubtreePath;
+use grovedb_private_document_store::PrivateDocumentStore;
 use grovedb_storage::{Storage, StorageContext};
 use grovedb_version::version::GroveVersion;
 
@@ -85,10 +88,11 @@ const NON_MERK_CHUNK_ID_LEN: usize = 17;
 
 /// Whether state sync transfers this (non-Merk) tree type by entry replay.
 ///
-/// This is deliberately narrower than
-/// [`TreeType::uses_non_merk_data_storage`]: that predicate also covers
-/// `PrivateDocumentStore`, which has no replay arm yet and must keep failing
-/// closed with a descriptive error rather than being routed here.
+/// Covers every tree type for which
+/// [`TreeType::uses_non_merk_data_storage`] is true. Kept as its own
+/// predicate (rather than aliasing that one) so a future non-Merk type
+/// without a replay arm fails closed here instead of being routed into
+/// replay it does not support.
 pub(crate) fn supports_entry_replay(tree_type: TreeType) -> bool {
     matches!(
         tree_type,
@@ -96,10 +100,15 @@ pub(crate) fn supports_entry_replay(tree_type: TreeType) -> bool {
             | TreeType::MmrTree
             | TreeType::BulkAppendTree(_)
             | TreeType::DenseAppendOnlyFixedSizeTree(_)
+            | TreeType::PrivateDocumentStore(_)
     )
 }
 
-/// Element-level twin of [`supports_entry_replay`].
+/// Element-level twin of [`supports_entry_replay`]. Discovery no longer
+/// needs it (every non-Merk type now has a replay arm), so it survives
+/// only to pin element-level parity with the tree-type predicate in
+/// tests.
+#[cfg(test)]
 pub(crate) fn element_supports_entry_replay(element: &Element) -> bool {
     matches!(
         element.underlying(),
@@ -107,6 +116,7 @@ pub(crate) fn element_supports_entry_replay(element: &Element) -> bool {
             | Element::MmrTree(..)
             | Element::BulkAppendTree(..)
             | Element::DenseAppendOnlyFixedSizeTree(..)
+            | Element::PrivateDocumentStore(..)
     )
 }
 
@@ -144,11 +154,12 @@ pub(crate) struct NonMerkChunkId {
     /// First entry position (0-based) this page should start at.
     pub start: u64,
     /// Type-specific size state from the element: `total_count` for
-    /// commitment/bulk trees, `mmr_size` for MMR trees, entry `count` for
-    /// dense trees.
+    /// commitment/bulk trees and private document stores, `mmr_size` for
+    /// MMR trees, entry `count` for dense trees.
     pub state: u64,
     /// Type-specific parameter from the element: `chunk_power` for
-    /// commitment/bulk trees, `height` for dense trees, 0 for MMR trees.
+    /// commitment/bulk trees and private document stores, `height` for
+    /// dense trees, 0 for MMR trees.
     pub param: u8,
 }
 
@@ -284,7 +295,14 @@ impl GroveDb {
         let id = NonMerkChunkId::decode(chunk_id_bytes)?;
 
         match tree_type {
-            TreeType::CommitmentTree(_) | TreeType::BulkAppendTree(_) => {
+            // A private document store's payload IS a bulk append tree
+            // (the wrapper only adds entry-size validation and the
+            // config-binding state root, neither of which affects how
+            // stored entries are read), so all three serve pages through
+            // `BulkAppendTree::from_state`.
+            TreeType::CommitmentTree(_)
+            | TreeType::BulkAppendTree(_)
+            | TreeType::PrivateDocumentStore(_) => {
                 // For a commitment tree, the first page also carries the
                 // serialized Sinsemilla frontier: it is an accumulator over
                 // the whole append history and cannot be replayed from
@@ -519,6 +537,9 @@ impl NonMerkRestorer {
             Element::DenseAppendOnlyFixedSizeTree(count, height, _) => {
                 (*count as u64, *count as u64, *height)
             }
+            Element::PrivateDocumentStore(total_count, _entry_size, chunk_power, _) => {
+                (*total_count, *total_count, *chunk_power)
+            }
             other => {
                 return Err(Error::InternalError(format!(
                     "NonMerkRestorer::new called on a non append-only element: {}",
@@ -729,6 +750,37 @@ impl NonMerkRestorer {
                         Error::CorruptedData(format!("cannot replay dense entry: {e}"))
                     })?;
                 }
+            }
+            Element::PrivateDocumentStore(_, entry_size, ..) => {
+                // Replay through the store wrapper (not the raw bulk tree)
+                // so the committed entry_size from the target's
+                // hash-verified element is enforced on every wire entry
+                // before anything is written.
+                let entry_size = *entry_size;
+                let ctx = db
+                    .db
+                    .get_immediate_storage_context(subtree_path, tx)
+                    .unwrap();
+                let mut store =
+                    PrivateDocumentStore::from_state(self.replayed, entry_size, self.param, ctx)
+                        .unwrap()
+                        .map_err(|e| {
+                            Error::CorruptedData(format!(
+                        "cannot open partially replayed private document store ({} entries): {e}",
+                        self.replayed
+                    ))
+                        })?;
+                store
+                    .append_many(entries.iter().map(Vec::as_slice), grove_version)
+                    .unwrap()
+                    .map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "cannot replay private document store entries: {e}"
+                        ))
+                    })?;
+                store.commit_mmr(grove_version).map_err(|e| {
+                    Error::CorruptedData(format!("cannot flush replayed document store MMR: {e}"))
+                })?;
             }
             _ => unreachable!("NonMerkRestorer::new only accepts append-only elements"),
         }
@@ -948,19 +1000,19 @@ mod tests {
     }
 
     #[test]
-    fn entry_replay_predicate_excludes_private_document_store() {
+    fn entry_replay_predicate_covers_non_merk_family() {
         assert!(supports_entry_replay(TreeType::CommitmentTree(4)));
         assert!(supports_entry_replay(TreeType::MmrTree));
         assert!(supports_entry_replay(TreeType::BulkAppendTree(4)));
         assert!(supports_entry_replay(
             TreeType::DenseAppendOnlyFixedSizeTree(4)
         ));
-        assert!(!supports_entry_replay(TreeType::PrivateDocumentStore(4)));
+        assert!(supports_entry_replay(TreeType::PrivateDocumentStore(4)));
         assert!(!supports_entry_replay(TreeType::NormalTree));
-        assert!(TreeType::PrivateDocumentStore(4).uses_non_merk_data_storage());
+        assert!(!supports_entry_replay(TreeType::ProvableCountTree));
 
         assert!(element_supports_entry_replay(&Element::empty_mmr_tree()));
-        assert!(!element_supports_entry_replay(
+        assert!(element_supports_entry_replay(
             &Element::empty_private_document_store(16, 4).unwrap()
         ));
         assert!(!element_supports_entry_replay(&Element::empty_tree()));

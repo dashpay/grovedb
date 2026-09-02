@@ -1,3 +1,4 @@
+pub(crate) mod indexed_sync;
 pub(crate) mod non_merk_sync;
 mod state_sync_session;
 
@@ -29,18 +30,182 @@ pub type ChunkIdentifier = (
     Vec<Vec<u8>>,
 );
 
-/// Current version of the state sync protocol.
+/// The state sync protocol version this build speaks.
+///
+/// State sync speaks exactly one protocol version: both sides pass this
+/// value, and every entry point (`fetch_chunk`, `start_snapshot_syncing`,
+/// `apply_chunk`) rejects any other with a descriptive error. The constant
+/// — and the `version` parameter threading through those entry points —
+/// exists so a future incompatible wire change can bump it and old/new
+/// peers fail fast with a clear error instead of failing midway with an
+/// opaque hash mismatch.
 pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
+
+/// Aux-storage key holding the "a state sync restore was applied to this
+/// database but never finished" marker.
+///
+/// Written by the first intermediate commit of a
+/// [`RestoreCommitMode::Incremental`] session and deleted by that
+/// session's final commit, both inside the same transaction as the data
+/// they describe. See [`GroveDb::has_incomplete_restore`].
+pub(crate) const INCOMPLETE_RESTORE_AUX_KEY: &[u8] = b"grovedb_state_sync_restore_in_progress";
+
+/// How much restored chunk payload an [`RestoreCommitMode::Incremental`]
+/// session accumulates before it takes the next intermediate commit.
+///
+/// A payload budget rather than a memory budget because it is the
+/// quantity the session can count exactly: RocksDB's only handle on the
+/// transaction's write-batch size copies the whole batch to report it.
+///
+/// Peak memory is not a clean multiple of this number, because a commit
+/// can only land on a subtree boundary — the effective granularity is
+/// `max(budget, largest single subtree)`, and below that the budget stops
+/// buying anything. Measured on the medium scale tier (1.31 GiB source
+/// grove, `restore_memory_ceiling_tier_medium`), peak footprint increment
+/// over the pre-sync baseline:
+///
+/// ```text
+/// atomic          7046 MiB  (5.24x the source)   52.3 s
+/// 128 MiB budget  2666 MiB  (1.98x)              53.0 s
+///  64 MiB budget  2357 MiB  (1.75x)              48.2 s
+///  16 MiB budget  1428 MiB  (1.06x)              81.5 s
+/// ```
+///
+/// 16 MiB is the default because it is the smallest budget measured to
+/// hold a gigabyte-scale restore near the size of the source rather than
+/// a multiple of it; the wall-clock it costs is paid once, on a node that
+/// is not yet serving.
+pub const DEFAULT_RESTORE_CHUNK_BUDGET_BYTES: u64 = 16 * 1024 * 1024;
+
+/// How a restore session persists the subtrees it has rebuilt.
+///
+/// The trade this enum exposes is memory against crash atomicity, and
+/// both sides of it are legitimate; see the variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RestoreCommitMode {
+    /// Every write of the sync stays in one RocksDB transaction until
+    /// [`GroveDb::commit_session`] has verified the restored root hash
+    /// against the offered `app_hash` (issue #775). Nothing reaches the
+    /// database early, so an aborted, failed or crashed restore leaves
+    /// the destination exactly as it was.
+    ///
+    /// The cost is that the entire restored state is resident: the
+    /// transaction's `WriteBatchWithIndex` holds every key and value,
+    /// and committing it copies the batch into a memtable, so peak
+    /// memory is a multiple of the *whole* source grove and grows with
+    /// it forever.
+    #[default]
+    Atomic,
+    /// Commit at proven-safe boundaries once `budget_bytes` of chunk
+    /// payload has accumulated, so peak memory tracks the budget and the
+    /// largest single subtree rather than the size of the whole state.
+    ///
+    /// The residual term is real and worth stating: a subtree's restorer
+    /// holds its storage context for the subtree's whole life, so no
+    /// commit can land inside one. Peak memory is therefore
+    /// `O(budget + largest subtree)`, not `O(budget)`. On Platform state
+    /// the largest subtree is one contract's document index — far smaller
+    /// than the grove, but it does grow with adoption, and driving the
+    /// bound below it would need commit points inside a Merk restore.
+    ///
+    /// The final commit still verifies the root hash and still refuses
+    /// to commit on a mismatch — what is given up is only the *rollback*:
+    /// a restore that fails or is interrupted after the first
+    /// intermediate commit leaves partially restored, hash-unverified
+    /// data behind. Such a database is marked (see
+    /// [`GroveDb::has_incomplete_restore`]) and must be discarded, not
+    /// used. Callers that already wipe-and-re-sync a failed restore —
+    /// drive-abci's restore sentinel does — lose nothing by choosing
+    /// this mode.
+    Incremental {
+        /// Chunk payload bytes to accumulate between intermediate
+        /// commits. See [`DEFAULT_RESTORE_CHUNK_BUDGET_BYTES`].
+        budget_bytes: u64,
+        /// How many subtrees may be part-restored at the same time.
+        ///
+        /// This is the other half of the memory bound, and without it
+        /// the byte budget does nothing. A commit is only safe once
+        /// every in-flight restorer has released the transaction, so the
+        /// budget can only be *spent* at a moment when no subtree is
+        /// part-restored. Left uncapped, the restore puts every subtree
+        /// discovered under a parent in flight at once -- a Platform
+        /// grove's root fans out to a handful of very large subtrees --
+        /// and that moment does not arrive until nearly the whole state
+        /// is already in the write batch. Measured on the medium tier:
+        /// uncapped, a 64 MiB budget over 1 GiB of payload took exactly
+        /// one intermediate commit and moved peak memory by 7%.
+        ///
+        /// Peak memory is therefore roughly
+        /// `budget_bytes + (this many partly-restored subtrees)`. One is
+        /// the tightest bound and the default; raising it trades memory
+        /// for more chunk requests in flight across subtrees.
+        max_subtrees_in_flight: usize,
+    },
+}
+
+impl RestoreCommitMode {
+    /// The standard bounded-memory configuration.
+    pub const fn incremental() -> Self {
+        RestoreCommitMode::Incremental {
+            budget_bytes: DEFAULT_RESTORE_CHUNK_BUDGET_BYTES,
+            max_subtrees_in_flight: 1,
+        }
+    }
+
+    /// Whether this mode ever commits before the root hash is verified.
+    pub const fn is_incremental(&self) -> bool {
+        matches!(self, RestoreCommitMode::Incremental { .. })
+    }
+}
 
 #[cfg(feature = "minimal")]
 impl GroveDb {
-    /// Starts a new state synchronization session with the given app hash and batch size.
+    /// Starts a new state synchronization session with the given app hash,
+    /// batch size and state sync protocol version.
     pub fn start_syncing_session(
         &self,
         app_hash: [u8; 32],
         subtrees_batch_size: usize,
+        version: u16,
     ) -> Pin<Box<MultiStateSyncSession<'_>>> {
-        MultiStateSyncSession::new(self, app_hash, subtrees_batch_size)
+        self.start_syncing_session_with_mode(
+            app_hash,
+            subtrees_batch_size,
+            version,
+            RestoreCommitMode::default(),
+        )
+    }
+
+    /// [`GroveDb::start_syncing_session`] with an explicit
+    /// [`RestoreCommitMode`].
+    pub fn start_syncing_session_with_mode(
+        &self,
+        app_hash: [u8; 32],
+        subtrees_batch_size: usize,
+        version: u16,
+        commit_mode: RestoreCommitMode,
+    ) -> Pin<Box<MultiStateSyncSession<'_>>> {
+        MultiStateSyncSession::new(self, app_hash, subtrees_batch_size, version, commit_mode)
+    }
+
+    /// Whether this database holds a partially applied, hash-unverified
+    /// state sync restore.
+    ///
+    /// Only a [`RestoreCommitMode::Incremental`] session can leave one:
+    /// it marks the database inside its first intermediate commit and
+    /// clears the mark inside the final, root-hash-verified commit, so
+    /// the marker survives exactly the window in which the database
+    /// contains restore writes that were never checked against the
+    /// offered `app_hash`. A `true` here means the contents are
+    /// meaningless and the directory must be discarded — it is never a
+    /// state to resume from or serve reads out of.
+    ///
+    /// Callers running an [`RestoreCommitMode::Atomic`] restore never
+    /// need this: that mode cannot leave partial state behind.
+    pub fn has_incomplete_restore(&self) -> Result<bool, Error> {
+        self.get_aux(INCOMPLETE_RESTORE_AUX_KEY, None)
+            .value
+            .map(|marker| marker.is_some())
     }
 
     /// Commits a completed state synchronization session.
@@ -52,9 +217,7 @@ impl GroveDb {
         session: Pin<Box<MultiStateSyncSession>>,
         grove_version: &GroveVersion,
     ) -> Result<(), Error> {
-        session
-            .commit(grove_version)
-            .inspect_err(|e| eprintln!("Failed to commit session: {:?}", e))
+        session.commit(grove_version)
     }
 
     /// Fetches a chunk of data from the database based on the given global
@@ -87,7 +250,7 @@ impl GroveDb {
     ///
     /// # Notes
     ///
-    /// - Only `CURRENT_STATE_SYNC_VERSION` is supported.
+    /// - Only [`CURRENT_STATE_SYNC_VERSION`] is supported.
     /// - If the `packed_global_chunk_id` matches the `root_app_hash` length, it
     ///   is treated as a single ID.
     /// - Otherwise, it is unpacked into multiple nested chunk IDs.
@@ -95,12 +258,14 @@ impl GroveDb {
     ///   associated data.
     /// - Empty trees return an empty byte vector.
     /// - Non-Merk append-only subtrees (`CommitmentTree`, `MmrTree`,
-    ///   `BulkAppendTree`, `DenseAppendOnlyFixedSizeTree`) are served as
-    ///   cursor-based entry pages instead of Merk chunks. A request for one
-    ///   of these subtrees without a page cursor returns
-    ///   `Error::NotSupported`.
-    /// - Indexed-tree requests and populated `PrivateDocumentStore`
-    ///   requests return `Error::NotSupported`.
+    ///   `BulkAppendTree`, `DenseAppendOnlyFixedSizeTree`,
+    ///   `PrivateDocumentStore`) are served as cursor-based entry pages
+    ///   instead of Merk chunks. A request for one of these subtrees
+    ///   without a page cursor returns `Error::NotSupported`.
+    /// - Indexed-tree primaries are served as a header page (carrying the
+    ///   primary and per-axis secondary root hashes) followed by ordinary
+    ///   Merk chunks; the axis secondaries are served as ordinary
+    ///   by-prefix Merk chunks (see `indexed_sync`).
     pub fn fetch_chunk(
         &self,
         packed_global_chunk_id: &[u8],
@@ -115,11 +280,11 @@ impl GroveDb {
 
         let tx = TxRef::new(&self.db, transaction);
 
-        // For now, only CURRENT_STATE_SYNC_VERSION is supported
         if version != CURRENT_STATE_SYNC_VERSION {
-            return Err(Error::CorruptedData(
-                "Unsupported state sync protocol version".to_string(),
-            ));
+            return Err(Error::CorruptedData(format!(
+                "Unsupported state sync protocol version {version}; this build speaks version \
+                 {CURRENT_STATE_SYNC_VERSION}"
+            )));
         }
 
         let mut global_chunk_ids: Vec<Vec<u8>> = vec![];
@@ -135,38 +300,45 @@ impl GroveDb {
             let (chunk_prefix, root_key, tree_type, nested_chunk_ids) =
                 utils::decode_global_chunk_id(global_chunk_id.as_slice(), &root_app_hash)?;
 
-            // State sync does not yet support indexed trees. Reject on the
-            // source side too (target-side discovery also rejects) so a
-            // peer requesting an indexed-tree chunk gets a descriptive
-            // error rather than a chunk that would fail root-hash
-            // verification on apply (indexed primaries commit a
-            // three-input combine_hash_three the restorer cannot match,
-            // and their axis secondary namespaces are never enumerated).
-            if tree_type.is_indexed_primary() {
-                return Err(Error::NotSupported(
-                    "state sync does not yet support indexed trees \
-                     (ProvableCountIndexedTree / ProvableSumIndexedTree / \
-                     ProvableCountProvableSumIndexedTree)"
-                        .to_string(),
-                ));
+            // The initial request for an indexed primary is a single
+            // header request carrying the axis tags and secondary root
+            // keys; answer it with the indexed header plus the primary's
+            // root chunk. Any other request for an indexed primary is an
+            // ordinary Merk chunk request and falls through to the
+            // generic serving below.
+            if tree_type.is_indexed_primary()
+                && nested_chunk_ids
+                    .first()
+                    .is_some_and(|id| indexed_sync::is_indexed_header_request(id))
+            {
+                if nested_chunk_ids.len() != 1 {
+                    return Err(Error::CorruptedData(
+                        "an indexed header request must be the only chunk id in its global chunk"
+                            .to_string(),
+                    ));
+                }
+                let payload = self.serve_indexed_header_page(
+                    chunk_prefix,
+                    root_key,
+                    tree_type,
+                    &nested_chunk_ids[0],
+                    tx.as_ref(),
+                    grove_version,
+                )?;
+                global_chunk_bytes.push(pack_nested_bytes(vec![payload])?);
+                continue;
             }
 
             // Non-Merk append-only trees (CommitmentTree / MmrTree /
-            // BulkAppendTree / DenseAppendOnlyFixedSizeTree) have no Merk
-            // nodes to chunk — their payload is served as target-driven
-            // entry pages instead. The target encodes a page cursor into
-            // every local chunk id; a request without one comes from a
-            // peer speaking the pre-#785 protocol, which cannot sync
-            // these subtrees. (Other non-Merk types without a replay arm
-            // — PrivateDocumentStore — fall through to the Merk path,
-            // which serves them empty or rejects them populated below.)
+            // BulkAppendTree / DenseAppendOnlyFixedSizeTree /
+            // PrivateDocumentStore) have no Merk nodes to chunk — their
+            // payload is served as target-driven entry pages instead. The
+            // target encodes a page cursor into every local chunk id, so
+            // a request without one is malformed.
             if non_merk_sync::supports_entry_replay(tree_type) {
                 if nested_chunk_ids.is_empty() {
                     return Err(Error::NotSupported(
-                        "append-only subtree chunk request is missing its page \
-                         cursor — the requesting peer does not support state \
-                         sync of append-only trees (see issue #785)"
-                            .to_string(),
+                        "append-only subtree chunk request is missing its page cursor".to_string(),
                     ));
                 }
                 let mut local_chunk_bytes: Vec<Vec<u8>> = vec![];
@@ -204,16 +376,6 @@ impl GroveDb {
             if merk.is_empty_tree().unwrap() {
                 local_chunk_bytes.push(vec![]);
             } else {
-                // A non-Merk data tree whose namespace is populated but that
-                // has no entry-replay arm (PrivateDocumentStore, see issues
-                // #783 / #784): there are no Merk nodes to chunk, so fail
-                // descriptively instead of dying in the chunk producer.
-                if tree_type.uses_non_merk_data_storage() {
-                    return Err(Error::NotSupported(format!(
-                        "state sync does not yet support populated {tree_type} subtrees \
-                         (non-Merk data storage without an entry-replay arm)"
-                    )));
-                }
                 let mut chunk_producer = ChunkProducer::new(&merk).map_err(|e| {
                     Error::CorruptedData(format!(
                         "failed to create chunk producer by prefix tx:{} with:{}",
@@ -296,6 +458,32 @@ impl GroveDb {
         version: u16,
         grove_version: &GroveVersion,
     ) -> Result<Pin<Box<MultiStateSyncSession<'_>>>, Error> {
+        self.start_snapshot_syncing_with_mode(
+            app_hash,
+            subtrees_batch_size,
+            version,
+            RestoreCommitMode::default(),
+            grove_version,
+        )
+    }
+
+    /// [`GroveDb::start_snapshot_syncing`] with an explicit
+    /// [`RestoreCommitMode`].
+    ///
+    /// Memory-constrained callers that already discard and re-sync a
+    /// failed restore should pass [`RestoreCommitMode::incremental`]:
+    /// peak memory then tracks the configured chunk budget instead of
+    /// the size of the state being restored. Read
+    /// [`RestoreCommitMode::Incremental`] first — it changes what a
+    /// crashed restore leaves on disk.
+    pub fn start_snapshot_syncing_with_mode(
+        &self,
+        app_hash: CryptoHash,
+        subtrees_batch_size: usize,
+        version: u16,
+        commit_mode: RestoreCommitMode,
+        grove_version: &GroveVersion,
+    ) -> Result<Pin<Box<MultiStateSyncSession<'_>>>, Error> {
         check_grovedb_v0!(
             "start_snapshot_syncing",
             grove_version
@@ -303,11 +491,11 @@ impl GroveDb {
                 .replication
                 .start_snapshot_syncing
         );
-        // For now, only CURRENT_STATE_SYNC_VERSION is supported
         if version != CURRENT_STATE_SYNC_VERSION {
-            return Err(Error::CorruptedData(
-                "Unsupported state sync protocol version".to_string(),
-            ));
+            return Err(Error::CorruptedData(format!(
+                "Unsupported state sync protocol version {version}; this build speaks version \
+                 {CURRENT_STATE_SYNC_VERSION}"
+            )));
         }
 
         if subtrees_batch_size == 0 {
@@ -318,7 +506,12 @@ impl GroveDb {
 
         let root_prefix = [0u8; 32];
 
-        let mut session = self.start_syncing_session(app_hash, subtrees_batch_size);
+        let mut session = self.start_syncing_session_with_mode(
+            app_hash,
+            subtrees_batch_size,
+            version,
+            commit_mode,
+        );
 
         session.add_subtree_sync_info(
             SubtreePath::empty(),

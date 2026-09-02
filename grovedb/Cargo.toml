@@ -55,7 +55,15 @@ grovedb-epoch-based-storage-flags = { version = "5.0.1", path = "../grovedb-epoc
 
 criterion = { workspace = true }
 hex = { workspace = true }
+# Process RSS sampling for the `#[ignore]`d state-sync restore
+# memory-ceiling harness (`tests/replication_scale_tests.rs`). The memory
+# that harness measures lives in RocksDB's C++ `WriteBatchWithIndex`, so it
+# has to be read from the OS rather than from a Rust allocator hook.
+libc = "0.2"
 pretty_assertions = "1.4.0"
+# Adversarial-input properties for the untrusted state-sync decode
+# surfaces (`tests/replication_fuzz_tests.rs`).
+proptest = "1.10.0"
 rand = { workspace = true }
 rand_distr = "0.6"
 assert_matches = { workspace = true }

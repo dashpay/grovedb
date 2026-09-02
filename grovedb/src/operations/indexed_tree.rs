@@ -115,6 +115,40 @@ pub(crate) fn axis_secondary_tree_type(axis: IndexAxis) -> TreeType {
     }
 }
 
+/// Decode the configured axes of an indexed-tree element as
+/// `(axis, secondary_root_key)` pairs in canonical element order: the
+/// single implicit axis for PCIT / PSIT, the 1..=3 entry TLV for PCPSIT.
+///
+/// Errors if `element` is not an indexed-tree variant or a PCPSIT axis tag
+/// is invalid. The one intentional non-caller is
+/// `cleanup_dedicated_indexed_child_storage`, which must stay tolerant of
+/// an invalid tag (cleanup of a corrupt element should still clear the
+/// valid axes rather than fail).
+pub(crate) fn indexed_element_axes(
+    element: &Element,
+) -> Result<Vec<(IndexAxis, Option<Vec<u8>>)>, Error> {
+    match element.underlying() {
+        Element::ProvableCountIndexedTree(_, s, ..) => Ok(vec![(IndexAxis::Count, s.clone())]),
+        Element::ProvableSumIndexedTree(_, s, ..) => Ok(vec![(IndexAxis::Sum, s.clone())]),
+        Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => axes
+            .iter()
+            .map(|(tag, root_key)| {
+                IndexAxis::try_from_tag(*tag)
+                    .map(|axis| (axis, root_key.clone()))
+                    .map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "invalid axis tag in indexed-tree element: {e}"
+                        ))
+                    })
+            })
+            .collect(),
+        other => Err(Error::CorruptedData(format!(
+            "expected an indexed-tree element, got {}",
+            other.type_str()
+        ))),
+    }
+}
+
 /// One primary entry's mirror-relevant state.
 ///
 /// The aggregates decide the row's sort key and carried sum; the value
@@ -421,31 +455,12 @@ impl GroveDb {
                     .map_err(Error::MerkError)
             )
         };
-        let axes: Vec<(IndexAxis, Option<Vec<u8>>)> = match element.underlying() {
-            Element::ProvableCountIndexedTree(_, s, ..) => vec![(IndexAxis::Count, s.clone())],
-            Element::ProvableSumIndexedTree(_, s, ..) => vec![(IndexAxis::Sum, s.clone())],
-            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => {
-                let mut out = Vec::with_capacity(axes.len());
-                for (tag, root_key) in axes {
-                    let axis = cost_return_on_error_no_add!(
-                        cost,
-                        IndexAxis::try_from_tag(*tag).map_err(|e| Error::CorruptedData(format!(
-                            "open_indexed_secondaries_for_batch: invalid axis tag: {e}"
-                        )))
-                    );
-                    out.push((axis, root_key.clone()));
-                }
-                out
-            }
-            other => {
-                return Err(Error::CorruptedData(format!(
-                    "open_indexed_secondaries_for_batch: parent element is not an indexed tree, \
-                     got {}",
-                    other.type_str()
-                )))
-                .wrap_with_cost(cost);
-            }
-        };
+        let axes: Vec<(IndexAxis, Option<Vec<u8>>)> = cost_return_on_error_no_add!(
+            cost,
+            indexed_element_axes(&element).map_err(|e| Error::CorruptedData(format!(
+                "open_indexed_secondaries_for_batch: {e}"
+            )))
+        );
 
         let mut merks = Vec::with_capacity(axes.len());
         for (axis, root_key) in axes {
@@ -943,29 +958,12 @@ impl GroveDb {
             &mut cost,
             Element::get(&parent_merk, indexed_key, true, grove_version).map_err(Error::MerkError)
         );
-        let axes: Vec<(IndexAxis, Option<Vec<u8>>)> = match indexed_element.underlying() {
-            Element::ProvableCountIndexedTree(_, s, ..) => vec![(IndexAxis::Count, s.clone())],
-            Element::ProvableSumIndexedTree(_, s, ..) => vec![(IndexAxis::Sum, s.clone())],
-            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes_tlv, _) => {
-                let mut out = Vec::with_capacity(axes_tlv.len());
-                for (tag, root_key) in axes_tlv {
-                    let axis = cost_return_on_error_no_add!(
-                        cost,
-                        IndexAxis::try_from_tag(*tag).map_err(|e| Error::CorruptedData(format!(
-                            "reconcile_indexed_tree_secondaries: invalid axis tag: {e}"
-                        )))
-                    );
-                    out.push((axis, root_key.clone()));
-                }
-                out
-            }
-            _ => {
-                return Err(Error::CorruptedData(
-                    "parent element at the indexed key is not an indexed tree".to_string(),
-                ))
-                .wrap_with_cost(cost);
-            }
-        };
+        let axes: Vec<(IndexAxis, Option<Vec<u8>>)> = cost_return_on_error_no_add!(
+            cost,
+            indexed_element_axes(&indexed_element).map_err(|e| Error::CorruptedData(format!(
+                "reconcile_indexed_tree_secondaries: {e}"
+            )))
+        );
         // The tightest ceiling across the configured axes (avg prepends a
         // 16-byte sort key against count/sum's 8).
         let max_item_key_len = axes
