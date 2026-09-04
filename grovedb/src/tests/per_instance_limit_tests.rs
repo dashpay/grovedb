@@ -1441,3 +1441,159 @@ fn empty_parents_are_reported_when_parent_inclusion_is_requested() {
     assert!(keys.contains(&b"full".as_slice()));
     assert!(keys.contains(&b"k0".as_slice()));
 }
+
+/// A limited input whose first key is already owned by a limit-free
+/// graft descends into it and grafts where the two diverge: `docs/p1`
+/// (every row) and `docs/p2` (two rows) share the `docs` key once an
+/// unrelated input lifts the common path above it, and still prove,
+/// verify and match the trusted read as one query.
+#[test]
+fn merge_grafts_a_limited_branch_below_a_key_a_limit_free_branch_owns() {
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    populate_parents(&db, &[b"p1", b"p2"], 4, grove_version);
+    use crate::tests::common::EMPTY_PATH;
+    db.insert(
+        EMPTY_PATH,
+        b"other",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert other tree");
+    db.insert(
+        [b"other".as_slice()].as_ref(),
+        b"x",
+        Element::new_item(vec![9]),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert other item");
+
+    let every_p1 =
+        PathQuery::new_unsized(vec![DOCS.to_vec(), b"p1".to_vec()], Query::new_range_full());
+    let two_of_p2 = PathQuery::new(
+        vec![DOCS.to_vec(), b"p2".to_vec()],
+        SizedQuery::new(Query::new_range_full(), Some(2), None),
+    );
+    let other = PathQuery::new_unsized(
+        vec![b"other".to_vec()],
+        Query::new_single_key(b"x".to_vec()),
+    );
+
+    let merged = PathQuery::merge(vec![&every_p1, &two_of_p2, &other], grove_version)
+        .expect("a limited branch grafts below the key the limit-free branch owns");
+    assert_eq!(merged.query.limit, None, "the merged query stays unsized");
+    let rows = assert_proved_matches_trusted_read(&db, &merged, grove_version);
+    assert_eq!(rows, 4 + 2 + 1, "all of p1, two of p2, the other row");
+
+    // Input order does not decide acceptance: limit-free branches merge
+    // first, so the descent sees the same owning branch either way.
+    let permuted = PathQuery::merge(vec![&two_of_p2, &other, &every_p1], grove_version)
+        .expect("the permutation merges identically");
+    assert_eq!(merged, permuted);
+}
+
+/// Two limited inputs colliding on a key graft below it when their
+/// paths diverge there — each keeps its own instance budget.
+#[test]
+fn merge_grafts_two_limited_branches_that_diverge_below_a_shared_key() {
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    populate_parents(&db, &[b"p1", b"p2"], 4, grove_version);
+    use crate::tests::common::EMPTY_PATH;
+    db.insert(
+        EMPTY_PATH,
+        b"other",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert other tree");
+    db.insert(
+        [b"other".as_slice()].as_ref(),
+        b"x",
+        Element::new_item(vec![9]),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert other item");
+
+    let one_of_p1 = PathQuery::new(
+        vec![DOCS.to_vec(), b"p1".to_vec()],
+        SizedQuery::new(Query::new_range_full(), Some(1), None),
+    );
+    let two_of_p2 = PathQuery::new(
+        vec![DOCS.to_vec(), b"p2".to_vec()],
+        SizedQuery::new(Query::new_range_full(), Some(2), None),
+    );
+    let other = PathQuery::new_unsized(
+        vec![b"other".to_vec()],
+        Query::new_single_key(b"x".to_vec()),
+    );
+
+    let merged = PathQuery::merge(vec![&one_of_p1, &two_of_p2, &other], grove_version)
+        .expect("limited branches diverging below a shared key merge");
+    let rows = assert_proved_matches_trusted_read(&db, &merged, grove_version);
+    assert_eq!(rows, 1 + 2 + 1, "one of p1, two of p2, the other row");
+
+    let permuted = PathQuery::merge(vec![&other, &two_of_p2, &one_of_p1], grove_version)
+        .expect("the permutation merges identically");
+    assert_eq!(merged, permuted);
+}
+
+/// The descent is not a licence to blend: two limited inputs on the
+/// SAME full path meet at the descended root and are still refused,
+/// and so is a limited input whose key the merged root selects by a
+/// range.
+#[test]
+fn merge_still_refuses_limited_branches_that_never_diverge() {
+    let grove_version = GroveVersion::latest();
+
+    let one_of_p1 = PathQuery::new(
+        vec![DOCS.to_vec(), b"p1".to_vec()],
+        SizedQuery::new(Query::new_range_full(), Some(1), None),
+    );
+    let two_of_p1 = PathQuery::new(
+        vec![DOCS.to_vec(), b"p1".to_vec()],
+        SizedQuery::new(Query::new_range_full(), Some(2), None),
+    );
+    let other = PathQuery::new_unsized(
+        vec![b"other".to_vec()],
+        Query::new_single_key(b"x".to_vec()),
+    );
+    let result = PathQuery::merge(vec![&one_of_p1, &two_of_p1, &other], grove_version);
+    assert!(
+        matches!(&result, Err(Error::NotSupported(message)) if message.contains("collide")),
+        "limited branches meeting at the same leaf must be refused, got {result:?}"
+    );
+
+    // A limit-free branch and a limited one meeting at the same leaf are
+    // refused too: the limited body would have to merge with the other.
+    let every_p1 =
+        PathQuery::new_unsized(vec![DOCS.to_vec(), b"p1".to_vec()], Query::new_range_full());
+    let result = PathQuery::merge(vec![&every_p1, &two_of_p1, &other], grove_version);
+    assert!(
+        matches!(&result, Err(Error::NotSupported(message)) if message.contains("collide")),
+        "a limited body meeting a limit-free body must be refused, got {result:?}"
+    );
+
+    // The merged root selecting `docs` by a RANGE owns every key under
+    // it at once; nothing below can be told apart, so no descent.
+    let mut ranged_root = Query::new_range_full();
+    ranged_root.set_subquery(Query::new_range_full());
+    let at_root = PathQuery::new_unsized(vec![], ranged_root);
+    let result = PathQuery::merge(vec![&at_root, &two_of_p1], grove_version);
+    assert!(
+        matches!(&result, Err(Error::NotSupported(message)) if message.contains("collide")),
+        "a range-selected key cannot host a limited graft, got {result:?}"
+    );
+}
