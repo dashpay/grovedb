@@ -6,6 +6,21 @@ use crate::{
 };
 
 impl SubqueryBranch {
+    /// The walk direction two branch bodies agree on: the direction of
+    /// whichever bodies exist when they agree, ascending when neither
+    /// exists or they disagree (the merge's direction rule only governs
+    /// the inputs' roots, so a disagreement below them stays as authored).
+    fn shared_direction(ours: Option<&Query>, theirs: Option<&Query>) -> bool {
+        match (ours, theirs) {
+            (Some(ours), Some(theirs)) if ours.left_to_right == theirs.left_to_right => {
+                ours.left_to_right
+            }
+            (Some(ours), None) => ours.left_to_right,
+            (None, Some(theirs)) => theirs.left_to_right,
+            _ => true,
+        }
+    }
+
     fn merge_subquery(
         &self,
         other_default_branch_subquery: Option<Box<Query>>,
@@ -124,8 +139,15 @@ impl SubqueryBranch {
                         // conditional subquery for each key
 
                         // We need to create a new subquery that will hold the conditional
-                        // subqueries
-                        let mut merged_query = Query::new();
+                        // subqueries. It walks in the direction the two bodies share:
+                        // a merge that later descends into this branch (see
+                        // grovedb's `graft_below`) rebuilds it as an input and checks
+                        // its direction against the others', so a default here would
+                        // refuse descending compositions their ascending twins accept.
+                        let mut merged_query = Query::new_with_direction(Self::shared_direction(
+                            self.subquery.as_deref(),
+                            other.subquery.as_deref(),
+                        ));
 
                         // The key is also removed from the path as it is no needed in the subquery
                         let left_top_key = left_path_leftovers.remove(0);
