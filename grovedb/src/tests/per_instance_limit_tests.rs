@@ -1739,11 +1739,78 @@ fn merge_grafts_an_unlimited_sibling_beside_a_root_branch_cap() {
     }
 }
 
+/// `docs/p1/a/{k0,k1}`, `docs/p1/b/{k0,k1}`, `docs/p2/{k0..k3}` and
+/// `other/{k0,k1}`: a two-level shared prefix under `docs`, plus an
+/// unrelated tree that lifts the common path to the root.
+fn populate_nested_parents(db: &TempGroveDb, grove_version: &GroveVersion) {
+    use crate::tests::common::EMPTY_PATH;
+    populate_parents(db, &[b"p2"], 4, grove_version);
+    db.insert(
+        [DOCS].as_ref(),
+        b"p1",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert p1 tree");
+    for child in [b"a", b"b"] {
+        db.insert(
+            [DOCS, b"p1".as_slice()].as_ref(),
+            child,
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert nested child tree");
+        for i in 0..2u8 {
+            db.insert(
+                [DOCS, b"p1".as_slice(), child.as_slice()].as_ref(),
+                &[b'k', b'0' + i],
+                Element::new_item(vec![i]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert nested item");
+        }
+    }
+    db.insert(
+        EMPTY_PATH,
+        b"other",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert other tree");
+    for i in 0..2u8 {
+        db.insert(
+            [b"other".as_slice()].as_ref(),
+            &[b'k', b'0' + i],
+            Element::new_item(vec![i]),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert other item");
+    }
+}
+
 #[test]
 fn merge_nested_limited_grafts_is_independent_of_all_input_permutations() {
     use itertools::Itertools;
 
     let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    populate_nested_parents(&db, grove_version);
+
     let limited = |path: &[&[u8]]| {
         PathQuery::new(
             path.iter().map(|key| key.to_vec()).collect(),
@@ -1756,11 +1823,27 @@ fn merge_nested_limited_grafts_is_independent_of_all_input_permutations() {
         limited(&[DOCS, b"p1", b"b"]),
         PathQuery::new_unsized(vec![b"other".to_vec()], Query::new_range_full()),
     ];
-    let expected = PathQuery::merge(queries.iter().collect(), grove_version)
+
+    // The merged query walks keys in order (`docs` before `other`, `p1`
+    // before `p2`, `a` before `b`), so the trusted reads of the inputs,
+    // concatenated in that order, are exactly what the merge must return:
+    // one capped row under each of `a`, `b` and `p2`, then all of `other`.
+    let mut expected = Vec::new();
+    for input in [&queries[1], &queries[2], &queries[0], &queries[3]] {
+        expected.extend(run(&db, input, grove_version).0);
+    }
+    assert_eq!(expected.len(), 5);
+
+    let canonical = PathQuery::merge(queries.iter().collect(), grove_version)
         .expect("nested limited branches diverge below docs and p1");
     for inputs in queries.iter().permutations(queries.len()) {
         let merged = PathQuery::merge(inputs, grove_version)
             .expect("every ordering must preserve the previously grafted child caps");
-        assert_eq!(merged, expected);
+        assert_eq!(merged, canonical);
+        assert_eq!(run(&db, &merged, grove_version).0, expected);
+        assert_eq!(
+            assert_proved_matches_trusted_read(&db, &merged, grove_version),
+            expected.len(),
+        );
     }
 }
