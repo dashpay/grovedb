@@ -1847,3 +1847,55 @@ fn merge_nested_limited_grafts_is_independent_of_all_input_permutations() {
         );
     }
 }
+
+#[test]
+fn merge_descends_into_a_synthesized_split_in_either_direction() {
+    // Two limit-free branches that diverge below `p1` make the merge
+    // synthesize the body at `docs/p1`; a limited branch on `p2` then
+    // collides at `docs` and descends into that branch. The synthesized
+    // body must walk in the inputs' direction, or the descent refuses the
+    // descending composition while accepting its ascending twin.
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    populate_nested_parents(&db, grove_version);
+
+    for left_to_right in [true, false] {
+        let mut full = Query::new_range_full();
+        full.left_to_right = left_to_right;
+        let unlimited = |path: &[&[u8]]| {
+            PathQuery::new_unsized(path.iter().map(|key| key.to_vec()).collect(), full.clone())
+        };
+        let a = unlimited(&[DOCS, b"p1", b"a"]);
+        let b = unlimited(&[DOCS, b"p1", b"b"]);
+        let other = unlimited(&[b"other"]);
+        let p2 = PathQuery::new(
+            vec![DOCS.to_vec(), b"p2".to_vec()],
+            SizedQuery::new(full.clone(), Some(1), None),
+        );
+
+        // The merged query walks keys in order, so the trusted reads of
+        // the inputs concatenated in walk order are what it must return.
+        let walk_order: [&PathQuery; 4] = if left_to_right {
+            [&a, &b, &p2, &other]
+        } else {
+            [&other, &p2, &b, &a]
+        };
+        let mut expected = Vec::new();
+        for input in walk_order {
+            expected.extend(run(&db, input, grove_version).0);
+        }
+        assert_eq!(
+            expected.len(),
+            7,
+            "two rows under a and b, one under p2, two under other"
+        );
+
+        let merged = PathQuery::merge(vec![&a, &b, &other, &p2], grove_version)
+            .unwrap_or_else(|e| panic!("left_to_right={left_to_right}: {e}"));
+        assert_eq!(run(&db, &merged, grove_version).0, expected);
+        assert_eq!(
+            assert_proved_matches_trusted_read(&db, &merged, grove_version),
+            expected.len(),
+        );
+    }
+}
