@@ -20,9 +20,9 @@
 //!   is refused, and caps on its own branches are accepted only when
 //!   it is the sole body at the root (so nothing else selects rows
 //!   under those branches);
-//! - a limited branch colliding on a key already owned by another
-//!   grafted branch **descends** into it and grafts where the two
-//!   actually diverge (the same merge, one level down — see
+//! - a limited branch colliding on a selected key whose first matching
+//!   conditional is that exact key **descends** into it and grafts where
+//!   the two actually diverge (the same merge, one level down — see
 //!   [`graft_below`]); it is refused only when the bodies would meet,
 //!   or when the key is selected by a range or by the merged root's own
 //!   items, where nothing below can be told apart;
@@ -152,9 +152,10 @@ pub(super) fn merge_v1(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
     };
 
     // Add conditional subqueries in a canonical order: every
-    // limit-free branch first (through the full merge machinery, which
-    // is still limit-free at that point), then the limit-carrying
-    // branches as exclusive grafts. Without the partition, acceptance
+    // limit-free branch first, then the limit-carrying branches.
+    // Use the full merge machinery only while both sides are limit-free;
+    // a root body with child caps already needs exclusive grafts, even
+    // for incoming limit-free branches. Without the partition, acceptance
     // would depend on input order — a disjoint limited branch
     // processed early would force a later limit-free overlap onto the
     // graft path and refuse it. The partition is deterministic (stable
@@ -171,34 +172,9 @@ pub(super) fn merge_v1(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
             .into_iter()
             .partition(&carries_limits);
 
-    for sub_path_query in unlimited_branches {
-        let SubqueryBranch {
-            subquery_path,
-            subquery,
-        } = sub_path_query;
-        let mut subquery_path =
-            subquery_path.ok_or(Error::CorruptedCodeExecution("subquery path must exist"))?;
-        let key = subquery_path.remove(0); // must exist
-        merged_query.insert_item(QueryItem::Key(key.clone()));
-        let rest_of_path = if subquery_path.is_empty() {
-            None
-        } else {
-            Some(subquery_path)
-        };
-        let subquery_branch = SubqueryBranch {
-            subquery_path: rest_of_path,
-            subquery,
-        };
-        // See v0: read modes are rejected in the prelude; propagate
-        // rather than discard if one ever reaches here. The merged
-        // query is still limit-free in this phase, so the machinery's
-        // blanket instance-limit gate cannot misfire.
-        merged_query
-            .merge_conditional_boxed_subquery(QueryItem::Key(key), subquery_branch)
-            .map_err(|e| Error::NotSupported(e.to_string()))?;
-    }
-
-    for sub_path_query in limited_branches {
+    for sub_path_query in unlimited_branches.into_iter().chain(limited_branches) {
+        let use_limit_free_merge =
+            !carries_limits(&sub_path_query) && !merged_query.has_instance_limit_anywhere();
         let SubqueryBranch {
             subquery_path,
             subquery,
@@ -211,21 +187,39 @@ pub(super) fn merge_v1(path_queries: Vec<&PathQuery>) -> Result<PathQuery, Error
         } else {
             Some(subquery_path)
         };
+        if use_limit_free_merge {
+            merged_query.insert_item(QueryItem::Key(key.clone()));
+            merged_query
+                .merge_conditional_boxed_subquery(
+                    QueryItem::Key(key),
+                    SubqueryBranch {
+                        subquery_path: rest_of_path,
+                        subquery,
+                    },
+                )
+                .map_err(|e| Error::NotSupported(e.to_string()))?;
+            continue;
+        }
 
         // A branch grafted earlier — limit-free through the machinery,
         // or an exclusive limited graft — may already own this exact
         // key. Budgets still never blend: the two are merged one level
         // down, where they either diverge onto exclusive keys of their
-        // own or are refused because their bodies would meet.
+        // own or are refused because their bodies would meet. A dormant
+        // conditional does not own an unselected key, and an earlier
+        // matching range takes precedence over a later exact conditional.
+        let exact_key = QueryItem::Key(key.clone());
+        let selected_by_exact_key = merged_query.items.contains(&exact_key);
         let owned_by_exact_key = merged_query
             .conditional_subquery_branches
             .as_ref()
-            .is_some_and(|branches| branches.contains_key(&QueryItem::Key(key.clone())));
+            .and_then(|branches| branches.keys().find(|item| item.contains(key.as_slice())))
+            .is_some_and(|item| *item == exact_key);
         let selected_by_a_range = merged_query
             .items
             .iter()
-            .any(|item| item.contains(key.as_slice()) && *item != QueryItem::Key(key.clone()));
-        if owned_by_exact_key && !selected_by_a_range {
+            .any(|item| item.contains(key.as_slice()) && *item != exact_key);
+        if selected_by_exact_key && owned_by_exact_key && !selected_by_a_range {
             let branches = merged_query.conditional_subquery_branches.as_mut().ok_or(
                 Error::CorruptedCodeExecution(
                     "conditional branches must exist when one owns the key",

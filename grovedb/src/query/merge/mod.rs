@@ -20,10 +20,12 @@
 //!   becomes its merged branch's per-instance cap (`Query::limit`) —
 //!   exact, because the branch instance executes exactly once — and
 //!   authored per-instance limits ride along on their branches.
-//!   Budgets never blend, so limits merge only as exclusive grafts: a
-//!   limited input landing at the merged root, or two limited branches
-//!   colliding on a key, are refused with typed errors. Offsets are
-//!   still refused.
+//!   Budgets never blend, so limits merge only as exclusive grafts.
+//!   Branches may descend through a selected key whose first matching
+//!   conditional is that exact key, until their paths diverge. A budget
+//!   on a body landing at the merged root, or overlapping selections
+//!   that cannot keep their budgets separate, are refused with typed
+//!   errors. Offsets are still refused.
 //!
 //!   (An intermediate carrying only the direction rules was once gated
 //!   here for `GROVE_V4`; since no grove version ever shipped it, it

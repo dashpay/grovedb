@@ -1597,3 +1597,170 @@ fn merge_still_refuses_limited_branches_that_never_diverge() {
         "a range-selected key cannot host a limited graft, got {result:?}"
     );
 }
+
+#[test]
+fn merge_refuses_a_limited_graft_shadowed_by_a_range_conditional() {
+    let grove_version = GroveVersion::latest();
+    let mut root = Query::new_single_key(DOCS.to_vec());
+    // Conditional branches use the first matching selector. The exact
+    // key exists, but the earlier range is the branch that actually runs.
+    for selector in [
+        crate::QueryItem::RangeFull(..),
+        crate::QueryItem::Key(DOCS.to_vec()),
+    ] {
+        root.add_conditional_subquery(
+            selector,
+            Some(vec![b"p1".to_vec()]),
+            Some(Query::new_range_full()),
+        );
+    }
+    let root = PathQuery::new_unsized(vec![], root);
+    let limited = PathQuery::new(
+        vec![DOCS.to_vec(), b"p2".to_vec()],
+        SizedQuery::new(Query::new_range_full(), Some(2), None),
+    );
+    for inputs in [vec![&root, &limited], vec![&limited, &root]] {
+        let result = PathQuery::merge(inputs, grove_version);
+        assert!(
+            matches!(&result, Err(Error::NotSupported(message)) if message.contains("collide")),
+            "a shadowed branch must not accept a graft that will never run: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn merge_grafts_below_an_exact_conditional_before_a_matching_range() {
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    populate_parents(&db, &[b"p1", b"p2"], 4, grove_version);
+    let mut root = Query::new_single_key(DOCS.to_vec());
+    // The exact branch runs; the later matching range is inactive.
+    for selector in [
+        crate::QueryItem::Key(DOCS.to_vec()),
+        crate::QueryItem::RangeFull(..),
+    ] {
+        root.add_conditional_subquery(
+            selector,
+            Some(vec![b"p1".to_vec()]),
+            Some(Query::new_range_full()),
+        );
+    }
+    let root = PathQuery::new_unsized(vec![], root);
+    let limited = PathQuery::new(
+        vec![DOCS.to_vec(), b"p2".to_vec()],
+        SizedQuery::new(Query::new_range_full(), Some(2), None),
+    );
+    let mut expected = run(&db, &root, grove_version).0;
+    expected.extend(run(&db, &limited, grove_version).0);
+    assert_eq!(expected.len(), 6);
+    for inputs in [vec![&root, &limited], vec![&limited, &root]] {
+        let merged = PathQuery::merge(inputs, grove_version)
+            .expect("the first matching conditional owns the selected key");
+        assert_eq!(run(&db, &merged, grove_version).0, expected);
+        assert_eq!(
+            assert_proved_matches_trusted_read(&db, &merged, grove_version),
+            expected.len(),
+        );
+    }
+}
+
+#[test]
+fn merge_refuses_a_limited_graft_into_an_unselected_conditional() {
+    let grove_version = GroveVersion::latest();
+    let mut root = Query::new_single_key(b"other".to_vec());
+    // Defining a conditional does not select its key. Descending into
+    // this dormant branch would omit p2, or add unwanted p1 rows if we
+    // also selected docs after merging the two branches.
+    root.add_conditional_subquery(
+        crate::QueryItem::Key(DOCS.to_vec()),
+        Some(vec![b"p1".to_vec()]),
+        Some(Query::new_range_full()),
+    );
+    let root = PathQuery::new_unsized(vec![], root);
+    let limited = PathQuery::new(
+        vec![DOCS.to_vec(), b"p2".to_vec()],
+        SizedQuery::new(Query::new_range_full(), Some(2), None),
+    );
+    for inputs in [vec![&root, &limited], vec![&limited, &root]] {
+        let result = PathQuery::merge(inputs, grove_version);
+        assert!(
+            matches!(&result, Err(Error::NotSupported(message)) if message.contains("collide")),
+            "an unselected conditional cannot own the incoming query's key: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn merge_grafts_an_unlimited_sibling_beside_a_root_branch_cap() {
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    populate_parents(&db, &[b"p1", b"p2"], 4, grove_version);
+
+    for left_to_right in [true, false] {
+        for conditional in [true, false] {
+            let mut capped = Query::new_range_full();
+            capped.left_to_right = left_to_right;
+            capped.limit = Some(1);
+            let mut root = Query::new_single_key(b"p1".to_vec());
+            root.left_to_right = left_to_right;
+            if conditional {
+                root.add_conditional_subquery(
+                    crate::QueryItem::Key(b"p1".to_vec()),
+                    None,
+                    Some(capped),
+                );
+            } else {
+                root.set_subquery(capped);
+            }
+            let root = PathQuery::new_unsized(vec![DOCS.to_vec()], root);
+            let mut every_p2 = Query::new_range_full();
+            every_p2.left_to_right = left_to_right;
+            let sibling = PathQuery::new_unsized(vec![DOCS.to_vec(), b"p2".to_vec()], every_p2);
+
+            let mut expected = run(&db, &root, grove_version).0;
+            let mut sibling_rows = run(&db, &sibling, grove_version).0;
+            if left_to_right {
+                expected.append(&mut sibling_rows);
+            } else {
+                sibling_rows.append(&mut expected);
+                expected = sibling_rows;
+            }
+            assert_eq!(expected.len(), 5, "one p1 row and all four p2 rows");
+            for inputs in [vec![&root, &sibling], vec![&sibling, &root]] {
+                let merged = PathQuery::merge(inputs, grove_version)
+                    .expect("an unlimited sibling has no overlap with the root's branch cap");
+                assert_eq!(run(&db, &merged, grove_version).0, expected);
+                assert_eq!(
+                    assert_proved_matches_trusted_read(&db, &merged, grove_version),
+                    expected.len(),
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn merge_nested_limited_grafts_is_independent_of_all_input_permutations() {
+    use itertools::Itertools;
+
+    let grove_version = GroveVersion::latest();
+    let limited = |path: &[&[u8]]| {
+        PathQuery::new(
+            path.iter().map(|key| key.to_vec()).collect(),
+            SizedQuery::new(Query::new_range_full(), Some(1), None),
+        )
+    };
+    let queries = [
+        limited(&[DOCS, b"p2"]),
+        limited(&[DOCS, b"p1", b"a"]),
+        limited(&[DOCS, b"p1", b"b"]),
+        PathQuery::new_unsized(vec![b"other".to_vec()], Query::new_range_full()),
+    ];
+    let expected = PathQuery::merge(queries.iter().collect(), grove_version)
+        .expect("nested limited branches diverge below docs and p1");
+    for inputs in queries.iter().permutations(queries.len()) {
+        let merged = PathQuery::merge(inputs, grove_version)
+            .expect("every ordering must preserve the previously grafted child caps");
+        assert_eq!(merged, expected);
+    }
+}
