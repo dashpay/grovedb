@@ -35,7 +35,10 @@
 //! thin wrapper, preserving the original error text.
 
 use grovedb_merk::{
-    proofs::{query::QueryProofVerify, Query as MerkQuery},
+    proofs::{
+        query::{QueryProofVerify, PROOF_VERSION_LATEST},
+        Query as MerkQuery,
+    },
     CryptoHash,
 };
 use grovedb_query::{Query, QueryItem};
@@ -97,7 +100,7 @@ pub(in crate::operations::proof) fn verify_single_key_layer_proof_v0(
     };
 
     let (root_hash, merk_result) = level_query
-        .execute_proof(merk_bytes, None, true, 0)
+        .execute_proof(merk_bytes, None, true, PROOF_VERSION_LATEST)
         .unwrap()
         .map_err(|e| {
             Error::InvalidProof(
@@ -190,9 +193,12 @@ pub(in crate::operations::proof) fn execute_carrier_layer_proof(
 
     // Walk direction must match the prover's; otherwise the merk
     // walker stops at the first out-of-order boundary and only the last
-    // key in the proof is returned.
+    // key in the proof is returned. Strict mode (#863) makes that a
+    // hard requirement on the stream's op family, so a carrier stream
+    // in the wrong family cannot fill a limited outer walk from the
+    // wrong end of the range.
     let (root_hash, merk_result) = level_query
-        .execute_proof(merk_bytes, outer_limit, left_to_right, 0)
+        .execute_proof(merk_bytes, outer_limit, left_to_right, PROOF_VERSION_LATEST)
         .unwrap()
         .map_err(|e| {
             Error::InvalidProof(

@@ -552,127 +552,171 @@ impl GroveDb {
                 Op::Push(node) | Op::PushInverted(node) => node,
                 _ => continue,
             };
-            let (key, value, node_value_hash, feature_type) = match &*node {
-                Node::KVValueHash(key, value, value_hash) => (
-                    key.clone(),
-                    value.clone(),
-                    *value_hash,
-                    TreeFeatureType::BasicMerkNode,
-                ),
-                Node::KVValueHashFeatureType(key, value, value_hash, feature_type) => {
-                    (key.clone(), value.clone(), *value_hash, *feature_type)
-                }
-                // Items are pushed as KV / KVCount / KVSum / KVCountSum,
-                // whose value bytes the merk verifier hashes itself.
-                _ => continue,
-            };
-            let element = cost_return_on_error_no_add!(
-                cost,
-                Element::deserialize(&value, grove_version).map_err(Error::from)
-            )
-            .into_underlying();
-            if element.is_indexed_tree() {
-                return Err(Error::NotSupported(format!(
-                    "sum-budget window: the scanned row {} is an indexed tree, whose \
-                     three-input binding no proof node can carry",
-                    hex_to_ascii(&key)
-                )))
-                .wrap_with_cost(cost);
+            cost_return_on_error!(
+                &mut cost,
+                self.bind_composite_row(
+                    node,
+                    target_path,
+                    transaction,
+                    grove_version,
+                    "sum-budget window: the scanned row",
+                )
+            );
+        }
+
+        Ok(()).wrap_with_cost(cost)
+    }
+
+    /// Bind one value-bearing proof row to the element bytes it carries, if
+    /// the row is composite (#870, #859).
+    ///
+    /// A `KVValueHash` / `KVValueHashFeatureType` row whose value is a tree or
+    /// a reference is rewritten to `KVValueHashFeatureTypeWithChildHash`,
+    /// carrying the second input of the `combine_hash` the parent committed:
+    ///
+    /// - Merk trees: the child root (`NULL_HASH` for an empty tree), verified
+    ///   as `combine_hash(H(value), child_root) == value_hash` — the
+    ///   composition `insert` commits.
+    /// - References: the referenced element's value hash, which is the
+    ///   reference's committed composition.
+    /// - Non-Merk trees: [`Self::bind_terminal_non_merk_tree`] (their own
+    ///   state root).
+    /// - Indexed trees commit a three-input hash no proof node carries, so the
+    ///   row is refused with `NotSupported` rather than emitted unbound;
+    ///   `context` prefixes that message with the caller's name for the row.
+    ///
+    /// Item rows, and node shapes that carry no `value_hash`, are left as the
+    /// merk prover emitted them.
+    pub(crate) fn bind_composite_row(
+        &self,
+        node: &mut Node,
+        target_path: &[&[u8]],
+        transaction: &Transaction,
+        grove_version: &GroveVersion,
+        context: &str,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+
+        let (key, value, node_value_hash, feature_type) = match &*node {
+            Node::KVValueHash(key, value, value_hash) => (
+                key.clone(),
+                value.clone(),
+                *value_hash,
+                TreeFeatureType::BasicMerkNode,
+            ),
+            Node::KVValueHashFeatureType(key, value, value_hash, feature_type) => {
+                (key.clone(), value.clone(), *value_hash, *feature_type)
             }
-            match element {
-                Element::Reference(reference_path, ..)
-                | Element::ReferenceWithSumItem(reference_path, ..) => {
-                    let absolute_path = cost_return_on_error_into!(
+            // Items are pushed as KV / KVCount / KVSum / KVCountSum,
+            // whose value bytes the merk verifier hashes itself.
+            _ => return Ok(()).wrap_with_cost(cost),
+        };
+        let element = cost_return_on_error_no_add!(
+            cost,
+            Element::deserialize(&value, grove_version).map_err(Error::from)
+        )
+        .into_underlying();
+        if element.is_indexed_tree() {
+            return Err(Error::NotSupported(format!(
+                "{context} {} is an indexed tree, whose three-input binding no proof node \
+                 can carry",
+                hex_to_ascii(&key)
+            )))
+            .wrap_with_cost(cost);
+        }
+        match element {
+            Element::Reference(reference_path, ..)
+            | Element::ReferenceWithSumItem(reference_path, ..) => {
+                let absolute_path = cost_return_on_error_into!(
+                    &mut cost,
+                    path_from_reference_path_type(
+                        reference_path,
+                        target_path,
+                        Some(key.as_slice())
+                    )
+                    .wrap_with_cost(OperationCost::default())
+                );
+                let referenced = cost_return_on_error_into!(
+                    &mut cost,
+                    self.follow_reference_as_stored(
+                        absolute_path.as_slice().into(),
+                        true,
+                        Some(transaction),
+                        grove_version
+                    )
+                );
+                // Legacy direct writes and stored-terminal commitments
+                // can coexist. Select the bytes using this row's actual
+                // commitment, independently of the version serving it.
+                let referenced = if referenced.is_wrapped() {
+                    let reference_element_hash = value_hash(&value).unwrap_add_cost(&mut cost);
+                    cost_return_on_error!(
                         &mut cost,
-                        path_from_reference_path_type(
-                            reference_path,
-                            target_path,
-                            Some(key.as_slice())
+                        Self::reference_terminal_as_committed(
+                            referenced,
+                            &reference_element_hash,
+                            &node_value_hash,
+                            grove_version,
                         )
-                        .wrap_with_cost(OperationCost::default())
-                    );
-                    let referenced = cost_return_on_error_into!(
+                    )
+                } else {
+                    referenced
+                };
+                let referenced_bytes = cost_return_on_error_no_add!(
+                    cost,
+                    referenced.serialize(grove_version).map_err(Error::from)
+                );
+                let referenced_hash = value_hash(&referenced_bytes).unwrap_add_cost(&mut cost);
+                *node = Node::KVValueHashFeatureTypeWithChildHash(
+                    key,
+                    value,
+                    node_value_hash,
+                    feature_type,
+                    referenced_hash,
+                );
+            }
+            non_merk @ (Element::MmrTree(..)
+            | Element::BulkAppendTree(..)
+            | Element::DenseAppendOnlyFixedSizeTree(..)
+            | Element::CommitmentTree(..)
+            | Element::PrivateDocumentStore(..)) => {
+                cost_return_on_error!(
+                    &mut cost,
+                    self.bind_terminal_non_merk_tree(
+                        node,
+                        &non_merk,
+                        target_path,
+                        transaction,
+                        grove_version,
+                    )
+                );
+            }
+            tree if tree.is_any_tree() => {
+                let child_root = if tree.is_non_empty_merk_tree() {
+                    let mut child_path = target_path.to_vec();
+                    child_path.push(key.as_slice());
+                    let child_merk = cost_return_on_error!(
                         &mut cost,
-                        self.follow_reference_as_stored(
-                            absolute_path.as_slice().into(),
-                            true,
-                            Some(transaction),
+                        self.open_transactional_merk_at_path(
+                            child_path.as_slice().into(),
+                            transaction,
+                            None,
                             grove_version
                         )
                     );
-                    // Legacy direct writes and stored-terminal commitments
-                    // can coexist. Select the bytes using this row's actual
-                    // commitment, independently of the version serving it.
-                    let referenced = if referenced.is_wrapped() {
-                        let reference_element_hash = value_hash(&value).unwrap_add_cost(&mut cost);
-                        cost_return_on_error!(
-                            &mut cost,
-                            Self::reference_terminal_as_committed(
-                                referenced,
-                                &reference_element_hash,
-                                &node_value_hash,
-                                grove_version,
-                            )
-                        )
-                    } else {
-                        referenced
-                    };
-                    let referenced_bytes = cost_return_on_error_no_add!(
-                        cost,
-                        referenced.serialize(grove_version).map_err(Error::from)
-                    );
-                    let referenced_hash = value_hash(&referenced_bytes).unwrap_add_cost(&mut cost);
-                    *node = Node::KVValueHashFeatureTypeWithChildHash(
-                        key,
-                        value,
-                        node_value_hash,
-                        feature_type,
-                        referenced_hash,
-                    );
-                }
-                non_merk @ (Element::MmrTree(..)
-                | Element::BulkAppendTree(..)
-                | Element::DenseAppendOnlyFixedSizeTree(..)
-                | Element::CommitmentTree(..)
-                | Element::PrivateDocumentStore(..)) => {
-                    cost_return_on_error!(
-                        &mut cost,
-                        self.bind_terminal_non_merk_tree(
-                            node,
-                            &non_merk,
-                            target_path,
-                            transaction,
-                            grove_version,
-                        )
-                    );
-                }
-                tree if tree.is_any_tree() => {
-                    let child_root = if tree.is_non_empty_merk_tree() {
-                        let mut child_path = target_path.to_vec();
-                        child_path.push(key.as_slice());
-                        let child_merk = cost_return_on_error!(
-                            &mut cost,
-                            self.open_transactional_merk_at_path(
-                                child_path.as_slice().into(),
-                                transaction,
-                                None,
-                                grove_version
-                            )
-                        );
-                        child_merk.root_hash().unwrap_add_cost(&mut cost)
-                    } else {
-                        NULL_HASH
-                    };
-                    *node = Node::KVValueHashFeatureTypeWithChildHash(
-                        key,
-                        value,
-                        node_value_hash,
-                        feature_type,
-                        child_root,
-                    );
-                }
-                _ => continue,
+                    child_merk.root_hash().unwrap_add_cost(&mut cost)
+                } else {
+                    NULL_HASH
+                };
+                *node = Node::KVValueHashFeatureTypeWithChildHash(
+                    key,
+                    value,
+                    node_value_hash,
+                    feature_type,
+                    child_root,
+                );
             }
+            _ => return Ok(()).wrap_with_cost(cost),
         }
 
         Ok(()).wrap_with_cost(cost)
@@ -1629,8 +1673,16 @@ impl GroveDb {
                 .map_err(Error::MerkError)
         );
 
+        // Bind every tree / reference row of the chunk to the bytes it
+        // carries (#859). A no-op below GROVE_V4.
+        let mut trunk_ops = trunk_result.proof;
+        cost_return_on_error!(
+            &mut cost,
+            self.bind_chunk_proof_rows(&mut trunk_ops, path_slices.as_slice(), &tx, grove_version)
+        );
+
         let mut trunk_proof_encoded = Vec::new();
-        encode_into(trunk_result.proof.iter(), &mut trunk_proof_encoded);
+        encode_into(trunk_ops.iter(), &mut trunk_proof_encoded);
 
         // Start with the innermost LayerProof using ProofBytes::Merk
         let mut current_layer = LayerProof {
@@ -1746,11 +1798,23 @@ impl GroveDb {
         );
 
         // Perform the branch query - returns BranchQueryResult directly
-        let branch_result = cost_return_on_error!(
+        let mut branch_result = cost_return_on_error!(
             &mut cost,
             target_tree
                 .branch_query(&query.key, query.depth, grove_version)
                 .map_err(Error::MerkError)
+        );
+
+        // Bind every tree / reference row of the chunk to the bytes it
+        // carries (#859). A no-op below GROVE_V4.
+        cost_return_on_error!(
+            &mut cost,
+            self.bind_chunk_proof_rows(
+                &mut branch_result.proof,
+                path_slices.as_slice(),
+                &tx,
+                grove_version
+            )
         );
 
         Ok(branch_result).wrap_with_cost(cost)

@@ -26,6 +26,7 @@ mod batch_unit_tests;
 mod bulk_append_tree_tests;
 mod checkpoint_tests;
 mod chunk_branch_proof_tests;
+mod chunk_proof_row_binding_tests;
 mod commitment_tree_cost_bound_tests;
 mod commitment_tree_tests;
 mod coverage_round7_tests;
@@ -35,6 +36,7 @@ mod non_merk_limited_page_tests;
 mod per_instance_gate_coverage_tests;
 mod per_instance_limit_tests;
 mod private_document_store_tests;
+mod unbound_empty_tree_tests;
 mod wrapped_terminal_reference_tests;
 // NOTE: the former `count_indexed_tree_tests` (~12.3k LOC) was written
 // against the now-removed non-provable `Element::CountIndexedTree` and was
@@ -92,6 +94,7 @@ mod partial_batch_consistency_tests;
 mod proof_advanced_tests;
 mod proof_coverage_tests;
 mod proof_depth_limit_tests;
+mod proof_orientation_tests;
 mod proof_size_measurement;
 mod provable_count_indexed_tree_tests;
 mod provable_count_provable_sum_indexed_tree_tests;

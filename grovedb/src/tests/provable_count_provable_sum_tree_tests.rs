@@ -2056,12 +2056,18 @@ mod tests {
         let result = GroveDb::verify_aggregate_count_and_sum_query(&reencoded, &pq, v);
         match result {
             Err(crate::Error::InvalidProof(_, msg)) => {
-                // Either the intermediate type gate fires or the chain
-                // mismatch fires first — both rejections mean the type
-                // confusion didn't pass.
+                // Any of three gates may fire first — the strict merk
+                // walk refusing an Item inside a value-hash node (the
+                // single-key layer walk runs in strict mode since #863),
+                // the intermediate type gate, or the chain mismatch —
+                // and every one of them means the type confusion didn't
+                // pass.
                 assert!(
-                    msg.contains("is not a tree element") || msg.contains("chain mismatch"),
-                    "expected intermediate-type-gate or chain-mismatch rejection, got: {msg}"
+                    msg.contains("must not contain an item element")
+                        || msg.contains("is not a tree element")
+                        || msg.contains("chain mismatch"),
+                    "expected strict-node, intermediate-type-gate or chain-mismatch rejection, \
+                     got: {msg}"
                 );
             }
             other => panic!("expected InvalidProof, got {:?}", other),
