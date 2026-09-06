@@ -20,6 +20,8 @@ use super::{aggregate_range_out_of_domain, AxisEntries, IndexedTargetChain};
 // Test-oracle-only imports (see the module doc): the standalone
 // verifiers and their inner cores are `#[cfg(test)]`.
 #[cfg(test)]
+use grovedb_merk::proofs::query::PROOF_VERSION_LATEST;
+#[cfg(test)]
 use grovedb_merk::{
     proofs::{
         query::{
@@ -285,7 +287,7 @@ fn execute_single_key_proof(
     let mut query = MerkQuery::new();
     query.insert_item(MerkQueryItem::Key(target_key.to_vec()));
     let (root_hash, result) = query
-        .execute_proof(proof_bytes, None, true, 0)
+        .execute_proof(proof_bytes, None, true, PROOF_VERSION_LATEST)
         .unwrap()
         .map_err(|e| {
             Error::CorruptedData(format!(
@@ -657,7 +659,7 @@ fn verify_indexed_axis_range_inner(
             &envelope.secondary_proof,
             limit_for_verify,
             left_to_right,
-            0,
+            PROOF_VERSION_LATEST,
         )
         .unwrap()
         .map_err(|e| {

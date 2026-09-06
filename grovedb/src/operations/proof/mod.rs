@@ -13,6 +13,9 @@ mod aggregate_sum;
 /// `value_hash`. Consensus-critical — see the module docs.
 #[cfg(feature = "minimal")]
 mod bind_terminal_non_merk_tree;
+/// Trunk / branch chunk proofs: composite-row binding (#859), versioned.
+#[cfg(any(feature = "minimal", feature = "verify"))]
+mod chunk_proof_row_binding;
 #[cfg(feature = "minimal")]
 mod generate;
 // The prover lives in `indexed_axis::generate` and is `minimal`-gated there;
@@ -1362,6 +1365,10 @@ pub(crate) mod prove_test_hooks {
     use std::cell::RefCell;
     thread_local! {
         pub(crate) static AFTER_PROOF_SNAPSHOT: RefCell<Option<Box<dyn FnMut()>>> =
+            const { RefCell::new(None) };
+        // One-shot seam after chunk ops are collected, before composite rows
+        // read their child roots or referenced values.
+        pub(crate) static BEFORE_CHUNK_ROW_BINDING: RefCell<Option<Box<dyn FnOnce()>>> =
             const { RefCell::new(None) };
     }
 }

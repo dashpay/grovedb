@@ -381,6 +381,42 @@ impl Tree {
 }
 ```
 
+### Which node forms bind their value bytes
+
+A proof node's value bytes reach the caller as the proven element, so the
+verifier has to know, for every node form, *what* binds those bytes to the
+root hash. Two forms — `KVValueHash` and `KVValueHashFeatureType` — hash
+only `(key, value_hash)`: the bytes they carry are not covered by the Merk
+chain at all, and a prover can pair any bytes with a genuine `value_hash`.
+The V1 verifier therefore admits only elements whose bytes are bound
+somewhere else onto them:
+
+| Element family on a `KVValueHash*` node | Verdict | What binds the bytes |
+|---|---|---|
+| Tree (any Merk or non-Merk tree) | accepted | The GroveDB layer recomputes `combine_hash(H(value), child)` from the lower layer, from `NULL_HASH` for an empty tree, or from the `child_hash` carried by `KVValueHashFeatureTypeWithChildHash`. |
+| Item (`Item`, `SumItem`, `ItemWithSumItem`) | rejected by the Merk verifier at proof version 1 | Nothing — items commit the plain `H(value)` and must ride on `KV` / `KVCount` / `KVSum` / `KVCountSum`, where the verifier recomputes the hash from the bytes. |
+| Reference (`Reference`, `ReferenceWithSumItem`, wrapped or not) | passes the Merk verifier; **rejected by `verify_layer_proof_v1` the moment it is consumed as a row** | Nothing on the node — references commit `combine_hash(H(reference), H(target))` and every row the GroveDB verifier consumes is served as `KVRefValueHash{,Count,Sum,CountSum}`, which hashes the **target** bytes and carries only `H(reference)`. Inside a sum-budget window a reference row rides on `KVValueHashFeatureTypeWithChildHash`, whose own `combine_hash(H(value), child_hash)` check binds it. |
+
+The reference rule lives in the GroveDB layer rather than the Merk
+verifier on purpose. A reference row that lies *past* the query limit
+legitimately stays a bare `KVValueHash` in released V1 proofs: the GroveDB
+post-pass only rewrites rows within the limit, and the GroveDB verifier
+stops consuming rows the moment its limit accounting is exhausted, so that
+node is never read. Refusing references at the Merk level would therefore
+reject honest proofs; refusing them at the row consumer covers every row
+that can influence a result or a descent.
+
+Without that rule an attacker could take an honest
+`KVRefValueHash(key, target, H(reference))` node, recompute the combined
+value hash it commits to, and re-present the row as
+`KVValueHash(key, <forged reference bytes>, combined)`. The Merk root still
+reconstructs, and the GroveDB layer would either return the forged
+reference — an attacker-chosen target path — as the proven element, or,
+when the query descends at that key, silently skip the descent (a reference
+has no lower layer) and verify a proof that hides a populated subtree
+(issue #862). `verify_layer_proof_v1` now refuses any raw reference row
+before the row's element type is consulted for either purpose.
+
 ## Absence Proofs
 
 GroveDB can prove that a key does **not** exist. This uses boundary nodes —

@@ -161,6 +161,57 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
+        self.follow_reference_as_stored_visiting(
+            path,
+            HashSet::new(),
+            allow_cache,
+            transaction,
+            grove_version,
+        )
+    }
+
+    /// [`Self::follow_reference_as_stored`] for a reference that is *being
+    /// written* at `referrer_qualified_path` (its parent path plus its key):
+    /// the chain is refused with [`Error::CyclicReference`] the moment it
+    /// reaches the referrer's own position.
+    ///
+    /// Resolving from the target alone cannot see that case. The position
+    /// being written still holds its previous element in storage, so a chain
+    /// that runs back to it reads that stale element — an item, say — and
+    /// looks acyclic, while the state about to be committed is the cycle
+    /// `referrer -> ... -> referrer`, which every later read of any key on it
+    /// fails on. The MerkCache follower (`reference_path::follow_reference`)
+    /// and the batch resolver (`follow_reference_get_value_hash`) already
+    /// account for the referrer's position; this is the direct-write
+    /// equivalent.
+    pub(crate) fn follow_reference_as_stored_for_write<B: AsRef<[u8]>>(
+        &self,
+        referrer_qualified_path: Vec<Vec<u8>>,
+        path: SubtreePath<B>,
+        allow_cache: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Element, Error> {
+        self.follow_reference_as_stored_visiting(
+            path,
+            HashSet::from([referrer_qualified_path]),
+            allow_cache,
+            transaction,
+            grove_version,
+        )
+    }
+
+    /// The walk behind both `follow_reference_as_stored*` entry points.
+    /// `visited` seeds the cycle check: the chain is refused as cyclic as
+    /// soon as it reaches any qualified path already in the set.
+    fn follow_reference_as_stored_visiting<B: AsRef<[u8]>>(
+        &self,
+        path: SubtreePath<B>,
+        mut visited: HashSet<Vec<Vec<u8>>>,
+        allow_cache: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Element, Error> {
         check_grovedb_v0_with_cost!(
             "follow_reference",
             grove_version
@@ -174,7 +225,6 @@ impl GroveDb {
 
         let mut hops_left = MAX_REFERENCE_HOPS;
         let mut current_element;
-        let mut visited = HashSet::new();
         // TODO, still have to do because of references handling
         let mut current_path = path.to_vec();
 

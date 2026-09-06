@@ -182,6 +182,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 verify_query_with_chained_path_queries: 0,
                 verify_query_get_parent_tree_info_with_options: 0,
                 terminal_non_merk_tree_child_hash: 0,
+                chunk_proof_row_binding: 0,
                 axis_descent_in_v1_envelope: 0,
                 sum_budget_in_v1_envelope: 0,
             },

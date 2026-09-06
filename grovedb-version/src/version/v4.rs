@@ -32,6 +32,20 @@
 //!   flips a rejected/accepted outcome and because deriving the state root
 //!   costs the prover extra storage reads and hash calls.
 //!
+//! - `proof.chunk_proof_row_binding: 1` — a trunk or branch chunk proof
+//!   (`prove_trunk_chunk` / `prove_branch_chunk`) carries every tree and
+//!   reference row as `KVValueHashFeatureTypeWithChildHash`, with the child
+//!   Merk root, the non-Merk tree's state root, or the referenced value hash,
+//!   and the verifier requires that node for every such row. V1..V3 emit a
+//!   bare `KVValueHash` and the verifier waives the value-hash check for any
+//!   row that deserializes as a tree, so the returned tree metadata (type,
+//!   aggregate count or sum, root key) is unbound and an item can be disguised
+//!   as a tree under a genuine root hash. Indexed-tree rows, whose three-input
+//!   binding no proof node carries, are refused by the prover and rejected by
+//!   the verifier. Gated because it flips an accepted/rejected outcome and
+//!   because deriving each child root costs the prover storage reads and hash
+//!   calls.
+//!
 //! - `proof.axis_descent_in_v1_envelope: 1` — the V1 proof envelope carries
 //!   axis-ordered descents into indexed trees
 //!   (`ProofBytes::IndexedTreeAxisDescent`): a proof over the queried
@@ -194,6 +208,21 @@
 //!   the epoch the switch happened in). Gated because the work — and so the
 //!   fee — moves, and because V4 writes keys V1..V3 never read.
 //!
+//! - `insert.add_element_on_transaction: 2` — a directly inserted
+//!   `Reference` / `ReferenceWithSumItem` (i) binds the value hash of its
+//!   terminal's STORED bytes, wrapper included for a `NonCounted`-wrapped
+//!   terminal, which is what the batch resolver has always committed to
+//!   (issue #858; v1 hashed the looked-through terminal, so the same
+//!   reference written directly and in a batch produced different roots),
+//!   and (ii) is refused with `CyclicReference` if its chain runs back
+//!   through the position being written. v1 resolved the chain from the
+//!   target alone and read the stale element still stored at that position,
+//!   so overwriting the item `B` of `A -> B` with a reference to `A` looked
+//!   acyclic and committed `A -> B -> A`, after which every `get`, proof and
+//!   `verify_grovedb` on either key failed. The batch path already refuses
+//!   it. Gated because (i) moves a committed root and (ii) flips an
+//!   accepted/rejected outcome.
+//!
 //! Note that `GroveVersion::latest()` resolves to this version, so anything
 //! defaulting to "latest" — tests, benchmarks, tools — exercises every gate
 //! listed above rather than V3 behaviour.
@@ -337,7 +366,12 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 // terminal), matching what the batch reference resolver has
                 // always committed to. v1 (GROVE_V3) hashed the looked-through
                 // terminal, so direct and batch writes of the same reference
-                // disagreed on the root (issue #858).
+                // disagreed on the root (issue #858). v2 also refuses a
+                // reference whose chain runs back through the position being
+                // written: v1 resolved from the target alone and read the
+                // stale element still stored at that position, so an
+                // overwrite could commit a cycle every later read fails on.
+                // The batch path already refuses it.
                 add_element_on_transaction: 2,
                 add_element_without_transaction: 0,
                 insert_if_not_exists: 0,
@@ -412,6 +446,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 verify_query_with_chained_path_queries: 0,
                 verify_query_get_parent_tree_info_with_options: 0,
                 terminal_non_merk_tree_child_hash: 1, // bind terminal non-Merk tree element bytes to the parent value_hash
+                chunk_proof_row_binding: 1, // bind every tree / reference row of a trunk or branch chunk proof
                 axis_descent_in_v1_envelope: 1, // axis-ordered descents in the V1 envelope (ReadMode::Axis)
                 sum_budget_in_v1_envelope: 1, // sum-budget windows in the V1 envelope (ReadMode::SumBudget)
             },
