@@ -1808,4 +1808,113 @@ mod proof_tests {
             );
         }
     }
+
+    /// Issue #854: the order the proof carries its entries in is not
+    /// authenticated (the root binds the position→value map), so every
+    /// verifier must surface the canonical ascending order — a permuted
+    /// proof yields the same root AND the same sequence, leaving a
+    /// caller's limit/truncation nothing to be steered by.
+    mod canonical_entry_order {
+        use super::*;
+
+        fn permuted_proofs(honest: &DenseTreeProof) -> Vec<(&'static str, DenseTreeProof)> {
+            let mut reversed = honest.clone();
+            reversed.entries.reverse();
+            let mut shuffled = honest.clone();
+            let n = shuffled.entries.len();
+            shuffled.entries.swap(0, n - 1);
+            shuffled.entries.swap(1, n / 2);
+            vec![
+                ("honest", honest.clone()),
+                ("reversed", reversed),
+                ("shuffled", shuffled),
+            ]
+        }
+
+        #[test]
+        fn verify_for_query_yields_ascending_positions_for_any_proof_order() {
+            let tree = make_tree_h3_full();
+            let (height, count) = (tree.height(), tree.count());
+            let expected_root = tree
+                .root_hash(GroveVersion::latest())
+                .unwrap()
+                .expect("root hash");
+            let mut query = Query::new();
+            query.insert_range_inclusive(vec![1]..=vec![5]);
+            let honest = DenseTreeProof::generate_for_query(&tree, &query)
+                .unwrap()
+                .expect("generate_for_query should succeed");
+            assert_eq!(honest.entries.len(), 5);
+
+            for (label, proof) in permuted_proofs(&honest) {
+                let (root, entries) = proof
+                    .verify_for_query::<Vec<(u16, Vec<u8>)>>(&query, height, count)
+                    .unwrap_or_else(|e| panic!("{label}: verify_for_query should succeed: {e}"));
+                assert_eq!(root, expected_root, "{label}: root is order-independent");
+                let positions: Vec<u16> = entries.iter().map(|(p, _)| *p).collect();
+                assert_eq!(
+                    positions,
+                    vec![1, 2, 3, 4, 5],
+                    "{label}: ascending positions"
+                );
+                for (pos, value) in &entries {
+                    assert_eq!(value, &vec![*pos as u8], "{label}: value bound to position");
+                }
+
+                // Direction is not a verifier concern: the same ascending
+                // sequence comes back for a descending query too, and the
+                // limit-applying caller reverses it.
+                let mut descending = query.clone();
+                descending.left_to_right = false;
+                let (_, entries) = proof
+                    .verify_for_query::<Vec<(u16, Vec<u8>)>>(&descending, height, count)
+                    .unwrap_or_else(|e| panic!("{label}: descending verify should succeed: {e}"));
+                let positions: Vec<u16> = entries.iter().map(|(p, _)| *p).collect();
+                assert_eq!(
+                    positions,
+                    vec![1, 2, 3, 4, 5],
+                    "{label}: direction-agnostic"
+                );
+            }
+        }
+
+        #[test]
+        fn root_verifiers_yield_ascending_positions_for_any_proof_order() {
+            let tree = make_tree_h4_full();
+            let (height, count) = (tree.height(), tree.count());
+            let expected_root = tree
+                .root_hash(GroveVersion::latest())
+                .unwrap()
+                .expect("root hash");
+            let honest = DenseTreeProof::generate(&tree, &[0, 3, 7, 9, 14])
+                .unwrap()
+                .expect("generate should succeed");
+
+            for (label, proof) in permuted_proofs(&honest) {
+                let entries: Vec<(u16, Vec<u8>)> = proof
+                    .verify_against_expected_root(&expected_root, height, count)
+                    .unwrap_or_else(|e| panic!("{label}: verify_against_expected_root: {e}"));
+                let positions: Vec<u16> = entries.iter().map(|(p, _)| *p).collect();
+                assert_eq!(
+                    positions,
+                    vec![0, 3, 7, 9, 14],
+                    "{label}: ascending positions"
+                );
+
+                let (root, entries) = proof
+                    .verify_and_get_root::<Vec<(u16, Vec<u8>)>>(height, count)
+                    .unwrap_or_else(|e| panic!("{label}: verify_and_get_root: {e}"));
+                assert_eq!(root, expected_root, "{label}: root is order-independent");
+                let positions: Vec<u16> = entries.iter().map(|(p, _)| *p).collect();
+                assert_eq!(
+                    positions,
+                    vec![0, 3, 7, 9, 14],
+                    "{label}: ascending positions"
+                );
+                for (pos, value) in &entries {
+                    assert_eq!(value, &pos.to_be_bytes().to_vec(), "{label}: value bound");
+                }
+            }
+        }
+    }
 }
