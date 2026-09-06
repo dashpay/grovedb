@@ -310,6 +310,13 @@ is neither hashed as an item nor closed through a child hash. Indexed
 trees commit a three-input hash no proof node carries; a window that
 scans one is refused by the prover.
 
+Reference witnesses preserve the representation committed by each row.
+The prover resolves the stored terminal, including `NonCounted` wrappers,
+then selects its unwrapped form only when that form matches the reference's
+persisted commitment. This supports legacy direct writes alongside batch
+and GROVE_V4 direct writes without rewriting state. A changed target whose
+hash no longer matches the reference still produces an invalid proof.
+
 ## Version gating
 
 Everything new activates at **GROVE_V4** and fails closed below it, on

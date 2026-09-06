@@ -785,4 +785,230 @@ mod tests {
             .expect_err("a feature-typed row stripped of its child hash must be rejected");
         assert!(matches!(err, Error::InvalidProof(..)), "{err:?}");
     }
+
+    /// The window may mix legacy direct-written references and stored-terminal
+    /// commitments, including references carrying sums and wrapped chain hops.
+    #[test]
+    fn wrapped_reference_rows_preserve_mixed_commitments() {
+        use crate::{
+            batch::QualifiedGroveDbOp, reference_path::ReferencePathType, tests::common::EMPTY_PATH,
+        };
+        use grovedb_version::version::v3::GROVE_V3;
+
+        let v = GroveVersion::latest();
+        for host in [
+            Element::empty_sum_tree(),
+            Element::empty_provable_sum_tree(),
+            Element::empty_provable_count_sum_tree(),
+            Element::empty_provable_count_provable_sum_tree(),
+        ] {
+            for inner in [
+                Element::new_item(b"payload".to_vec()),
+                Element::new_sum_item(17),
+                Element::new_item_with_sum_item(b"payload".to_vec(), 17),
+            ] {
+                let db = make_test_sum_tree_grovedb(v);
+                db.insert(EMPTY_PATH, b"window", host.clone(), None, None, v)
+                    .unwrap()
+                    .unwrap();
+                db.insert(
+                    EMPTY_PATH,
+                    b"targets",
+                    Element::empty_count_sum_tree(),
+                    None,
+                    None,
+                    v,
+                )
+                .unwrap()
+                .unwrap();
+                let wrapped = Element::new_non_counted(inner.clone()).unwrap();
+                db.insert(
+                    [b"targets".as_slice()].as_ref(),
+                    b"target",
+                    wrapped.clone(),
+                    None,
+                    None,
+                    v,
+                )
+                .unwrap()
+                .unwrap();
+                let to_target = ReferencePathType::AbsolutePathReference(vec![
+                    b"targets".to_vec(),
+                    b"target".to_vec(),
+                ]);
+                db.insert(
+                    [b"targets".as_slice()].as_ref(),
+                    b"hop",
+                    Element::new_non_counted(Element::new_reference(to_target.clone())).unwrap(),
+                    None,
+                    None,
+                    v,
+                )
+                .unwrap()
+                .unwrap();
+                for (key, sum) in [(b"a", 7), (b"b", 5)] {
+                    db.insert(
+                        [b"window".as_slice()].as_ref(),
+                        key,
+                        Element::new_sum_item(sum),
+                        None,
+                        None,
+                        v,
+                    )
+                    .unwrap()
+                    .unwrap();
+                }
+                let to_hop = ReferencePathType::AbsolutePathReference(vec![
+                    b"targets".to_vec(),
+                    b"hop".to_vec(),
+                ]);
+                for (key, version, batch, reference) in [
+                    (
+                        b"ab_legacy".as_slice(),
+                        &GROVE_V3,
+                        false,
+                        Element::new_reference(to_target.clone()),
+                    ),
+                    (
+                        b"ac_batch".as_slice(),
+                        &GROVE_V3,
+                        true,
+                        Element::new_reference(to_target.clone()),
+                    ),
+                    (
+                        b"ad_direct".as_slice(),
+                        v,
+                        false,
+                        Element::new_reference_with_sum_item(to_target.clone(), 1000),
+                    ),
+                    (
+                        b"ae_chain".as_slice(),
+                        v,
+                        true,
+                        Element::new_reference_with_sum_item(to_hop, 1000),
+                    ),
+                ] {
+                    if batch {
+                        db.apply_batch(
+                            vec![QualifiedGroveDbOp::insert_or_replace_op(
+                                vec![b"window".to_vec()],
+                                key.to_vec(),
+                                reference,
+                            )],
+                            None,
+                            None,
+                            version,
+                        )
+                        .unwrap()
+                        .unwrap();
+                    } else {
+                        db.insert(
+                            [b"window".as_slice()].as_ref(),
+                            key,
+                            reference,
+                            None,
+                            None,
+                            version,
+                        )
+                        .unwrap()
+                        .unwrap();
+                    }
+                }
+
+                let root = root_hash(&db, v);
+                for ascending in [false, true] {
+                    for (budget, limit, expected_stop) in [
+                        (10, None, SumBudgetStop::BudgetReached),
+                        (1000, None, SumBudgetStop::Exhausted),
+                        (1000, Some(2), SumBudgetStop::MatchLimitReached),
+                    ] {
+                        let pq = PathQuery::new_sum_budget(
+                            vec![b"window".to_vec()],
+                            vec![QueryItem::RangeFull(..)],
+                            ascending,
+                            budget,
+                            limit,
+                        );
+                        let proof = prove(&db, &pq, v);
+                        let (verified_root, matches, total, stop) = verify_budget(&proof, &pq, v);
+                        assert_eq!(verified_root, root);
+                        assert_eq!(matches, trusted_matches(&db, &pq, v));
+                        assert_eq!(total, 12, "reference sums and target sums are skipped");
+                        assert_eq!(stop, expected_stop);
+                    }
+                }
+                assert_eq!(
+                    root_hash(&db, v),
+                    root,
+                    "proof serving must not rewrite commitments"
+                );
+
+                let pq = PathQuery::new_sum_budget(
+                    vec![b"window".to_vec()],
+                    vec![QueryItem::RangeFull(..)],
+                    true,
+                    1000,
+                    None,
+                );
+                let proof = prove(&db, &pq, v);
+                // Flipping a row's witness to the other representation must
+                // fail: supporting both formats cannot weaken hash binding.
+                for key in [
+                    b"ab_legacy".as_slice(),
+                    b"ac_batch",
+                    b"ad_direct",
+                    b"ae_chain",
+                ] {
+                    let wrong_terminal = if key == b"ab_legacy" {
+                        &wrapped
+                    } else {
+                        &inner
+                    };
+                    let wrong_hash = value_hash(&wrong_terminal.serialize(v).unwrap()).unwrap();
+                    let tampered = tamper_window_ops(&proof, |ops| {
+                        let mut hit = false;
+                        for op in ops {
+                            if let Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+                                row_key,
+                                _,
+                                _,
+                                _,
+                                child_hash,
+                            )) = op
+                            {
+                                if row_key == key {
+                                    assert_ne!(*child_hash, wrong_hash);
+                                    *child_hash = wrong_hash;
+                                    hit = true;
+                                }
+                            }
+                        }
+                        assert!(hit, "the reference row must carry a bound witness");
+                    });
+                    assert!(matches!(
+                        GroveDb::verify_path_query(&tampered, &pq, v),
+                        Err(Error::InvalidProof(..))
+                    ));
+                }
+
+                // Neither representation of a changed target can satisfy the
+                // old commitment. Compatibility must not conceal stale refs.
+                db.insert(
+                    [b"targets".as_slice()].as_ref(),
+                    b"target",
+                    Element::new_non_counted(Element::new_item(b"changed".to_vec())).unwrap(),
+                    None,
+                    None,
+                    v,
+                )
+                .unwrap()
+                .unwrap();
+                let stale_proof = prove(&db, &pq, v);
+                assert!(matches!(
+                    GroveDb::verify_path_query(&stale_proof, &pq, v),
+                    Err(Error::InvalidProof(..))
+                ));
+            }
+        }
+    }
 }

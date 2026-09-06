@@ -593,13 +593,30 @@ impl GroveDb {
                     );
                     let referenced = cost_return_on_error_into!(
                         &mut cost,
-                        self.follow_reference(
+                        self.follow_reference_as_stored(
                             absolute_path.as_slice().into(),
                             true,
                             Some(transaction),
                             grove_version
                         )
                     );
+                    // Legacy direct writes and stored-terminal commitments
+                    // can coexist. Select the bytes using this row's actual
+                    // commitment, independently of the version serving it.
+                    let referenced = if referenced.is_wrapped() {
+                        let reference_element_hash = value_hash(&value).unwrap_add_cost(&mut cost);
+                        cost_return_on_error!(
+                            &mut cost,
+                            Self::reference_terminal_as_committed(
+                                referenced,
+                                &reference_element_hash,
+                                &node_value_hash,
+                                grove_version,
+                            )
+                        )
+                    } else {
+                        referenced
+                    };
                     let referenced_bytes = cost_return_on_error_no_add!(
                         cost,
                         referenced.serialize(grove_version).map_err(Error::from)
