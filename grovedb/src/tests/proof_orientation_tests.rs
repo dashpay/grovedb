@@ -300,6 +300,71 @@ mod tests {
         assert_rejected(verified_keys(&forged, &victim, gv), "a mixed-family stream");
     }
 
+    // -----------------------------------------------------------------
+    // Subset verification that stops at a tree element the proof
+    // descended into: the lower layer is consumed for its root hash
+    // only. Its direction is the generating query's, which the narrower
+    // query does not know, so it is read off the stream — and a mixed
+    // stream is still refused there.
+    // -----------------------------------------------------------------
+
+    fn docs_element_query() -> PathQuery {
+        let mut q = Query::new();
+        q.insert_key(DOCS.to_vec());
+        PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], q)
+    }
+
+    #[test]
+    fn subset_verification_reads_a_descending_lower_layer_for_its_root() {
+        let gv = GroveVersion::latest();
+        let db = build_fixture(gv);
+        // A DESCENDING wide read, so the `docs` layer is emitted inverted.
+        let wide = full_range_query(false, None);
+        let proof = prove(&db, &wide, gv);
+        let (root_hash, rows) = GroveDb::verify_subset_query(&proof, &docs_element_query(), gv)
+            .expect("narrower query stops at the docs element");
+        assert_eq!(
+            root_hash,
+            db.root_hash(None, gv).unwrap().expect("root hash")
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1, DOCS.to_vec());
+        assert!(
+            matches!(rows[0].2, Some(Element::Tree(..))),
+            "the tree element itself is reported, got {:?}",
+            rows[0].2
+        );
+    }
+
+    #[test]
+    fn subset_verification_refuses_a_mixed_lower_layer() {
+        let gv = GroveVersion::latest();
+        let db = build_fixture(gv);
+        let proof = prove(&db, &full_range_query(false, None), gv);
+        // Flip the family of the stream's last structural op. The
+        // orientation read runs before any op is executed, so the
+        // rejection is the mixed-family one, not a hash mismatch.
+        let forged = rewrite_docs_layer_ops(&proof, |mut ops| {
+            let last = ops
+                .iter()
+                .rposition(|op| matches!(op, Op::ParentInverted | Op::ChildInverted))
+                .expect("descending stream has a structural op");
+            ops[last] = match ops[last] {
+                Op::ParentInverted => Op::Parent,
+                Op::ChildInverted => Op::Child,
+                _ => unreachable!(),
+            };
+            ops
+        });
+        match GroveDb::verify_subset_query(&forged, &docs_element_query(), gv) {
+            Err(Error::InvalidProof(_, msg)) => assert!(
+                msg.contains("root derivation") && msg.contains("mixes upright and inverted"),
+                "expected the lower layer's orientation read to refuse the mixed stream, got: {msg}"
+            ),
+            other => panic!("a mixed lower layer must be rejected, got {other:?}"),
+        }
+    }
+
     /// The mixed stream above really is a faithful reconstruction: it
     /// must be rejected for its op families, not for its hash.
     #[test]
