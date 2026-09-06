@@ -1635,6 +1635,38 @@ impl GroveDb {
                     let element =
                         Element::deserialize(value_bytes, grove_version)?.into_underlying();
 
+                    // A raw reference can never be an honest V1 row. The
+                    // prover rewrites every reference the verifier will
+                    // consume into a `KVRefValueHash*` node carrying the
+                    // dereferenced TARGET bytes, so the bytes surfaced
+                    // here are the target's — never the reference's own.
+                    // A `KVValueHash` / `KVValueHashFeatureType` node
+                    // hashes only `(key, value_hash)`, and the merk-level
+                    // V1 guard refuses only *items* on those forms (it
+                    // cannot refuse references: a reference row past the
+                    // query limit legitimately stays bare there, and this
+                    // loop stops before reading it). So a forged proof can
+                    // pair genuine `value_hash` with arbitrary reference
+                    // bytes and still reconstruct the root. This is the
+                    // check that binds the row: refuse before the element
+                    // type can be returned as unauthenticated reference
+                    // metadata, or make "a reference has no lower layer"
+                    // silently skip a descent the query asked for
+                    // (issue #862).
+                    if element.is_reference() {
+                        return Err(Error::InvalidProof(
+                            query.clone(),
+                            format!(
+                                "V1 proof surfaces a raw {} at key {}: the prover serves \
+                                 references as KVRefValueHash nodes carrying the dereferenced \
+                                 target, so an unresolved reference row is unbound and \
+                                 malformed",
+                                element.type_str(),
+                                hex::encode(key),
+                            ),
+                        ));
+                    }
+
                     verified_keys.insert(key.clone());
 
                     // Axis-ordered read: resolved from the QUERY first —

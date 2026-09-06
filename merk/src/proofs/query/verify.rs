@@ -378,6 +378,18 @@ impl QueryProofVerify for Query {
                     // attacker substitutes a KV node with KVValueHash to inject
                     // a fake value while keeping the original hash.
                     // Skipped for V0 backwards compatibility.
+                    //
+                    // Reference elements deliberately PASS here even though
+                    // this node hashes only (key, value_hash) and so binds
+                    // none of their bytes. A reference row that lies past
+                    // the query limit legitimately stays a bare KVValueHash
+                    // in released V1 proofs — the GroveDB post-pass only
+                    // rewrites rows within the limit into KVRefValueHash* —
+                    // so refusing references at this level would reject
+                    // honest proofs. The binding contract for reference
+                    // bytes is enforced by the only consumer of these rows:
+                    // `verify_layer_proof_v1` rejects any raw reference row
+                    // it consumes (issue #862).
                     if proof_version >= 1 {
                         let element_type =
                             ElementType::from_serialized_value(value).map_err(|e| {
@@ -427,6 +439,10 @@ impl QueryProofVerify for Query {
                         println!("Processing KVValueHashFeatureType node");
                     }
                     // Same check as KVValueHash — reject item elements.
+                    // References pass here for the same reason as on
+                    // KVValueHash (beyond-limit reference rows stay bare in
+                    // released proofs); `verify_layer_proof_v1` refuses any
+                    // raw reference row it consumes.
                     // Skipped for V0 backwards compatibility.
                     if proof_version >= 1 {
                         let element_type =

@@ -76,10 +76,13 @@ observing an append error.
 | Proof encoding truncates keys ≥ 256 bytes | Unreachable: every public insert path (direct + batch) enforces the 255-byte key limit (PR #506), so oversized keys cannot reach proof encoding. The `debug_assert!` is sufficient. Raw-Merk hardening exists separately (#728). |
 | `feature_type` forgery in `KVValueHashFeatureType` proof nodes | The decoded `_feature_type` is discarded by the verifier; the canonical type/sum/count lives in the hash-verified `Element` bytes. Forged values never reach callers. Documented in `verify.rs` comments and `proof_exploit_tests.rs`. |
 | `saturating_sub` on negative `SumItem` values corrupts `sum_limit` | Correct as written: `sum_limit` tracks the remaining **net sum** budget; +7 and −4 must consume 3, not 11. Absolute-value math would be the bug. |
+| The merk-level V1 guard (`execute_proof`, proof version 1) rejects items on `KVValueHash` / `KVValueHashFeatureType` nodes but lets **reference** elements through, so reference bytes on those nodes are unbound at the Merk level | True at the Merk level and deliberate. A reference row past the query limit legitimately stays a bare `KVValueHash` in released V1 proofs (the GroveDB post-pass only rewrites rows within the limit into `KVRefValueHash*`), so refusing references there would reject honest proofs. The only consumer of those rows, `verify_layer_proof_v1`, rejects any raw `Reference` / `ReferenceWithSumItem` row it consumes — before the element type is used for a result or a descent decision — and its limit accounting stops it before the beyond-limit node is ever read. The exploitable half of this claim (forged reference row returned as a result; forged reference hiding a populated subtree by skipping its descent) was real and is fixed via [#862](https://github.com/dashpay/grovedb/issues/862); see `docs/book/src/proof-system.md` "Which node forms bind their value bytes" and `grovedb/src/tests/unbound_reference_row_tests.rs`. |
 
-**Becomes real if:** a new write path bypasses the 255-byte key check, or a
+**Becomes real if:** a new write path bypasses the 255-byte key check, a
 verifier starts trusting a decoded field instead of the hash-verified
-element bytes.
+element bytes, or a V1 code path other than `verify_layer_proof_v1` starts
+reading the value bytes of a `KVValueHash*` row (the merk-level guard does
+not cover reference bytes there).
 
 ## Proof-envelope trailing bytes: strict rejection is canonical, do not re-gate leniency
 

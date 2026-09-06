@@ -117,6 +117,7 @@ mod test_compaction_sizes;
 mod test_provable_count_fresh;
 mod tree_hashes_tests;
 mod trunk_proof_tests;
+mod unbound_reference_row_tests;
 mod v1_cidx_descent_tests;
 mod v1_proof_tests;
 mod verify_grovedb_indexed_tests;
