@@ -602,11 +602,7 @@ impl GroveDb {
                     );
                     let referenced_bytes = cost_return_on_error_no_add!(
                         cost,
-                        referenced.serialize(grove_version).map_err(|e| {
-                            Error::CorruptedData(format!(
-                                "sum-budget window: unable to serialize the referenced element: {e}"
-                            ))
-                        })
+                        referenced.serialize(grove_version).map_err(Error::from)
                     );
                     let referenced_hash = value_hash(&referenced_bytes).unwrap_add_cost(&mut cost);
                     *node = Node::KVValueHashFeatureTypeWithChildHash(

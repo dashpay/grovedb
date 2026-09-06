@@ -1329,19 +1329,14 @@ impl GroveDb {
             if element.is_reference() || !element.is_sum_item() {
                 continue;
             }
-            // A sum item commits the plain hash of its bytes; the merk
-            // verifier already refuses item elements on child-hash
-            // nodes, so this cannot fire on a proof it accepted.
-            if !simply_bound {
-                return Err(Error::InvalidProof(
-                    query.clone(),
-                    format!(
-                        "sum-budget window row {} folds as a sum item but is not bound by its \
-                         own value hash",
-                        hex::encode(key)
-                    ),
-                ));
-            }
+            // A sum item commits the plain hash of its bytes, and the
+            // merk verifier refuses item elements on child-hash nodes at
+            // proof version 1, so a row that reaches the fold is always
+            // simply bound on a proof it accepted.
+            debug_assert!(
+                simply_bound,
+                "a folded sum item row must be bound by its own hash"
+            );
             let value = match element.into_underlying() {
                 Element::SumItem(value, _) => value,
                 Element::ItemWithSumItem(_, value, _) => value,

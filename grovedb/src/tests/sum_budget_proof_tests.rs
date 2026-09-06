@@ -428,9 +428,15 @@ mod tests {
     }
 
     /// TEST_LEAF: a(7), then composite rows the fold skips — a reference
-    /// to `a`, an empty subtree, a populated subtree, a bulk-append
-    /// tree — then b(5).
-    const COMPOSITE_KEYS: &[&[u8]] = &[b"ab_ref", b"ac_empty", b"ad_full", b"ae_bulk"];
+    /// to `a`, a reference carrying a sum, an empty subtree, a populated
+    /// subtree, a bulk-append tree — then b(5).
+    const COMPOSITE_KEYS: &[&[u8]] = &[
+        b"ab_ref",
+        b"ab_ref_sum",
+        b"ac_empty",
+        b"ad_full",
+        b"ae_bulk",
+    ];
 
     fn build_sum_tree_with_composite_rows(db: &GroveDb, grove_version: &GroveVersion) {
         use crate::reference_path::ReferencePathType;
@@ -457,6 +463,21 @@ mod tests {
         )
         .unwrap()
         .expect("insert reference");
+        // A reference that carries its own sum contribution is still a
+        // reference to the fold: skipped, never folded.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"ab_ref_sum",
+            Element::new_reference_with_sum_item(
+                ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"a".to_vec()]),
+                1_000,
+            ),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert reference with sum item");
         db.insert(
             [TEST_LEAF].as_ref(),
             b"ac_empty",
@@ -643,5 +664,125 @@ mod tests {
             .unwrap()
             .expect_err("a window over an indexed tree row must be refused");
         assert!(matches!(err, Error::NotSupported(_)), "{err:?}");
+    }
+
+    #[test]
+    fn composite_rows_in_a_provable_sum_tree_target_are_bound_too() {
+        // A provable sum tree emits its composite rows on feature-typed
+        // nodes; the window binder must carry that feature type through
+        // to the child-hash node, and stripping the child hash is still
+        // rejected.
+        use crate::tests::common::EMPTY_PATH;
+        let grove_version = GroveVersion::latest();
+        let db = make_test_sum_tree_grovedb(grove_version);
+        db.insert(
+            EMPTY_PATH,
+            b"psum",
+            Element::empty_provable_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert provable sum tree");
+        db.insert(
+            [b"psum".as_slice()].as_ref(),
+            b"a",
+            Element::new_sum_item(7),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert a");
+        db.insert(
+            [b"psum".as_slice()].as_ref(),
+            b"ab_tree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert subtree");
+        db.insert(
+            [b"psum".as_slice(), b"ab_tree".as_slice()].as_ref(),
+            b"child",
+            Element::new_item(b"child".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert subtree child");
+        db.insert(
+            [b"psum".as_slice()].as_ref(),
+            b"b",
+            Element::new_sum_item(5),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert b");
+
+        let pq = PathQuery::new_sum_budget(
+            vec![b"psum".to_vec()],
+            vec![QueryItem::RangeFull(..)],
+            true,
+            1_000,
+            None,
+        );
+        let proof = prove(&db, &pq, grove_version);
+        let (_, matches, total, stop) = verify_budget(&proof, &pq, grove_version);
+        assert_eq!(stop, SumBudgetStop::Exhausted);
+        assert_eq!(matches, trusted_matches(&db, &pq, grove_version));
+        assert_eq!(matches, vec![(b"a".to_vec(), 7), (b"b".to_vec(), 5)]);
+        assert_eq!(total, 12);
+
+        let downgraded = tamper_window_ops(&proof, |ops| {
+            let mut hit = false;
+            for op in ops.iter_mut() {
+                let replacement = match &*op {
+                    Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+                        key,
+                        value,
+                        value_hash,
+                        feature_type,
+                        _,
+                    )) if key.as_slice() == b"ab_tree" => {
+                        Some(Op::Push(Node::KVValueHashFeatureType(
+                            key.clone(),
+                            value.clone(),
+                            *value_hash,
+                            *feature_type,
+                        )))
+                    }
+                    Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+                        key,
+                        value,
+                        value_hash,
+                        feature_type,
+                        _,
+                    )) if key.as_slice() == b"ab_tree" => {
+                        Some(Op::PushInverted(Node::KVValueHashFeatureType(
+                            key.clone(),
+                            value.clone(),
+                            *value_hash,
+                            *feature_type,
+                        )))
+                    }
+                    _ => None,
+                };
+                if let Some(replacement) = replacement {
+                    *op = replacement;
+                    hit = true;
+                }
+            }
+            assert!(hit, "the subtree row rides on a child-hash node");
+        });
+        let err = GroveDb::verify_path_query(&downgraded, &pq, grove_version)
+            .expect_err("a feature-typed row stripped of its child hash must be rejected");
+        assert!(matches!(err, Error::InvalidProof(..)), "{err:?}");
     }
 }
