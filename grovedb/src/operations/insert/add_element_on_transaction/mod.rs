@@ -13,18 +13,25 @@
 //!   `ProvableCountSumTree` are written as a plain value (`Op::Put`). This is the
 //!   behaviour frozen into the live protocol-v11 activation chain (testnet block
 //!   245,344, `transition_to_version_11`). Selected by `GROVE_V1` / `GROVE_V2`.
-//! * **[v1]** — current behaviour. Those three types are written as layered
-//!   subtrees, consistent with the batch insert path (both root hash and fee).
-//!   Selected by `GROVE_V3`+.
+//! * **[v1]** — Those three types are written as layered subtrees, consistent
+//!   with the batch insert path (both root hash and fee). Selected by
+//!   `GROVE_V3`.
+//! * **[v2]** — current behaviour. As v1, but a `Reference` binds the value
+//!   hash of its terminal's **stored** bytes (wrapper included for a
+//!   `NonCounted`-wrapped terminal), matching the batch reference resolver.
+//!   v1 hashed the looked-through terminal, so a directly inserted reference
+//!   to a wrapped item committed a different root than the same reference
+//!   applied in a batch (issue #858). Selected by `GROVE_V4`+.
 //!
-//! The two implementations are otherwise identical; the only difference is which
-//! match arm those three element types fall into. See [v0] / [v1].
+//! The implementations are otherwise identical. See [v0] / [v1] / [v2].
 //!
 //! [v0]: self::v0
 //! [v1]: self::v1
+//! [v2]: self::v2
 
 mod v0;
 mod v1;
+mod v2;
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_merk::Merk;
@@ -77,10 +84,19 @@ impl GroveDb {
                 batch,
                 grove_version,
             ),
+            2 => self.add_element_on_transaction_v2(
+                path,
+                key,
+                element,
+                options,
+                transaction,
+                batch,
+                grove_version,
+            ),
             version => Err(
                 grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
                     method: "add_element_on_transaction".to_string(),
-                    known_versions: vec![0, 1],
+                    known_versions: vec![0, 1, 2],
                     received: version,
                 }
                 .into(),
