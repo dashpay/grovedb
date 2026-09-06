@@ -22,6 +22,7 @@ use grovedb_version::version::GroveVersion;
 use crate::{
     operations::proof::{GroveDBProof, GroveDBProofV1, ProofBytes},
     query_result_type::QueryResultType,
+    reference_path::ReferencePathType,
     tests::{make_test_grovedb, TempGroveDb, TEST_LEAF},
     Element, GroveDb, PathQuery, Query, SizedQuery,
 };
@@ -35,9 +36,28 @@ enum Kind {
     Tree,
     SumTree,
     ProvableCountTree,
+    /// Two child Merks: the empty form commits
+    /// `combine_hash_three(H(value), NULL_HASH, NULL_HASH)`.
+    ProvableSumIndexedTree,
+    ProvableCountIndexedTree,
+    /// Axes list: the empty form commits
+    /// `combine_hash_three(H(value), NULL_HASH, axes_digest(zero_axes))`.
+    ProvableCountProvableSumIndexedTree,
 }
 
-const KINDS: [Kind; 3] = [Kind::Tree, Kind::SumTree, Kind::ProvableCountTree];
+const KINDS: [Kind; 6] = [
+    Kind::Tree,
+    Kind::SumTree,
+    Kind::ProvableCountTree,
+    Kind::ProvableSumIndexedTree,
+    Kind::ProvableCountIndexedTree,
+    Kind::ProvableCountProvableSumIndexedTree,
+];
+
+/// The PCPSIT fixture indexes all three axes.
+fn pcpsit_axes() -> Vec<(u8, Option<Vec<u8>>)> {
+    vec![(0, None), (1, None), (2, None)]
+}
 
 impl Kind {
     fn empty(self) -> Element {
@@ -45,13 +65,90 @@ impl Kind {
             Kind::Tree => Element::empty_tree(),
             Kind::SumTree => Element::empty_sum_tree(),
             Kind::ProvableCountTree => Element::empty_provable_count_tree(),
+            Kind::ProvableSumIndexedTree => Element::empty_provable_sum_indexed_tree(),
+            Kind::ProvableCountIndexedTree => Element::empty_provable_count_indexed_tree(),
+            Kind::ProvableCountProvableSumIndexedTree => {
+                Element::empty_provable_count_provable_sum_indexed_tree(pcpsit_axes())
+                    .expect("canonical axes")
+            }
         }
     }
 
-    fn row(self, i: u8) -> Element {
+    /// Insert row `i` under `TEST_LEAF/docs` through the tree's own
+    /// insert path.
+    fn insert_row(self, db: &TempGroveDb, i: u8, grove_version: &GroveVersion) {
+        let path = [TEST_LEAF, DOCS];
+        let key = [b'k', i];
         match self {
-            Kind::Tree | Kind::ProvableCountTree => Element::new_item(vec![i]),
-            Kind::SumTree => Element::new_sum_item(i as i64 + 1),
+            Kind::Tree | Kind::ProvableCountTree => {
+                db.insert(
+                    path.as_ref(),
+                    &key,
+                    Element::new_item(vec![i]),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert row");
+            }
+            Kind::SumTree => {
+                db.insert(
+                    path.as_ref(),
+                    &key,
+                    Element::new_sum_item(i as i64 + 1),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert row");
+            }
+            Kind::ProvableSumIndexedTree => {
+                db.insert_into_provable_sum_indexed_tree(
+                    path.as_ref(),
+                    &key,
+                    Element::new_sum_item(i as i64 + 1),
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert PSIT row");
+            }
+            Kind::ProvableCountIndexedTree => {
+                // PCIT rows are counted subtrees; give each one an item
+                // so the row is a non-empty tree.
+                db.insert_into_count_indexed_tree(
+                    path.as_ref(),
+                    &key,
+                    Element::empty_provable_count_tree(),
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert PCIT row");
+                db.insert(
+                    [TEST_LEAF, DOCS, key.as_slice()].as_ref(),
+                    b"v",
+                    Element::new_item(vec![i]),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert PCIT row item");
+            }
+            Kind::ProvableCountProvableSumIndexedTree => {
+                db.insert_into_provable_count_provable_sum_indexed_tree(
+                    path.as_ref(),
+                    &key,
+                    Element::new_item_with_sum_item(vec![i], i as i64 + 1),
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert PCPSIT row");
+            }
         }
     }
 }
@@ -73,18 +170,22 @@ fn populate(kind: Kind, grove_version: &GroveVersion) -> TempGroveDb {
         .expect("insert tree");
     }
     for i in 0..ROWS {
-        db.insert(
-            [TEST_LEAF, DOCS].as_ref(),
-            &[b'k', i],
-            kind.row(i),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("insert row");
+        kind.insert_row(&db, i, grove_version);
     }
     db
+}
+
+/// The rejection must come from binding the claimed emptiness — the
+/// two-input check for plain trees, the three-input one for indexed
+/// trees — not from some unrelated structural complaint.
+fn assert_rejected_by_emptiness_binding(kind: Kind, include_empty: bool, error: &crate::Error) {
+    let message = format!("{error}");
+    assert!(
+        message.contains("empty tree value hash mismatch")
+            || message.contains("empty indexed-tree value hash mismatch"),
+        "{kind:?} include_empty={include_empty}: rejection must come from binding the \
+         claimed emptiness, got: {message}"
+    );
 }
 
 /// `TEST_LEAF/<key>` with a `RangeFull` subquery — a required descent.
@@ -256,14 +357,7 @@ fn forged_empty_tree_under_a_subquery_is_rejected() {
                 grove_version,
             );
             match outcome {
-                Err(e) => {
-                    let message = format!("{e}");
-                    assert!(
-                        message.contains("empty tree value hash mismatch"),
-                        "{kind:?} include_empty={include_empty}: rejection must come from \
-                         binding the claimed emptiness, got: {message}"
-                    );
-                }
+                Err(e) => assert_rejected_by_emptiness_binding(kind, include_empty, &e),
                 Ok((root, rows)) => panic!(
                     "{kind:?} include_empty={include_empty}: forged-empty tree under a \
                      subquery verified as {} rows against root {} (honest root {})",
@@ -306,14 +400,7 @@ fn forged_empty_tree_at_a_terminal_position_is_rejected() {
                 grove_version,
             );
             match outcome {
-                Err(e) => {
-                    let message = format!("{e}");
-                    assert!(
-                        message.contains("empty tree value hash mismatch"),
-                        "{kind:?} include_empty={include_empty}: rejection must come from \
-                         binding the claimed emptiness, got: {message}"
-                    );
-                }
+                Err(e) => assert_rejected_by_emptiness_binding(kind, include_empty, &e),
                 Ok((_, rows)) => panic!(
                     "{kind:?} include_empty={include_empty}: forged-empty terminal tree \
                      verified as {} rows",
@@ -406,5 +493,49 @@ fn genuinely_empty_trees_keep_verifying_and_match_trusted_reads() {
             expected_excluded,
             "{kind:?}: exclusion applies to plain empty trees only"
         );
+    }
+}
+
+#[test]
+fn unbound_non_tree_classification_under_a_subquery_is_rejected() {
+    // The arm chain's last resort: an element that is neither an item,
+    // a descended tree, a reported row, nor a bound empty tree. Honest
+    // V1 proofs dereference references into their target's bytes, so
+    // raw reference bytes under a subquery can only come from a prover
+    // rewriting the (unhashed) element bytes. They used to be skipped
+    // silently — another route to a verified absence.
+    let grove_version = GroveVersion::latest();
+    let db = populate(Kind::Tree, grove_version);
+    let query = descent_query(DOCS);
+    let honest = db
+        .prove_query(&query, None, grove_version)
+        .unwrap()
+        .expect("prove");
+    let fake = Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+        TEST_LEAF.to_vec(),
+        EMPTY.to_vec(),
+    ]));
+    let forged = forge_element_bytes(&honest, DOCS, &fake, grove_version);
+    for include_empty in [false, true] {
+        let outcome = GroveDb::verify_query_with_options(
+            &forged,
+            &query,
+            options(include_empty),
+            grove_version,
+        );
+        match outcome {
+            Err(e) => {
+                let message = format!("{e}");
+                assert!(
+                    message.contains("neither descended into nor bound"),
+                    "include_empty={include_empty}: got: {message}"
+                );
+            }
+            Ok((_, rows)) => panic!(
+                "include_empty={include_empty}: unbound reference under a subquery verified \
+                 as {} rows",
+                rows.len()
+            ),
+        }
     }
 }

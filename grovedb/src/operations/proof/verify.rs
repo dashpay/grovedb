@@ -2459,6 +2459,7 @@ impl GroveDb {
     ///   - Empty PCPSIT: `second = axes_digest(zero_axes)`, the digest
     ///     over the element's own axes list with every axis's secondary
     ///     root hash = NULL_HASH.
+    ///
     /// These mirror the insert commit path in
     /// add_element_on_transaction/v1.rs.
     ///
