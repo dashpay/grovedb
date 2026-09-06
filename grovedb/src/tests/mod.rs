@@ -36,6 +36,7 @@ mod non_merk_limited_page_tests;
 mod per_instance_gate_coverage_tests;
 mod per_instance_limit_tests;
 mod private_document_store_tests;
+mod reference_cycle_on_overwrite_tests;
 mod unbound_empty_tree_tests;
 mod wrapped_terminal_reference_tests;
 // NOTE: the former `count_indexed_tree_tests` (~12.3k LOC) was written

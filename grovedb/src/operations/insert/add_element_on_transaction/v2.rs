@@ -14,6 +14,16 @@
 //! which looks through the wrapper before hashing; for a wrapped terminal that
 //! bakes `H(inner)` instead of `H(NonCounted(inner))` into the reference node.
 //! `GROVE_V3` is live, so v1 keeps that behaviour (issue #858).
+//!
+//! v2 also refuses a reference whose chain runs back through the position
+//! being written. v1 resolved the chain from the target alone, and the
+//! written position still holds its previous element in storage, so
+//! overwriting the item `B` of `A -> B` with a reference back to `A` read the
+//! stale item, looked acyclic, and committed the cycle `A -> B -> A`; every
+//! later `get`, proof and `verify_grovedb` on either key then failed with
+//! `CyclicReference`. The batch resolver has always refused this, because the
+//! overwriting op is in `ops_by_qualified_paths`. Refusing it here flips an
+//! accepted/rejected outcome, hence the gate.
 
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
@@ -38,7 +48,7 @@ use super::super::InsertOptions;
 use crate::{Element, Error, GroveDb, Transaction};
 
 impl GroveDb {
-    /// `add_element_on_transaction` v1 — see the module documentation.
+    /// `add_element_on_transaction` v2 — see the module documentation.
     pub(crate) fn add_element_on_transaction_v2<'db, B: AsRef<[u8]>>(
         &'db self,
         path: SubtreePath<B>,
@@ -117,13 +127,23 @@ impl GroveDb {
                     path_from_reference_path_type(reference_path.clone(), &path, Some(key))
                         .wrap_with_cost(OperationCost::default())
                 );
+                // The position this reference is written to. Storage still
+                // holds whatever was there before (an item, an older
+                // reference), so a chain resolved from the target alone would
+                // read that stale element and miss that it runs back here:
+                // an overwrite could close a cycle every later read fails on.
+                let mut referrer_qualified_path = path;
+                referrer_qualified_path.push(key.to_vec());
 
                 // Commitment-preserving resolution: the reference binds the
                 // terminal's stored bytes, wrapper included. This is what
                 // the batch path commits to as well — see the module docs.
+                // The walk is seeded with the referrer's own position and
+                // refuses the chain as cyclic if it reaches it.
                 let referenced_item = cost_return_on_error!(
                     &mut cost,
-                    self.follow_reference_as_stored(
+                    self.follow_reference_as_stored_for_write(
+                        referrer_qualified_path,
                         reference_path.as_slice().into(),
                         false,
                         Some(transaction),
