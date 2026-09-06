@@ -532,8 +532,13 @@ fn unbound_non_tree_classification_under_a_subquery_is_rejected() {
         match outcome {
             Err(e) => {
                 let message = format!("{e}");
+                // Since #862 a raw reference row is refused as soon as
+                // it is deserialized — before the arm chain can classify
+                // it — so the specific rejection fires ahead of the
+                // last-resort one. Either way the forgery is rejected.
                 assert!(
-                    message.contains("neither descended into nor bound"),
+                    message.contains("raw reference")
+                        || message.contains("neither descended into nor bound"),
                     "include_empty={include_empty}: got: {message}"
                 );
             }
