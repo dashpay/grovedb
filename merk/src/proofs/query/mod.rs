@@ -41,7 +41,7 @@ use grovedb_version::version::GroveVersion;
 pub use map::{Map, MapBuilder};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use verify::{
-    boundaries_in_proof, key_exists_as_boundary_in_proof, proof_stream_direction,
+    boundaries_in_proof, key_exists_as_boundary_in_proof, op_is_upright, proof_stream_direction,
     ProofVerificationResult, ProvedKeyOptionalValue, ProvedKeyValue, QueryProofVerify,
     VerifyOptions, PROOF_VERSION_LATEST,
 };

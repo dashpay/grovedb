@@ -1056,15 +1056,21 @@ impl GroveDb {
                     let secondary_query =
                         crate::query::axis_lowering::axis_bounded_merk_query(axis_query)?;
                     let left_to_right = secondary_query.left_to_right;
-                    // proof_version 0 (lenient) matches the standalone
-                    // envelope's choice and is safe HERE because the
-                    // axis decoders consume only `proved.key` — bound
-                    // into the recomputed secondary root — never
-                    // `proved.value`. If a future change starts reading
-                    // secondary VALUES, it must move to
-                    // PROOF_VERSION_LATEST first.
+                    // Strict mode (#863): the secondary stream must be
+                    // encoded in the family of the direction it is
+                    // walked in, or an upright stream handed to a
+                    // descending axis read would fill the page from the
+                    // wrong end of the range. The strict value checks
+                    // that come with it are moot here — the axis
+                    // decoders consume only `proved.key`, bound into the
+                    // recomputed secondary root — but harmless.
                     let (root, res) = secondary_query
-                        .execute_proof(&payload.secondary_proof, Some(*limit), left_to_right, 0)
+                        .execute_proof(
+                            &payload.secondary_proof,
+                            Some(*limit),
+                            left_to_right,
+                            PROOF_VERSION_LATEST,
+                        )
                         .unwrap()
                         .map_err(|e| {
                             Error::InvalidProof(
@@ -1424,8 +1430,21 @@ impl GroveDb {
         merk_proof_bytes: &[u8],
         query: &PathQuery,
     ) -> Result<CryptoHash, Error> {
-        let (root_hash, _) = Query::new()
-            .execute_proof(merk_proof_bytes, None, true, PROOF_VERSION_LATEST)
+        // The layer was emitted in the direction of the query that
+        // generated the proof, which this (subset) query does not know.
+        // No row is reported, so the direction carries no semantics
+        // here; it only has to match the stream's own family for the
+        // #863 orientation check, which still refuses a mixed stream.
+        let left_to_right = grovedb_merk::proofs::query::proof_stream_direction(merk_proof_bytes)
+            .map_err(|e| {
+                Error::InvalidProof(
+                    query.clone(),
+                    format!("Invalid V1 lower layer proof (root derivation): {}", e),
+                )
+            })?
+            .unwrap_or(true);
+        let (root_hash, _) = Query::new_with_direction(left_to_right)
+            .execute_proof(merk_proof_bytes, None, left_to_right, PROOF_VERSION_LATEST)
             .unwrap()
             .map_err(|e| {
                 Error::InvalidProof(
@@ -1555,6 +1574,17 @@ impl GroveDb {
         // binds the result stays where it was: the reconstructed root
         // hash still has to match what the parent layer committed, and
         // `QueryItem::contains` still gates every returned key.
+        //
+        // For every other level the direction is the query's, and
+        // `execute_proof` itself (#863) refuses a stream that is not
+        // homogeneous in that direction's op family — an upright
+        // stream walked descending, or a mixed stream that rebuilds
+        // the honest tree in a non-monotonic visit order, would
+        // otherwise read an absence, or a page from the wrong end of
+        // the range, out of an authentic root hash. The same check
+        // runs on a synthesized level, where the direction read off
+        // the stream trivially matches it (`proof_stream_direction`
+        // already refuses a mixed stream).
         let single_key_synthesized_level = internal_query.synthesized_path_component
             && matches!(
                 internal_query.items.as_slice(),

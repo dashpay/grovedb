@@ -4715,3 +4715,213 @@ fn test_forged_row_under_right_hash_node_is_rejected() {
         "forged row under a right-side Node::Hash must be rejected, got {result:?}"
     );
 }
+
+// ---------------------------------------------------------------------
+// Issue #863: the op family a layer proof is encoded in must be the
+// family of the direction the verifier walks it in.
+//
+// `execute` checks per op that upright pushes ascend and inverted pushes
+// descend, but it never ties the family to the caller's `left_to_right`,
+// and it lets the two families mix. The bound-witness machinery in
+// `execute_proof` reads "the previous visited node" as "the neighbouring
+// key in the tree", which is only true when the visit order is the
+// tree's in-order (all upright) or its reverse (all inverted) AND that
+// order is the one the walk expects. Every test below hands the verifier
+// a stream whose root hash is authentic and gets an answer that
+// disagrees with the tree.
+// ---------------------------------------------------------------------
+
+/// The 3-node tree {3, 5, 7}: an honest ASCENDING proof of `{3, 7}`
+/// (5 abridged to its kv hash) handed to a DESCENDING single-key query
+/// for `5`. Walked right-to-left the verifier meets `3` first, reads it
+/// as the rightmost node, consumes the `Key(5)` item as "before this
+/// key", and never runs the end-of-stream absence check: `5` is
+/// reported absent although it is the root of the tree.
+#[test]
+fn ascending_stream_walked_descending_must_not_prove_absence() {
+    let grove_version = GroveVersion::latest();
+    let mut tree = make_3_node_tree();
+    let expected_root = tree.hash().unwrap();
+    let mut walker = RefWalker::new(&mut tree, PanicSource {});
+    let (proof, ..) = walker
+        .create_proof(
+            &[QueryItem::Key(vec![3]), QueryItem::Key(vec![7])],
+            None,
+            true,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create_proof errored");
+    let mut bytes = vec![];
+    encode_into(proof.iter(), &mut bytes);
+
+    let mut query = Query::new_with_direction(false);
+    query.insert_key(vec![5]);
+    let result = query
+        .verify_proof(bytes.as_slice(), None, false, expected_root)
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::InvalidProofError(_))),
+        "an upright stream walked descending must be rejected, got {result:?}"
+    );
+}
+
+/// Mirror image: an honest DESCENDING proof of `{3, 7}` walked
+/// ASCENDING for `Key(5)`.
+#[test]
+fn descending_stream_walked_ascending_must_not_prove_absence() {
+    let grove_version = GroveVersion::latest();
+    let mut tree = make_3_node_tree();
+    let expected_root = tree.hash().unwrap();
+    let mut walker = RefWalker::new(&mut tree, PanicSource {});
+    let (proof, ..) = walker
+        .create_proof(
+            &[QueryItem::Key(vec![3]), QueryItem::Key(vec![7])],
+            None,
+            false,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create_proof errored");
+    let mut bytes = vec![];
+    encode_into(proof.iter(), &mut bytes);
+
+    let mut query = Query::new();
+    query.insert_key(vec![5]);
+    let result = query
+        .verify_proof(bytes.as_slice(), None, true, expected_root)
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::InvalidProofError(_))),
+        "an inverted stream walked ascending must be rejected, got {result:?}"
+    );
+}
+
+/// "Give me the latest entry": a DESCENDING range with limit 1 over
+/// {3, 5, 7} answers `7`. An honest ASCENDING limit-1 proof of the same
+/// range reveals `3` and abridges the rest; walked descending it fills
+/// the limit with `3`, and the abridged tail is exactly what a
+/// satisfied limit allows. The verifier answers `3` for a query whose
+/// trusted read is `7`.
+#[test]
+fn ascending_limited_stream_walked_descending_must_not_fill_the_page() {
+    let grove_version = GroveVersion::latest();
+    let mut tree = make_3_node_tree();
+    let expected_root = tree.hash().unwrap();
+    let mut walker = RefWalker::new(&mut tree, PanicSource {});
+    let (proof, ..) = walker
+        .create_proof(&[QueryItem::RangeFull(..)], Some(1), true, grove_version)
+        .unwrap()
+        .expect("create_proof errored");
+    let mut bytes = vec![];
+    encode_into(proof.iter(), &mut bytes);
+
+    let mut query = Query::new_with_direction(false);
+    query.insert_all();
+    let result = query
+        .verify_proof(bytes.as_slice(), Some(1), false, expected_root)
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::InvalidProofError(_))),
+        "an upright limited stream walked descending must be rejected, got {result:?}"
+    );
+}
+
+/// A MIXED stream that reconstructs the honest tree exactly (root hash
+/// authentic) while visiting `3`, then `7`, then the abridged root `5`:
+///
+/// ```text
+/// Push(KV 3) · Push(KV 7) · PushInverted(KVHash 5) · ParentInverted · Parent
+/// ```
+///
+/// `ParentInverted` hangs `7` on the right of `5`, `Parent` hangs `3`
+/// on its left — the honest shape. The per-op key check passes (`7 > 3`
+/// upright, and a `KVHash` carries no key), yet walked ascending for
+/// `Key(5)` the verifier sees `3` then `7` as adjacent key-bearing
+/// pushes and endorses the gap between them as proof that `5` is absent.
+#[test]
+fn mixed_op_families_must_not_prove_absence() {
+    let tree = make_3_node_tree();
+    let expected_root = tree.hash().unwrap();
+    let root_kv_hash = *tree.kv_hash();
+
+    let mixed = [
+        Op::Push(Node::KV(vec![3], vec![3])),
+        Op::Push(Node::KV(vec![7], vec![7])),
+        Op::PushInverted(Node::KVHash(root_kv_hash)),
+        Op::ParentInverted,
+        Op::Parent,
+    ];
+    let mut bytes = vec![];
+    encode_into(mixed.iter(), &mut bytes);
+
+    // The stream really does rebuild the honest tree.
+    let rebuilt = super::super::tree::execute(Decoder::new(&bytes), false, |_| Ok(()))
+        .unwrap()
+        .expect("mixed stream reconstructs");
+    assert_eq!(rebuilt.hash().unwrap(), expected_root);
+
+    let mut query = Query::new();
+    query.insert_key(vec![5]);
+    let result = query
+        .verify_proof(bytes.as_slice(), None, true, expected_root)
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::InvalidProofError(_))),
+        "a mixed-family stream must be rejected, got {result:?}"
+    );
+}
+
+/// The honest counterparts of the forgeries above still verify, in
+/// both directions, and agree with the tree.
+#[test]
+fn homogeneous_streams_matching_the_walk_direction_verify() {
+    let grove_version = GroveVersion::latest();
+    for left_to_right in [true, false] {
+        let mut tree = make_3_node_tree();
+        let expected_root = tree.hash().unwrap();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+        let (proof, ..) = walker
+            .create_proof(
+                &[QueryItem::Key(vec![5])],
+                None,
+                left_to_right,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create_proof errored");
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+
+        let mut query = Query::new_with_direction(left_to_right);
+        query.insert_key(vec![5]);
+        let res = query
+            .verify_proof(bytes.as_slice(), None, left_to_right, expected_root)
+            .unwrap()
+            .unwrap_or_else(|e| panic!("honest proof (ltr={left_to_right}) must verify: {e}"));
+        compare_result_tuples_not_optional!(res.result_set, vec![(vec![5], vec![5])]);
+
+        let (proof, ..) = RefWalker::new(&mut tree, PanicSource {})
+            .create_proof(
+                &[QueryItem::RangeFull(..)],
+                Some(1),
+                left_to_right,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create_proof errored");
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let mut query = Query::new_with_direction(left_to_right);
+        query.insert_all();
+        let res = query
+            .verify_proof(bytes.as_slice(), Some(1), left_to_right, expected_root)
+            .unwrap()
+            .unwrap_or_else(|e| {
+                panic!("honest limited proof (ltr={left_to_right}) must verify: {e}")
+            });
+        let expected: Vec<u8> = if left_to_right { vec![3] } else { vec![7] };
+        let expected_rows = [(expected.clone(), expected)];
+        compare_result_tuples_not_optional!(res.result_set, expected_rows);
+    }
+}
