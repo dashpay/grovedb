@@ -4483,75 +4483,11 @@ impl GroveDb {
 
         let element = Element::deserialize(&value, grove_version)?;
 
-        // Verify embedded value_hash for node types that carry one.
-        // Without this, an attacker could replace KV(key, real_value)
-        // with KVValueHash(key, forged_value, real_value_hash) and the
-        // merk execute() would accept it since it uses the embedded hash.
-        match &tree.node {
-            Node::KVValueHash(_, _, node_value_hash)
-            | Node::KVValueHashFeatureType(_, _, node_value_hash, _) => {
-                let computed_vh = value_hash(&value).value().to_owned();
-                if computed_vh != *node_value_hash {
-                    // For tree elements, value_hash = combine_hash(H(value),
-                    // child_root_hash). We can't decompose the combined hash,
-                    // but the hash chain verification already validates tree
-                    // elements through the merk proof structure.
-                    if !element.is_any_tree() {
-                        return Err(Error::InvalidProof(
-                            PathQuery::new_unsized(Vec::new(), Query::default()),
-                            format!(
-                                "trunk/branch proof value hash mismatch at key {}: \
-                                 H(value) = {} but embedded value_hash = {}",
-                                hex::encode(&key),
-                                hex::encode(computed_vh),
-                                hex::encode(node_value_hash),
-                            ),
-                        ));
-                    }
-                }
-            }
-            Node::KVValueHashFeatureTypeWithChildHash(_, _, node_value_hash, _, child_hash) => {
-                let element_vh = value_hash(&value).value().to_owned();
-                let computed_vh = combine_hash(&element_vh, child_hash).value().to_owned();
-                if computed_vh != *node_value_hash {
-                    return Err(Error::InvalidProof(
-                        PathQuery::new_unsized(Vec::new(), Query::default()),
-                        format!(
-                            "trunk/branch proof value/child hash mismatch at key {}: \
-                             combine_hash(H(value), child_hash) = {} but value_hash = {}",
-                            hex::encode(&key),
-                            hex::encode(computed_vh),
-                            hex::encode(node_value_hash),
-                        ),
-                    ));
-                }
-            }
-            Node::KVRefValueHash(..)
-            | Node::KVRefValueHashCount(..)
-            | Node::KVRefValueHashSum(..)
-            | Node::KVRefValueHashCountSum(..) => {
-                // KVRefValueHash{,Count,Sum,CountSum} carries an opaque
-                // node_value_hash that cannot be recomputed from the value
-                // bytes alone — the hash is `combine_hash(node_value_hash,
-                // value_hash(referenced_value))`, and the verifier never
-                // gets to see the referenced_value at this layer. Without
-                // this rejection, a forged value could ride along in a
-                // KVRefValueHashSum / KVRefValueHashCountSum trunk/branch
-                // node while the merk-level hash chain still appears
-                // valid, because the embedded opaque hash is treated as
-                // authoritative. These node types should never appear in
-                // trunk/branch chunk proofs.
-                return Err(Error::InvalidProof(
-                    PathQuery::new_unsized(Vec::new(), Query::default()),
-                    format!(
-                        "trunk/branch proof contains unexpected KVRefValueHash node at key {}",
-                        hex::encode(&key),
-                    ),
-                ));
-            }
-            // KV, KVCount: value is used directly in hash computation — safe
-            _ => {}
-        }
+        // A row only reaches here under a genuine root hash, but the merk
+        // root covers a tree's or reference's `value_hash`, not its bytes:
+        // whether the node form binds them is version-gated (#859).
+        Self::check_chunk_proof_row(&tree.node, &key, &value, &element, grove_version)?;
+
         elements.insert(key.clone(), element);
 
         // Check if this node has Hash children (making it a leaf)
