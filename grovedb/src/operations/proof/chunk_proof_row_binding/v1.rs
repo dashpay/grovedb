@@ -51,6 +51,13 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
+        #[cfg(test)]
+        super::super::prove_test_hooks::BEFORE_CHUNK_ROW_BINDING.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().take() {
+                hook();
+            }
+        });
+
         for op in ops.iter_mut() {
             let node = match op {
                 Op::Push(node) | Op::PushInverted(node) => node,

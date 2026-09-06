@@ -1651,7 +1651,8 @@ impl GroveDb {
     ) -> CostResult<GroveDBProof, Error> {
         let mut cost = OperationCost::default();
 
-        let tx = self.start_transaction();
+        // Keep chunk rows, their child roots, and ancestor layers on one state.
+        let tx = self.start_snapshot_read_transaction();
 
         let path_slices: Vec<&[u8]> = query.path.iter().map(|p| p.as_slice()).collect();
 
@@ -1782,7 +1783,8 @@ impl GroveDb {
         );
         let mut cost = OperationCost::default();
 
-        let tx = self.start_transaction();
+        // Row binding must read the same state as the parent chunk commitment.
+        let tx = self.start_snapshot_read_transaction();
 
         let path_slices: Vec<&[u8]> = query.path.iter().map(|p| p.as_slice()).collect();
 

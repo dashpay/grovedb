@@ -1366,5 +1366,9 @@ pub(crate) mod prove_test_hooks {
     thread_local! {
         pub(crate) static AFTER_PROOF_SNAPSHOT: RefCell<Option<Box<dyn FnMut()>>> =
             const { RefCell::new(None) };
+        // One-shot seam after chunk ops are collected, before composite rows
+        // read their child roots or referenced values.
+        pub(crate) static BEFORE_CHUNK_ROW_BINDING: RefCell<Option<Box<dyn FnOnce()>>> =
+            const { RefCell::new(None) };
     }
 }
