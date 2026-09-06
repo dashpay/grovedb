@@ -317,6 +317,189 @@ mod tests {
         );
     }
 
+    /// One composite row, so a mid-generation update cannot be confused with
+    /// a race between unrelated parent Merk nodes.
+    fn snapshot_fixture(reference_row: bool) -> TempGroveDb {
+        let db = make_empty_grovedb();
+        let version = GroveVersion::latest();
+        db.insert(
+            EMPTY_PATH,
+            b"ct",
+            Element::empty_count_tree(),
+            None,
+            None,
+            version,
+        )
+        .unwrap()
+        .expect("insert host");
+        if reference_row {
+            db.insert(
+                EMPTY_PATH,
+                b"target",
+                Element::new_item(vec![1]),
+                None,
+                None,
+                version,
+            )
+            .unwrap()
+            .expect("insert reference target");
+            db.insert(
+                &[b"ct"],
+                b"row",
+                Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                    b"target".to_vec()
+                ])),
+                None,
+                None,
+                version,
+            )
+            .unwrap()
+            .expect("insert reference");
+        } else {
+            db.insert(&[b"ct"], b"row", Element::empty_tree(), None, None, version)
+                .unwrap()
+                .expect("insert child tree");
+            db.insert(
+                &[b"ct".as_slice(), b"row".as_slice()],
+                b"item",
+                Element::new_item(vec![1]),
+                None,
+                None,
+                version,
+            )
+            .unwrap()
+            .expect("populate child tree");
+        }
+        db
+    }
+
+    /// Commit atomically after the parent ops have been read and before their
+    /// composite rows are bound. Both the parent commitment and its second
+    /// hash input change together; every committed state is valid.
+    fn prove_during_composite_row_commit<T>(
+        db: &GroveDb,
+        reference_row: bool,
+        prove: impl FnOnce() -> T,
+    ) -> T {
+        use std::{sync::mpsc, time::Duration};
+
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (committed_tx, committed_rx) = mpsc::channel();
+        crate::operations::proof::prove_test_hooks::BEFORE_CHUNK_ROW_BINDING.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                ready_tx.send(()).expect("wake writer");
+                committed_rx
+                    .recv_timeout(Duration::from_secs(20))
+                    .expect("writer committed");
+            }));
+        });
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                ready_rx
+                    .recv_timeout(Duration::from_secs(20))
+                    .expect("parent ops collected");
+                let version = GroveVersion::latest();
+                let tx = db.start_transaction();
+                if reference_row {
+                    db.insert(
+                        EMPTY_PATH,
+                        b"target",
+                        Element::new_item(vec![2]),
+                        None,
+                        Some(&tx),
+                        version,
+                    )
+                    .unwrap()
+                    .expect("update reference target");
+                    db.insert(
+                        &[b"ct"],
+                        b"row",
+                        Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                            b"target".to_vec(),
+                        ])),
+                        None,
+                        Some(&tx),
+                        version,
+                    )
+                    .unwrap()
+                    .expect("refresh reference commitment");
+                } else {
+                    db.insert(
+                        &[b"ct".as_slice(), b"row".as_slice()],
+                        b"item",
+                        Element::new_item(vec![2]),
+                        None,
+                        Some(&tx),
+                        version,
+                    )
+                    .unwrap()
+                    .expect("update child root");
+                }
+                db.commit_transaction(tx).unwrap().expect("atomic commit");
+                committed_tx.send(()).expect("resume generation");
+            });
+            prove()
+        })
+    }
+
+    #[test]
+    fn trunk_chunk_generation_uses_one_snapshot_across_row_binding_and_ancestors() {
+        let version = GroveVersion::latest();
+        for reference_row in [false, true] {
+            let db = snapshot_fixture(reference_row);
+            let root_before = db.root_hash(None, version).unwrap().unwrap();
+            let expected_proof = prove_trunk(&db, version);
+            let proof =
+                prove_during_composite_row_commit(&db, reference_row, || prove_trunk(&db, version));
+            assert_ne!(
+                db.root_hash(None, version).unwrap().unwrap(),
+                root_before,
+                "commit landed"
+            );
+            let (root, result) = GroveDb::verify_trunk_chunk_proof(&proof, &trunk_query(), version)
+                .expect("concurrent commit must not invalidate the trunk proof");
+            assert_eq!(root, root_before, "ancestors share the generation snapshot");
+            assert_eq!(result.elements.len(), 1);
+            assert_eq!(proof, expected_proof, "all rows use the pre-commit state");
+        }
+    }
+
+    #[test]
+    fn branch_chunk_generation_uses_one_snapshot_across_row_binding() {
+        let version = GroveVersion::latest();
+        for reference_row in [false, true] {
+            let db = snapshot_fixture(reference_row);
+            let query = PathBranchChunkQuery::new(vec![b"ct".to_vec()], b"row".to_vec(), 1);
+            let expected = db
+                .prove_branch_chunk_non_serialized(&query, version)
+                .unwrap()
+                .unwrap();
+            let expected_proof = encode_ops(&expected.proof);
+            let proof = prove_during_composite_row_commit(&db, reference_row, || {
+                db.prove_branch_chunk(&query, version)
+                    .unwrap()
+                    .expect("prove branch")
+            });
+            let current = db
+                .prove_branch_chunk_non_serialized(&query, version)
+                .unwrap()
+                .unwrap();
+            assert_ne!(
+                current.branch_root_hash, expected.branch_root_hash,
+                "commit landed"
+            );
+            let result = GroveDb::verify_branch_chunk_proof(
+                &proof,
+                &query,
+                expected.branch_root_hash,
+                version,
+            )
+            .expect("concurrent commit must not invalidate the branch proof");
+            assert_eq!(result.elements.len(), 1);
+            assert_eq!(proof, expected_proof, "all rows use the pre-commit state");
+        }
+    }
+
     // ── Trunk attacks ──────────────────────────────────────────────────
 
     #[test]
@@ -906,6 +1089,21 @@ mod tests {
     /// forgery.
     #[test]
     fn chunk_proof_row_binding_version_gate() {
+        let db = make_empty_grovedb();
+        for version in [&GROVE_V1, &GROVE_V3, GroveVersion::latest()] {
+            let tx = db.start_chunk_proof_transaction(version).unwrap();
+            assert_eq!(
+                tx.is_snapshot_read(),
+                version
+                    .grovedb_versions
+                    .operations
+                    .proof
+                    .chunk_proof_row_binding
+                    == 1,
+                "only bound chunk generation pins a snapshot",
+            );
+        }
+
         let build_and_forge = |grove_version: &GroveVersion| {
             let db = count_tree_with_subtrees(grove_version, Element::empty_count_tree());
             let proof = prove_trunk(&db, grove_version);

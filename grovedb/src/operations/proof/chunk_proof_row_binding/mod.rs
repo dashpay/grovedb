@@ -11,9 +11,11 @@
 //! ancestor chain therefore says nothing about the returned tree element's own
 //! metadata: its type, aggregate count or sum, and root key.
 //!
-//! Two functions share one gate, `proof.chunk_proof_row_binding`, so prover
+//! These functions share one gate, `proof.chunk_proof_row_binding`, so prover
 //! and verifier move together at the protocol boundary:
 //!
+//! * [`GroveDb::start_chunk_proof_transaction`] pins V4 generation to one
+//!   snapshot, including the chunk, row bindings, and ancestor layers.
 //! * [`GroveDb::bind_chunk_proof_rows`] (prover) rewrites every composite row
 //!   of the chunk ops to `KVValueHashFeatureTypeWithChildHash`.
 //! * [`GroveDb::check_chunk_proof_row`] (verifier) decides, per extracted
@@ -55,6 +57,33 @@ use crate::Transaction;
 use crate::{Element, Error, GroveDb};
 
 impl GroveDb {
+    /// Use one committed state for the chunk and every storage read needed to
+    /// bind it. A plain transaction can pair a pre-commit parent value hash
+    /// with a post-commit child root or reference target. Preserve the released
+    /// transaction behavior when composite-row binding is disabled.
+    #[cfg(feature = "minimal")]
+    pub(crate) fn start_chunk_proof_transaction(
+        &self,
+        grove_version: &GroveVersion,
+    ) -> Result<Transaction<'_>, Error> {
+        match grove_version
+            .grovedb_versions
+            .operations
+            .proof
+            .chunk_proof_row_binding
+        {
+            0 => Ok(self.start_transaction()),
+            1 => Ok(self.start_snapshot_read_transaction()),
+            version => Err(Error::VersionError(
+                grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                    method: "start_chunk_proof_transaction".to_string(),
+                    known_versions: vec![0, 1],
+                    received: version,
+                },
+            )),
+        }
+    }
+
     /// Bind every composite row of a trunk / branch chunk proof to the
     /// `value_hash` its Merk commits to, if the grove version calls for it.
     ///

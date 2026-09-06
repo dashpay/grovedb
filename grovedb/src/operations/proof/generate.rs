@@ -1651,7 +1651,8 @@ impl GroveDb {
     ) -> CostResult<GroveDBProof, Error> {
         let mut cost = OperationCost::default();
 
-        let tx = self.start_transaction();
+        let tx =
+            cost_return_on_error_no_add!(cost, self.start_chunk_proof_transaction(grove_version));
 
         let path_slices: Vec<&[u8]> = query.path.iter().map(|p| p.as_slice()).collect();
 
@@ -1782,7 +1783,8 @@ impl GroveDb {
         );
         let mut cost = OperationCost::default();
 
-        let tx = self.start_transaction();
+        let tx =
+            cost_return_on_error_no_add!(cost, self.start_chunk_proof_transaction(grove_version));
 
         let path_slices: Vec<&[u8]> = query.path.iter().map(|p| p.as_slice()).collect();
 
