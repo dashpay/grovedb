@@ -296,6 +296,20 @@ unified trusted read uses the same semantics, so read and verified
 results agree over any state. The legacy `AggregateSumPathQuery`
 surface keeps its configurable options, including reference following.
 
+Every fold-or-skip decision rests on **bound element bytes**. An item row
+is bound because the Merk node hashes its value (`H(value) ==
+value_hash`). A composite row — a subtree or a reference — is carried on
+a `KVValueHashFeatureTypeWithChildHash` node whose child hash the Merk
+verifier closes with `combine_hash(H(value), child_hash) == value_hash`:
+the child Merk root (or `NULL_HASH`) for a subtree, the referenced
+element's value hash for a reference, and the tree's own state root for
+a non-Merk tree. A bare `KVValueHash` row would leave its bytes free to
+rewrite under a genuine root — enough to disguise a sum item as a tree
+and drop its contribution — so the verifier rejects any present row that
+is neither hashed as an item nor closed through a child hash. Indexed
+trees commit a three-input hash no proof node carries; a window that
+scans one is refused by the prover.
+
 ## Version gating
 
 Everything new activates at **GROVE_V4** and fails closed below it, on

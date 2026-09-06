@@ -1,6 +1,6 @@
 //! Generate proof operations
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, LinkedList};
 
 use grovedb_bulk_append_tree::BulkAppendTreeProof;
 use grovedb_commitment_tree::COMMITMENT_TREE_DATA_KEY;
@@ -11,7 +11,7 @@ use grovedb_costs::{
 use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
 use grovedb_merk::{
     proofs::{encode_into, query::QueryItem, Node, Op},
-    tree::{combine_hash, value_hash},
+    tree::{combine_hash, value_hash, NULL_HASH},
     Merk, ProofWithoutEncodingResult, TreeFeatureType,
 };
 use grovedb_merkle_mountain_range::MmrTreeProof;
@@ -476,28 +476,193 @@ impl GroveDb {
                 grove_version
             )
         );
-        let mut window_query = grovedb_merk::proofs::Query::new_with_direction(node.left_to_right);
-        window_query.items = node.items.clone();
         let window_limit = if exhausted {
             None
         } else {
             Some(walk.elements_scanned)
         };
-        let proof_result = cost_return_on_error!(
+        let mut window_proof = cost_return_on_error!(
             &mut cost,
-            target_merk
-                .prove(window_query, window_limit, grove_version)
-                .map_err(|e| Error::CorruptedData(format!(
-                    "sum-budget window: merk proof over the scanned window: {e}"
-                )))
+            self.generate_merk_proof(
+                &target_merk,
+                &node.items,
+                node.left_to_right,
+                window_limit,
+                grove_version,
+            )
         );
+
+        // 4. Bind every composite row so the verifier can authenticate
+        // the bytes it classifies (#870).
+        cost_return_on_error!(
+            &mut cost,
+            self.bind_sum_budget_window_rows(
+                &mut window_proof.proof,
+                target_path,
+                transaction,
+                grove_version,
+            )
+        );
+
+        let mut merk_proof = Vec::with_capacity(1024);
+        encode_into(window_proof.proof.iter(), &mut merk_proof);
 
         Ok(crate::operations::proof::SumBudgetWindowProof {
             exhausted,
             window_len: walk.elements_scanned,
-            merk_proof: proof_result.proof,
+            merk_proof,
         })
         .wrap_with_cost(cost)
+    }
+
+    /// Bind every value-bearing row of a sum-budget window proof to the
+    /// element bytes the verifier classifies (#870).
+    ///
+    /// A raw merk proof binds an item row through `KV` (the verifier hashes
+    /// the value bytes itself) but a tree or reference row through
+    /// `KVValueHash`, whose bytes the merk root does not cover. The window
+    /// verifier decides "fold or skip" from those bytes, so an unbound
+    /// composite row let a prover disguise a genuine sum item as a tree and
+    /// drop its contribution under a genuine root hash. Every composite row
+    /// is rewritten to a node the merk verifier checks end to end:
+    ///
+    /// - Merk trees: `KVValueHashFeatureTypeWithChildHash` carrying the
+    ///   child root (`NULL_HASH` for an empty tree), verified as
+    ///   `combine_hash(H(value), child_root) == value_hash` — the
+    ///   composition `insert` commits.
+    /// - References: the same node carrying the referenced element's value
+    ///   hash, which is the reference's committed composition.
+    /// - Non-Merk trees: [`Self::bind_terminal_non_merk_tree`] (their own
+    ///   state root).
+    /// - Indexed trees commit a three-input hash no proof node carries, so
+    ///   the window refuses them rather than emit an unbound row.
+    ///
+    /// Item rows are left as the merk prover emitted them.
+    fn bind_sum_budget_window_rows(
+        &self,
+        ops: &mut LinkedList<Op>,
+        target_path: &[&[u8]],
+        transaction: &Transaction,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+
+        for op in ops.iter_mut() {
+            let node = match op {
+                Op::Push(node) | Op::PushInverted(node) => node,
+                _ => continue,
+            };
+            let (key, value, node_value_hash, feature_type) = match &*node {
+                Node::KVValueHash(key, value, value_hash) => (
+                    key.clone(),
+                    value.clone(),
+                    *value_hash,
+                    TreeFeatureType::BasicMerkNode,
+                ),
+                Node::KVValueHashFeatureType(key, value, value_hash, feature_type) => {
+                    (key.clone(), value.clone(), *value_hash, *feature_type)
+                }
+                // Items are pushed as KV / KVCount / KVSum / KVCountSum,
+                // whose value bytes the merk verifier hashes itself.
+                _ => continue,
+            };
+            let element = cost_return_on_error_no_add!(
+                cost,
+                Element::deserialize(&value, grove_version).map_err(Error::from)
+            )
+            .into_underlying();
+            if element.is_indexed_tree() {
+                return Err(Error::NotSupported(format!(
+                    "sum-budget window: the scanned row {} is an indexed tree, whose \
+                     three-input binding no proof node can carry",
+                    hex_to_ascii(&key)
+                )))
+                .wrap_with_cost(cost);
+            }
+            match element {
+                Element::Reference(reference_path, ..)
+                | Element::ReferenceWithSumItem(reference_path, ..) => {
+                    let absolute_path = cost_return_on_error_into!(
+                        &mut cost,
+                        path_from_reference_path_type(
+                            reference_path,
+                            target_path,
+                            Some(key.as_slice())
+                        )
+                        .wrap_with_cost(OperationCost::default())
+                    );
+                    let referenced = cost_return_on_error_into!(
+                        &mut cost,
+                        self.follow_reference(
+                            absolute_path.as_slice().into(),
+                            true,
+                            Some(transaction),
+                            grove_version
+                        )
+                    );
+                    let referenced_bytes = cost_return_on_error_no_add!(
+                        cost,
+                        referenced.serialize(grove_version).map_err(|e| {
+                            Error::CorruptedData(format!(
+                                "sum-budget window: unable to serialize the referenced element: {e}"
+                            ))
+                        })
+                    );
+                    let referenced_hash = value_hash(&referenced_bytes).unwrap_add_cost(&mut cost);
+                    *node = Node::KVValueHashFeatureTypeWithChildHash(
+                        key,
+                        value,
+                        node_value_hash,
+                        feature_type,
+                        referenced_hash,
+                    );
+                }
+                non_merk @ (Element::MmrTree(..)
+                | Element::BulkAppendTree(..)
+                | Element::DenseAppendOnlyFixedSizeTree(..)
+                | Element::CommitmentTree(..)
+                | Element::PrivateDocumentStore(..)) => {
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.bind_terminal_non_merk_tree(
+                            node,
+                            &non_merk,
+                            target_path,
+                            transaction,
+                            grove_version,
+                        )
+                    );
+                }
+                tree if tree.is_any_tree() => {
+                    let child_root = if tree.is_non_empty_merk_tree() {
+                        let mut child_path = target_path.to_vec();
+                        child_path.push(key.as_slice());
+                        let child_merk = cost_return_on_error!(
+                            &mut cost,
+                            self.open_transactional_merk_at_path(
+                                child_path.as_slice().into(),
+                                transaction,
+                                None,
+                                grove_version
+                            )
+                        );
+                        child_merk.root_hash().unwrap_add_cost(&mut cost)
+                    } else {
+                        NULL_HASH
+                    };
+                    *node = Node::KVValueHashFeatureTypeWithChildHash(
+                        key,
+                        value,
+                        node_value_hash,
+                        feature_type,
+                        child_root,
+                    );
+                }
+                _ => continue,
+            }
+        }
+
+        Ok(()).wrap_with_cost(cost)
     }
 
     fn check_count_offset_target_tree_type(
