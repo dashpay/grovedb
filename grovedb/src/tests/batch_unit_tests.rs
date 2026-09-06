@@ -9,7 +9,7 @@
 mod tests {
     use grovedb_merk::tree::AggregateData;
     use grovedb_merk::tree_type::TreeType;
-    use grovedb_version::version::GroveVersion;
+    use grovedb_version::version::{v3::GROVE_V3, GroveVersion};
 
     use crate::batch::key_info::KeyInfo::KnownKey;
     use crate::batch::{
@@ -1671,7 +1671,10 @@ mod tests {
         .unwrap()
         .expect("insert tree");
 
-        // Insert ref_a pointing to the tree (this is unusual but valid for insert)
+        // Insert ref_a pointing to the tree. Direct insert refuses a
+        // reference to a tree from GROVE_V4 on, so the row is written under
+        // GROVE_V3, which still accepts it — the shape an upgraded database
+        // can carry from before the refusal.
         db.insert(
             [TEST_LEAF].as_ref(),
             b"ref_a2",
@@ -1681,10 +1684,10 @@ mod tests {
             ])),
             None,
             None,
-            grove_version,
+            &GROVE_V3,
         )
         .unwrap()
-        .expect("insert ref_a2");
+        .expect("insert ref_a2 under GROVE_V3");
 
         // Batch: refresh ref_a2 (trust=true, pointing to the tree) +
         // insert ref_b2 -> ref_a2 with hops > 1
