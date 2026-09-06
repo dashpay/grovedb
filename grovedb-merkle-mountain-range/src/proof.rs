@@ -470,7 +470,12 @@ impl MmrTreeProof {
     /// * `expected_mmr_root` - The MMR root hash from the parent element
     ///
     /// # Returns
-    /// The verified leaf values as `(leaf_index, value_bytes)` pairs.
+    /// The verified leaf values as `(leaf_index, value_bytes)` pairs in
+    /// ascending `leaf_index` order, deduplicated by index. The order the
+    /// proof *carried* the leaves in is not authenticated (root
+    /// computation sorts by position), so it is never surfaced: a caller
+    /// that pages or truncates the result sees the same page for every
+    /// permutation of the same leaf set.
     pub fn verify(&self, expected_mmr_root: &[u8; 32]) -> Result<VerifiedLeaves> {
         if self.leaves.is_empty() {
             return Err(Error::InvalidProof(
@@ -525,17 +530,7 @@ impl MmrTreeProof {
             ));
         }
 
-        // Deduplicate by leaf_index: the library deduplicates positions
-        // internally, but self.leaves may contain duplicate indices that were
-        // not independently verified. Only return unique leaf entries.
-        let mut seen = BTreeSet::new();
-        let verified_leaves: Vec<(u64, Vec<u8>)> = self
-            .leaves
-            .iter()
-            .filter(|(idx, _)| seen.insert(*idx))
-            .cloned()
-            .collect();
-        Ok(verified_leaves)
+        Ok(self.canonical_leaves())
     }
 
     /// Verify the proof and return the computed MMR root hash along with the
@@ -544,6 +539,12 @@ impl MmrTreeProof {
     /// Unlike [`verify`](Self::verify), this does NOT check against an expected
     /// root — the caller is responsible for validating the root (typically via
     /// the Merk child hash mechanism).
+    ///
+    /// The returned leaves follow the same contract as [`verify`]: ascending
+    /// `leaf_index` order, deduplicated by index, independent of the order
+    /// the proof carried them in.
+    ///
+    /// [`verify`]: Self::verify
     pub fn verify_and_get_root(&self) -> Result<([u8; 32], VerifiedLeaves)> {
         if self.leaves.is_empty() {
             return Err(Error::InvalidProof(
@@ -588,16 +589,29 @@ impl MmrTreeProof {
             Error::InvalidProof(format!("MMR proof root calculation failed: {}", e))
         })?;
 
-        // Deduplicate by leaf_index
+        Ok((root.hash(), self.canonical_leaves()))
+    }
+
+    /// The proof's leaves in their canonical, authenticated order:
+    /// ascending by `leaf_index`, one entry per index.
+    ///
+    /// Root computation (`calculate_peaks_hashes`) sorts the leaves by
+    /// position and keeps the FIRST occurrence of a duplicated position, so
+    /// the leaf set and the surviving value per index are what the root
+    /// binds — the sequence the proof was encoded in is not. Returning that
+    /// sequence would let a prover choose which entries survive a caller's
+    /// limit/truncation without changing the root (issue #854); returning
+    /// the canonical order removes that degree of freedom.
+    fn canonical_leaves(&self) -> VerifiedLeaves {
         let mut seen = BTreeSet::new();
-        let verified_leaves: Vec<(u64, Vec<u8>)> = self
+        let mut leaves: VerifiedLeaves = self
             .leaves
             .iter()
             .filter(|(idx, _)| seen.insert(*idx))
             .cloned()
             .collect();
-
-        Ok((root.hash(), verified_leaves))
+        leaves.sort_by_key(|(idx, _)| *idx);
+        leaves
     }
 
     /// Serialize this proof to bytes using bincode.

@@ -2194,7 +2194,9 @@ impl GroveDb {
                     Op::Push(node) | Op::PushInverted(node) => node,
                     _ => continue,
                 };
-                let Node::KVValueHashFeatureType(key, value, _, feature_type) = node else {
+                let Node::KVValueHashFeatureType(key, value, committed_value_hash, feature_type) =
+                    node
+                else {
                     continue;
                 };
                 let elem = match Element::deserialize(value, grove_version) {
@@ -2214,13 +2216,26 @@ impl GroveDb {
                     Ok(p) => p,
                     Err(e) => return Err(Error::from(e)).wrap_with_cost(cost),
                 };
+                // Resolve stored bytes first, then select the representation
+                // bound by this row. Legacy direct writes may coexist with
+                // stored-terminal commitments in the same paginated tree.
                 let referenced_elem = cost_return_on_error!(
                     &mut cost,
-                    self.follow_reference(
+                    self.follow_reference_as_stored(
                         absolute_path.as_slice().into(),
                         true,
                         None,
                         grove_version
+                    )
+                );
+                let reference_element_hash = value_hash(value).unwrap_add_cost(&mut cost);
+                let referenced_elem = cost_return_on_error!(
+                    &mut cost,
+                    Self::reference_terminal_as_committed(
+                        referenced_elem,
+                        &reference_element_hash,
+                        committed_value_hash,
+                        grove_version,
                     )
                 );
                 let serialized_referenced_elem = match referenced_elem.serialize(grove_version) {
@@ -2232,7 +2247,6 @@ impl GroveDb {
                         .wrap_with_cost(cost);
                     }
                 };
-                let reference_element_hash = value_hash(value).unwrap_add_cost(&mut cost);
                 *node = match feature_type {
                     TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => {
                         Node::KVRefValueHashCountSum(
@@ -2392,6 +2406,16 @@ impl GroveDb {
                 _ => None,
             };
 
+            // Merk emits references with their stored combined value hash.
+            // Preserve it before replacing the node with a resolved payload.
+            let committed_value_hash = match op {
+                Op::Push(Node::KVValueHash(_, _, hash))
+                | Op::PushInverted(Node::KVValueHash(_, _, hash))
+                | Op::Push(Node::KVValueHashFeatureType(_, _, hash, _))
+                | Op::PushInverted(Node::KVValueHashFeatureType(_, _, hash, _)) => Some(*hash),
+                _ => None,
+            };
+
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
                     Node::KV(key, value)
@@ -2412,6 +2436,11 @@ impl GroveDb {
                             // with `Reference` — both produce a
                             // KVRefValueHash{,Count} node with the
                             // dereferenced target's serialized bytes.
+                            //
+                            // Select the target bytes by the node's existing
+                            // commitment, not the current GroveVersion: a V4
+                            // reader may encounter V3 direct-written references
+                            // that bind the unwrapped terminal.
                             Ok(Element::Reference(reference_path, ..))
                             | Ok(Element::ReferenceWithSumItem(reference_path, ..)) => {
                                 let absolute_path = cost_return_on_error_into!(
@@ -2426,11 +2455,30 @@ impl GroveDb {
 
                                 let referenced_elem = cost_return_on_error_into!(
                                     &mut cost,
-                                    self.follow_reference(
+                                    self.follow_reference_as_stored(
                                         absolute_path.as_slice().into(),
                                         true,
                                         None,
                                         grove_version
+                                    )
+                                );
+
+                                let reference_element_hash =
+                                    value_hash(value).unwrap_add_cost(&mut cost);
+                                let committed_value_hash = cost_return_on_error_no_add!(
+                                    cost,
+                                    committed_value_hash.ok_or_else(|| Error::CorruptedData(
+                                        "reference proof node is missing its committed value hash"
+                                            .to_string()
+                                    ))
+                                );
+                                let referenced_elem = cost_return_on_error!(
+                                    &mut cost,
+                                    Self::reference_terminal_as_committed(
+                                        referenced_elem,
+                                        &reference_element_hash,
+                                        &committed_value_hash,
+                                        grove_version,
                                     )
                                 );
 
@@ -2452,7 +2500,7 @@ impl GroveDb {
                                     Node::KVRefValueHashCountSum(
                                         key.to_owned(),
                                         serialized_referenced_elem.expect("confirmed ok above"),
-                                        value_hash(value).unwrap_add_cost(&mut cost),
+                                        reference_element_hash,
                                         count,
                                         sum,
                                     )
@@ -2460,21 +2508,21 @@ impl GroveDb {
                                     Node::KVRefValueHashSum(
                                         key.to_owned(),
                                         serialized_referenced_elem.expect("confirmed ok above"),
-                                        value_hash(value).unwrap_add_cost(&mut cost),
+                                        reference_element_hash,
                                         sum,
                                     )
                                 } else if let Some(count) = count_for_ref {
                                     Node::KVRefValueHashCount(
                                         key.to_owned(),
                                         serialized_referenced_elem.expect("confirmed ok above"),
-                                        value_hash(value).unwrap_add_cost(&mut cost),
+                                        reference_element_hash,
                                         count,
                                     )
                                 } else {
                                     Node::KVRefValueHash(
                                         key.to_owned(),
                                         serialized_referenced_elem.expect("confirmed ok above"),
-                                        value_hash(value).unwrap_add_cost(&mut cost),
+                                        reference_element_hash,
                                     )
                                 };
                                 limit_state.charge_row_with_instance(&mut frame_instance);
@@ -3847,9 +3895,12 @@ impl GroveDb {
         if let Some(limit) = overall_limit.as_mut() {
             let matched = cost_return_on_error_no_add!(
                 cost,
-                Self::expand_query_to_u64_positions(&sub_query.items, total_count)
+                super::position_intervals::PositionIntervals::from_query_items(
+                    &sub_query.items,
+                    total_count
+                )
             );
-            let count = matched.len().min(u16::MAX as usize) as u16;
+            let count = matched.len().min(u16::MAX as u64) as u16;
             *limit = limit.saturating_sub(count);
         }
 

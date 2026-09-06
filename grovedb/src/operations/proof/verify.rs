@@ -15,6 +15,7 @@ use grovedb_version::{
     check_grovedb_v0, version::GroveVersion, TryFromVersioned, TryIntoVersioned,
 };
 
+use super::position_intervals::PositionIntervals;
 #[cfg(feature = "proof_debug")]
 use crate::operations::proof::util::{
     hex_to_ascii, path_as_slices_hex_to_ascii, path_hex_to_ascii,
@@ -703,12 +704,20 @@ impl GroveDb {
             // NonCounted-wrapped values are checked **before**
             // unwrapping via `into_underlying`, since the wrapper
             // itself is the rejected shape. The merk-level prover
-            // already refuses to emit NonCounted entries as
-            // value-bearing nodes, so an honest proof can never
-            // surface one here. Reject as `InvalidProof`
-            // (forgery) rather than `NotSupported` to make the
-            // distinction visible.
-            if elem.is_non_counted() {
+            // already refuses to emit NonCounted entries of the proved
+            // tree as value-bearing nodes, so an honest proof can never
+            // surface one of the tree's OWN entries wrapped. Reject as
+            // `InvalidProof` (forgery) rather than `NotSupported` to
+            // make the distinction visible.
+            //
+            // A row resolved through a reference is the exception: a
+            // reference commits to its terminal's stored bytes verbatim
+            // (wrapper included — see `follow_reference_as_stored`), so
+            // a target that lives wrapped in a count-bearing tree
+            // legitimately surfaces here wrapped. The merk verifier
+            // flags those rows, and the wrapper is looked through below
+            // like everywhere else.
+            if elem.is_non_counted() && !item.resolved_from_reference {
                 return Err(Error::InvalidProof(
                     query.clone(),
                     format!(
@@ -2595,32 +2604,38 @@ impl GroveDb {
                     "MMR path not found in query".to_string(),
                 ))?;
 
-        // Build expected and proved sets for completeness + soundness.
+        // Completeness + soundness over position INTERVALS, never an
+        // enumerated set. `element_mmr_size` is read from the parent
+        // element bytes carried by the proof, which are only bound to the
+        // trusted root after this layer returns, so nothing below may cost
+        // work proportional to it: the interval build is O(query items),
+        // and both checks are O(proved leaves), which the proof bytes bound
+        // (issue #856).
         let leaf_count = grovedb_merkle_mountain_range::mmr_size_to_leaf_count(element_mmr_size);
-        let expected_indices = Self::expand_query_to_u64_positions(&sub_query.items, leaf_count)?;
+        let expected_indices = PositionIntervals::from_query_items(&sub_query.items, leaf_count)?;
         let proved_indices: BTreeSet<u64> = verified_leaves.iter().map(|(idx, _)| *idx).collect();
 
         // Soundness: no unrequested leaves in the proof.
-        let extra: Vec<u64> = proved_indices
-            .difference(&expected_indices)
-            .copied()
-            .collect();
+        let extra = expected_indices.extra_in(proved_indices.iter());
         if !extra.is_empty() {
             return Err(Error::InvalidProof(
                 query.clone(),
-                format!("MMR proof contains unrequested leaf indices {:?}", extra),
+                format!(
+                    "MMR proof contains unrequested leaf indices ({})",
+                    extra.describe()
+                ),
             ));
         }
 
         // Completeness: every requested leaf must be in the proof.
-        let missing: Vec<u64> = expected_indices
-            .difference(&proved_indices)
-            .copied()
-            .collect();
+        let missing = expected_indices.missing_from(&proved_indices);
         if !missing.is_empty() {
             return Err(Error::InvalidProof(
                 query.clone(),
-                format!("MMR proof missing requested leaf indices {:?}", missing),
+                format!(
+                    "MMR proof missing requested leaf indices ({})",
+                    missing.describe()
+                ),
             ));
         }
 
@@ -2747,32 +2762,36 @@ impl GroveDb {
         }
 
         // Completeness: every position the query expects must be present in
-        // the proof values. Build the expected set and check coverage.
+        // the proof values. The expected set is kept as position INTERVALS,
+        // never enumerated: `element_total_count` comes from the parent
+        // element bytes carried by the proof, which are only bound to the
+        // trusted root after this layer returns, so nothing here may cost
+        // work proportional to it. The interval build is O(query items) and
+        // the coverage check is O(proved values), which the proof bytes
+        // bound (issue #856).
         let expected_positions =
-            Self::expand_query_to_u64_positions(&sub_query.items, element_total_count)?;
+            PositionIntervals::from_query_items(&sub_query.items, element_total_count)?;
         let proved_positions: BTreeSet<u64> = values.iter().map(|(pos, _)| *pos).collect();
-        let missing: Vec<u64> = expected_positions
-            .difference(&proved_positions)
-            .copied()
-            .collect();
+        let missing = expected_positions.missing_from(&proved_positions);
         if !missing.is_empty() {
             return Err(Error::InvalidProof(
                 query.clone(),
                 format!(
-                    "BulkAppendTree proof missing requested positions {:?}",
-                    missing
+                    "BulkAppendTree proof missing requested positions ({})",
+                    missing.describe()
                 ),
             ));
         }
 
         // Filter values by checking each position against the actual query
         // items. This enforces soundness: only positions matching the
-        // original query are included in results.
+        // original query are included in results (chunk-aligned proofs
+        // legitimately carry a superset of the queried positions).
         for (position, value) in values {
-            let key = position.to_be_bytes().to_vec();
-            if !sub_query.items.iter().any(|item| item.contains(&key)) {
+            if !expected_positions.contains(position) {
                 continue;
             }
+            let key = position.to_be_bytes().to_vec();
             let element = Element::new_item(value);
             let serialized = element.serialize(grove_version).map_err(|e| {
                 Error::CorruptedData(format!(
@@ -3103,136 +3122,6 @@ impl GroveDb {
         }
 
         Ok((min_start, max_end))
-    }
-
-    /// Expand query items (with BE u64 keys) into a set of individual positions
-    /// bounded by `count`. Used for completeness checking in non-Merk
-    /// verifiers.
-    pub(crate) fn expand_query_to_u64_positions(
-        items: &[grovedb_merk::proofs::query::QueryItem],
-        count: u64,
-    ) -> Result<BTreeSet<u64>, Error> {
-        use grovedb_merk::proofs::query::QueryItem;
-
-        fn be_u64(key: &[u8]) -> Result<u64, Error> {
-            let arr: [u8; 8] = key.try_into().map_err(|_| {
-                Error::InvalidInput("position key must be exactly 8 bytes (BE u64)")
-            })?;
-            Ok(u64::from_be_bytes(arr))
-        }
-
-        if count == 0 {
-            return Ok(BTreeSet::new());
-        }
-
-        const MAX_POSITIONS: usize = 10_000_000;
-        let max_idx = count - 1;
-        let mut positions = BTreeSet::new();
-
-        macro_rules! check_cap {
-            ($positions:expr) => {
-                if $positions.len() > MAX_POSITIONS {
-                    return Err(Error::InvalidInput("query range too large"));
-                }
-            };
-        }
-
-        for item in items {
-            match item {
-                QueryItem::Key(key) => {
-                    let idx = be_u64(key)?;
-                    if idx < count {
-                        positions.insert(idx);
-                    }
-                }
-                QueryItem::RangeInclusive(range) => {
-                    let s = be_u64(range.start())?;
-                    let e = be_u64(range.end())?.min(max_idx);
-                    for idx in s..=e {
-                        positions.insert(idx);
-                        check_cap!(positions);
-                    }
-                }
-                QueryItem::Range(range) => {
-                    let s = be_u64(&range.start)?;
-                    let e = be_u64(&range.end)?.min(count);
-                    for idx in s..e {
-                        positions.insert(idx);
-                        check_cap!(positions);
-                    }
-                }
-                QueryItem::RangeFrom(range) => {
-                    let s = be_u64(&range.start)?;
-                    for idx in s..count {
-                        positions.insert(idx);
-                        check_cap!(positions);
-                    }
-                }
-                QueryItem::RangeTo(range) => {
-                    let e = be_u64(&range.end)?.min(count);
-                    for idx in 0..e {
-                        positions.insert(idx);
-                        check_cap!(positions);
-                    }
-                }
-                QueryItem::RangeToInclusive(range) => {
-                    let e = be_u64(&range.end)?.min(max_idx);
-                    for idx in 0..=e {
-                        positions.insert(idx);
-                        check_cap!(positions);
-                    }
-                }
-                QueryItem::RangeFull(..) => {
-                    for idx in 0..count {
-                        positions.insert(idx);
-                        check_cap!(positions);
-                    }
-                }
-                QueryItem::RangeAfter(range) => {
-                    let s = be_u64(&range.start)?;
-                    for idx in s.saturating_add(1)..count {
-                        positions.insert(idx);
-                        check_cap!(positions);
-                    }
-                }
-                QueryItem::RangeAfterTo(range) => {
-                    let s = be_u64(&range.start)?;
-                    let e = be_u64(&range.end)?.min(count);
-                    for idx in s.saturating_add(1)..e {
-                        positions.insert(idx);
-                        check_cap!(positions);
-                    }
-                }
-                QueryItem::RangeAfterToInclusive(range) => {
-                    let s = be_u64(range.start())?;
-                    let e = be_u64(range.end())?.min(max_idx);
-                    for idx in s.saturating_add(1)..=e {
-                        positions.insert(idx);
-                        check_cap!(positions);
-                    }
-                }
-                QueryItem::AggregateCountOnRange(_) => {
-                    return Err(Error::InvalidInput(
-                        "AggregateCountOnRange is only supported on provable count trees, \
-                         not on this tree type",
-                    ));
-                }
-                QueryItem::AggregateSumOnRange(_) => {
-                    return Err(Error::InvalidInput(
-                        "AggregateSumOnRange is only supported on provable sum trees, \
-                         not on this tree type",
-                    ));
-                }
-                QueryItem::AggregateCountAndSumOnRange(_) => {
-                    return Err(Error::InvalidInput(
-                        "AggregateCountAndSumOnRange is only supported on \
-                         ProvableCountProvableSumTree, not on this tree type",
-                    ));
-                }
-            }
-        }
-
-        Ok(positions)
     }
 
     /// ╔══════════════════════════════════════════════════════════════════╗

@@ -331,11 +331,13 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 insert: 0,
                 insert_on_transaction: 0,
                 insert_without_transaction: 0,
-                // v1: non-batch insert writes CountSumTree / ProvableCountTree /
-                // ProvableCountSumTree as layered subtrees, consistent with the
-                // batch path. GROVE_V1 / GROVE_V2 keep v0 (Op::Put) to preserve
-                // the protocol-v11 consensus root (testnet block 245,344).
-                add_element_on_transaction: 1,
+                // v2: a directly inserted Reference binds the value hash of its
+                // terminal's STORED bytes (wrapper included for a NonCounted
+                // terminal), matching what the batch reference resolver has
+                // always committed to. v1 (GROVE_V3) hashed the looked-through
+                // terminal, so direct and batch writes of the same reference
+                // disagreed on the root (issue #858).
+                add_element_on_transaction: 2,
                 add_element_without_transaction: 0,
                 insert_if_not_exists: 0,
                 insert_if_not_exists_return_existing_element: 0,
