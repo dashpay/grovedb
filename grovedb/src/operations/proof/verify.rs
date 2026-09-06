@@ -1257,12 +1257,18 @@ impl GroveDb {
                 )
             })?;
 
-        // Present rows only, in walk order; absent keys (value None)
-        // are covered by the proof but never scanned by the engine.
-        let window: Vec<(&Vec<u8>, &Vec<u8>)> = window_result
+        // Present rows only, in walk order, each kept WITH its binding
+        // evidence (the merk-surfaced value hash and whether a child hash
+        // was verified); absent keys (value None) are covered by the
+        // proof but never scanned by the engine.
+        let window: Vec<(&Vec<u8>, &Vec<u8>, &CryptoHash, bool)> = window_result
             .result_set
             .iter()
-            .filter_map(|row| row.value.as_ref().map(|value| (&row.key, value)))
+            .filter_map(|row| {
+                row.value
+                    .as_ref()
+                    .map(|value| (&row.key, value, &row.proof, row.child_hash_verified))
+            })
             .collect();
         if window.len() != payload.window_len as usize {
             return Err(Error::InvalidProof(
@@ -1287,7 +1293,7 @@ impl GroveDb {
         let mut matches: Vec<(Vec<u8>, i64)> = Vec::new();
         let mut hard_cap_tripped = false;
 
-        for (key, value_bytes) in &window {
+        for (key, value_bytes, row_value_hash, child_hash_verified) in &window {
             // Pre-element conditions (the engine's loop guards): a
             // window that continues past a fired stop hides where the
             // walk really ended.
@@ -1295,6 +1301,27 @@ impl GroveDb {
                 return Err(Error::InvalidProof(
                     query.clone(),
                     "sum-budget window continues past its stop condition".to_string(),
+                ));
+            }
+            // Binding evidence (#870): the fold/skip decision below reads
+            // the element bytes, so they must be the bytes the root
+            // commits. An item row is bound when the merk verifier hashed
+            // its value itself (`H(value) == value_hash`); a composite row
+            // (tree, reference) is bound only when the merk verifier
+            // checked `combine_hash(H(value), child_hash) == value_hash`
+            // on a node carrying the child hash. A bare `KVValueHash` row
+            // satisfies neither: its bytes are free for a prover to
+            // rewrite under a genuine root, which is exactly how a sum
+            // item could be disguised as a tree and dropped.
+            let simply_bound = value_hash(value_bytes).value() == *row_value_hash;
+            if !simply_bound && !*child_hash_verified {
+                return Err(Error::InvalidProof(
+                    query.clone(),
+                    format!(
+                        "sum-budget window row {} presents element bytes the proof does not \
+                         bind: a composite row must carry its child hash",
+                        hex::encode(key)
+                    ),
                 ));
             }
             scanned = scanned.saturating_add(1);
@@ -1307,9 +1334,18 @@ impl GroveDb {
             let element = Element::deserialize(value_bytes, grove_version)?;
             // Provable fold semantics: references and non-sum elements
             // are skipped (they cannot be replayed / do not contribute).
+            // Their bytes are authenticated above, so the skip is too.
             if element.is_reference() || !element.is_sum_item() {
                 continue;
             }
+            // A sum item commits the plain hash of its bytes, and the
+            // merk verifier refuses item elements on child-hash nodes at
+            // proof version 1, so a row that reaches the fold is always
+            // simply bound on a proof it accepted.
+            debug_assert!(
+                simply_bound,
+                "a folded sum item row must be bound by its own hash"
+            );
             let value = match element.into_underlying() {
                 Element::SumItem(value, _) => value,
                 Element::ItemWithSumItem(_, value, _) => value,
