@@ -473,9 +473,14 @@ fn combined_verifier_rejects_disjoint_leaf_with_children() {
     let bytes = encode_proof(&ops);
     let result = verify_aggregate_count_and_sum_on_range_proof(&bytes, &inner_range).unwrap();
     let err = result.expect_err("Disjoint HashWithCountAndSum with children must be rejected");
+    // Since issue #853 `Tree::attach` refuses to hang anything under an
+    // opaque node, so `execute` rejects this shape before the shape walk
+    // runs. The shape walk's own check is retained as defense in depth,
+    // so either message is an acceptable rejection.
     match err {
         Error::InvalidProofError(msg) => assert!(
-            msg.contains("Disjoint position must be a leaf"),
+            msg.contains("cannot have children")
+                || msg.contains("Disjoint position must be a leaf"),
             "unexpected message: {msg}"
         ),
         other => panic!("expected InvalidProofError, got {:?}", other),
@@ -513,9 +518,14 @@ fn combined_verifier_rejects_contained_leaf_with_children() {
     let bytes = encode_proof(&ops);
     let result = verify_aggregate_count_and_sum_on_range_proof(&bytes, &inner_range).unwrap();
     let err = result.expect_err("Contained HashWithCountAndSum with children must be rejected");
+    // Since issue #853 `Tree::attach` refuses to hang anything under an
+    // opaque node, so `execute` rejects this shape before the shape walk
+    // runs. The shape walk's own check is retained as defense in depth,
+    // so either message is an acceptable rejection.
     match err {
         Error::InvalidProofError(msg) => assert!(
-            msg.contains("Contained position must be a leaf"),
+            msg.contains("cannot have children")
+                || msg.contains("Contained position must be a leaf"),
             "unexpected message: {msg}"
         ),
         other => panic!("expected InvalidProofError, got {:?}", other),
@@ -551,9 +561,14 @@ fn combined_verifier_rejects_non_kvdigestcountsum_at_boundary() {
     let bytes = encode_proof(&ops);
     let result = verify_aggregate_count_and_sum_on_range_proof(&bytes, &inner_range).unwrap();
     let err = result.expect_err("non-KVDigestCountSum at Boundary must be rejected");
+    // Since issue #853 `Tree::attach` refuses to hang anything under an
+    // opaque node, so `execute` rejects this shape before the shape walk
+    // runs. The shape walk's own check is retained as defense in depth,
+    // so either message is an acceptable rejection.
     match err {
         Error::InvalidProofError(msg) => assert!(
-            msg.contains("expected KVDigestCountSum") && msg.contains("Boundary"),
+            msg.contains("cannot have children")
+                || (msg.contains("expected KVDigestCountSum") && msg.contains("Boundary")),
             "unexpected message: {msg}"
         ),
         other => panic!("expected InvalidProofError, got {:?}", other),
@@ -986,9 +1001,14 @@ fn combined_verifier_rejects_hashwithcountandsum_at_boundary_position() {
     let result = verify_aggregate_count_and_sum_on_range_proof(&bytes, &inner_range).unwrap();
     let err =
         result.expect_err("HashWithCountAndSum at a Boundary position must be rejected by Phase 2");
+    // Since issue #853 `Tree::attach` refuses to hang anything under an
+    // opaque node, so `execute` rejects this shape before the shape walk
+    // runs. The shape walk's own check is retained as defense in depth,
+    // so either message is an acceptable rejection.
     match err {
         Error::InvalidProofError(msg) => assert!(
-            msg.contains("expected KVDigestCountSum") && msg.contains("Boundary"),
+            msg.contains("cannot have children")
+                || (msg.contains("expected KVDigestCountSum") && msg.contains("Boundary")),
             "unexpected message: {msg}"
         ),
         other => panic!("expected InvalidProofError, got {:?}", other),
