@@ -21,7 +21,12 @@
 //!   `NonCounted`-wrapped terminal), matching the batch reference resolver.
 //!   v1 hashed the looked-through terminal, so a directly inserted reference
 //!   to a wrapped item committed a different root than the same reference
-//!   applied in a batch (issue #858). Selected by `GROVE_V4`+.
+//!   applied in a batch (issue #858). v2 also refuses a reference whose
+//!   chain runs back through the position being written, which v1 accepted
+//!   when that position was being overwritten: the stale stored element
+//!   made the chain look acyclic and the write committed a cycle that every
+//!   later read failed on. The batch path already refuses it. Selected by
+//!   `GROVE_V4`+.
 //!
 //! The implementations are otherwise identical. See [v0] / [v1] / [v2].
 //!

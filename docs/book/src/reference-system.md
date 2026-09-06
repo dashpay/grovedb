@@ -326,6 +326,24 @@ graph LR
 >
 > Without cycle detection, this would loop forever. `MAX_REFERENCE_HOPS = 10` also caps traversal depth for long chains.
 
+### Cycles are refused at write time
+
+Reads detect a cycle only once it exists, and once one is committed every
+`get`, proof and `verify_grovedb` that touches a key on it fails. Writes
+therefore refuse the reference that would close one. A reference is resolved
+to its terminal when it is written, and that walk treats the position being
+written as already visited: storage still holds the element that position had
+before — an item, say — so a chain resolved from the target alone would read
+that stale element and look acyclic. Overwriting `B` in `A → B(item)` with a
+reference back to `A` is the canonical case.
+
+- `apply_batch` has always refused it: the batch resolver sees the overwriting
+  op in the batch and follows the new reference instead of the stored item.
+- Direct `insert` refuses it from `GROVE_V4` (`add_element_on_transaction: 2`)
+  by seeding the stored-terminal walk with the referrer's own path. `GROVE_V3`
+  is live and keeps accepting the overwrite, so that outcome is preserved for
+  replay.
+
 ## References in Merk — Combined Value Hashes
 
 When a Reference is stored in a Merk tree, its `value_hash` must authenticate
