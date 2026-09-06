@@ -2273,87 +2273,10 @@ impl GroveDb {
                                 || !matches!(element, Element::Tree(None, _)))
                     {
                         // For empty trees in the result set (no lower layer
-                        // proof), verify that the value_hash matches
-                        // combine_hash(H(value), NULL_HASH). Without this
-                        // check, an attacker could swap tree types (e.g.
-                        // SumTree→Tree) in KVValueHash nodes without breaking
-                        // the merk proof, since the value bytes are not part of
-                        // the KVValueHash tree hash computation.
-                        //
-                        // Indexed-tree elements (PCIT / PSIT / PCPSIT) have TWO
-                        // (or more) child Merks — a primary and one-or-more
-                        // secondaries — so their empty terminal proofs commit
-                        // `combine_hash_three(H(value), NULL_HASH, second)`
-                        // rather than the two-input `combine_hash`.
-                        //   - Empty PCIT / PSIT: `second = NULL_HASH` (the lone
-                        //     secondary's root hash while empty).
-                        //   - Empty PCPSIT: `second = axes_digest(zero_axes)`,
-                        //     the digest over the element's own axes list with
-                        //     every axis's secondary root hash = NULL_HASH.
-                        // These mirror the insert commit path in
-                        // add_element_on_transaction/v1.rs. Without the
-                        // indexed-specific arms, honest empty-indexed terminal
-                        // proofs fail verification.
-                        let empty_indexed_expected: Option<CryptoHash> = match &element {
-                            Element::ProvableCountIndexedTree(None, None, 0, _)
-                            | Element::ProvableSumIndexedTree(None, None, 0, _) => Some(
-                                combine_hash_three(
-                                    value_hash(value_bytes).value(),
-                                    &NULL_HASH,
-                                    &NULL_HASH,
-                                )
-                                .value()
-                                .to_owned(),
-                            ),
-                            Element::ProvableCountProvableSumIndexedTree(None, 0, 0, axes, _)
-                                if axes.iter().all(|(_, sk)| sk.is_none()) =>
-                            {
-                                let zero_axes: Vec<(u8, CryptoHash)> =
-                                    axes.iter().map(|(t, _)| (*t, NULL_HASH)).collect();
-                                let digest = axes_digest(&zero_axes).value().to_owned();
-                                Some(
-                                    combine_hash_three(
-                                        value_hash(value_bytes).value(),
-                                        &NULL_HASH,
-                                        &digest,
-                                    )
-                                    .value()
-                                    .to_owned(),
-                                )
-                            }
-                            _ => None,
-                        };
-                        if let Some(expected_value_hash) = empty_indexed_expected {
-                            if hash != &expected_value_hash {
-                                return Err(Error::InvalidProof(
-                                    query.clone(),
-                                    format!(
-                                        "V1 empty indexed-tree value hash mismatch at key {}: \
-                                         expected {}, got {}",
-                                        hex::encode(key),
-                                        hex::encode(hash),
-                                        hex::encode(expected_value_hash)
-                                    ),
-                                ));
-                            }
-                        } else if element.is_any_tree() && !element.is_non_empty_tree() {
-                            let expected_value_hash =
-                                combine_hash(value_hash(value_bytes).value(), &NULL_HASH)
-                                    .value()
-                                    .to_owned();
-                            if hash != &expected_value_hash {
-                                return Err(Error::InvalidProof(
-                                    query.clone(),
-                                    format!(
-                                        "V1 empty tree value hash mismatch at key {}: \
-                                         expected {}, got {}",
-                                        hex::encode(key),
-                                        hex::encode(hash),
-                                        hex::encode(expected_value_hash)
-                                    ),
-                                ));
-                            }
-                        }
+                        // proof), bind the element bytes to the proof's
+                        // value_hash before trusting anything decoded from
+                        // them (see `verify_empty_tree_binding`).
+                        Self::verify_empty_tree_binding(query, key, &element, value_bytes, hash)?;
 
                         // For trees reported without a subquery (no lower layer
                         // proof), the prover must use
@@ -2420,13 +2343,22 @@ impl GroveDb {
                         && internal_query.has_subquery_or_matching_in_path_on_key(key)
                     {
                         // An EMPTY tree a subquery matches: an empty
-                        // child, not a result row. When the governing
-                        // query asks for parent-tree inclusion, the
-                        // matched parent is still reported — empty and
-                        // non-empty parents must behave alike — and,
-                        // like every parent-tree row, it does not
-                        // consume a budget slot (the documented
-                        // known limitation on the flag).
+                        // child, not a result row. "Empty" is so far
+                        // only what the element bytes CLAIM, and a
+                        // `KVValueHash*` node does not hash those bytes
+                        // — a prover can rewrite a populated tree into
+                        // its empty form, omit the lower layer, and the
+                        // root still verifies. Bind the claim to the
+                        // proof's value_hash before acting on it; the
+                        // real tree's child hash is NULL_HASH only if it
+                        // really is empty (issue #869).
+                        Self::verify_empty_tree_binding(query, key, &element, value_bytes, hash)?;
+                        // When the governing query asks for parent-tree
+                        // inclusion, the matched parent is still
+                        // reported — empty and non-empty parents must
+                        // behave alike — and, like every parent-tree
+                        // row, it does not consume a budget slot (the
+                        // documented known limitation on the flag).
                         if query.should_add_parent_tree_at_path(current_path, grove_version)? {
                             let path_key_optional_value =
                                 ProvedPathKeyOptionalValue::from_proved_key_value(
@@ -2453,6 +2385,32 @@ impl GroveDb {
                                 hex::encode(key),
                             ),
                         ));
+                    } else if element.is_any_tree() && !element.is_non_empty_tree() {
+                        // A claimed-empty plain `Tree` at a terminal
+                        // position while the caller excludes empty trees
+                        // from results (`include_empty_trees_in_result`
+                        // is false). It is not reported, but the claim
+                        // still decides that a key the trusted read
+                        // returns is absent from the result set — so it
+                        // must be bound exactly like a reported empty
+                        // tree (issue #869).
+                        Self::verify_empty_tree_binding(query, key, &element, value_bytes, hash)?;
+                    } else {
+                        // Every classification the verifier can act on
+                        // is either descended into (bound through its
+                        // lower layer), reported (bound above), or a
+                        // bound empty tree. Nothing else may be
+                        // silently skipped: the element bytes of a
+                        // `KVValueHash*` node are unauthenticated until
+                        // one of those paths binds them.
+                        return Err(Error::InvalidProof(
+                            query.clone(),
+                            format!(
+                                "V1 proof reports an element at key {} that is neither \
+                                 descended into nor bound to the proof",
+                                hex::encode(key),
+                            ),
+                        ));
                     }
                 }
             }
@@ -2475,6 +2433,94 @@ impl GroveDb {
         }
 
         Ok(root_hash)
+    }
+
+    /// Bind a claimed-empty tree's element bytes to the proof's
+    /// authenticated `value_hash`.
+    ///
+    /// A merk `KVValueHash*` node hashes `(key, value_hash)`; the element
+    /// bytes it carries are NOT part of the merk root, so everything the
+    /// verifier decodes from them — tree type, emptiness — is a claim
+    /// until it is tied to `value_hash`. A non-empty tree is tied through
+    /// the lower layer it descends into (`combine_hash(H(value), lower
+    /// root)`) or the child hash it must carry when reported terminally.
+    /// An empty tree has no lower layer, so the tie is that its committed
+    /// child hash is NULL_HASH: `value_hash == combine_hash(H(value),
+    /// NULL_HASH)`. Without this a prover could swap tree types
+    /// (SumTree→Tree) or rewrite a populated tree into its empty form —
+    /// omitting the descent — without breaking the merk proof.
+    ///
+    /// Indexed-tree elements (PCIT / PSIT / PCPSIT) have TWO (or more)
+    /// child Merks — a primary and one-or-more secondaries — so their
+    /// empty form commits `combine_hash_three(H(value), NULL_HASH,
+    /// second)` rather than the two-input `combine_hash`:
+    ///   - Empty PCIT / PSIT: `second = NULL_HASH` (the lone secondary's
+    ///     root hash while empty).
+    ///   - Empty PCPSIT: `second = axes_digest(zero_axes)`, the digest
+    ///     over the element's own axes list with every axis's secondary
+    ///     root hash = NULL_HASH.
+    /// These mirror the insert commit path in
+    /// add_element_on_transaction/v1.rs.
+    ///
+    /// Non-tree elements and non-empty trees pass through untouched:
+    /// their binding is the caller's responsibility.
+    fn verify_empty_tree_binding(
+        query: &PathQuery,
+        key: &[u8],
+        element: &Element,
+        value_bytes: &[u8],
+        hash: &CryptoHash,
+    ) -> Result<(), Error> {
+        let empty_indexed_expected: Option<CryptoHash> = match element {
+            Element::ProvableCountIndexedTree(None, None, 0, _)
+            | Element::ProvableSumIndexedTree(None, None, 0, _) => Some(
+                combine_hash_three(value_hash(value_bytes).value(), &NULL_HASH, &NULL_HASH)
+                    .value()
+                    .to_owned(),
+            ),
+            Element::ProvableCountProvableSumIndexedTree(None, 0, 0, axes, _)
+                if axes.iter().all(|(_, sk)| sk.is_none()) =>
+            {
+                let zero_axes: Vec<(u8, CryptoHash)> =
+                    axes.iter().map(|(t, _)| (*t, NULL_HASH)).collect();
+                let digest = axes_digest(&zero_axes).value().to_owned();
+                Some(
+                    combine_hash_three(value_hash(value_bytes).value(), &NULL_HASH, &digest)
+                        .value()
+                        .to_owned(),
+                )
+            }
+            _ => None,
+        };
+        if let Some(expected_value_hash) = empty_indexed_expected {
+            if hash != &expected_value_hash {
+                return Err(Error::InvalidProof(
+                    query.clone(),
+                    format!(
+                        "V1 empty indexed-tree value hash mismatch at key {}: expected {}, got {}",
+                        hex::encode(key),
+                        hex::encode(hash),
+                        hex::encode(expected_value_hash)
+                    ),
+                ));
+            }
+        } else if element.is_any_tree() && !element.is_non_empty_tree() {
+            let expected_value_hash = combine_hash(value_hash(value_bytes).value(), &NULL_HASH)
+                .value()
+                .to_owned();
+            if hash != &expected_value_hash {
+                return Err(Error::InvalidProof(
+                    query.clone(),
+                    format!(
+                        "V1 empty tree value hash mismatch at key {}: expected {}, got {}",
+                        hex::encode(key),
+                        hex::encode(hash),
+                        hex::encode(expected_value_hash)
+                    ),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Verify an MMR lower layer proof and add results.
