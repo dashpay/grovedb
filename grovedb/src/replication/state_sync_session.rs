@@ -288,9 +288,9 @@ pub struct MultiStateSyncSession<'db> {
     /// makes the group-splitting test non-vacuous.
     commits_deferred_for_open_group: usize,
 
-    /// Set when an intermediate commit failed, which loses the writes
-    /// accumulated since the previous one. Every subsequent entry point
-    /// refuses; see [`Self::intermediate_commit`].
+    /// Set when chunk application or an intermediate commit failed.
+    /// Application may already have consumed a restorer or changed pending
+    /// work, so every subsequent application and commit must refuse.
     failed: bool,
 
     /// In-flight indexed-tree groups, keyed by the
@@ -446,14 +446,8 @@ impl<'db> MultiStateSyncSession<'db> {
     /// Returns true if all subtrees have been fully synchronized.
     /// Returns false if sync has never started (no prefixes processed).
     pub fn is_sync_completed(&self) -> bool {
-        if self.current_prefixes.is_empty() && self.processed_prefixes.is_empty() {
+        if self.failed || !self.current_prefixes.is_empty() || self.processed_prefixes.is_empty() {
             return false;
-        }
-
-        for subtree_state_info in self.current_prefixes.values() {
-            if !subtree_state_info.pending_chunks.is_empty() {
-                return false;
-            }
         }
 
         if self.pending_discovered_subtrees.is_some() {
@@ -477,7 +471,7 @@ impl<'db> MultiStateSyncSession<'db> {
     pub fn commit(self: Pin<Box<Self>>, grove_version: &GroveVersion) -> Result<(), Error> {
         if self.failed {
             return Err(Error::CorruptedData(
-                "cannot commit a state sync session whose intermediate commit failed".to_string(),
+                "cannot commit a failed state sync session".to_string(),
             ));
         }
         if !self.is_sync_completed() {
@@ -585,6 +579,11 @@ impl<'db> MultiStateSyncSession<'db> {
         chunk_prefix: [u8; 32],
         grove_version: &GroveVersion,
     ) -> Result<Vec<u8>, Error> {
+        if self.failed {
+            return Err(Error::InternalError(
+                "state sync session has failed".to_string(),
+            ));
+        }
         let transaction_ref: &'db Transaction<'db> = unsafe {
             let tx: &Transaction<'db> = &self.as_ref().transaction;
             &*(tx as *const _)
@@ -1180,6 +1179,8 @@ impl<'db> MultiStateSyncSession<'db> {
     ///   format.
     /// - This function modifies the state of the synchronization session, so it
     ///   must be used carefully to maintain correctness and avoid errors.
+    /// - An error after chunk application begins abandons the session. Drop
+    ///   it and start a new restore; further application and commit refuse.
     /// - The pinned `self` ensures that the session cannot be moved in memory,
     ///   preserving consistency during the synchronization process.
     pub fn apply_chunk(
@@ -1218,7 +1219,7 @@ impl<'db> MultiStateSyncSession<'db> {
         }
         if self.failed {
             return Err(Error::InternalError(
-                "state sync session was abandoned after a failed intermediate commit".to_string(),
+                "state sync session has failed".to_string(),
             ));
         }
         if self.is_empty() {
@@ -1227,6 +1228,27 @@ impl<'db> MultiStateSyncSession<'db> {
             ));
         }
 
+        let result = self.apply_decoded_chunks(
+            nested_global_chunk_ids,
+            nested_global_chunks,
+            packed_global_chunks.len() as u64,
+            grove_version,
+        );
+        if result.is_err() {
+            // SAFETY: only the plain failure flag changes; the pinned
+            // transaction and every restorer remain in place until drop.
+            unsafe { self.as_mut().get_unchecked_mut() }.failed = true;
+        }
+        result
+    }
+
+    fn apply_decoded_chunks(
+        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        nested_global_chunk_ids: Vec<Vec<u8>>,
+        nested_global_chunks: Vec<Vec<u8>>,
+        payload_bytes: u64,
+        grove_version: &GroveVersion,
+    ) -> Result<Vec<Vec<u8>>, Error> {
         // Payload applied since the last commit. Counted on the wire
         // bytes rather than on the transaction's write batch because
         // RocksDB's only handle on that batch's size copies the whole
@@ -1234,7 +1256,7 @@ impl<'db> MultiStateSyncSession<'db> {
         // the Merk nodes being written), so a wire-byte budget bounds the
         // write set within a constant factor -- which is all a memory
         // budget needs to do.
-        *self.as_mut().bytes_since_commit() += packed_global_chunks.len() as u64;
+        *self.as_mut().bytes_since_commit() += payload_bytes;
 
         let db = self.db;
         // SAFETY: the transaction lives as long as the pinned session and is
@@ -1361,7 +1383,7 @@ impl<'db> MultiStateSyncSession<'db> {
                                 }
                                 completed_member_root = Some(merk_root);
                             } else {
-                                match restorer.finalize(grove_version) {
+                                match restorer.finalize_with_grovedb_elements(grove_version) {
                                     Ok(merk) => {
                                         completed_member_root = Some(merk.root_hash().unwrap());
                                     }

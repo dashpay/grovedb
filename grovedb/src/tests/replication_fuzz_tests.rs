@@ -430,7 +430,7 @@ mod tests {
     /// be reached: at least one mutant still decodes (so the canonical
     /// re-encode assertions actually run) and at least one is rejected (so
     /// the corpus is not just the identity). If a future encoding change
-    /// made every mutant unparseable, the properties would keep "passing"
+    /// made every mutant unparsable, the properties would keep "passing"
     /// while asserting nothing — this fails instead.
     /// Genuine edits of `valid` only — the unmutated input is deliberately
     /// NOT included, so "some mutant decodes" cannot be satisfied by the
@@ -480,7 +480,7 @@ mod tests {
         assert_corpus_reaches_both_arms(
             "unpack_nested_bytes",
             &pack_nested_bytes(vec![vec![1, 2, 3], vec![], vec![9; 10]]).unwrap(),
-            |b| unpack_nested_bytes(b),
+            unpack_nested_bytes,
         );
 
         assert_corpus_reaches_both_arms(
@@ -528,7 +528,7 @@ mod tests {
         assert_corpus_reaches_both_arms(
             "decode_non_merk_page",
             &encode_non_merk_page(true, vec![7, 7], vec![vec![1, 2], vec![3]]).unwrap(),
-            |b| decode_non_merk_page(b),
+            decode_non_merk_page,
         );
     }
 

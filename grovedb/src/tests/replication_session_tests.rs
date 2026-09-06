@@ -82,17 +82,17 @@ mod tests {
                 for (gid, gdata) in global_ids.iter().zip(global_data) {
                     let (_, _, tree_type, _) = decode_global_chunk_id(gid, &app_hash)?;
                     let mut gdata = gdata;
-                    if let Some(mutate) = mutate_page {
-                        if supports_entry_replay(tree_type) {
-                            let pages = unpack_nested_bytes(&gdata)?;
-                            let mut mutated_pages = Vec::with_capacity(pages.len());
-                            for page in pages {
-                                let (more, aux, entries) = decode_non_merk_page(&page)?;
-                                let (more, aux, entries) = mutate(more, aux, entries);
-                                mutated_pages.push(encode_non_merk_page(more, aux, entries)?);
-                            }
-                            gdata = pack_nested_bytes(mutated_pages)?;
+                    if let Some(mutate) = mutate_page
+                        && supports_entry_replay(tree_type)
+                    {
+                        let pages = unpack_nested_bytes(&gdata)?;
+                        let mut mutated_pages = Vec::with_capacity(pages.len());
+                        for page in pages {
+                            let (more, aux, entries) = decode_non_merk_page(&page)?;
+                            let (more, aux, entries) = mutate(more, aux, entries);
+                            mutated_pages.push(encode_non_merk_page(more, aux, entries)?);
                         }
+                        gdata = pack_nested_bytes(mutated_pages)?;
                     }
                     if let Some(mutate) = mutate_global {
                         gdata = mutate(tree_type, gid, gdata);
@@ -103,7 +103,30 @@ mod tests {
             }
 
             let more_ids =
-                session.apply_chunk(chunk_id.as_slice(), &chunk_data, version, grove_version)?;
+                match session.apply_chunk(chunk_id.as_slice(), &chunk_data, version, grove_version)
+                {
+                    Ok(ids) => ids,
+                    Err(err) => {
+                        // Rejection must leave the session unusable even if a
+                        // caller ignores the original error and tries to commit.
+                        assert!(
+                            !session.is_sync_completed(),
+                            "failed sync reports completion: {err}"
+                        );
+                        assert!(session
+                            .apply_chunk(&chunk_id, &chunk_data, version, grove_version)
+                            .is_err());
+                        assert!(
+                            dest.commit_session(session, grove_version).is_err(),
+                            "failed sync committed: {err}"
+                        );
+                        assert_eq!(
+                            dest.root_hash(None, grove_version).unwrap().unwrap(),
+                            grovedb_merk::tree::hash::NULL_HASH
+                        );
+                        return Err(err);
+                    }
+                };
 
             chunk_queue.extend(more_ids);
         }
@@ -978,7 +1001,14 @@ mod tests {
             "unexpected error: {err}"
         );
 
-        drop(session);
+        assert!(
+            !session.is_sync_completed(),
+            "rejected subtree must keep the sync incomplete"
+        );
+        assert!(
+            dest.commit_session(session, grove_version).is_err(),
+            "rejected subtree must prevent commit"
+        );
         assert_eq!(
             dest.root_hash(None, grove_version)
                 .unwrap()
@@ -990,7 +1020,6 @@ mod tests {
 
     #[test]
     fn is_sync_completed_returns_false_before_any_sync() {
-        let grove_version = GroveVersion::latest();
         let dest = make_empty_grovedb();
         let session = crate::replication::MultiStateSyncSession::new(
             &dest,
@@ -2942,10 +2971,9 @@ mod tests {
                 if matches!(
                     tree_type,
                     grovedb_merk::tree_type::TreeType::ProvableCountProvableSumTree
-                ) {
-                    if let Some(last) = gdata.last_mut() {
-                        *last ^= 0xFF;
-                    }
+                ) && let Some(last) = gdata.last_mut()
+                {
+                    *last ^= 0xFF;
                 }
                 gdata
             }),
