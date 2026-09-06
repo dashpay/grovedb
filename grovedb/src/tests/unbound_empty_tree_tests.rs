@@ -35,7 +35,9 @@ const ROWS: u8 = 3;
 enum Kind {
     Tree,
     SumTree,
+    CountSumTree,
     ProvableCountTree,
+    ProvableCountSumTree,
     /// Two child Merks: the empty form commits
     /// `combine_hash_three(H(value), NULL_HASH, NULL_HASH)`.
     ProvableSumIndexedTree,
@@ -45,10 +47,12 @@ enum Kind {
     ProvableCountProvableSumIndexedTree,
 }
 
-const KINDS: [Kind; 6] = [
+const KINDS: [Kind; 8] = [
     Kind::Tree,
     Kind::SumTree,
+    Kind::CountSumTree,
     Kind::ProvableCountTree,
+    Kind::ProvableCountSumTree,
     Kind::ProvableSumIndexedTree,
     Kind::ProvableCountIndexedTree,
     Kind::ProvableCountProvableSumIndexedTree,
@@ -64,7 +68,9 @@ impl Kind {
         match self {
             Kind::Tree => Element::empty_tree(),
             Kind::SumTree => Element::empty_sum_tree(),
+            Kind::CountSumTree => Element::empty_count_sum_tree(),
             Kind::ProvableCountTree => Element::empty_provable_count_tree(),
+            Kind::ProvableCountSumTree => Element::empty_provable_count_sum_tree(),
             Kind::ProvableSumIndexedTree => Element::empty_provable_sum_indexed_tree(),
             Kind::ProvableCountIndexedTree => Element::empty_provable_count_indexed_tree(),
             Kind::ProvableCountProvableSumIndexedTree => {
@@ -92,7 +98,7 @@ impl Kind {
                 .unwrap()
                 .expect("insert row");
             }
-            Kind::SumTree => {
+            Kind::SumTree | Kind::CountSumTree | Kind::ProvableCountSumTree => {
                 db.insert(
                     path.as_ref(),
                     &key,
@@ -537,5 +543,105 @@ fn unbound_non_tree_classification_under_a_subquery_is_rejected() {
                 rows.len()
             ),
         }
+    }
+}
+
+#[test]
+fn mixed_legacy_and_layered_empty_commitments_verify_after_upgrade() {
+    use grovedb_version::version::{v1::GROVE_V1, v2::GROVE_V2, v3::GROVE_V3};
+
+    use crate::batch::QualifiedGroveDbOp;
+
+    let latest = GroveVersion::latest();
+    for kind in [
+        Kind::CountSumTree,
+        Kind::ProvableCountTree,
+        Kind::ProvableCountSumTree,
+    ] {
+        let db = make_test_grovedb(latest);
+        // Mix both commitment formats in the same parent Merk. The read
+        // version cannot tell us which writer committed any particular row.
+        for (index, writer) in [&GROVE_V1, &GROVE_V2, &GROVE_V3, latest]
+            .into_iter()
+            .enumerate()
+        {
+            for batch in [false, true] {
+                let key = format!("v{}-{}", index + 1, if batch { "batch" } else { "direct" })
+                    .into_bytes();
+                if batch {
+                    db.apply_batch(
+                        vec![QualifiedGroveDbOp::insert_or_replace_op(
+                            vec![TEST_LEAF.to_vec()],
+                            key,
+                            kind.empty(),
+                        )],
+                        None,
+                        None,
+                        writer,
+                    )
+                    .unwrap()
+                    .expect("batch insert empty tree");
+                } else {
+                    db.insert([TEST_LEAF].as_ref(), &key, kind.empty(), None, None, writer)
+                        .unwrap()
+                        .expect("direct insert empty tree");
+                }
+            }
+        }
+        let root = db.root_hash(None, latest).unwrap().unwrap();
+        for reader in [&GROVE_V3, latest] {
+            for ascending in [false, true] {
+                for descend in [true, false] {
+                    let mut query = Query::new_range_full();
+                    query.left_to_right = ascending;
+                    if descend {
+                        query.set_subquery(Query::new_range_full());
+                    }
+                    let query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+                    let trusted = trusted_row_count(&db, &query, reader);
+                    assert_eq!(trusted, if descend { 0 } else { 8 });
+                    let proof = db.prove_query(&query, None, reader).unwrap().unwrap();
+                    for include_empty in [false, true] {
+                        let (verified_root, rows) = GroveDb::verify_query_with_options(
+                            &proof,
+                            &query,
+                            options(include_empty),
+                            reader,
+                        )
+                        .unwrap_or_else(|e| {
+                            panic!(
+                                "{kind:?} ascending={ascending} descend={descend} \
+                                 include_empty={include_empty}: {e}"
+                            )
+                        });
+                        assert_eq!(verified_root, root);
+                        assert_eq!(rows.len(), trusted);
+                    }
+
+                    // The legacy alternative must authenticate the actual
+                    // serialized bytes, not just accept this family of types.
+                    let fake = match kind {
+                        Kind::CountSumTree => Element::empty_provable_count_sum_tree(),
+                        _ => Element::empty_count_sum_tree(),
+                    };
+                    let forged = forge_element_bytes(&proof, b"v1-direct", &fake, reader);
+                    for include_empty in [false, true] {
+                        let err = GroveDb::verify_query_with_options(
+                            &forged,
+                            &query,
+                            options(include_empty),
+                            reader,
+                        )
+                        .expect_err("changing a legacy empty tree's bytes must be rejected");
+                        assert_rejected_by_emptiness_binding(kind, include_empty, &err);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            db.root_hash(None, latest).unwrap().unwrap(),
+            root,
+            "serving proofs must preserve stored commitments"
+        );
     }
 }

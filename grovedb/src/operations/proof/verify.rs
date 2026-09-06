@@ -2472,6 +2472,12 @@ impl GroveDb {
     /// These mirror the insert commit path in
     /// add_element_on_transaction/v1.rs.
     ///
+    /// GROVE_V1/V2 direct inserts committed empty `CountSumTree`,
+    /// `ProvableCountTree`, and `ProvableCountSumTree` as `H(value)`.
+    /// Those rows can coexist with layered commitments after an upgrade,
+    /// so accept that form for these types only when it authenticates the
+    /// exact serialized bytes, independently of the reader's version.
+    ///
     /// Non-tree elements and non-empty trees pass through untouched:
     /// their binding is the caller's responsibility.
     fn verify_empty_tree_binding(
@@ -2515,9 +2521,17 @@ impl GroveDb {
                 ));
             }
         } else if element.is_any_tree() && !element.is_non_empty_tree() {
-            let expected_value_hash = combine_hash(value_hash(value_bytes).value(), &NULL_HASH)
-                .value()
-                .to_owned();
+            let element_hash = value_hash(value_bytes).value().to_owned();
+            if matches!(
+                element,
+                Element::CountSumTree(None, ..)
+                    | Element::ProvableCountTree(None, ..)
+                    | Element::ProvableCountSumTree(None, ..)
+            ) && hash == &element_hash
+            {
+                return Ok(());
+            }
+            let expected_value_hash = combine_hash(&element_hash, &NULL_HASH).value().to_owned();
             if hash != &expected_value_hash {
                 return Err(Error::InvalidProof(
                     query.clone(),
