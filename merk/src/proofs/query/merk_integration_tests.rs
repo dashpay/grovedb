@@ -4631,3 +4631,87 @@ fn test_boundaries_in_proof_multiple_ranges() {
         boundaries
     );
 }
+
+/// Regression for issue #853: a `Node::Hash` proof node commits only to the
+/// 32-byte hash it carries — `Tree::hash()` ignores any children that the
+/// `Parent`/`Child` ops hang beneath it. Before the fix a prover could
+/// therefore park a forged `KV` push under a collapsed `Hash` leaf: the
+/// verifier consumed the push (in push order, not tree order) and emitted it
+/// as a result row, while the root hash still matched the honest tree.
+///
+/// The proof below is for the honest 3-node tree `[3] <- [5] -> [7]` and
+/// claims key `[3]` holds `"forged"` while reusing the honest child hashes.
+#[test]
+fn test_forged_row_under_hash_node_is_rejected() {
+    let tree = make_3_node_tree();
+    let expected_root = tree.hash().unwrap();
+    let left_hash = *tree.child_hash(true);
+    let right_hash = *tree.child_hash(false);
+
+    let malicious = [
+        Op::Push(Node::Hash(left_hash)),
+        Op::Push(Node::KV(vec![3], b"forged".to_vec())),
+        // hangs the forged KV as the right child of the opaque Hash leaf
+        Op::Child,
+        Op::Push(Node::KV(vec![5], vec![5])),
+        Op::Parent,
+        Op::Push(Node::Hash(right_hash)),
+        Op::Child,
+    ];
+    let mut bytes = vec![];
+    encode_into(malicious.iter(), &mut bytes);
+
+    let mut query = Query::new();
+    query.insert_key(vec![3]);
+
+    let result = query
+        .verify_proof(bytes.as_slice(), None, true, expected_root)
+        .unwrap();
+    match result {
+        Err(Error::InvalidProofError(msg)) => {
+            assert!(
+                msg.contains("Hash"),
+                "expected the opaque-node childlessness error, got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected InvalidProofError, got {other:?}"),
+        Ok(verified) => panic!(
+            "SECURITY BUG: forged row accepted under a Node::Hash: {:?}",
+            verified.result_set
+        ),
+    }
+}
+
+/// Same shape as [`test_forged_row_under_hash_node_is_rejected`] but the
+/// forged push is parked under the *right* collapsed subtree, using a key
+/// larger than every honest key so the push-ordering check is satisfied.
+#[test]
+fn test_forged_row_under_right_hash_node_is_rejected() {
+    let tree = make_3_node_tree();
+    let expected_root = tree.hash().unwrap();
+    let left_hash = *tree.child_hash(true);
+    let right_hash = *tree.child_hash(false);
+
+    let malicious = [
+        Op::Push(Node::Hash(left_hash)),
+        Op::Push(Node::KV(vec![5], vec![5])),
+        Op::Parent,
+        Op::Push(Node::Hash(right_hash)),
+        Op::Push(Node::KV(vec![9], b"forged".to_vec())),
+        Op::Child,
+        Op::Child,
+    ];
+    let mut bytes = vec![];
+    encode_into(malicious.iter(), &mut bytes);
+
+    let mut query = Query::new();
+    query.insert_key(vec![9]);
+
+    let result = query
+        .verify_proof(bytes.as_slice(), None, true, expected_root)
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::InvalidProofError(_))),
+        "forged row under a right-side Node::Hash must be rejected, got {result:?}"
+    );
+}

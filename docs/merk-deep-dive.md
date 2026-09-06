@@ -127,6 +127,11 @@ Node::Hash(hash: [u8; 32])
 - **Size**: 32 bytes
 - **Use Case**: When you need to verify tree structure but not the data
 - **Example**: Proving a path to a specific key without revealing sibling data
+- **Invariant**: Always a leaf of the proof tree. Its hash is taken verbatim,
+  so the verifier rejects any `Parent`/`Child` op that would attach a child
+  beneath it (the same rule applies to `HashWithCount`, `HashWithSum` and
+  `HashWithCountAndSum`). Otherwise data hung under the node would be invisible
+  to the root-hash check yet still reachable by query and restore traversal.
 
 ### 2. **KVHash**
 ```rust
@@ -326,6 +331,8 @@ Proof contains:
 2. Validate all hash computations
 3. Check for malformed proofs (wrong operation sequences)
 4. Verify aggregate values match individual components
+5. Opaque nodes (`Hash`, `HashWithCount`, `HashWithSum`, `HashWithCountAndSum`)
+   must be childless; `Tree::attach` enforces this for every consumer
 
 ### For Privacy
 1. Use `Hash` nodes to hide irrelevant data

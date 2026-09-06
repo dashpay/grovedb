@@ -725,9 +725,14 @@ fn shape_walk_rejects_disjoint_hashwithcountandsum_with_children_pcps() {
     let err = result.expect_err(
         "spliced child under Disjoint HashWithCountAndSum must be rejected by shape walk",
     );
+    // Since issue #853 `Tree::attach` refuses to hang anything under an
+    // opaque node, so `execute` rejects this shape before the shape walk
+    // runs. The shape walk's own leaf assertion is retained as defense in
+    // depth, so either message is an acceptable rejection.
     match err {
         Error::InvalidProofError(msg) => assert!(
-            msg.contains("Disjoint position must be a leaf")
+            msg.contains("cannot have children")
+                || msg.contains("Disjoint position must be a leaf")
                 || msg.contains("at a Disjoint position"),
             "unexpected message: {msg}"
         ),
@@ -1456,9 +1461,14 @@ fn shape_walk_rejects_disjoint_hashwithcount_with_children() {
     let bytes = encode_proof(&ops);
     let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
     let err = result.expect_err("Disjoint HashWithCount with children must be rejected");
+    // Since issue #853 `Tree::attach` refuses to hang anything under an
+    // opaque node, so `execute` rejects this shape before the shape walk
+    // runs. The shape walk's own leaf assertion is retained as defense in
+    // depth, so either message is an acceptable rejection.
     match err {
         Error::InvalidProofError(msg) => assert!(
-            msg.contains("Disjoint position must be a leaf"),
+            msg.contains("cannot have children")
+                || msg.contains("Disjoint position must be a leaf"),
             "unexpected message: {msg}"
         ),
         other => panic!("expected InvalidProofError, got {:?}", other),
@@ -1617,9 +1627,14 @@ fn shape_walk_rejects_contained_hashwithcount_with_children() {
     let bytes = encode_proof(&ops);
     let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
     let err = result.expect_err("Contained HashWithCount with children must be rejected");
+    // Since issue #853 `Tree::attach` refuses to hang anything under an
+    // opaque node, so `execute` rejects this shape before the shape walk
+    // runs. The shape walk's own leaf assertion is retained as defense in
+    // depth, so either message is an acceptable rejection.
     match err {
         Error::InvalidProofError(msg) => assert!(
-            msg.contains("Contained position must be a leaf"),
+            msg.contains("cannot have children")
+                || msg.contains("Contained position must be a leaf"),
             "unexpected message: {msg}"
         ),
         other => panic!("expected InvalidProofError, got {:?}", other),
@@ -1661,9 +1676,14 @@ fn shape_walk_rejects_contained_hashwithcountandsum_with_children_pcps() {
     let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
     let err = result
         .expect_err("Contained HashWithCountAndSum with children must be rejected (dual-axis)");
+    // Since issue #853 `Tree::attach` refuses to hang anything under an
+    // opaque node, so `execute` rejects this shape before the shape walk
+    // runs. The shape walk's own leaf assertion is retained as defense in
+    // depth, so either message is an acceptable rejection.
     match err {
         Error::InvalidProofError(msg) => assert!(
-            msg.contains("Contained position must be a leaf"),
+            msg.contains("cannot have children")
+                || msg.contains("Contained position must be a leaf"),
             "unexpected message: {msg}"
         ),
         other => panic!("expected InvalidProofError, got {:?}", other),
@@ -1740,9 +1760,15 @@ fn shape_walk_rejects_non_kvdigestcount_at_boundary() {
     let bytes = encode_proof(&ops);
     let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
     let err = result.expect_err("non-KVDigestCount at Boundary must be rejected");
+    // The swapped node keeps its children, and since issue #853
+    // `Tree::attach` refuses children under an opaque node, so `execute`
+    // rejects the proof before the shape walk runs. The shape walk's own
+    // Boundary check is retained as defense in depth, so either message
+    // is an acceptable rejection.
     match err {
         Error::InvalidProofError(msg) => assert!(
-            msg.contains("expected KVDigestCount") && msg.contains("Boundary"),
+            msg.contains("cannot have children")
+                || (msg.contains("expected KVDigestCount") && msg.contains("Boundary")),
             "unexpected message: {msg}"
         ),
         other => panic!("expected InvalidProofError, got {:?}", other),

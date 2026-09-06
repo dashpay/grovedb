@@ -999,6 +999,70 @@ mod tests {
         );
     }
 
+    /// Regression for issue #853: a `Node::Hash` chunk-boundary node commits
+    /// only to the hash it carries, so before the fix a chunk could hang a
+    /// forged `KV` beneath it. `verify_chunk` accepted the chunk (the root
+    /// hash still matched) and `write_chunk` persisted the forged row into
+    /// storage even though nothing in the authenticated tree links to it.
+    #[test]
+    fn test_forged_kv_under_hash_boundary_node_is_rejected() {
+        use crate::tree::{kv_hash, node_hash};
+
+        let grove_version = GroveVersion::latest();
+        let left_hash: CryptoHash = [0x11; 32];
+        let right_hash: CryptoHash = [0x22; 32];
+        let root_kv_hash = kv_hash(&[5], &[5]).unwrap();
+        let expected_root = node_hash(&root_kv_hash, &left_hash, &right_hash).unwrap();
+
+        let malicious_chunk = vec![
+            Op::Push(Node::Hash(left_hash)),
+            Op::Push(Node::KV(vec![3], b"forged".to_vec())),
+            // hangs the forged KV under the opaque boundary node
+            Op::Child,
+            Op::Push(Node::KV(vec![5], vec![5])),
+            Op::Parent,
+            Op::Push(Node::Hash(right_hash)),
+            Op::Child,
+        ];
+
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let restoration_merk = Merk::open_base(
+            storage
+                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .unwrap(),
+            TreeType::NormalTree,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        let mut restorer = Restorer::new(restoration_merk, expected_root, None);
+        let result = restorer.process_chunk(
+            &traversal_instruction_as_vec_bytes(&[]),
+            malicious_chunk,
+            grove_version,
+        );
+        assert!(
+            matches!(result, Err(Error::InvalidProofError(_))),
+            "forged KV under a Node::Hash boundary must be rejected, got {result:?}"
+        );
+
+        // Nothing from the rejected chunk may have reached storage.
+        let merk = restorer.into_merk();
+        let forged = merk
+            .get(
+                &[3],
+                true,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get should not error");
+        assert!(forged.is_none(), "forged row must not be persisted");
+    }
+
     fn get_node_hash(node: Node) -> Result<CryptoHash, String> {
         match node {
             Node::Hash(hash) => Ok(hash),

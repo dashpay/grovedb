@@ -332,6 +332,10 @@ The verifier checks each layer, confirming that:
 1. The layer proof reconstructs to the expected root hash
 2. The root hash matches the value_hash from the parent layer
 3. The top-level root hash matches the known state root
+4. Every opaque node (`Hash`, `HashWithCount`, `HashWithSum`,
+   `HashWithCountAndSum`) is a leaf. These nodes hash to an embedded value that
+   ignores attached children, so a child beneath one would be unauthenticated
+   data; `Tree::attach` refuses to build such a tree.
 
 ## Proof Verification
 

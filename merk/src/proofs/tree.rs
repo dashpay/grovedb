@@ -465,11 +465,47 @@ impl Tree {
         }
     }
 
-    /// Attaches the child to the `Tree`'s given side. Panics if there is
-    /// already a child attached to this side.
+    /// Whether this node's hash is taken verbatim from (or recomputed
+    /// solely from) fields embedded in the node, ignoring any children
+    /// attached to the reconstructed proof tree.
+    ///
+    /// `Hash` carries a finished subtree hash; `HashWithCount`,
+    /// `HashWithSum` and `HashWithCountAndSum` carry the `(kv_hash, left,
+    /// right, ...)` inputs of a finished subtree hash. None of them consult
+    /// `self.left` / `self.right` in [`Tree::hash`], so a child hung beneath
+    /// one would be invisible to the root-hash check.
+    #[cfg(any(feature = "minimal", feature = "verify"))]
+    pub const fn is_opaque(&self) -> bool {
+        matches!(
+            self.node,
+            Node::Hash(_)
+                | Node::HashWithCount(..)
+                | Node::HashWithSum(..)
+                | Node::HashWithCountAndSum(..)
+        )
+    }
+
+    /// Attaches the child to the `Tree`'s given side. Errors if there is
+    /// already a child attached to this side, or if this node is opaque.
+    ///
+    /// Opaque nodes (see [`Tree::is_opaque`]) must stay childless: their
+    /// hash excludes reconstructed children, so anything attached beneath
+    /// them is unauthenticated data that the root-hash check can never
+    /// catch. Query verification consumes pushes in push order and chunk
+    /// restoration walks the reconstructed tree, so without this rule a
+    /// prover could smuggle forged rows into results or storage under a
+    /// hash that still matches the honest root (issue #853).
     #[cfg(any(feature = "minimal", feature = "verify"))]
     pub(crate) fn attach(&mut self, left: bool, child: Self) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
+
+        if self.is_opaque() {
+            return Err(Error::InvalidProofError(format!(
+                "opaque proof node {} cannot have children: its hash excludes them",
+                self.node
+            )))
+            .wrap_with_cost(cost);
+        }
 
         if self.child(left).is_some() {
             return Err(Error::CorruptedCodeExecution(
@@ -950,6 +986,50 @@ mod test {
         recurse(&tree, 3);
     }
 
+    /// Issue #853: opaque nodes (those whose `hash()` ignores reconstructed
+    /// children) must stay childless, otherwise a prover can hang
+    /// unauthenticated data beneath them without disturbing the root hash.
+    #[test]
+    fn attach_to_opaque_node_is_rejected() {
+        let child = || -> ProofTree { Node::KV(vec![1], vec![1]).into() };
+        let opaque_parents: Vec<ProofTree> = vec![
+            Node::Hash([0; 32]).into(),
+            Node::HashWithCount([0; 32], [0; 32], [0; 32], 1).into(),
+            Node::HashWithSum([0; 32], [0; 32], [0; 32], 1).into(),
+            Node::HashWithCountAndSum([0; 32], [0; 32], [0; 32], 1, 1).into(),
+        ];
+        for mut parent in opaque_parents {
+            let node = parent.node.clone();
+            for left in [true, false] {
+                let result = parent.attach(left, child()).unwrap();
+                assert!(
+                    matches!(result, Err(Error::InvalidProofError(_))),
+                    "attaching a child to {node} must fail, got {result:?}"
+                );
+                assert!(
+                    parent.left.is_none() && parent.right.is_none(),
+                    "{node} must remain childless after a rejected attach"
+                );
+            }
+        }
+    }
+
+    /// `KVHash`-family nodes hash their children, so they legitimately take
+    /// children — the childlessness rule must not over-reach.
+    #[test]
+    fn attach_to_kvhash_node_is_allowed() {
+        let mut parent: ProofTree = Node::KVHash([0; 32]).into();
+        parent
+            .attach(true, Node::KV(vec![1], vec![1]).into())
+            .unwrap()
+            .expect("KVHash takes a left child");
+        parent
+            .attach(false, Node::KV(vec![2], vec![2]).into())
+            .unwrap()
+            .expect("KVHash takes a right child");
+        assert_eq!(parent.height, 2);
+    }
+
     #[test]
     fn layer_iter() {
         let tree = make_7_node_prooftree();
@@ -1347,21 +1427,26 @@ mod test {
         );
     }
 
+    // NOTE (issue #853): the resource-limit tests below build synthetic
+    // chains out of `KVHash` nodes. `KVHash` is keyless (no ordering
+    // constraint) and hashes its children, so it may take children;
+    // opaque `Hash` nodes may not, and `attach` rejects them.
+
     /// Verifies SEC-005 fix: execute() now rejects proofs that exceed
     /// MAX_PROOF_OPS operations.
     ///
-    /// Uses alternating Push(Hash)/Parent pairs to keep the stack depth at
+    /// Uses alternating Push(KVHash)/Parent pairs to keep the stack depth at
     /// 1 while exceeding the total operation count limit.
     #[test]
     fn attack_operation_count_is_limited() {
         let n = super::MAX_PROOF_OPS + 1;
         let mut ops: Vec<Result<Op, Error>> = Vec::with_capacity(n);
-        // Seed with one Hash node
-        ops.push(Ok(Op::Push(Node::Hash([0xAA; 32]))));
+        // Seed with one KVHash node
+        ops.push(Ok(Op::Push(Node::KVHash([0xAA; 32]))));
         // Each (Push, Parent) pair = 2 ops, stack stays at depth 1.
         // The new Hash becomes the parent, the existing tree its left child.
         while ops.len() < n {
-            ops.push(Ok(Op::Push(Node::Hash([0xAA; 32]))));
+            ops.push(Ok(Op::Push(Node::KVHash([0xAA; 32]))));
             ops.push(Ok(Op::Parent));
         }
 
@@ -1400,9 +1485,9 @@ mod test {
         // height reaches 130, exceeding MAX_PROOF_TREE_HEIGHT (128).
         let depth = super::MAX_PROOF_TREE_HEIGHT + 2;
         let mut ops: Vec<Result<Op, Error>> = Vec::new();
-        ops.push(Ok(Op::Push(Node::Hash([0xCC; 32]))));
+        ops.push(Ok(Op::Push(Node::KVHash([0xCC; 32]))));
         for _ in 1..depth {
-            ops.push(Ok(Op::Push(Node::Hash([0xCC; 32]))));
+            ops.push(Ok(Op::Push(Node::KVHash([0xCC; 32]))));
             ops.push(Ok(Op::Parent));
         }
 
@@ -1436,9 +1521,9 @@ mod test {
         let ops_per_chain = 2 * (max_height - 1) - 1;
         while ops.len() + ops_per_chain < max_ops && current_stack_depth < max_stack {
             // Build one chain of height max_height - 1
-            ops.push(Ok(Op::Push(Node::Hash([0xDD; 32]))));
+            ops.push(Ok(Op::Push(Node::KVHash([0xDD; 32]))));
             for _ in 1..(max_height - 1) {
-                ops.push(Ok(Op::Push(Node::Hash([0xDD; 32]))));
+                ops.push(Ok(Op::Push(Node::KVHash([0xDD; 32]))));
                 ops.push(Ok(Op::Parent));
             }
             current_stack_depth += 1;
@@ -1447,12 +1532,12 @@ mod test {
         // Step 2: fill remaining op budget with bare Push(Hash) ops,
         // growing the stack further.
         while ops.len() < max_ops && current_stack_depth < max_stack {
-            ops.push(Ok(Op::Push(Node::Hash([0xEE; 32]))));
+            ops.push(Ok(Op::Push(Node::KVHash([0xEE; 32]))));
             current_stack_depth += 1;
         }
 
         // Step 3: one more Push to exceed whichever limit is tighter.
-        ops.push(Ok(Op::Push(Node::Hash([0xFF; 32]))));
+        ops.push(Ok(Op::Push(Node::KVHash([0xFF; 32]))));
 
         let result = execute(ops.into_iter(), true, |_| Ok(())).unwrap();
         assert!(
@@ -1480,9 +1565,9 @@ mod test {
         // With collapse=true, height stays at 2.
         {
             let mut ops: Vec<Result<Op, Error>> = Vec::new();
-            ops.push(Ok(Op::Push(Node::Hash([0xAA; 32]))));
+            ops.push(Ok(Op::Push(Node::KVHash([0xAA; 32]))));
             for _ in 0..24_999 {
-                ops.push(Ok(Op::Push(Node::Hash([0xAA; 32]))));
+                ops.push(Ok(Op::Push(Node::KVHash([0xAA; 32]))));
                 ops.push(Ok(Op::Parent));
             }
             assert_eq!(ops.len(), 49_999);
@@ -1500,7 +1585,7 @@ mod test {
         {
             let mut ops: Vec<Result<Op, Error>> = Vec::new();
             for _ in 0..10_000 {
-                ops.push(Ok(Op::Push(Node::Hash([0xBB; 32]))));
+                ops.push(Ok(Op::Push(Node::KVHash([0xBB; 32]))));
             }
             // Combine 10,000 → 1: first Parent, then (Child, Parent) pairs
             ops.push(Ok(Op::Parent));
@@ -1524,18 +1609,18 @@ mod test {
             let max_height = super::MAX_PROOF_TREE_HEIGHT; // 92
             let mut ops: Vec<Result<Op, Error>> = Vec::new();
             // Build left chain of height max_height - 1
-            ops.push(Ok(Op::Push(Node::Hash([0xCC; 32]))));
+            ops.push(Ok(Op::Push(Node::KVHash([0xCC; 32]))));
             for _ in 0..(max_height - 2) {
-                ops.push(Ok(Op::Push(Node::Hash([0xCC; 32]))));
+                ops.push(Ok(Op::Push(Node::KVHash([0xCC; 32]))));
                 ops.push(Ok(Op::Parent));
             }
             // Push root and attach left child
-            ops.push(Ok(Op::Push(Node::Hash([0xDD; 32]))));
+            ops.push(Ok(Op::Push(Node::KVHash([0xDD; 32]))));
             ops.push(Ok(Op::Parent));
             // Build right chain of height max_height - 1
-            ops.push(Ok(Op::Push(Node::Hash([0xEE; 32]))));
+            ops.push(Ok(Op::Push(Node::KVHash([0xEE; 32]))));
             for _ in 0..(max_height - 2) {
-                ops.push(Ok(Op::Push(Node::Hash([0xEE; 32]))));
+                ops.push(Ok(Op::Push(Node::KVHash([0xEE; 32]))));
                 ops.push(Ok(Op::Parent));
             }
             // Attach right child
