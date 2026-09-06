@@ -4587,3 +4587,61 @@ mod direct_axis_mirror_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod indexed_element_axes_tests {
+    use super::*;
+
+    /// Every indexed variant decodes to its configured axes in canonical
+    /// element order: the single implicit axis for PCIT / PSIT, the TLV
+    /// entries for PCPSIT.
+    #[test]
+    fn indexed_element_axes_decodes_every_indexed_variant() {
+        assert_eq!(
+            indexed_element_axes(&Element::empty_provable_count_indexed_tree()).unwrap(),
+            vec![(IndexAxis::Count, None)]
+        );
+        assert_eq!(
+            indexed_element_axes(&Element::empty_provable_sum_indexed_tree()).unwrap(),
+            vec![(IndexAxis::Sum, None)]
+        );
+        let pcpsit = Element::empty_provable_count_provable_sum_indexed_tree(vec![
+            (IndexAxis::Count.tag(), Some(b"count_root".to_vec())),
+            (IndexAxis::Sum.tag(), None),
+        ])
+        .expect("valid axes");
+        assert_eq!(
+            indexed_element_axes(&pcpsit).unwrap(),
+            vec![
+                (IndexAxis::Count, Some(b"count_root".to_vec())),
+                (IndexAxis::Sum, None),
+            ]
+        );
+    }
+
+    /// The decode fails closed on anything that is not an indexed tree and
+    /// on a stored PCPSIT axis tag no axis maps to (the constructors
+    /// validate tags, but a corrupt stored element can carry any byte).
+    #[test]
+    fn indexed_element_axes_rejects_non_indexed_elements_and_invalid_tags() {
+        for element in [
+            Element::empty_tree(),
+            Element::new_item(vec![1]),
+            Element::empty_sum_tree(),
+        ] {
+            let err = indexed_element_axes(&element).expect_err("not an indexed tree");
+            assert!(
+                matches!(&err, Error::CorruptedData(m) if m.contains("expected an indexed-tree element")),
+                "{err}"
+            );
+        }
+
+        let corrupt =
+            Element::ProvableCountProvableSumIndexedTree(None, 0, 0, vec![(0xFF, None)], None);
+        let err = indexed_element_axes(&corrupt).expect_err("invalid axis tag");
+        assert!(
+            matches!(&err, Error::CorruptedData(m) if m.contains("invalid axis tag")),
+            "{err}"
+        );
+    }
+}

@@ -1998,3 +1998,45 @@ impl fmt::Debug for SubtreesMetadata {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subtrees_metadata_debug_lists_every_variant() {
+        let mut metadata = SubtreesMetadata::new();
+        metadata.data.insert(
+            [1u8; 32],
+            SubtreeMetadata::Ordinary {
+                path: vec![b"a".to_vec()],
+                actual_value_hash: [0u8; 32],
+                elem_value_hash: [0u8; 32],
+            },
+        );
+        metadata.data.insert(
+            [2u8; 32],
+            SubtreeMetadata::IndexedPrimary {
+                path: vec![b"a".to_vec(), b"pcit".to_vec()],
+                actual_value_hash: [0u8; 32],
+                elem_value_hash: [0u8; 32],
+                element: Element::empty_provable_count_indexed_tree(),
+            },
+        );
+        metadata.data.insert(
+            [3u8; 32],
+            SubtreeMetadata::IndexedSecondary {
+                primary_prefix: [2u8; 32],
+                axis_tag: 1,
+            },
+        );
+        let rendered = format!("{metadata:?}");
+        assert!(rendered.contains(" -> path:"), "{rendered}");
+        assert!(rendered.contains("indexed primary path:"), "{rendered}");
+        assert!(
+            rendered.contains("indexed secondary (axis 1) of primary:"),
+            "{rendered}"
+        );
+        assert_eq!(rendered.lines().count(), 3, "{rendered}");
+    }
+}

@@ -2762,9 +2762,17 @@ mod tests {
             let tx = storage.start_transaction();
             let merk = open_restoration_merk(&storage, &tx, tree_type);
             let mut restorer = Restorer::new(merk, root_hash, None);
+            assert!(
+                !restorer.expects_an_empty_tree(),
+                "a populated commitment never reads as empty"
+            );
             restorer
                 .process_chunk(&[], vec![Op::Push(honest_node)], grove_version)
                 .unwrap();
+            assert!(
+                !restorer.expects_an_empty_tree(),
+                "once the root chunk is processed the question no longer applies"
+            );
             let restored = restorer
                 .finalize_with_grovedb_elements(grove_version)
                 .unwrap_or_else(|e| panic!("honest chunk must finalize for {tree_type:?}: {e}"));

@@ -3899,4 +3899,191 @@ mod tests {
             "page cursors",
         );
     }
+
+    /// A header page must carry exactly a header and a root chunk; any
+    /// other section count is refused before the header is even decoded.
+    #[test]
+    fn state_sync_indexed_header_page_with_wrong_section_count_rejected() {
+        let grove_version = GroveVersion::latest();
+        let source = tamper_test_psit_source(grove_version);
+
+        let err = run_sync_with_version(
+            &source,
+            grove_version,
+            64,
+            None,
+            Some(&|tree_type, _gid: &[u8], gdata: Vec<u8>| {
+                use crate::replication::utils::{pack_nested_bytes, unpack_nested_bytes};
+                if !tree_type.is_indexed_primary() {
+                    return gdata;
+                }
+                let locals = unpack_nested_bytes(&gdata).expect("unpack header payload");
+                let mut sections = unpack_nested_bytes(&locals[0]).expect("unpack header sections");
+                sections.push(Vec::new());
+                pack_nested_bytes(vec![pack_nested_bytes(sections).expect("repack sections")])
+                    .expect("repack payload")
+            }),
+            CURRENT_STATE_SYNC_VERSION,
+        )
+        .map(|_| ())
+        .expect_err("a three-section header page must be rejected");
+        assert!(
+            format!("{err:?}").contains("exactly a header and a root chunk"),
+            "got: {err:?}"
+        );
+    }
+
+    /// A header whose axis tags differ from the element's configured axes
+    /// is refused when it is registered, before any secondary is opened.
+    #[test]
+    fn state_sync_indexed_header_with_foreign_axis_tags_rejected() {
+        let grove_version = GroveVersion::latest();
+        let source = tamper_test_psit_source(grove_version);
+
+        let err = run_sync_with_version(
+            &source,
+            grove_version,
+            64,
+            None,
+            Some(&|tree_type, _gid: &[u8], gdata: Vec<u8>| {
+                if !tree_type.is_indexed_primary() {
+                    return gdata;
+                }
+                mutate_indexed_header_page(gdata, |mut header_bytes, ops| {
+                    // Layout: primary hash (32) | count (1) | tag (1) | hash.
+                    // The PSIT's single axis is Sum (tag 1); claim Count.
+                    assert_eq!(
+                        header_bytes[33], 1,
+                        "sanity: PSIT header carries the sum axis"
+                    );
+                    header_bytes[33] = 0;
+                    (header_bytes, ops)
+                })
+            }),
+            CURRENT_STATE_SYNC_VERSION,
+        )
+        .map(|_| ())
+        .expect_err("a header with foreign axis tags must be rejected");
+        assert!(
+            format!("{err:?}").contains("do not match the element's configured axes"),
+            "got: {err:?}"
+        );
+    }
+
+    /// Every peer-controlled field of an indexed header request is
+    /// rejected descriptively on the source: a request that is not alone
+    /// in its global chunk, an unknown axis tag, and a primary root key
+    /// that opens nothing. (A secondary root key that names no node opens
+    /// as an empty Merk and is answered with the NULL hash, which the
+    /// target's joint verification then rejects.)
+    #[test]
+    fn fetch_chunk_rejects_malformed_indexed_header_requests() {
+        use grovedb_storage::rocksdb_storage::RocksDbStorage;
+
+        use crate::replication::{
+            indexed_sync::IndexedHeaderRequest,
+            utils::{encode_global_chunk_id, pack_nested_bytes},
+        };
+
+        let grove_version = GroveVersion::latest();
+        let source = tamper_test_psit_source(grove_version);
+        let tx = source.start_transaction();
+        let (merk, root_key, tree_type, _element) = source
+            .open_merk_for_replication([TEST_LEAF, b"psit"].as_ref().into(), &tx, grove_version)
+            .expect("open indexed primary for replication");
+        drop(merk);
+        assert!(tree_type.is_indexed_primary(), "sanity: {tree_type:?}");
+        let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        let prefix = RocksDbStorage::build_prefix(path.into()).unwrap();
+        let fetch = |global_id: Vec<u8>| {
+            source.fetch_chunk(
+                &pack_nested_bytes(vec![global_id]).expect("pack"),
+                Some(&tx),
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )
+        };
+        let valid_request = IndexedHeaderRequest {
+            axes: vec![(1, None)],
+        }
+        .encode();
+
+        let err = fetch(
+            encode_global_chunk_id(
+                prefix,
+                root_key.clone(),
+                tree_type,
+                vec![valid_request.clone(), vec![]],
+            )
+            .unwrap(),
+        )
+        .expect_err("a header request bundled with another id must be refused");
+        assert!(
+            format!("{err}").contains("must be the only chunk id"),
+            "{err}"
+        );
+
+        let err = fetch(
+            encode_global_chunk_id(
+                prefix,
+                root_key.clone(),
+                tree_type,
+                vec![IndexedHeaderRequest {
+                    axes: vec![(0xFF, None)],
+                }
+                .encode()],
+            )
+            .unwrap(),
+        )
+        .expect_err("an unknown axis tag must be refused");
+        assert!(
+            format!("{err}").contains("invalid axis tag in indexed header request"),
+            "{err}"
+        );
+
+        let err = fetch(
+            encode_global_chunk_id(
+                prefix,
+                Some(b"no such node".to_vec()),
+                tree_type,
+                vec![valid_request],
+            )
+            .unwrap(),
+        )
+        .expect_err("a primary root key that opens nothing must be refused");
+        // The layered Merk opens (a root key is only a pointer) but has no
+        // root node to chunk from, so the refusal comes from the producer.
+        assert!(
+            format!("{err}").contains("failed to create indexed primary chunk producer"),
+            "{err}"
+        );
+    }
+
+    /// The commit mode reports whether it ever commits early, and the
+    /// session constructors honour the replication feature gate like the
+    /// rest of the versioned API.
+    #[test]
+    fn commit_mode_predicate_and_session_version_gate() {
+        use crate::replication::RestoreCommitMode;
+
+        assert!(!RestoreCommitMode::Atomic.is_incremental());
+        assert!(RestoreCommitMode::incremental().is_incremental());
+        assert!(RestoreCommitMode::Incremental {
+            budget_bytes: 1,
+            max_subtrees_in_flight: 0,
+        }
+        .is_incremental());
+
+        let mut gated = GroveVersion::latest().clone();
+        gated.grovedb_versions.replication.start_snapshot_syncing = 1;
+        let dest = make_empty_grovedb();
+        let err = dest
+            .start_syncing_session([0u8; 32], 64, CURRENT_STATE_SYNC_VERSION, &gated)
+            .map(|_| ())
+            .expect_err("an unknown feature version must be refused");
+        assert!(
+            matches!(err, crate::Error::VersionError(_)),
+            "expected a version error, got {err:?}"
+        );
+    }
 }
