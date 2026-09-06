@@ -299,6 +299,20 @@ Otherwise they use the stored terminal. This works for mixed write histories
 and after an upgrade without rewriting data or changing roots. A changed
 terminal that matches neither representation still fails verification.
 
+### A reference must terminate at a value
+
+The terminal of a reference chain must be an item (`Item`, `SumItem`,
+`ItemWithSumItem`, optionally `NonCounted`-wrapped). A tree element cannot be a
+terminal: the reference would only bind `H(tree element bytes)`, which says
+nothing about the subtree behind it, so the subtree could change without
+disturbing the reference's commitment or `verify_grovedb`, and the row could
+not be proved (the V1 verifier expects a lower layer for a non-empty tree).
+The batch reference resolver has always rejected such a reference with
+`InvalidBatchOperation("references can not point to trees being updated")`.
+Direct insert on `GROVE_V4`+ rejects it too, with
+`InvalidInput("references can not point to trees")`; `GROVE_V3` direct inserts
+keep the legacy behaviour of accepting it.
+
 ## Cycle Detection
 
 The `visited` HashSet tracks all paths we've seen. If we encounter a path we've
