@@ -843,6 +843,7 @@ mod tests {
                 64,
                 CURRENT_STATE_SYNC_VERSION,
                 mode,
+                grove_version,
             ) else {
                 panic!("a marked destination built a bare {mode:?} session");
             };

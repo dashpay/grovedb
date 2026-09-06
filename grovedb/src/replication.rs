@@ -1,6 +1,7 @@
 pub(crate) mod indexed_sync;
 pub(crate) mod non_merk_sync;
 mod state_sync_session;
+mod verify;
 
 use std::pin::Pin;
 
@@ -161,7 +162,8 @@ impl RestoreCommitMode {
 #[cfg(feature = "minimal")]
 impl GroveDb {
     /// Starts a new state synchronization session with the given app hash,
-    /// batch size and state sync protocol version.
+    /// batch size and state sync protocol version, ready to apply the root
+    /// chunk requested by `app_hash`.
     ///
     /// Rejects any `version` other than [`CURRENT_STATE_SYNC_VERSION`] up
     /// front, with the same error the other entry points use. A session
@@ -174,12 +176,14 @@ impl GroveDb {
         app_hash: [u8; 32],
         subtrees_batch_size: usize,
         version: u16,
+        grove_version: &GroveVersion,
     ) -> Result<Pin<Box<MultiStateSyncSession<'_>>>, Error> {
         self.start_syncing_session_with_mode(
             app_hash,
             subtrees_batch_size,
             version,
             RestoreCommitMode::default(),
+            grove_version,
         )
     }
 
@@ -191,7 +195,15 @@ impl GroveDb {
         subtrees_batch_size: usize,
         version: u16,
         commit_mode: RestoreCommitMode,
+        grove_version: &GroveVersion,
     ) -> Result<Pin<Box<MultiStateSyncSession<'_>>>, Error> {
+        check_grovedb_v0!(
+            "start_snapshot_syncing",
+            grove_version
+                .grovedb_versions
+                .replication
+                .start_snapshot_syncing
+        );
         if version != CURRENT_STATE_SYNC_VERSION {
             return Err(Error::CorruptedData(format!(
                 "Unsupported state sync protocol version {version}; this build speaks version \
@@ -212,13 +224,21 @@ impl GroveDb {
                     .to_string(),
             ));
         }
-        Ok(MultiStateSyncSession::new(
-            self,
+        if subtrees_batch_size == 0 {
+            return Err(Error::InternalError(
+                "subtrees_batch_size cannot be zero".to_string(),
+            ));
+        }
+        let mut session =
+            MultiStateSyncSession::new(self, app_hash, subtrees_batch_size, version, commit_mode);
+        session.add_subtree_sync_info(
+            SubtreePath::empty(),
             app_hash,
-            subtrees_batch_size,
-            version,
-            commit_mode,
-        ))
+            None,
+            [0u8; 32],
+            grove_version,
+        )?;
+        Ok(session)
     }
 
     /// Whether this database holds a partially applied, hash-unverified
@@ -248,8 +268,8 @@ impl GroveDb {
 
     /// Commits a completed state synchronization session.
     ///
-    /// Verifies the final GroveDB root hash matches the expected `app_hash`
-    /// before committing. Returns an error if the hashes don't match.
+    /// Verifies the final root against `app_hash` and authenticates restored
+    /// element bytes before committing. Returns an error on any mismatch.
     pub fn commit_session(
         &self,
         session: Pin<Box<MultiStateSyncSession>>,
@@ -559,44 +579,13 @@ impl GroveDb {
         commit_mode: RestoreCommitMode,
         grove_version: &GroveVersion,
     ) -> Result<Pin<Box<MultiStateSyncSession<'_>>>, Error> {
-        check_grovedb_v0!(
-            "start_snapshot_syncing",
-            grove_version
-                .grovedb_versions
-                .replication
-                .start_snapshot_syncing
-        );
-        if version != CURRENT_STATE_SYNC_VERSION {
-            return Err(Error::CorruptedData(format!(
-                "Unsupported state sync protocol version {version}; this build speaks version \
-                 {CURRENT_STATE_SYNC_VERSION}"
-            )));
-        }
-
-        if subtrees_batch_size == 0 {
-            return Err(Error::InternalError(
-                "subtrees_batch_size cannot be zero".to_string(),
-            ));
-        }
-
-        let root_prefix = [0u8; 32];
-
-        let mut session = self.start_syncing_session_with_mode(
+        self.start_syncing_session_with_mode(
             app_hash,
             subtrees_batch_size,
             version,
             commit_mode,
-        )?;
-
-        session.add_subtree_sync_info(
-            SubtreePath::empty(),
-            app_hash,
-            None,
-            root_prefix,
             grove_version,
-        )?;
-
-        Ok(session)
+        )
     }
 }
 

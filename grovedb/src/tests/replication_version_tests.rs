@@ -27,6 +27,54 @@ mod tests {
         Element, GroveDb,
     };
 
+    #[test]
+    fn public_session_constructors_are_ready_to_restore() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+        let app_hash = source.root_hash(None, grove_version).unwrap().unwrap();
+        for mode in [RestoreCommitMode::Atomic, RestoreCommitMode::incremental()] {
+            let dest = make_empty_grovedb();
+            let start = |batch_size| match mode {
+                RestoreCommitMode::Atomic => dest.start_syncing_session(
+                    app_hash,
+                    batch_size,
+                    CURRENT_STATE_SYNC_VERSION,
+                    grove_version,
+                ),
+                _ => dest.start_syncing_session_with_mode(
+                    app_hash,
+                    batch_size,
+                    CURRENT_STATE_SYNC_VERSION,
+                    mode,
+                    grove_version,
+                ),
+            };
+            assert!(
+                start(0).is_err(),
+                "zero-sized discovery batches cannot make progress"
+            );
+            let mut session = start(1).expect("start a usable session");
+            assert!(!session.is_empty(), "the root must already be scheduled");
+            let mut queue = VecDeque::from([app_hash.to_vec()]);
+            while let Some(id) = queue.pop_front() {
+                let chunk = source
+                    .fetch_chunk(&id, None, CURRENT_STATE_SYNC_VERSION, grove_version)
+                    .unwrap();
+                queue.extend(
+                    session
+                        .apply_chunk(&id, &chunk, CURRENT_STATE_SYNC_VERSION, grove_version)
+                        .unwrap(),
+                );
+            }
+            assert!(session.is_sync_completed());
+            dest.commit_session(session, grove_version).unwrap();
+            assert_eq!(
+                dest.root_hash(None, grove_version).unwrap().unwrap(),
+                app_hash
+            );
+        }
+    }
+
     /// A checkpoint of `source`, opened the way a serving peer would.
     struct SourcePeer {
         db: GroveDb,
@@ -190,7 +238,7 @@ mod tests {
             // Target side, lower-level constructors: the bare session
             // builders refuse too, so no public path can produce a session
             // that could never apply a chunk.
-            let Err(err) = dest.start_syncing_session(app_hash, 64, bad) else {
+            let Err(err) = dest.start_syncing_session(app_hash, 64, bad, grove_version) else {
                 panic!("version {bad} should not have built a bare session");
             };
             let msg = format!("{err}");
@@ -205,6 +253,7 @@ mod tests {
                 64,
                 bad,
                 RestoreCommitMode::incremental(),
+                grove_version,
             ) else {
                 panic!("version {bad} should not have built a bare incremental session");
             };

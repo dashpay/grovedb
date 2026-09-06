@@ -783,7 +783,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 // types whose value hash is simply `H(bytes)` require the
                 // two to agree first. Subtree and reference elements carry
                 // a combined hash instead; subtrees are bound by the child
-                // restore's own commitment check.
+                // restore's own commitment check. The GroveDB session must
+                // verify reference bindings once all target subtrees have
+                // arrived, before it commits the restore.
                 if element.element_type().has_simple_value_hash()
                     && value_hash(cloned_node.value_as_slice()).unwrap()
                         != *cloned_node.value_hash()

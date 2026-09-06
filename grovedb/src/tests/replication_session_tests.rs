@@ -38,6 +38,26 @@ mod tests {
         mutate_global: Option<GlobalChunkMutator>,
         version: u16,
     ) -> Result<TempGroveDb, crate::Error> {
+        run_sync_with_version_and_mode(
+            source,
+            grove_version,
+            subtrees_batch_size,
+            mutate_page,
+            mutate_global,
+            version,
+            crate::replication::RestoreCommitMode::Atomic,
+        )
+    }
+
+    fn run_sync_with_version_and_mode(
+        source: &TempGroveDb,
+        grove_version: &GroveVersion,
+        subtrees_batch_size: usize,
+        mutate_page: Option<NonMerkPageMutator>,
+        mutate_global: Option<GlobalChunkMutator>,
+        version: u16,
+        mode: crate::replication::RestoreCommitMode,
+    ) -> Result<TempGroveDb, crate::Error> {
         use crate::replication::{
             non_merk_sync::{decode_non_merk_page, encode_non_merk_page, supports_entry_replay},
             utils::{decode_global_chunk_id, pack_nested_bytes, unpack_nested_bytes},
@@ -57,8 +77,13 @@ mod tests {
 
         let dest = make_empty_grovedb();
 
-        let mut session =
-            dest.start_snapshot_syncing(app_hash, subtrees_batch_size, version, grove_version)?;
+        let mut session = dest.start_snapshot_syncing_with_mode(
+            app_hash,
+            subtrees_batch_size,
+            version,
+            mode,
+            grove_version,
+        )?;
 
         // Use a queue-based approach as shown in the tutorial
         let mut chunk_queue: VecDeque<Vec<u8>> = VecDeque::new();
@@ -107,6 +132,7 @@ mod tests {
                 {
                     Ok(ids) => ids,
                     Err(err) => {
+                        let committed_early = session.intermediate_commits() > 0;
                         // Rejection must leave the session unusable even if a
                         // caller ignores the original error and tries to commit.
                         assert!(
@@ -120,10 +146,14 @@ mod tests {
                             dest.commit_session(session, grove_version).is_err(),
                             "failed sync committed: {err}"
                         );
-                        assert_eq!(
-                            dest.root_hash(None, grove_version).unwrap().unwrap(),
-                            grovedb_merk::tree::hash::NULL_HASH
-                        );
+                        if committed_early {
+                            assert!(dest.has_incomplete_restore().unwrap());
+                        } else {
+                            assert_eq!(
+                                dest.root_hash(None, grove_version).unwrap().unwrap(),
+                                grovedb_merk::tree::hash::NULL_HASH
+                            );
+                        }
                         return Err(err);
                     }
                 };
@@ -137,7 +167,35 @@ mod tests {
             ));
         }
 
-        dest.commit_session(session, grove_version)?;
+        let committed_early = session.intermediate_commits() > 0;
+        if matches!(
+            mode,
+            crate::replication::RestoreCommitMode::Incremental {
+                budget_bytes: 1,
+                ..
+            }
+        ) {
+            assert!(
+                committed_early,
+                "the one-byte-budget test must exercise intermediate commits"
+            );
+        }
+        if let Err(err) = dest.commit_session(session, grove_version) {
+            if committed_early {
+                assert!(
+                    dest.has_incomplete_restore().unwrap(),
+                    "a failed final verification must preserve the incomplete marker"
+                );
+            } else {
+                assert_eq!(
+                    dest.root_hash(None, grove_version).unwrap().unwrap(),
+                    grovedb_merk::tree::hash::NULL_HASH,
+                    "a failed final verification must roll back atomic restore"
+                );
+            }
+            return Err(err);
+        }
+        assert!(!dest.has_incomplete_restore().unwrap());
         Ok(dest)
     }
 
@@ -3277,6 +3335,311 @@ mod tests {
     /// disagree with every honest node.
     #[test]
     fn state_sync_forged_element_bytes_under_honest_value_hash_rejected() {
+        assert_state_sync_forged_element_rejected(
+            Element::new_sum_item(1_000_000),
+            crate::replication::RestoreCommitMode::Atomic,
+        );
+    }
+
+    #[test]
+    fn state_sync_item_to_reference_type_forgery_rejected() {
+        use crate::reference_path::ReferencePathType;
+        use crate::replication::RestoreCommitMode;
+        for mode in [
+            RestoreCommitMode::Atomic,
+            RestoreCommitMode::Incremental {
+                budget_bytes: 1,
+                max_subtrees_in_flight: 1,
+            },
+        ] {
+            assert_state_sync_forged_element_rejected(
+                Element::new_reference_with_sum_item(
+                    ReferencePathType::SiblingReference(vec![0]),
+                    1_000_000,
+                ),
+                mode,
+            );
+        }
+    }
+
+    #[test]
+    fn state_sync_normal_tree_value_hash_forgery_rejected() {
+        use std::cell::Cell;
+
+        use grovedb_merk::{
+            proofs::{Node, Op},
+            tree::value_hash,
+        };
+        use grovedb_storage::rocksdb_storage::RocksDbStorage;
+
+        use crate::replication::utils::{
+            decode_vec_ops, encode_vec_ops, pack_nested_bytes, unpack_nested_bytes,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"victim",
+                Element::new_item(vec![1]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        let prefix = RocksDbStorage::build_prefix([TEST_LEAF].as_ref().into()).unwrap();
+        let forged_bytes = Element::new_item(vec![2]).serialize(grove_version).unwrap();
+        let forged = Cell::new(0);
+        let err = run_sync_with_version(
+            &source,
+            grove_version,
+            1,
+            None,
+            Some(&|_, gid, gdata| {
+                if gid.get(..32) != Some(prefix.as_slice()) {
+                    return gdata;
+                }
+                let chunks = unpack_nested_bytes(&gdata)
+                    .unwrap()
+                    .into_iter()
+                    .map(|chunk| {
+                        let ops = decode_vec_ops(&chunk)
+                            .unwrap()
+                            .into_iter()
+                            .map(|op| match op {
+                                Op::Push(Node::KV(key, bytes)) if key == b"victim" => {
+                                    forged.set(forged.get() + 1);
+                                    Op::Push(Node::KVValueHash(
+                                        key,
+                                        forged_bytes.clone(),
+                                        value_hash(&bytes).unwrap(),
+                                    ))
+                                }
+                                other => other,
+                            })
+                            .collect();
+                        encode_vec_ops(ops).unwrap()
+                    })
+                    .collect();
+                pack_nested_bytes(chunks).unwrap()
+            }),
+            CURRENT_STATE_SYNC_VERSION,
+        )
+        .map(|_| ())
+        .expect_err("forged plain item must not commit");
+        assert!(forged.get() > 0);
+        assert!(format!("{err}").contains("value hash"), "{err}");
+    }
+
+    #[test]
+    fn state_sync_index_reference_bytes_forgery_rejected() {
+        use std::cell::Cell;
+
+        use grovedb_merk::{
+            proofs::{Node, Op},
+            tree_type::TreeType,
+        };
+
+        use crate::replication::utils::{
+            decode_vec_ops, encode_vec_ops, pack_nested_bytes, unpack_nested_bytes,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let source = tamper_test_psit_source(grove_version);
+        let forged = Cell::new(0);
+        let err = run_sync_with_version(
+            &source,
+            grove_version,
+            1,
+            None,
+            Some(&|tree_type, _, gdata| {
+                if tree_type != TreeType::ProvableCountProvableSumTree {
+                    return gdata;
+                }
+                let chunks = unpack_nested_bytes(&gdata)
+                    .unwrap()
+                    .into_iter()
+                    .map(|chunk| {
+                        let ops = decode_vec_ops(&chunk)
+                            .unwrap()
+                            .into_iter()
+                            .map(|op| match op {
+                                Op::Push(Node::KVValueHashFeatureType(
+                                    key,
+                                    bytes,
+                                    hash,
+                                    feature,
+                                )) => {
+                                    let Element::ReferenceWithSumItem(path, hops, sum, _) =
+                                        Element::deserialize(&bytes, grove_version).unwrap()
+                                    else {
+                                        panic!("expected an index reference row");
+                                    };
+                                    forged.set(forged.get() + 1);
+                                    let bytes = Element::ReferenceWithSumItem(
+                                        path,
+                                        hops,
+                                        sum,
+                                        Some(vec![0xFF]),
+                                    )
+                                    .serialize(grove_version)
+                                    .unwrap();
+                                    Op::Push(Node::KVValueHashFeatureType(
+                                        key, bytes, hash, feature,
+                                    ))
+                                }
+                                other => other,
+                            })
+                            .collect();
+                        encode_vec_ops(ops).unwrap()
+                    })
+                    .collect();
+                pack_nested_bytes(chunks).unwrap()
+            }),
+            CURRENT_STATE_SYNC_VERSION,
+        )
+        .map(|_| ())
+        .expect_err("forged index row must not commit");
+        assert!(forged.get() > 0);
+        assert!(format!("{err}").contains("value hash"), "{err}");
+    }
+
+    #[test]
+    fn state_sync_references_across_discovery_batches_round_trip() {
+        use crate::reference_path::ReferencePathType::{AbsolutePathReference, SiblingReference};
+        use crate::replication::RestoreCommitMode;
+
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"target",
+                Element::new_item(vec![42]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"ref",
+                Element::new_reference(SiblingReference(b"target".to_vec())),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        source
+            .insert(
+                [ANOTHER_TEST_LEAF].as_ref(),
+                b"sums",
+                Element::empty_sum_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        source
+            .insert(
+                [ANOTHER_TEST_LEAF, b"sums"].as_ref(),
+                b"chain",
+                Element::new_reference_with_sum_item(
+                    AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"ref".to_vec()]),
+                    7,
+                ),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+
+        // The index row must bind this reference's stored combined hash,
+        // while the reference itself binds the terminal item's bytes.
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"index",
+                Element::empty_provable_count_indexed_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        source
+            .insert_into_count_indexed_tree(
+                [TEST_LEAF, b"index"].as_ref(),
+                b"indexed_ref",
+                Element::new_reference(AbsolutePathReference(vec![
+                    ANOTHER_TEST_LEAF.to_vec(),
+                    b"sums".to_vec(),
+                    b"chain".to_vec(),
+                ])),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+
+        for mode in [
+            RestoreCommitMode::Atomic,
+            RestoreCommitMode::Incremental {
+                budget_bytes: 1,
+                max_subtrees_in_flight: 1,
+            },
+        ] {
+            let dest = run_sync_with_version_and_mode(
+                &source,
+                grove_version,
+                1,
+                None,
+                None,
+                CURRENT_STATE_SYNC_VERSION,
+                mode,
+            )
+            .expect("cross-subtree reference chain must sync");
+            assert_eq!(
+                source.root_hash(None, grove_version).unwrap().unwrap(),
+                dest.root_hash(None, grove_version).unwrap().unwrap()
+            );
+            assert_eq!(
+                source
+                    .get_raw(
+                        [ANOTHER_TEST_LEAF, b"sums"].as_ref().into(),
+                        b"chain",
+                        None,
+                        grove_version
+                    )
+                    .unwrap()
+                    .unwrap(),
+                dest.get_raw(
+                    [ANOTHER_TEST_LEAF, b"sums"].as_ref().into(),
+                    b"chain",
+                    None,
+                    grove_version
+                )
+                .unwrap()
+                .unwrap()
+            );
+            assert!(dest
+                .verify_grovedb(None, true, false, grove_version)
+                .unwrap()
+                .is_empty());
+        }
+    }
+
+    fn assert_state_sync_forged_element_rejected(
+        forged_element: Element,
+        mode: crate::replication::RestoreCommitMode,
+    ) {
         use std::cell::Cell;
 
         use grovedb_merk::proofs::{Node, Op};
@@ -3315,12 +3678,12 @@ mod tests {
         let victim_path: &[&[u8]] = &[TEST_LEAF, b"sums"];
         let victim_prefix = RocksDbStorage::build_prefix(victim_path.into()).unwrap();
         let victim_key = vec![3u8];
-        let forged_bytes = Element::new_sum_item(1_000_000)
+        let forged_bytes = forged_element
             .serialize(grove_version)
             .expect("serialize forged sum item");
 
         let forged = Cell::new(0usize);
-        let result = run_sync_with_version(
+        let result = run_sync_with_version_and_mode(
             &source,
             grove_version,
             64,
@@ -3363,6 +3726,7 @@ mod tests {
                 pack_nested_bytes(mutated).expect("repack victim payload")
             }),
             CURRENT_STATE_SYNC_VERSION,
+            mode,
         );
         assert!(
             forged.get() > 0,
@@ -3375,8 +3739,8 @@ mod tests {
                     .unwrap()
                     .expect("read the restored sum tree element");
                 let item = dest
-                    .get(
-                        [TEST_LEAF, b"sums"].as_ref(),
+                    .get_raw(
+                        [TEST_LEAF, b"sums"].as_ref().into(),
                         &victim_key,
                         None,
                         grove_version,

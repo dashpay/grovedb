@@ -492,9 +492,8 @@ impl<'db> MultiStateSyncSession<'db> {
 
     /// Commits the sync session by finalizing the underlying transaction.
     ///
-    /// Before committing, verifies that the GroveDB root hash matches the
-    /// expected `app_hash` to ensure the overall composition of all restored
-    /// subtrees is correct.
+    /// Before committing, verifies the root against `app_hash` and binds
+    /// element bytes, including references, to the authenticated value hashes.
     pub fn commit(self: Pin<Box<Self>>, grove_version: &GroveVersion) -> Result<(), Error> {
         if self.failed {
             return Err(Error::CorruptedData(
@@ -547,9 +546,17 @@ impl<'db> MultiStateSyncSession<'db> {
             )));
         }
 
-        // The root hash is verified, so the destination is about to become a
-        // complete, checked restore: retire the unfinished-restore marker in
-        // the very transaction that makes that true.
+        // Chunk hashes authenticate carried value hashes, not necessarily
+        // element bytes. References need all target subtrees present before
+        // their combined hashes can be checked. This also covers plain
+        // trees, which do not run the Merk aggregate rewrite.
+        session
+            .db
+            .verify_restored_value_hashes(&session.transaction, grove_version)?;
+
+        // The root hash and element bytes are verified: retire the
+        // unfinished-restore marker in the transaction that makes the
+        // complete, checked restore visible.
         if session.intermediate_commits > 0 {
             session.set_incomplete_restore_marker(false)?;
         }
