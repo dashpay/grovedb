@@ -2709,8 +2709,14 @@ impl GroveDb {
                             &path.to_vec(),
                             Some(&key),
                         )?;
+                        // Commitment-preserving: the reference binds its
+                        // terminal's stored bytes, wrapper included (the
+                        // same representation the batch resolver and the
+                        // V1 prover use). Looking through the wrapper here
+                        // would report every batch-written reference to a
+                        // NonCounted item as corrupt.
                         let item = self
-                            .follow_reference(
+                            .follow_reference_as_stored(
                                 (full_path.as_slice()).into(),
                                 allow_cache,
                                 Some(transaction),

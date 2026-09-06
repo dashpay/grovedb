@@ -2053,9 +2053,13 @@ impl GroveDb {
                     Ok(p) => p,
                     Err(e) => return Err(Error::from(e)).wrap_with_cost(cost),
                 };
+                // Embed the terminal's STORED bytes (wrapper included):
+                // the reference node's hash combines its own value hash
+                // with `H(stored terminal bytes)`, so a looked-through
+                // terminal would not reproduce the committed hash.
                 let referenced_elem = cost_return_on_error!(
                     &mut cost,
-                    self.follow_reference(
+                    self.follow_reference_as_stored(
                         absolute_path.as_slice().into(),
                         true,
                         None,
@@ -2251,6 +2255,14 @@ impl GroveDb {
                             // with `Reference` — both produce a
                             // KVRefValueHash{,Count} node with the
                             // dereferenced target's serialized bytes.
+                            //
+                            // The target is embedded as STORED (wrapper
+                            // included): the node's hash is
+                            // `combine(H(reference), H(stored terminal))`,
+                            // which is what both write paths commit to.
+                            // (The V0 prover in `prove_subqueries` is
+                            // frozen and still embeds the looked-through
+                            // terminal.)
                             Ok(Element::Reference(reference_path, ..))
                             | Ok(Element::ReferenceWithSumItem(reference_path, ..)) => {
                                 let absolute_path = cost_return_on_error_into!(
@@ -2265,7 +2277,7 @@ impl GroveDb {
 
                                 let referenced_elem = cost_return_on_error_into!(
                                     &mut cost,
-                                    self.follow_reference(
+                                    self.follow_reference_as_stored(
                                         absolute_path.as_slice().into(),
                                         true,
                                         None,

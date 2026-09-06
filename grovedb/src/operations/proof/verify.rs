@@ -703,12 +703,20 @@ impl GroveDb {
             // NonCounted-wrapped values are checked **before**
             // unwrapping via `into_underlying`, since the wrapper
             // itself is the rejected shape. The merk-level prover
-            // already refuses to emit NonCounted entries as
-            // value-bearing nodes, so an honest proof can never
-            // surface one here. Reject as `InvalidProof`
-            // (forgery) rather than `NotSupported` to make the
-            // distinction visible.
-            if elem.is_non_counted() {
+            // already refuses to emit NonCounted entries of the proved
+            // tree as value-bearing nodes, so an honest proof can never
+            // surface one of the tree's OWN entries wrapped. Reject as
+            // `InvalidProof` (forgery) rather than `NotSupported` to
+            // make the distinction visible.
+            //
+            // A row resolved through a reference is the exception: a
+            // reference commits to its terminal's stored bytes verbatim
+            // (wrapper included — see `follow_reference_as_stored`), so
+            // a target that lives wrapped in a count-bearing tree
+            // legitimately surfaces here wrapped. The merk verifier
+            // flags those rows, and the wrapper is looked through below
+            // like everywhere else.
+            if elem.is_non_counted() && !item.resolved_from_reference {
                 return Err(Error::InvalidProof(
                     query.clone(),
                     format!(
