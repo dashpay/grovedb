@@ -742,6 +742,155 @@ mod tests {
             .expect("bound tree accepted");
     }
 
+    /// The released (v0) row check, pinned arm by arm: the tree waiver, the
+    /// item mismatch rejection, the child-hash composition check, and the
+    /// `KVRefValueHash` rejection.
+    #[test]
+    fn check_chunk_proof_row_v0_pins_released_arms() {
+        let grove_version = &GROVE_V3;
+        let key = b"k".to_vec();
+        let child = [9u8; 32];
+
+        let tree = Element::empty_tree();
+        let tree_bytes = tree.serialize(grove_version).unwrap();
+        let item = Element::new_item(vec![1]);
+        let item_bytes = item.serialize(grove_version).unwrap();
+
+        // A tree in a bare KVValueHash whose value_hash is a combine_hash the
+        // bytes cannot reproduce: waived (the hole this PR closes from V4).
+        let combined = combine_hash(&value_hash(&tree_bytes).unwrap(), &child).unwrap();
+        let node = Node::KVValueHash(key.clone(), tree_bytes.clone(), combined);
+        GroveDb::check_chunk_proof_row(&node, &key, &tree_bytes, &tree, grove_version)
+            .expect("v0 waives the mismatch for a tree");
+        let node = Node::KVValueHashFeatureType(
+            key.clone(),
+            tree_bytes.clone(),
+            combined,
+            TreeFeatureType::BasicMerkNode,
+        );
+        GroveDb::check_chunk_proof_row(&node, &key, &tree_bytes, &tree, grove_version)
+            .expect("v0 waives the mismatch for a tree in a feature-type node");
+
+        // An item with a mismatching value_hash is rejected.
+        let node = Node::KVValueHash(key.clone(), item_bytes.clone(), combined);
+        let msg = format!(
+            "{:?}",
+            GroveDb::check_chunk_proof_row(&node, &key, &item_bytes, &item, grove_version)
+                .err()
+                .expect("v0 rejects an item mismatch")
+        );
+        assert!(msg.contains("value hash mismatch"), "{msg}");
+        // ... and accepted when the hash matches.
+        let node = Node::KVValueHash(
+            key.clone(),
+            item_bytes.clone(),
+            value_hash(&item_bytes).unwrap(),
+        );
+        GroveDb::check_chunk_proof_row(&node, &key, &item_bytes, &item, grove_version)
+            .expect("v0 accepts a matching item");
+
+        // Child-hash node: composition checked.
+        let node = Node::KVValueHashFeatureTypeWithChildHash(
+            key.clone(),
+            tree_bytes.clone(),
+            combined,
+            TreeFeatureType::BasicMerkNode,
+            child,
+        );
+        GroveDb::check_chunk_proof_row(&node, &key, &tree_bytes, &tree, grove_version)
+            .expect("v0 accepts a correct child-hash composition");
+        let node = Node::KVValueHashFeatureTypeWithChildHash(
+            key.clone(),
+            tree_bytes.clone(),
+            combined,
+            TreeFeatureType::BasicMerkNode,
+            [0u8; 32],
+        );
+        let msg = format!(
+            "{:?}",
+            GroveDb::check_chunk_proof_row(&node, &key, &tree_bytes, &tree, grove_version)
+                .err()
+                .expect("v0 rejects a wrong child hash")
+        );
+        assert!(msg.contains("value/child hash mismatch"), "{msg}");
+
+        // KVRefValueHash family: never accepted.
+        let node = Node::KVRefValueHash(key.clone(), item_bytes.clone(), combined);
+        let msg = format!(
+            "{:?}",
+            GroveDb::check_chunk_proof_row(&node, &key, &item_bytes, &item, grove_version)
+                .err()
+                .expect("v0 rejects KVRefValueHash")
+        );
+        assert!(msg.contains("unexpected KVRefValueHash"), "{msg}");
+
+        // Plain KV: bound by the merk verifier itself.
+        let node = Node::KV(key.clone(), item_bytes.clone());
+        GroveDb::check_chunk_proof_row(&node, &key, &item_bytes, &item, grove_version)
+            .expect("v0 accepts KV");
+    }
+
+    #[test]
+    fn check_chunk_proof_row_v1_rejects_ref_nodes_and_item_mismatch() {
+        let grove_version = GroveVersion::latest();
+        let key = b"k".to_vec();
+        let item = Element::new_item(vec![1]);
+        let item_bytes = item.serialize(grove_version).unwrap();
+        let real_vh = value_hash(&item_bytes).unwrap();
+
+        let node = Node::KVRefValueHashSum(key.clone(), item_bytes.clone(), real_vh, 1);
+        let msg = format!(
+            "{:?}",
+            GroveDb::check_chunk_proof_row(&node, &key, &item_bytes, &item, grove_version)
+                .err()
+                .expect("v1 rejects KVRefValueHash family")
+        );
+        assert!(msg.contains("unexpected KVRefValueHash"), "{msg}");
+
+        let node = Node::KVValueHash(key.clone(), item_bytes.clone(), [7u8; 32]);
+        let msg = format!(
+            "{:?}",
+            GroveDb::check_chunk_proof_row(&node, &key, &item_bytes, &item, grove_version)
+                .err()
+                .expect("v1 rejects an item mismatch")
+        );
+        assert!(msg.contains("value hash mismatch"), "{msg}");
+
+        let node = Node::KVValueHash(key.clone(), item_bytes.clone(), real_vh);
+        GroveDb::check_chunk_proof_row(&node, &key, &item_bytes, &item, grove_version)
+            .expect("v1 accepts a matching item in KVValueHash");
+    }
+
+    #[test]
+    fn chunk_proof_row_binding_unknown_version_is_refused_on_both_sides() {
+        let mut unknown = GroveVersion::latest().clone();
+        unknown
+            .grovedb_versions
+            .operations
+            .proof
+            .chunk_proof_row_binding = 99;
+
+        let key = b"k".to_vec();
+        let item = Element::new_item(vec![1]);
+        let item_bytes = item.serialize(&unknown).unwrap();
+        let node = Node::KV(key.clone(), item_bytes.clone());
+        assert!(matches!(
+            GroveDb::check_chunk_proof_row(&node, &key, &item_bytes, &item, &unknown),
+            Err(Error::VersionError(_))
+        ));
+
+        let db = count_tree_with_subtrees(GroveVersion::latest(), Element::empty_count_tree());
+        assert!(matches!(
+            db.prove_trunk_chunk(&trunk_query(), &unknown).unwrap(),
+            Err(Error::VersionError(_))
+        ));
+        let branch_query = PathBranchChunkQuery::new(vec![b"ct".to_vec()], b"sub_0".to_vec(), 1);
+        assert!(matches!(
+            db.prove_branch_chunk(&branch_query, &unknown).unwrap(),
+            Err(Error::VersionError(_))
+        ));
+    }
+
     // ── Version gate ───────────────────────────────────────────────────
 
     /// Consensus version gate for `proof.chunk_proof_row_binding`.
