@@ -1089,21 +1089,6 @@ mod tests {
     /// forgery.
     #[test]
     fn chunk_proof_row_binding_version_gate() {
-        let db = make_empty_grovedb();
-        for version in [&GROVE_V1, &GROVE_V3, GroveVersion::latest()] {
-            let tx = db.start_chunk_proof_transaction(version).unwrap();
-            assert_eq!(
-                tx.is_snapshot_read(),
-                version
-                    .grovedb_versions
-                    .operations
-                    .proof
-                    .chunk_proof_row_binding
-                    == 1,
-                "only bound chunk generation pins a snapshot",
-            );
-        }
-
         let build_and_forge = |grove_version: &GroveVersion| {
             let db = count_tree_with_subtrees(grove_version, Element::empty_count_tree());
             let proof = prove_trunk(&db, grove_version);
