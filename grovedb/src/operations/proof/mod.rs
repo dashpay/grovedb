@@ -21,6 +21,10 @@ mod generate;
 // proof-verification layer with `--no-default-features --features verify`).
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod indexed_axis;
+/// Interval arithmetic over u64 positions for the append-only tree
+/// verifiers' completeness/soundness checks (count-independent cost).
+#[cfg(any(feature = "minimal", feature = "verify"))]
+mod position_intervals;
 /// Utility functions for proof display and conversion.
 pub mod util;
 mod verify;

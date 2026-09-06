@@ -3686,9 +3686,12 @@ impl GroveDb {
         if let Some(limit) = overall_limit.as_mut() {
             let matched = cost_return_on_error_no_add!(
                 cost,
-                Self::expand_query_to_u64_positions(&sub_query.items, total_count)
+                super::position_intervals::PositionIntervals::from_query_items(
+                    &sub_query.items,
+                    total_count
+                )
             );
-            let count = matched.len().min(u16::MAX as usize) as u16;
+            let count = matched.len().min(u16::MAX as u64) as u16;
             *limit = limit.saturating_sub(count);
         }
 
