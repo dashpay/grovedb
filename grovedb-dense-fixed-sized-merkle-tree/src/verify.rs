@@ -18,9 +18,13 @@ impl DenseTreeProof {
     /// `height` and `count` are trusted values obtained from an authenticated
     /// source (e.g. the parent `Element` in Merk).
     ///
-    /// Returns the proved `(position, value)` pairs collected into `C`.
+    /// Returns the proved `(position, value)` pairs collected into `C`,
+    /// yielded in ascending `position` order regardless of the order the
+    /// proof carried them in (see [`verify_and_get_root`]).
     /// `C` can be `Vec<(u16, Vec<u8>)>`, `BTreeMap<u16, Vec<u8>>`,
     /// `HashMap<u16, Vec<u8>>`, or any `FromIterator<(u16, Vec<u8>)>`.
+    ///
+    /// [`verify_and_get_root`]: Self::verify_and_get_root
     pub fn verify_against_expected_root<C>(
         &self,
         expected_root: &[u8; 32],
@@ -52,6 +56,12 @@ impl DenseTreeProof {
     /// This is used when the root hash flows through the Merk child hash
     /// mechanism rather than being stored in the Element.
     ///
+    /// The entries are yielded in ascending `position` order. The sequence
+    /// the proof encoded them in is not authenticated (the root binds the
+    /// position→value map), so it is never surfaced: a caller that pages or
+    /// truncates the result sees the same page for every permutation of the
+    /// same entry set.
+    ///
     /// `C` can be `Vec<(u16, Vec<u8>)>`, `BTreeMap<u16, Vec<u8>>`,
     /// `HashMap<u16, Vec<u8>>`, or any `FromIterator<(u16, Vec<u8>)>`.
     pub fn verify_and_get_root<C>(
@@ -81,8 +91,17 @@ impl DenseTreeProof {
     /// - **Sound**: the proof contains no entries for positions that were not
     ///   requested by the query.
     ///
+    /// The entries are yielded in ascending `position` order, independent of
+    /// the order the proof carried them in (see [`verify_and_get_root`]).
+    /// `query.left_to_right` is not applied here: it selects which end of the
+    /// set a *limit* keeps, and this method applies no limit, so the caller
+    /// that does (GroveDB's lower-layer verifier) reverses the ascending
+    /// sequence for a descending query before truncating.
+    ///
     /// `C` can be `Vec<(u16, Vec<u8>)>`, `BTreeMap<u16, Vec<u8>>`,
     /// `HashMap<u16, Vec<u8>>`, or any `FromIterator<(u16, Vec<u8>)>`.
+    ///
+    /// [`verify_and_get_root`]: Self::verify_and_get_root
     pub fn verify_for_query<C>(
         &self,
         query: &Query,
@@ -277,8 +296,16 @@ impl DenseTreeProof {
         let computed_root =
             recompute_hash(0, capacity, count, &entry_map, &value_hash_map, &hash_map)?;
 
-        // All entry positions validated in-range above; collect into C
-        let entries: C = self.entries.iter().cloned().collect();
+        // All entry positions validated in-range above. Surface them in
+        // canonical (ascending-position) order rather than the order the
+        // proof carried them in: the root binds the position→value map, not
+        // the encoded sequence, so a prover could otherwise permute the
+        // entries without changing the root and steer which ones survive a
+        // caller's limit/truncation (issue #854). Positions are unique
+        // (checked above), so the sort is a total order.
+        let mut ordered: Vec<(u16, Vec<u8>)> = self.entries.clone();
+        ordered.sort_by_key(|(pos, _)| *pos);
+        let entries: C = ordered.into_iter().collect();
 
         Ok((computed_root, entries))
     }
