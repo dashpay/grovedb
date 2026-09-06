@@ -303,6 +303,17 @@ pub struct MultiStateSyncSession<'db> {
     /// `(primary_prefix, axis_tag)`.
     secondary_owner: BTreeMap<SubtreePrefix, (SubtreePrefix, u8)>,
 
+    /// Every subtree prefix the session has ever discovered — the root,
+    /// every child subtree read out of a restored parent, every axis
+    /// secondary announced by an indexed header. Entries are never
+    /// removed. [`Self::is_sync_completed`] requires all of them to be in
+    /// `processed_prefixes`, so completeness is a checked invariant rather
+    /// than a property of the bookkeeping between discovery and
+    /// activation never dropping an entry: the final root hash check
+    /// cannot see a missing branch, because the restored parent already
+    /// commits to the child's hash whether or not the child was restored.
+    discovered_prefixes: BTreeSet<SubtreePrefix>,
+
     /// Transaction used for the synchronization process.
     /// This is placed last to ensure it is dropped last.
     transaction: Transaction<'db>,
@@ -352,7 +363,15 @@ struct IndexedSyncGroup {
 impl<'db> MultiStateSyncSession<'db> {
     /// Initializes a new state sync session speaking the given state sync
     /// protocol version.
-    pub fn new(
+    ///
+    /// Raw constructor: it does not validate `version`. Crate-private so
+    /// every external session goes through
+    /// [`GroveDb::start_syncing_session`] /
+    /// [`GroveDb::start_snapshot_syncing`], which reject unsupported
+    /// versions before a session exists. Tests use this directly to build
+    /// a session pinned to a version other than the wire's and exercise
+    /// the session-consistency check in [`Self::apply_chunk`].
+    pub(crate) fn new(
         db: &'db GroveDb,
         app_hash: [u8; 32],
         subtrees_batch_size: usize,
@@ -376,6 +395,7 @@ impl<'db> MultiStateSyncSession<'db> {
             failed: false,
             indexed_groups: Default::default(),
             secondary_owner: Default::default(),
+            discovered_prefixes: Default::default(),
             _pin: PhantomPinned,
         })
     }
@@ -457,6 +477,13 @@ impl<'db> MultiStateSyncSession<'db> {
         // An indexed group still tracked here has members whose joint
         // verification has not run yet (e.g. secondaries not activated).
         if !self.indexed_groups.is_empty() {
+            return false;
+        }
+
+        // Every prefix ever discovered must have been fully restored. See
+        // the field's documentation for why the root hash check cannot
+        // stand in for this.
+        if !self.discovered_prefixes.is_subset(&self.processed_prefixes) {
             return false;
         }
 
@@ -571,7 +598,7 @@ impl<'db> MultiStateSyncSession<'db> {
     /// - This function uses unsafe code to create a reference to the
     ///   transaction. Ensure that the transaction is properly managed and the
     ///   lifetime guarantees are respected.
-    pub fn add_subtree_sync_info<'b, B: AsRef<[u8]>>(
+    pub(crate) fn add_subtree_sync_info<'b, B: AsRef<[u8]>>(
         self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
         path: SubtreePath<'b, B>,
         hash: CryptoHash,
@@ -584,6 +611,8 @@ impl<'db> MultiStateSyncSession<'db> {
                 "state sync session has failed".to_string(),
             ));
         }
+        // Covers the grove root, which no discovery pass produces.
+        self.as_mut().discovered_prefixes().insert(chunk_prefix);
         let transaction_ref: &'db Transaction<'db> = unsafe {
             let tx: &Transaction<'db> = &self.as_ref().transaction;
             &*(tx as *const _)
@@ -872,6 +901,14 @@ impl<'db> MultiStateSyncSession<'db> {
         &mut unsafe { self.get_unchecked_mut() }.secondary_owner
     }
 
+    fn discovered_prefixes(
+        self: Pin<&mut MultiStateSyncSession<'db>>,
+    ) -> &mut BTreeSet<SubtreePrefix> {
+        // SAFETY: we only access a single field and do not move the struct;
+        // the pin invariant only protects `transaction` from being moved.
+        &mut unsafe { self.get_unchecked_mut() }.discovered_prefixes
+    }
+
     /// Registers an indexed subtree group and opens its primary for
     /// restore.
     ///
@@ -1084,6 +1121,9 @@ impl<'db> MultiStateSyncSession<'db> {
             );
         }
         group.header = Some(header);
+        for prefix in metadata.data.keys() {
+            self.as_mut().discovered_prefixes().insert(*prefix);
+        }
         Ok(metadata)
     }
 
@@ -1259,14 +1299,6 @@ impl<'db> MultiStateSyncSession<'db> {
         *self.as_mut().bytes_since_commit() += payload_bytes;
 
         let db = self.db;
-        // SAFETY: the transaction lives as long as the pinned session and is
-        // dropped last; the reference is only used within this call while
-        // the session is alive. This mirrors the pattern used by
-        // `add_subtree_sync_info` and `discover_new_subtrees_metadata`.
-        let transaction_ref: &'db Transaction<'db> = unsafe {
-            let tx: &Transaction<'db> = &self.as_ref().transaction;
-            &*(tx as *const _)
-        };
 
         let mut next_global_chunk_ids: Vec<Vec<u8>> = vec![];
         let mut received_headers: Vec<(SubtreePrefix, IndexedHeader)> = vec![];
@@ -1275,6 +1307,16 @@ impl<'db> MultiStateSyncSession<'db> {
             .iter()
             .zip(nested_global_chunks.iter())
         {
+            // SAFETY: the transaction lives as long as the pinned session and
+            // is dropped last. The reference is scoped to this iteration so
+            // it is provably dead by the time the drained-boundary block
+            // after the loop may replace the transaction in an intermediate
+            // commit. This mirrors the pattern used by
+            // `add_subtree_sync_info` and `discover_new_subtrees_metadata`.
+            let transaction_ref: &'db Transaction<'db> = unsafe {
+                let tx: &Transaction<'db> = &self.as_ref().transaction;
+                &*(tx as *const _)
+            };
             let mut next_chunk_ids = vec![];
 
             let (chunk_prefix, _, _, nested_local_chunk_ids) =
@@ -1447,6 +1489,9 @@ impl<'db> MultiStateSyncSession<'db> {
                 } else {
                     self.discover_new_subtrees_metadata(&completed_path, grove_version)?
                 };
+                for prefix in new_subtrees_metadata.data.keys() {
+                    self.as_mut().discovered_prefixes().insert(*prefix);
+                }
 
                 if self.discovery_batch_full() {
                     match self.as_mut().pending_discovered_subtrees() {

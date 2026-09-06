@@ -22,7 +22,7 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::{
-        replication::CURRENT_STATE_SYNC_VERSION,
+        replication::{MultiStateSyncSession, RestoreCommitMode, CURRENT_STATE_SYNC_VERSION},
         tests::{make_empty_grovedb, make_test_grovedb, TempGroveDb, TEST_LEAF},
         Element, GroveDb,
     };
@@ -187,6 +187,32 @@ mod tests {
                 "version {bad}: the error should name both versions, got {msg}"
             );
 
+            // Target side, lower-level constructors: the bare session
+            // builders refuse too, so no public path can produce a session
+            // that could never apply a chunk.
+            let Err(err) = dest.start_syncing_session(app_hash, 64, bad) else {
+                panic!("version {bad} should not have built a bare session");
+            };
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("Unsupported state sync protocol version")
+                    && msg.contains(&format!("{bad}"))
+                    && msg.contains(&format!("{CURRENT_STATE_SYNC_VERSION}")),
+                "version {bad}: the bare constructor should name both versions, got {msg}"
+            );
+            let Err(err) = dest.start_syncing_session_with_mode(
+                app_hash,
+                64,
+                bad,
+                RestoreCommitMode::incremental(),
+            ) else {
+                panic!("version {bad} should not have built a bare incremental session");
+            };
+            assert!(
+                format!("{err}").contains("Unsupported state sync protocol version"),
+                "version {bad}: got {err}"
+            );
+
             // Source side: the peer refuses to serve.
             let err = peer
                 .db
@@ -230,11 +256,17 @@ mod tests {
         let dest = make_empty_grovedb();
         let app_hash = peer.app_hash(grove_version);
 
-        // `start_syncing_session` is the raw constructor and does not
-        // validate the version — pin the session to a different one so
-        // the wire version below passes the supported check but fails
-        // the session-consistency check.
-        let mut session = dest.start_syncing_session(app_hash, 64, CURRENT_STATE_SYNC_VERSION + 1);
+        // Every public entry point validates the version, so the only way
+        // to pin a session to a different one is the crate-private raw
+        // constructor: the wire version below then passes the supported
+        // check but fails the session-consistency check.
+        let mut session = MultiStateSyncSession::new(
+            &dest,
+            app_hash,
+            64,
+            CURRENT_STATE_SYNC_VERSION + 1,
+            RestoreCommitMode::default(),
+        );
         let chunk = peer
             .db
             .fetch_chunk(&app_hash, None, CURRENT_STATE_SYNC_VERSION, grove_version)

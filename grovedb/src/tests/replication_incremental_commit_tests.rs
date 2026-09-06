@@ -760,4 +760,100 @@ mod tests {
              database must stay marked so the caller discards it"
         );
     }
+
+    /// A destination still carrying the incomplete-restore marker holds
+    /// unverified — and, once a different snapshot is restored over it,
+    /// orphaned — data from an abandoned incremental restore. A new
+    /// session into it would clear the marker on its own success while
+    /// leaving that data in place, unreachable from the root hash check.
+    /// Every session entry point therefore refuses until the directory
+    /// is discarded.
+    #[test]
+    fn a_marked_destination_refuses_to_start_another_restore() {
+        let grove_version = GroveVersion::latest();
+        let source = multi_subtree_source(grove_version);
+
+        let checkpoint_dir = TempDir::new().expect("temp dir");
+        let checkpoint_path = checkpoint_dir.path().join("checkpoint");
+        source
+            .create_checkpoint(&checkpoint_path)
+            .expect("create checkpoint");
+        let checkpoint_db = GroveDb::open(&checkpoint_path).expect("open checkpoint");
+        let app_hash = checkpoint_db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .unwrap();
+
+        let dest = make_empty_grovedb();
+        let mut session = dest
+            .start_snapshot_syncing_with_mode(
+                app_hash,
+                64,
+                CURRENT_STATE_SYNC_VERSION,
+                COMMIT_AT_EVERY_SAFE_POINT,
+                grove_version,
+            )
+            .expect("start syncing");
+
+        // Drive only until the first intermediate commit, then walk away.
+        let mut chunk_queue: VecDeque<Vec<u8>> = VecDeque::new();
+        chunk_queue.push_back(app_hash.to_vec());
+        while let Some(chunk_id) = chunk_queue.pop_front() {
+            let chunk_data = checkpoint_db
+                .fetch_chunk(
+                    chunk_id.as_slice(),
+                    None,
+                    CURRENT_STATE_SYNC_VERSION,
+                    grove_version,
+                )
+                .expect("fetch chunk");
+            let more = session
+                .apply_chunk(
+                    chunk_id.as_slice(),
+                    &chunk_data,
+                    CURRENT_STATE_SYNC_VERSION,
+                    grove_version,
+                )
+                .expect("apply chunk");
+            if session.intermediate_commits() > 0 {
+                break;
+            }
+            chunk_queue.extend(more);
+        }
+        assert!(session.intermediate_commits() > 0);
+        drop(session);
+        assert!(dest.has_incomplete_restore().unwrap());
+
+        for mode in [RestoreCommitMode::Atomic, COMMIT_AT_EVERY_SAFE_POINT] {
+            let Err(err) = dest.start_snapshot_syncing_with_mode(
+                app_hash,
+                64,
+                CURRENT_STATE_SYNC_VERSION,
+                mode,
+                grove_version,
+            ) else {
+                panic!("a marked destination started a {mode:?} snapshot restore");
+            };
+            assert!(
+                format!("{err}").contains("incomplete restore"),
+                "{mode:?}: expected the marker to be named, got {err}"
+            );
+            let Err(err) = dest.start_syncing_session_with_mode(
+                app_hash,
+                64,
+                CURRENT_STATE_SYNC_VERSION,
+                mode,
+            ) else {
+                panic!("a marked destination built a bare {mode:?} session");
+            };
+            assert!(
+                format!("{err}").contains("incomplete restore"),
+                "{mode:?}: expected the marker to be named, got {err}"
+            );
+        }
+        assert!(
+            dest.has_incomplete_restore().unwrap(),
+            "refusing to start must not clear the marker"
+        );
+    }
 }

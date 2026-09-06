@@ -8,7 +8,7 @@ use grovedb_merk::{tree::hash::CryptoHash, tree_type::TreeType, ChunkProducer};
 use grovedb_path::SubtreePath;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
-pub use self::state_sync_session::MultiStateSyncSession;
+pub use self::state_sync_session::{MultiStateSyncSession, CONST_GROUP_PACKING_SIZE};
 use crate::{
     replication::utils::{pack_nested_bytes, unpack_nested_bytes},
     util::TxRef,
@@ -162,12 +162,19 @@ impl RestoreCommitMode {
 impl GroveDb {
     /// Starts a new state synchronization session with the given app hash,
     /// batch size and state sync protocol version.
+    ///
+    /// Rejects any `version` other than [`CURRENT_STATE_SYNC_VERSION`] up
+    /// front, with the same error the other entry points use. A session
+    /// pinned to an unsupported version could never apply a chunk (every
+    /// `apply_chunk` would fail the version checks), so refusing here
+    /// turns a dead-on-arrival session into a descriptive error at the
+    /// point the caller can act on it.
     pub fn start_syncing_session(
         &self,
         app_hash: [u8; 32],
         subtrees_batch_size: usize,
         version: u16,
-    ) -> Pin<Box<MultiStateSyncSession<'_>>> {
+    ) -> Result<Pin<Box<MultiStateSyncSession<'_>>>, Error> {
         self.start_syncing_session_with_mode(
             app_hash,
             subtrees_batch_size,
@@ -184,8 +191,34 @@ impl GroveDb {
         subtrees_batch_size: usize,
         version: u16,
         commit_mode: RestoreCommitMode,
-    ) -> Pin<Box<MultiStateSyncSession<'_>>> {
-        MultiStateSyncSession::new(self, app_hash, subtrees_batch_size, version, commit_mode)
+    ) -> Result<Pin<Box<MultiStateSyncSession<'_>>>, Error> {
+        if version != CURRENT_STATE_SYNC_VERSION {
+            return Err(Error::CorruptedData(format!(
+                "Unsupported state sync protocol version {version}; this build speaks version \
+                 {CURRENT_STATE_SYNC_VERSION}"
+            )));
+        }
+        // A destination still marked from an abandoned incremental restore
+        // holds unverified data that a new session would neither clear nor
+        // re-verify: the new restore's root hash check cannot see orphaned
+        // entries under prefixes it declares empty, and its own final
+        // commit would erase the marker. Refuse until the directory is
+        // discarded.
+        if self.has_incomplete_restore()? {
+            return Err(Error::CorruptedData(
+                "cannot start a state sync session: the database holds an incomplete restore \
+                 (an earlier incremental restore never reached a verified commit); discard the \
+                 directory and sync into a fresh one"
+                    .to_string(),
+            ));
+        }
+        Ok(MultiStateSyncSession::new(
+            self,
+            app_hash,
+            subtrees_batch_size,
+            version,
+            commit_mode,
+        ))
     }
 
     /// Whether this database holds a partially applied, hash-unverified
@@ -202,6 +235,11 @@ impl GroveDb {
     ///
     /// Callers running an [`RestoreCommitMode::Atomic`] restore never
     /// need this: that mode cannot leave partial state behind.
+    ///
+    /// Every session constructor refuses to start while the marker is
+    /// set, so a marked directory cannot be "repaired" by syncing into it
+    /// again: the new restore would clear the marker on its own success
+    /// while leaving the earlier, unverified entries in place.
     pub fn has_incomplete_restore(&self) -> Result<bool, Error> {
         self.get_aux(INCOMPLETE_RESTORE_AUX_KEY, None)
             .value
@@ -257,6 +295,11 @@ impl GroveDb {
     /// - The function opens a `Merk` tree for each chunk and retrieves the
     ///   associated data.
     /// - Empty trees return an empty byte vector.
+    /// - The request shape is bounded to what an honest target sends: at
+    ///   most [`CONST_GROUP_PACKING_SIZE`] global chunk ids per request,
+    ///   at most that many local chunk ids per global id, and exactly one
+    ///   page cursor per append-only subtree. Larger requests are refused
+    ///   before anything is served, since every id costs a buffered chunk.
     /// - Non-Merk append-only subtrees (`CommitmentTree`, `MmrTree`,
     ///   `BulkAppendTree`, `DenseAppendOnlyFixedSizeTree`,
     ///   `PrivateDocumentStore`) are served as cursor-based entry pages
@@ -295,10 +338,33 @@ impl GroveDb {
             global_chunk_ids.extend(unpack_nested_bytes(packed_global_chunk_id)?);
         }
 
+        // Every id in the request costs one bounded chunk or page to serve
+        // and every chunk is buffered before the response is packed, so the
+        // request shape is what bounds the response size. An honest target
+        // never packs more than `CONST_GROUP_PACKING_SIZE` global ids per
+        // request nor more than that many local ids per global id (see
+        // `apply_chunk`); anything beyond is a peer trying to make this
+        // node build a response arbitrarily larger than its request.
+        if global_chunk_ids.len() > CONST_GROUP_PACKING_SIZE {
+            return Err(Error::CorruptedData(format!(
+                "state sync request carries too many global chunk ids: {} > {}",
+                global_chunk_ids.len(),
+                CONST_GROUP_PACKING_SIZE
+            )));
+        }
+
         let mut global_chunk_bytes: Vec<Vec<u8>> = vec![];
         for global_chunk_id in global_chunk_ids {
             let (chunk_prefix, root_key, tree_type, nested_chunk_ids) =
                 utils::decode_global_chunk_id(global_chunk_id.as_slice(), &root_app_hash)?;
+            if nested_chunk_ids.len() > CONST_GROUP_PACKING_SIZE {
+                return Err(Error::CorruptedData(format!(
+                    "state sync request carries too many local chunk ids for one subtree: {} > \
+                     {}",
+                    nested_chunk_ids.len(),
+                    CONST_GROUP_PACKING_SIZE
+                )));
+            }
 
             // The initial request for an indexed primary is a single
             // header request carrying the axis tags and secondary root
@@ -340,6 +406,15 @@ impl GroveDb {
                     return Err(Error::NotSupported(
                         "append-only subtree chunk request is missing its page cursor".to_string(),
                     ));
+                }
+                // The target asks for exactly one page per round; every
+                // extra cursor would cost another `MAX_PAGE_BYTES` page.
+                if nested_chunk_ids.len() > 1 {
+                    return Err(Error::CorruptedData(format!(
+                        "state sync request carries too many page cursors for one append-only \
+                         subtree: {} > 1",
+                        nested_chunk_ids.len()
+                    )));
                 }
                 let mut local_chunk_bytes: Vec<Vec<u8>> = vec![];
                 for chunk_id in &nested_chunk_ids {
@@ -511,7 +586,7 @@ impl GroveDb {
             subtrees_batch_size,
             version,
             commit_mode,
-        );
+        )?;
 
         session.add_subtree_sync_info(
             SubtreePath::empty(),

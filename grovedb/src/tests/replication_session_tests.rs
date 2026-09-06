@@ -3265,4 +3265,274 @@ mod tests {
             .expect("dest verify_grovedb should run");
         assert!(dest_issues.is_empty(), "got: {:?}", dest_issues);
     }
+
+    /// The value bytes of a `KVValueHashFeatureType` chunk node are not
+    /// bound by the chunk hash: the hash is computed from the carried
+    /// `value_hash`, never from `H(value)`. A byzantine source can keep
+    /// every hash-bound field of an honest node and substitute forged
+    /// element bytes, and the chunk still verifies against the parent's
+    /// commitment. Element-mode finalization derives the subtree's
+    /// aggregates from exactly those bytes, so the restore must refuse
+    /// them rather than commit a sum tree whose stored items and aggregate
+    /// disagree with every honest node.
+    #[test]
+    fn state_sync_forged_element_bytes_under_honest_value_hash_rejected() {
+        use std::cell::Cell;
+
+        use grovedb_merk::proofs::{Node, Op};
+        use grovedb_storage::rocksdb_storage::RocksDbStorage;
+
+        use crate::replication::utils::{
+            decode_vec_ops, encode_vec_ops, pack_nested_bytes, unpack_nested_bytes,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"sums",
+                Element::empty_sum_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert sum tree");
+        for i in 0..8u8 {
+            source
+                .insert(
+                    [TEST_LEAF, b"sums"].as_ref(),
+                    &[i],
+                    Element::new_sum_item(5),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert sum item");
+        }
+        let victim_path: &[&[u8]] = &[TEST_LEAF, b"sums"];
+        let victim_prefix = RocksDbStorage::build_prefix(victim_path.into()).unwrap();
+        let victim_key = vec![3u8];
+        let forged_bytes = Element::new_sum_item(1_000_000)
+            .serialize(grove_version)
+            .expect("serialize forged sum item");
+
+        let forged = Cell::new(0usize);
+        let result = run_sync_with_version(
+            &source,
+            grove_version,
+            64,
+            None,
+            Some(&|_tree_type, gid: &[u8], gdata: Vec<u8>| {
+                if gid.len() < 32 || gid[..32] != victim_prefix {
+                    return gdata;
+                }
+                let locals = unpack_nested_bytes(&gdata).expect("unpack victim payload");
+                let mutated: Vec<Vec<u8>> = locals
+                    .into_iter()
+                    .map(|local| {
+                        if local.is_empty() {
+                            return local;
+                        }
+                        let ops = decode_vec_ops(&local).expect("decode chunk ops");
+                        let ops: Vec<Op> = ops
+                            .into_iter()
+                            .map(|op| match op {
+                                Op::Push(Node::KVValueHashFeatureType(
+                                    key,
+                                    _honest_value,
+                                    honest_value_hash,
+                                    feature,
+                                )) if key == victim_key => {
+                                    forged.set(forged.get() + 1);
+                                    Op::Push(Node::KVValueHashFeatureType(
+                                        key,
+                                        forged_bytes.clone(),
+                                        honest_value_hash,
+                                        feature,
+                                    ))
+                                }
+                                other => other,
+                            })
+                            .collect();
+                        encode_vec_ops(ops).expect("re-encode chunk ops")
+                    })
+                    .collect();
+                pack_nested_bytes(mutated).expect("repack victim payload")
+            }),
+            CURRENT_STATE_SYNC_VERSION,
+        );
+        assert!(
+            forged.get() > 0,
+            "the victim node must have been forged for this test to mean anything"
+        );
+        match result {
+            Ok(dest) => {
+                let element = dest
+                    .get([TEST_LEAF].as_ref(), b"sums", None, grove_version)
+                    .unwrap()
+                    .expect("read the restored sum tree element");
+                let item = dest
+                    .get(
+                        [TEST_LEAF, b"sums"].as_ref(),
+                        &victim_key,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("read the restored victim item");
+                panic!(
+                    "forged element bytes were accepted: parent element {element:?}, restored \
+                     victim item {item:?}"
+                );
+            }
+            Err(err) => assert!(
+                format!("{err:?}").contains("value hash"),
+                "expected the value-hash binding to reject the forgery, got: {err:?}"
+            ),
+        }
+    }
+
+    /// `fetch_chunk` serves one bounded chunk per requested id but used to
+    /// place no bound on how many ids one request may carry, so a peer
+    /// could repeat a single valid id thousands of times and have the
+    /// source build a response thousands of times larger than any honest
+    /// one. An honest target never packs more than
+    /// `CONST_GROUP_PACKING_SIZE` global ids, nor more than that many
+    /// local ids per global id, and asks for exactly one page cursor per
+    /// append-only subtree; anything beyond is refused up front.
+    #[test]
+    fn fetch_chunk_bounds_the_number_of_chunk_ids_per_request() {
+        use grovedb_storage::rocksdb_storage::RocksDbStorage;
+
+        use crate::replication::{
+            non_merk_sync::NonMerkChunkId,
+            utils::{encode_global_chunk_id, pack_nested_bytes},
+            CONST_GROUP_PACKING_SIZE,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"ct",
+                Element::empty_commitment_tree(4).expect("valid chunk power"),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert commitment tree");
+        source
+            .commitment_tree_insert_raw(
+                [TEST_LEAF].as_ref(),
+                b"ct",
+                [1u8; 32],
+                [2u8; 32],
+                [3u8; 32],
+                vec![0u8; 216],
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert commitment tree note");
+        let app_hash = source
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("source root hash");
+        let fetch = |packed: Vec<u8>| {
+            source.fetch_chunk(
+                packed.as_slice(),
+                None,
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )
+        };
+        let assert_bounded = |err: crate::Error, what: &str| {
+            assert!(
+                format!("{err}").contains("too many"),
+                "{what}: expected a descriptive bound error, got {err}"
+            );
+        };
+
+        // Global ids per request: the honest maximum is served, one more
+        // is refused.
+        let honest_max = pack_nested_bytes(vec![app_hash.to_vec(); CONST_GROUP_PACKING_SIZE])
+            .expect("pack honest maximum");
+        fetch(honest_max).expect("the honest maximum number of global ids must be served");
+        let too_many = pack_nested_bytes(vec![app_hash.to_vec(); CONST_GROUP_PACKING_SIZE + 1])
+            .expect("pack one too many");
+        assert_bounded(
+            fetch(too_many).expect_err("one global id beyond the bound must be refused"),
+            "global ids",
+        );
+
+        // Local ids per global id, on an ordinary Merk subtree.
+        let tx = source.start_transaction();
+        let (merk, root_key, tree_type, _element) = source
+            .open_merk_for_replication([TEST_LEAF].as_ref().into(), &tx, grove_version)
+            .expect("open test leaf for replication");
+        drop(merk);
+        let leaf_path: &[&[u8]] = &[TEST_LEAF];
+        let leaf_prefix = RocksDbStorage::build_prefix(leaf_path.into()).unwrap();
+        let honest_max = encode_global_chunk_id(
+            leaf_prefix,
+            root_key.clone(),
+            tree_type,
+            vec![vec![]; CONST_GROUP_PACKING_SIZE],
+        )
+        .expect("encode honest maximum");
+        fetch(pack_nested_bytes(vec![honest_max]).expect("pack"))
+            .expect("the honest maximum number of local ids must be served");
+        let too_many = encode_global_chunk_id(
+            leaf_prefix,
+            root_key,
+            tree_type,
+            vec![vec![]; CONST_GROUP_PACKING_SIZE + 1],
+        )
+        .expect("encode one too many");
+        assert_bounded(
+            fetch(pack_nested_bytes(vec![too_many]).expect("pack"))
+                .expect_err("one local id beyond the bound must be refused"),
+            "local ids",
+        );
+
+        // Page cursors per append-only subtree: exactly one.
+        let (merk, ct_root_key, ct_tree_type, _element) = source
+            .open_merk_for_replication([TEST_LEAF, b"ct"].as_ref().into(), &tx, grove_version)
+            .expect("open commitment tree for replication");
+        drop(merk);
+        let ct_path: &[&[u8]] = &[TEST_LEAF, b"ct"];
+        let ct_prefix = RocksDbStorage::build_prefix(ct_path.into()).unwrap();
+        let cursor = NonMerkChunkId {
+            start: 0,
+            state: 1,
+            param: 4,
+        }
+        .encode();
+        let one = encode_global_chunk_id(
+            ct_prefix,
+            ct_root_key.clone(),
+            ct_tree_type,
+            vec![cursor.clone()],
+        )
+        .expect("encode one cursor");
+        fetch(pack_nested_bytes(vec![one]).expect("pack"))
+            .expect("a single page cursor must be served");
+        let two = encode_global_chunk_id(
+            ct_prefix,
+            ct_root_key,
+            ct_tree_type,
+            vec![cursor.clone(), cursor],
+        )
+        .expect("encode two cursors");
+        assert_bounded(
+            fetch(pack_nested_bytes(vec![two]).expect("pack"))
+                .expect_err("a second page cursor in one request must be refused"),
+            "page cursors",
+        );
+    }
 }

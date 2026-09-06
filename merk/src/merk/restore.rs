@@ -351,6 +351,23 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let mut batch = self.merk.storage.new_batch();
         let mut new_chunk_ids = Vec::new();
 
+        // Chunk verification cannot tell feature-type families apart:
+        // `Node::KV` and a `SummedMerkNode` `KVValueHashFeatureType` hash
+        // identically, and so do the `ProvableCounted*` variants that share
+        // `node_hash_with_count`. A node carrying a family foreign to this
+        // merk's tree type is a lie; refuse it before it is persisted, where
+        // it would corrupt every later aggregate computation (or panic in
+        // `hash_for_link`).
+        let tree_type = self.merk.tree_type;
+        let family_check = |tree: &TreeNode| -> Result<(), Error> {
+            if tree.node_type() != tree_type.inner_node_type() {
+                return Err(Error::ChunkRestoringError(ChunkError::InvalidChunkProof(
+                    "chunk node feature type does not belong to the tree type",
+                )));
+            }
+            Ok(())
+        };
+
         chunk_tree.visit_refs_track_traversal_and_parent(
             traversal_instruction,
             None,
@@ -373,6 +390,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
 
                         // encode the node and add it to the batch
+                        family_check(&tree)?;
                         let bytes = tree.encode();
 
                         batch.put(key, &bytes, None, None).map_err(CostsError)
@@ -392,6 +410,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
                         *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
 
+                        family_check(&tree)?;
                         let bytes = tree.encode();
                         batch.put(key, &bytes, None, None).map_err(CostsError)
                     }
@@ -410,6 +429,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
                         *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
 
+                        family_check(&tree)?;
                         let bytes = tree.encode();
                         batch.put(key, &bytes, None, None).map_err(CostsError)
                     }
@@ -428,6 +448,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
                         *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
 
+                        family_check(&tree)?;
                         let bytes = tree.encode();
                         batch.put(key, &bytes, None, None).map_err(CostsError)
                     }
@@ -447,6 +468,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
                         *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
 
+                        family_check(&tree)?;
                         let bytes = tree.encode();
                         batch.put(key, &bytes, None, None).map_err(CostsError)
                     }
@@ -470,6 +492,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
                         *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
 
+                        family_check(&tree)?;
                         let bytes = tree.encode();
                         batch.put(key, &bytes, None, None).map_err(CostsError)
                     }
@@ -540,9 +563,15 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             .last()
             .expect("rewrite is only called when traversal_instruction is not empty");
 
-        let updated_key = chunk_tree
-            .key()
-            .expect("chunk tree must have a key during restore");
+        // A chunk whose root is a bare `Hash` node verifies (its proof-tree
+        // hash IS the expected hash) but carries no key to link the parent
+        // to. It is untrusted network input, so refuse it descriptively.
+        let updated_key =
+            chunk_tree
+                .key()
+                .ok_or(Error::ChunkRestoringError(ChunkError::InvalidChunkProof(
+                    "non-root chunk cannot be a bare hash node",
+                )))?;
         let updated_sum = chunk_tree.aggregate_data().map_err(|e| {
             Error::CorruptedData(format!(
                 "chunk tree root node must be KVValueHashFeatureType for aggregate data: {e}"
@@ -693,9 +722,19 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// leaving the tree indistinguishable from one built by ordinary
     /// writes. Hashes are untouched: the feature type does not participate
     /// in the kv hash, and node hashes always recombine aggregates live
-    /// from own + link values. `finalize()`'s subsequent `verify()` then
-    /// checks the recomputed aggregates against the (chunk-verified) node
-    /// hashes, so a chunk producer lying about aggregates is still caught.
+    /// from own + link values.
+    ///
+    /// What authenticates the result differs by family. For the `Provable*`
+    /// families the aggregate is an input to the node hash, so
+    /// `finalize()`'s subsequent `verify()` and root recheck catch a chunk
+    /// producer lying about it. For the non-provable families (`SumTree` /
+    /// `BigSumTree` / `CountTree` / `CountSumTree`, and the sum half of
+    /// `ProvableCountSumTree`) no hash covers the aggregate: in element
+    /// mode it is authenticated only because each simple-valued element's
+    /// bytes are required to match the hash-bound `value_hash` before they
+    /// decide the contribution (see the check below); in raw mode it is
+    /// whatever the proof carried and cannot be authenticated at this
+    /// layer.
     fn rewrite_aggregates(
         &mut self,
         grove_version: &GroveVersion,
@@ -718,6 +757,16 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 Error::CorruptedState("failed to decode tree node during aggregate rewrite")
             })?;
 
+            // `write_chunk` already refuses nodes whose feature-type family
+            // is foreign to the tree type; this is the backstop for
+            // anything that reached storage another way, and it runs
+            // before `hash_for_link` could panic on such a mismatch.
+            if cloned_node.node_type() != tree_type.inner_node_type() {
+                return Err(Error::ChunkRestoringError(ChunkError::InvalidChunkProof(
+                    "chunk node feature type does not belong to the tree type",
+                )));
+            }
+
             // Opaque Merk values can coincidentally encode an Element.
             // Only an explicit GroveDB caller may interpret them as one.
             if grove_db_elements {
@@ -725,6 +774,24 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     .map_err(|_| {
                         Error::CorruptedState("invalid element during aggregate rewrite")
                     })?;
+                // The chunk hash binds the carried `value_hash`, never the
+                // value bytes (`Tree::hash` digests the carried hash for
+                // the KVValueHash-family nodes), so a byzantine source can
+                // ship forged element bytes under an honest value hash and
+                // still pass chunk verification. Those bytes are about to
+                // decide the node's aggregate contribution, so for element
+                // types whose value hash is simply `H(bytes)` require the
+                // two to agree first. Subtree and reference elements carry
+                // a combined hash instead; subtrees are bound by the child
+                // restore's own commitment check.
+                if element.element_type().has_simple_value_hash()
+                    && value_hash(cloned_node.value_as_slice()).unwrap()
+                        != *cloned_node.value_hash()
+                {
+                    return Err(Error::ChunkRestoringError(ChunkError::InvalidChunkProof(
+                        "element value bytes do not match the hash-bound value hash",
+                    )));
+                }
                 let feature = element.get_feature_type(tree_type).map_err(|_| {
                     Error::CorruptedState("cannot derive feature type during aggregate rewrite")
                 })?;
@@ -916,9 +983,13 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         // (`skip_sum_checks: false`). Historically the aggregate checks
         // were skipped for aggregate-bearing tree types because restored
         // aggregates were not authoritative; `rewrite_aggregates` above
-        // now makes them so, and keeping the check active is the
-        // defense-in-depth backstop for a chunk producer lying about
-        // aggregate contributions.
+        // now recomputes them from the persisted nodes, so the link
+        // aggregates must be consistent with them. Note what this does
+        // and does not prove: the link hash check binds aggregates only
+        // for the `Provable*` families (their aggregate is hashed); for
+        // the others the aggregate check compares two values derived from
+        // the same persisted bytes, and the authentication comes from the
+        // value-hash binding in `rewrite_aggregates` instead.
         if !self.merk.verify(false, grove_version).0.is_empty() {
             return Err(Error::ChunkRestoringError(ChunkError::InternalError(
                 "restored tree invalid",
@@ -2602,5 +2673,223 @@ mod tests {
                 "{err}"
             );
         }
+    }
+
+    /// Opens an empty restoration merk of `tree_type` on `storage` inside
+    /// `tx`.
+    fn open_restoration_merk<'a>(
+        storage: &'a TempStorage,
+        tx: &'a <grovedb_storage::rocksdb_storage::RocksDbStorage as Storage<'a>>::Transaction,
+        tree_type: TreeType,
+    ) -> Merk<PrefixedRocksDbImmediateStorageContext<'a>> {
+        Merk::open_base(
+            storage
+                .get_immediate_storage_context(SubtreePath::empty(), tx)
+                .unwrap(),
+            tree_type,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            GroveVersion::latest(),
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    /// The value bytes of a `KVValueHashFeatureType` chunk node are not
+    /// bound by the chunk hash — the hash is computed from the carried
+    /// `value_hash`, never from `H(value)`. A byzantine source can
+    /// therefore keep every hash-bound field of an honest node and swap in
+    /// forged element bytes. Element-mode finalization derives the node's
+    /// aggregate contribution from those bytes, so it must first require
+    /// them to match the hash-bound value hash whenever the element type
+    /// has a simple (non-combined) value hash.
+    #[test]
+    fn restore_with_grovedb_elements_rejects_forged_value_bytes_under_honest_value_hash() {
+        let grove_version = GroveVersion::latest();
+        for (tree_type, honest, forged, feature) in [
+            (
+                TreeType::SumTree,
+                Element::new_sum_item(5),
+                Element::new_sum_item(1_000_000),
+                TreeFeatureType::SummedMerkNode(5),
+            ),
+            (
+                TreeType::CountTree,
+                Element::new_item(vec![1]),
+                Element::new_non_counted(Element::new_item(vec![1])).unwrap(),
+                TreeFeatureType::CountedMerkNode(1),
+            ),
+            (
+                TreeType::CountSumTree,
+                Element::new_item_with_sum_item(vec![1], 5),
+                Element::new_item_with_sum_item(vec![1], -5),
+                TreeFeatureType::CountedSummedMerkNode(1, 5),
+            ),
+            (
+                TreeType::BigSumTree,
+                Element::new_sum_item(5),
+                Element::new_sum_item(1_000_000),
+                TreeFeatureType::BigSummedMerkNode(5),
+            ),
+        ] {
+            let honest_bytes = honest.serialize(grove_version).unwrap();
+            let forged_bytes = forged.serialize(grove_version).unwrap();
+            let honest_value_hash = value_hash(&honest_bytes).unwrap();
+
+            let honest_node = Node::KVValueHashFeatureType(
+                vec![0],
+                honest_bytes.clone(),
+                honest_value_hash,
+                feature,
+            );
+            let forged_node = Node::KVValueHashFeatureType(
+                vec![0],
+                forged_bytes.clone(),
+                honest_value_hash,
+                feature,
+            );
+            let root_hash = ProofTree::from(honest_node.clone()).hash().unwrap();
+            assert_eq!(
+                root_hash,
+                ProofTree::from(forged_node.clone()).hash().unwrap(),
+                "sanity: the forged node hashes identically, so chunk verification alone cannot \
+                 tell them apart ({tree_type:?})"
+            );
+
+            // The honest chunk restores.
+            let storage = TempStorage::new();
+            let tx = storage.start_transaction();
+            let merk = open_restoration_merk(&storage, &tx, tree_type);
+            let mut restorer = Restorer::new(merk, root_hash, None);
+            restorer
+                .process_chunk(&[], vec![Op::Push(honest_node)], grove_version)
+                .unwrap();
+            let restored = restorer
+                .finalize_with_grovedb_elements(grove_version)
+                .unwrap_or_else(|e| panic!("honest chunk must finalize for {tree_type:?}: {e}"));
+            drop(restored);
+
+            // The forged chunk passes verification but must be refused at
+            // element-mode finalization.
+            let storage = TempStorage::new();
+            let tx = storage.start_transaction();
+            let merk = open_restoration_merk(&storage, &tx, tree_type);
+            let mut restorer = Restorer::new(merk, root_hash, None);
+            restorer
+                .process_chunk(&[], vec![Op::Push(forged_node)], grove_version)
+                .expect("chunk verification cannot see the forgery");
+            let Err(err) = restorer.finalize_with_grovedb_elements(grove_version) else {
+                panic!(
+                    "forged value bytes under an honest value hash were accepted for {tree_type:?}"
+                );
+            };
+            assert!(
+                err.to_string().contains("value hash"),
+                "{tree_type:?}: unexpected error {err}"
+            );
+        }
+    }
+
+    /// Nothing in chunk verification ties a node's feature-type family to
+    /// the merk's tree type: `Node::KV` and a `SummedMerkNode`
+    /// `KVValueHashFeatureType` hash identically, and so do the
+    /// `ProvableCounted*` variants that share `node_hash_with_count`.
+    /// Finalization must refuse a chunk whose nodes carry a foreign
+    /// family instead of persisting them (or, for the provable pair,
+    /// panicking in `hash_for_link` at the new root recheck).
+    #[test]
+    fn restore_rejects_feature_type_family_foreign_to_the_tree_type() {
+        let grove_version = GroveVersion::latest();
+
+        let vh = value_hash(&raw_value(0)).unwrap();
+        for (tree_type, node) in [
+            // A plain KV node (BasicMerkNode) offered for a SumTree.
+            (TreeType::SumTree, Node::KV(vec![0], raw_value(0))),
+            // A ProvableCountedSummedMerkNode offered for a
+            // ProvableCountTree: same node hash as
+            // ProvableCountedMerkNode(1), different family.
+            (
+                TreeType::ProvableCountTree,
+                Node::KVValueHashFeatureType(
+                    vec![0],
+                    raw_value(0),
+                    vh,
+                    TreeFeatureType::ProvableCountedSummedMerkNode(1, 7),
+                ),
+            ),
+            // A summed node offered for a NormalTree, which has no
+            // aggregate rewrite pass to catch it later.
+            (
+                TreeType::NormalTree,
+                Node::KVValueHashFeatureType(
+                    vec![0],
+                    raw_value(0),
+                    vh,
+                    TreeFeatureType::SummedMerkNode(5),
+                ),
+            ),
+            // A provable count node offered for a NormalTree.
+            (
+                TreeType::NormalTree,
+                Node::KVCount(vec![0], raw_value(0), 1),
+            ),
+        ] {
+            let root_hash = ProofTree::from(node.clone()).hash().unwrap();
+            let storage = TempStorage::new();
+            let tx = storage.start_transaction();
+            let merk = open_restoration_merk(&storage, &tx, tree_type);
+            let mut restorer = Restorer::new(merk, root_hash, None);
+            let Err(err) = restorer.process_chunk(&[], vec![Op::Push(node)], grove_version) else {
+                panic!("a foreign feature-type family was written into a {tree_type:?}");
+            };
+            assert!(
+                err.to_string().contains("feature type"),
+                "{tree_type:?}: {err}"
+            );
+        }
+    }
+
+    /// A non-root chunk consisting of a single `Hash` node verifies (its
+    /// proof-tree hash IS the expected hash) but has no key to rewrite the
+    /// parent link with. That must be a descriptive error, never a panic:
+    /// the chunk is network input from an untrusted source.
+    #[test]
+    fn test_hash_only_non_root_chunk_returns_error_not_panic() {
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
+        let batch = make_batch_seq(0..15);
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .unwrap()
+            .expect("apply failed");
+        let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
+
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let restoration_merk = open_restoration_merk(&storage, &tx, TreeType::NormalTree);
+        let mut restorer = Restorer::new(restoration_merk, merk.root_hash().unwrap(), None);
+
+        let (root_chunk, _) = chunk_producer
+            .chunk(&[], grove_version)
+            .expect("root chunk");
+        let next_chunk_ids = restorer
+            .process_chunk(&[], root_chunk, grove_version)
+            .expect("root chunk should process");
+        let child_id = next_chunk_ids
+            .first()
+            .cloned()
+            .expect("a 15-key tree has child chunks");
+        let expected_child_hash = *restorer
+            .chunk_id_to_root_hash
+            .get(&child_id)
+            .expect("child chunk is pending");
+
+        let result = restorer.process_chunk(
+            &child_id,
+            vec![Op::Push(Node::Hash(expected_child_hash))],
+            grove_version,
+        );
+        assert!(
+            matches!(result, Err(ChunkRestoringError(InvalidChunkProof(_)))),
+            "hash-only non-root chunk must be rejected, got {result:?}"
+        );
     }
 }
