@@ -18,7 +18,12 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
     CostsExt, OperationCost,
 };
-use grovedb_merk::{element::get::ElementFetchFromStorageExtensions, error::MerkErrorExt};
+use grovedb_merk::{
+    element::{get::ElementFetchFromStorageExtensions, ElementExt},
+    error::MerkErrorExt,
+    tree::combine_hash,
+    CryptoHash,
+};
 use grovedb_path::SubtreePath;
 use grovedb_storage::StorageContext;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
@@ -108,10 +113,48 @@ impl GroveDb {
         }
     }
 
-    /// Return the Element that a reference points to.
+    /// Return the Element that a reference points to, **for presentation**.
     /// If the reference points to another reference, keep following until
     /// base element is reached.
+    ///
+    /// The terminal is returned looked-through: a `NonCounted`-wrapped
+    /// terminal comes back as its inner element, which is what `get` /
+    /// query callers want. Anything that must reproduce the reference's
+    /// *commitment* — the hash a reference node binds — must start with
+    /// [`Self::follow_reference_as_stored`] instead. GROVE_V4 writes commit to
+    /// the terminal's stored bytes, wrapper included. Readers of existing nodes
+    /// must also account for legacy direct writes that hashed the inner value.
     pub fn follow_reference<B: AsRef<[u8]>>(
+        &self,
+        path: SubtreePath<B>,
+        allow_cache: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Element, Error> {
+        self.follow_reference_as_stored(path, allow_cache, transaction, grove_version)
+            .map_ok(Element::into_underlying)
+    }
+
+    /// Return the terminal Element of a reference chain **exactly as it is
+    /// stored**, i.e. commitment-preserving.
+    ///
+    /// Wrappers are looked through only to decide whether to keep hopping
+    /// (a `NonCounted(Reference)` is followed like a bare `Reference`); the
+    /// terminal itself is returned with its wrapper intact. This is the
+    /// element whose serialized bytes hash to the merk-stored `value_hash`
+    /// of the terminal node, so `terminal.value_hash()` is the value a
+    /// reference node must combine into its own hash. The batch reference
+    /// resolver (`process_reference` in `batch/mod.rs`) commits to the same
+    /// representation — it either reads the terminal's stored value hash
+    /// directly or hashes the outer element's bytes. Direct writes on GROVE_V4
+    /// use that representation too. Proof generation and integrity checks
+    /// additionally select the legacy unwrapped representation when it matches
+    /// an existing reference's committed hash; the current read version does
+    /// not identify which write path originally produced the node.
+    ///
+    /// Use [`Self::follow_reference`] when the caller only needs the value
+    /// the reference denotes.
+    pub fn follow_reference_as_stored<B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<B>,
         allow_cache: bool,
@@ -169,21 +212,55 @@ impl GroveDb {
             // Look through `NonCounted` so a chain that hops via a wrapped
             // reference is followed instead of being returned as a value.
             // `ReferenceWithSumItem` is also followed — the carried sum is
-            // irrelevant to chain destination.
-            match current_element.into_underlying() {
+            // irrelevant to chain destination. The terminal is handed back
+            // untouched (wrapper and all): it is the stored element.
+            let next_hop = match current_element.underlying() {
                 Element::Reference(reference_path, ..)
-                | Element::ReferenceWithSumItem(reference_path, ..) => {
+                | Element::ReferenceWithSumItem(reference_path, ..) => Some(reference_path.clone()),
+                _ => None,
+            };
+            match next_hop {
+                Some(reference_path) => {
                     current_path = cost_return_on_error_into!(
                         &mut cost,
                         path_from_reference_qualified_path_type(reference_path, &current_path)
                             .wrap_with_cost(OperationCost::default())
                     )
                 }
-                other => return Ok(other).wrap_with_cost(cost),
+                None => return Ok(current_element).wrap_with_cost(cost),
             }
             hops_left -= 1;
         }
         Err(Error::ReferenceLimit).wrap_with_cost(cost)
+    }
+
+    /// Select the terminal representation bound by an existing reference.
+    ///
+    /// Pre-V4 direct writes hashed the unwrapped terminal, while batch writes
+    /// and V4 direct writes hash its stored bytes. Both can coexist, even after
+    /// an upgrade, so select the legacy form only when its combined hash matches
+    /// the reference's actual commitment. Otherwise retain the stored form:
+    /// callers still detect a stale reference if neither representation matches.
+    /// This is a read-side compatibility step and must not be used for writes.
+    pub(crate) fn reference_terminal_as_committed(
+        terminal: Element,
+        reference_element_hash: &CryptoHash,
+        committed_value_hash: &CryptoHash,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Element, Error> {
+        let mut cost = OperationCost::default();
+        if terminal.is_wrapped() {
+            let legacy_terminal_hash = cost_return_on_error_into!(
+                &mut cost,
+                terminal.underlying().value_hash(grove_version)
+            );
+            let legacy_commitment = combine_hash(reference_element_hash, &legacy_terminal_hash)
+                .unwrap_add_cost(&mut cost);
+            if &legacy_commitment == committed_value_hash {
+                return Ok(terminal.into_underlying()).wrap_with_cost(cost);
+            }
+        }
+        Ok(terminal).wrap_with_cost(cost)
     }
 
     /// Get Element at specified path and key
