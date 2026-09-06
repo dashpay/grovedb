@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Renamed `prove_internal` to `prove_query_non_serialized` for clarity (#373)
 
 ### Fixed
+- Ordinary (Item / Reference) replacements of a specialized value (a tree or a sum item) are charged from their own serialized bytes on `GROVE_V4` (`merk_versions.tree.put_value: 1`). Before, the node kept the predecessor's fixed `value_defined_cost`, so the replacement was charged as the predecessor's fixed size and the physical-size verification was skipped. Old-value removal accounting and the ordinary -> specialized direction are unchanged; grove v1..v3 keep the legacy charges (#908)
 - Direct and batch references to `NonCounted`-wrapped items now commit to identical stored terminal bytes on `GROVE_V4` (`add_element_on_transaction: 2`). `verify_grovedb` and V1 proof generation select the terminal representation matching each reference's stored commitment, preserving older direct-write hashes across upgrades. Offset-paginated proof rows resolved through a reference may surface the wrapped target (`CountOffsetReturnedItem::resolved_from_reference`) (#858)
 - Corrected proof verification logic in GroveDb (#371)
 - Added ASCII check before appending string to hex display for better visualization (#376)

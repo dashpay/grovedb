@@ -32,6 +32,7 @@ mod coverage_round7_tests;
 mod non_merk_completeness_budget_tests;
 mod non_merk_integrity_audit_tests;
 mod non_merk_limited_page_tests;
+mod ordinary_replacement_cost_tests;
 mod per_instance_gate_coverage_tests;
 mod per_instance_limit_tests;
 mod private_document_store_tests;
