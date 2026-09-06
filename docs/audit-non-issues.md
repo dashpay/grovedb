@@ -13,7 +13,9 @@ file away — that is a new finding, not a re-report.
 
 1. Match your candidate finding against the entries below (grep for the
    function or file name).
-2. If it matches and the "becomes real if" condition does not hold, drop it.
+2. Apply a rejection only when the claim, caller, input trust boundary, and
+   applicable version match, and the documented safety invariant holds.
+   A shared function or file name alone does not establish a duplicate.
 3. If you believe the invariant that makes it safe has been broken, file the
    issue and cite this file — say explicitly which invariant no longer holds.
 
@@ -22,28 +24,37 @@ file away — that is a new finding, not a re-report.
 ## Unreachable arithmetic overflow (magnitude class)
 
 The recurring pattern: an audit finds unchecked `u32`/`u64` arithmetic on
-byte counts or element counts and reports wraparound. These are not reachable
-because the inputs are derived from **real stored bytes or hash-committed
-counts**, both of which are capped far below the wrap point:
+byte counts or element counts and reports wraparound. The rejections below
+rely on **path-specific size or arithmetic-domain bounds**: the inputs either
+describe physically bounded stored data or are constrained by validation
+before the relevant calculation.
 
 - Key lengths are capped at 255 bytes by every public insert path (direct and
   batch) — enforced since PR #506.
 - Value/element sizes are capped orders of magnitude below 4 GiB by platform
   state-transition and document size limits.
-- Tree element counts are accumulated one append at a time and committed into
-  `Element` bytes that the proof chain binds to the trusted root, so a forged
-  count is ultimately rejected as a bad proof.
+- Append-side element counts represent real appends. Verification-side counts
+  need their own arithmetic-domain analysis, because parent authentication
+  can happen after a lower-layer verifier has consumed the count.
 
-  Be precise about *when* that binding happens, though: for the non-Merk
-  lower layers it is **after** the arithmetic, not before. `verify.rs:1953-2016`
-  dispatches the MMR / bulk-append / dense verifiers using an `Element`
-  decoded from the proof's own `value_bytes`, and only at `verify.rs:2018`
-  does `combine_hash(value_hash(value_bytes), &lower_hash)` check it against
-  the parent-committed hash. A forged count therefore *does* reach the math;
-  what makes that safe is that the release build wraps and the chain check
-  then rejects the result. Do not lean on "verified before the arithmetic"
-  as the invariant — and note that a build with `overflow-checks = true`
-  panics instead of wrapping.
+  For the non-Merk lower layers, `verify.rs:1953-2016` dispatches verifiers
+  using an `Element` decoded from the proof's own `value_bytes`; the parent
+  binding follows at `verify.rs:2018-2031`, through
+  `combine_hash(value_hash(value_bytes), &lower_hash)`. This ordering alone
+  establishes neither overflow nor arithmetic safety.
+
+  For #693 specifically, `BulkAppendTreeProof::verify_and_compute_root`
+  (`grovedb-bulk-append-tree/src/proof/mod.rs:427-438`) first validates
+  `height` in `1..=16`. Therefore `chunk_item_count = 2^height` is at least
+  2, and `completed_chunks = total_count / chunk_item_count` is at most
+  `2^63 - 1` for every `u64 total_count`. The subsequent
+  `2 * completed_chunks - popcount(completed_chunks)` fits in `u64`; the
+  helper also returns 0 explicitly for a zero count. Neither release
+  wrapping nor an overflow-check panic occurs in this conversion.
+
+  This bound applies to the bulk/commitment completed-chunk conversion.
+  Independent MMR conversions and resource use before parent authentication
+  require their own analysis.
 
 Verified-and-rejected instances:
 
@@ -52,12 +63,13 @@ Verified-and-rejected instances:
 | [#684](https://github.com/dashpay/grovedb/issues/684) (closed) | Unchecked size arithmetic undercounts storage costs | Overflow needs a single ~4 GiB length; cannot exist under key/value caps. Costs are bit-identical for every input that can occur. Its fix PR [#737](https://github.com/dashpay/grovedb/pull/737) was also closed: it converted `saturating_sub` to erroring `checked_sub` in fee-critical `paid_value_len` arithmetic — a semantic change resting on unverified never-underflows claims, with consensus-grade blast radius under a live protocol version. Do not re-propose checked arithmetic here unless narrowed to addition sites (behavior-identical by construction) and landed at the start of a protocol-version window. |
 | [#715](https://github.com/dashpay/grovedb/issues/715) (closed) | `StorageCost::verify` passes after u32 wrap | Same: `added_bytes + replaced_bytes` ≈ 4 GiB required; inputs are real serialized lengths, not attacker-supplied. |
 | [#716](https://github.com/dashpay/grovedb/issues/716) (closed) | Sectioned removal totals wrap u32 | Same: one element's removals would have to exceed 4 GiB of actually-stored bytes. |
-| [#693](https://github.com/dashpay/grovedb/issues/693) (closed) | Bulk-append `2 * leaf_count` overflows near 2^63 | Append side: 2^63 real appends is physically impossible. Verify side: the release build wraps harmlessly and the forged element is then rejected by the `combine_hash` chain. **Note the ordering** — the element is *not* hash-verified before the arithmetic runs: `verify.rs:1953-2016` dispatches the lower-layer verifiers using an `Element` decoded from the proof's own `value_bytes`, and only at `verify.rs:2018` does `combine_hash(value_hash(value_bytes), &lower_hash)` bind it to the parent-committed hash. So `total_count` reaching `2 * leaf_count - popcount` is unauthenticated at that moment; what saves it is that the wrap produces a value the subsequent chain check rejects, not a prior verification. In a build with `overflow-checks = true` this is a panic instead. |
+| [#693](https://github.com/dashpay/grovedb/issues/693) (closed) | Bulk-append `2 * leaf_count` overflows near 2^63 | Append side: 2^63 real appends is physically impossible. Verify side: `verify_and_compute_root` validates `height` in `1..=16` before computing `completed_chunks = total_count / 2^height` (`grovedb-bulk-append-tree/src/proof/mod.rs:427-438`). Hence `completed_chunks <= 2^63 - 1`, and `2 * completed_chunks - popcount(completed_chunks)` cannot overflow; the zero case returns 0 (`tree/mod.rs:126-130`). This holds even when the proof supplies an unauthenticated `u64::MAX` count. The later parent-hash check binds the result, but the arithmetic safety comes from the validated height and division, not from prior authentication or release wrapping. |
 
-**Becomes real if:** a code path feeds these computations an integer that is
-neither derived from actually-stored bytes nor hash-verified before use
-(e.g. a length decoded from an untrusted proof or network message and used
-in arithmetic before verification).
+**Becomes real if:** a path exceeds the stored-size limits assumed by an
+entry, or reaches its arithmetic without the bounds that make that specific
+calculation safe. For proof or network inputs, trace the validated domain
+at the calculation itself; a later hash check cannot prevent an earlier
+panic, allocation, or other side effect.
 
 ## Capacity-boundary behavior on impossible tree sizes
 
@@ -110,10 +122,11 @@ re-propose version-gated leniency for proof-envelope trailing bytes.
 
 ## Trust-boundary findings: corrupt storage and caller-chosen paths
 
-GroveDB's trust boundary puts local storage *inside* it. Findings whose
-trigger is "corrupt local storage" or "the caller passed a bad argument"
-are not vulnerabilities — integrity auditing is delegated to
-`Merk::verify` and `GroveDb::verify_grovedb` on purpose.
+The two rejections below assume trusted local storage and a trusted caller
+choosing the checkpoint path. Integrity auditing of that storage is delegated
+to `Merk::verify` and `GroveDb::verify_grovedb` on purpose. These assumptions
+do not cover untrusted proofs, state-sync ingestion, or paths derived from
+network input; assess those entry points and their validation separately.
 
 | Issue | Claim | Why not real |
 |---|---|---|
@@ -130,10 +143,11 @@ immediate caller.
 | Issue | Claim | Why not real |
 |---|---|---|
 | [#702](https://github.com/dashpay/grovedb/issues/702) (closed) | `GroveVersion::default` creates protocol version 0, satisfying v0 gates | Inert on two independent grounds. (1) `protocol_version` is **never read by any logic in the workspace** — grep finds it only in the four version-constant definitions and in test assertions; every gate reads a *feature* slot such as `grove_version.grovedb_versions.operations.insert.*`. (2) `GroveVersion::default()` is behaviorally identical to `GROVE_V1`: every `FeatureVersion` in V1 is `0`, and the only non-zero values in `v1.rs` are `protocol_version: 1` (never read) and `max_aggregate_sum_query_elements_scanned: 1024`, which is not a version slot and whose hand-written `impl Default` returns the same 1024. So the worst outcome is "the caller got V1 behavior", which is already legal via an explicit `GROVE_V1`. |
-| [#703](https://github.com/dashpay/grovedb/issues/703) (closed) | Public versioned APIs miss explicit version gates and could execute writes instead of returning `VersionError` | Three of the seven cited refs are stale line numbers resolving to `root_key`, `root_hash` and `verify_grovedb` — two accessors and a verification helper, none version-dependent, none a write path; gating them would break callers on any unrelated slot bump. The four typed non-Merk append entry points (`mmr_tree_append`, `bulk_append`, `dense_tree_insert`, `commitment_tree_insert`) do lack a *top-level* gate but already fail closed deeper and **before any mutation**, via their cost dispatchers (`grovedb-merkle-mountain-range/src/cost/mod.rs:88-98`, `grovedb-bulk-append-tree/src/cost/mod.rs:182-201`, `grovedb-dense-fixed-sized-merkle-tree/src/tree/root_maintenance/mod.rs:56-71`, `grovedb-commitment-tree/src/commitment_tree/cost/mod.rs:43,73`). Writes also land in a `StorageBatch` committed only on success. The genuine residual is narrower and different: those four types have no `element_creation` gate of the kind `PrivateDocumentStore` uses (`grovedb_versions.rs:180-186`, enabled only in `v4.rs:407`) — a design-consistency question about when they become *creatable*, worth filing separately if wanted. |
-| [#721](https://github.com/dashpay/grovedb/issues/721) (closed) | `grovedbg` build script downloads a release artifact at build time | Acceptable posture. Gated off by default (`default = ["full", "estimated_costs"]`; with `grovedbg` off, `build.rs` compiles to a literal no-op and `reqwest`/`sha2` are not even resolved), and integrity is enforced by a pinned version tag plus a pinned `GROVEDBG_SHA256` asserted at `build.rs:33`. A substituted, tampered, or 404 artifact fails the build — fail-closed. Real but minor DX defect not named in the issue: the `if !grovedbg_zip_path.exists()` guard at `:15` caches a bad download, so every later rebuild fails the SHA assert without re-fetching until `target/` is cleared. |
+| [#703](https://github.com/dashpay/grovedb/issues/703) (closed) | Public versioned APIs miss explicit version gates and could execute writes instead of returning `VersionError` | Three of the seven cited refs are stale line numbers resolving to `root_key`, `root_hash` and `verify_grovedb` — two accessors and a verification helper, none version-dependent, none a write path; gating them would break callers on any unrelated slot bump. The four typed non-Merk append entry points (`mmr_tree_append`, `bulk_append`, `dense_tree_insert`, `commitment_tree_insert`) do lack a *top-level* gate but consult their lower-layer cost-version dispatchers **before staging child writes** (`grovedb-merkle-mountain-range/src/cost/mod.rs:88-98`, `grovedb-bulk-append-tree/src/cost/mod.rs:182-201`, `grovedb-dense-fixed-sized-merkle-tree/src/tree/root_maintenance/mod.rs:56-71`, `grovedb-commitment-tree/src/commitment_tree/cost/mod.rs:43,73`). Those dispatchers reject unsupported versions for their own slots; they do not guarantee that every later version error precedes all writes. Direct typed appends flush their child `data_batch` into the transaction before updating the parent Merk (`grovedb/src/operations/mmr_tree.rs:127-168`), so a later parent-update failure can leave child writes in a caller-supplied transaction. The caller must roll that transaction back on error. Locally owned transactions are committed only at the end of a successful operation (`mmr_tree.rs:188-198`, `grovedb/src/util.rs:21-26`). The genuine residual is narrower and different: those four types have no `element_creation` gate of the kind `PrivateDocumentStore` uses (`grovedb_versions.rs:180-186`, enabled only in `v4.rs:407`) — a design-consistency question about when they become *creatable*, worth filing separately if wanted. |
+| [#721](https://github.com/dashpay/grovedb/issues/721) (closed) | `grovedbg` build script downloads a release artifact at build time | Acceptable posture. Gated off by default (`default = ["full", "estimated_costs"]`; with `grovedbg` off, `build.rs` compiles to a literal no-op and these optional `reqwest`/`sha2` build dependencies are not activated, built, or executed through this feature-off build script; Cargo still resolves optional dependencies for the workspace lockfile, as described in the [Cargo resolver documentation](https://doc.rust-lang.org/cargo/reference/resolver.html#features)), and integrity is enforced by a pinned version tag plus a pinned `GROVEDBG_SHA256` asserted at `build.rs:33`. A substituted, tampered, or 404 artifact fails the build — fail-closed. Real but minor DX defect not named in the issue: the `if !grovedbg_zip_path.exists()` guard at `:15` caches a bad download, so every later rebuild fails the SHA assert without re-fetching until `target/` is cleared. |
 
 **Becomes real if:** `protocol_version` gains a reader that dispatches
-behavior on it; one of the four append paths gains a mutation that runs
-before its cost dispatcher; or `grovedbg` is added to the default feature
-set or its SHA-256 pin is dropped.
+behavior on it; one of the four append paths bypasses its lower-layer cost
+version check or stages child writes before that check; or `grovedbg` is
+added to the default feature set or its SHA-256 pin is dropped. Later
+parent-update failures remain subject to the caller-rollback contract above.
