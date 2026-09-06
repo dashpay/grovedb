@@ -667,7 +667,26 @@ impl<'db> MultiStateSyncSession<'db> {
                     vec![first_chunk_id],
                 );
             }
-            let restorer = Restorer::new(merk, hash, actual_hash);
+            // Legacy direct inserts stored these empty trees with a plain
+            // H(element) value hash, before the layered insert path was
+            // enabled. Such entries can survive a GroveVersion upgrade.
+            // Authenticate the exact empty element before translating that
+            // binding to NULL_HASH for Merk: a populated element, different
+            // tree family, or mismatched value bytes must never take this arm.
+            let legacy_empty = actual_hash == Some(hash)
+                && matches!(
+                    element.as_ref().map(Element::underlying),
+                    Some(
+                        Element::CountSumTree(None, 0, 0, _)
+                            | Element::ProvableCountTree(None, 0, _)
+                            | Element::ProvableCountSumTree(None, 0, 0, _)
+                    )
+                );
+            let restorer = if legacy_empty {
+                Restorer::new(merk, grovedb_merk::tree::hash::NULL_HASH, None)
+            } else {
+                Restorer::new(merk, hash, actual_hash)
+            };
             let mut sync_info = SubtreeStateSyncInfo::new(restorer);
             sync_info.pending_chunks.insert(vec![]);
             sync_info.root_key = root_key.clone();

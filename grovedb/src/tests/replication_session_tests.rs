@@ -229,6 +229,406 @@ mod tests {
     }
 
     #[test]
+    fn state_sync_wrapped_reference_targets_round_trip() {
+        use crate::{
+            batch::QualifiedGroveDbOp, reference_path::ReferencePathType::SiblingReference,
+            replication::RestoreCommitMode,
+        };
+
+        let version = GroveVersion::latest();
+        for terminal in [
+            Element::new_item(b"value".to_vec()),
+            Element::new_sum_item(11),
+            Element::new_item_with_sum_item(b"value".to_vec(), 11),
+        ] {
+            let source = make_empty_grovedb();
+            source
+                .insert(
+                    &[] as &[&[u8]],
+                    b"ct",
+                    Element::empty_count_sum_tree(),
+                    None,
+                    None,
+                    version,
+                )
+                .unwrap()
+                .unwrap();
+            let target = Element::new_non_counted(terminal.clone()).unwrap();
+            let batch_ref = Element::new_reference(SiblingReference(b"target".to_vec()));
+            let chain = Element::new_non_counted(Element::new_reference_with_sum_item(
+                SiblingReference(b"batch_ref".to_vec()),
+                7,
+            ))
+            .unwrap();
+            // The target and both references are written together, exercising
+            // batch resolution through a wrapped ReferenceWithSumItem as well.
+            source
+                .apply_batch(
+                    vec![
+                        QualifiedGroveDbOp::insert_or_replace_op(
+                            vec![b"ct".to_vec()],
+                            b"target".to_vec(),
+                            target.clone(),
+                        ),
+                        QualifiedGroveDbOp::insert_or_replace_op(
+                            vec![b"ct".to_vec()],
+                            b"batch_ref".to_vec(),
+                            batch_ref,
+                        ),
+                        QualifiedGroveDbOp::insert_or_replace_op(
+                            vec![b"ct".to_vec()],
+                            b"chain".to_vec(),
+                            chain.clone(),
+                        ),
+                    ],
+                    None,
+                    None,
+                    version,
+                )
+                .unwrap()
+                .unwrap();
+            // Cover both paths for already-persisted batch targets: a one-hop
+            // stored-hash lookup and resolution through an intermediate ref.
+            source
+                .apply_batch(
+                    vec![
+                        QualifiedGroveDbOp::insert_or_replace_op(
+                            vec![b"ct".to_vec()],
+                            b"one_hop".to_vec(),
+                            Element::new_reference_with_hops(
+                                SiblingReference(b"target".to_vec()),
+                                Some(1),
+                            ),
+                        ),
+                        QualifiedGroveDbOp::insert_or_replace_op(
+                            vec![b"ct".to_vec()],
+                            b"persisted_chain".to_vec(),
+                            Element::new_reference(SiblingReference(b"chain".to_vec())),
+                        ),
+                    ],
+                    None,
+                    None,
+                    version,
+                )
+                .unwrap()
+                .unwrap();
+            // Direct inserts strip the terminal wrapper before hashing. These
+            // references must keep working alongside the batch-created ones.
+            source
+                .insert(
+                    [b"ct"].as_ref(),
+                    b"direct_ref",
+                    Element::new_reference(SiblingReference(b"chain".to_vec())),
+                    None,
+                    None,
+                    version,
+                )
+                .unwrap()
+                .unwrap();
+
+            for mode in [
+                RestoreCommitMode::Atomic,
+                RestoreCommitMode::Incremental {
+                    budget_bytes: 1,
+                    max_subtrees_in_flight: 1,
+                },
+            ] {
+                let dest = run_sync_with_version_and_mode(
+                    &source,
+                    version,
+                    1,
+                    None,
+                    None,
+                    CURRENT_STATE_SYNC_VERSION,
+                    mode,
+                )
+                .expect("wrapped reference targets must sync");
+                assert_eq!(
+                    source.root_hash(None, version).unwrap().unwrap(),
+                    dest.root_hash(None, version).unwrap().unwrap()
+                );
+                assert_eq!(
+                    dest.get_raw([b"ct"].as_ref().into(), b"target", None, version)
+                        .unwrap()
+                        .unwrap(),
+                    target
+                );
+                assert_eq!(
+                    dest.get_raw([b"ct"].as_ref().into(), b"chain", None, version)
+                        .unwrap()
+                        .unwrap(),
+                    chain
+                );
+                for key in [
+                    b"batch_ref".as_slice(),
+                    b"chain",
+                    b"one_hop",
+                    b"persisted_chain",
+                    b"direct_ref",
+                ] {
+                    assert_eq!(
+                        dest.get([b"ct"].as_ref(), key, None, version)
+                            .unwrap()
+                            .unwrap(),
+                        terminal
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn state_sync_forged_reference_to_wrapped_target_is_rejected() {
+        use crate::{
+            batch::QualifiedGroveDbOp,
+            reference_path::ReferencePathType::SiblingReference,
+            replication::{
+                utils::{decode_vec_ops, encode_vec_ops, pack_nested_bytes, unpack_nested_bytes},
+                RestoreCommitMode,
+            },
+        };
+        use grovedb_merk::{
+            proofs::{Node, Op},
+            tree_type::TreeType,
+        };
+        use std::cell::Cell;
+
+        let version = GroveVersion::latest();
+        for direct_insert in [false, true] {
+            let source = make_empty_grovedb();
+            source
+                .insert(
+                    &[] as &[&[u8]],
+                    b"ct",
+                    Element::empty_count_sum_tree(),
+                    None,
+                    None,
+                    version,
+                )
+                .unwrap()
+                .unwrap();
+            for (key, value) in [
+                (b"target".as_slice(), b"value".as_slice()),
+                (b"other", b"wrong"),
+            ] {
+                source
+                    .insert(
+                        [b"ct"].as_ref(),
+                        key,
+                        Element::new_non_counted(Element::new_item(value.to_vec())).unwrap(),
+                        None,
+                        None,
+                        version,
+                    )
+                    .unwrap()
+                    .unwrap();
+            }
+            let reference = Element::new_reference(SiblingReference(b"target".to_vec()));
+            if direct_insert {
+                source
+                    .insert([b"ct"].as_ref(), b"ref", reference, None, None, version)
+                    .unwrap()
+                    .unwrap();
+            } else {
+                source
+                    .apply_batch(
+                        vec![QualifiedGroveDbOp::insert_or_replace_op(
+                            vec![b"ct".to_vec()],
+                            b"ref".to_vec(),
+                            reference,
+                        )],
+                        None,
+                        None,
+                        version,
+                    )
+                    .unwrap()
+                    .unwrap();
+            }
+            for mode in [
+                RestoreCommitMode::Atomic,
+                RestoreCommitMode::Incremental {
+                    budget_bytes: 1,
+                    max_subtrees_in_flight: 1,
+                },
+            ] {
+                let mutated = Cell::new(false);
+                let error = run_sync_with_version_and_mode(
+                    &source,
+                    version,
+                    1,
+                    None,
+                    Some(&|tree_type, _, payload| {
+                        if tree_type != TreeType::CountSumTree {
+                            return payload;
+                        }
+                        let chunks = unpack_nested_bytes(&payload)
+                            .unwrap()
+                            .into_iter()
+                            .map(|chunk| {
+                                let ops = decode_vec_ops(&chunk)
+                                    .unwrap()
+                                    .into_iter()
+                                    .map(|op| match op {
+                                        Op::Push(Node::KVValueHashFeatureType(
+                                            key,
+                                            _,
+                                            hash,
+                                            feature,
+                                        )) if key == b"ref" => {
+                                            mutated.set(true);
+                                            let forged = Element::new_reference(SiblingReference(
+                                                b"other".to_vec(),
+                                            ));
+                                            Op::Push(Node::KVValueHashFeatureType(
+                                                key,
+                                                forged.serialize(version).unwrap(),
+                                                hash,
+                                                feature,
+                                            ))
+                                        }
+                                        other => other,
+                                    })
+                                    .collect();
+                                encode_vec_ops(ops).unwrap()
+                            })
+                            .collect();
+                        pack_nested_bytes(chunks).unwrap()
+                    }),
+                    CURRENT_STATE_SYNC_VERSION,
+                    mode,
+                )
+                .err()
+                .expect("forged reference cannot commit");
+                assert!(mutated.get());
+                assert!(
+                    format!("{error}").contains("value hash mismatch"),
+                    "{error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn state_sync_legacy_empty_aggregate_trees_round_trip_after_upgrade() {
+        use crate::replication::RestoreCommitMode;
+        use grovedb_version::version::{v1::GROVE_V1, v2::GROVE_V2};
+
+        for write_version in [&GROVE_V1, &GROVE_V2] {
+            let source = make_empty_grovedb();
+            for (key, element) in [
+                (b"cs".as_slice(), Element::empty_count_sum_tree()),
+                (b"pc", Element::empty_provable_count_tree()),
+                (b"pcs", Element::empty_provable_count_sum_tree()),
+            ] {
+                source
+                    .insert(&[] as &[&[u8]], key, element, None, None, write_version)
+                    .unwrap()
+                    .unwrap();
+            }
+            // Unchanged legacy entries retain their plain value hash after
+            // upgrading: the restore version cannot identify their encoding.
+            for read_version in [write_version, GroveVersion::latest()] {
+                for mode in [
+                    RestoreCommitMode::Atomic,
+                    RestoreCommitMode::Incremental {
+                        budget_bytes: 1,
+                        max_subtrees_in_flight: 1,
+                    },
+                ] {
+                    let dest = run_sync_with_version_and_mode(
+                        &source,
+                        read_version,
+                        1,
+                        None,
+                        None,
+                        CURRENT_STATE_SYNC_VERSION,
+                        mode,
+                    )
+                    .expect("legacy empty trees must sync");
+                    assert_eq!(
+                        source.root_hash(None, read_version).unwrap().unwrap(),
+                        dest.root_hash(None, read_version).unwrap().unwrap()
+                    );
+                    for key in [b"cs".as_slice(), b"pc", b"pcs"] {
+                        assert_eq!(
+                            source
+                                .get_raw((&[] as &[&[u8]]).into(), key, None, read_version)
+                                .unwrap()
+                                .unwrap(),
+                            dest.get_raw((&[] as &[&[u8]]).into(), key, None, read_version)
+                                .unwrap()
+                                .unwrap()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn state_sync_populated_legacy_aggregate_trees_reject_empty_payloads() {
+        use crate::replication::{utils::pack_nested_bytes, RestoreCommitMode};
+        use grovedb_merk::tree_type::TreeType;
+        use grovedb_version::version::v2::GROVE_V2;
+        use std::cell::Cell;
+
+        for element in [
+            Element::empty_count_sum_tree(),
+            Element::empty_provable_count_tree(),
+            Element::empty_provable_count_sum_tree(),
+        ] {
+            let source = make_empty_grovedb();
+            source
+                .insert(&[] as &[&[u8]], b"ct", element, None, None, &GROVE_V2)
+                .unwrap()
+                .unwrap();
+            source
+                .insert(
+                    [b"ct"].as_ref(),
+                    b"item",
+                    Element::new_item(b"value".to_vec()),
+                    None,
+                    None,
+                    &GROVE_V2,
+                )
+                .unwrap()
+                .unwrap();
+            for mode in [
+                RestoreCommitMode::Atomic,
+                RestoreCommitMode::Incremental {
+                    budget_bytes: 1,
+                    max_subtrees_in_flight: 1,
+                },
+            ] {
+                let mutated = Cell::new(false);
+                let error = run_sync_with_version_and_mode(
+                    &source,
+                    GroveVersion::latest(),
+                    1,
+                    None,
+                    Some(&|tree_type, _, payload| {
+                        if tree_type != TreeType::NormalTree {
+                            mutated.set(true);
+                            pack_nested_bytes(vec![vec![]]).unwrap()
+                        } else {
+                            payload
+                        }
+                    }),
+                    CURRENT_STATE_SYNC_VERSION,
+                    mode,
+                )
+                .err()
+                .expect("populated trees cannot be omitted");
+                assert!(mutated.get());
+                assert!(
+                    format!("{error}").contains("empty payload for a subtree"),
+                    "{error}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn start_snapshot_syncing_returns_session() {
         let grove_version = GroveVersion::latest();
         let source = make_test_grovedb(grove_version);

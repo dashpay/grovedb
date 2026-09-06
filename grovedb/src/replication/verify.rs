@@ -3,6 +3,8 @@
 //! References can point into subtrees that arrive later, so their bindings
 //! must be checked after discovery completes and before the final commit.
 
+use std::collections::HashSet;
+
 use grovedb_merk::{
     element::costs::ElementCostExtensions,
     tree::{combine_hash, kv::ValueDefinedCostType, value_hash, TreeNode},
@@ -12,10 +14,11 @@ use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, Storage, Sto
 use grovedb_version::version::GroveVersion;
 
 use crate::{
-    operations::indexed_tree::{
-        axis_secondary_tree_type, decode_axis_row_reference, indexed_element_axes,
+    operations::{
+        get::MAX_REFERENCE_HOPS,
+        indexed_tree::{axis_secondary_tree_type, decode_axis_row_reference, indexed_element_axes},
     },
-    reference_path::path_from_reference_path_type,
+    reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
     Element, Error, GroveDb, Transaction,
 };
 
@@ -49,6 +52,42 @@ fn visit_nodes<'db, S: StorageContext<'db>>(
 }
 
 impl GroveDb {
+    /// Resolve without the query API's terminal-wrapper removal. Batch
+    /// references authenticate the stored terminal, including its wrapper.
+    fn restored_reference_target(
+        &self,
+        mut path: Vec<Vec<u8>>,
+        transaction: &Transaction,
+        grove_version: &GroveVersion,
+    ) -> Result<Element, Error> {
+        let mut visited = HashSet::new();
+        for _ in 0..MAX_REFERENCE_HOPS {
+            if !visited.insert(path.clone()) {
+                return Err(Error::CyclicReference);
+            }
+            let (key, parent) = path
+                .split_last()
+                .ok_or(Error::CorruptedPath("empty reference path".to_string()))?;
+            let element = self
+                .get_raw_caching_optional(
+                    parent.into(),
+                    key,
+                    false,
+                    Some(transaction),
+                    grove_version,
+                )
+                .value?;
+            match element.underlying() {
+                Element::Reference(reference_path, ..)
+                | Element::ReferenceWithSumItem(reference_path, ..) => {
+                    path = path_from_reference_qualified_path_type(reference_path.clone(), &path)?;
+                }
+                _ => return Ok(element),
+            }
+        }
+        Err(Error::ReferenceLimit)
+    }
+
     pub(super) fn verify_restored_value_hashes(
         &self,
         transaction: &Transaction,
@@ -79,16 +118,31 @@ impl GroveDb {
                             &path,
                             Some(node.key()),
                         )?;
-                        let target = self
-                            .follow_reference(
-                                target_path.as_slice().into(),
-                                false,
-                                Some(transaction),
-                                grove_version,
-                            )
-                            .value?;
+                        let target = self.restored_reference_target(
+                            target_path,
+                            transaction,
+                            grove_version,
+                        )?;
                         let target_hash = value_hash(&target.serialize(grove_version)?).unwrap();
-                        combine_hash(&actual_value_hash, &target_hash).unwrap()
+                        let combined = combine_hash(&actual_value_hash, &target_hash).unwrap();
+                        if combined != *node.value_hash()
+                            && matches!(
+                                target,
+                                Element::NonCounted(_)
+                                    | Element::NotSummed(_)
+                                    | Element::NotCountedOrSummed(_)
+                            )
+                        {
+                            // Direct inserts use follow_reference, which strips
+                            // the terminal wrapper before hashing. Both write
+                            // paths exist on disk; verify that binding too,
+                            // rather than changing either path's consensus hash.
+                            let unwrapped_hash =
+                                value_hash(&target.underlying().serialize(grove_version)?).unwrap();
+                            combine_hash(&actual_value_hash, &unwrapped_hash).unwrap()
+                        } else {
+                            combined
+                        }
                     }
                     _ if element.element_type().has_simple_value_hash() => actual_value_hash,
                     _ if element.is_any_tree() => {
