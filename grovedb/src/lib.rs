@@ -2703,18 +2703,15 @@ impl GroveDb {
                             hex_to_ascii(&key)
                         )))?;
 
+                    let self_actual_value_hash = value_hash(&kv_value).unwrap();
                     let referenced_value_hash = {
                         let full_path = path_from_reference_path_type(
                             reference_path.clone(),
                             &path.to_vec(),
                             Some(&key),
                         )?;
-                        // Commitment-preserving: the reference binds its
-                        // terminal's stored bytes, wrapper included (the
-                        // same representation the batch resolver and the
-                        // V1 prover use). Looking through the wrapper here
-                        // would report every batch-written reference to a
-                        // NonCounted item as corrupt.
+                        // Resolve the stored terminal, then preserve whichever
+                        // representation this existing reference committed to.
                         let item = self
                             .follow_reference_as_stored(
                                 (full_path.as_slice()).into(),
@@ -2723,12 +2720,17 @@ impl GroveDb {
                                 grove_version,
                             )
                             .unwrap()?;
+                        let item = Self::reference_terminal_as_committed(
+                            item,
+                            &self_actual_value_hash,
+                            &element_value_hash,
+                            grove_version,
+                        )
+                        .unwrap()?;
                         item.value_hash(grove_version).unwrap()?
                     };
 
-                    // Take the current item (reference) hash and combine it with referenced value's
-                    // hash
-                    let self_actual_value_hash = value_hash(&kv_value).unwrap();
+                    // Check the commitment without rewriting the stored reference.
                     let combined_value_hash =
                         combine_hash(&self_actual_value_hash, &referenced_value_hash).unwrap();
 

@@ -287,10 +287,17 @@ GroveDB exposes two resolvers over the same loop:
 
 The distinction matters because a reference node's `value_hash` combines the
 hash of the reference's own bytes with the hash of the terminal's **stored**
-bytes (see below). Every producer or checker of that hash — direct insert on
-`GROVE_V4`+, the batch reference resolver, `verify_grovedb`, and the V1 prover —
-uses the stored form, so a reference written directly and the same reference
+bytes (see below). Direct insert on `GROVE_V4`+ and the batch reference resolver
+use the stored form, so a reference written directly and the same reference
 applied in a batch commit the same root and verify with the same proof.
+
+References written directly before `GROVE_V4` committed to the unwrapped
+terminal instead. Those existing commitments remain valid: the V1 prover
+(including paginated proofs) and `verify_grovedb` select the unwrapped terminal
+only if its combined hash matches the reference node's stored commitment.
+Otherwise they use the stored terminal. This works for mixed write histories
+and after an upgrade without rewriting data or changing roots. A changed
+terminal that matches neither representation still fails verification.
 
 ## Cycle Detection
 

@@ -12,8 +12,8 @@
 //!
 //! `GROVE_V3` is live, so the direct-insert change is gated to
 //! `GROVE_V4` (`add_element_on_transaction: 2`); the read-side paths
-//! (integrity walk, V1 prover) are not versioned and follow the stored
-//! representation unconditionally.
+//! (integrity walk, V1 prover) select the representation matching each
+//! reference's stored commitment, including when reading V3 data under V4.
 
 #[cfg(test)]
 mod tests {
@@ -387,9 +387,8 @@ mod tests {
 
     /// Consensus pin: `GROVE_V3` is live, so its direct insert keeps the
     /// legacy commitment (hash of the looked-through terminal) and still
-    /// disagrees with the batch path. The read side is not versioned, so
-    /// the integrity walk now reports that legacy node — which is the
-    /// honest answer, since no proof can bind it either.
+    /// disagrees with the batch path. Both commitments must remain readable
+    /// and provable, including after upgrading to GROVE_V4.
     #[test]
     fn grove_v3_direct_insert_keeps_the_legacy_unwrapped_commitment() {
         let grove_version = &GROVE_V3;
@@ -423,14 +422,187 @@ mod tests {
         );
         assert_ne!(root(&direct, grove_version), root(&batched, grove_version));
 
-        let issues = direct
-            .verify_grovedb(None, true, true, grove_version)
-            .expect("verify_grovedb runs");
-        assert_eq!(issues.len(), 1, "the legacy node is reported: {issues:?}");
-        assert!(issues.contains_key(&vec![TEST_LEAF.to_vec(), REF.to_vec()]));
-        assert!(batched
-            .verify_grovedb(None, true, true, grove_version)
-            .expect("verify_grovedb runs")
-            .is_empty());
+        for reader_version in [&GROVE_V3, GroveVersion::latest()] {
+            for (db, expected) in [
+                (&direct, wrapped_item().into_underlying()),
+                (&batched, wrapped_item()),
+            ] {
+                let before = root(db, reader_version);
+                let surfaced = prove_and_verify_ref(db, reader_version);
+                assert_eq!(
+                    Element::deserialize(&surfaced, reader_version).unwrap(),
+                    expected
+                );
+                assert!(db
+                    .verify_grovedb(None, true, true, reader_version)
+                    .expect("verify_grovedb runs")
+                    .is_empty());
+                assert_eq!(
+                    root(db, reader_version),
+                    before,
+                    "reads must not rewrite commitments"
+                );
+            }
+        }
+    }
+
+    /// A single tree can contain both commitment formats. The reader's
+    /// current version cannot identify how any individual row was written.
+    #[test]
+    fn mixed_commitments_round_trip_in_regular_and_paginated_reference_proofs() {
+        let latest = GroveVersion::latest();
+        for host in [
+            Element::empty_provable_count_tree(),
+            Element::empty_provable_count_sum_tree(),
+            Element::empty_provable_count_provable_sum_tree(),
+        ] {
+            for with_sum in [false, true] {
+                let db = db_with_wrapped_target(&GROVE_V3);
+                // Include a wrapped intermediate reference, itself written
+                // under V3, so the integrity walk also checks a legacy hop.
+                db.insert(
+                    [TEST_LEAF, COUNT_TREE].as_ref(),
+                    b"hop",
+                    Element::new_non_counted(reference_to_target()).unwrap(),
+                    None,
+                    None,
+                    &GROVE_V3,
+                )
+                .unwrap()
+                .unwrap();
+                db.insert(
+                    [TEST_LEAF].as_ref(),
+                    b"refs",
+                    host.clone(),
+                    None,
+                    None,
+                    latest,
+                )
+                .unwrap()
+                .unwrap();
+                let path = vec![TEST_LEAF.to_vec(), b"refs".to_vec()];
+                let reference_path = ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    COUNT_TREE.to_vec(),
+                    b"hop".to_vec(),
+                ]);
+                let reference = if with_sum {
+                    Element::new_reference_with_sum_item(reference_path, 7)
+                } else {
+                    Element::new_reference(reference_path)
+                };
+                for (key, version, batch) in [
+                    (b"a", &GROVE_V3, true),
+                    (b"b", &GROVE_V3, false),
+                    (b"c", latest, false),
+                    (b"d", latest, true),
+                ] {
+                    if batch {
+                        db.apply_batch(
+                            vec![QualifiedGroveDbOp::insert_or_replace_op(
+                                path.clone(),
+                                key.to_vec(),
+                                reference.clone(),
+                            )],
+                            None,
+                            None,
+                            version,
+                        )
+                        .unwrap()
+                        .unwrap();
+                    } else {
+                        db.insert(path.as_slice(), key, reference.clone(), None, None, version)
+                            .unwrap()
+                            .unwrap();
+                    }
+                }
+                let before = root(&db, latest);
+                for reader_version in [&GROVE_V3, latest] {
+                    for ascending in [false, true] {
+                        for offset in [None, Some(1)] {
+                            let mut query = Query::new();
+                            query.left_to_right = ascending;
+                            query.insert_range_inclusive(b"a".to_vec()..=b"d".to_vec());
+                            let query = PathQuery::new(
+                                path.clone(),
+                                SizedQuery::new(query, offset.map(|_| 2), offset),
+                            );
+                            let proof = db
+                                .prove_query(&query, None, reader_version)
+                                .unwrap()
+                                .unwrap();
+                            let (proved_root, rows) =
+                                GroveDb::verify_query_raw(&proof, &query, reader_version)
+                                    .expect("mixed reference commitments must verify");
+                            assert_eq!(proved_root, before);
+                            let mut expected_keys = if offset.is_some() {
+                                vec![b"b".to_vec(), b"c".to_vec()]
+                            } else {
+                                vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec(), b"d".to_vec()]
+                            };
+                            if !ascending {
+                                expected_keys.reverse();
+                            }
+                            assert_eq!(
+                                rows.iter().map(|r| r.key.clone()).collect::<Vec<_>>(),
+                                expected_keys
+                            );
+                            for row in rows {
+                                let expected = if row.key == b"b" {
+                                    wrapped_item().into_underlying()
+                                } else {
+                                    wrapped_item()
+                                };
+                                assert_eq!(
+                                    Element::deserialize(&row.value, reader_version).unwrap(),
+                                    expected
+                                );
+                            }
+                        }
+                    }
+                    assert!(db
+                        .verify_grovedb(None, true, true, reader_version)
+                        .unwrap()
+                        .is_empty());
+                    assert_eq!(root(&db, reader_version), before);
+                }
+            }
+        }
+    }
+
+    /// Compatibility may select an older representation, but never an
+    /// unrelated terminal whose bytes match neither committed format.
+    #[test]
+    fn stale_wrapped_reference_commitments_are_still_detected() {
+        for batch in [false, true] {
+            let db = db_with_wrapped_target(&GROVE_V3);
+            if batch {
+                insert_reference_in_batch(&db, &GROVE_V3);
+            } else {
+                insert_reference_directly(&db, &GROVE_V3);
+            }
+            db.insert(
+                [TEST_LEAF, COUNT_TREE].as_ref(),
+                TARGET,
+                Element::new_non_counted(Element::new_item(b"changed".to_vec())).unwrap(),
+                None,
+                None,
+                GroveVersion::latest(),
+            )
+            .unwrap()
+            .unwrap();
+            for reader_version in [&GROVE_V3, GroveVersion::latest()] {
+                let issues = db.verify_grovedb(None, true, true, reader_version).unwrap();
+                assert_eq!(issues.len(), 1);
+                assert!(issues.contains_key(&vec![TEST_LEAF.to_vec(), REF.to_vec()]));
+                let query = query_for_ref();
+                let proof = db
+                    .prove_query(&query, None, reader_version)
+                    .unwrap()
+                    .unwrap();
+                let result = GroveDb::verify_query_raw(&proof, &query, reader_version);
+                assert!(result.is_err() || result.unwrap().0 != root(&db, reader_version));
+            }
+        }
     }
 }

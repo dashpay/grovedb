@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Renamed `prove_internal` to `prove_query_non_serialized` for clarity (#373)
 
 ### Fixed
-- A reference whose terminal is a `NonCounted`-wrapped item now commits to the terminal's stored bytes (wrapper included) on every path. Direct insert (`GROVE_V4`+, `add_element_on_transaction: 2`), `verify_grovedb` and the V1 prover use the new commitment-preserving `follow_reference_as_stored`, matching what the batch resolver always hashed; `follow_reference` stays the looked-through presentation read. Offset-paginated proof rows resolved through a reference may surface the wrapped target (`CountOffsetReturnedItem::resolved_from_reference`) (#858)
+- Direct and batch references to `NonCounted`-wrapped items now commit to identical stored terminal bytes on `GROVE_V4` (`add_element_on_transaction: 2`). `verify_grovedb` and V1 proof generation select the terminal representation matching each reference's stored commitment, preserving older direct-write hashes across upgrades. Offset-paginated proof rows resolved through a reference may surface the wrapped target (`CountOffsetReturnedItem::resolved_from_reference`) (#858)
 - Corrected proof verification logic in GroveDb (#371)
 - Added ASCII check before appending string to hex display for better visualization (#376)
 
