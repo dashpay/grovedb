@@ -3054,10 +3054,16 @@ impl GroveDb {
             }
         }
 
-        if min_start == u64::MAX {
-            return Err(Error::InvalidInput(
-                "No valid range items found in BulkAppendTree query",
-            ));
+        // An empty selection — no items at all, only reversed spans, or a
+        // key at `u64::MAX` (a position no tree can hold) — is a valid
+        // query that matches nothing. The prover (`query_items_to_range`
+        // plus the normalized position set) proves and charges it as
+        // empty; rejecting it here turned an honest proof into an
+        // `InvalidInput` error (#865). Return the empty span explicitly
+        // so the caller extracts no values, expects no positions, and
+        // charges nothing.
+        if min_start >= max_end {
+            return Ok((0, 0));
         }
 
         Ok((min_start, max_end))
