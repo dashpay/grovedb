@@ -32,6 +32,20 @@
 //!   flips a rejected/accepted outcome and because deriving the state root
 //!   costs the prover extra storage reads and hash calls.
 //!
+//! - `proof.chunk_proof_row_binding: 1` — a trunk or branch chunk proof
+//!   (`prove_trunk_chunk` / `prove_branch_chunk`) carries every tree and
+//!   reference row as `KVValueHashFeatureTypeWithChildHash`, with the child
+//!   Merk root, the non-Merk tree's state root, or the referenced value hash,
+//!   and the verifier requires that node for every such row. V1..V3 emit a
+//!   bare `KVValueHash` and the verifier waives the value-hash check for any
+//!   row that deserializes as a tree, so the returned tree metadata (type,
+//!   aggregate count or sum, root key) is unbound and an item can be disguised
+//!   as a tree under a genuine root hash. Indexed-tree rows, whose three-input
+//!   binding no proof node carries, are refused by the prover and rejected by
+//!   the verifier. Gated because it flips an accepted/rejected outcome and
+//!   because deriving each child root costs the prover storage reads and hash
+//!   calls.
+//!
 //! - `proof.axis_descent_in_v1_envelope: 1` — the V1 proof envelope carries
 //!   axis-ordered descents into indexed trees
 //!   (`ProofBytes::IndexedTreeAxisDescent`): a proof over the queried
@@ -411,6 +425,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 verify_query_with_chained_path_queries: 0,
                 verify_query_get_parent_tree_info_with_options: 0,
                 terminal_non_merk_tree_child_hash: 1, // bind terminal non-Merk tree element bytes to the parent value_hash
+                chunk_proof_row_binding: 1, // bind every tree / reference row of a trunk or branch chunk proof
                 axis_descent_in_v1_envelope: 1, // axis-ordered descents in the V1 envelope (ReadMode::Axis)
                 sum_budget_in_v1_envelope: 1, // sum-budget windows in the V1 envelope (ReadMode::SumBudget)
             },

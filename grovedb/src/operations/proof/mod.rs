@@ -13,6 +13,9 @@ mod aggregate_sum;
 /// `value_hash`. Consensus-critical — see the module docs.
 #[cfg(feature = "minimal")]
 mod bind_terminal_non_merk_tree;
+/// Trunk / branch chunk proofs: composite-row binding (#859), versioned.
+#[cfg(any(feature = "minimal", feature = "verify"))]
+mod chunk_proof_row_binding;
 #[cfg(feature = "minimal")]
 mod generate;
 // The prover lives in `indexed_axis::generate` and is `minimal`-gated there;
