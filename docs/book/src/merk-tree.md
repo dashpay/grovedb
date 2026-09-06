@@ -84,6 +84,15 @@ Two important points:
    `hash` (kv_hash) is `H(key, value_hash)`. Keeping both allows the proof system
    to choose how much information to reveal.
 
+3. **`value_defined_cost` is per-operation cost metadata, not state.** It is
+   stamped when a node is loaded (from the element the node holds) and by the
+   specialized puts (trees, sum items) from the new operation. An ordinary put
+   (an Item or a Reference) clears it from `GROVE_V4`
+   (`merk_versions.tree.put_value = 1`) so the replacement is charged from its
+   own bytes and verified against what is written; earlier versions keep the
+   loaded metadata, so replacing a tree or sum item with an item was charged
+   at the predecessor's fixed size (issue #908).
+
 ## The Semi-Balanced Nature — How AVL "Wobbles"
 
 A Merk tree is an **AVL tree** — the classic self-balancing binary search tree

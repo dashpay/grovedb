@@ -208,10 +208,27 @@ impl KV {
 
     /// Replaces the `KV`'s value with the given value, does not update the hash
     /// or value hash.
+    ///
+    /// Any `value_defined_cost` already on the node (stamped from the stored
+    /// predecessor when the node was loaded) is kept. Use
+    /// [`Self::put_ordinary_value_no_update_of_hashes`] when the new value is
+    /// an ordinary (non-specialized) value whose cost must be measured from
+    /// its own bytes.
     #[inline]
     pub fn put_value_no_update_of_hashes(mut self, value: Vec<u8>) -> Self {
         self.value = value;
         self
+    }
+
+    /// Replaces the `KV`'s value with an ordinary (Item / Reference) value,
+    /// does not update the hash or value hash, and clears any
+    /// `value_defined_cost` inherited from the stored predecessor so the
+    /// storage charge is measured from the new bytes and verified against
+    /// what is written (issue #908).
+    #[inline]
+    pub fn put_ordinary_value_no_update_of_hashes(mut self, value: Vec<u8>) -> Self {
+        self.value_defined_cost = None;
+        self.put_value_no_update_of_hashes(value)
     }
 
     /// Replaces the `KV`'s value with the given value, updates the hash,

@@ -14,7 +14,8 @@ use crate::version::{
         GroveDBReplicationVersions, GroveDBVersions,
     },
     merk_versions::{
-        MerkAverageCaseCostsVersions, MerkBatchVersions, MerkProofVersions, MerkVersions,
+        MerkAverageCaseCostsVersions, MerkBatchVersions, MerkProofVersions, MerkTreeVersions,
+        MerkVersions,
     },
     mmr_versions::{MmrCostVersions, MmrVersions},
     GroveVersion,
@@ -267,6 +268,9 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
         proof: MerkProofVersions {
             prove_count_offset_on_range: 0,
         },
+        // Ordinary replacements keep the loaded `value_defined_cost`
+        // metadata (issue #908); consensus-locked, bumped in v4.
+        tree: MerkTreeVersions { put_value: 0 },
     },
     // MMR hash charges: the shipped accounting, which billed the
     // storage reads each operation performed but not the blake3 merges
