@@ -32,7 +32,7 @@ use orchard::{
     NOTE_COMMITMENT_TREE_DEPTH,
 };
 use rusqlite::Connection;
-use shardtree::ShardTree;
+use shardtree::{store::ShardStore, ShardTree};
 
 use super::{
     sqlite_store::{SqliteShardStore, SqliteShardStoreError},
@@ -68,6 +68,16 @@ impl ClientPersistentCommitmentTree {
     /// (e.g., a wallet database). The commitment tree tables are created if
     /// missing, and the mutex is locked only for the duration of each SQL
     /// operation.
+    ///
+    /// Mutating tree operations ([`append`](Self::append),
+    /// [`checkpoint`](Self::checkpoint)) wrap their statements in a SQLite
+    /// savepoint. Savepoints nest, so calling them while the wallet holds an
+    /// open transaction on this connection is supported — the wallet then
+    /// owns the final commit or rollback. Because the mutex is released
+    /// between individual statements, other threads must not write through
+    /// the same connection while a mutating tree operation is in flight: if
+    /// the operation fails, its rollback would revert those interleaved
+    /// writes as well.
     pub fn open_on_shared_connection(
         conn: Arc<Mutex<Connection>>,
         max_checkpoints: usize,
@@ -95,26 +105,71 @@ impl ClientPersistentCommitmentTree {
     /// `cmx` is the 32-byte extracted note commitment. `retention` controls
     /// whether the leaf is marked for witness generation, checkpointed, or
     /// ephemeral.
+    ///
+    /// Checkpoint ids must be strictly increasing: appending with
+    /// `Retention::Checkpoint { id, .. }` where `id` is not greater than the
+    /// current maximum checkpoint id fails with
+    /// [`CommitmentTreeError::CheckpointOutOfOrder`] before anything is
+    /// written.
+    ///
+    /// # Atomicity
+    ///
+    /// The whole operation (shard write, checkpoint row, checkpoint pruning)
+    /// runs inside a SQLite savepoint. On `Err` the savepoint has been rolled
+    /// back and the persisted tree state is unchanged, so the append can be
+    /// safely retried.
     pub fn append(
         &mut self,
         cmx: [u8; 32],
         retention: Retention<u32>,
     ) -> Result<(), CommitmentTreeError> {
         let leaf = merkle_hash_from_bytes(&cmx).ok_or(CommitmentTreeError::InvalidFieldElement)?;
-        self.inner
-            .batch_insert(self.next_position()?, std::iter::once((leaf, retention)))
-            .map_err(|e| CommitmentTreeError::InvalidData(format!("append failed: {e}")))?;
-        Ok(())
+        // `ShardTree::batch_insert` (unlike `ShardTree::append`) does not
+        // check checkpoint-id ordering before writing, and the SQLite store
+        // would only reject the duplicate id after the shard row is already
+        // persisted. Refuse here, before any mutation, with the same
+        // strictly-increasing contract as `ShardTree::append`.
+        if let Retention::Checkpoint { id, .. } = &retention {
+            let max =
+                self.inner.store().max_checkpoint_id().map_err(|e| {
+                    CommitmentTreeError::InvalidData(format!("max_checkpoint_id: {e}"))
+                })?;
+            if max.as_ref() >= Some(id) {
+                return Err(CommitmentTreeError::CheckpointOutOfOrder {
+                    provided: *id,
+                    max: max.expect("comparison above requires max to be Some"),
+                });
+            }
+        }
+        let start = self.next_position()?;
+        self.atomically(|tree| {
+            tree.inner
+                .batch_insert(start, std::iter::once((leaf, retention)))
+                .map_err(|e| CommitmentTreeError::InvalidData(format!("append failed: {e}")))?;
+            Ok(())
+        })
     }
 
     /// Create a checkpoint at the current tree state.
     ///
     /// Checkpoints allow `witness_at_checkpoint_depth` to produce witnesses
     /// relative to historical anchors.
+    ///
+    /// Returns `Ok(false)` without modifying anything if `checkpoint_id` is
+    /// not greater than the current maximum checkpoint id.
+    ///
+    /// # Atomicity
+    ///
+    /// The whole operation (shard retention update, checkpoint row,
+    /// checkpoint pruning) runs inside a SQLite savepoint. On `Err` the
+    /// savepoint has been rolled back and the persisted tree state is
+    /// unchanged.
     pub fn checkpoint(&mut self, checkpoint_id: u32) -> Result<bool, CommitmentTreeError> {
-        self.inner
-            .checkpoint(checkpoint_id)
-            .map_err(|e| CommitmentTreeError::InvalidData(format!("checkpoint failed: {e}")))
+        self.atomically(|tree| {
+            tree.inner
+                .checkpoint(checkpoint_id)
+                .map_err(|e| CommitmentTreeError::InvalidData(format!("checkpoint failed: {e}")))
+        })
     }
 
     /// Get the position of the most recently appended leaf.
@@ -153,6 +208,71 @@ impl ClientPersistentCommitmentTree {
         {
             Some(root) => Ok(Anchor::from(root)),
             None => Ok(Anchor::empty_tree()),
+        }
+    }
+
+    /// Run a mutating multi-statement tree operation inside a SQLite
+    /// savepoint so it commits or rolls back as a unit.
+    ///
+    /// `ShardTree` operations issue several store calls (shard writes,
+    /// checkpoint inserts, pruning); without this, a storage error partway
+    /// through would leave the earlier writes committed while the operation
+    /// reports failure. Savepoints nest, so this also composes with a
+    /// caller-owned wallet transaction on a shared connection — the wallet
+    /// then owns the final commit.
+    ///
+    /// On a shared connection the mutex is only held per SQL statement, so
+    /// other threads must not write through the same connection while a
+    /// mutating tree operation is in flight: a rollback here would revert
+    /// their interleaved writes as well.
+    fn atomically<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, CommitmentTreeError>,
+    ) -> Result<T, CommitmentTreeError> {
+        let owns_transaction = self
+            .inner
+            .store()
+            .with_conn(|conn| {
+                let owns_transaction = conn.is_autocommit();
+                conn.execute_batch("SAVEPOINT commitment_tree_client_op")
+                    .map(|()| owns_transaction)
+            })
+            .map_err(|e| CommitmentTreeError::InvalidData(format!("savepoint failed: {e}")))?;
+        // Releasing the outermost savepoint commits the transaction and can
+        // itself fail (for example, SQLITE_BUSY). Treat that like an error
+        // from the operation, so no pending writes escape cleanup.
+        let result = f(self).and_then(|value| {
+            self.inner
+                .store()
+                .with_conn(|conn| conn.execute_batch("RELEASE SAVEPOINT commitment_tree_client_op"))
+                .map_err(|e| {
+                    CommitmentTreeError::InvalidData(format!("savepoint release failed: {e}"))
+                })?;
+            Ok(value)
+        });
+        match result {
+            Ok(value) => Ok(value),
+            Err(e) => {
+                // If we own the transaction, end it with ROLLBACK: RELEASE
+                // can remain blocked by a reader even after ROLLBACK TO.
+                // Otherwise undo only our savepoint, preserving the wallet's
+                // transaction and any writes it made before this operation.
+                if let Err(rollback_err) = self.inner.store().with_conn(|conn| {
+                    if owns_transaction {
+                        conn.execute_batch("ROLLBACK")
+                    } else {
+                        conn.execute_batch(
+                            "ROLLBACK TO SAVEPOINT commitment_tree_client_op; RELEASE SAVEPOINT \
+                             commitment_tree_client_op",
+                        )
+                    }
+                }) {
+                    return Err(CommitmentTreeError::InvalidData(format!(
+                        "rollback failed after error ({e}): {rollback_err}"
+                    )));
+                }
+                Err(e)
+            }
         }
     }
 

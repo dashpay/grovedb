@@ -3,7 +3,10 @@ use orchard::{
     tree::{MerkleHashOrchard, MerklePath},
     Anchor, NOTE_COMMITMENT_TREE_DEPTH,
 };
-use shardtree::{store::memory::MemoryShardStore, ShardTree};
+use shardtree::{
+    store::{memory::MemoryShardStore, ShardStore},
+    ShardTree,
+};
 
 use super::SHARD_HEIGHT;
 use crate::commitment_frontier::{merkle_hash_from_bytes, CommitmentTreeError};
@@ -44,12 +47,37 @@ impl ClientMemoryCommitmentTree {
     /// `cmx` is the 32-byte extracted note commitment. `retention` controls
     /// whether the leaf is marked for witness generation, checkpointed, or
     /// ephemeral.
+    ///
+    /// Checkpoint ids must be strictly increasing: appending with
+    /// `Retention::Checkpoint { id, .. }` where `id` is not greater than the
+    /// current maximum checkpoint id fails with
+    /// [`CommitmentTreeError::CheckpointOutOfOrder`] before anything is
+    /// modified. This matches
+    /// [`ClientPersistentCommitmentTree`](crate::ClientPersistentCommitmentTree)
+    /// (and `ShardTree::append`); the in-memory store would otherwise
+    /// silently replace the existing checkpoint.
     pub fn append(
         &mut self,
         cmx: [u8; 32],
         retention: Retention<u32>,
     ) -> Result<(), CommitmentTreeError> {
         let leaf = merkle_hash_from_bytes(&cmx).ok_or(CommitmentTreeError::InvalidFieldElement)?;
+        // `ShardTree::batch_insert` (unlike `ShardTree::append`) does not
+        // check checkpoint-id ordering, and `MemoryShardStore` silently
+        // replaces a checkpoint with a duplicate id. Refuse before mutating,
+        // keeping memory and SQLite backends on the same contract.
+        if let Retention::Checkpoint { id, .. } = &retention {
+            let max =
+                self.inner.store().max_checkpoint_id().map_err(|e| {
+                    CommitmentTreeError::InvalidData(format!("max_checkpoint_id: {e}"))
+                })?;
+            if max.as_ref() >= Some(id) {
+                return Err(CommitmentTreeError::CheckpointOutOfOrder {
+                    provided: *id,
+                    max: max.expect("comparison above requires max to be Some"),
+                });
+            }
+        }
         self.inner
             .batch_insert(self.next_position()?, std::iter::once((leaf, retention)))
             .map_err(|e| CommitmentTreeError::InvalidData(format!("append failed: {e}")))?;

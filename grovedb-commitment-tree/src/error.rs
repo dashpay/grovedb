@@ -13,6 +13,18 @@ pub enum CommitmentTreeError {
     /// A 32-byte value is not a valid Pallas field element.
     #[error("invalid Pallas field element")]
     InvalidFieldElement,
+    /// A checkpoint id was not greater than the current maximum checkpoint
+    /// id. Checkpoint ids must be strictly increasing; the operation was
+    /// refused before any state was modified.
+    #[error(
+        "checkpoint id {provided} is not greater than the current maximum checkpoint id {max}"
+    )]
+    CheckpointOutOfOrder {
+        /// The checkpoint id supplied by the caller.
+        provided: u32,
+        /// The current maximum checkpoint id in the tree.
+        max: u32,
+    },
 
     /// An unknown grove version was supplied for a versioned accounting
     /// decision.

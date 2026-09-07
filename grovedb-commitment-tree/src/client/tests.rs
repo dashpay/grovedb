@@ -257,3 +257,66 @@ fn test_witness_anchors_match_across_syncs() {
     // (MerklePath doesn't implement PartialEq so we just verify both are
     // Some)
 }
+
+#[test]
+fn test_append_duplicate_checkpoint_id_refused() {
+    // Regression test for issue #882: the in-memory store used to silently
+    // replace an existing checkpoint when a leaf was appended with a
+    // duplicate checkpoint id, diverging from the persistent backend (and
+    // from `ShardTree::append`, which refuses out-of-order checkpoint ids).
+    use incrementalmerkletree::Marking;
+
+    use crate::CommitmentTreeError;
+
+    let mut tree = ClientMemoryCommitmentTree::new(10);
+    tree.append(
+        test_leaf(0),
+        Retention::Checkpoint {
+            id: 1,
+            marking: Marking::None,
+        },
+    )
+    .expect("first checkpointed append");
+    let anchor_before = tree.anchor().expect("anchor");
+
+    let err = tree
+        .append(
+            test_leaf(1),
+            Retention::Checkpoint {
+                id: 1,
+                marking: Marking::None,
+            },
+        )
+        .expect_err("duplicate checkpoint id must be refused");
+    assert!(
+        matches!(
+            err,
+            CommitmentTreeError::CheckpointOutOfOrder {
+                provided: 1,
+                max: 1
+            }
+        ),
+        "unexpected error: {err}"
+    );
+
+    // The refused append must not have modified anything.
+    assert_eq!(
+        tree.max_leaf_position().expect("pos"),
+        Some(Position::from(0))
+    );
+    assert_eq!(tree.anchor().expect("anchor"), anchor_before);
+
+    // The next id is accepted.
+    tree.append(
+        test_leaf(1),
+        Retention::Checkpoint {
+            id: 2,
+            marking: Marking::None,
+        },
+    )
+    .expect("append with next checkpoint id");
+    assert_eq!(
+        tree.max_leaf_position().expect("pos"),
+        Some(Position::from(1))
+    );
+}
