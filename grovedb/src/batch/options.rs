@@ -67,6 +67,10 @@ pub struct BatchApplyOptions {
     /// such conflicting batches are rejected before the emptiness check runs.
     /// When this flag is `true`, the caller must ensure no batch contains
     /// both inserts into a subtree and a `DeleteTree` of that subtree.
+    ///
+    /// Partial batches always validate conflicts between the initial and
+    /// continuation segments. This flag disables only per-segment checks;
+    /// it cannot make pending state safe for committed-state cleanup.
     pub disable_operation_consistency_check: bool,
     /// Base root storage is free
     pub base_root_storage_is_free: bool,

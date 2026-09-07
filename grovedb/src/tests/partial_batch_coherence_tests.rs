@@ -1357,4 +1357,185 @@ mod tests {
         assert_eq!(root_hash(&db, gv), root_hash(&sequential, gv));
         assert_verify_clean(&db, gv);
     }
+
+    /// Fresh empty trees need the same rejection as trees with child writes,
+    /// before the deletion preflight attempts to read committed state.
+    #[test]
+    fn cross_segment_gate_rejects_deleting_or_overwriting_fresh_merk_tree() {
+        for gv in grovedb_version::version::GROVE_VERSIONS {
+            let path = vec![TEST_LEAF.to_vec()];
+            let key = b"fresh".to_vec();
+            let add_ons = [
+                QualifiedGroveDbOp::delete_tree_op(
+                    path.clone(),
+                    key.clone(),
+                    TreeType::NormalTree,
+                    SubelementsDeletionBehavior::Error,
+                ),
+                QualifiedGroveDbOp::delete_tree_op(
+                    path.clone(),
+                    key.clone(),
+                    TreeType::NormalTree,
+                    SubelementsDeletionBehavior::Skip,
+                ),
+                QualifiedGroveDbOp::delete_tree_op(
+                    path.clone(),
+                    key.clone(),
+                    TreeType::NormalTree,
+                    SubelementsDeletionBehavior::DeleteChildren,
+                ),
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    path.clone(),
+                    key.clone(),
+                    Element::new_item(vec![9]),
+                ),
+            ];
+            for disable_operation_consistency_check in [false, true] {
+                for add_on in &add_ons {
+                    let db = ordinary_subtree(gv);
+                    let before = root_hash(&db, gv);
+                    let result = apply_partial(
+                        &db,
+                        vec![QualifiedGroveDbOp::insert_or_replace_op(
+                            path.clone(),
+                            key.clone(),
+                            Element::empty_tree(),
+                        )],
+                        vec![add_on.clone()],
+                        Some(BatchApplyOptions {
+                            disable_operation_consistency_check,
+                            ..Default::default()
+                        }),
+                        gv,
+                    );
+                    assert!(
+                        matches!(result, Err(Error::InvalidBatchOperation(_))),
+                        "{result:?}"
+                    );
+                    assert_eq!(root_hash(&db, gv), before);
+                    assert!(db
+                        .get([TEST_LEAF].as_ref(), b"fresh", None, gv)
+                        .unwrap()
+                        .is_err());
+                    assert_verify_clean(&db, gv);
+                }
+            }
+        }
+    }
+
+    /// Disabling per-segment checks must not permit cleanup or overwrites
+    /// that strand the other segment's pending data.
+    #[test]
+    fn cross_segment_gate_cannot_be_disabled() {
+        let gv = GroveVersion::latest();
+        let sub_path = vec![TEST_LEAF.to_vec(), b"sub".to_vec()];
+        let mmr_path = vec![TEST_LEAF.to_vec(), b"mmr".to_vec()];
+        let cases = [
+            (
+                item_op(sub_path.clone(), 20),
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"sub".to_vec(),
+                    Element::new_item(vec![9]),
+                ),
+            ),
+            (
+                QualifiedGroveDbOp::delete_tree_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"sub".to_vec(),
+                    TreeType::NormalTree,
+                    SubelementsDeletionBehavior::DeleteChildren,
+                ),
+                item_op(sub_path.clone(), 20),
+            ),
+            (
+                item_op(sub_path, 20),
+                QualifiedGroveDbOp::delete_tree_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"sub".to_vec(),
+                    TreeType::NormalTree,
+                    SubelementsDeletionBehavior::DeleteChildren,
+                ),
+            ),
+            (
+                QualifiedGroveDbOp::mmr_tree_append_op(mmr_path.clone(), b"a".to_vec()),
+                QualifiedGroveDbOp::mmr_tree_append_op(mmr_path, b"b".to_vec()),
+            ),
+        ];
+        for (first, second) in cases {
+            let db = ordinary_subtree_with_mmr(gv);
+            let before = root_hash(&db, gv);
+            let result = apply_partial(
+                &db,
+                vec![first],
+                vec![second],
+                Some(BatchApplyOptions {
+                    disable_operation_consistency_check: true,
+                    ..Default::default()
+                }),
+                gv,
+            );
+            assert!(
+                matches!(result, Err(Error::InvalidBatchOperation(_))),
+                "{result:?}"
+            );
+            assert_eq!(root_hash(&db, gv), before);
+            assert_eq!(
+                present_keys(&db, &[TEST_LEAF, b"sub"], gv),
+                (0..8u64).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                db.mmr_tree_leaf_count([TEST_LEAF].as_ref(), b"mmr", None, gv)
+                    .unwrap()
+                    .unwrap(),
+                0
+            );
+            assert_verify_clean(&db, gv);
+        }
+    }
+
+    /// A skipped tree insertion did not create pending state at the target
+    /// and must not prevent the continuation from deleting the stored tree.
+    #[test]
+    fn cross_segment_gate_excludes_skipped_tree_insertions() {
+        for gv in grovedb_version::version::GROVE_VERSIONS {
+            let db = ordinary_subtree(gv);
+            db.insert(
+                [TEST_LEAF].as_ref(),
+                b"empty",
+                Element::empty_tree(),
+                None,
+                None,
+                gv,
+            )
+            .unwrap()
+            .unwrap();
+            apply_partial(
+                &db,
+                vec![QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"empty".to_vec(),
+                    Element::empty_tree(),
+                )],
+                vec![QualifiedGroveDbOp::delete_tree_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"empty".to_vec(),
+                    TreeType::NormalTree,
+                    SubelementsDeletionBehavior::Error,
+                )],
+                None,
+                gv,
+            )
+            .unwrap();
+            assert!(db
+                .get([TEST_LEAF].as_ref(), b"empty", None, gv)
+                .unwrap()
+                .is_err());
+            assert_eq!(
+                present_keys(&db, &[TEST_LEAF, b"sub"], gv),
+                (0..8u64).collect::<Vec<_>>()
+            );
+            assert_verify_clean(&db, gv);
+        }
+    }
 }

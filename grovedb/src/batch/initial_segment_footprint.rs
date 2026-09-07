@@ -7,6 +7,8 @@
 //! recorded here is what lets the flow refuse add-on shapes that are
 //! individually consistent but incoherent across the segment boundary.
 
+use std::collections::{BTreeMap, HashSet};
+
 use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 
 use crate::{
@@ -28,7 +30,8 @@ use crate::{
 pub(super) struct InitialSegmentFootprint {
     /// Qualified path (path ‖ key) of every element the segment deleted.
     deleted: Vec<Vec<Vec<u8>>>,
-    /// Path of the Merk every op in the segment wrote into.
+    /// Paths written into, plus qualified targets of Merk trees the segment
+    /// creates or replaces, even when no child operation populated them.
     written_paths: Vec<Vec<Vec<u8>>>,
     /// Qualified path of every non-Merk tree the segment appended into,
     /// created, or replaced. Add-on typed appends are preprocessed against
@@ -41,37 +44,46 @@ pub(super) struct InitialSegmentFootprint {
 }
 
 impl InitialSegmentFootprint {
-    pub(super) fn from_ops(ops: &[QualifiedGroveDbOp]) -> Self {
+    /// Build the footprint after initial execution, retaining pending ops
+    /// above the pause height but excluding conditional insertions that
+    /// execution skipped. A skipped proposal created no pending tree state.
+    pub(super) fn from_ops(
+        ops: &BTreeMap<Vec<Vec<u8>>, GroveOp>,
+        skipped_insert_paths: &HashSet<Vec<Vec<u8>>>,
+    ) -> Self {
         let mut deleted = Vec::new();
         let mut written_paths = Vec::with_capacity(ops.len());
         let mut non_merk_tree_targets = Vec::new();
-        for op in ops {
-            let path = op.path.to_path();
-            if matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..))
-                && let Some(key) = op.key.as_ref()
-            {
-                let mut qualified = path.clone();
-                qualified.push(key.get_key_clone());
-                deleted.push(qualified);
+        for (qualified, op) in ops {
+            if skipped_insert_paths.contains(qualified) {
+                continue;
+            }
+            let mut path = qualified.clone();
+            path.pop();
+            if matches!(op, GroveOp::Delete | GroveOp::DeleteTree(..)) {
+                deleted.push(qualified.clone());
             }
             // Typed appends were rewritten into ReplaceNonMerkTreeRoot by
-            // preprocessing before the footprint is taken; insert-family
-            // ops can create or replace a non-Merk tree element directly.
-            let non_merk_tree_target = match &op.op {
-                GroveOp::ReplaceNonMerkTreeRoot { .. } => true,
+            // preprocessing; insert-family ops can create or replace trees
+            // directly. Track the tree's own path as well as its parent:
+            // even an empty new tree exists only in pending state, which
+            // committed-state deletion checks and cleanup cannot observe.
+            let tree_type = match op {
                 GroveOp::InsertOrReplace { element }
                 | GroveOp::InsertWithKnownToNotAlreadyExist { element }
                 | GroveOp::InsertIfNotExists { element, .. }
                 | GroveOp::Replace { element }
-                | GroveOp::Patch { element, .. } => element
-                    .tree_type()
-                    .is_some_and(|tree_type| tree_type.uses_non_merk_data_storage()),
-                _ => false,
+                | GroveOp::Patch { element, .. } => element.tree_type(),
+                _ => None,
             };
-            if non_merk_tree_target && let Some(key) = op.key.as_ref() {
-                let mut qualified = path.clone();
-                qualified.push(key.get_key_clone());
-                non_merk_tree_targets.push(qualified);
+            if let Some(tree_type) = tree_type {
+                if tree_type.uses_non_merk_data_storage() {
+                    non_merk_tree_targets.push(qualified.clone());
+                } else {
+                    written_paths.push(qualified.clone());
+                }
+            } else if matches!(op, GroveOp::ReplaceNonMerkTreeRoot { .. }) {
+                non_merk_tree_targets.push(qualified.clone());
             }
             written_paths.push(path);
         }

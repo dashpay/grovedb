@@ -7063,10 +7063,12 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
-    /// Applies a partial batch of operations on GroveDB
-    /// The batch is not committed
-    /// Clients should set the Batch Apply Options batch pause height
-    /// If it is not set we default to pausing at the root tree
+    /// Apply the initial segment, pass its pending cost to the add-on
+    /// callback, then apply the continuation before one atomic commit.
+    ///
+    /// The initial segment pauses at `batch_pause_height` (default: 1).
+    /// Cross-segment safety checks are always enforced, even when
+    /// `disable_operation_consistency_check` skips per-segment validation.
     pub fn apply_partial_batch_with_element_flags_update(
         &self,
         ops: Vec<QualifiedGroveDbOp>,
@@ -7227,9 +7229,6 @@ impl GroveDb {
             batch_apply_options.batch_pause_height = Some(1);
         }
 
-        let initial_segment_footprint =
-            check_batch_operation_consistency.then(|| InitialSegmentFootprint::from_ops(&ops));
-
         // Both segments run against ONE storage batch and ONE live Merk
         // cache (issue #842). The initial segment's writes are only pending
         // in the batch, so a continuation that reopened Merks from the
@@ -7327,11 +7326,18 @@ impl GroveDb {
                 .wrap_with_cost(cost);
             }
         }
-        // Cross-segment gate: the shapes the live cache cannot make
-        // coherent (see `InitialSegmentFootprint`).
-        if let Some(footprint) = initial_segment_footprint.as_ref() {
-            cost_return_on_error_no_add!(cost, footprint.verify_add_on_ops(&new_operations));
-        }
+        // Cross-segment safety is mandatory even when callers disable
+        // per-segment consistency checks: the live cache cannot make these
+        // operation combinations coherent. Build from the initial op map
+        // after execution so skipped conditional insertions add no footprint.
+        let initial_segment_footprint = InitialSegmentFootprint::from_ops(
+            &initial_ops_by_qualified_paths,
+            &merk_tree_cache.skipped_insert_paths,
+        );
+        cost_return_on_error_no_add!(
+            cost,
+            initial_segment_footprint.verify_add_on_ops(&new_operations)
+        );
         // A continuation write under an indexed primary the initial segment
         // safe-subset-OVERWROTE would land in the very storage prefixes the
         // post-apply sweep below clears (the old element's primary subtree
@@ -7438,9 +7444,7 @@ impl GroveDb {
         // path / behavior collection the post-apply passes below run on.
         // The scan reads committed state, which is coherent here because
         // the cross-segment gate refused deletes of anything the initial
-        // segment wrote into; a target the initial segment CREATED has no
-        // committed element yet, so an Error / Skip emptiness check on it
-        // fails closed before the continuation applies anything.
+        // segment wrote into, created, or replaced, including empty trees.
         let DeleteTreePreScan {
             non_merk_delete_paths: add_on_non_merk_delete_paths,
             merk_delete_paths: add_on_merk_delete_paths,
