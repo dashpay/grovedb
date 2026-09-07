@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use grovedb_merk::{
-    element::costs::ElementCostExtensions,
+    element::{costs::ElementCostExtensions, ElementExt},
     tree::{combine_hash, kv::ValueDefinedCostType, value_hash, TreeNode},
     Merk,
 };
@@ -82,6 +82,14 @@ impl GroveDb {
                 | Element::ReferenceWithSumItem(reference_path, ..) => {
                     path = path_from_reference_qualified_path_type(reference_path.clone(), &path)?;
                 }
+                // A bidirectional edge is followed like any other hop; the
+                // chain's members commit to the terminal's LOGICAL hash.
+                Element::BidirectionalReference(reference, _) => {
+                    path = path_from_reference_qualified_path_type(
+                        reference.forward_reference_path.clone(),
+                        &path,
+                    )?;
+                }
                 _ => return Ok(element),
             }
         }
@@ -143,6 +151,49 @@ impl GroveDb {
                         } else {
                             combined
                         }
+                    }
+                    // Backward-references family (two-layer scheme): a
+                    // bidirectional reference's node hash is
+                    // `combine(combine(inner, referrer list), end hash)` where
+                    // the end hash is the terminal's LOGICAL (referrer-list
+                    // stripped) hash; the item variants commit to
+                    // `combine(inner, referrer list)` alone.
+                    Element::BidirectionalReference(reference, _) => {
+                        let hashes = element
+                            .backward_references_hashes(grove_version)
+                            .unwrap()?
+                            .ok_or_else(|| {
+                                Error::CorruptedData(
+                                    "bidirectional reference without backward-references hashes"
+                                        .to_string(),
+                                )
+                            })?;
+                        let target_path = path_from_reference_path_type(
+                            reference.forward_reference_path.clone(),
+                            &path,
+                            Some(node.key()),
+                        )?;
+                        let target = self.restored_reference_target(
+                            target_path,
+                            transaction,
+                            grove_version,
+                        )?;
+                        let end_hash = target.logical_value_hash(grove_version).unwrap()?;
+                        combine_hash(&hashes.combined, &end_hash).unwrap()
+                    }
+                    Element::ItemWithBackwardsReferences(..)
+                    | Element::SumItemWithBackwardsReferences(..)
+                    | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                        element
+                            .backward_references_hashes(grove_version)
+                            .unwrap()?
+                            .ok_or_else(|| {
+                                Error::CorruptedData(
+                                    "backward-references item without backward-references hashes"
+                                        .to_string(),
+                                )
+                            })?
+                            .combined
                     }
                     _ if element.element_type().has_simple_value_hash() => actual_value_hash,
                     _ if element.is_any_tree() => {

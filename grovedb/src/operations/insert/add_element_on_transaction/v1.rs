@@ -127,7 +127,7 @@ impl GroveDb {
 
                 let referenced_element_value_hash = cost_return_on_error_into!(
                     &mut cost,
-                    referenced_item.value_hash(grove_version)
+                    referenced_item.logical_value_hash(grove_version)
                 );
 
                 cost_return_on_error_into!(
@@ -260,7 +260,26 @@ impl GroveDb {
                     )
                 );
             }
-            Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
+            Element::Item(..)
+            | Element::SumItem(..)
+            | Element::ItemWithSumItem(..)
+            | Element::ItemWithBackwardsReferences(..)
+            | Element::SumItemWithBackwardsReferences(..)
+            | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                // The backward-references item variants store exactly like
+                // their plain counterparts; the backward-reference
+                // bookkeeping only runs when the caller opts in via
+                // `propagate_backward_references` (routed before this call).
+                //
+                // DELIBERATE TRADEOFF (see adr/bidirectional_references.md):
+                // without the flag, overwriting a key that carries backward
+                // references performs NO cascade/propagation — any
+                // bidirectional references pointing at it keep their old
+                // hashes and `verify_grovedb(..., verify_references, ..)`
+                // will then report them. Detecting that case would require
+                // fetching the previous element on EVERY insert, a cost the
+                // flag exists to avoid; consistency is the caller's promise
+                // once they've mixed flagged and unflagged writes.
                 cost_return_on_error_into!(
                     &mut cost,
                     element.insert(
@@ -270,6 +289,19 @@ impl GroveDb {
                         grove_version
                     )
                 );
+            }
+            Element::BidirectionalReference(..) => {
+                // Inserting a bidirectional reference must register its
+                // backward reference in the target's meta storage, which
+                // only the `MerkCache`-based flow performs
+                // (`insert_on_transaction` v1 routes it there before ever
+                // reaching this function). Fail closed.
+                return Err(Error::NotSupported(
+                    "bidirectional references can only be inserted through the \
+                     backward-references insertion flow (GROVE_V4+)"
+                        .to_owned(),
+                ))
+                .wrap_with_cost(cost);
             }
             Element::ProvableCountIndexedTree(primary, secondary, count_value, _) => {
                 let (primary_root_hash, secondary_root_hash) = if primary.is_none()

@@ -422,7 +422,11 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
         match element_for_cost {
             Some(Element::Item(..))
             | Some(Element::Reference(..))
-            | Some(Element::ReferenceWithSumItem(..)) => {
+            | Some(Element::ReferenceWithSumItem(..))
+            | Some(Element::ItemWithBackwardsReferences(..))
+            | Some(Element::SumItemWithBackwardsReferences(..))
+            | Some(Element::ItemWithSumItemWithBackwardsReferences(..))
+            | Some(Element::BidirectionalReference(..)) => {
                 // while the loaded item might be a sum item, it is given for free
                 // as it would be very hard to know in advance
                 cost.storage_loaded_bytes = KV::value_byte_cost_size_for_key_and_value_lengths(
@@ -539,7 +543,13 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
         let wrapper_overhead = if element.is_wrapped() { 1u32 } else { 0 };
         let element_for_cost = element.underlying();
         match element_for_cost {
-            Element::Item(..) | Element::Reference(..) | Element::ReferenceWithSumItem(..) => {
+            Element::Item(..)
+            | Element::Reference(..)
+            | Element::ReferenceWithSumItem(..)
+            | Element::ItemWithBackwardsReferences(..)
+            | Element::SumItemWithBackwardsReferences(..)
+            | Element::ItemWithSumItemWithBackwardsReferences(..)
+            | Element::BidirectionalReference(..) => {
                 // while the loaded item might be a sum item, it is given for free
                 // as it would be very hard to know in advance
                 cost.storage_loaded_bytes = KV::value_byte_cost_size_for_key_and_value_lengths(

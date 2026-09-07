@@ -487,6 +487,47 @@ where
                 ProofNodeType::KvSum => self.to_kv_sum_node(),
                 ProofNodeType::KvCountSum => self.to_kv_count_sum_node(),
                 ProofNodeType::KvValueHash => self.to_kv_value_hash_node(),
+                // Backward-references elements: emit the dedicated wire
+                // node — STRIPPED bytes plus the referrer-list hash — so
+                // the verifier recombines and binds the payload. The stored
+                // bytes always deserialize for honestly written elements;
+                // failing to rebuild means corrupted storage, and emitting a
+                // plain KVValueHash instead would only move the failure to
+                // the verifier with a misleading message — error out here.
+                ProofNodeType::KvBackwardsReferencesValueHash => {
+                    use crate::element::ElementExt;
+                    let rebuilt = grovedb_element::Element::deserialize(
+                        self.tree().value_ref(),
+                        grove_version,
+                    )
+                    .ok()
+                    .and_then(|element| {
+                        let hashes = element
+                            .backward_references_hashes(grove_version)
+                            .unwrap_add_cost(&mut cost)
+                            .ok()
+                            .flatten()?;
+                        let stripped = element
+                            .stripped_of_backward_references()
+                            .serialize(grove_version)
+                            .ok()?;
+                        Some(Node::KVBackwardsReferencesValueHash(
+                            self.tree().key().to_vec(),
+                            stripped,
+                            hashes.backrefs,
+                        ))
+                    });
+                    match rebuilt {
+                        Some(node) => node,
+                        None => {
+                            return Err(Error::CorruptedData(format!(
+                                "cannot rebuild the backward-references proof node for key {}",
+                                hex::encode(self.tree().key())
+                            )))
+                            .wrap_with_cost(cost);
+                        }
+                    }
+                }
                 ProofNodeType::KvValueHashFeatureType => self.to_kv_value_hash_feature_type_node(),
                 // References: at merk level, generate same node type as non-ref counterpart
                 // GroveDB will post-process to KVRefValueHash with dereferenced value

@@ -94,7 +94,22 @@ impl GroveDb {
                     // Look through `NonCounted` so a wrapped reference still
                     // resolves; the wrapper is transparent at the query
                     // layer.
-                    match element.into_underlying() {
+                    // A bidirectional reference resolves exactly like a
+                    // plain reference; normalize it so the match below needs
+                    // no extra arm.
+                    let mut bidirectional_edge_budget = None;
+                    let element = match element.into_underlying() {
+                        Element::BidirectionalReference(reference, flags) => {
+                            bidirectional_edge_budget = reference.max_hop;
+                            Element::Reference(
+                                reference.forward_reference_path,
+                                reference.max_hop,
+                                flags,
+                            )
+                        }
+                        other => other,
+                    };
+                    match element {
                         Element::Reference(reference_path, ..)
                         | Element::ReferenceWithSumItem(reference_path, ..) => match reference_path
                         {
@@ -104,8 +119,9 @@ impl GroveDb {
                                 // external costs accumulator instead of
                                 // returning costs from `map` call.
                                 let maybe_item = self
-                                    .follow_reference(
+                                    .follow_reference_with_max_hop(
                                         absolute_path.as_slice().into(),
+                                        bidirectional_edge_budget,
                                         allow_cache,
                                         transaction,
                                         grove_version,
@@ -114,9 +130,16 @@ impl GroveDb {
 
                                 // Same treatment for the resolved value.
                                 match maybe_item.into_underlying() {
-                                    Element::Item(item, _) => Ok(item),
-                                    Element::ItemWithSumItem(item, ..) => Ok(item),
-                                    Element::SumItem(value, _) => Ok(value.encode_var_vec()),
+                                    Element::Item(item, _)
+                                    | Element::ItemWithSumItem(item, ..)
+                                    | Element::ItemWithBackwardsReferences(item, _, _)
+                                    | Element::ItemWithSumItemWithBackwardsReferences(item, ..) => {
+                                        Ok(item)
+                                    }
+                                    Element::SumItem(value, _)
+                                    | Element::SumItemWithBackwardsReferences(value, _, _) => {
+                                        Ok(value.encode_var_vec())
+                                    }
                                     _ => Err(Error::InvalidQuery(
                                         "the reference must result in an item",
                                     )),
@@ -227,6 +250,18 @@ where {
         // resolves; a NonCounted item still returns itself. The wrapper's
         // sole effect is on parent count aggregation.
         let element = element.into_underlying();
+        // A bidirectional reference resolves exactly like a plain reference;
+        // normalize it so the match below needs no extra arm. Never leaks to
+        // the caller: reference-family elements are always resolved, not
+        // returned.
+        let mut bidirectional_edge_budget = None;
+        let element = match element {
+            Element::BidirectionalReference(reference, flags) => {
+                bidirectional_edge_budget = reference.max_hop;
+                Element::Reference(reference.forward_reference_path, reference.max_hop, flags)
+            }
+            other => other,
+        };
         match element {
             Element::Reference(reference_path, ..)
             | Element::ReferenceWithSumItem(reference_path, ..) => {
@@ -244,8 +279,9 @@ where {
                         // path; the sum carried on the source element does
                         // not affect what `follow_reference` returns.
                         let maybe_item = self
-                            .follow_reference(
+                            .follow_reference_with_max_hop(
                                 absolute_path.as_slice().into(),
+                                bidirectional_edge_budget,
                                 allow_cache,
                                 transaction,
                                 grove_version,
@@ -267,6 +303,9 @@ where {
             Element::Item(..)
             | Element::SumItem(..)
             | Element::ItemWithSumItem(..)
+            | Element::ItemWithBackwardsReferences(..)
+            | Element::SumItemWithBackwardsReferences(..)
+            | Element::ItemWithSumItemWithBackwardsReferences(..)
             | Element::SumTree(..)
             | Element::BigSumTree(..)
             | Element::CountTree(..)
@@ -274,7 +313,14 @@ where {
             | Element::ProvableCountTree(..)
             | Element::ProvableCountSumTree(..)
             | Element::ProvableSumTree(..)
-            | Element::ProvableCountProvableSumTree(..) => Ok(element),
+            | Element::ProvableCountProvableSumTree(..) => {
+                // Public results carry the logical (stripped) form; the
+                // referrer list is internal bookkeeping.
+                Ok(element.stripped_of_backward_references())
+            }
+            Element::BidirectionalReference(..) => {
+                unreachable!("normalized to Element::Reference above")
+            }
             Element::Tree(..)
             | Element::CommitmentTree(..)
             | Element::MmrTree(..)
@@ -375,6 +421,21 @@ where {
                 QueryResultElement::ElementResultItem(element) => {
                     // NonCounted is transparent at this layer.
                     let element = element.into_underlying();
+                    // Normalize a bidirectional reference to its
+                    // plain-reference shape; resolution is identical and the
+                    // reference element itself is never returned from here.
+                    let mut bidirectional_edge_budget = None;
+                    let element = match element {
+                        Element::BidirectionalReference(reference, flags) => {
+                            bidirectional_edge_budget = reference.max_hop;
+                            Element::Reference(
+                                reference.forward_reference_path,
+                                reference.max_hop,
+                                flags,
+                            )
+                        }
+                        other => other,
+                    };
                     match element {
                         // `ReferenceWithSumItem` resolves to the target item
                         // the same way `Reference` does; the carried sum is
@@ -390,8 +451,9 @@ where {
                                     // external costs accumulator instead of
                                     // returning costs from `map` call.
                                     let maybe_item = self
-                                        .follow_reference(
+                                        .follow_reference_with_max_hop(
                                             absolute_path.as_slice().into(),
+                                            bidirectional_edge_budget,
                                             allow_cache,
                                             transaction,
                                             grove_version,
@@ -400,8 +462,16 @@ where {
 
                                     match maybe_item.into_underlying() {
                                         Element::Item(item, _)
-                                        | Element::ItemWithSumItem(item, ..) => Ok(item),
-                                        Element::SumItem(item, _) => Ok(item.encode_var_vec()),
+                                        | Element::ItemWithSumItem(item, ..)
+                                        | Element::ItemWithBackwardsReferences(item, _, _)
+                                        | Element::ItemWithSumItemWithBackwardsReferences(
+                                            item,
+                                            ..,
+                                        ) => Ok(item),
+                                        Element::SumItem(item, _)
+                                        | Element::SumItemWithBackwardsReferences(item, _, _) => {
+                                            Ok(item.encode_var_vec())
+                                        }
                                         _ => Err(Error::InvalidQuery(
                                             "the reference must result in an item",
                                         )),
@@ -412,8 +482,17 @@ where {
                                 )),
                             }
                         }
-                        Element::Item(item, _) | Element::ItemWithSumItem(item, ..) => Ok(item),
-                        Element::SumItem(item, _) => Ok(item.encode_var_vec()),
+                        Element::Item(item, _)
+                        | Element::ItemWithSumItem(item, ..)
+                        | Element::ItemWithBackwardsReferences(item, _, _)
+                        | Element::ItemWithSumItemWithBackwardsReferences(item, ..) => Ok(item),
+                        Element::SumItem(item, _)
+                        | Element::SumItemWithBackwardsReferences(item, _, _) => {
+                            Ok(item.encode_var_vec())
+                        }
+                        Element::BidirectionalReference(..) => {
+                            unreachable!("normalized to Element::Reference above")
+                        }
                         Element::Tree(..)
                         | Element::SumTree(..)
                         | Element::BigSumTree(..)
@@ -490,6 +569,21 @@ where {
                 QueryResultElement::ElementResultItem(element) => {
                     // NonCounted is transparent at this layer.
                     let element = element.into_underlying();
+                    // Normalize a bidirectional reference to its
+                    // plain-reference shape; resolution is identical and the
+                    // reference element itself is never returned from here.
+                    let mut bidirectional_edge_budget = None;
+                    let element = match element {
+                        Element::BidirectionalReference(reference, flags) => {
+                            bidirectional_edge_budget = reference.max_hop;
+                            Element::Reference(
+                                reference.forward_reference_path,
+                                reference.max_hop,
+                                flags,
+                            )
+                        }
+                        other => other,
+                    };
                     match element {
                         // `ReferenceWithSumItem` resolves to the target item
                         // exactly like `Reference`; the carried sum value
@@ -505,8 +599,9 @@ where {
                                     // external costs accumulator instead of
                                     // returning costs from `map` call.
                                     let maybe_item = self
-                                        .follow_reference(
+                                        .follow_reference_with_max_hop(
                                             absolute_path.as_slice().into(),
+                                            bidirectional_edge_budget,
                                             allow_cache,
                                             transaction,
                                             grove_version,
@@ -514,17 +609,24 @@ where {
                                         .unwrap_add_cost(&mut cost)?;
 
                                     match maybe_item.into_underlying() {
-                                        Element::Item(item, _) => {
+                                        Element::Item(item, _)
+                                        | Element::ItemWithBackwardsReferences(item, _, _) => {
                                             Ok(QueryItemOrSumReturnType::ItemData(item))
                                         }
-                                        Element::SumItem(sum_value, _) => {
-                                            Ok(QueryItemOrSumReturnType::SumValue(sum_value))
-                                        }
-                                        Element::ItemWithSumItem(item, sum_value, _) => {
-                                            Ok(QueryItemOrSumReturnType::ItemDataWithSumValue(
-                                                item, sum_value,
-                                            ))
-                                        }
+                                        Element::SumItem(sum_value, _)
+                                        | Element::SumItemWithBackwardsReferences(
+                                            sum_value,
+                                            _,
+                                            _,
+                                        ) => Ok(QueryItemOrSumReturnType::SumValue(sum_value)),
+                                        Element::ItemWithSumItem(item, sum_value, _)
+                                        | Element::ItemWithSumItemWithBackwardsReferences(
+                                            item,
+                                            sum_value,
+                                            ..,
+                                        ) => Ok(QueryItemOrSumReturnType::ItemDataWithSumValue(
+                                            item, sum_value,
+                                        )),
                                         Element::SumTree(_, sum_value, _) => {
                                             Ok(QueryItemOrSumReturnType::SumValue(sum_value))
                                         }
@@ -590,13 +692,23 @@ where {
                                 )),
                             }
                         }
-                        Element::Item(item, _) => Ok(QueryItemOrSumReturnType::ItemData(item)),
-                        Element::SumItem(sum_value, _) => {
+                        Element::Item(item, _)
+                        | Element::ItemWithBackwardsReferences(item, _, _) => {
+                            Ok(QueryItemOrSumReturnType::ItemData(item))
+                        }
+                        Element::SumItem(sum_value, _)
+                        | Element::SumItemWithBackwardsReferences(sum_value, _, _) => {
                             Ok(QueryItemOrSumReturnType::SumValue(sum_value))
                         }
-                        Element::ItemWithSumItem(item, sum_value, _) => Ok(
-                            QueryItemOrSumReturnType::ItemDataWithSumValue(item, sum_value),
-                        ),
+                        Element::ItemWithSumItem(item, sum_value, _)
+                        | Element::ItemWithSumItemWithBackwardsReferences(item, sum_value, ..) => {
+                            Ok(QueryItemOrSumReturnType::ItemDataWithSumValue(
+                                item, sum_value,
+                            ))
+                        }
+                        Element::BidirectionalReference(..) => {
+                            unreachable!("normalized to Element::Reference above")
+                        }
                         Element::SumTree(_, sum_value, _) => {
                             Ok(QueryItemOrSumReturnType::SumValue(sum_value))
                         }
@@ -1065,6 +1177,21 @@ where {
                 QueryResultElement::ElementResultItem(element) => {
                     // NonCounted is transparent at this layer.
                     let element = element.into_underlying();
+                    // Normalize a bidirectional reference to its
+                    // plain-reference shape; resolution is identical and the
+                    // reference element itself is never returned from here.
+                    let mut bidirectional_edge_budget = None;
+                    let element = match element {
+                        Element::BidirectionalReference(reference, flags) => {
+                            bidirectional_edge_budget = reference.max_hop;
+                            Element::Reference(
+                                reference.forward_reference_path,
+                                reference.max_hop,
+                                flags,
+                            )
+                        }
+                        other => other,
+                    };
                     match element {
                         // For `ReferenceWithSumItem` we follow the reference
                         // just like `Reference` — the carried sum is a
@@ -1081,21 +1208,27 @@ where {
                                     // external costs accumulator instead of
                                     // returning costs from `map` call.
                                     let maybe_item = self
-                                        .follow_reference(
+                                        .follow_reference_with_max_hop(
                                             absolute_path.as_slice().into(),
+                                            bidirectional_edge_budget,
                                             allow_cache,
                                             transaction,
                                             grove_version,
                                         )
                                         .unwrap_add_cost(&mut cost)?;
 
-                                    if let Element::SumItem(item, _) = maybe_item.into_underlying()
-                                    {
-                                        Ok(item)
-                                    } else {
-                                        Err(Error::InvalidQuery(
+                                    match maybe_item.into_underlying() {
+                                        Element::SumItem(item, _)
+                                        | Element::ItemWithSumItem(_, item, _)
+                                        | Element::SumItemWithBackwardsReferences(item, _, _)
+                                        | Element::ItemWithSumItemWithBackwardsReferences(
+                                            _,
+                                            item,
+                                            ..,
+                                        ) => Ok(item),
+                                        _ => Err(Error::InvalidQuery(
                                             "the reference must result in a sum item",
-                                        ))
+                                        )),
                                     }
                                 }
                                 _ => Err(Error::CorruptedCodeExecution(
@@ -1103,8 +1236,12 @@ where {
                                 )),
                             }
                         }
-                        Element::SumItem(item, _) | Element::ItemWithSumItem(_, item, _) => {
-                            Ok(item)
+                        Element::SumItem(item, _)
+                        | Element::ItemWithSumItem(_, item, _)
+                        | Element::SumItemWithBackwardsReferences(item, _, _)
+                        | Element::ItemWithSumItemWithBackwardsReferences(_, item, ..) => Ok(item),
+                        Element::BidirectionalReference(..) => {
+                            unreachable!("normalized to Element::Reference above")
                         }
                         Element::Tree(..)
                         | Element::SumTree(..)
@@ -1123,7 +1260,8 @@ where {
                         | Element::ProvableSumIndexedTree(..)
                         | Element::ProvableCountProvableSumIndexedTree(..)
                         | Element::ProvableCountIndexedTree(..)
-                        | Element::Item(..) => Err(Error::InvalidQuery(
+                        | Element::Item(..)
+                        | Element::ItemWithBackwardsReferences(..) => Err(Error::InvalidQuery(
                             "path_queries over sum items can only refer to sum items and \
                              references",
                         )),

@@ -45,6 +45,16 @@ pub enum Op {
     /// because the value is independent of the reference hash
     /// In GroveDB this is used for references
     PutCombinedReference(Vec<u8>, CryptoHash, TreeFeatureType),
+    /// Insert or Update an element whose node value hash is supplied fully
+    /// computed by the caller. In GroveDB this is used for
+    /// backward-references elements, whose value hash combines the STRIPPED
+    /// serialization's hash with the backward-references hash (and, for a
+    /// bidirectional reference, with the resolved end-of-chain hash carried
+    /// in the third field). When a just-in-time value update (a flags
+    /// carry-over or a flags-update callback) rewrites the bytes of a
+    /// replaced element, the value hash is recomputed from the final bytes
+    /// with the same scheme, so the committed bytes and hash always agree.
+    PutWithProvidedValueHash(Vec<u8>, CryptoHash, Option<CryptoHash>, TreeFeatureType),
     /// `Layered references` include the value in the node hash
     /// because the value is independent of the reference hash
     /// In GroveDB this is used for trees
@@ -91,6 +101,10 @@ impl fmt::Debug for Op {
                 Put(value, _) => format!("Put({value:?})"),
                 PutWithSpecializedCost(value, cost, feature_type) => format!(
                     "Put Specialized Cost({value:?}) with cost ({cost:?}) for ({feature_type:?})"
+                ),
+                PutWithProvidedValueHash(value, value_hash, end_hash, feature_type) => format!(
+                    "Put Provided Value Hash({value:?}) with hash ({value_hash:?}) end hash \
+                     ({end_hash:?}) ({feature_type:?})"
                 ),
                 PutCombinedReference(value, referenced_value, feature_type) => format!(
                     "Put Combined Reference({value:?}) for ({referenced_value:?}). \
@@ -367,6 +381,7 @@ where
             Put(value, feature_type)
             | PutWithSpecializedCost(value, .., feature_type)
             | PutCombinedReference(value, .., feature_type)
+            | PutWithProvidedValueHash(value, .., feature_type)
             | PutLayeredReference(value, .., feature_type)
             | ReplaceLayeredReference(value, .., feature_type)
             | PutLayeredCountIndexedReference(value, .., feature_type)
@@ -396,6 +411,13 @@ where
                 mid_key.as_ref().to_vec(),
                 mid_value,
                 referenced_value.to_owned(),
+                mid_feature_type.to_owned(),
+            )
+            .unwrap_add_cost(&mut cost),
+            PutWithProvidedValueHash(_, value_hash, _, _) => TreeNode::new_with_value_hash(
+                mid_key.as_ref().to_vec(),
+                mid_value,
+                value_hash.to_owned(),
                 mid_feature_type.to_owned(),
             )
             .unwrap_add_cost(&mut cost),
@@ -580,6 +602,22 @@ where
                         self.put_value_and_reference_value_hash(
                             value.to_vec(),
                             referenced_value.to_owned(),
+                            feature_type.to_owned(),
+                            old_specialized_cost,
+                            get_temp_new_value_with_old_flags,
+                            update_tree_value_based_on_costs,
+                            section_removal_bytes,
+                            grove_version,
+                        )
+                    )
+                }
+                PutWithProvidedValueHash(value, value_hash, end_hash, feature_type) => {
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.put_value_with_provided_value_hash(
+                            value.to_vec(),
+                            value_hash.to_owned(),
+                            end_hash.to_owned(),
                             feature_type.to_owned(),
                             old_specialized_cost,
                             get_temp_new_value_with_old_flags,
