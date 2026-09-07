@@ -12,7 +12,7 @@ mod tests {
     use crate::{
         operations::proof::{SumBudgetStop, VerifiedPathQuery},
         tests::{make_test_grovedb, TEST_LEAF},
-        Element, Error, GroveDb, PathQuery, SizedQuery,
+        Element, GroveDb, PathQuery, SizedQuery,
     };
 
     // -----------------------------------------------------------------

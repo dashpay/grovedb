@@ -579,7 +579,7 @@ mod tests {
 
         // Re-encode the tampered proof
         let tampered_proof =
-            bincode::encode_to_vec(&GroveDBProof::V1(proof_v1), config).expect("re-encode");
+            bincode::encode_to_vec(GroveDBProof::V1(proof_v1), config).expect("re-encode");
 
         // Verification should fail due to trailing bytes
         let result = GroveDb::verify_trunk_chunk_proof(&tampered_proof, &query, grove_version);
@@ -780,7 +780,7 @@ mod tests {
                         key.clone(),
                         forged_value_bytes.clone(),
                         *value_hash,
-                        feature_type.clone(),
+                        *feature_type,
                     )));
                     found_target = true;
                 }
@@ -795,7 +795,7 @@ mod tests {
                         key.clone(),
                         forged_value_bytes.clone(),
                         *value_hash,
-                        feature_type.clone(),
+                        *feature_type,
                         *child_hash,
                     )));
                     found_target = true;
@@ -818,7 +818,7 @@ mod tests {
 
         // Re-encode the full proof
         let tampered_proof =
-            bincode::encode_to_vec(&GroveDBProof::V1(proof_v1), config).expect("re-encode");
+            bincode::encode_to_vec(GroveDBProof::V1(proof_v1), config).expect("re-encode");
 
         // V1 verification should FAIL because the combine_hash check will detect
         // the mismatch between the forged value bytes and the original value_hash
@@ -1029,7 +1029,7 @@ mod tests {
         }
 
         let tampered =
-            bincode::encode_to_vec(&GroveDBProof::V1(proof_v1), config).expect("re-encode");
+            bincode::encode_to_vec(GroveDBProof::V1(proof_v1), config).expect("re-encode");
 
         let result = GroveDb::verify_trunk_chunk_proof(&tampered, &query, grove_version);
         assert!(
@@ -1234,7 +1234,7 @@ mod tests {
         let config = bincode::config::standard()
             .with_big_endian()
             .with_no_limit();
-        let tampered = bincode::encode_to_vec(&GroveDBProof::V1(proof_v1), config).expect("encode");
+        let tampered = bincode::encode_to_vec(GroveDBProof::V1(proof_v1), config).expect("encode");
 
         let result = GroveDb::verify_trunk_chunk_proof(&tampered, &query, grove_version);
         assert!(
@@ -1261,7 +1261,7 @@ mod tests {
         let config = bincode::config::standard()
             .with_big_endian()
             .with_no_limit();
-        let tampered = bincode::encode_to_vec(&GroveDBProof::V1(proof_v1), config).expect("encode");
+        let tampered = bincode::encode_to_vec(GroveDBProof::V1(proof_v1), config).expect("encode");
 
         let result = GroveDb::verify_trunk_chunk_proof(&tampered, &query, grove_version);
         assert!(
@@ -1310,7 +1310,7 @@ mod tests {
         let config = bincode::config::standard()
             .with_big_endian()
             .with_no_limit();
-        let tampered = bincode::encode_to_vec(&GroveDBProof::V1(proof_v1), config).expect("encode");
+        let tampered = bincode::encode_to_vec(GroveDBProof::V1(proof_v1), config).expect("encode");
 
         let result = GroveDb::verify_trunk_chunk_proof(&tampered, &query, grove_version);
         assert!(result.is_err(), "should reject when lower layer is missing");
@@ -1339,7 +1339,7 @@ mod tests {
         let config = bincode::config::standard()
             .with_big_endian()
             .with_no_limit();
-        let tampered = bincode::encode_to_vec(&GroveDBProof::V1(proof_v1), config).expect("encode");
+        let tampered = bincode::encode_to_vec(GroveDBProof::V1(proof_v1), config).expect("encode");
 
         let result = GroveDb::verify_trunk_chunk_proof(&tampered, &query, grove_version);
         assert!(
@@ -1367,7 +1367,7 @@ mod tests {
             .with_big_endian()
             .with_no_limit();
         let proof_bytes =
-            bincode::encode_to_vec(&GroveDBProof::V1(proof_v1), config).expect("encode");
+            bincode::encode_to_vec(GroveDBProof::V1(proof_v1), config).expect("encode");
 
         let result = GroveDb::verify_trunk_chunk_proof(&proof_bytes, &empty_query, grove_version);
         assert!(result.is_err(), "should reject empty path");
@@ -1394,7 +1394,7 @@ mod tests {
             .get_mut(b"cst".as_slice())
             .expect("should have cst layer");
 
-        let invalid_ops = vec![Op::Child];
+        let invalid_ops = [Op::Child];
         let mut invalid_merk = Vec::new();
         encode_into(invalid_ops.iter(), &mut invalid_merk);
         target_layer.merk_proof = ProofBytes::Merk(invalid_merk);
@@ -1402,7 +1402,7 @@ mod tests {
         let config = bincode::config::standard()
             .with_big_endian()
             .with_no_limit();
-        let tampered = bincode::encode_to_vec(&GroveDBProof::V1(proof_v1), config).expect("encode");
+        let tampered = bincode::encode_to_vec(GroveDBProof::V1(proof_v1), config).expect("encode");
 
         let result = GroveDb::verify_trunk_chunk_proof(&tampered, &query, grove_version);
         assert!(
@@ -1524,7 +1524,7 @@ mod tests {
                         key.clone(),
                         forged_bytes.clone(),
                         *vh,
-                        ft.clone(),
+                        *ft,
                     )));
                     found = true;
                 }
@@ -1535,7 +1535,7 @@ mod tests {
                         key.clone(),
                         forged_bytes.clone(),
                         *vh,
-                        ft.clone(),
+                        *ft,
                         *ch,
                     )));
                     found = true;
@@ -1550,7 +1550,7 @@ mod tests {
         root_lower.merk_proof = ProofBytes::Merk(tampered_merk);
 
         let tampered_proof =
-            bincode::encode_to_vec(&GroveDBProof::V1(proof_v1), config).expect("encode");
+            bincode::encode_to_vec(GroveDBProof::V1(proof_v1), config).expect("encode");
 
         let result = GroveDb::verify_trunk_chunk_proof(&tampered_proof, &query, grove_version);
         assert!(
@@ -1634,7 +1634,7 @@ mod tests {
             .with_big_endian()
             .with_no_limit();
         let tampered_proof =
-            bincode::encode_to_vec(&GroveDBProof::V1(tampered_v1), config).expect("encode");
+            bincode::encode_to_vec(GroveDBProof::V1(tampered_v1), config).expect("encode");
 
         // The tree hash is unchanged (execute() uses embedded value_hash),
         // so combine_hash passes. But extract_elements_and_leaf_keys must
@@ -1711,7 +1711,7 @@ mod tests {
             .with_big_endian()
             .with_no_limit();
         let tampered_proof =
-            bincode::encode_to_vec(&GroveDBProof::V1(tampered_v1), config).expect("encode");
+            bincode::encode_to_vec(GroveDBProof::V1(tampered_v1), config).expect("encode");
 
         let result = GroveDb::verify_trunk_chunk_proof(&tampered_proof, &query, grove_version);
         assert!(
@@ -1791,7 +1791,7 @@ mod tests {
         target_layer.merk_proof = ProofBytes::Merk(vec![0xDE; 1024]);
 
         let tampered_bytes =
-            bincode::encode_to_vec(&GroveDBProof::V1(proof_v1), config).expect("encode");
+            bincode::encode_to_vec(GroveDBProof::V1(proof_v1), config).expect("encode");
 
         let result = GroveDb::verify_trunk_chunk_proof(&tampered_bytes, &query, grove_version);
         assert!(
@@ -1901,7 +1901,7 @@ mod tests {
             .with_big_endian()
             .with_no_limit();
         let tampered_proof =
-            bincode::encode_to_vec(&GroveDBProof::V1(tampered_v1), config).expect("encode");
+            bincode::encode_to_vec(GroveDBProof::V1(tampered_v1), config).expect("encode");
 
         let result = GroveDb::verify_trunk_chunk_proof(&tampered_proof, &query, grove_version);
         // KVRefValueHash uses a different hash computation, so the merk tree
@@ -1975,7 +1975,7 @@ mod tests {
             .with_big_endian()
             .with_no_limit();
         let tampered_proof =
-            bincode::encode_to_vec(&GroveDBProof::V1(tampered_v1), config).expect("encode");
+            bincode::encode_to_vec(GroveDBProof::V1(tampered_v1), config).expect("encode");
 
         let result = GroveDb::verify_trunk_chunk_proof(&tampered_proof, &query, grove_version);
         // Either the merk hash chain catches the tag swap first or the
@@ -2051,7 +2051,7 @@ mod tests {
             .with_big_endian()
             .with_no_limit();
         let tampered_proof =
-            bincode::encode_to_vec(&GroveDBProof::V1(tampered_v1), config).expect("encode");
+            bincode::encode_to_vec(GroveDBProof::V1(tampered_v1), config).expect("encode");
 
         let result = GroveDb::verify_trunk_chunk_proof(&tampered_proof, &query, grove_version);
         assert!(
@@ -2112,7 +2112,7 @@ mod tests {
             .with_big_endian()
             .with_no_limit();
         let tampered_proof =
-            bincode::encode_to_vec(&GroveDBProof::V1(tampered_v1), config).expect("encode");
+            bincode::encode_to_vec(GroveDBProof::V1(tampered_v1), config).expect("encode");
 
         let result = GroveDb::verify_trunk_chunk_proof(&tampered_proof, &query, grove_version);
         assert!(
@@ -2125,8 +2125,6 @@ mod tests {
     /// other non-Hash at the same node) should be rejected.
     #[test]
     fn test_trunk_proof_v1_rejects_inconsistent_depth() {
-        use std::collections::BTreeMap;
-
         let grove_version = GroveVersion::latest();
         let (proof_v1, query, _) = make_single_level_v1_proof();
 
@@ -2185,7 +2183,7 @@ mod tests {
             .with_big_endian()
             .with_no_limit();
         let tampered_proof =
-            bincode::encode_to_vec(&GroveDBProof::V1(tampered_v1), config).expect("encode");
+            bincode::encode_to_vec(GroveDBProof::V1(tampered_v1), config).expect("encode");
 
         // Should be rejected — either by execute() or by extract_elements
         let result = GroveDb::verify_trunk_chunk_proof(&tampered_proof, &query, grove_version);

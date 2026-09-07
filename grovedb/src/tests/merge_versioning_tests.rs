@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn query_level_merges_reject_read_modes() {
-        use grovedb_merk::proofs::query::{AggregateFold, AxisQuery, IndexAxis, ReadMode};
+        use grovedb_merk::proofs::query::{AxisQuery, IndexAxis, ReadMode};
 
         let mut axis_query = Query::new();
         axis_query.read_mode = Some(Box::new(ReadMode::Axis(AxisQuery::top_k(

@@ -1162,7 +1162,7 @@ mod error_path_tests {
         // state every real read after a restart is in.
         let storage = PrivateDocumentStore::into_storage_for_test(store);
         storage.fail_reads();
-        let mut store = PrivateDocumentStore::from_state(6, 8, 2, storage)
+        let store = PrivateDocumentStore::from_state(6, 8, 2, storage)
             .unwrap()
             .expect("reopen");
 

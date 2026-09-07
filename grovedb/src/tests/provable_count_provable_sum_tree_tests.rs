@@ -37,8 +37,8 @@ mod tests {
     };
 
     /// 1. Round-trip a `ProvableCountProvableSumTree`: insert it, populate
-    /// with mixed `SumItem` children, verify the parent tracks BOTH count
-    /// (number of children) AND running sum simultaneously.
+    ///    with mixed `SumItem` children, verify the parent tracks BOTH count
+    ///    (number of children) AND running sum simultaneously.
     #[test]
     fn provable_count_provable_sum_tree_round_trip_tracks_count_and_sum() {
         let grove_version = GroveVersion::latest();
@@ -150,14 +150,14 @@ mod tests {
             .as_provable_count_provable_sum_tree_value()
             .expect("pcps value");
         assert_eq!(count, 4);
-        assert_eq!(sum, -10 + 5 + 0 + -3);
+        assert_eq!(sum, (-10 + 5) + -3);
     }
 
     /// 3. Hash divergence from `ProvableCountSumTree` AND `ProvableSumTree`
-    /// over the same content. `ProvableCountSumTree` hashes ONLY the count;
-    /// `ProvableSumTree` hashes ONLY the sum; `ProvableCountProvableSumTree`
-    /// hashes BOTH — so its root must differ from both flavors even with
-    /// identical children.
+    ///    over the same content. `ProvableCountSumTree` hashes ONLY the count;
+    ///    `ProvableSumTree` hashes ONLY the sum; `ProvableCountProvableSumTree`
+    ///    hashes BOTH — so its root must differ from both flavors even with
+    ///    identical children.
     #[test]
     fn pcps_root_hash_diverges_from_pcst_and_pst_over_same_content() {
         let grove_version = GroveVersion::latest();
@@ -208,7 +208,7 @@ mod tests {
     }
 
     /// 4. Headline crossover: a single tree produces BOTH a verifiable
-    /// count proof AND a verifiable sum proof against the SAME root hash.
+    ///    count proof AND a verifiable sum proof against the SAME root hash.
     ///
     /// This is what `ProvableCountProvableSumTree` exists for — the count
     /// and sum proof modules both accept the new variant and verify
@@ -352,9 +352,9 @@ mod tests {
     }
 
     /// 6. `NotSummed(ProvableCountProvableSumTree)` is insertable in
-    /// sum-bearing parents and suppresses sum propagation while counts
-    /// still propagate. (PCPS is both count- AND sum-bearing, so it
-    /// qualifies as both NotSummed inner and as NotSummed parent.)
+    ///    sum-bearing parents and suppresses sum propagation while counts
+    ///    still propagate. (PCPS is both count- AND sum-bearing, so it
+    ///    qualifies as both NotSummed inner and as NotSummed parent.)
     #[test]
     fn not_summed_pcps_inserts_into_pcps_parent_and_zeros_sum_contribution() {
         let grove_version = GroveVersion::latest();
@@ -1294,10 +1294,10 @@ mod tests {
         };
         let leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF")
             .lower_layers
-            .get_mut(&b"pcps".to_vec())
+            .get_mut(b"pcps".as_slice())
             .expect("pcps");
         leaf_layer.merk_proof = ProofBytes::MMR(vec![0u8; 8]);
 
@@ -1343,9 +1343,9 @@ mod tests {
         };
         let test_leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF");
-        let removed = test_leaf_layer.lower_layers.remove(&b"pcps".to_vec());
+        let removed = test_leaf_layer.lower_layers.remove(b"pcps".as_slice());
         assert!(removed.is_some(), "test setup: pcps layer should exist");
 
         let reencoded = reencode_combined_envelope(decoded);
@@ -1394,7 +1394,7 @@ mod tests {
         };
         let test_leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF");
         test_leaf_layer.lower_layers.insert(
             b"intruder".to_vec(),
@@ -1445,11 +1445,11 @@ mod tests {
         };
         let test_leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF");
         let pcps_layer = test_leaf_layer
             .lower_layers
-            .remove(&b"pcps".to_vec())
+            .remove(b"pcps".as_slice())
             .expect("pcps should be present");
         test_leaf_layer
             .lower_layers
@@ -1500,10 +1500,10 @@ mod tests {
         };
         let leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF")
             .lower_layers
-            .get_mut(&b"pcps".to_vec())
+            .get_mut(b"pcps".as_slice())
             .expect("pcps");
         leaf_layer.lower_layers.insert(
             b"dangling".to_vec(),
@@ -1560,10 +1560,10 @@ mod tests {
         };
         let leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF")
             .lower_layers
-            .get_mut(&b"pcps".to_vec())
+            .get_mut(b"pcps".as_slice())
             .expect("pcps");
 
         let mut ops: LinkedList<Op> = LinkedList::new();
@@ -1614,7 +1614,7 @@ mod tests {
         };
         let test_leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF");
         match &mut test_leaf_layer.merk_proof {
             ProofBytes::Merk(b) => {
@@ -2004,7 +2004,7 @@ mod tests {
         };
         let test_leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF");
         let bytes = match &mut test_leaf_layer.merk_proof {
             ProofBytes::Merk(b) => b,
@@ -2107,7 +2107,7 @@ mod tests {
         };
         let test_leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF");
         let bytes = match &mut test_leaf_layer.merk_proof {
             ProofBytes::Merk(b) => b,
@@ -2257,7 +2257,7 @@ mod tests {
     /// Three-layer happy path: TEST_LEAF → outer Tree → pcps PCPS.
     /// The combined-aggregate verifier walks both non-leaf layers
     /// (TEST_LEAF and outer) via `verify_single_key_layer_proof_v0`
-    /// + `enforce_lower_chain` and then verifies the leaf merk proof
+    /// plus `enforce_lower_chain` and then verifies the leaf merk proof
     /// for the PCPS host. This exercises the happy-path branches of
     /// both helpers across multiple chain hops — counts and sums
     /// must equal the actual contents of the leaf merk.
@@ -2411,7 +2411,7 @@ mod tests {
         };
         let test_leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF");
         let bytes = match &mut test_leaf_layer.merk_proof {
             ProofBytes::Merk(b) => b,
@@ -2542,7 +2542,7 @@ mod tests {
         };
         let test_leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF");
         let bytes = match &mut test_leaf_layer.merk_proof {
             ProofBytes::Merk(b) => b,

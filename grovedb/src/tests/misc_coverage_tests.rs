@@ -2966,11 +2966,13 @@ fn batch_worst_case_insert_count_tree_cost() {
 fn batch_average_case_insert_only_item_cost() {
     let grove_version = GroveVersion::latest();
 
-    let ops = vec![QualifiedGroveDbOp::insert_only_op(
-        vec![],
-        b"insert_only_key".to_vec(),
-        Element::new_item(b"insert_only_value".to_vec()),
-    )];
+    let ops = vec![
+        QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+            vec![],
+            b"insert_only_key".to_vec(),
+            Element::new_item(b"insert_only_value".to_vec()),
+        ),
+    ];
 
     let mut paths = HashMap::new();
     paths.insert(
@@ -3003,11 +3005,13 @@ fn batch_average_case_insert_only_item_cost() {
 fn batch_worst_case_insert_only_item_cost() {
     let grove_version = GroveVersion::latest();
 
-    let ops = vec![QualifiedGroveDbOp::insert_only_op(
-        vec![],
-        b"insert_only_key".to_vec(),
-        Element::new_item(b"insert_only_value".to_vec()),
-    )];
+    let ops = vec![
+        QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+            vec![],
+            b"insert_only_key".to_vec(),
+            Element::new_item(b"insert_only_value".to_vec()),
+        ),
+    ];
 
     let mut paths = HashMap::new();
     paths.insert(
@@ -3036,11 +3040,13 @@ fn batch_worst_case_insert_only_item_cost() {
 fn batch_average_case_insert_if_not_exists_item_cost() {
     let grove_version = GroveVersion::latest();
 
-    let ops_insert_only = vec![QualifiedGroveDbOp::insert_only_op(
-        vec![],
-        b"key1".to_vec(),
-        Element::new_item(b"value1".to_vec()),
-    )];
+    let ops_insert_only = vec![
+        QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+            vec![],
+            b"key1".to_vec(),
+            Element::new_item(b"value1".to_vec()),
+        ),
+    ];
 
     let ops_if_not_exists = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
         vec![],
@@ -3101,11 +3107,13 @@ fn batch_average_case_insert_if_not_exists_item_cost() {
 fn batch_worst_case_insert_if_not_exists_item_cost() {
     let grove_version = GroveVersion::latest();
 
-    let ops_insert_only = vec![QualifiedGroveDbOp::insert_only_op(
-        vec![],
-        b"key1".to_vec(),
-        Element::new_item(b"value1".to_vec()),
-    )];
+    let ops_insert_only = vec![
+        QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+            vec![],
+            b"key1".to_vec(),
+            Element::new_item(b"value1".to_vec()),
+        ),
+    ];
 
     let ops_if_not_exists = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
         vec![],

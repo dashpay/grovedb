@@ -629,7 +629,7 @@ mod tests {
 
     #[test]
     fn is_sync_completed_returns_false_before_any_sync() {
-        let grove_version = GroveVersion::latest();
+        let _grove_version = GroveVersion::latest();
         let dest = make_empty_grovedb();
         let session = crate::replication::MultiStateSyncSession::new(&dest, [0u8; 32], 64);
         assert!(

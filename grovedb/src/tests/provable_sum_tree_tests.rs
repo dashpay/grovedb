@@ -27,8 +27,8 @@ mod tests {
     use crate::{tests::make_test_grovedb, Element};
 
     /// 1. Round-trip a `ProvableSumTree`: insert it, populate with mixed
-    /// `SumItem` children, read back the parent and verify its tracked
-    /// `sum_value` matches the running sum of inserted children.
+    ///    `SumItem` children, read back the parent and verify its tracked
+    ///    `sum_value` matches the running sum of inserted children.
     #[test]
     fn provable_sum_tree_round_trip_tracks_aggregate_sum() {
         let grove_version = GroveVersion::latest();
@@ -99,7 +99,7 @@ mod tests {
     }
 
     /// 2. Aggregate propagation across positive, negative, zero, and the
-    /// extremes of `i64`. We test ranges that won't overflow.
+    ///    extremes of `i64`. We test ranges that won't overflow.
     #[test]
     fn provable_sum_tree_aggregate_negatives_and_zeros() {
         let grove_version = GroveVersion::latest();
@@ -186,8 +186,8 @@ mod tests {
     }
 
     /// 3. `ProvableSumTree` root hash diverges from a plain `SumTree` with
-    /// identical children. This is the hash-binding cornerstone: the sum
-    /// is part of the node hash.
+    ///    identical children. This is the hash-binding cornerstone: the sum
+    ///    is part of the node hash.
     #[test]
     fn provable_sum_tree_hash_diverges_from_sum_tree() {
         let grove_version = GroveVersion::latest();
@@ -291,8 +291,8 @@ mod tests {
     }
 
     /// 4. Nested `ProvableSumTree[A] -> ProvableSumTree[B] -> SumItems`:
-    /// B's aggregate propagates up into A's aggregate, and A's root hash
-    /// includes A's aggregate (which transitively reflects B's children).
+    ///    B's aggregate propagates up into A's aggregate, and A's root hash
+    ///    includes A's aggregate (which transitively reflects B's children).
     #[test]
     fn nested_provable_sum_trees_propagate_aggregate_upward() {
         let grove_version = GroveVersion::latest();
@@ -551,8 +551,8 @@ mod tests {
     }
 
     /// 6. Mutating the sum (deleting a SumItem child) changes the root
-    /// hash of the ProvableSumTree because the aggregate sum is bound into
-    /// the node hash.
+    ///    hash of the ProvableSumTree because the aggregate sum is bound into
+    ///    the node hash.
     #[test]
     fn deleting_sum_item_changes_provable_sum_tree_root_hash() {
         let grove_version = GroveVersion::latest();
@@ -608,11 +608,11 @@ mod tests {
     }
 
     /// 7. Directly insert a non-empty `ProvableSumTree` element pointing at
-    /// an existing root key. Mirrors the existing
-    /// `ProvableCountTree` direct-insert behavior — when no state exists,
-    /// the insert is structurally accepted but corresponds to an empty
-    /// Merk. Most importantly, the direct-insert path does not panic
-    /// and the read path returns the value back faithfully.
+    ///    an existing root key. Mirrors the existing
+    ///    `ProvableCountTree` direct-insert behavior — when no state exists,
+    ///    the insert is structurally accepted but corresponds to an empty
+    ///    Merk. Most importantly, the direct-insert path does not panic
+    ///    and the read path returns the value back faithfully.
     #[test]
     fn direct_insert_provable_sum_tree_with_root_key_and_sum() {
         let grove_version = GroveVersion::latest();
@@ -652,7 +652,7 @@ mod tests {
             .unwrap()
             .expect("get template");
         let (captured_root_key, captured_sum) = match template {
-            Element::ProvableSumTree(root_key, sum, flags) => {
+            Element::ProvableSumTree(root_key, sum, _flags) => {
                 assert!(root_key.is_some());
                 assert_eq!(sum, 6);
                 (root_key, sum)

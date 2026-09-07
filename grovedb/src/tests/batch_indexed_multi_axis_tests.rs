@@ -1311,10 +1311,7 @@ mod tests {
                 .collect();
             seeds.swap(3, 20);
             seeds.swap(7, 15);
-            for (child, sum) in [(b"k0".to_vec(), 29i64)]
-                .into_iter()
-                .chain(seeds.into_iter())
-            {
+            for (child, sum) in [(b"k0".to_vec(), 29i64)].into_iter().chain(seeds) {
                 let child = child.as_slice();
                 db.insert_into_provable_count_provable_sum_indexed_tree(
                     [TEST_LEAF, b"idx"].as_ref(),
