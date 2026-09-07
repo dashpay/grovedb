@@ -120,10 +120,10 @@ pub(crate) fn axis_secondary_tree_type(axis: IndexAxis) -> TreeType {
 /// single implicit axis for PCIT / PSIT, the 1..=3 entry TLV for PCPSIT.
 ///
 /// Errors if `element` is not an indexed-tree variant or a PCPSIT axis tag
-/// is invalid. The one intentional non-caller is
-/// `cleanup_dedicated_indexed_child_storage`, which must stay tolerant of
-/// an invalid tag (cleanup of a corrupt element should still clear the
-/// valid axes rather than fail).
+/// is invalid. The one intentional non-caller is the storage cleanup path
+/// (`GroveDb::clear_subtree_storage_recursively`), which sweeps all three
+/// axis namespaces unconditionally instead of decoding the TLV — cleanup
+/// of a corrupt element must still clear every axis rather than fail.
 pub(crate) fn indexed_element_axes(
     element: &Element,
 ) -> Result<Vec<(IndexAxis, Option<Vec<u8>>)>, Error> {
@@ -490,9 +490,13 @@ impl GroveDb {
     /// child orphans the child's storage namespace — the entry is gone
     /// from the primary Merk but its descendants still occupy storage
     /// and resurface to `verify_grovedb`'s raw_iter pass (and to a
-    /// future insert at the same key). For an indexed-tree child the
-    /// per-axis secondary namespaces at `Blake3(primary_prefix ‖
-    /// axis_tag)` must be cleared too.
+    /// future insert at the same key). The shared recursive cleanup
+    /// also sweeps the per-axis secondary namespaces at
+    /// `Blake3(prefix ‖ axis_tag)` for every discovered subtree —
+    /// covering an indexed-tree `existing` child itself and any nested
+    /// indexed primary deeper inside it (issue #888). The all-axis
+    /// sweep never decodes the (possibly corrupt) element's axes TLV,
+    /// so cleanup of a corrupt element still clears every axis.
     fn cleanup_dedicated_indexed_child_storage<'db, 'b, B: AsRef<[u8]>>(
         &'db self,
         existing: &Element,
@@ -501,68 +505,18 @@ impl GroveDb {
         batch: &'db StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
+        let cost = OperationCost::default();
         if !existing.is_any_tree() {
             return Ok(()).wrap_with_cost(cost);
         }
-        // Recursively clear all primary subtree storage under entry_path.
-        let subtrees_paths = cost_return_on_error!(
-            &mut cost,
-            self.find_subtrees(&entry_path, Some(transaction), grove_version)
-        );
-        for subtree_path in subtrees_paths {
-            let p: SubtreePath<_> = subtree_path.as_slice().into();
-            let mut storage = self
-                .db
-                .get_transactional_storage_context(p, Some(batch), transaction)
-                .unwrap_add_cost(&mut cost);
-            cost_return_on_error!(
-                &mut cost,
-                storage.clear().map_err(|e| {
-                    Error::CorruptedData(format!(
-                        "unable to clean up old subtree storage in dedicated indexed-tree \
-                         overwrite/delete: {e}",
-                    ))
-                })
-            );
-        }
-        // Clear the per-axis secondary namespaces for indexed primaries.
-        let axes: Vec<IndexAxis> = match existing.underlying() {
-            Element::ProvableCountIndexedTree(..) => vec![IndexAxis::Count],
-            Element::ProvableSumIndexedTree(..) => vec![IndexAxis::Sum],
-            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes_tlv, _) => axes_tlv
-                .iter()
-                .filter_map(|(tag, _)| IndexAxis::try_from_tag(*tag).ok())
-                .collect(),
-            _ => Vec::new(),
-        };
-        if !axes.is_empty() {
-            let primary_prefix =
-                RocksDbStorage::build_prefix(entry_path.clone()).unwrap_add_cost(&mut cost);
-            for axis in axes {
-                let secondary_prefix =
-                    RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
-                        .unwrap_add_cost(&mut cost);
-                let mut secondary_storage = self
-                    .db
-                    .get_transactional_storage_context_by_subtree_prefix(
-                        secondary_prefix,
-                        Some(batch),
-                        transaction,
-                    )
-                    .unwrap_add_cost(&mut cost);
-                cost_return_on_error!(
-                    &mut cost,
-                    secondary_storage.clear().map_err(|e| {
-                        Error::CorruptedData(format!(
-                            "unable to clean up indexed secondary (axis {axis:?}) during \
-                             dedicated indexed-tree overwrite/delete: {e}",
-                        ))
-                    })
-                );
-            }
-        }
-        Ok(()).wrap_with_cost(cost)
+        self.clear_subtree_storage_recursively(
+            &entry_path,
+            transaction,
+            batch,
+            "dedicated indexed-tree overwrite/delete",
+            grove_version,
+        )
+        .add_cost(cost)
     }
 
     /// Validate that `path` names an indexed primary of the expected variant,

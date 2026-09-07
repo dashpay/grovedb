@@ -6761,8 +6761,11 @@ impl GroveDb {
         // Clean up storage for deleted standard Merk subtrees.
         // The parent key has been removed from the parent Merk by apply_body,
         // but the child subtree's storage (and any nested subtrees) remains.
-        // We use find_subtrees to recursively discover all nested subtrees
-        // and clear their storage, matching the non-batch delete behavior.
+        // The shared recursive cleanup discovers all nested subtrees via
+        // find_subtrees and clears each one's primary namespace AND its
+        // per-axis indexed-tree secondary namespaces (issue #888 — a nested
+        // indexed primary's secondaries live outside the path-prefix walk),
+        // matching the non-batch delete behavior.
         //
         // NOTE: find_subtrees reads from the committed transaction state
         // (without the pending storage_batch), so any subtrees *inserted*
@@ -6774,25 +6777,16 @@ impl GroveDb {
         // BatchApplyOptions::disable_operation_consistency_check.
         for child_path in &merk_delete_paths {
             let child_subtree_path: SubtreePath<Vec<u8>> = child_path.as_slice().into();
-            let subtrees_paths = cost_return_on_error!(
+            cost_return_on_error!(
                 &mut cost,
-                self.find_subtrees(&child_subtree_path, Some(tx.as_ref()), grove_version)
+                self.clear_subtree_storage_recursively(
+                    &child_subtree_path,
+                    tx.as_ref(),
+                    &storage_batch,
+                    "batch delete",
+                    grove_version,
+                )
             );
-            for subtree_path in subtrees_paths {
-                let p: SubtreePath<_> = subtree_path.as_slice().into();
-                let mut storage = self
-                    .db
-                    .get_transactional_storage_context(p, Some(&storage_batch), tx.as_ref())
-                    .unwrap_add_cost(&mut cost);
-                cost_return_on_error!(
-                    &mut cost,
-                    storage.clear().map_err(|e| {
-                        Error::CorruptedData(format!(
-                            "unable to clean up merk subtree storage in batch delete: {e}",
-                        ))
-                    })
-                );
-            }
         }
 
         // Indexed-tree secondary cleanup. find_subtrees walks the
@@ -6849,66 +6843,24 @@ impl GroveDb {
         // (parent_path + cidx_key).
         for cidx_path in &cidx_overwrite_cleanup_paths {
             let cidx_subtree_path: SubtreePath<Vec<u8>> = cidx_path.as_slice().into();
-            // Clear all primary subtree storage recursively via
-            // find_subtrees (same walk as DeleteTree cleanup above).
-            let subtrees_paths = cost_return_on_error!(
+            // Clear all primary subtree storage recursively (same walk as
+            // the DeleteTree cleanup above), sweeping every discovered
+            // subtree's per-axis secondary namespaces too — this covers
+            // both the replaced cidx's own secondaries (find_subtrees
+            // includes the root path itself) and any nested indexed
+            // primary inside it (issue #888). Sweeping all three axes is
+            // safe: clear on empty is a no-op, so this also works for
+            // PCIT-only overwrites (the sum / avg slots are empty).
+            cost_return_on_error!(
                 &mut cost,
-                self.find_subtrees(&cidx_subtree_path, Some(tx.as_ref()), grove_version)
+                self.clear_subtree_storage_recursively(
+                    &cidx_subtree_path,
+                    tx.as_ref(),
+                    &storage_batch,
+                    "batch overwrite",
+                    grove_version,
+                )
             );
-            for subtree_path in subtrees_paths {
-                let p: SubtreePath<_> = subtree_path.as_slice().into();
-                let mut storage = self
-                    .db
-                    .get_transactional_storage_context(p, Some(&storage_batch), tx.as_ref())
-                    .unwrap_add_cost(&mut cost);
-                cost_return_on_error!(
-                    &mut cost,
-                    storage.clear().map_err(|e| {
-                        Error::CorruptedData(format!(
-                            "unable to clean up cidx primary subtree storage in batch \
-                             overwrite: {e}",
-                        ))
-                    })
-                );
-            }
-            // Clear the per-axis secondary namespaces at
-            // Blake3(primary ‖ axis_tag). Sweep all three axes — clear
-            // on empty is a no-op, so this also works for PCIT-only
-            // overwrites (the sum / avg slots are empty).
-            let primary_prefix = grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(
-                cidx_subtree_path.clone(),
-            )
-            .unwrap_add_cost(&mut cost);
-            for axis in [
-                grovedb_element::indexed::IndexAxis::Count,
-                grovedb_element::indexed::IndexAxis::Sum,
-                grovedb_element::indexed::IndexAxis::Avg,
-            ] {
-                let secondary_prefix =
-                    grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
-                        &primary_prefix,
-                        axis.tag(),
-                    )
-                    .unwrap_add_cost(&mut cost);
-                let mut secondary_storage = self
-                    .db
-                    .get_transactional_storage_context_by_subtree_prefix(
-                        secondary_prefix,
-                        Some(&storage_batch),
-                        tx.as_ref(),
-                    )
-                    .unwrap_add_cost(&mut cost);
-                cost_return_on_error!(
-                    &mut cost,
-                    secondary_storage.clear().map_err(|e| {
-                        Error::CorruptedData(format!(
-                            "unable to clean up indexed-tree secondary (axis {:?}) storage \
-                             in batch overwrite: {e}",
-                            axis
-                        ))
-                    })
-                );
-            }
         }
 
         // TODO: compute batch costs
@@ -7570,25 +7522,16 @@ impl GroveDb {
         // BatchApplyOptions::disable_operation_consistency_check.
         for child_path in &merk_delete_paths {
             let child_subtree_path: SubtreePath<Vec<u8>> = child_path.as_slice().into();
-            let subtrees_paths = cost_return_on_error!(
+            cost_return_on_error!(
                 &mut cost,
-                self.find_subtrees(&child_subtree_path, Some(tx.as_ref()), grove_version)
+                self.clear_subtree_storage_recursively(
+                    &child_subtree_path,
+                    tx.as_ref(),
+                    &storage_batch,
+                    "batch delete",
+                    grove_version,
+                )
             );
-            for subtree_path in subtrees_paths {
-                let p: SubtreePath<_> = subtree_path.as_slice().into();
-                let mut storage = self
-                    .db
-                    .get_transactional_storage_context(p, Some(&storage_batch), tx.as_ref())
-                    .unwrap_add_cost(&mut cost);
-                cost_return_on_error!(
-                    &mut cost,
-                    storage.clear().map_err(|e| {
-                        Error::CorruptedData(format!(
-                            "unable to clean up merk subtree storage in batch delete: {e}",
-                        ))
-                    })
-                );
-            }
         }
 
         // Indexed-tree secondary cleanup (parallels the
@@ -7641,60 +7584,20 @@ impl GroveDb {
             .collect();
         for cidx_path in all_cidx_overwrite_paths {
             let cidx_subtree_path: SubtreePath<Vec<u8>> = cidx_path.as_slice().into();
-            let subtrees_paths = cost_return_on_error!(
+            // Shared recursive cleanup: primary namespaces plus per-axis
+            // secondaries for every discovered subtree, covering the
+            // replaced cidx itself and any nested indexed primary inside
+            // it (issue #888).
+            cost_return_on_error!(
                 &mut cost,
-                self.find_subtrees(&cidx_subtree_path, Some(tx.as_ref()), grove_version)
+                self.clear_subtree_storage_recursively(
+                    &cidx_subtree_path,
+                    tx.as_ref(),
+                    &storage_batch,
+                    "batch overwrite",
+                    grove_version,
+                )
             );
-            for subtree_path in subtrees_paths {
-                let p: SubtreePath<_> = subtree_path.as_slice().into();
-                let mut storage = self
-                    .db
-                    .get_transactional_storage_context(p, Some(&storage_batch), tx.as_ref())
-                    .unwrap_add_cost(&mut cost);
-                cost_return_on_error!(
-                    &mut cost,
-                    storage.clear().map_err(|e| {
-                        Error::CorruptedData(format!(
-                            "unable to clean up cidx primary subtree storage in batch \
-                             overwrite: {e}",
-                        ))
-                    })
-                );
-            }
-            let primary_prefix = grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(
-                cidx_subtree_path.clone(),
-            )
-            .unwrap_add_cost(&mut cost);
-            for axis in [
-                grovedb_element::indexed::IndexAxis::Count,
-                grovedb_element::indexed::IndexAxis::Sum,
-                grovedb_element::indexed::IndexAxis::Avg,
-            ] {
-                let secondary_prefix =
-                    grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
-                        &primary_prefix,
-                        axis.tag(),
-                    )
-                    .unwrap_add_cost(&mut cost);
-                let mut secondary_storage = self
-                    .db
-                    .get_transactional_storage_context_by_subtree_prefix(
-                        secondary_prefix,
-                        Some(&storage_batch),
-                        tx.as_ref(),
-                    )
-                    .unwrap_add_cost(&mut cost);
-                cost_return_on_error!(
-                    &mut cost,
-                    secondary_storage.clear().map_err(|e| {
-                        Error::CorruptedData(format!(
-                            "unable to clean up indexed-tree secondary (axis {:?}) storage \
-                             in batch overwrite: {e}",
-                            axis
-                        ))
-                    })
-                );
-            }
         }
 
         // let's build the write batch
