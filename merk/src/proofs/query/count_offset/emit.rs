@@ -13,7 +13,10 @@
 //!   single `HashWithCount` and subtract the subtree's count from
 //!   offset_remaining. Whole-subtree skip pays O(log n) proof size for
 //!   O(subtree_count) skipped items — the central optimization this
-//!   module exists for.
+//!   module exists for. Before collapsing, the prover walks the subtree
+//!   and refuses unless every row contributes exactly one count unit,
+//!   so the count it consumes equals the rows ordinary pagination
+//!   would skip (`ensure_every_row_is_a_unit`, issue #864).
 //! - **Contained** with `offset_remaining == 0 && limit_remaining ==
 //!   Some(0)` → past limit. Emit a single `HashWithCount` to bind the
 //!   structural count without emitting any items.
@@ -42,7 +45,9 @@
 
 use std::collections::LinkedList;
 
-use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
 use grovedb_element::{Element, ElementType, ProofNodeType};
 use grovedb_version::version::GroveVersion;
 
@@ -129,17 +134,19 @@ where
     // self-verifying `HashWithCount` op.
     //
     //   Disjoint                                       → always collapse
-    //   Contained + sub ≤ offset_remaining             → collapse, offset −= sub
     //   Contained + offset == 0 && limit_remaining == 0 → collapse
+    //   Contained + sub ≤ offset_remaining             → collapse, offset −= sub
     //
     // Anything else falls through to per-element descent below.
     let collapse_action = match class {
         SubtreeClassification::Disjoint => Some(CollapseAction::Disjoint),
         SubtreeClassification::Contained => {
-            if subtree_count <= state.offset_remaining {
-                Some(CollapseAction::SkippedByOffset)
-            } else if state.offset_remaining == 0 && state.limit_remaining == Some(0) {
+            // A zero-count subtree also fits a zero remaining offset, but
+            // after the page is complete it must be exempt from skip validation.
+            if state.offset_remaining == 0 && state.limit_remaining == Some(0) {
                 Some(CollapseAction::PastLimit)
+            } else if subtree_count <= state.offset_remaining {
+                Some(CollapseAction::SkippedByOffset)
             } else {
                 None
             }
@@ -148,6 +155,26 @@ where
     };
 
     if let Some(action) = collapse_action {
+        // An offset-skipped collapse consumes `subtree_count` units of
+        // offset, but ordinary pagination skips *rows*. The two agree
+        // only when every row in the subtree contributes exactly one
+        // count unit. A nested count-bearing tree (`CountTree`,
+        // `ProvableCountTree`, ... — the shape Platform's
+        // `range_countable` indexes use) contributes its own aggregate
+        // count instead: 0 when empty, N when it holds N descendants.
+        // Collapsing over such a row would skip N rows' worth of offset
+        // for one physical row and hand back a different page than the
+        // trusted read, while the count commitment stays perfectly
+        // valid — the verifier cannot see inside a `HashWithCount`.
+        // So before collapsing we walk the subtree and refuse unless
+        // every row is a unit row (issue #864). Disjoint and past-limit
+        // collapses never touch the offset budget, so they are exempt.
+        if matches!(action, CollapseAction::SkippedByOffset) {
+            cost_return_on_error!(
+                &mut cost,
+                ensure_every_row_is_a_unit(walker, subtree_count, grove_version)
+            );
+        }
         // Emit one collapsed-subtree op. The four (or five for dual-axis)
         // committed fields recompute the parent's hashing function;
         // tampering with the count (or sum) fails the parent's hash check.
@@ -251,12 +278,17 @@ where
     // GroveDB query semantics. Three cases, each pinned to a finding
     // in the PR review:
     //
-    //   • **NonCounted-wrapped in-range entry** (`own_struct == 0`):
-    //     regular GroveDB returns the NonCounted item's value; the
-    //     current count-offset flow has no way to emit it (the proof's
-    //     `KVDigestCount` carries only the key/hash, not the value).
-    //     Silently dropping it would be a correctness divergence — we
-    //     reject upfront instead.
+    //   • **Non-unit row** (`own_struct > 1`, in range or not): a nested
+    //     count-bearing tree. See `non_unit_row_error` and the
+    //     pre-collapse walk above (issue #864).
+    //
+    //   • **Zero-unit in-range entry** (`own_struct == 0`): a
+    //     NonCounted-wrapped entry or an empty count-bearing tree.
+    //     Regular GroveDB returns it as a row; the current count-offset
+    //     flow has no way to emit it (the proof's `KVDigestCount`
+    //     carries only the key/hash, not the value). Silently dropping
+    //     it would be a correctness divergence — we reject upfront
+    //     instead.
     //
     //   • **Non-empty tree** in-range entry: V1 strict-mode requires a
     //     `KVValueHashFeatureTypeWithChildHash` proof node for these,
@@ -280,15 +312,28 @@ where
     // Lifting the remaining rejection is straightforward future work:
     // emit the appropriate node variant and update the verifier
     // symmetrically.
+    if own_struct > 1 {
+        // A nested count-bearing tree holding `own_struct` descendants.
+        // In range, regular pagination treats it as one row while the
+        // count axis treats it as `own_struct` — the same divergence the
+        // pre-collapse walk refuses, met here on descent. Out of range
+        // it is only a path row, but the verifier derives `own_count`
+        // for every descended row and rejects anything above one, so
+        // emitting it would only produce an unverifiable proof. Refuse
+        // up front in both cases.
+        return Err(non_unit_row_error(&node_key, own_struct)).wrap_with_cost(cost);
+    }
+
     if is_in_range {
         if own_struct == 0 {
-            return Err(Error::InvalidProofError(
-                "count-offset paginated proofs do not yet support NonCounted-wrapped \
-                 in-range entries (regular GroveDB query semantics return their values, \
-                 but this proof flow has no way to emit those without changing the wire \
-                 format)"
-                    .to_string(),
-            ))
+            return Err(Error::InvalidProofError(format!(
+                "count-offset paginated proofs require every in-range row to contribute \
+                 exactly one count unit, but the row at key {} contributes zero (a \
+                 NonCounted-wrapped entry or an empty count-bearing tree) — regular \
+                 GroveDB pagination counts it as one row, and this proof flow has no way \
+                 to emit it without changing the wire format",
+                hex::encode(&node_key)
+            )))
             .wrap_with_cost(cost);
         }
         let value_bytes = walker.tree().value_as_slice();
@@ -496,6 +541,100 @@ where
     let _ = (left_link_count, right_link_count);
 
     Ok(node_count).wrap_with_cost(cost)
+}
+
+/// Walk the subtree under `walker` and confirm every row contributes
+/// exactly one count unit, i.e. the subtree's aggregate count equals its
+/// physical row count. Called before an offset-skipped collapse so the
+/// `HashWithCount(count)` the prover is about to emit consumes exactly
+/// as many rows of offset as regular pagination would skip.
+///
+/// `subtree_count` is the aggregate already read for the subtree root.
+/// Each node's own contribution is `aggregate − left − right`; a
+/// non-unit contribution comes from a nested count-bearing tree (its
+/// own aggregate count, 0 when empty) or a `NonCounted`-style wrapper.
+/// The walk reads every node in the subtree, so it costs O(skipped)
+/// node loads — the same I/O the trusted read pays to skip those rows —
+/// while the emitted proof stays a single op.
+fn ensure_every_row_is_a_unit<S>(
+    walker: &mut RefWalker<'_, S>,
+    subtree_count: u64,
+    grove_version: &GroveVersion,
+) -> CostResult<(), Error>
+where
+    S: Fetch + Sized + Clone,
+{
+    let mut cost = OperationCost::default();
+
+    let left_count: u64 = walker
+        .tree()
+        .link(true)
+        .map(|l| l.aggregate_data().as_count_u64())
+        .unwrap_or(0);
+    let right_count: u64 = walker
+        .tree()
+        .link(false)
+        .map(|l| l.aggregate_data().as_count_u64())
+        .unwrap_or(0);
+    // The subtraction cannot underflow on a tree whose link aggregates
+    // are consistent with its node aggregate; the error is built eagerly
+    // rather than in a closure so the guard leaves no unreachable region.
+    let own = cost_return_on_error_no_add!(
+        cost,
+        subtree_count
+            .checked_sub(left_count)
+            .and_then(|c| c.checked_sub(right_count))
+            .ok_or(Error::CorruptedState(
+                "count-offset proof: child aggregate counts exceed the parent's aggregate",
+            ))
+    );
+    if own != 1 {
+        return Err(non_unit_row_error(walker.tree().key(), own)).wrap_with_cost(cost);
+    }
+
+    for (left, child_count) in [(true, left_count), (false, right_count)] {
+        if walker.tree().link(left).is_none() {
+            continue;
+        }
+        let walked = cost_return_on_error!(
+            &mut cost,
+            walker.walk(
+                left,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+        );
+        // `walk` returns `None` only for a missing link, ruled out just
+        // above; same eager-error shape as the `own` guard.
+        let mut child = cost_return_on_error_no_add!(
+            cost,
+            walked.ok_or(Error::CorruptedState(
+                "tree.link(dir) was Some but walk returned None",
+            ))
+        );
+        cost_return_on_error!(
+            &mut cost,
+            ensure_every_row_is_a_unit(&mut child, child_count, grove_version)
+        );
+    }
+
+    Ok(()).wrap_with_cost(cost)
+}
+
+/// The refusal surfaced when a row the proof skips or descends through
+/// contributes `own` count units instead of one. Shared by the
+/// pre-collapse walk and the descended-row check so callers see one
+/// message.
+fn non_unit_row_error(key: &[u8], own: u64) -> Error {
+    Error::InvalidProofError(format!(
+        "count-offset paginated proofs require every row they skip or descend through to \
+         contribute exactly one count unit, but the row at key {} contributes {} — a \
+         nested count-bearing tree contributes its own aggregate count, while regular \
+         pagination counts it as one row, so this page cannot be proved without diverging \
+         from the trusted read",
+        hex::encode(key),
+        own
+    ))
 }
 
 /// Classify why we're collapsing a subtree into a single

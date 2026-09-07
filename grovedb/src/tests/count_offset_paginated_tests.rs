@@ -1571,6 +1571,300 @@ mod tests {
         assert_eq!(items[0].1, b"b".to_vec());
     }
 
+    // ─── Issue #864: nested count-bearing rows vs row pagination ────
+    //
+    // A `CountTree` (or any count-bearing tree) stored inside a
+    // `ProvableCountTree` contributes its own aggregate count to the
+    // parent — 0 when empty, N when it holds N descendants — but is one
+    // row to ordinary pagination. Platform's `range_countable` indexes
+    // use exactly this layout, so it cannot be banned at insert time.
+    // A collapsed `HashWithCount` commits nothing about physical row
+    // count, so the prover must refuse to collapse an offset-skipped
+    // subtree unless every row in it contributes exactly one unit.
+
+    /// Build `counts` (a `ProvableCountTree`) holding keys "a".."g"; every
+    /// key is an `Item` except `nested_key`, which is a `CountTree`
+    /// populated with `nested_rows` items. The seven host rows go in as
+    /// ONE batch so the merk builds the balanced tree from the sorted
+    /// batch — "d" at the root over b(a,c) and f(e,g) — and the fixture
+    /// asserts that root so a collapse-vs-descent expectation below can
+    /// never silently drift with the AVL shape.
+    fn make_host_with_nested_count_tree(
+        nested_key: u8,
+        nested_rows: u8,
+        grove_version: &GroveVersion,
+    ) -> crate::tests::TempGroveDb {
+        use crate::batch::QualifiedGroveDbOp;
+
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            &[] as &[&[u8]],
+            b"counts",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert host");
+        let ops = (b'a'..=b'g')
+            .map(|k| {
+                let element = if k == nested_key {
+                    Element::empty_count_tree()
+                } else {
+                    Element::new_item(vec![k])
+                };
+                QualifiedGroveDbOp::insert_or_replace_op(vec![b"counts".to_vec()], vec![k], element)
+            })
+            .collect();
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("insert host rows");
+        {
+            let tx = db.start_transaction();
+            let merk = db
+                .open_transactional_merk_at_path(
+                    [b"counts".as_slice()].as_slice().into(),
+                    &tx,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("open host merk");
+            assert_eq!(
+                merk.root_key(),
+                Some(b"d".to_vec()),
+                "fixture relies on the balanced batch shape rooted at d"
+            );
+        }
+        for i in 0..nested_rows {
+            db.insert(
+                [b"counts".as_slice(), [nested_key].as_slice()].as_slice(),
+                &[b'0' + i],
+                Element::new_item(vec![i]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate nested count tree");
+        }
+        db
+    }
+
+    /// A `RangeFull` page over the host. The unbounded range is what
+    /// lets the root's child subtrees classify as Contained (a bounded
+    /// range such as a..=z leaves each child's key-space open on one
+    /// side, so it is Boundary and always descended); Contained is the
+    /// only classification the offset collapse fires on.
+    fn full_range_page(limit: Option<u16>, offset: u16, left_to_right: bool) -> PathQuery {
+        let mut q = Query::new_with_direction(left_to_right);
+        q.insert_all();
+        PathQuery::new(
+            vec![b"counts".to_vec()],
+            SizedQuery::new(q, limit, Some(offset)),
+        )
+    }
+
+    /// Keys the trusted read returns for `path_query` — the row-based
+    /// pagination the proof must agree with.
+    fn raw_page_keys(
+        db: &crate::tests::TempGroveDb,
+        path_query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Vec<Vec<u8>> {
+        let (result, _) = db
+            .query_raw(
+                path_query,
+                true,
+                true,
+                true,
+                crate::query_result_type::QueryResultType::QueryKeyElementPairResultType,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("query_raw");
+        result.to_keys()
+    }
+
+    fn assert_prover_refuses_non_unit_row(
+        db: &crate::tests::TempGroveDb,
+        path_query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) {
+        let err = db
+            .prove_query(path_query, None, grove_version)
+            .unwrap()
+            .expect_err("prover must refuse a page whose offset region holds a non-unit row");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("exactly one count unit"),
+            "refusal should name the unit-row requirement; got {}",
+            msg
+        );
+    }
+
+    /// Ascending: "b" is a `CountTree` with 3 rows, so the left subtree
+    /// "a".."c" carries count 5 over 3 physical rows. Offset 5 collapses
+    /// it in one `HashWithCount(5)` and would return "d", while the
+    /// trusted read skips a,b,c,d,e and returns "f". The prover must
+    /// refuse instead of proving the divergent page. (Without the
+    /// pre-collapse walk this proof is produced and verifies.)
+    #[test]
+    fn nested_count_tree_in_skipped_prefix_is_refused_ascending() {
+        let v = GroveVersion::latest();
+        let db = make_host_with_nested_count_tree(b'b', 3, v);
+        let pq = full_range_page(Some(1), 5, true);
+        assert_eq!(raw_page_keys(&db, &pq, v), vec![b"f".to_vec()]);
+        assert_prover_refuses_non_unit_row(&db, &pq, v);
+    }
+
+    /// Descending mirror: "f" is the nested tree, the right subtree
+    /// "e".."g" carries count 5 over 3 rows. Offset 5 descending would
+    /// collapse it and return "d"; the trusted read returns "b".
+    #[test]
+    fn nested_count_tree_in_skipped_prefix_is_refused_descending() {
+        let v = GroveVersion::latest();
+        let db = make_host_with_nested_count_tree(b'f', 3, v);
+        let pq = full_range_page(Some(1), 5, false);
+        assert_eq!(raw_page_keys(&db, &pq, v), vec![b"b".to_vec()]);
+        assert_prover_refuses_non_unit_row(&db, &pq, v);
+    }
+
+    /// An EMPTY nested count tree contributes 0 units but is still one
+    /// row. The left subtree "a".."c" then carries count 2 over 3 rows:
+    /// offset 2 would collapse it and return "d" while the trusted read
+    /// skips a,b and returns "c".
+    #[test]
+    fn empty_nested_count_tree_in_skipped_prefix_is_refused() {
+        let v = GroveVersion::latest();
+        let db = make_host_with_nested_count_tree(b'b', 0, v);
+        let pq = full_range_page(Some(1), 2, true);
+        assert_eq!(raw_page_keys(&db, &pq, v), vec![b"c".to_vec()]);
+        assert_prover_refuses_non_unit_row(&db, &pq, v);
+        // Descending, the same empty row sits mid-walk and is met on
+        // descent rather than inside a collapse; still refused.
+        let pq_desc = full_range_page(Some(1), 5, false);
+        assert_eq!(raw_page_keys(&db, &pq_desc, v), vec![b"b".to_vec()]);
+        assert_prover_refuses_non_unit_row(&db, &pq_desc, v);
+    }
+
+    /// Offset past the population: every in-range subtree collapses. The
+    /// count axis would report 9 units skipped over 7 rows and an empty
+    /// page "past the end"; the trusted read also returns nothing, but the
+    /// skipped total the verifier surfaces would be wrong, so this is
+    /// refused too.
+    #[test]
+    fn truncated_offset_over_nested_count_tree_is_refused() {
+        let v = GroveVersion::latest();
+        let db = make_host_with_nested_count_tree(b'b', 3, v);
+        for ltr in [true, false] {
+            let pq = full_range_page(Some(2), 100, ltr);
+            assert!(raw_page_keys(&db, &pq, v).is_empty());
+            assert_prover_refuses_non_unit_row(&db, &pq, v);
+        }
+    }
+
+    /// The nested tree met on DESCENT (offset lands inside the subtree
+    /// that holds it) is refused as well, with the same message.
+    #[test]
+    fn nested_count_tree_met_on_descent_is_refused() {
+        let v = GroveVersion::latest();
+        let db = make_host_with_nested_count_tree(b'b', 3, v);
+        // Left subtree count 5 > offset 4, so the prover descends: "a"
+        // collapses (1 ≤ 4), then "b" contributes 3 → refused.
+        let pq = full_range_page(Some(1), 4, true);
+        assert_eq!(raw_page_keys(&db, &pq, v), vec![b"e".to_vec()]);
+        assert_prover_refuses_non_unit_row(&db, &pq, v);
+    }
+
+    /// A nested tree in a subtree OUTSIDE the range (Disjoint collapse)
+    /// or PAST the limit never touches the offset budget, so the proof is
+    /// served and agrees with the trusted read in both directions.
+    #[test]
+    fn nested_count_tree_outside_offset_region_still_proves_and_matches_raw() {
+        let v = GroveVersion::latest();
+
+        // Disjoint: the nested tree is the leaf "a"; range c.. leaves
+        // that leaf's whole key-space (everything below "b") out of
+        // range, so it collapses as Disjoint and is never walked, while
+        // the right subtree e..g is Contained and paginates normally.
+        let db_a = make_host_with_nested_count_tree(b'a', 3, v);
+        let mut q = Query::new();
+        q.insert_range_from(b"c".to_vec()..);
+        let pq = PathQuery::new(
+            vec![b"counts".to_vec()],
+            SizedQuery::new(q, Some(2), Some(2)),
+        );
+        let raw = raw_page_keys(&db_a, &pq, v);
+        assert_eq!(raw, vec![b"e".to_vec(), b"f".to_vec()]);
+        let proof = db_a.prove_query(&pq, None, v).unwrap().expect("prove");
+        let (root, proved) = GroveDb::verify_query_raw(&proof, &pq, v).expect("verify");
+        assert_eq!(root, db_a.root_hash(None, v).unwrap().unwrap());
+        assert_eq!(proved_keys(&proved), raw);
+
+        // Past limit, descending: the nested tree sits at "b". Offset 1
+        // limit 2 skips "g" and returns f, e; the whole left subtree
+        // a..c, nested tree included, is past the limit and collapses
+        // without consuming offset.
+        let db = make_host_with_nested_count_tree(b'b', 3, v);
+        let pq_desc = full_range_page(Some(2), 1, false);
+        let raw_desc = raw_page_keys(&db, &pq_desc, v);
+        assert_eq!(raw_desc, vec![b"f".to_vec(), b"e".to_vec()]);
+        let proof = db.prove_query(&pq_desc, None, v).unwrap().expect("prove");
+        let (root, proved) = GroveDb::verify_query_raw(&proof, &pq_desc, v).expect("verify");
+        assert_eq!(root, db.root_hash(None, v).unwrap().unwrap());
+        assert_eq!(proved_keys(&proved), raw_desc);
+
+        // Ascending mirror with the nested tree at "f", past a limit-2
+        // page starting after "a".
+        let db2 = make_host_with_nested_count_tree(b'f', 3, v);
+        let pq_asc = full_range_page(Some(2), 1, true);
+        let raw_asc = raw_page_keys(&db2, &pq_asc, v);
+        assert_eq!(raw_asc, vec![b"b".to_vec(), b"c".to_vec()]);
+        let proof = db2.prove_query(&pq_asc, None, v).unwrap().expect("prove");
+        let (root, proved) = GroveDb::verify_query_raw(&proof, &pq_asc, v).expect("verify");
+        assert_eq!(root, db2.root_hash(None, v).unwrap().unwrap());
+        assert_eq!(proved_keys(&proved), raw_asc);
+    }
+
+    /// An empty count tree just after the completed page contributes zero,
+    /// but must not trigger offset validation once the limit is exhausted.
+    #[test]
+    fn empty_nested_count_tree_past_limit_still_proves_and_matches_raw() {
+        let v = GroveVersion::latest();
+        for (ltr, empty_key, returned_key) in [(true, b'c', b'b'), (false, b'e', b'f')] {
+            let db = make_host_with_nested_count_tree(empty_key, 0, v);
+            let pq = full_range_page(Some(1), 1, ltr);
+            let raw = raw_page_keys(&db, &pq, v);
+            assert_eq!(raw, vec![vec![returned_key]]);
+
+            let proof = db.prove_query(&pq, None, v).unwrap().expect("prove");
+            let (root, proved) = GroveDb::verify_query_raw(&proof, &pq, v).expect("verify");
+            assert_eq!(root, db.root_hash(None, v).unwrap().unwrap());
+            assert_eq!(proved_keys(&proved), raw);
+        }
+    }
+
+    /// A nested count tree holding exactly ONE row contributes one unit,
+    /// which is what it is to row pagination too. Skipping over it is
+    /// sound and the page agrees with the trusted read.
+    #[test]
+    fn nested_count_tree_with_one_row_is_a_unit_row_and_proves() {
+        let v = GroveVersion::latest();
+        let db = make_host_with_nested_count_tree(b'b', 1, v);
+        for (ltr, expected) in [(true, b"d".to_vec()), (false, b"d".to_vec())] {
+            let pq = full_range_page(Some(1), 3, ltr);
+            let raw = raw_page_keys(&db, &pq, v);
+            assert_eq!(raw, vec![expected]);
+            let proof = db.prove_query(&pq, None, v).unwrap().expect("prove");
+            let (root, proved) = GroveDb::verify_query_raw(&proof, &pq, v).expect("verify");
+            assert_eq!(root, db.root_hash(None, v).unwrap().unwrap());
+            assert_eq!(proved_keys(&proved), raw);
+        }
+    }
+
     /// A bidirectional reference stored inside a `ProvableCountTree` must be
     /// dereferenced by the count-offset proof path exactly like a plain
     /// reference (the branch performs its own reference normalization).

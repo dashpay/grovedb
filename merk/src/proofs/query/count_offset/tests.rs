@@ -1489,3 +1489,288 @@ fn pcps_count_offset_root_hash_diverges_from_single_axis() {
          node hash, so its hash function differs"
     );
 }
+
+// ─── Issue #864: non-unit rows inside the offset region ──────────────
+//
+// At the merk layer a nested count-bearing tree is simply a row whose
+// feature type carries a count other than 1. Fifteen ascending inserts
+// build the perfect tree rooted at "h" (left "d" over b(a,c) f(e,g),
+// right "l" over j(i,k) n(m,o)), so the subtree a collapse would swallow
+// is predictable.
+
+/// The 15-key fixture with the row at `key` carrying `own` count units
+/// instead of one.
+fn make_15_key_tree_with_non_unit_row(
+    key: u8,
+    own: u64,
+    grove_version: &GroveVersion,
+) -> (TempMerk, [u8; 32]) {
+    make_15_key_tree_with_non_unit_row_and_type(
+        key,
+        own,
+        TreeType::ProvableCountTree,
+        grove_version,
+    )
+}
+
+fn make_15_key_tree_with_non_unit_row_and_type(
+    key: u8,
+    own: u64,
+    tree_type: TreeType,
+    grove_version: &GroveVersion,
+) -> (TempMerk, [u8; 32]) {
+    use crate::tree::TreeFeatureType::{
+        ProvableCountedAndProvableSummedMerkNode, ProvableCountedSummedMerkNode,
+    };
+
+    let mut merk = TempMerk::new_with_tree_type(grove_version, tree_type);
+    let entries: Vec<(Vec<u8>, Op)> = (b'a'..=b'o')
+        .enumerate()
+        .map(|(i, c)| {
+            let count = if c == key { own } else { 1 };
+            let feature_type = match tree_type {
+                TreeType::ProvableCountTree => ProvableCountedMerkNode(count),
+                TreeType::ProvableCountSumTree => ProvableCountedSummedMerkNode(count, 0),
+                TreeType::ProvableCountProvableSumTree => {
+                    ProvableCountedAndProvableSummedMerkNode(count, 0)
+                }
+                _ => panic!("fixture requires a provable count-bearing tree"),
+            };
+            (vec![c], Op::Put(vec![i as u8], feature_type))
+        })
+        .collect();
+    merk.apply::<_, Vec<_>>(&entries, &[], None, grove_version)
+        .unwrap()
+        .expect("apply should succeed");
+    merk.commit(grove_version);
+    let root_hash = merk.root_hash().unwrap();
+    (merk, root_hash)
+}
+
+fn assert_refuses_non_unit_row(
+    merk: &Merk<impl grovedb_storage::StorageContext<'static>>,
+    inner_range: QueryItem,
+    offset: u64,
+    limit: Option<u64>,
+    left_to_right: bool,
+    grove_version: &GroveVersion,
+) {
+    let err = match merk
+        .prove_count_offset_on_range(&inner_range, offset, limit, left_to_right, grove_version)
+        .unwrap()
+    {
+        Ok(_) => panic!("prover must refuse a non-unit row in the offset region"),
+        Err(e) => e,
+    };
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("exactly one count unit"),
+        "refusal should name the unit-row requirement; got {}",
+        msg
+    );
+}
+
+/// Row "c" carries 3 units, so the left half a..g carries 9 units over 7
+/// rows. Offset 9 ascending would fold it into one `HashWithCount(9)`
+/// and return "h"; row pagination would return "j". Refused.
+#[test]
+fn refuses_offset_collapse_over_non_unit_row_ascending() {
+    let grove_version = GroveVersion::latest();
+    let (merk, _) = make_15_key_tree_with_non_unit_row(b'c', 3, grove_version);
+    assert_refuses_non_unit_row(
+        &merk,
+        QueryItem::RangeFull(..),
+        9,
+        Some(1),
+        true,
+        grove_version,
+    );
+}
+
+/// Descending mirror: row "m" carries 3 units, so the right half i..o
+/// carries 9 units over 7 rows and would collapse under offset 9.
+#[test]
+fn refuses_offset_collapse_over_non_unit_row_descending() {
+    let grove_version = GroveVersion::latest();
+    let (merk, _) = make_15_key_tree_with_non_unit_row(b'm', 3, grove_version);
+    assert_refuses_non_unit_row(
+        &merk,
+        QueryItem::RangeFull(..),
+        9,
+        Some(1),
+        false,
+        grove_version,
+    );
+}
+
+/// A ZERO-unit row (empty nested count tree) inside a collapsed prefix is
+/// refused too: a..g then carries 6 units over 7 rows.
+#[test]
+fn refuses_offset_collapse_over_zero_unit_row() {
+    let grove_version = GroveVersion::latest();
+    let (merk, _) = make_15_key_tree_with_non_unit_row(b'c', 0, grove_version);
+    assert_refuses_non_unit_row(
+        &merk,
+        QueryItem::RangeFull(..),
+        6,
+        Some(1),
+        true,
+        grove_version,
+    );
+}
+
+/// The non-unit row met on DESCENT (the offset lands inside its subtree)
+/// is refused with the same message.
+#[test]
+fn refuses_non_unit_row_met_on_descent() {
+    let grove_version = GroveVersion::latest();
+    let (merk, _) = make_15_key_tree_with_non_unit_row(b'c', 3, grove_version);
+    // b(a,c) carries 5 > 2, so the prover descends: "a" collapses,
+    // "b" burns the last offset unit, "c" contributes 3 → refused.
+    assert_refuses_non_unit_row(
+        &merk,
+        QueryItem::RangeFull(..),
+        2,
+        Some(1),
+        true,
+        grove_version,
+    );
+}
+
+/// Offset past the population: everything in range collapses, and the
+/// walk over the collapsed prefix still finds the non-unit row.
+#[test]
+fn refuses_truncated_offset_over_non_unit_row() {
+    let grove_version = GroveVersion::latest();
+    let (merk, _) = make_15_key_tree_with_non_unit_row(b'c', 3, grove_version);
+    for ltr in [true, false] {
+        assert_refuses_non_unit_row(
+            &merk,
+            QueryItem::RangeFull(..),
+            1_000,
+            Some(1),
+            ltr,
+            grove_version,
+        );
+    }
+}
+
+/// A non-unit row that is DISJOINT from the range or PAST the limit never
+/// touches the offset budget: those collapses are still served and the
+/// page is the row page.
+#[test]
+fn non_unit_row_outside_offset_region_still_proves() {
+    let grove_version = GroveVersion::latest();
+    let (merk, root) = make_15_key_tree_with_non_unit_row(b'c', 3, grove_version);
+
+    // Disjoint: e..=o keeps b(a,c) entirely out of range. Offset 2
+    // skips e,f and returns g.
+    round_trip_keys(
+        &merk,
+        root,
+        QueryItem::RangeInclusive(b"e".to_vec()..=b"o".to_vec()),
+        2,
+        Some(1),
+        true,
+        2,
+        &[b"g"],
+        grove_version,
+    );
+
+    // Past limit: offset 0 limit 1 returns "a"; the rest of the tree,
+    // including "c", collapses past the limit.
+    round_trip_keys(
+        &merk,
+        root,
+        QueryItem::RangeFull(..),
+        0,
+        Some(1),
+        true,
+        0,
+        &[b"a"],
+        grove_version,
+    );
+
+    // Descending past limit: returns "o"; "c" is far past the limit.
+    round_trip_keys(
+        &merk,
+        root,
+        QueryItem::RangeFull(..),
+        0,
+        Some(1),
+        false,
+        0,
+        &[b"o"],
+        grove_version,
+    );
+}
+
+/// A zero-count subtree after the page is complete must collapse as
+/// PastLimit, even though its count also fits the remaining zero offset.
+#[test]
+fn zero_count_subtree_past_limit_still_proves_in_all_count_hosts() {
+    let grove_version = GroveVersion::latest();
+    for tree_type in [
+        TreeType::ProvableCountTree,
+        TreeType::ProvableCountSumTree,
+        TreeType::ProvableCountProvableSumTree,
+    ] {
+        for (ltr, zero_key, returned_key) in [(true, b'c', b'b'), (false, b'm', b'n')] {
+            let (merk, root) =
+                make_15_key_tree_with_non_unit_row_and_type(zero_key, 0, tree_type, grove_version);
+            assert_eq!(merk.root_key(), Some(b"h".to_vec()));
+            // Ascending skips a, returns b, then visits the zero-count c.
+            // Descending skips o, returns n, then visits the zero-count m.
+            round_trip_keys(
+                &merk,
+                root,
+                QueryItem::RangeFull(..),
+                1,
+                Some(1),
+                ltr,
+                1,
+                &[&[returned_key]],
+                grove_version,
+            );
+        }
+    }
+}
+
+/// The pre-collapse unit-row walk reads nodes the emitter would otherwise
+/// never touch, and every one of those loads must be billed. Each prove
+/// runs on a fresh fixture because a walk upgrades pruned links to
+/// `Loaded` in memory, so a second prove on the same merk would see a
+/// tree that no longer needs any seeks.
+#[test]
+fn offset_collapse_walk_is_charged() {
+    let grove_version = GroveVersion::latest();
+
+    // Offset 0, limit 1: "a" is returned and everything else collapses
+    // past the limit. The emitter loads d, b, a on the way down plus c,
+    // f, l as collapsed subtree roots: six seeks, no hashing.
+    let (merk, _) = make_15_key_provable_count_tree(grove_version);
+    let without_walk = merk
+        .prove_count_offset_on_range(&QueryItem::RangeFull(..), 0, Some(1), true, grove_version)
+        .cost;
+    assert_eq!(without_walk.seek_count, 6, "{:?}", without_walk);
+    assert_eq!(without_walk.hash_node_calls, 0, "{:?}", without_walk);
+    assert!(without_walk.storage_loaded_bytes > 0, "{:?}", without_walk);
+
+    // Offset 7, limit 1: the whole left half a..g collapses after the
+    // walk confirms its seven rows are units. The walk additionally
+    // loads e and g, the two nodes the no-walk path never reads, so the
+    // collapse costs exactly two more seeks and their bytes.
+    let (merk, _) = make_15_key_provable_count_tree(grove_version);
+    let with_walk = merk
+        .prove_count_offset_on_range(&QueryItem::RangeFull(..), 7, Some(1), true, grove_version)
+        .cost;
+    assert_eq!(with_walk.seek_count, 8, "{:?}", with_walk);
+    assert_eq!(with_walk.hash_node_calls, 0, "{:?}", with_walk);
+    assert!(
+        with_walk.storage_loaded_bytes > without_walk.storage_loaded_bytes,
+        "the walk's node loads must be billed: {:?} vs {:?}",
+        with_walk,
+        without_walk
+    );
+    assert_eq!(with_walk.storage_cost, without_walk.storage_cost);
+}

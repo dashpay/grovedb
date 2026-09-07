@@ -35,6 +35,20 @@
 //!   aggregate-derived `own_count`. Mismatches surface as
 //!   `InvalidProofError`.
 //!
+//! ## What a collapsed skip does and does not attest
+//!
+//! A `HashWithCount(count)` in the offset window attests that the
+//! collapsed subtree's committed **count** is `count`. It does not
+//! attest how many physical rows the subtree holds: a nested
+//! count-bearing tree contributes its own aggregate count (0 when
+//! empty) and is still one row to ordinary pagination. Nothing in the
+//! node hash distinguishes the two, so this verifier cannot reject the
+//! shape. The prover closes the gap on its side by walking every
+//! subtree it is about to collapse and refusing unless each row
+//! contributes exactly one unit (issue #864); for rows it descends
+//! through, `own_count` is derived here and anything other than 0 or 1
+//! is rejected, and an in-range 0 is rejected too.
+//!
 //! ## Truncated offset
 //!
 //! When the requested offset is greater than the total in-range
@@ -131,10 +145,20 @@ pub struct CountOffsetProofResult {
     /// Items the prover returned, in the order the verifier
     /// encountered them during the directional walk.
     pub returned_items: Vec<CountOffsetReturnedItem>,
-    /// Number of in-range items the prover skipped via offset, as
-    /// independently derived from the proof. ≤ the offset the caller
+    /// Number of in-range **count units** the prover skipped via offset,
+    /// as independently derived from the proof. ≤ the offset the caller
     /// passed to verify; equal to it unless the in-range population
     /// was exhausted before the offset finished consuming.
+    ///
+    /// Count units equal rows only when every skipped row contributes
+    /// exactly one unit. The proof commits nothing about the physical
+    /// row count inside a collapsed `HashWithCount`, so a nested
+    /// count-bearing tree in the skipped region (which contributes its
+    /// own aggregate count, 0 when empty) cannot be detected here. An
+    /// honest prover walks every subtree it collapses and refuses the
+    /// query instead (issue #864); a verifier that needs the row
+    /// semantics on a host that may nest count trees should treat a
+    /// verified page as "after `skipped` count units", not rows.
     pub skipped: u64,
 }
 

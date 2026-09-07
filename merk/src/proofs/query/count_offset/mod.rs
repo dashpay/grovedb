@@ -54,6 +54,22 @@
 //! count-only — the sum is committed alongside purely for hash
 //! reconstruction; it plays no role in offset/limit consumption.
 //!
+//! ## Offset counts rows, so every skipped row must be one unit
+//!
+//! `SizedQuery::offset` skips rows. A collapsed `HashWithCount` consumes
+//! the subtree's committed count, which equals its row count only when
+//! every row contributes one unit. A nested count-bearing tree
+//! (`CountTree`, `ProvableCountTree`, ... — the layout Platform's
+//! `range_countable` indexes use, so it cannot be refused at insert
+//! time) contributes its own aggregate count instead. The prover
+//! therefore walks each subtree before collapsing it for offset and
+//! refuses the query when any row is not a unit row; rows it descends
+//! through are refused on the same rule. Disjoint and past-limit
+//! collapses never touch the offset budget and are exempt. The verifier
+//! cannot check the collapsed case — see [`verify`] — so the guarantee
+//! for the returned page is "after exactly `skipped` count units";
+//! that equals rows on every host an honest prover serves (issue #864).
+//!
 //! ## Scope
 //!
 //! - **Tree type**: `ProvableCountTree`, `ProvableCountSumTree`, or
