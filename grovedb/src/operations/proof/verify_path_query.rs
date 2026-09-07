@@ -26,7 +26,7 @@ use crate::{
         verify::{AxisWalkOutcome, AxisWalkResult},
         GroveDBProof,
     },
-    query::{AggregateKind, PathQueryShape},
+    query::{validated::ValidatedPathQuery, AggregateKind, PathQueryShape},
     query_result_type::PathKeyOptionalElementTrio,
     Error, GroveDb, PathQuery,
 };
@@ -165,7 +165,9 @@ impl GroveDb {
         path_query: &PathQuery,
         grove_version: &GroveVersion,
     ) -> Result<VerifiedPathQuery, Error> {
-        match path_query.classify()? {
+        let validated = ValidatedPathQuery::for_verification(path_query, grove_version)?;
+        let path_query = validated.query();
+        match validated.shape() {
             PathQueryShape::KeySelection | PathQueryShape::CountOffsetPaginated { .. } => {
                 let (root_hash, elements) = Self::verify_query(proof, path_query, grove_version)?;
                 Ok(VerifiedPathQuery::Elements {
@@ -240,7 +242,7 @@ impl GroveDb {
             },
             PathQueryShape::AxisRead { axis } => {
                 let (root_hash, _, outcomes) =
-                    Self::verify_axis_shape_walk(proof, path_query, grove_version)?;
+                    Self::verify_axis_shape_walk(proof, &validated, grove_version)?;
                 let [outcome]: [AxisWalkOutcome; 1] =
                     outcomes.try_into().map_err(|outcomes: Vec<_>| {
                         Error::InvalidProof(
@@ -266,7 +268,7 @@ impl GroveDb {
                 axis,
             } => {
                 let (root_hash, trios, outcomes) =
-                    Self::verify_axis_shape_walk(proof, path_query, grove_version)?;
+                    Self::verify_axis_shape_walk(proof, &validated, grove_version)?;
 
                 // Index outcomes by their branch key (the segment right
                 // after the branching prefix).
@@ -376,24 +378,10 @@ impl GroveDb {
                 })
             }
             PathQueryShape::SumBudget { .. } => {
-                if grove_version
-                    .grovedb_versions
-                    .operations
-                    .proof
-                    .sum_budget_in_v1_envelope
-                    != 1
-                {
-                    return Err(Error::NotSupported(
-                        "sum-budget windows in the V1 proof envelope are not accepted at this \
-                         grove version"
-                            .to_string(),
-                    ));
-                }
                 let decoded = decode_grovedb_proof_canonical(proof)?;
+                validated.check_envelope(&decoded)?;
                 let GroveDBProof::V1(proof_v1) = decoded else {
-                    return Err(Error::NotSupported(
-                        "sum-budget path queries require V1 proof envelopes".to_string(),
-                    ));
+                    unreachable!("validated sum-budget envelope");
                 };
                 let (root_hash, _, outcomes) =
                     Self::verify_proof_v1_with_axis_outcomes(&proof_v1, path_query, grove_version)?;
@@ -438,7 +426,7 @@ impl GroveDb {
     /// Decode + envelope-gate + walk for the axis shapes.
     fn verify_axis_shape_walk(
         proof: &[u8],
-        path_query: &PathQuery,
+        validated: &ValidatedPathQuery<'_>,
         grove_version: &GroveVersion,
     ) -> Result<
         (
@@ -448,28 +436,12 @@ impl GroveDb {
         ),
         Error,
     > {
-        if grove_version
-            .grovedb_versions
-            .operations
-            .proof
-            .axis_descent_in_v1_envelope
-            != 1
-        {
-            return Err(Error::NotSupported(
-                "axis-ordered descents in the V1 proof envelope are not accepted at this \
-                 grove version"
-                    .to_string(),
-            ));
-        }
         let decoded = decode_grovedb_proof_canonical(proof)?;
-        match decoded {
-            GroveDBProof::V0(_) => Err(Error::NotSupported(
-                "axis-ordered path queries require V1 proof envelopes".to_string(),
-            )),
-            GroveDBProof::V1(proof_v1) => {
-                Self::verify_proof_v1_with_axis_outcomes(&proof_v1, path_query, grove_version)
-            }
-        }
+        validated.check_envelope(&decoded)?;
+        let GroveDBProof::V1(proof_v1) = decoded else {
+            unreachable!("validated axis envelope");
+        };
+        Self::verify_proof_v1_with_axis_outcomes(&proof_v1, validated.query(), grove_version)
     }
 
     /// Map a single-path axis outcome into the public result, checking

@@ -8,6 +8,7 @@ pub(crate) mod merge;
 mod path_branch_chunk_query;
 mod path_trunk_chunk_query;
 pub(crate) mod shape;
+pub(crate) mod validated;
 
 use std::{
     borrow::{Cow, Cow::Borrowed},

@@ -3,11 +3,10 @@
 //! A [`PathQuery`] is one type, but the engine serves several distinct
 //! *shapes* through it: plain key selection, the three aggregate-on-range
 //! families (each in a leaf and a carrier form), and count-offset
-//! pagination. Today each entry point re-discovers the shape by calling
-//! the `has_*` / `validate_*` helpers in its own order; this module
-//! gives that discovery a single name, [`PathQuery::classify`], so the
-//! reader, the prover, and the verifier can share one decision instead
-//! of three copies of it.
+//! pagination. [`PathQuery::classify`] owns the shape grammar; the
+//! internal [`ValidatedPathQuery`](super::validated::ValidatedPathQuery)
+//! retains that decision and the applicable version/envelope checks for
+//! the unified reader, prover, and verifier.
 //!
 //! Classification is **pure** (no database access — a proof verifier,
 //! which holds only the query, classifies identically to the prover),
@@ -24,7 +23,8 @@
 //! - Envelope eligibility. A shape like
 //!   [`PathQueryShape::CountOffsetPaginated`] classifies the same for a
 //!   V0 and a V1 proof; whether the envelope supports it is the
-//!   envelope gate's decision (`apply_count_offset_envelope_gate`).
+//!   envelope gate's decision. Legacy element verifiers retain their
+//!   V0-before-syntax offset rejection order.
 //! - Tree types. The check that a count-offset target really is a
 //!   `ProvableCountTree` (or that an aggregate leaf sits on the right
 //!   provable tree) requires opening the merk and stays at execution /
@@ -152,6 +152,17 @@ impl PathQuery {
     /// reproduces which of the two rejection messages a mixed query
     /// gets from the prover today.
     pub fn classify(&self) -> Result<PathQueryShape<'_>, Error> {
+        self.classify_with_offset_gate(|| Ok(()))
+    }
+
+    /// Proof envelopes historically gate offsets before validating their
+    /// syntax. Keep that ordering without duplicating shape discovery in
+    /// the prover. The gate is reached only for selection pagination, after
+    /// read-mode and aggregate validation.
+    pub(super) fn classify_with_offset_gate(
+        &self,
+        offset_gate: impl FnOnce() -> Result<(), Error>,
+    ) -> Result<PathQueryShape<'_>, Error> {
         let query = &self.query.query;
 
         // Read modes are checked first: a query carrying one anywhere is
@@ -214,6 +225,7 @@ impl PathQuery {
         }
 
         if self.has_non_zero_offset() {
+            offset_gate()?;
             let inner = self.validate_count_offset_paginated()?;
             return Ok(PathQueryShape::CountOffsetPaginated { inner });
         }

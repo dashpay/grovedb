@@ -28,7 +28,7 @@ use crate::{
         util::hex_to_ascii, GroveDBProof, GroveDBProofV0, GroveDBProofV1, LayerProof,
         MerkOnlyLayerProof, ProofBytes, ProveOptions,
     },
-    query::PathTrunkChunkQuery,
+    query::{validated::ValidatedPathQuery, AggregateKind, PathQueryShape, PathTrunkChunkQuery},
     reference_path::path_from_reference_path_type,
     Element, Error, GroveDb, PathQuery, Transaction,
 };
@@ -119,191 +119,16 @@ impl GroveDb {
         prove_options: Option<ProveOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<GroveDBProof, Error> {
-        // Per-instance limit gate: served by the V1 prover from
-        // GROVE_V4; older grove versions fail closed, and zero caps are
-        // rejected as malformed.
-        if let Err(e) = path_query.reject_unserved_per_instance_limits(grove_version) {
-            return Err(e).wrap_with_cost(OperationCost::default());
-        }
-        // Read-mode dispatch. Axis shapes are served by the V1 envelope
-        // — validated here (classify runs the full shape grammar) and
-        // gated below once `prove_version` is known. Sum-budget shapes
-        // have no proof form yet. Anything malformed fails closed
-        // rather than being misread as key selection.
-        let (is_axis_shape, is_sum_budget_shape) =
-            if path_query.query.query.has_read_mode_anywhere() {
-                match path_query.classify() {
-                    Ok(crate::PathQueryShape::AxisRead { .. })
-                    | Ok(crate::PathQueryShape::BranchedAxisRead { .. }) => (true, false),
-                    Ok(crate::PathQueryShape::SumBudget { .. }) => (false, true),
-                    Ok(_) => {
-                        return Err(Error::CorruptedCodeExecution(
-                            "a read-mode-bearing query classified as a non-read-mode shape",
-                        ))
-                        .wrap_with_cost(OperationCost::default());
-                    }
-                    Err(e) => return Err(e).wrap_with_cost(OperationCost::default()),
-                }
-            } else {
-                (false, false)
-            };
-        // Aggregate-count gate: validate at entry so malformed ACOR
-        // queries (invalid inner range, ACOR-hidden-in-subquery, etc.) are
-        // rejected up front instead of being skipped when the recursive
-        // prover never reaches the ACOR-bearing leaf — for example because
-        // the path doesn't exist. Without this gate, `prove_query` would
-        // happily return a regular path/absence proof for an invalid
-        // aggregate-count request.
-        let is_acor_query = path_query
-            .query
-            .query
-            .has_aggregate_count_on_range_anywhere();
-        if is_acor_query && let Err(e) = path_query.validate_aggregate_count_on_range() {
-            return Err(e).wrap_with_cost(OperationCost::default());
-        }
-        // Mirror of the count gate for sum. Same defense-in-depth: catch
-        // malformed `AggregateSumOnRange` shapes up front so the prover
-        // never silently returns a regular proof for a path that doesn't
-        // exist.
-        let is_asor_query = path_query.query.query.has_aggregate_sum_on_range_anywhere();
-        if is_asor_query && let Err(e) = path_query.validate_aggregate_sum_on_range() {
-            return Err(e).wrap_with_cost(OperationCost::default());
-        }
-        // Combined-aggregate gate (mirror of the ACOR / ASOR gates).
-        // Catch malformed `AggregateCountAndSumOnRange` shapes up front
-        // so the prover never silently returns a regular proof for an
-        // invalid combined-aggregate request.
-        let is_acasor_query = path_query
-            .query
-            .query
-            .has_aggregate_count_and_sum_on_range_anywhere();
-        if is_acasor_query && let Err(e) = path_query.validate_aggregate_count_and_sum_on_range() {
-            return Err(e).wrap_with_cost(OperationCost::default());
-        }
-
-        let prove_version = grove_version
-            .grovedb_versions
-            .operations
-            .proof
-            .prove_query_non_serialized;
-
-        // AggregateCountOnRange requires V1 proof envelopes. The legacy
-        // V0 (`MerkOnlyLayerProof`) envelope predates ACOR and is only
-        // produced by grove versions that pre-date Dash Platform v12;
-        // refusing the combination here keeps callers from accidentally
-        // emitting a V0 ACOR proof that the verifier would (correctly)
-        // reject.
-        // Axis shapes are V1-envelope-only, and a V4 capability: refuse
-        // the V0 envelope (same contract as the aggregate gates below)
-        // and pre-V4 versions up front, mirroring the verifier's
-        // envelope gate so both sides agree at every version.
-        if is_axis_shape {
-            if prove_version == 0 {
-                return Err(Error::NotSupported(
-                    "axis-ordered path queries require V1 proof envelopes; upgrade the grove \
-                     version producing the proof"
-                        .to_string(),
-                ))
-                .wrap_with_cost(OperationCost::default());
-            }
-            if grove_version
-                .grovedb_versions
-                .operations
-                .proof
-                .axis_descent_in_v1_envelope
-                != 1
-            {
-                return Err(Error::NotSupported(
-                    "axis-ordered descents in the V1 proof envelope are not emitted at this \
-                     grove version"
-                        .to_string(),
-                ))
-                .wrap_with_cost(OperationCost::default());
-            }
-        }
-
-        // Sum-budget shapes mirror the axis gates: V1 envelope only, and
-        // a GROVE_V4 capability on both sides.
-        if is_sum_budget_shape {
-            if prove_version == 0 {
-                return Err(Error::NotSupported(
-                    "sum-budget path queries require V1 proof envelopes; upgrade the grove \
-                     version producing the proof"
-                        .to_string(),
-                ))
-                .wrap_with_cost(OperationCost::default());
-            }
-            if grove_version
-                .grovedb_versions
-                .operations
-                .proof
-                .sum_budget_in_v1_envelope
-                != 1
-            {
-                return Err(Error::NotSupported(
-                    "sum-budget windows in the V1 proof envelope are not emitted at this \
-                     grove version"
-                        .to_string(),
-                ))
-                .wrap_with_cost(OperationCost::default());
-            }
-        }
-
-        if is_acor_query && prove_version == 0 {
-            return Err(Error::NotSupported(
-                "AggregateCountOnRange proofs require V1 proof envelopes; upgrade the grove \
-                 version producing the proof"
-                    .to_string(),
-            ))
-            .wrap_with_cost(OperationCost::default());
-        }
-
-        // Mirror of the count V0 gate for sum. `AggregateSumOnRange`
-        // postdates V0 envelopes for the same reason as count, so a V0
-        // aggregate-sum proof can never be honestly produced; refuse
-        // the combination here so callers see a clear `NotSupported`
-        // instead of a downstream verifier rejection.
-        if is_asor_query && prove_version == 0 {
-            return Err(Error::NotSupported(
-                "AggregateSumOnRange proofs require V1 proof envelopes; upgrade the grove \
-                 version producing the proof"
-                    .to_string(),
-            ))
-            .wrap_with_cost(OperationCost::default());
-        }
-
-        // Combined-aggregate proofs are a grove v3+ feature; V0 envelopes
-        // predate them and cannot legitimately carry one. Same contract
-        // as the ACOR / ASOR V0 gates above. V0 proofs are **LOCKED** —
-        // combined aggregates live on V1 only.
-        if is_acasor_query && prove_version == 0 {
-            return Err(Error::NotSupported(
-                "AggregateCountAndSumOnRange proofs require V1 proof envelopes; upgrade the \
-                 grove version producing the proof"
-                    .to_string(),
-            ))
-            .wrap_with_cost(OperationCost::default());
-        }
-
-        match prove_version {
+        let validated = cost_return_on_error_default!(ValidatedPathQuery::for_proof(
+            path_query,
+            grove_version,
+        ));
+        match validated.proof_version() {
             0 => {
-                // The V0 prover is a frozen wire format whose limit
-                // accounting predates per-instance caps; a grove
-                // version that selects it can never serve them.
-                if let Err(e) = path_query.reject_per_instance_limits("the V0 prover") {
-                    return Err(e).wrap_with_cost(OperationCost::default());
-                }
-                self.prove_query_non_serialized_v0(path_query, prove_options, grove_version)
+                self.prove_query_non_serialized_v0(validated.query(), prove_options, grove_version)
             }
-            1 => self.prove_query_non_serialized_v1(path_query, prove_options, grove_version),
-            version => Err(Error::VersionError(
-                grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
-                    method: "prove_query_non_serialized".to_string(),
-                    known_versions: vec![0, 1],
-                    received: version,
-                },
-            ))
-            .wrap_with_cost(OperationCost::default()),
+            1 => self.prove_query_non_serialized_v1(&validated, prove_options, grove_version),
+            _ => unreachable!("validated proof version"),
         }
     }
 
@@ -1865,13 +1690,14 @@ impl GroveDb {
 
     // ── V1 Proof Generation (MmrTree / BulkAppendTree support) ──────────
 
-    /// V1: Generates a proof that supports MmrTree / BulkAppendTree elements.
+    /// V1: Generates a proof from an already validated query.
     pub(crate) fn prove_query_non_serialized_v1(
         &self,
-        path_query: &PathQuery,
+        validated: &ValidatedPathQuery<'_>,
         prove_options: Option<ProveOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<GroveDBProof, Error> {
+        let path_query = validated.query();
         let mut cost = OperationCost::default();
         let prove_options = prove_options.unwrap_or_default();
         // ONE snapshot for the entire recursive generation: every layer
@@ -1889,29 +1715,12 @@ impl GroveDb {
             }
         });
 
-        if path_query.query.offset.is_some() && path_query.query.offset != Some(0) {
-            // A non-zero offset is honored *only* if the surrounding
-            // query is an offset-paginated range query against a
-            // ProvableCountTree / ProvableCountSumTree (see
-            // `SizedQuery::validate_count_offset_paginated`).
-            //
-            // We do two checks here at the top entry:
-            //   1. Syntactic gate via `validate_count_offset_paginated`
-            //      (single range item, no subqueries, offset > 0).
-            //   2. Open the target leaf merk and confirm its
-            //      `tree_type` is one of the two allowed flavors.
-            //
-            // Step 2 has to be done at the top because the leaf-level
-            // short-circuit in `prove_subqueries_v1` only fires after
-            // the descent reaches the leaf — and for an empty
-            // NormalTree at the target path the descent's empty-tree
-            // arm decrements the limit and returns instead of
-            // recursing, so the leaf check would silently accept.
-            // Doing the merk-open here gives a clear up-front error
-            // for that case.
-            if let Err(e) = path_query.validate_count_offset_paginated() {
-                return Err(e).wrap_with_cost(cost);
-            }
+        if matches!(
+            validated.shape(),
+            PathQueryShape::CountOffsetPaginated { .. }
+        ) {
+            // Syntax is already validated. Keep this storage-dependent gate
+            // before the zero-limit check to preserve both errors and costs.
             cost_return_on_error!(
                 &mut cost,
                 self.check_count_offset_target_tree_type(
@@ -1935,7 +1744,7 @@ impl GroveDb {
             self.prove_subqueries_v1(
                 &snapshot_transaction,
                 vec![],
-                path_query,
+                validated,
                 &mut limit_state,
                 None,
                 &prove_options,
@@ -1956,10 +1765,7 @@ impl GroveDb {
         // Branched axis reads are deliberately excluded: an absent
         // branch key legitimately produces no descent, and its absence
         // is what the branching-level Merk proof authenticates.
-        if matches!(
-            path_query.classify(),
-            Ok(crate::PathQueryShape::AxisRead { .. })
-        ) {
+        if matches!(validated.shape(), PathQueryShape::AxisRead { .. }) {
             fn count_axis_descents(layer: &LayerProof) -> usize {
                 usize::from(matches!(
                     layer.merk_proof,
@@ -2090,13 +1896,14 @@ impl GroveDb {
         &self,
         transaction: &Transaction,
         path: Vec<&[u8]>,
-        path_query: &PathQuery,
+        validated: &ValidatedPathQuery<'_>,
         limit_state: &mut super::V1LimitState,
         inherited_instance: Option<u16>,
         prove_options: &ProveOptions,
         current_depth: usize,
         grove_version: &GroveVersion,
     ) -> CostResult<LayerProof, Error> {
+        let path_query = validated.query();
         let mut cost = OperationCost::default();
 
         if current_depth > super::MAX_PROOF_DEPTH {
@@ -2157,84 +1964,44 @@ impl GroveDb {
             limit_state.global
         };
 
-        // Aggregate-count short-circuit (v1 path). Same validation contract
-        // as v0: any AggregateCountOnRange at this level requires the
-        // surrounding PathQuery to validate as a well-formed aggregate-count
-        // query. The count-proof bytes are wrapped in `ProofBytes::Merk`
-        // since they share the merk Op stream encoding.
-        if query
-            .items
-            .iter()
-            .any(QueryItem::is_aggregate_count_on_range)
-        {
-            let inner_range = cost_return_on_error_no_add!(
-                cost,
-                path_query.validate_aggregate_count_on_range().cloned()
-            );
-            let (count_ops, _count) = cost_return_on_error!(
-                &mut cost,
-                subtree
-                    .prove_aggregate_count_on_range(&inner_range, grove_version)
-                    .map_err(Error::MerkError)
-            );
-            let mut serialized = Vec::with_capacity(128);
-            encode_into(count_ops.iter(), &mut serialized);
-            return Ok(LayerProof {
-                merk_proof: ProofBytes::Merk(serialized),
-                lower_layers: BTreeMap::new(),
-            })
-            .wrap_with_cost(cost);
-        }
-
-        // Aggregate-sum short-circuit (v1 path). Mirror of the count v1
-        // branch.
-        if query.items.iter().any(QueryItem::is_aggregate_sum_on_range) {
-            let inner_range = cost_return_on_error_no_add!(
-                cost,
-                path_query.validate_aggregate_sum_on_range().cloned()
-            );
-            let (sum_ops, _sum) = cost_return_on_error!(
-                &mut cost,
-                subtree
-                    .prove_aggregate_sum_on_range(&inner_range, grove_version)
-                    .map_err(|e| Error::CorruptedData(format!(
-                        "prove_aggregate_sum_on_range failed: {}",
-                        e
-                    )))
-            );
-            let mut serialized = Vec::with_capacity(128);
-            encode_into(sum_ops.iter(), &mut serialized);
-            return Ok(LayerProof {
-                merk_proof: ProofBytes::Merk(serialized),
-                lower_layers: BTreeMap::new(),
-            })
-            .wrap_with_cost(cost);
-        }
-
-        // Combined-aggregate short-circuit (v1 path). PCPS-only —
-        // emits the dual-axis op stream that carries both count and
-        // sum from a single proof. Mirror of the ACOR / ASOR v1
-        // branches above.
-        if query
-            .items
-            .iter()
-            .any(QueryItem::is_aggregate_count_and_sum_on_range)
-        {
-            let inner_range = cost_return_on_error_no_add!(
-                cost,
-                path_query
-                    .validate_aggregate_count_and_sum_on_range()
-                    .cloned()
-            );
-            let (ops, _count, _sum) = cost_return_on_error!(
-                &mut cost,
-                subtree
-                    .prove_aggregate_count_and_sum_on_range(&inner_range, grove_version)
-                    .map_err(|e| Error::CorruptedData(format!(
-                        "prove_aggregate_count_and_sum_on_range failed: {}",
-                        e
-                    )))
-            );
+        // Shape validation fixed the aggregate family and terminal depth.
+        // The merk primitives still enforce the actual tree's eligibility.
+        if let Some((kind, inner_range)) = validated.aggregate_at_depth(path.len()) {
+            let ops = match kind {
+                AggregateKind::Count => {
+                    let (ops, _) = cost_return_on_error!(
+                        &mut cost,
+                        subtree
+                            .prove_aggregate_count_on_range(inner_range, grove_version)
+                            .map_err(Error::MerkError)
+                    );
+                    ops
+                }
+                AggregateKind::Sum => {
+                    let (ops, _) = cost_return_on_error!(
+                        &mut cost,
+                        subtree
+                            .prove_aggregate_sum_on_range(inner_range, grove_version)
+                            .map_err(|e| Error::CorruptedData(format!(
+                                "prove_aggregate_sum_on_range failed: {}",
+                                e
+                            )))
+                    );
+                    ops
+                }
+                AggregateKind::CountAndSum => {
+                    let (ops, _, _) = cost_return_on_error!(
+                        &mut cost,
+                        subtree
+                            .prove_aggregate_count_and_sum_on_range(inner_range, grove_version)
+                            .map_err(|e| Error::CorruptedData(format!(
+                                "prove_aggregate_count_and_sum_on_range failed: {}",
+                                e
+                            )))
+                    );
+                    ops
+                }
+            };
             let mut serialized = Vec::with_capacity(128);
             encode_into(ops.iter(), &mut serialized);
             return Ok(LayerProof {
@@ -2252,7 +2019,12 @@ impl GroveDb {
         // top entry already ran, so a mismatched tree type is a
         // hard-error case (the caller asked for count-offset pagination
         // against something that isn't a count tree).
-        if path.len() == path_query.path.len() && path_query.has_non_zero_offset() {
+        if path.len() == path_query.path.len()
+            && matches!(
+                validated.shape(),
+                PathQueryShape::CountOffsetPaginated { .. }
+            )
+        {
             return self
                 .prove_count_offset_layer_v1(
                     &subtree,
@@ -2266,31 +2038,12 @@ impl GroveDb {
                 .add_cost(cost);
         }
 
-        // Whether the surrounding query is an aggregate-count carrier:
-        // empty trees that match a `subquery_path` step still need a
-        // lower-layer descent so the aggregate-count short-circuit can
-        // emit an empty count proof (verifier reads it as count = 0).
-        // For non-aggregate-count queries, empty trees keep their
-        // existing "terminal result" semantics.
-        let is_aggregate_count_query = path_query
-            .query
-            .query
-            .has_aggregate_count_on_range_anywhere();
-        // Same reasoning for aggregate-sum on the new dual-axis
-        // ProvableCountProvableSumTree (and the single-axis
-        // ProvableSumTree): an empty merk at the sum-bearing host
-        // still has to emit a lower-layer ASOR proof (verifier reads
-        // it as sum = 0).
-        let is_aggregate_sum_query = path_query.query.query.has_aggregate_sum_on_range_anywhere();
-        // Combined-aggregate (PCPS-only) carrier detection mirrors the
-        // ACOR / ASOR flags above. Empty PCPS hosts under an
-        // AggregateCountAndSumOnRange carrier need a lower-layer
-        // descent so the combined short-circuit can emit an empty
-        // proof (verifier reads it as count = 0, sum = 0).
-        let is_aggregate_count_and_sum_query = path_query
-            .query
-            .query
-            .has_aggregate_count_and_sum_on_range_anywhere();
+        // Aggregate terminals need a descent even when their host is empty:
+        // their answer is an authenticated zero, not an empty-tree element.
+        let aggregate_kind = validated.shape().aggregate_kind();
+        let is_aggregate_count_query = aggregate_kind == Some(AggregateKind::Count);
+        let is_aggregate_sum_query = aggregate_kind == Some(AggregateKind::Sum);
+        let is_aggregate_count_and_sum_query = aggregate_kind == Some(AggregateKind::CountAndSum);
 
         // `query.left_to_right` is used verbatim, synthesized levels
         // included: this is the definition of the layer's op family, and
@@ -2844,7 +2597,7 @@ impl GroveDb {
                                     &mut cost,
                                     self.prove_subqueries_v1(transaction,
                                         lower_path.clone(),
-                                        path_query,
+                                        validated,
                                         limit_state,
                                         frame_instance,
                                         prove_options,
@@ -2963,7 +2716,7 @@ impl GroveDb {
                                     &mut cost,
                                     self.prove_subqueries_v1(transaction,
                                         lower_path.clone(),
-                                        path_query,
+                                        validated,
                                         limit_state,
                                         frame_instance,
                                         prove_options,
@@ -3074,7 +2827,7 @@ impl GroveDb {
                                     &mut cost,
                                     self.prove_subqueries_v1(transaction,
                                         lower_path.clone(),
-                                        path_query,
+                                        validated,
                                         limit_state,
                                         frame_instance,
                                         prove_options,
@@ -3180,7 +2933,7 @@ impl GroveDb {
                                     &mut cost,
                                     self.prove_subqueries_v1(transaction,
                                         lower_path,
-                                        path_query,
+                                        validated,
                                         limit_state,
                                         frame_instance,
                                         prove_options,
@@ -3388,7 +3141,7 @@ impl GroveDb {
                                     &mut cost,
                                     self.prove_subqueries_v1(transaction,
                                         lower_path,
-                                        path_query,
+                                        validated,
                                         limit_state,
                                         frame_instance,
                                         prove_options,
@@ -3432,7 +3185,7 @@ impl GroveDb {
                                     &mut cost,
                                     self.prove_subqueries_v1(transaction,
                                         lower_path,
-                                        path_query,
+                                        validated,
                                         limit_state,
                                         frame_instance,
                                         prove_options,
@@ -3471,7 +3224,7 @@ impl GroveDb {
                                     &mut cost,
                                     self.prove_subqueries_v1(transaction,
                                         lower_path,
-                                        path_query,
+                                        validated,
                                         limit_state,
                                         frame_instance,
                                         prove_options,

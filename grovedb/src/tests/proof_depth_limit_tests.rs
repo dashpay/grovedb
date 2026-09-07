@@ -232,7 +232,8 @@ mod tests {
             .prove_subqueries_v1(
                 &db.start_transaction(),
                 vec![b"deep".as_slice()],
-                &path_query,
+                &crate::query::validated::ValidatedPathQuery::for_proof(&path_query, grove_version)
+                    .unwrap(),
                 &mut limit_state,
                 None,
                 &prove_options,
