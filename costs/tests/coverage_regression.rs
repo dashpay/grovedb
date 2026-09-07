@@ -787,3 +787,300 @@ fn error_display_includes_expected_data() {
     assert!(display.contains("replaced: 9"));
     assert!(display.contains("actual:10"));
 }
+
+// ── Issue #683 / audit C008: basic-into-sectioned removal matrix ─────────
+//
+// Every arm that folds a `BasicStorageRemoval` into a
+// `SectionedStorageRemoval`, in both aggregation orders and both operator
+// forms, pinned to the exact resulting map under the legacy (v1..v3) and
+// corrected (v4) arithmetic. The default owner already carries attribution
+// in two known epochs AND an `UNKNOWN_EPOCH` entry, next to an unrelated
+// identity-owned section, so the legacy figures show both losses the audit
+// names: the default owner's existing epoch attribution AND the incoming
+// basic bytes.
+
+const AUDIT_IDENTITY: Identifier = [1u8; 32];
+const AUDIT_BASIC_BYTES: u32 = 11;
+
+fn epochs(entries: &[(u16, u32)]) -> IntMap<u16, u32> {
+    entries.iter().copied().collect()
+}
+
+fn sections(entries: &[(Identifier, IntMap<u16, u32>)]) -> StorageRemovedBytes {
+    SectionedStorageRemoval(entries.iter().cloned().collect::<BTreeMap<_, _>>())
+}
+
+/// Default owner with attribution in epochs 3 and 5 plus an `UNKNOWN_EPOCH`
+/// entry, alongside an identity-owned section in epoch 2. Total 97 bytes.
+fn audit_default_with_unknown() -> StorageRemovedBytes {
+    sections(&[
+        (
+            Identifier::default(),
+            epochs(&[
+                (3, 20),
+                (5, 30),
+                (grovedb_costs::storage_cost::removal::UNKNOWN_EPOCH, 7),
+            ]),
+        ),
+        (AUDIT_IDENTITY, epochs(&[(2, 40)])),
+    ])
+}
+
+/// Default owner with attribution in epoch 3 only — no `UNKNOWN_EPOCH`
+/// entry — so the legacy "insert fresh UNKNOWN_EPOCH into the detached map"
+/// branch is the one that fires. Total 20 bytes.
+fn audit_default_without_unknown() -> StorageRemovedBytes {
+    sections(&[(Identifier::default(), epochs(&[(3, 20)]))])
+}
+
+/// No default owner at all: only the identity-owned section. Total 40 bytes.
+fn audit_default_absent() -> StorageRemovedBytes {
+    sections(&[(AUDIT_IDENTITY, epochs(&[(2, 40)]))])
+}
+
+/// Result of every mixed arm for one `sectioned` input and the fixed
+/// `AUDIT_BASIC_BYTES` basic removal, evaluated under the version currently
+/// selected by the thread-local guard (or its default when unguarded).
+#[derive(Debug, PartialEq)]
+struct MixedArmOutputs {
+    basic_plus_sectioned: StorageRemovedBytes,
+    sectioned_plus_basic: StorageRemovedBytes,
+    basic_add_assign_sectioned: StorageRemovedBytes,
+    sectioned_add_assign_basic: StorageRemovedBytes,
+}
+
+fn run_mixed_arms(sectioned: impl Fn() -> StorageRemovedBytes) -> MixedArmOutputs {
+    let mut basic_add_assign_sectioned = BasicStorageRemoval(AUDIT_BASIC_BYTES);
+    basic_add_assign_sectioned += sectioned();
+
+    let mut sectioned_add_assign_basic = sectioned();
+    sectioned_add_assign_basic += BasicStorageRemoval(AUDIT_BASIC_BYTES);
+
+    MixedArmOutputs {
+        basic_plus_sectioned: BasicStorageRemoval(AUDIT_BASIC_BYTES) + sectioned(),
+        sectioned_plus_basic: sectioned() + BasicStorageRemoval(AUDIT_BASIC_BYTES),
+        basic_add_assign_sectioned,
+        sectioned_add_assign_basic,
+    }
+}
+
+/// The corrected result: the basic bytes land in the default owner's
+/// `UNKNOWN_EPOCH` entry and every other entry survives. This is what all
+/// four arms must produce under v1, and what `Sectioned += Basic` has always
+/// produced.
+fn corrected_default_with_unknown() -> StorageRemovedBytes {
+    sections(&[
+        (
+            Identifier::default(),
+            epochs(&[
+                (3, 20),
+                (5, 30),
+                (
+                    grovedb_costs::storage_cost::removal::UNKNOWN_EPOCH,
+                    7 + AUDIT_BASIC_BYTES,
+                ),
+            ]),
+        ),
+        (AUDIT_IDENTITY, epochs(&[(2, 40)])),
+    ])
+}
+
+fn corrected_default_without_unknown() -> StorageRemovedBytes {
+    sections(&[(
+        Identifier::default(),
+        epochs(&[
+            (3, 20),
+            (
+                grovedb_costs::storage_cost::removal::UNKNOWN_EPOCH,
+                AUDIT_BASIC_BYTES,
+            ),
+        ]),
+    )])
+}
+
+fn corrected_default_absent() -> StorageRemovedBytes {
+    sections(&[
+        (
+            Identifier::default(),
+            epochs(&[(
+                grovedb_costs::storage_cost::removal::UNKNOWN_EPOCH,
+                AUDIT_BASIC_BYTES,
+            )]),
+        ),
+        (AUDIT_IDENTITY, epochs(&[(2, 40)])),
+    ])
+}
+
+#[test]
+fn legacy_basic_sectioned_removal_matrix_pins_shipped_v1_to_v3_output() {
+    // Version 0 is the shipped v1..v3 arithmetic. The three buggy arms detach
+    // the default owner's epoch map, fold the basic bytes in, and drop it:
+    // both the owner's existing attribution (20 + 30 + 7) and the incoming
+    // basic bytes (11) vanish, leaving only the identity-owned 40. The
+    // `Sectioned += Basic` sibling reinserts and keeps all 108.
+    let expected_legacy_loss = sections(&[(AUDIT_IDENTITY, epochs(&[(2, 40)]))]);
+    let outputs = with_basic_sectioned_removal_addition_version(0, || {
+        run_mixed_arms(audit_default_with_unknown)
+    });
+    assert_eq!(
+        outputs,
+        MixedArmOutputs {
+            basic_plus_sectioned: expected_legacy_loss.clone(),
+            sectioned_plus_basic: expected_legacy_loss.clone(),
+            basic_add_assign_sectioned: expected_legacy_loss.clone(),
+            sectioned_add_assign_basic: corrected_default_with_unknown(),
+        }
+    );
+    assert_eq!(outputs.basic_plus_sectioned.total_removed_bytes(), 40);
+    assert_eq!(
+        outputs.sectioned_add_assign_basic.total_removed_bytes(),
+        108
+    );
+
+    // Default owner present without an UNKNOWN_EPOCH entry: the detached map
+    // gets a fresh UNKNOWN_EPOCH entry and is then dropped, so the legacy
+    // result is an EMPTY sectioned removal — zero bytes of 31.
+    let outputs = with_basic_sectioned_removal_addition_version(0, || {
+        run_mixed_arms(audit_default_without_unknown)
+    });
+    let empty = SectionedStorageRemoval(BTreeMap::new());
+    assert_eq!(
+        outputs,
+        MixedArmOutputs {
+            basic_plus_sectioned: empty.clone(),
+            sectioned_plus_basic: empty.clone(),
+            basic_add_assign_sectioned: empty,
+            sectioned_add_assign_basic: corrected_default_without_unknown(),
+        }
+    );
+    assert_eq!(outputs.basic_plus_sectioned.total_removed_bytes(), 0);
+    assert_eq!(outputs.sectioned_add_assign_basic.total_removed_bytes(), 31);
+
+    // Default owner absent: the vacant-entry branch was always correct, so
+    // every arm agrees even on the legacy path.
+    let outputs =
+        with_basic_sectioned_removal_addition_version(0, || run_mixed_arms(audit_default_absent));
+    assert_eq!(
+        outputs,
+        MixedArmOutputs {
+            basic_plus_sectioned: corrected_default_absent(),
+            sectioned_plus_basic: corrected_default_absent(),
+            basic_add_assign_sectioned: corrected_default_absent(),
+            sectioned_add_assign_basic: corrected_default_absent(),
+        }
+    );
+    assert_eq!(outputs.basic_plus_sectioned.total_removed_bytes(), 51);
+}
+
+#[test]
+fn v4_basic_sectioned_removal_matrix_preserves_default_section_in_every_arm() {
+    // Version 1 (GROVE_V4): all four arms reinsert the updated default
+    // section, so both aggregation orders and both operator forms agree on
+    // the exact map, and the total is the sum of every input.
+    let outputs = with_basic_sectioned_removal_addition_version(1, || {
+        run_mixed_arms(audit_default_with_unknown)
+    });
+    assert_eq!(
+        outputs,
+        MixedArmOutputs {
+            basic_plus_sectioned: corrected_default_with_unknown(),
+            sectioned_plus_basic: corrected_default_with_unknown(),
+            basic_add_assign_sectioned: corrected_default_with_unknown(),
+            sectioned_add_assign_basic: corrected_default_with_unknown(),
+        }
+    );
+    assert_eq!(outputs.basic_plus_sectioned.total_removed_bytes(), 108);
+
+    let outputs = with_basic_sectioned_removal_addition_version(1, || {
+        run_mixed_arms(audit_default_without_unknown)
+    });
+    assert_eq!(
+        outputs,
+        MixedArmOutputs {
+            basic_plus_sectioned: corrected_default_without_unknown(),
+            sectioned_plus_basic: corrected_default_without_unknown(),
+            basic_add_assign_sectioned: corrected_default_without_unknown(),
+            sectioned_add_assign_basic: corrected_default_without_unknown(),
+        }
+    );
+    assert_eq!(outputs.basic_plus_sectioned.total_removed_bytes(), 31);
+
+    let outputs =
+        with_basic_sectioned_removal_addition_version(1, || run_mixed_arms(audit_default_absent));
+    assert_eq!(
+        outputs,
+        MixedArmOutputs {
+            basic_plus_sectioned: corrected_default_absent(),
+            sectioned_plus_basic: corrected_default_absent(),
+            basic_add_assign_sectioned: corrected_default_absent(),
+            sectioned_add_assign_basic: corrected_default_absent(),
+        }
+    );
+    assert_eq!(outputs.basic_plus_sectioned.total_removed_bytes(), 51);
+}
+
+#[test]
+fn sectioned_add_assign_basic_is_identical_across_removal_versions() {
+    // The always-correct sibling control: `Sectioned += Basic` must produce
+    // the same exact map whether the legacy or the corrected arithmetic is
+    // selected, and whether or not any guard is installed at all.
+    for sectioned in [
+        audit_default_with_unknown as fn() -> StorageRemovedBytes,
+        audit_default_without_unknown,
+        audit_default_absent,
+    ] {
+        let unguarded = run_mixed_arms(sectioned).sectioned_add_assign_basic;
+        let legacy = with_basic_sectioned_removal_addition_version(0, || {
+            run_mixed_arms(sectioned).sectioned_add_assign_basic
+        });
+        let corrected = with_basic_sectioned_removal_addition_version(1, || {
+            run_mixed_arms(sectioned).sectioned_add_assign_basic
+        });
+        assert_eq!(unguarded, legacy);
+        assert_eq!(legacy, corrected);
+        assert_eq!(
+            corrected.total_removed_bytes(),
+            sectioned().total_removed_bytes() + AUDIT_BASIC_BYTES
+        );
+    }
+}
+
+#[test]
+fn removal_addition_version_defaults_to_legacy_and_guard_restores_previous() {
+    // Unguarded aggregation (a caller outside any GroveDB entry point) runs
+    // the legacy arithmetic — the safe direction, since it reproduces shipped
+    // output rather than silently upgrading.
+    let expected_legacy_loss = sections(&[(AUDIT_IDENTITY, epochs(&[(2, 40)]))]);
+    assert_eq!(
+        run_mixed_arms(audit_default_with_unknown).basic_plus_sectioned,
+        expected_legacy_loss
+    );
+
+    // Guards nest and restore: inside v1 the fix applies; a nested v0 guard
+    // reverts to legacy; dropping it returns to v1; dropping the outer guard
+    // returns to the unguarded default.
+    with_basic_sectioned_removal_addition_version(1, || {
+        assert_eq!(
+            run_mixed_arms(audit_default_with_unknown).basic_plus_sectioned,
+            corrected_default_with_unknown()
+        );
+        {
+            let _inner =
+                grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(
+                    0,
+                );
+            assert_eq!(
+                run_mixed_arms(audit_default_with_unknown).basic_plus_sectioned,
+                expected_legacy_loss
+            );
+        }
+        assert_eq!(
+            run_mixed_arms(audit_default_with_unknown).basic_plus_sectioned,
+            corrected_default_with_unknown()
+        );
+    });
+    assert_eq!(
+        run_mixed_arms(audit_default_with_unknown).basic_plus_sectioned,
+        expected_legacy_loss
+    );
+}
