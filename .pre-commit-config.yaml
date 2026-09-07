@@ -10,10 +10,12 @@ repos:
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
+        # Preserve this upstream 2.0.1 doctest's original whitespace.
         exclude: |
           (?x)^(
               .*\.md$|
-              .*mermaid.*\.js$
+              .*mermaid.*\.js$|
+              grovedb-bincode/src/de/mod\.rs$
           )$
       - id: end-of-file-fixer
         exclude: |
@@ -28,6 +30,8 @@ repos:
       - id: check-merge-conflict
       - id: mixed-line-ending
         args: ['--fix=lf']
+        # Preserve the original line endings of the imported documentation.
+        exclude: '^(grovedb-bincode/docs/spec\.md|grovedb-bincode-derive/readme\.md)$'
       - id: check-added-large-files
         args: ['--maxkb=1000']
       - id: check-case-conflict
@@ -40,12 +44,14 @@ repos:
     hooks:
       - id: typos
         args: ['--write-changes']
+        # Keep the imported upstream comments and README byte-identical.
         exclude: |
           (?x)^(
               .*\.lock$|
               docs/book/output/.*|
               docs/book/translations/.*/src/.*|
-              .*mermaid\.min\.js$
+              .*mermaid\.min\.js$|
+              grovedb-bincode/(src/de/mod\.rs|src/error\.rs|readme\.md)$
           )$
 
   - repo: local

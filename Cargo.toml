@@ -18,6 +18,8 @@ members = [
     "grovedb-dense-fixed-sized-merkle-tree",
     "grovedb-query",
     "grovedb-private-document-store",
+    "grovedb-bincode",
+    "grovedb-bincode-derive",
 ]
 
 [workspace.dependencies]
@@ -26,8 +28,8 @@ thiserror = "2.0"
 hex = "0.4.3"
 integer-encoding = "4.1.0"
 blake3 = "1.8"
-bincode = "=2.0.1"
-bincode_derive = "=2.0.1"
+bincode = { package = "grovedb-bincode", version = "=2.0.1", path = "grovedb-bincode" }
+bincode_derive = { package = "grovedb-bincode-derive", version = "=2.0.1", path = "grovedb-bincode-derive" }
 indexmap = "2.13.0"
 serde = { version = "1.0", features = ["derive"] }
 byteorder = "1.5.0"
