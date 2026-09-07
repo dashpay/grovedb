@@ -176,6 +176,26 @@ pub struct GroveDBApplyBatchVersions {
     /// rewrites keyless ops into keyed ops before the batch structure is
     /// built.
     pub keyless_op_cost_dispatch: FeatureVersion,
+    /// Whether batch execution rejects ordinary keyed ops at a level whose
+    /// parent is a non-Merk data tree (`CommitmentTree`, `MmrTree`,
+    /// `BulkAppendTree`, `DenseAppendOnlyFixedSizeTree`,
+    /// `PrivateDocumentStore`).
+    ///
+    /// - `0` (V1..V3): such ops execute through ordinary Merk dispatch
+    ///   against the parent's (empty) Merk namespace. The level's Merk root
+    ///   then propagates into the parent element's committed hash while the
+    ///   element keeps its typed metadata (e.g. `mmr_size: 0`) and no root
+    ///   key — the batch acknowledges a write that typed readers never see,
+    ///   the rows are unreachable, and `verify_grovedb` reports the subtree
+    ///   corrupted (issue #900). Preserved for replay only.
+    /// - `1` (V4+): the level is refused before any write, for parents that
+    ///   already exist and for parents created in the same batch alike
+    ///   (the batch structure registers a same-batch parent's real tree
+    ///   type in the Merk cache, so both reach the same check). Typed
+    ///   append operations are unaffected: preprocessing rewrites them into
+    ///   `ReplaceNonMerkTreeRoot` ops at the PARENT level, which never
+    ///   dispatches into the non-Merk tree's own path.
+    pub non_merk_parent_keyed_ops_rejection: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

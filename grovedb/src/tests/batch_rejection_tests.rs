@@ -497,3 +497,265 @@ fn test_commitment_tree_insert_debug_format() {
         debug_str
     );
 }
+
+// ===========================================================================
+// Keyed child writes under non-Merk (append-family) parents — issue #900
+// ===========================================================================
+//
+// Non-Merk data trees (CommitmentTree, MmrTree, BulkAppendTree, DenseTree,
+// PrivateDocumentStore) keep their state in the data namespace and commit a
+// typed root. Before the V4 gate `non_merk_parent_keyed_ops_rejection`,
+// ordinary keyed batch ops beneath such a parent executed through Merk
+// dispatch against the parent's (empty) Merk namespace: the batch returned
+// Ok, the level's Merk root was committed into the parent element's hash
+// while the element kept its typed metadata (e.g. `mmr_size: 0`) and no
+// root key — so the acknowledged rows were unreachable, typed readers saw
+// an empty tree, and verify_grovedb reported the subtree corrupted. These
+// tests pin the V4+ rejection for parents created in the same batch and
+// for pre-existing parents, and that valid typed usage is unaffected.
+
+/// The four append-family elements (PrivateDocumentStore has its own
+/// dedicated rejection tests in private_document_store_tests.rs).
+fn append_family_elements() -> Vec<(&'static [u8], Element)> {
+    vec![
+        (
+            b"ct".as_slice(),
+            Element::empty_commitment_tree(10).expect("valid chunk_power"),
+        ),
+        (b"mmr".as_slice(), Element::empty_mmr_tree()),
+        (
+            b"bulk".as_slice(),
+            Element::empty_bulk_append_tree(2).expect("valid chunk_power"),
+        ),
+        (b"dense".as_slice(), Element::empty_dense_tree(3)),
+    ]
+}
+
+#[test]
+fn test_batch_rejects_keyed_child_under_same_batch_created_append_tree() {
+    let grove_version = GroveVersion::latest();
+    for (key, element) in append_family_elements() {
+        let db = make_empty_grovedb();
+        let root_before = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root hash before");
+
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(vec![], key.to_vec(), element),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![key.to_vec()],
+                b"child".to_vec(),
+                Element::new_item(b"data".to_vec()),
+            ),
+        ];
+        let result = db.apply_batch(ops, None, None, grove_version).value;
+        assert!(
+            matches!(result, Err(Error::InvalidBatchOperation(_))),
+            "keyed child under same-batch {} parent must be rejected, got {:?}",
+            String::from_utf8_lossy(key),
+            result
+        );
+
+        // The whole batch must roll back: no parent element, unchanged root.
+        assert!(
+            db.get(EMPTY_PATH, key, None, grove_version)
+                .unwrap()
+                .is_err(),
+            "rejected batch must not have created the {} parent",
+            String::from_utf8_lossy(key)
+        );
+        let root_after = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root hash after");
+        assert_eq!(root_before, root_after, "root hash must be unchanged");
+        let issues = db
+            .verify_grovedb(None, true, false, grove_version)
+            .expect("verify_grovedb should not fail");
+        assert!(issues.is_empty(), "expected no issues, got: {:?}", issues);
+    }
+}
+
+#[test]
+fn test_batch_rejects_keyed_child_under_existing_append_tree() {
+    let grove_version = GroveVersion::latest();
+    for (key, element) in append_family_elements() {
+        let db = make_empty_grovedb();
+        db.insert(EMPTY_PATH, key, element.clone(), None, None, grove_version)
+            .unwrap()
+            .expect("insert append-family tree");
+        let root_before = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root hash before");
+
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![key.to_vec()],
+            b"child".to_vec(),
+            Element::new_item(b"data".to_vec()),
+        )];
+        let result = db.apply_batch(ops, None, None, grove_version).value;
+        assert!(
+            matches!(result, Err(Error::InvalidBatchOperation(_))),
+            "keyed child under existing {} parent must be rejected, got {:?}",
+            String::from_utf8_lossy(key),
+            result
+        );
+
+        // State must be untouched: same root, same stored element, clean
+        // verification.
+        let root_after = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root hash after");
+        assert_eq!(root_before, root_after, "root hash must be unchanged");
+        let stored = db
+            .get(EMPTY_PATH, key, None, grove_version)
+            .unwrap()
+            .expect("parent element still readable");
+        assert_eq!(stored, element, "parent element must be unchanged");
+        let issues = db
+            .verify_grovedb(None, true, false, grove_version)
+            .expect("verify_grovedb should not fail");
+        assert!(issues.is_empty(), "expected no issues, got: {:?}", issues);
+    }
+}
+
+#[test]
+fn test_batch_rejects_keyed_delete_under_existing_append_tree() {
+    // Not just inserts: EVERY keyed op family dispatching into the non-Merk
+    // tree's own path is refused.
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+    db.insert(
+        EMPTY_PATH,
+        b"mmr",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert mmr tree");
+
+    let ops = vec![QualifiedGroveDbOp::delete_op(
+        vec![b"mmr".to_vec()],
+        b"child".to_vec(),
+    )];
+    let result = db.apply_batch(ops, None, None, grove_version).value;
+    assert!(
+        matches!(result, Err(Error::InvalidBatchOperation(_))),
+        "keyed delete under an MmrTree parent must be rejected, got {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_batch_rejects_subtree_created_below_append_tree() {
+    // A grandchild level executes before its parents (deepest level first),
+    // so the ordinary Tree level applies cleanly — the rejection fires when
+    // its root propagates into the MmrTree's own path, and the whole batch
+    // must roll back, including the already-executed grandchild level.
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+    let root_before = db
+        .root_hash(None, grove_version)
+        .unwrap()
+        .expect("root hash before");
+
+    let ops = vec![
+        QualifiedGroveDbOp::insert_or_replace_op(
+            vec![],
+            b"mmr".to_vec(),
+            Element::empty_mmr_tree(),
+        ),
+        QualifiedGroveDbOp::insert_or_replace_op(
+            vec![b"mmr".to_vec()],
+            b"sub".to_vec(),
+            Element::empty_tree(),
+        ),
+        QualifiedGroveDbOp::insert_or_replace_op(
+            vec![b"mmr".to_vec(), b"sub".to_vec()],
+            b"child".to_vec(),
+            Element::new_item(b"data".to_vec()),
+        ),
+    ];
+    let result = db.apply_batch(ops, None, None, grove_version).value;
+    assert!(
+        matches!(result, Err(Error::InvalidBatchOperation(_))),
+        "subtree nested below an MmrTree parent must be rejected, got {:?}",
+        result
+    );
+    let root_after = db
+        .root_hash(None, grove_version)
+        .unwrap()
+        .expect("root hash after");
+    assert_eq!(root_before, root_after, "root hash must be unchanged");
+    assert!(
+        db.get(EMPTY_PATH, b"mmr", None, grove_version)
+            .unwrap()
+            .is_err(),
+        "rejected batch must not have created the mmr parent"
+    );
+}
+
+#[test]
+fn test_batch_creating_empty_append_trees_still_succeeds() {
+    // Valid fresh-parent creation (no keyed descendants) is unaffected by
+    // the rejection, and the created trees agree with typed readers and
+    // integrity checks.
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    let ops = append_family_elements()
+        .into_iter()
+        .map(|(key, element)| {
+            QualifiedGroveDbOp::insert_or_replace_op(vec![], key.to_vec(), element)
+        })
+        .collect::<Vec<_>>();
+    db.apply_batch(ops, None, None, grove_version)
+        .unwrap()
+        .expect("creating empty append-family trees in a batch must succeed");
+
+    // Typed appends into the freshly created trees work.
+    db.mmr_tree_append(EMPTY_PATH, b"mmr", b"value".to_vec(), None, grove_version)
+        .unwrap()
+        .expect("typed append into fresh mmr tree");
+    assert_eq!(
+        db.mmr_tree_leaf_count(EMPTY_PATH, b"mmr", None, grove_version)
+            .unwrap()
+            .expect("leaf count"),
+        1
+    );
+
+    let issues = db
+        .verify_grovedb(None, true, false, grove_version)
+        .expect("verify_grovedb should not fail");
+    assert!(issues.is_empty(), "expected no issues, got: {:?}", issues);
+}
+
+#[test]
+fn test_batch_keyed_child_under_append_tree_accepted_on_grove_v3_for_replay() {
+    // GROVE_V3 must keep the released accepted/rejected outcome: the gate
+    // `non_merk_parent_keyed_ops_rejection` is 0, so the (corrupting) keyed
+    // child write under a CommitmentTree parent still returns Ok. This
+    // documents that the V4 fix does not alter V1..V3 replay.
+    use grovedb_version::version::v3::GROVE_V3;
+    let db = make_empty_grovedb();
+    let ops = vec![
+        QualifiedGroveDbOp::insert_or_replace_op(
+            vec![],
+            b"ct".to_vec(),
+            Element::empty_commitment_tree(10).expect("valid chunk_power"),
+        ),
+        QualifiedGroveDbOp::insert_or_replace_op(
+            vec![b"ct".to_vec()],
+            b"child".to_vec(),
+            Element::new_item(b"data".to_vec()),
+        ),
+    ];
+    db.apply_batch(ops, None, None, &GROVE_V3)
+        .unwrap()
+        .expect("GROVE_V3 must preserve the released (accepting) behavior");
+}

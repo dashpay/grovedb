@@ -2904,6 +2904,33 @@ where
             merk.tree_type
         };
 
+        // Every op at this level executes through Merk dispatch against the
+        // parent's Merk namespace. Non-Merk data trees keep their state in
+        // the data namespace and commit a typed root instead: letting a Merk
+        // root form here would propagate it into the parent element's hash
+        // while the element keeps its typed metadata and no root key — an
+        // acknowledged write that typed readers never see, unreachable rows,
+        // and a verify_grovedb failure (issue #900). This catches parents
+        // that already exist (the open above derives the tree type from the
+        // stored element) and parents created in this same batch (the batch
+        // structure registers them in the cache with their real tree type).
+        // Typed appends never reach this path: preprocessing rewrites them
+        // into ReplaceNonMerkTreeRoot ops at the PARENT level.
+        if in_tree_type.uses_non_merk_data_storage()
+            && grove_version
+                .grovedb_versions
+                .apply_batch
+                .non_merk_parent_keyed_ops_rejection
+                >= 1
+        {
+            return Err(Error::InvalidBatchOperation(
+                "non-Merk trees (CommitmentTree, MmrTree, BulkAppendTree, DenseTree, \
+                 PrivateDocumentStore) cannot hold keyed child elements; entries are added \
+                 through their typed operations",
+            ))
+            .wrap_with_cost(cost);
+        }
+
         // For cidx primaries, capture the pre-apply count value of every
         // key that this level's ops will mutate. After
         // `merk.apply_with_specialized_costs` runs we re-read each
