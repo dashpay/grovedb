@@ -1682,26 +1682,41 @@ fn non_unit_row_outside_offset_region_still_proves() {
     );
 }
 
-/// The refusal is fail-closed on the proof side only: the prover walks
-/// the subtree it is about to collapse and pays for every node it reads.
+/// The pre-collapse unit-row walk reads nodes the emitter would otherwise
+/// never touch, and every one of those loads must be billed. Each prove
+/// runs on a fresh fixture because a walk upgrades pruned links to
+/// `Loaded` in memory, so a second prove on the same merk would see a
+/// tree that no longer needs any seeks.
 #[test]
 fn offset_collapse_walk_is_charged() {
     let grove_version = GroveVersion::latest();
+
+    // Offset 0, limit 1: "a" is returned and everything else collapses
+    // past the limit. The emitter loads d, b, a on the way down plus c,
+    // f, l as collapsed subtree roots: six seeks, no hashing.
     let (merk, _) = make_15_key_provable_count_tree(grove_version);
-    // Offset 7 collapses the whole left half a..g after walking its
-    // seven nodes; the walk's loads show up as seeks in the cost.
-    let with_walk = merk
-        .prove_count_offset_on_range(&QueryItem::RangeFull(..), 7, Some(1), true, grove_version)
-        .cost;
-    // Offset 0 walks nothing extra: "a" is returned, everything else is
-    // a past-limit collapse.
     let without_walk = merk
         .prove_count_offset_on_range(&QueryItem::RangeFull(..), 0, Some(1), true, grove_version)
         .cost;
+    assert_eq!(without_walk.seek_count, 6, "{:?}", without_walk);
+    assert_eq!(without_walk.hash_node_calls, 0, "{:?}", without_walk);
+    assert!(without_walk.storage_loaded_bytes > 0, "{:?}", without_walk);
+
+    // Offset 7, limit 1: the whole left half a..g collapses after the
+    // walk confirms its seven rows are units. The walk additionally
+    // loads e and g, the two nodes the no-walk path never reads, so the
+    // collapse costs exactly two more seeks and their bytes.
+    let (merk, _) = make_15_key_provable_count_tree(grove_version);
+    let with_walk = merk
+        .prove_count_offset_on_range(&QueryItem::RangeFull(..), 7, Some(1), true, grove_version)
+        .cost;
+    assert_eq!(with_walk.seek_count, 8, "{:?}", with_walk);
+    assert_eq!(with_walk.hash_node_calls, 0, "{:?}", with_walk);
     assert!(
-        with_walk.seek_count > without_walk.seek_count,
-        "the pre-collapse unit-row walk must be billed: {:?} vs {:?}",
+        with_walk.storage_loaded_bytes > without_walk.storage_loaded_bytes,
+        "the walk's node loads must be billed: {:?} vs {:?}",
         with_walk,
         without_walk
     );
+    assert_eq!(with_walk.storage_cost, without_walk.storage_cost);
 }

@@ -250,8 +250,13 @@ These rejection branches all have dedicated forging tests in
 ## Unsupported in-range value shapes (P1 / P2)
 
 The count-offset proof flow's scope is **plain `Item` / `SumItem` /
-`ItemWithSumItem` and empty trees inside a count tree**. These shapes
-are explicitly rejected by the prover (and, where it can see them, the
+`ItemWithSumItem` and empty trees inside a count tree**, with one rule
+on what may sit in the offset region: every row an offset collapse
+would skip must contribute exactly one count unit, a row the prover
+descends through may not contribute more than one wherever it sits,
+and an in-range row it descends through may not contribute zero.
+Disjoint and past-limit collapses are exempt. These shapes are
+explicitly rejected by the prover (and, where it can see them, the
 verifier):
 
 | Rejected shape                              | Primary defense                                                                                                                                                                                                                                              |
@@ -304,7 +309,9 @@ emitted proof stays a single op, so proof size is unchanged. Disjoint
 and past-limit collapses never touch the offset budget and are not
 walked. A non-unit row met on descent (in range or on the path) is
 refused with the same message, since the verifier derives `own_count`
-for every descended row and rejects anything above 1.
+for every descended row and rejects any value other than 0 or 1 (and
+rejects 0 for an in-range row, which is where an empty nested
+count-bearing tree lands).
 
 The verifier's `skipped` is therefore exactly "count units skipped";
 it equals rows on every host an honest prover agrees to serve. A
