@@ -38,6 +38,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             apply_partial_batch_with_element_flags_update: 0,
             estimated_case_operations_for_batch: 0,
             delete_tree_cleanup_type_source: 0,
+            delete_tree_recursive_secondary_cleanup: 0,
             overwrite_indexed_cleanup_inspection: 0,
             keyless_op_cost_dispatch: 0,
             add_on_op_collision: 0,

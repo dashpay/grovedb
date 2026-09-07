@@ -195,9 +195,10 @@ impl GroveDb {
         Ok(result).wrap_with_cost(cost)
     }
 
-    /// Recursively clear ALL storage owned by the subtree at `path`: the
+    /// Recursively clear storage owned by the subtree at `path`: the
     /// primary namespace of every nested subtree discovered by
-    /// [`Self::find_subtrees`], plus — for EVERY discovered subtree — the
+    /// [`Self::find_subtrees`], plus — when `sweep_secondary_namespaces` is
+    /// enabled, for EVERY discovered subtree — the
     /// per-axis indexed-tree secondary namespaces at
     /// `Blake3(subtree_prefix ‖ axis_tag)` (S2-B derivation).
     ///
@@ -212,11 +213,16 @@ impl GroveDb {
     /// deterministic path (prefixes are path-derived) would resurrect the
     /// stale secondary rows, breaking primary-secondary agreement.
     ///
-    /// All three axis tags are swept unconditionally for every discovered
+    /// When enabled, all three axis tags are swept for every discovered
     /// subtree rather than decoding each subtree's element to check its
     /// tree type: clearing an empty namespace is a no-op, so the
     /// redundancy is intentional defense-in-depth (it also removes a class
     /// of missed-decoding bugs).
+    ///
+    /// Full and partial batch deletion disable the secondary sweep on
+    /// V1..V3 to preserve historical costs, including empty-namespace seeks
+    /// and hashes for ordinary trees. Direct deletion keeps it enabled on
+    /// every version because its legacy loop already included the sweep.
     ///
     /// `context` names the calling operation in error messages.
     pub(crate) fn clear_subtree_storage_recursively<'db, B: AsRef<[u8]>>(
@@ -224,6 +230,7 @@ impl GroveDb {
         path: &SubtreePath<B>,
         transaction: &'db Transaction,
         batch: &'db StorageBatch,
+        sweep_secondary_namespaces: bool,
         context: &str,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -248,6 +255,9 @@ impl GroveDb {
                 })
             );
 
+            if !sweep_secondary_namespaces {
+                continue;
+            }
             let primary_prefix = RocksDbStorage::build_prefix(p).unwrap_add_cost(&mut cost);
             for axis in [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg] {
                 let secondary_prefix =

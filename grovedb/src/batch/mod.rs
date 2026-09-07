@@ -6765,7 +6765,9 @@ impl GroveDb {
         // find_subtrees and clears each one's primary namespace AND its
         // per-axis indexed-tree secondary namespaces (issue #888 — a nested
         // indexed primary's secondaries live outside the path-prefix walk),
-        // matching the non-batch delete behavior.
+        // matching the non-batch delete behavior on V4+. V1..V3 retain
+        // primary-only recursion because even empty secondary sweeps
+        // charge additional costs for ordinary trees.
         //
         // NOTE: find_subtrees reads from the committed transaction state
         // (without the pending storage_batch), so any subtrees *inserted*
@@ -6783,6 +6785,11 @@ impl GroveDb {
                     &child_subtree_path,
                     tx.as_ref(),
                     &storage_batch,
+                    grove_version
+                        .grovedb_versions
+                        .apply_batch
+                        .delete_tree_recursive_secondary_cleanup
+                        >= 1,
                     "batch delete",
                     grove_version,
                 )
@@ -6857,6 +6864,7 @@ impl GroveDb {
                     &cidx_subtree_path,
                     tx.as_ref(),
                     &storage_batch,
+                    true,
                     "batch overwrite",
                     grove_version,
                 )
@@ -7528,6 +7536,11 @@ impl GroveDb {
                     &child_subtree_path,
                     tx.as_ref(),
                     &storage_batch,
+                    grove_version
+                        .grovedb_versions
+                        .apply_batch
+                        .delete_tree_recursive_secondary_cleanup
+                        >= 1,
                     "batch delete",
                     grove_version,
                 )
@@ -7594,6 +7607,7 @@ impl GroveDb {
                     &cidx_subtree_path,
                     tx.as_ref(),
                     &storage_batch,
+                    true,
                     "batch overwrite",
                     grove_version,
                 )

@@ -12,6 +12,13 @@
 //!   observer), so V4 charges exactly the V1..V3 cost — the gate exists
 //!   because it flips an accepted/rejected outcome, not because of cost.
 //!
+//! - `apply_batch.delete_tree_recursive_secondary_cleanup: 1` — full and
+//!   partial batch `DeleteTree` cleanup sweeps each descendant's indexed
+//!   secondary namespaces (issue #888). V1..V3 retain primary-only recursion
+//!   and the separate top-level secondary pass: even empty secondary sweeps
+//!   charge additional seeks, reads, and hashes for ordinary trees. Direct
+//!   deletion already swept descendants' secondaries and is unchanged.
+//!
 //! - `apply_batch.overwrite_indexed_cleanup_inspection: 1` — a batch
 //!   overwrite (with tree-override protection off, references included)
 //!   classifies the element it displaces to detect an indexed tree being
@@ -336,6 +343,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             apply_partial_batch_with_element_flags_update: 0,
             estimated_case_operations_for_batch: 0,
             delete_tree_cleanup_type_source: 1,
+            delete_tree_recursive_secondary_cleanup: 1,
             overwrite_indexed_cleanup_inspection: 1,
             keyless_op_cost_dispatch: 1,
             add_on_op_collision: 1,

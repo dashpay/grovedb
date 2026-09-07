@@ -513,6 +513,7 @@ impl GroveDb {
             &entry_path,
             transaction,
             batch,
+            true,
             "dedicated indexed-tree overwrite/delete",
             grove_version,
         )

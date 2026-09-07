@@ -234,6 +234,7 @@ impl GroveDb {
                             &subtree_merk_path_ref,
                             transaction,
                             batch,
+                            true,
                             "delete",
                             grove_version,
                         )

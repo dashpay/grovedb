@@ -23,18 +23,131 @@
 
 #[cfg(test)]
 mod tests {
+    use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, OperationCost};
     use grovedb_element::indexed::IndexAxis;
     use grovedb_merk::tree_type::TreeType;
     use grovedb_path::SubtreePath;
     use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageContext};
-    use grovedb_version::version::GroveVersion;
+    use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 
     use crate::{
         batch::{BatchApplyOptions, QualifiedGroveDbOp, SubelementsDeletionBehavior},
         operations::delete::DeleteOptions,
-        tests::{make_test_grovedb, TempGroveDb, TEST_LEAF},
+        tests::{make_empty_grovedb, make_test_grovedb, TempGroveDb, TEST_LEAF},
         Element, IndexedAxisEntrySliceExt,
     };
+
+    #[derive(Clone, Copy, Debug)]
+    enum DeleteRoute {
+        FullBatch,
+        PartialBatch,
+        Direct,
+    }
+
+    /// Costs measured on the parent of #934. Even an empty secondary
+    /// sweep charges seeks, boundary reads, and prefix hashes, so plain
+    /// trees must retain their released costs on V1..V3. Direct deletion
+    /// already swept secondaries and must keep doing so on every version.
+    fn assert_plain_tree_delete_costs(route: DeleteRoute) {
+        for gv in GROVE_VERSIONS {
+            let db = make_empty_grovedb();
+            let root: &[&[u8]] = &[];
+            db.insert(root, b"parent", Element::empty_tree(), None, None, gv)
+                .unwrap()
+                .expect("insert parent");
+            let expected_root = db.root_hash(None, gv).unwrap().expect("empty parent root");
+            db.insert(
+                &[b"parent".as_slice()],
+                b"child",
+                Element::empty_tree(),
+                None,
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("insert child");
+            db.insert(
+                &[b"parent".as_slice(), b"child".as_slice()],
+                b"item",
+                Element::new_item(vec![1]),
+                None,
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("populate child");
+
+            let ops = vec![QualifiedGroveDbOp::delete_tree_op(
+                vec![b"parent".to_vec()],
+                b"child".to_vec(),
+                TreeType::NormalTree,
+                SubelementsDeletionBehavior::DeleteChildren,
+            )];
+            let result = match route {
+                DeleteRoute::FullBatch => db.apply_batch(ops, None, None, gv),
+                DeleteRoute::PartialBatch => {
+                    db.apply_partial_batch(ops, None, |_, _| Ok(vec![]), None, gv)
+                }
+                DeleteRoute::Direct => db.delete(
+                    &[b"parent".as_slice()],
+                    b"child",
+                    Some(DeleteOptions {
+                        allow_deleting_non_empty_trees: true,
+                        deleting_non_empty_trees_returns_error: false,
+                        ..Default::default()
+                    }),
+                    None,
+                    gv,
+                ),
+            };
+            result.value.expect("delete child");
+            let (seek_count, storage_loaded_bytes, hash_node_calls) = match route {
+                DeleteRoute::Direct if gv.protocol_version <= 3 => (21, 2415, 14),
+                DeleteRoute::Direct => (20, 2340, 13),
+                _ if gv.protocol_version <= 3 => (13, 1135, 8),
+                _ => (16, 1999, 12),
+            };
+            let expected_cost = OperationCost {
+                seek_count,
+                storage_cost: grovedb_costs::storage_cost::StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 80,
+                    removed_bytes: StorageRemovedBytes::BasicStorageRemoval(226),
+                },
+                storage_loaded_bytes,
+                hash_node_calls,
+                ..Default::default()
+            };
+            assert_eq!(
+                result.cost, expected_cost,
+                "{route:?} cost changed on Grove version {}",
+                gv.protocol_version,
+            );
+            assert_eq!(
+                db.root_hash(None, gv)
+                    .unwrap()
+                    .expect("root after deletion"),
+                expected_root,
+                "{route:?} root changed on Grove version {}",
+                gv.protocol_version,
+            );
+        }
+    }
+
+    #[test]
+    fn batch_delete_preserves_versioned_costs() {
+        assert_plain_tree_delete_costs(DeleteRoute::FullBatch);
+    }
+
+    #[test]
+    fn partial_batch_delete_preserves_versioned_costs() {
+        assert_plain_tree_delete_costs(DeleteRoute::PartialBatch);
+    }
+
+    #[test]
+    fn direct_delete_preserves_versioned_costs() {
+        assert_plain_tree_delete_costs(DeleteRoute::Direct);
+    }
 
     /// Derive the secondary-namespace prefix for an indexed primary at
     /// `primary_path` and axis `axis`.
