@@ -4,14 +4,7 @@
 use bincode::config;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
-use crate::{
-    element::Element,
-    element_type::{
-        NON_COUNTED_WRAPPER_DISCRIMINANT, NOT_COUNTED_OR_SUMMED_WRAPPER_DISCRIMINANT,
-        NOT_SUMMED_WRAPPER_DISCRIMINANT,
-    },
-    error::ElementError,
-};
+use crate::{element::Element, error::ElementError};
 
 impl Element {
     /// Serializes self. Returns vector of u8s.
@@ -127,42 +120,14 @@ impl Element {
 
     /// Deserializes given bytes and sets as self.
     ///
-    /// Pre-checks the leading bytes for any wrapper-byte combination and
-    /// rejects before invoking bincode. This closes a stack-exhaustion
-    /// vector: a hostile payload of repeated wrapper bytes would otherwise
-    /// cause bincode to recursively decode the `Box<Element>` chain (and
-    /// overflow the stack) before any post-decode check could fire. The
-    /// pre-check is O(1) — only the first two bytes matter.
-    ///
-    /// The rejected leading byte pairs are every ordered combination of
-    /// the three wrapper discriminants (15 NonCounted, 16 NotSummed,
-    /// 17 NotCountedOrSummed) — nine in total.
+    /// The manual bincode decoder validates wrapper nesting from decoded
+    /// discriminants before descending and grows collections only after their
+    /// encoded contents have been read.
     pub fn deserialize(bytes: &[u8], grove_version: &GroveVersion) -> Result<Self, ElementError> {
         check_grovedb_v0!(
             "Element::deserialize",
             grove_version.grovedb_versions.element.deserialize
         );
-        // Pre-check: if the wire starts with a wrapper discriminant, the
-        // very next byte must NOT be ANY wrapper discriminant. This bounds
-        // the recursion bincode will attempt.
-        if let [outer, inner, ..] = bytes
-            && matches!(
-                *outer,
-                NON_COUNTED_WRAPPER_DISCRIMINANT
-                    | NOT_SUMMED_WRAPPER_DISCRIMINANT
-                    | NOT_COUNTED_OR_SUMMED_WRAPPER_DISCRIMINANT
-            )
-            && matches!(
-                *inner,
-                NON_COUNTED_WRAPPER_DISCRIMINANT
-                    | NOT_SUMMED_WRAPPER_DISCRIMINANT
-                    | NOT_COUNTED_OR_SUMMED_WRAPPER_DISCRIMINANT
-            )
-        {
-            return Err(ElementError::CorruptedData(
-                "deserialized wrapper wrapping another wrapper".to_string(),
-            ));
-        }
         let config = config::standard().with_big_endian().with_no_limit();
         let (elem, consumed): (Element, usize) = bincode::decode_from_slice(bytes, config)
             .map_err(|e| {
@@ -175,9 +140,8 @@ impl Element {
                 bytes.len()
             )));
         }
-        // Defensive belt-and-braces post-check (guards against future
-        // bincode/discriminant changes that could let a nested wrapper
-        // sneak past the pre-check).
+        // Keep this public-boundary validation so its error remains an
+        // ElementError even if another decoder implementation is introduced.
         if let Element::NonCounted(inner) = &elem
             && matches!(
                 **inner,
@@ -256,10 +220,82 @@ impl Element {
 
 #[cfg(test)]
 mod tests {
+    use grovedb_version::version::GROVE_VERSIONS;
     use integer_encoding::VarInt;
 
     use super::*;
     use crate::reference_path::ReferencePathType;
+
+    fn every_element_variant() -> Vec<Element> {
+        let flags = || Some(Vec::new());
+        vec![
+            Element::Item(vec![1], flags()),
+            Element::Reference(
+                ReferencePathType::AbsolutePathReference(vec![vec![2]]),
+                Some(3),
+                flags(),
+            ),
+            Element::Tree(Some(vec![3]), flags()),
+            Element::SumItem(-4, flags()),
+            Element::SumTree(Some(vec![5]), -5, flags()),
+            Element::BigSumTree(Some(vec![6]), -6, flags()),
+            Element::CountTree(Some(vec![7]), 7, flags()),
+            Element::CountSumTree(Some(vec![8]), 8, -8, flags()),
+            Element::ProvableCountTree(Some(vec![9]), 9, flags()),
+            Element::ItemWithSumItem(vec![10], -10, flags()),
+            Element::ProvableCountSumTree(Some(vec![11]), 11, -11, flags()),
+            Element::CommitmentTree(12, 4, flags()),
+            Element::MmrTree(13, flags()),
+            Element::BulkAppendTree(14, 4, flags()),
+            Element::DenseAppendOnlyFixedSizeTree(15, 4, flags()),
+            Element::NonCounted(Box::new(Element::Item(vec![16], flags()))),
+            Element::NotSummed(Box::new(Element::SumTree(Some(vec![17]), -17, flags()))),
+            Element::NotCountedOrSummed(Box::new(Element::SumTree(Some(vec![18]), -18, flags()))),
+            Element::ReferenceWithSumItem(
+                ReferencePathType::SiblingReference(vec![19]),
+                Some(4),
+                -19,
+                flags(),
+            ),
+            Element::ProvableSumTree(Some(vec![20]), -20, flags()),
+            Element::ProvableCountProvableSumTree(Some(vec![21]), 21, -21, flags()),
+            Element::ProvableSumIndexedTree(Some(vec![22]), Some(vec![23]), -22, flags()),
+            Element::ProvableCountIndexedTree(Some(vec![24]), Some(vec![25]), 24, flags()),
+            Element::ProvableCountProvableSumIndexedTree(
+                Some(vec![26]),
+                25,
+                -25,
+                vec![(0, Some(vec![27])), (1, None)],
+                flags(),
+            ),
+            Element::PrivateDocumentStore(26, 32, 4, flags()),
+            Element::BidirectionalReference(
+                crate::BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(vec![28]),
+                    cascade_on_update: true,
+                    max_hop: Some(5),
+                    backward_references: Vec::new(),
+                },
+                flags(),
+            ),
+            Element::ItemWithBackwardsReferences(
+                vec![29],
+                crate::BackwardReferences::default(),
+                flags(),
+            ),
+            Element::SumItemWithBackwardsReferences(
+                -30,
+                crate::BackwardReferences::default(),
+                flags(),
+            ),
+            Element::ItemWithSumItemWithBackwardsReferences(
+                vec![31],
+                -31,
+                crate::BackwardReferences::default(),
+                flags(),
+            ),
+        ]
+    }
 
     #[test]
     fn test_serialization() {
@@ -440,6 +476,70 @@ mod tests {
         }
     }
 
+    #[test]
+    fn noncanonical_nested_wrappers_are_rejected_without_recursing() {
+        // `fb 00 0f` is bincode's accepted, non-minimal u16 form of the
+        // NonCounted discriminant. It bypassed the former raw-byte precheck.
+        let mut bytes = vec![251, 0, 15];
+        bytes.extend(std::iter::repeat_n(15, 100_000));
+        bytes.extend([0, 0, 0]);
+
+        let config = config::standard().with_big_endian().with_no_limit();
+        let direct = bincode::decode_from_slice::<Element, _>(&bytes, config);
+        assert!(
+            matches!(direct, Err(bincode::error::DecodeError::Other(message)) if message.contains("nested Element wrappers"))
+        );
+        let borrowed = bincode::borrow_decode_from_slice::<Element, _>(&bytes, config);
+        assert!(
+            matches!(borrowed, Err(bincode::error::DecodeError::Other(message)) if message.contains("nested Element wrappers"))
+        );
+
+        let result = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || Element::deserialize(&bytes, GroveVersion::latest()))
+            .expect("spawn decoder on a small stack")
+            .join()
+            .expect("decoder must not overflow its stack");
+
+        assert!(
+            matches!(result, Err(ElementError::CorruptedData(message)) if message.contains("nested Element wrappers")),
+            "nested wrappers should return a structured decode error"
+        );
+    }
+
+    #[test]
+    fn every_vec_bearing_variant_rejects_an_unbacked_length_without_panicking() {
+        for element in every_element_variant() {
+            let name = element.type_str();
+            let mut bytes = element
+                .serialize(GroveVersion::latest())
+                .expect("serialize test element");
+
+            // Every Element variant has a trailing flags Option<Vec<u8>>.
+            // Replace its empty vector length with bincode's u64 marker and
+            // the largest possible declaration, without supplying contents.
+            assert_eq!(bytes.pop(), Some(0));
+            assert_eq!(bytes[bytes.len() - 1], 1);
+            bytes.push(252);
+            bytes.extend(u32::MAX.to_be_bytes());
+
+            let error = match Element::deserialize(&bytes, GroveVersion::latest()) {
+                Ok(_) => panic!("{name} accepted an unbacked vector length"),
+                Err(error) => error,
+            };
+            assert!(matches!(&error, ElementError::CorruptedData(_)));
+        }
+    }
+
+    #[test]
+    fn unlimited_public_decoders_do_not_reserve_an_unbacked_length() {
+        let bytes = [vec![0, 253], u64::MAX.to_be_bytes().to_vec()].concat();
+        let config = config::standard().with_big_endian().with_no_limit();
+
+        assert!(bincode::decode_from_slice::<Element, _>(&bytes, config).is_err());
+        assert!(bincode::borrow_decode_from_slice::<Element, _>(&bytes, config).is_err());
+    }
+
     /// `NonCounted` may not wrap the backward-references family — enforced
     /// at construction, serialization, AND deserialization (fail closed
     /// symmetric in both directions).
@@ -472,6 +572,20 @@ mod tests {
 
             // The type-classifier guard also rejects the pair.
             assert!(crate::ElementType::from_serialized_value(&bytes).is_err());
+        }
+    }
+
+    #[test]
+    fn every_variant_round_trips_on_all_supported_versions() {
+        for grove_version in GROVE_VERSIONS {
+            for element in every_element_variant() {
+                let bytes = element
+                    .serialize(grove_version)
+                    .expect("serialize valid element");
+                let decoded =
+                    Element::deserialize(&bytes, grove_version).expect("deserialize valid element");
+                assert_eq!(decoded, element);
+            }
         }
     }
 }

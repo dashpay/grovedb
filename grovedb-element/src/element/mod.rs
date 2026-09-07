@@ -13,7 +13,7 @@ mod visualize;
 
 use std::fmt;
 
-use bincode::{Decode, Encode};
+use bincode::Encode;
 
 use crate::{
     bidirectional_reference::BidirectionalReference, element_type::ElementType,
@@ -53,7 +53,7 @@ pub trait ElementCostSizeExtension {
 /// `NotCountedOrSummed`) may only wrap a sum-tree variant.
 /// `serde::Serialize` is derived; serialization of valid `Element` values is
 /// always safe.
-#[derive(Clone, Encode, Decode, PartialEq, Eq, Hash)]
+#[derive(Clone, Encode, PartialEq, Eq, Hash)]
 #[cfg_attr(not(feature = "visualize"), derive(Debug))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum Element {

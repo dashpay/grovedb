@@ -1930,6 +1930,62 @@ mod tests {
     }
 
     #[test]
+    fn proof_node_resource_exhaustion_payloads_return_structured_errors() {
+        use grovedb_merk::proofs::{Node, Op};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_sum_tree(v);
+        let pq = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove_query");
+
+        let mut nested_wrappers = vec![251, 0, 15];
+        nested_wrappers.extend(std::iter::repeat_n(15, 100_000));
+        nested_wrappers.extend([0, 0, 0]);
+        let unbacked_item_length = [vec![0, 253], u64::MAX.to_be_bytes().to_vec()].concat();
+
+        for hostile_value in [nested_wrappers, unbacked_item_length] {
+            let mutated = mutate_sum_test_leaf_layer_ops(&proof, |ops| {
+                for op in ops.iter_mut() {
+                    let value = match op {
+                        Op::Push(Node::KVValueHash(k, value, _))
+                        | Op::PushInverted(Node::KVValueHash(k, value, _))
+                        | Op::Push(Node::KVValueHashFeatureType(k, value, _, _))
+                        | Op::PushInverted(Node::KVValueHashFeatureType(k, value, _, _))
+                        | Op::Push(Node::KVValueHashFeatureTypeWithChildHash(k, value, _, _, _))
+                        | Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+                            k,
+                            value,
+                            _,
+                            _,
+                            _,
+                        )) if k == b"st" => Some(value),
+                        _ => None,
+                    };
+                    if let Some(value) = value {
+                        *value = hostile_value.clone();
+                        return;
+                    }
+                }
+                panic!("test setup: no `st` value-bearing proof node");
+            });
+
+            let result = GroveDb::verify_aggregate_sum_query(&mutated, &pq, v);
+            assert!(
+                matches!(result, Err(crate::Error::InvalidProof(_, _))),
+                "hostile proof value should return InvalidProof, got {:?}",
+                result.map(|(_, sum)| sum)
+            );
+        }
+    }
+
+    #[test]
     fn sum_non_leaf_proof_with_non_tree_element_is_rejected() {
         // Replace `st` value with a serialized Item: deserializes fine,
         // but enforce_lower_chain's `is_any_tree()` guard rejects it

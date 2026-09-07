@@ -27,7 +27,7 @@
 //! 32-byte `backrefs_hash`, so the referrer set is authenticated without
 //! bloating or leaking into result sets.
 
-use bincode::{Decode, Encode};
+use bincode::Encode;
 
 use crate::{element::MaxReferenceHop, reference_path::ReferencePathType};
 
@@ -68,7 +68,7 @@ pub type CascadeOnUpdate = bool;
 /// A referrer is identified by its `inverted_reference` (which is derived
 /// from the referrer's position, so it is unique per referrer); there are
 /// no slot indices.
-#[derive(Clone, Debug, Encode, Decode, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Encode, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BackwardReference {
     /// Path leading back to the referring `BidirectionalReference`.
@@ -94,7 +94,7 @@ pub struct BackwardReference {
 ///
 /// The type dereferences to its entries so the list can be read and
 /// maintained like the plain `Vec` it replaced.
-#[derive(Clone, Debug, Encode, Decode, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Encode, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BackwardReferences {
     /// How many referrers this element accepts (at most
@@ -163,7 +163,7 @@ impl std::ops::DerefMut for BackwardReferences {
 }
 
 /// Payload of [`crate::Element::BidirectionalReference`].
-#[derive(Clone, Debug, Encode, Decode, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Encode, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BidirectionalReference {
     /// Where this reference points to, like a regular reference.
@@ -203,7 +203,7 @@ pub fn deserialize_backward_references(
     let config = bincode::config::standard()
         .with_big_endian()
         .with_no_limit();
-    bincode::decode_from_slice(bytes, config)
+    bincode::decode_from_slice::<crate::bounded_decode::BackwardReferenceVec, _>(bytes, config)
         .map_err(|e| {
             crate::error::ElementError::CorruptedData(format!(
                 "unable to deserialize backward references: {e}"
@@ -214,7 +214,7 @@ pub fn deserialize_backward_references(
             // the same list; the codec is consensus-critical, so reject
             // them like `Element::deserialize` does.
             if consumed == bytes.len() {
-                Ok(v)
+                Ok(v.0)
             } else {
                 Err(crate::error::ElementError::CorruptedData(
                     "trailing bytes after backward references".to_string(),
@@ -628,6 +628,11 @@ mod tests {
         // The empty list has a stable 1-byte encoding (its hash is a
         // protocol constant).
         assert_eq!(serialize_backward_references(&[]).unwrap().len(), 1);
+
+        // A declared list length without encoded entries is rejected before
+        // the decoder reserves space for the declaration.
+        let unbacked_length = [vec![252], u32::MAX.to_be_bytes().to_vec()].concat();
+        assert!(deserialize_backward_references(&unbacked_length).is_err());
     }
     /// The declared capacity bounds registrations, the protocol ceiling
     /// bounds declarations, and decode enforces both.
