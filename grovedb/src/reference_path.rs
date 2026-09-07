@@ -4,7 +4,10 @@ use std::collections::HashSet;
 
 use grovedb_costs::{cost_return_on_error, cost_return_on_error_into_no_add, CostResult, CostsExt};
 pub use grovedb_element::reference_path::*;
-use grovedb_merk::{element::get::ElementFetchFromStorageExtensions, CryptoHash};
+use grovedb_merk::{
+    element::{get::ElementFetchFromStorageExtensions, ElementExt},
+    CryptoHash,
+};
 use grovedb_path::SubtreePathBuilder;
 use grovedb_version::check_grovedb_v0_with_cost;
 
@@ -20,6 +23,9 @@ pub(crate) struct ResolvedReference<'db, 'b, 'c, B> {
     pub target_key: Vec<u8>,
     pub target_element: Element,
     pub target_node_value_hash: CryptoHash,
+    /// Reference edges traversed to reach the terminal (1 for a direct
+    /// target).
+    pub hops: usize,
 }
 
 pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
@@ -37,12 +43,13 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
             .grovedb_versions
             .operations
             .get
-            .follow_reference
+            .ref_path_follow_reference
     );
 
     let mut cost = Default::default();
 
     let mut hops_left = MAX_REFERENCE_HOPS;
+    let mut hops_taken: usize = 0;
     let mut visited = HashSet::new();
 
     let mut qualified_path = path.clone();
@@ -55,6 +62,7 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
     let mut current_ref = ref_path;
 
     while hops_left > 0 {
+        hops_taken += 1;
         let referred_qualified_path = cost_return_on_error_into_no_add!(
             cost,
             current_ref.absolute_qualified_path(current_path, &current_key)
@@ -73,15 +81,16 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
             cost_return_on_error!(&mut cost, merk_cache.get_merk(referred_path.clone()));
         let (element, value_hash) = cost_return_on_error!(
             &mut cost,
-            referred_merk
-                .for_merk(|m| {
-                    Element::get_with_value_hash(m, &referred_key, true, merk_cache.version)
-                })
-                .map_err(|e| match e {
-                    grovedb_merk::error::Error::PathKeyNotFound(s) =>
-                        Error::CorruptedReferencePathKeyNotFound(s),
-                    e => e.into(),
-                })
+            referred_merk.for_merk(|m| {
+                Element::get_with_value_hash(m, &referred_key, true, merk_cache.version).map_err(
+                    |e| match e {
+                        grovedb_merk::error::Error::PathKeyNotFound(s) => {
+                            Error::CorruptedReferencePathKeyNotFound(s)
+                        }
+                        e => e.into(),
+                    },
+                )
+            })
         );
 
         // Look through wrapper variants so a wrapper-wrapped reference is
@@ -96,6 +105,9 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
         // share the resolution path. The carried sum on
         // `ReferenceWithSumItem` is irrelevant to chain following: it's a
         // parent-aggregation property, not a per-hop value.
+        // `BidirectionalReference` is a reference too: its forward path is
+        // followed exactly like a plain reference's. (Its backward slot is
+        // bookkeeping for update propagation, irrelevant to resolution.)
         match element.into_underlying() {
             Element::Reference(ref_path, ..) | Element::ReferenceWithSumItem(ref_path, ..) => {
                 current_path = referred_path;
@@ -103,13 +115,32 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
                 current_ref = ref_path;
                 hops_left -= 1;
             }
+            Element::BidirectionalReference(reference, _) => {
+                current_path = referred_path;
+                current_key = referred_key;
+                current_ref = reference.forward_reference_path;
+                hops_left -= 1;
+            }
             e => {
+                // Referrers commit to the LOGICAL value hash: for
+                // backward-references elements that is the inner (stripped)
+                // hash, not the node's stored combined hash.
+                let target_node_value_hash = if e.supports_backward_references() {
+                    cost_return_on_error!(
+                        &mut cost,
+                        e.logical_value_hash(merk_cache.version)
+                            .map_err(Error::from)
+                    )
+                } else {
+                    value_hash
+                };
                 return Ok(ResolvedReference {
                     target_merk: referred_merk,
                     target_path: referred_path,
                     target_key: referred_key,
                     target_element: e,
-                    target_node_value_hash: value_hash,
+                    target_node_value_hash,
+                    hops: hops_taken,
                 })
                 .wrap_with_cost(cost);
             }
@@ -156,23 +187,37 @@ pub(crate) fn follow_reference_once<'db, 'b, 'c, B: AsRef<[u8]>>(
         cost_return_on_error!(&mut cost, merk_cache.get_merk(referred_path.clone()));
     let (element, value_hash) = cost_return_on_error!(
         &mut cost,
-        referred_merk
-            .for_merk(|m| {
-                Element::get_with_value_hash(m, &referred_key, true, merk_cache.version)
+        referred_merk.for_merk(|m| {
+            Element::get_with_value_hash(m, &referred_key, true, merk_cache.version).map_err(|e| {
+                match e {
+                    grovedb_merk::error::Error::PathKeyNotFound(s) => {
+                        Error::CorruptedReferencePathKeyNotFound(s)
+                    }
+                    e => e.into(),
+                }
             })
-            .map_err(|e| match e {
-                grovedb_merk::error::Error::PathKeyNotFound(s) =>
-                    Error::CorruptedReferencePathKeyNotFound(s),
-                e => e.into(),
-            })
+        })
     );
+
+    // See `follow_reference`: logical hash for backward-references elements.
+    let target_node_value_hash = if element.supports_backward_references() {
+        cost_return_on_error!(
+            &mut cost,
+            element
+                .logical_value_hash(merk_cache.version)
+                .map_err(Error::from)
+        )
+    } else {
+        value_hash
+    };
 
     Ok(ResolvedReference {
         target_merk: referred_merk,
         target_path: referred_path,
         target_key: referred_key,
         target_element: element,
-        target_node_value_hash: value_hash,
+        target_node_value_hash,
+        hops: 1,
     })
     .wrap_with_cost(cost)
 }

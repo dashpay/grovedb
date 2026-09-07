@@ -1315,10 +1315,14 @@ impl GroveDb {
             // its value itself (`H(value) == value_hash`); a composite row
             // (tree, reference) is bound only when the merk verifier
             // checked `combine_hash(H(value), child_hash) == value_hash`
-            // on a node carrying the child hash. A bare `KVValueHash` row
-            // satisfies neither: its bytes are free for a prover to
-            // rewrite under a genuine root, which is exactly how a sum
-            // item could be disguised as a tree and dropped.
+            // on a node carrying the child hash; a backward-references
+            // item row (`KVBackwardsReferencesValueHash`) is bound the same
+            // way, the merk verifier having recomputed
+            // `combine_hash(H(stripped), referrer_list_hash)` into the root.
+            // A bare `KVValueHash` row satisfies neither: its bytes are
+            // free for a prover to rewrite under a genuine root, which is
+            // exactly how a sum item could be disguised as a tree and
+            // dropped.
             let simply_bound = value_hash(value_bytes).value() == *row_value_hash;
             if !simply_bound && !*child_hash_verified {
                 return Err(Error::InvalidProof(
@@ -1344,17 +1348,21 @@ impl GroveDb {
             if element.is_reference() || !element.is_sum_item() {
                 continue;
             }
-            // A sum item commits the plain hash of its bytes, and the
-            // merk verifier refuses item elements on child-hash nodes at
-            // proof version 1, so a row that reaches the fold is always
-            // simply bound on a proof it accepted.
+            // A plain sum item commits the plain hash of its bytes, and
+            // the merk verifier refuses item elements on child-hash nodes
+            // at proof version 1, so a row that reaches the fold is either
+            // simply bound or — for the backward-references sum items —
+            // bound through the recomputed referrer-list combination.
             debug_assert!(
-                simply_bound,
-                "a folded sum item row must be bound by its own hash"
+                simply_bound || *child_hash_verified,
+                "a folded sum item row must be bound by its own hash or a recomputed \
+                 combined hash"
             );
             let value = match element.into_underlying() {
-                Element::SumItem(value, _) => value,
-                Element::ItemWithSumItem(_, value, _) => value,
+                Element::SumItem(value, _)
+                | Element::ItemWithSumItem(_, value, _)
+                | Element::SumItemWithBackwardsReferences(value, _, _)
+                | Element::ItemWithSumItemWithBackwardsReferences(_, value, _, _) => value,
                 _ => {
                     return Err(Error::InvalidProof(
                         query.clone(),
@@ -2360,7 +2368,11 @@ impl GroveDb {
                             | Element::Item(..)
                             | Element::ItemWithSumItem(..)
                             | Element::Reference(..)
-                            | Element::ReferenceWithSumItem(..) => {
+                            | Element::ReferenceWithSumItem(..)
+                            | Element::BidirectionalReference(..)
+                            | Element::ItemWithBackwardsReferences(..)
+                            | Element::SumItemWithBackwardsReferences(..)
+                            | Element::ItemWithSumItemWithBackwardsReferences(..) => {
                                 return Err(Error::InvalidProof(
                                     query.clone(),
                                     "V1 proof has lower layer for a non-tree element.".to_string(),
@@ -3530,7 +3542,11 @@ impl GroveDb {
                             | Element::Item(..)
                             | Element::ItemWithSumItem(..)
                             | Element::Reference(..)
-                            | Element::ReferenceWithSumItem(..) => {
+                            | Element::ReferenceWithSumItem(..)
+                            | Element::BidirectionalReference(..)
+                            | Element::ItemWithBackwardsReferences(..)
+                            | Element::SumItemWithBackwardsReferences(..)
+                            | Element::ItemWithSumItemWithBackwardsReferences(..) => {
                                 return Err(Error::InvalidProof(
                                     query.clone(),
                                     "Proof has lower layer for a non Tree.".to_string(),
@@ -4680,6 +4696,7 @@ impl GroveDb {
         match node {
             Node::KV(key, value)
             | Node::KVValueHash(key, value, ..)
+            | Node::KVBackwardsReferencesValueHash(key, value, ..)
             | Node::KVValueHashFeatureType(key, value, ..)
             | Node::KVValueHashFeatureTypeWithChildHash(key, value, ..)
             | Node::KVCount(key, value, ..)

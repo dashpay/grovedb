@@ -22,6 +22,7 @@ where
             root_tree_key: Cell::new(None),
             storage,
             merk_type,
+            meta_cache: Default::default(),
             tree_type,
         }
     }
@@ -41,6 +42,7 @@ where
             storage,
             merk_type: StandaloneMerk,
             tree_type,
+            meta_cache: Default::default(),
         };
 
         merk.load_base_root(value_defined_cost_fn, grove_version)
@@ -62,6 +64,7 @@ where
             storage,
             merk_type: BaseMerk,
             tree_type,
+            meta_cache: Default::default(),
         };
 
         merk.load_base_root(value_defined_cost_fn, grove_version)
@@ -84,6 +87,7 @@ where
             storage,
             merk_type: LayeredMerk,
             tree_type,
+            meta_cache: Default::default(),
         };
 
         merk.load_root(value_defined_cost_fn, grove_version)
