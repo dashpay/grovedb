@@ -1177,6 +1177,7 @@ mod tests {
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: true,
             read_mode: None,
+            limit: None,
         };
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
@@ -1443,6 +1444,7 @@ mod tests {
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         };
         let path_query = PathQuery::new_unsized(vec![], query);
 
@@ -1783,6 +1785,7 @@ mod tests {
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         };
         let path_query = PathQuery::new(
             vec![TEST_LEAF.to_vec()],
@@ -1852,6 +1855,7 @@ mod tests {
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         };
         let path_query = PathQuery::new(
             vec![b"tree".to_vec()],
@@ -2756,6 +2760,7 @@ mod tests {
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: true,
             read_mode: None,
+            limit: None,
         };
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
@@ -2837,6 +2842,7 @@ mod tests {
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: true,
             read_mode: None,
+            limit: None,
         };
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
@@ -2921,6 +2927,7 @@ mod tests {
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         };
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
@@ -3003,6 +3010,7 @@ mod tests {
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         };
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
@@ -3084,6 +3092,7 @@ mod tests {
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         };
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
@@ -3211,6 +3220,7 @@ mod tests {
             conditional_subquery_branches: Some(conditional),
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         };
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
@@ -3301,6 +3311,7 @@ mod tests {
             conditional_subquery_branches: Some(conditional),
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         };
         let path_query = PathQuery::new(
             vec![b"root".to_vec()],
@@ -3419,6 +3430,7 @@ mod tests {
             conditional_subquery_branches: Some(conditional),
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         };
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
@@ -3514,6 +3526,7 @@ mod tests {
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         };
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
@@ -3676,6 +3689,7 @@ mod tests {
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         };
         let path_query = PathQuery::new(
             vec![b"root".to_vec()],
@@ -4062,6 +4076,7 @@ mod tests {
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         };
         let path_query = PathQuery::new(
             vec![TEST_LEAF.to_vec()],
@@ -4122,6 +4137,7 @@ mod tests {
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         };
         let path_query = PathQuery::new(
             vec![b"tree".to_vec()],
@@ -4377,6 +4393,7 @@ mod tests {
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         };
         let path_query = PathQuery::new_unsized(vec![], query);
 
@@ -4427,6 +4444,7 @@ mod tests {
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         };
         let path_query = PathQuery::new_unsized(vec![], query);
 
@@ -5227,8 +5245,8 @@ mod tests {
     // BulkAppendTree query variant coverage
     //
     // Exercises different QueryItem match arms in verify.rs:
-    //   extract_range_from_query_items (lines 993-1111)
-    //   expand_query_to_u64_positions  (lines 1116-1224)
+    //   extract_range_from_query_items
+    //   position_intervals::PositionIntervals::from_query_items
     //
     // Existing tests only use Key and RangeInclusive. These tests cover:
     //   Range, RangeFull, RangeFrom, RangeTo, RangeToInclusive,
@@ -5293,6 +5311,7 @@ mod tests {
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         };
         PathQuery::new_unsized(vec![b"root".to_vec()], query)
     }
@@ -5447,7 +5466,8 @@ mod tests {
     // This covers the match arms in:
     //   generate.rs: query_items_to_positions, query_items_to_leaf_indices,
     //                query_items_to_range
-    //   verify.rs:   extract_range_from_query_items, expand_query_to_u64_positions
+    //   verify.rs:   extract_range_from_query_items,
+    //                position_intervals::PositionIntervals::from_query_items
     // =========================================================================
 
     /// Helper: build a PathQuery selecting `tree_key` inside `[b"root"]`,
@@ -5463,6 +5483,7 @@ mod tests {
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         };
         let query = Query {
             items: vec![QueryItem::Key(tree_key.to_vec())],
@@ -5474,6 +5495,7 @@ mod tests {
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         };
         PathQuery::new_unsized(vec![b"root".to_vec()], query)
     }
@@ -5510,7 +5532,7 @@ mod tests {
     fn prove_v1_mmr_tree_query_variants() {
         // Exercises 8 QueryItem range variants against an MmrTree.
         // Covers generate.rs::query_items_to_leaf_indices and
-        // verify.rs::expand_query_to_u64_positions.
+        // position_intervals::PositionIntervals::from_query_items.
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 

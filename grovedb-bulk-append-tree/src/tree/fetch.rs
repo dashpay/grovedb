@@ -6,7 +6,7 @@ use grovedb_merkle_mountain_range::{leaf_to_pos, MmrKeySize, MmrStore, MMR};
 use grovedb_query::Query;
 use grovedb_storage::StorageContext;
 
-use super::BulkAppendTree;
+use super::{BulkAppendTree, RangePage};
 use crate::{chunk::deserialize_chunk_blob, BulkAppendError};
 use grovedb_version::version::GroveVersion;
 
@@ -85,6 +85,133 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             })?;
         let entries = proof.entries.clone();
         Ok(BufferQueryResult { entries, proof })
+    }
+
+    // ── Range operations (chunks + buffer) ───────────────────────────
+
+    /// Fetch entries for the position range `[start, start + limit)`,
+    /// clamped to the tree's total count.
+    ///
+    /// This is the paginated-scan read path: clients walking "all entries
+    /// since my cursor" call it with their cursor as `start` and advance by
+    /// `entries.len()`. The read is chunk-aligned — each completed chunk
+    /// overlapping the range is read and deserialized exactly once, so a
+    /// page costs O(chunks touched) blob reads plus one read per buffer
+    /// entry, not O(entries) random reads.
+    ///
+    /// Absence needs no lookup: positions `>= total_count` do not exist, so
+    /// a page shorter than `limit` means the end of the tree was reached.
+    ///
+    /// Returns a [`CostResult`] so callers can charge the page's actual
+    /// storage work (chunk MMR seeks and buffer reads) against cost limits.
+    pub fn get_range(&self, start: u64, limit: u16) -> CostResult<RangePage, BulkAppendError> {
+        let mut cost = OperationCost::default();
+
+        let total_count = self.total_count;
+        let end = start.saturating_add(limit as u64).min(total_count);
+        if start >= end {
+            return Ok(RangePage {
+                entries: Vec::new(),
+                total_count,
+            })
+            .wrap_with_cost(cost);
+        }
+        let mut entries = Vec::with_capacity((end - start) as usize);
+
+        let epoch_size = self.epoch_size();
+        let buffer_start = self.chunk_count() * epoch_size;
+
+        // Completed chunks overlapping [start, min(end, buffer_start)).
+        // The MMR (with its overlay clone) is built once and reused for every
+        // chunk in the page — going through `get_chunk_value` would rebuild
+        // it, and re-clone the overlay, per chunk.
+        let chunk_end = end.min(buffer_start);
+        if start < chunk_end {
+            let first_chunk = start / epoch_size;
+            let last_chunk = (chunk_end - 1) / epoch_size;
+            let mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32);
+            let mmr = MMR::new_with_overlay(self.mmr_size(), &mmr_store, self.mmr_overlay.clone());
+            for chunk_idx in first_chunk..=last_chunk {
+                let node = match mmr
+                    .batch
+                    .element_at_position(leaf_to_pos(chunk_idx))
+                    .unwrap_add_cost(&mut cost)
+                {
+                    Ok(node) => node,
+                    Err(e) => {
+                        return Err(BulkAppendError::MmrError(format!(
+                            "failed to read MMR node for chunk {}: {}",
+                            chunk_idx, e
+                        )))
+                        .wrap_with_cost(cost);
+                    }
+                };
+                let Some(blob) = node.and_then(|n| n.into_value()) else {
+                    return Err(BulkAppendError::CorruptedData(format!(
+                        "missing chunk blob for index {}",
+                        chunk_idx
+                    )))
+                    .wrap_with_cost(cost);
+                };
+                let chunk_entries = match deserialize_chunk_blob(&blob) {
+                    Ok(chunk_entries) => chunk_entries,
+                    Err(e) => return Err(e).wrap_with_cost(cost),
+                };
+                // A completed chunk holds exactly `epoch_size` entries — a
+                // short blob would silently omit positions and an oversized
+                // one would overlap the next chunk, breaking the contiguous
+                // page contract. Unlike proof verification (where chunk
+                // bytes are bound to the state root and a length check is
+                // redundant — see the NOTE in proof/mod.rs), this raw read
+                // path has no root comparison backing it, so the length is
+                // validated here.
+                if chunk_entries.len() as u64 != epoch_size {
+                    return Err(BulkAppendError::CorruptedData(format!(
+                        "chunk {} holds {} entries, expected {}",
+                        chunk_idx,
+                        chunk_entries.len(),
+                        epoch_size
+                    )))
+                    .wrap_with_cost(cost);
+                }
+                let chunk_start = chunk_idx * epoch_size;
+                for (i, value) in chunk_entries.into_iter().enumerate() {
+                    let pos = chunk_start + i as u64;
+                    if pos >= start && pos < chunk_end {
+                        entries.push((pos, value));
+                    }
+                }
+            }
+        }
+
+        // Buffer tail: positions in [max(start, buffer_start), end). Every
+        // position here is below `total_count`, so the buffer must hold it;
+        // `get_buffer_value_with_cost` charges each read's seek and bytes,
+        // and a `None` from it can only mean the backing store lost a value.
+        for pos in start.max(buffer_start)..end {
+            let buffer_pos = (pos - buffer_start) as u16;
+            let value = match self
+                .get_buffer_value_with_cost(buffer_pos)
+                .unwrap_add_cost(&mut cost)
+            {
+                Ok(Some(value)) => value,
+                Ok(None) => {
+                    return Err(BulkAppendError::CorruptedData(format!(
+                        "missing buffer value at position {}",
+                        buffer_pos
+                    )))
+                    .wrap_with_cost(cost);
+                }
+                Err(e) => return Err(e).wrap_with_cost(cost),
+            };
+            entries.push((pos, value));
+        }
+
+        Ok(RangePage {
+            entries,
+            total_count,
+        })
+        .wrap_with_cost(cost)
     }
 
     // ── Chunk operations (MMR) ───────────────────────────────────────

@@ -136,7 +136,7 @@ pub trait Storage<'db> {
     /// Creates a database checkpoint in a specified path
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error>;
 
-    /// Return worst case cost for storage_cost context creation.
+    /// Return worst case cost for storage context creation.
     fn get_storage_context_cost<L: WorstKeyLength>(path: &[L]) -> OperationCost;
 }
 
@@ -149,11 +149,11 @@ pub trait StorageContext<'db> {
     /// Storage batch type
     type Batch: Batch;
 
-    /// Storage raw iterator type (to iterate over storage_cost without
+    /// Storage raw iterator type (to iterate over storage without
     /// supplying a key)
     type RawIterator: RawIterator;
 
-    /// Put `value` into data storage_cost with `key`
+    /// Put `value` into data storage with `key`
     fn put<K: AsRef<[u8]>>(
         &self,
         key: K,
@@ -162,7 +162,7 @@ pub trait StorageContext<'db> {
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error>;
 
-    /// Put `value` into auxiliary data storage_cost with `key`
+    /// Put `value` into auxiliary data storage with `key`
     fn put_aux<K: AsRef<[u8]>>(
         &self,
         key: K,
@@ -170,7 +170,7 @@ pub trait StorageContext<'db> {
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error>;
 
-    /// Put `value` into trees roots storage_cost with `key`
+    /// Put `value` into trees roots storage with `key`
     fn put_root<K: AsRef<[u8]>>(
         &self,
         key: K,
@@ -178,7 +178,7 @@ pub trait StorageContext<'db> {
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error>;
 
-    /// Put `value` into GroveDB metadata storage_cost with `key`
+    /// Put `value` into GroveDB metadata storage with `key`
     fn put_meta<K: AsRef<[u8]>>(
         &self,
         key: K,
@@ -186,44 +186,44 @@ pub trait StorageContext<'db> {
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error>;
 
-    /// Delete entry with `key` from data storage_cost
+    /// Delete entry with `key` from data storage
     fn delete<K: AsRef<[u8]>>(
         &self,
         key: K,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error>;
 
-    /// Delete entry with `key` from auxiliary data storage_cost
+    /// Delete entry with `key` from auxiliary data storage
     fn delete_aux<K: AsRef<[u8]>>(
         &self,
         key: K,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error>;
 
-    /// Delete entry with `key` from trees roots storage_cost
+    /// Delete entry with `key` from trees roots storage
     fn delete_root<K: AsRef<[u8]>>(
         &self,
         key: K,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error>;
 
-    /// Delete entry with `key` from GroveDB metadata storage_cost
+    /// Delete entry with `key` from GroveDB metadata storage
     fn delete_meta<K: AsRef<[u8]>>(
         &self,
         key: K,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error>;
 
-    /// Get entry by `key` from data storage_cost
+    /// Get entry by `key` from data storage
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error>;
 
-    /// Get entry by `key` from auxiliary data storage_cost
+    /// Get entry by `key` from auxiliary data storage
     fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error>;
 
-    /// Get entry by `key` from trees roots storage_cost
+    /// Get entry by `key` from trees roots storage
     fn get_root<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error>;
 
-    /// Get entry by `key` from GroveDB metadata storage_cost
+    /// Get entry by `key` from GroveDB metadata storage
     fn get_meta<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error>;
 
     /// Initialize a new batch
@@ -232,7 +232,7 @@ pub trait StorageContext<'db> {
     /// Commits changes from batch into storage
     fn commit_batch(&self, batch: Self::Batch) -> CostResult<(), Error>;
 
-    /// Get raw iterator over storage_cost
+    /// Get raw iterator over storage
     fn raw_iter(&self) -> Self::RawIterator;
 }
 
@@ -247,7 +247,7 @@ pub trait Batch {
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), grovedb_costs::error::Error>;
 
-    /// Appends to the database batch a put operation for aux storage_cost.
+    /// Appends to the database batch a put operation for aux storage.
     fn put_aux<K: AsRef<[u8]>>(
         &mut self,
         key: K,
@@ -256,7 +256,7 @@ pub trait Batch {
     ) -> Result<(), grovedb_costs::error::Error>;
 
     /// Appends to the database batch a put operation for subtrees roots
-    /// storage_cost.
+    /// storage.
     fn put_root<K: AsRef<[u8]>>(
         &mut self,
         key: K,
@@ -267,15 +267,15 @@ pub trait Batch {
     /// Appends to the database batch a delete operation for a data record.
     fn delete<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>);
 
-    /// Appends to the database batch a delete operation for aux storage_cost.
+    /// Appends to the database batch a delete operation for aux storage.
     fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>);
 
     /// Appends to the database batch a delete operation for a record in subtree
-    /// roots storage_cost.
+    /// roots storage.
     fn delete_root<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>);
 }
 
-/// Allows to iterate over database record inside of storage_cost context.
+/// Allows to iterate over database record inside of storage context.
 pub trait RawIterator {
     /// Move iterator to first valid record.
     fn seek_to_first(&mut self) -> CostContext<()>;
@@ -305,29 +305,86 @@ pub trait RawIterator {
     fn valid(&self) -> CostContext<bool>;
 }
 
-/// Structure to hold deferred database operations in "batched" storage_cost
+/// Structure to hold deferred database operations in "batched" storage
 /// contexts.
+///
+/// A batch is a keyed map of the *final* state of each key, not an ordered
+/// log. Within one operation (one Merk commit) a `put` always wins over a
+/// `delete` for the same key, because rebalancing legitimately deletes and
+/// re-inserts a node in one commit. Callers that run SEVERAL independent
+/// operations against one batch (the `MerkCache`) mark the boundary between
+/// them with [`StorageBatch::next_operation`]; across such a boundary the
+/// later operation's outcome wins, so a delete issued by a later operation
+/// removes a key an earlier operation had put.
 #[derive(Debug)]
 pub struct StorageBatch {
     operations: RefCell<Operations>,
 }
 
+/// A deferred operation stamped with the operation generation it belongs to
+/// (see [`StorageBatch::next_operation`]).
+struct Entry {
+    generation: u64,
+    op: AbstractBatchOperation,
+}
+
 #[derive(Default)]
 struct Operations {
-    data: BTreeMap<Vec<u8>, AbstractBatchOperation>,
-    roots: BTreeMap<Vec<u8>, AbstractBatchOperation>,
-    aux: BTreeMap<Vec<u8>, AbstractBatchOperation>,
-    meta: BTreeMap<Vec<u8>, AbstractBatchOperation>,
+    /// The current operation generation; entries recorded now carry it.
+    generation: u64,
+    data: BTreeMap<Vec<u8>, Entry>,
+    roots: BTreeMap<Vec<u8>, Entry>,
+    aux: BTreeMap<Vec<u8>, Entry>,
+    meta: BTreeMap<Vec<u8>, Entry>,
+}
+
+impl Operations {
+    /// Record a put: the newest value always wins.
+    fn put_into(
+        map: &mut BTreeMap<Vec<u8>, Entry>,
+        generation: u64,
+        key: Vec<u8>,
+        op: AbstractBatchOperation,
+    ) {
+        map.insert(key, Entry { generation, op });
+    }
+
+    /// Record a delete. An entry from the SAME operation generation keeps
+    /// precedence (put-wins within one Merk commit — see the documentation
+    /// on [`StorageBatch::delete`]); an entry from an EARLIER generation is
+    /// superseded, so a later operation's delete removes the key.
+    fn delete_into(
+        map: &mut BTreeMap<Vec<u8>, Entry>,
+        generation: u64,
+        key: Vec<u8>,
+        op: AbstractBatchOperation,
+    ) {
+        match map.get(&key) {
+            Some(existing) if existing.generation >= generation => {}
+            _ => {
+                map.insert(key, Entry { generation, op });
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for Operations {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut fmt = f.debug_struct("Operations");
 
-        fmt.field("data", &self.data.values());
-        fmt.field("aux", &self.aux.values());
-        fmt.field("roots", &self.roots.values());
-        fmt.field("meta", &self.meta.values());
+        fmt.field(
+            "data",
+            &self.data.values().map(|e| &e.op).collect::<Vec<_>>(),
+        );
+        fmt.field("aux", &self.aux.values().map(|e| &e.op).collect::<Vec<_>>());
+        fmt.field(
+            "roots",
+            &self.roots.values().map(|e| &e.op).collect::<Vec<_>>(),
+        );
+        fmt.field(
+            "meta",
+            &self.meta.values().map(|e| &e.op).collect::<Vec<_>>(),
+        );
 
         fmt.finish()
     }
@@ -363,7 +420,11 @@ impl StorageBatch {
         children_sizes: ChildrenSizesWithIsSumTree,
         cost_info: Option<KeyValueStorageCost>,
     ) {
-        self.operations.borrow_mut().data.insert(
+        let ops = &mut *self.operations.borrow_mut();
+        let generation = ops.generation;
+        Operations::put_into(
+            &mut ops.data,
+            generation,
             key.clone(),
             AbstractBatchOperation::Put {
                 key,
@@ -374,14 +435,28 @@ impl StorageBatch {
         );
     }
 
-    /// Add deferred `put` operation for aux storage_cost
+    /// Mark the boundary between two independent operations sharing this
+    /// batch (e.g. consecutive Merk commits driven through a `MerkCache`).
+    /// Everything recorded so far is treated as the settled outcome of
+    /// earlier operations: a `delete` issued after this point supersedes an
+    /// earlier `put` of the same key, while within a single operation the
+    /// put-wins rule still holds.
+    pub fn next_operation(&self) {
+        self.operations.borrow_mut().generation += 1;
+    }
+
+    /// Add deferred `put` operation for aux storage
     pub(crate) fn put_aux(
         &self,
         key: Vec<u8>,
         value: Vec<u8>,
         cost_info: Option<KeyValueStorageCost>,
     ) {
-        self.operations.borrow_mut().aux.insert(
+        let ops = &mut *self.operations.borrow_mut();
+        let generation = ops.generation;
+        Operations::put_into(
+            &mut ops.aux,
+            generation,
             key.clone(),
             AbstractBatchOperation::PutAux {
                 key,
@@ -391,14 +466,18 @@ impl StorageBatch {
         );
     }
 
-    /// Add deferred `put` operation for subtree roots storage_cost
+    /// Add deferred `put` operation for subtree roots storage
     pub(crate) fn put_root(
         &self,
         key: Vec<u8>,
         value: Vec<u8>,
         cost_info: Option<KeyValueStorageCost>,
     ) {
-        self.operations.borrow_mut().roots.insert(
+        let ops = &mut *self.operations.borrow_mut();
+        let generation = ops.generation;
+        Operations::put_into(
+            &mut ops.roots,
+            generation,
             key.clone(),
             AbstractBatchOperation::PutRoot {
                 key,
@@ -408,14 +487,18 @@ impl StorageBatch {
         );
     }
 
-    /// Add deferred `put` operation for metadata storage_cost
+    /// Add deferred `put` operation for metadata storage
     pub(crate) fn put_meta(
         &self,
         key: Vec<u8>,
         value: Vec<u8>,
         cost_info: Option<KeyValueStorageCost>,
     ) {
-        self.operations.borrow_mut().meta.insert(
+        let ops = &mut *self.operations.borrow_mut();
+        let generation = ops.generation;
+        Operations::put_into(
+            &mut ops.meta,
+            generation,
             key.clone(),
             AbstractBatchOperation::PutMeta {
                 key,
@@ -427,68 +510,80 @@ impl StorageBatch {
 
     /// Add deferred `delete` operation.
     ///
-    /// If a `put` for the same key already exists in this batch, the delete is
-    /// silently dropped — the put always wins within a single batch. This is
-    /// intentional: during tree rebalancing, a node may be deleted from one
-    /// position and re-inserted at another within the same commit.
+    /// If a `put` for the same key already exists in this batch FROM THE SAME
+    /// OPERATION, the delete is silently dropped — the put always wins within
+    /// a single operation. This is intentional: during tree rebalancing, a
+    /// node may be deleted from one position and re-inserted at another
+    /// within the same commit.
     ///
     /// AUDIT NOTE (issue #698 — intentional, do not re-flag): a `StorageBatch`
     /// is a keyed map of the *final* state for each key within one atomic
     /// commit, NOT an ordered operation log. There is therefore no meaningful
-    /// "put then delete then commit" ordering to honor — Merk's rebalancing
-    /// legitimately emits a delete and a put for the same key in one commit, and
-    /// the surviving value (the put) is exactly the intended end state. Making
-    /// a later delete win would drop nodes that rebalancing just re-inserted and
-    /// corrupt the tree. Do not "fix" this to last-write-wins.
+    /// "put then delete then commit" ordering to honor within one Merk commit
+    /// — rebalancing legitimately emits a delete and a put for the same key,
+    /// and the surviving value (the put) is exactly the intended end state.
+    /// Making a later delete win INSIDE an operation would drop nodes that
+    /// rebalancing just re-inserted and corrupt the tree.
+    ///
+    /// Across operations it is the opposite: when several Merk commits share
+    /// one batch (a `MerkCache` flow — e.g. a delete whose rebalancing
+    /// rewrote a neighbouring node, followed by a cascade that deletes that
+    /// very node), the later operation's delete must remove the key an
+    /// earlier one had put. [`StorageBatch::next_operation`] marks those
+    /// boundaries; an entry from an earlier generation is superseded.
     pub(crate) fn delete(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
-        let operations = &mut self.operations.borrow_mut().data;
-        if operations.get(&key).is_none() {
-            operations.insert(
-                key.clone(),
-                AbstractBatchOperation::Delete { key, cost_info },
-            );
-        }
+        let ops = &mut *self.operations.borrow_mut();
+        let generation = ops.generation;
+        Operations::delete_into(
+            &mut ops.data,
+            generation,
+            key.clone(),
+            AbstractBatchOperation::Delete { key, cost_info },
+        );
     }
 
     /// Add deferred `delete` operation for aux storage.
     ///
     /// Same put-wins semantics as [`Self::delete`].
     pub(crate) fn delete_aux(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
-        let operations = &mut self.operations.borrow_mut().aux;
-        if operations.get(&key).is_none() {
-            operations.insert(
-                key.clone(),
-                AbstractBatchOperation::DeleteAux { key, cost_info },
-            );
-        }
+        let ops = &mut *self.operations.borrow_mut();
+        let generation = ops.generation;
+        Operations::delete_into(
+            &mut ops.aux,
+            generation,
+            key.clone(),
+            AbstractBatchOperation::DeleteAux { key, cost_info },
+        );
     }
 
     /// Add deferred `delete` operation for subtree roots storage.
     ///
     /// Same put-wins semantics as [`Self::delete`].
     pub(crate) fn delete_root(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
-        let operations = &mut self.operations.borrow_mut().roots;
-        if operations.get(&key).is_none() {
-            operations.insert(
-                key.clone(),
-                AbstractBatchOperation::DeleteRoot { key, cost_info },
-            );
-        }
+        let ops = &mut *self.operations.borrow_mut();
+        let generation = ops.generation;
+        Operations::delete_into(
+            &mut ops.roots,
+            generation,
+            key.clone(),
+            AbstractBatchOperation::DeleteRoot { key, cost_info },
+        );
     }
 
-    /// Add deferred `delete` operation for metadata storage_cost
+    /// Add deferred `delete` operation for metadata storage
     pub(crate) fn delete_meta(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
-        let operations = &mut self.operations.borrow_mut().meta;
-        if operations.get(&key).is_none() {
-            operations.insert(
-                key.clone(),
-                AbstractBatchOperation::DeleteMeta { key, cost_info },
-            );
-        }
+        let ops = &mut *self.operations.borrow_mut();
+        let generation = ops.generation;
+        Operations::delete_into(
+            &mut ops.meta,
+            generation,
+            key.clone(),
+            AbstractBatchOperation::DeleteMeta { key, cost_info },
+        );
     }
 
     /// Merge batch into this one
-    pub(crate) fn merge(&self, other: StorageBatch) {
+    pub fn merge(&self, other: StorageBatch) {
         for op in other.into_iter() {
             match op {
                 AbstractBatchOperation::Put {
@@ -525,14 +620,46 @@ impl StorageBatch {
             }
         }
     }
+
+    /// Merge batch into this one prioritizing operations of the provided batch
+    /// for deletions. The original [[merge]] doesn't overwrite operations
+    /// with deletions keeping keys if they were inserted before.
+    pub fn merge_overwriting(&self, other: StorageBatch) {
+        let other_ops = other.operations.into_inner();
+        let mut ops = self.operations.borrow_mut();
+        let generation = ops.generation;
+
+        fn restamp(
+            entries: BTreeMap<Vec<u8>, Entry>,
+            generation: u64,
+        ) -> impl Iterator<Item = (Vec<u8>, Entry)> {
+            entries.into_iter().map(move |(key, entry)| {
+                (
+                    key,
+                    Entry {
+                        generation,
+                        op: entry.op,
+                    },
+                )
+            })
+        }
+
+        ops.data.extend(restamp(other_ops.data, generation));
+        ops.meta.extend(restamp(other_ops.meta, generation));
+        ops.aux.extend(restamp(other_ops.aux, generation));
+        ops.roots.extend(restamp(other_ops.roots, generation));
+        // The merged content is the settled outcome of the other batch's
+        // operations; whatever follows is a later operation.
+        ops.generation += 1;
+    }
 }
 
-/// Iterator over storage_cost batch operations.
+/// Iterator over storage batch operations.
 pub(crate) struct StorageBatchIter {
-    data: IntoValues<Vec<u8>, AbstractBatchOperation>,
-    aux: IntoValues<Vec<u8>, AbstractBatchOperation>,
-    meta: IntoValues<Vec<u8>, AbstractBatchOperation>,
-    roots: IntoValues<Vec<u8>, AbstractBatchOperation>,
+    data: IntoValues<Vec<u8>, Entry>,
+    aux: IntoValues<Vec<u8>, Entry>,
+    meta: IntoValues<Vec<u8>, Entry>,
+    roots: IntoValues<Vec<u8>, Entry>,
 }
 
 impl Iterator for StorageBatchIter {
@@ -544,6 +671,7 @@ impl Iterator for StorageBatchIter {
             .or_else(|| self.aux.next())
             .or_else(|| self.roots.next())
             .or_else(|| self.data.next())
+            .map(|entry| entry.op)
     }
 }
 
@@ -568,7 +696,7 @@ impl Default for StorageBatch {
     }
 }
 
-/// Deferred storage_cost operation not tied to any storage_cost implementation,
+/// Deferred storage operation not tied to any storage implementation,
 /// required for multi-tree batches.
 #[allow(missing_docs)]
 #[derive(strum::AsRefStr)]
@@ -580,19 +708,19 @@ pub(crate) enum AbstractBatchOperation {
         children_sizes: ChildrenSizesWithIsSumTree,
         cost_info: Option<KeyValueStorageCost>,
     },
-    /// Deferred put operation for aux storage_cost
+    /// Deferred put operation for aux storage
     PutAux {
         key: Vec<u8>,
         value: Vec<u8>,
         cost_info: Option<KeyValueStorageCost>,
     },
-    /// Deferred put operation for roots storage_cost
+    /// Deferred put operation for roots storage
     PutRoot {
         key: Vec<u8>,
         value: Vec<u8>,
         cost_info: Option<KeyValueStorageCost>,
     },
-    /// Deferred put operation for metadata storage_cost
+    /// Deferred put operation for metadata storage
     PutMeta {
         key: Vec<u8>,
         value: Vec<u8>,
@@ -603,17 +731,17 @@ pub(crate) enum AbstractBatchOperation {
         key: Vec<u8>,
         cost_info: Option<KeyValueStorageCost>,
     },
-    /// Deferred delete operation for aux storage_cost
+    /// Deferred delete operation for aux storage
     DeleteAux {
         key: Vec<u8>,
         cost_info: Option<KeyValueStorageCost>,
     },
-    /// Deferred delete operation for roots storage_cost
+    /// Deferred delete operation for roots storage
     DeleteRoot {
         key: Vec<u8>,
         cost_info: Option<KeyValueStorageCost>,
     },
-    /// Deferred delete operation for metadata storage_cost
+    /// Deferred delete operation for metadata storage
     DeleteMeta {
         key: Vec<u8>,
         cost_info: Option<KeyValueStorageCost>,
@@ -678,6 +806,7 @@ mod tests {
             value_storage_cost: StorageCost::default(),
             new_node: false,
             needs_value_verification: false,
+            prepaid: false,
         }
     }
 
@@ -755,6 +884,67 @@ mod tests {
             op => panic!("unexpected operation: {op:?}"),
         }
         assert!(operations.next().is_none());
+    }
+
+    #[test]
+    fn test_storage_batch_later_operation_delete_supersedes_earlier_put() {
+        let batch = StorageBatch::new();
+
+        // Operation 1 (e.g. a Merk commit whose rebalancing rewrote a node).
+        batch.put(
+            b"key".to_vec(),
+            b"value".to_vec(),
+            dummy_children_sizes(),
+            None,
+        );
+        batch.next_operation();
+        // Operation 2 deletes that very node: it must win.
+        batch.delete(b"key".to_vec(), Some(removed_bytes_cost(5)));
+
+        let operations: Vec<_> = batch.into_iter().collect();
+        assert_eq!(operations.len(), 1);
+        assert!(matches!(
+            operations[0],
+            AbstractBatchOperation::Delete { .. }
+        ));
+    }
+
+    #[test]
+    fn test_storage_batch_put_wins_within_one_operation_after_boundary() {
+        let batch = StorageBatch::new();
+        batch.next_operation();
+
+        // Within the new operation the put-wins rule is unchanged, in both
+        // orders.
+        batch.put(b"a".to_vec(), b"1".to_vec(), dummy_children_sizes(), None);
+        batch.delete(b"a".to_vec(), None);
+        batch.delete(b"b".to_vec(), None);
+        batch.put(b"b".to_vec(), b"2".to_vec(), dummy_children_sizes(), None);
+
+        let variants: Vec<_> = batch
+            .into_iter()
+            .map(|op| matches!(op, AbstractBatchOperation::Put { .. }))
+            .collect();
+        assert_eq!(variants, vec![true, true]);
+    }
+
+    #[test]
+    fn test_storage_batch_merge_overwriting_settles_generation() {
+        let batch = StorageBatch::new();
+        let other = StorageBatch::new();
+        other.put(b"key".to_vec(), b"v".to_vec(), dummy_children_sizes(), None);
+
+        batch.merge_overwriting(other);
+        // The merged put is an earlier operation's outcome: a delete issued
+        // afterwards removes the key.
+        batch.delete(b"key".to_vec(), None);
+
+        let operations: Vec<_> = batch.into_iter().collect();
+        assert_eq!(operations.len(), 1);
+        assert!(matches!(
+            operations[0],
+            AbstractBatchOperation::Delete { .. }
+        ));
     }
 
     #[test]

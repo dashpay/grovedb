@@ -183,10 +183,11 @@ impl GroveDb {
                 );
                 let root_hash = cost_return_on_error!(
                     &mut cost,
-                    tree.root_hash().map_err(|e| Error::CorruptedData(format!(
-                        "dense tree root hash error: {}",
-                        e
-                    )))
+                    tree.root_hash(grove_version)
+                        .map_err(|e| Error::CorruptedData(format!(
+                            "dense tree root hash error: {}",
+                            e
+                        )))
                 );
                 Ok(root_hash).wrap_with_cost(cost)
             }
@@ -212,7 +213,7 @@ impl GroveDb {
                 );
                 let state_root = cost_return_on_error_no_add!(
                     cost,
-                    tree.compute_current_state_root().map_err(|e| {
+                    tree.compute_current_state_root(grove_version).map_err(|e| {
                         Error::CorruptedData(format!("bulk append state root failed: {}", e))
                     })
                 );
@@ -253,7 +254,7 @@ impl GroveDb {
                 );
                 let bulk_state_root = cost_return_on_error_no_add!(
                     cost,
-                    tree.compute_current_state_root().map_err(|e| {
+                    tree.compute_current_state_root(grove_version).map_err(|e| {
                         Error::CorruptedData(format!("bulk append state root failed: {}", e))
                     })
                 );

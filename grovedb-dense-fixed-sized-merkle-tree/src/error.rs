@@ -21,4 +21,7 @@ pub enum DenseMerkleError {
     /// A proof is structurally invalid or fails verification.
     #[error("invalid proof: {0}")]
     InvalidProof(String),
+    /// The grove version selects a behaviour this crate does not know.
+    #[error("version error: {0}")]
+    VersionError(String),
 }

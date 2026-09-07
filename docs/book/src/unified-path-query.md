@@ -49,6 +49,7 @@ pub struct AxisQuery {
     pub axis: IndexAxis,          // Count = 0 | Sum = 1 | Avg = 2
     pub traversal: AxisTraversal,
     pub descending: bool,
+    pub projection: AxisProjection, // Entries = 0 (default) | Keys = 1
 }
 
 pub enum AxisTraversal {
@@ -65,6 +66,19 @@ pub enum AxisTraversal {
 
 `RankedPage` is directional: `descending: true` reads it as top-k,
 `false` as bottom-k — one wire shape, both leaderboard ends.
+
+`projection` is an **unproved-read** choice for the two entry-listing
+traversals. `Entries` (the default) returns each entry with its
+resolved primary value; `Keys` returns the `(ordering_value,
+original_key)` pairs straight from the pinned secondary view and never
+opens the primary — no primary point reads after the page was
+collected (which, through a caller-supplied `None` transaction, would
+sit outside the iterator's view), and no reads for values a caller
+that only ranks would discard. A proof always carries the values, and
+verification yields entries; keys are a strict projection of them, so
+the prover and verifier treat a `Keys` query exactly as `Entries`.
+`run_path_query` returns `AxisKeys` / `BranchedAxisKeys` for a `Keys`
+read.
 
 `AggregateOverValueRange` makes the caller SAY which scalar they mean,
 because both readings are meaningful on both axes and the "obvious"
@@ -171,6 +185,18 @@ primitives, the budgeted sum reader — so the unified answer is always
 equal to the dedicated entry point's answer (pinned by differential
 tests).
 
+Single-path paginated axis reads (`RankedPage`) carry the
+count-commitment-attested skip alongside the page — on both
+projections, `AxisEntries { entries, skipped: Some(n) }` and
+`AxisKeys { keys, skipped: Some(n) }` — exactly as the direct
+`indexed_*_top_k_paginated*` primitives report it: `n` equals the
+requested offset on a full page and the population when the offset is
+at or past the end (the empty page attests the population). `Bounded`
+traversals carry `skipped: None` (no skip concept). This mirrors the
+proved side's `VerifiedPathQuery::AxisEntries` contract; the branched
+variants carry no skip, since a per-branch skip has no meaning for the
+merged union.
+
 Branched reads mirror the proof's absence semantics: a branch key — or
 any suffix segment under it — that does not exist yields `None` for
 that branch rather than failing the whole read.
@@ -270,6 +296,27 @@ unified trusted read uses the same semantics, so read and verified
 results agree over any state. The legacy `AggregateSumPathQuery`
 surface keeps its configurable options, including reference following.
 
+Every fold-or-skip decision rests on **bound element bytes**. An item row
+is bound because the Merk node hashes its value (`H(value) ==
+value_hash`). A composite row — a subtree or a reference — is carried on
+a `KVValueHashFeatureTypeWithChildHash` node whose child hash the Merk
+verifier closes with `combine_hash(H(value), child_hash) == value_hash`:
+the child Merk root (or `NULL_HASH`) for a subtree, the referenced
+element's value hash for a reference, and the tree's own state root for
+a non-Merk tree. A bare `KVValueHash` row would leave its bytes free to
+rewrite under a genuine root — enough to disguise a sum item as a tree
+and drop its contribution — so the verifier rejects any present row that
+is neither hashed as an item nor closed through a child hash. Indexed
+trees commit a three-input hash no proof node carries; a window that
+scans one is refused by the prover.
+
+Reference witnesses preserve the representation committed by each row.
+The prover resolves the stored terminal, including `NonCounted` wrappers,
+then selects its unwrapped form only when that form matches the reference's
+persisted commitment. This supports legacy direct writes alongside batch
+and GROVE_V4 direct writes without rewriting state. A changed target whose
+hash no longer matches the reference still produces an invalid proof.
+
 ## Version gating
 
 Everything new activates at **GROVE_V4** and fails closed below it, on
@@ -291,16 +338,32 @@ the same contract the aggregate-on-range shapes use.
 
 ## Relationship to the specialized surfaces
 
-Every pre-existing surface remains first-class: the
-`prove/verify_indexed_*` methods and their standalone echo-based
-envelopes, `AggregateSumPathQuery` and its budgeted reader, and the
-per-shape `verify_aggregate_*` entry points. The unified entry points
-route to the same engines, and where both a standalone envelope and an
-embedded V1 proof exist for the same read, tests pin that they yield
-identical entries and reconstruct the same root hash. New callers
-should prefer `PathQuery` + `run_path_query` + `verify_path_query`; the
-specialized surfaces are the engines underneath and the compatibility
-surface for existing integrations.
+For indexed-axis proofs, `PathQuery` + `prove_query` +
+`verify_path_query` is the **only public surface**. The standalone
+`prove/verify_indexed_*` methods and their echo-based envelopes
+(`IndexedAxisRangeProof` / `IndexedAxisPaginatedProof` /
+`IndexedAxisAggregateProof`) are retired from the public API: they are
+compiled `#[cfg(test)]` and kept solely as in-crate oracles that
+cross-check the unified V1-envelope axis proofs against an independent
+implementation of the same engines. Their wire format was never emitted
+by a released version, so retiring them before GROVE_V4 activates means
+it never becomes consensus-frozen — only the V1 envelope's axis-descent
+format ships. The byte-level relationship between the two families
+(shared semantic core, deliberately different outer envelopes, mutual
+rejection between verifiers) is pinned in
+`grovedb/src/tests/envelope_byte_equality_tests.rs`.
+
+The per-axis **trusted-read** wrappers (`indexed_*_top_k*`,
+`indexed_*_range*`, the aggregate reads and the `_keys` projections)
+are likewise crate-internal: they are the engine `run_path_query`
+routes axis shapes to. External callers build the same axis
+`PathQuery` for reads and proofs alike — one request shape, three
+consumers (`run_path_query`, `prove_query`, `verify_path_query`).
+
+Other pre-existing surfaces remain first-class:
+`AggregateSumPathQuery` and its budgeted reader, and the per-shape
+`verify_aggregate_*` entry points. The unified entry points route to
+the same engines underneath.
 
 Two things deliberately do **not** merge:
 

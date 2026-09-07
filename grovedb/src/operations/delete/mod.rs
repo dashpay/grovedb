@@ -2,20 +2,38 @@
 //!
 //! # Dangling References
 //!
-//! GroveDB does **not** track backward (incoming) references. When an element
-//! is deleted, any existing [`Reference`](crate::Element::Reference) elements
-//! that point to it become *dangling*. Attempting to follow a dangling
-//! reference will return
+//! For ordinary [`Reference`](crate::Element::Reference) elements, GroveDB
+//! does **not** track backward (incoming) references. When an element is
+//! deleted, any existing references that point to it become *dangling*.
+//! Attempting to follow a dangling reference will return
 //! [`Error::CorruptedReferencePathKeyNotFound`](crate::Error::CorruptedReferencePathKeyNotFound)
 //! rather than incorrect data, so the failure mode is safe.
 //!
-//! Callers are responsible for ensuring that all references to an element are
-//! removed before (or atomically with) the deletion of that element.
+//! Callers are responsible for ensuring that all ordinary references to an
+//! element are removed before (or atomically with) the deletion of that
+//! element.
+//!
+//! The exception is the opt-in bidirectional-references machinery
+//! (`GROVE_V4`+): deleting with
+//! [`DeleteOptions::propagate_backward_references`] set cascades any
+//! [`BidirectionalReference`](crate::Element::BidirectionalReference)
+//! chains that point at the deleted element (each affected reference must
+//! allow `cascade_on_update`, otherwise the delete errors instead). See
+//! `adr/bidirectional_references.md`.
 
 #[cfg(feature = "estimated_costs")]
 mod average_case;
+/// Versioned dispatch for `delete_internal_on_transaction` (the shared
+/// delete path). Consensus-critical — see the module docs.
+#[cfg(feature = "minimal")]
+mod delete_internal_on_transaction;
 #[cfg(feature = "minimal")]
 mod delete_up_tree;
+/// Flat-subtree drop (issue #848): O(1) removal of a populated subtree
+/// declared to contain no child subtrees, with storage reclaimed outside
+/// consensus via range tombstones driven from durable redo records.
+#[cfg(feature = "minimal")]
+pub mod flat_drop;
 #[cfg(feature = "estimated_costs")]
 mod worst_case;
 
@@ -24,7 +42,8 @@ use std::collections::{BTreeSet, HashMap};
 
 #[cfg(feature = "minimal")]
 pub use delete_up_tree::DeleteUpTreeOptions;
-use grovedb_costs::cost_return_on_error_into;
+#[cfg(feature = "minimal")]
+pub use flat_drop::PendingPrefixDropsReport;
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add,
@@ -32,8 +51,7 @@ use grovedb_costs::{
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::element::{
-    costs::ElementCostExtensions, decode::ElementDecodeExtensions,
-    delete::ElementDeleteFromStorageExtensions, tree_type::ElementTreeTypeExtensions,
+    decode::ElementDecodeExtensions, tree_type::ElementTreeTypeExtensions,
 };
 #[cfg(feature = "minimal")]
 use grovedb_merk::{proofs::Query, KVIterator, MaybeTree};
@@ -42,8 +60,7 @@ use grovedb_merk::{Error as MerkError, Merk, MerkOptions};
 use grovedb_path::SubtreePath;
 #[cfg(feature = "minimal")]
 use grovedb_storage::{
-    rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
-    Storage, StorageBatch, StorageContext,
+    rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch, StorageContext,
 };
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
@@ -90,6 +107,13 @@ pub struct DeleteOptions {
     pub base_root_storage_is_free: bool,
     /// Validate tree at path exists
     pub validate_tree_at_path_exists: bool,
+    /// Propagate updates to elements with backward references. This enables
+    /// bidirectional-reference bookkeeping for this call: deletions of
+    /// backward-references elements cascade along the reference chains
+    /// (each affected reference must allow `cascade_on_update`, otherwise
+    /// the operation errors). Opt-in per call because the checks require an
+    /// extra fetch on every delete. Requires `GROVE_V4`+.
+    pub propagate_backward_references: bool,
 }
 
 #[cfg(feature = "minimal")]
@@ -100,6 +124,7 @@ impl Default for DeleteOptions {
             deleting_non_empty_trees_returns_error: true,
             base_root_storage_is_free: true,
             validate_tree_at_path_exists: false,
+            propagate_backward_references: false,
         }
     }
 }
@@ -119,13 +144,18 @@ impl GroveDb {
     ///
     /// # Dangling references
     ///
-    /// This operation does **not** check for incoming references. If other
+    /// Without [`DeleteOptions::propagate_backward_references`], this
+    /// operation does **not** check for incoming references. If other
     /// elements hold [`Reference`](crate::Element::Reference) paths that point
     /// to the deleted element, those references become dangling. Following a
     /// dangling reference will return
     /// [`Error::CorruptedReferencePathKeyNotFound`](crate::Error::CorruptedReferencePathKeyNotFound),
     /// not incorrect data. Callers must manage reference lifecycle and remove
-    /// or update any references to this element before deleting it.
+    /// or update any ordinary references to this element before deleting it.
+    ///
+    /// With the flag set (`GROVE_V4`+), bidirectional references pointing at
+    /// the deleted element are cascade-deleted instead — see the
+    /// [module-level documentation](self).
     pub fn delete<'b, B, P>(
         &self,
         path: P,
@@ -184,10 +214,13 @@ impl GroveDb {
     ///
     /// # Dangling references
     ///
-    /// This operation does **not** check for incoming references. Any
-    /// [`Reference`](crate::Element::Reference) elements elsewhere in the
-    /// database that point to elements within the cleared subtree will become
-    /// dangling. See the [module-level documentation](self) for details.
+    /// This operation does **not** check for incoming references (it has no
+    /// backward-references propagation option). Any
+    /// [`Reference`](crate::Element::Reference) or
+    /// [`BidirectionalReference`](crate::Element::BidirectionalReference)
+    /// elements elsewhere in the database that point to elements within the
+    /// cleared subtree will become dangling. See the
+    /// [module-level documentation](self) for details.
     pub fn clear_subtree<'b, B, P>(
         &self,
         path: P,
@@ -394,6 +427,13 @@ impl GroveDb {
                 .delete
                 .delete_with_sectional_storage_function
         );
+        let _storage_removal_version_guard =
+            grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(
+                grove_version
+                    .grovedb_versions
+                    .storage_costs
+                    .add_basic_storage_removal_to_sectioned_storage_removal,
+            );
 
         let tx = TxRef::new(&self.db, transaction);
 
@@ -526,6 +566,13 @@ impl GroveDb {
                 .delete
                 .delete_if_empty_tree_with_sectional_storage_function
         );
+        let _storage_removal_version_guard =
+            grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(
+                grove_version
+                    .grovedb_versions
+                    .storage_costs
+                    .add_basic_storage_removal_to_sectioned_storage_removal,
+            );
 
         let options = DeleteOptions {
             allow_deleting_non_empty_trees: false,
@@ -719,380 +766,6 @@ impl GroveDb {
             }
         }
     }
-
-    fn delete_internal_on_transaction<B: AsRef<[u8]>>(
-        &self,
-        path: SubtreePath<B>,
-        key: &[u8],
-        options: &DeleteOptions,
-        transaction: &Transaction,
-        sectioned_removal: &mut impl FnMut(
-            &Vec<u8>,
-            u32,
-            u32,
-        ) -> Result<
-            (StorageRemovedBytes, StorageRemovedBytes),
-            MerkError,
-        >,
-        batch: &StorageBatch,
-        grove_version: &GroveVersion,
-    ) -> CostResult<bool, Error> {
-        check_grovedb_v0_with_cost!(
-            "delete_internal_on_transaction",
-            grove_version
-                .grovedb_versions
-                .operations
-                .delete
-                .delete_internal_on_transaction
-        );
-
-        let mut cost = OperationCost::default();
-
-        let element = cost_return_on_error!(
-            &mut cost,
-            self.get_raw(path.clone(), key.as_ref(), Some(transaction), grove_version)
-        );
-        let mut subtree_to_delete_from = cost_return_on_error!(
-            &mut cost,
-            self.open_transactional_merk_at_path(
-                path.clone(),
-                transaction,
-                Some(batch),
-                grove_version
-            )
-        );
-        // A generic delete cannot mirror the removed child's ordering value
-        // out of an indexed primary's secondary index. Reject before any
-        // mutation.
-        cost_return_on_error_no_add!(
-            cost,
-            crate::operations::indexed_tree::reject_generic_write_into_indexed_primary(
-                subtree_to_delete_from.tree_type,
-                "delete",
-            )
-        );
-
-        let uses_sum_tree = subtree_to_delete_from.tree_type;
-        if let Some(tree_type) = element.tree_type() {
-            let subtree_merk_path = path.derive_owned_with_child(key);
-            let subtree_merk_path_ref = SubtreePath::from(&subtree_merk_path);
-
-            // Tree types that store data in the data namespace as non-Merk
-            // entries (CommitmentTree, MmrTree, BulkAppendTree, DenseTree)
-            // have an always-empty Merk but may have data.  We cannot iterate
-            // their storage with find_subtrees because the entries are not
-            // valid Element serializations.
-            let non_merk_data = element.uses_non_merk_data_storage();
-
-            let subtree_of_tree_we_are_deleting = cost_return_on_error!(
-                &mut cost,
-                self.open_transactional_merk_at_path(
-                    subtree_merk_path_ref.clone(),
-                    transaction,
-                    Some(batch),
-                    grove_version,
-                )
-            );
-
-            // For non-Merk data trees the raw_iter check would see non-Merk
-            // keys and wrongly report the tree as non-empty.  Use the
-            // element's own count instead.
-            let is_empty = if non_merk_data {
-                element.non_merk_entry_count().unwrap_or(0) == 0
-            } else {
-                subtree_of_tree_we_are_deleting
-                    .is_empty_tree()
-                    .unwrap_add_cost(&mut cost)
-            };
-
-            if !options.allow_deleting_non_empty_trees && !is_empty {
-                return if options.deleting_non_empty_trees_returns_error {
-                    Err(Error::DeletingNonEmptyTree(
-                        "trying to do a delete operation for a non empty tree, but options not \
-                         allowing this",
-                    ))
-                    .wrap_with_cost(cost)
-                } else {
-                    Ok(false).wrap_with_cost(cost)
-                };
-            }
-
-            // Indexed-tree primaries own one or more secondary storage
-            // namespaces (the axis-ordered secondary indexes) at prefixes
-            // derived from the primary's prefix via S2-B
-            // (`Blake3(primary_prefix ‖ axis_tag)`) — one per axis: PCIT
-            // has Count, PSIT has Sum, and PCPSIT has up to all three
-            // (Count/Sum/Avg). `find_subtrees` only walks the primary's
-            // namespace, so without this explicit clear the secondary's
-            // storage would be orphaned: future inserts under the same
-            // path could collide with stale entries (the derived prefix
-            // is identical for a recreated tree at the same path), and
-            // the secondary index would be unreachable but would still
-            // consume disk. Run unconditionally on every indexed-tree
-            // primary delete — including the `is_empty` branch below,
-            // since a stale (drifted) secondary can co-exist with an
-            // empty primary (e.g. a bug that mirrors deletions into the
-            // primary but fails to mirror into the secondary would leave
-            // orphans here; defend against it by clearing the namespace
-            // at delete time). We sweep all three axis tags
-            // unconditionally rather than decoding the axes TLV, matching
-            // the nested-subtree sweep inside the `find_subtrees` loop
-            // below: clearing an unused axis prefix is idempotent on an
-            // empty namespace, so the redundancy is intentional
-            // defense-in-depth. The per-prefix cleanup inside that loop
-            // also clears these same namespaces for the target prefix,
-            // but both clears are idempotent so the redundancy is fine.
-            if tree_type.is_indexed_primary() {
-                let primary_prefix = RocksDbStorage::build_prefix(subtree_merk_path_ref.clone())
-                    .unwrap_add_cost(&mut cost);
-                for axis in [
-                    grovedb_element::indexed::IndexAxis::Count,
-                    grovedb_element::indexed::IndexAxis::Sum,
-                    grovedb_element::indexed::IndexAxis::Avg,
-                ] {
-                    let secondary_prefix =
-                        RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
-                            .unwrap_add_cost(&mut cost);
-                    let mut secondary_storage = self
-                        .db
-                        .get_transactional_storage_context_by_subtree_prefix(
-                            secondary_prefix,
-                            Some(batch),
-                            transaction,
-                        )
-                        .unwrap_add_cost(&mut cost);
-                    cost_return_on_error!(
-                        &mut cost,
-                        secondary_storage.clear().map_err(|e| {
-                            Error::CorruptedData(format!(
-                                "unable to cleanup indexed-tree secondary (axis {:?}) from \
-                                 storage: {e}",
-                                axis
-                            ))
-                        })
-                    );
-                }
-            }
-
-            if !is_empty {
-                if non_merk_data {
-                    // Non-Merk data trees: clear the subtree storage directly.
-                    // These trees never contain child subtrees so we only need
-                    // to clear the one storage context.
-                    let mut storage = self
-                        .db
-                        .get_transactional_storage_context(
-                            subtree_merk_path_ref.clone(),
-                            Some(batch),
-                            transaction,
-                        )
-                        .unwrap_add_cost(&mut cost);
-                    cost_return_on_error!(
-                        &mut cost,
-                        storage.clear().map_err(|e| {
-                            Error::CorruptedData(format!(
-                                "unable to cleanup non-merk tree data from storage: {e}",
-                            ))
-                        })
-                    );
-                } else {
-                    let subtrees_paths = cost_return_on_error!(
-                        &mut cost,
-                        self.find_subtrees(
-                            &subtree_merk_path_ref,
-                            Some(transaction),
-                            grove_version
-                        )
-                    );
-                    for subtree_path in subtrees_paths {
-                        let p: SubtreePath<_> = subtree_path.as_slice().into();
-                        let mut storage = self
-                            .db
-                            .get_transactional_storage_context(p.clone(), Some(batch), transaction)
-                            .unwrap_add_cost(&mut cost);
-
-                        cost_return_on_error!(
-                            &mut cost,
-                            storage.clear().map_err(|e| {
-                                Error::CorruptedData(format!(
-                                    "unable to cleanup tree from storage: {e}",
-                                ))
-                            })
-                        );
-
-                        // NESTED INDEXED-TREE SECONDARY CLEANUP.
-                        // find_subtrees enumerates every nested subtree
-                        // under the deletion target, but only the
-                        // primary's storage namespace is reachable via
-                        // the path-prefix walk. Any nested indexed-tree
-                        // primary inside the deleted subtree has its own
-                        // per-axis secondary namespaces at
-                        // Blake3(its_prefix ‖ axis_tag) — one for PCIT
-                        // (count), one for PSIT (sum), up to three for
-                        // PCPSIT — that find_subtrees cannot see; clear
-                        // them all too.
-                        //
-                        // Clearing the secondary prefix is idempotent on
-                        // non-indexed subtrees (their secondary namespace
-                        // is empty), so we sweep all three axis tags
-                        // unconditionally rather than decoding each
-                        // subtree's root element to check the tree type —
-                        // cheaper and removes a class of missed-decoding
-                        // bugs.
-                        let primary_prefix =
-                            RocksDbStorage::build_prefix(p).unwrap_add_cost(&mut cost);
-                        for axis in [
-                            grovedb_element::indexed::IndexAxis::Count,
-                            grovedb_element::indexed::IndexAxis::Sum,
-                            grovedb_element::indexed::IndexAxis::Avg,
-                        ] {
-                            let secondary_prefix =
-                                RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
-                                    .unwrap_add_cost(&mut cost);
-                            let mut secondary_storage = self
-                                .db
-                                .get_transactional_storage_context_by_subtree_prefix(
-                                    secondary_prefix,
-                                    Some(batch),
-                                    transaction,
-                                )
-                                .unwrap_add_cost(&mut cost);
-                            cost_return_on_error!(
-                                &mut cost,
-                                secondary_storage.clear().map_err(|e| {
-                                    Error::CorruptedData(format!(
-                                        "unable to cleanup nested indexed-tree secondary \
-                                         (axis {:?}) in delete: {e}",
-                                        axis
-                                    ))
-                                })
-                            );
-                        }
-                    }
-                }
-                // todo: verify why we need to open the same? merk again
-                let storage = self
-                    .db
-                    .get_transactional_storage_context(path.clone(), Some(batch), transaction)
-                    .unwrap_add_cost(&mut cost);
-
-                // The merk reopened here is the PARENT merk (at `path`), but
-                // the historical code labels it with the DELETED CHILD's
-                // tree type. For a PrivateDocumentStore child that label
-                // would trip the merk-level "no ops on a PDS Merk"
-                // chokepoint (the delete below applies to the parent), so
-                // use the parent's actual tree type for PDS deletions.
-                // Existing types keep the historical label byte-for-byte to
-                // avoid any behavior change on released paths.
-                let reopen_tree_type =
-                    if matches!(tree_type, grovedb_merk::TreeType::PrivateDocumentStore(_)) {
-                        subtree_to_delete_from.tree_type
-                    } else {
-                        tree_type
-                    };
-                let mut merk_to_delete_tree_from = cost_return_on_error!(
-                    &mut cost,
-                    Merk::open_layered_with_root_key(
-                        storage,
-                        subtree_to_delete_from.root_key(),
-                        reopen_tree_type,
-                        Some(&Element::value_defined_cost_for_serialized_value),
-                        grove_version,
-                    )
-                    .map_err(|e| {
-                        Error::CorruptedData(format!(
-                            "cannot open a subtree with given root key: {e}"
-                        ))
-                    })
-                );
-                // We are deleting a tree, a tree uses 3 bytes
-                cost_return_on_error_into!(
-                    &mut cost,
-                    Element::delete_with_sectioned_removal_bytes(
-                        &mut merk_to_delete_tree_from,
-                        key,
-                        Some(options.as_merk_options()),
-                        true,
-                        uses_sum_tree,
-                        sectioned_removal,
-                        grove_version,
-                    )
-                );
-                let mut merk_cache: HashMap<
-                    SubtreePath<B>,
-                    Merk<PrefixedRocksDbTransactionContext>,
-                > = HashMap::default();
-                merk_cache.insert(path.clone(), merk_to_delete_tree_from);
-                cost_return_on_error!(
-                    &mut cost,
-                    self.propagate_changes_with_batch_transaction(
-                        batch,
-                        merk_cache,
-                        &path,
-                        transaction,
-                        grove_version,
-                    )
-                );
-            } else {
-                // We are deleting a tree, a tree uses 3 bytes
-                cost_return_on_error_into!(
-                    &mut cost,
-                    Element::delete_with_sectioned_removal_bytes(
-                        &mut subtree_to_delete_from,
-                        key,
-                        Some(options.as_merk_options()),
-                        true,
-                        uses_sum_tree,
-                        sectioned_removal,
-                        grove_version,
-                    )
-                );
-                let mut merk_cache: HashMap<
-                    SubtreePath<B>,
-                    Merk<PrefixedRocksDbTransactionContext>,
-                > = HashMap::default();
-                merk_cache.insert(path.clone(), subtree_to_delete_from);
-                cost_return_on_error!(
-                    &mut cost,
-                    self.propagate_changes_with_transaction(
-                        merk_cache,
-                        path,
-                        transaction,
-                        batch,
-                        grove_version
-                    )
-                );
-            }
-        } else {
-            cost_return_on_error_into!(
-                &mut cost,
-                Element::delete_with_sectioned_removal_bytes(
-                    &mut subtree_to_delete_from,
-                    key,
-                    Some(options.as_merk_options()),
-                    false,
-                    uses_sum_tree,
-                    sectioned_removal,
-                    grove_version,
-                )
-            );
-            let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
-                HashMap::default();
-            merk_cache.insert(path.clone(), subtree_to_delete_from);
-            cost_return_on_error!(
-                &mut cost,
-                self.propagate_changes_with_transaction(
-                    merk_cache,
-                    path,
-                    transaction,
-                    batch,
-                    grove_version
-                )
-            );
-        }
-
-        Ok(true).wrap_with_cost(cost)
-    }
 }
 
 #[cfg(feature = "minimal")]
@@ -1102,17 +775,492 @@ mod tests {
         storage_cost::{removal::StorageRemovedBytes::BasicStorageRemoval, StorageCost},
         OperationCost,
     };
-    use grovedb_version::version::GroveVersion;
+    use grovedb_version::version::{v3::GROVE_V3, GroveVersion};
     use pretty_assertions::assert_eq;
+
+    use grovedb_path::SubtreePath;
 
     use crate::{
         operations::delete::{delete_up_tree::DeleteUpTreeOptions, ClearOptions, DeleteOptions},
         reference_path::ReferencePathType,
         tests::{
-            common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF,
+            common::{make_tree_with_bidi_references, EMPTY_PATH},
+            make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF,
         },
         Element, Error,
     };
+
+    /// Issue #686 regression: deleting a non-empty child tree must keep
+    /// delete propagation on the PARENT's tree type. Under the legacy path
+    /// the parent Merk was reopened labeled with the child's tree type.
+    #[test]
+    fn test_non_empty_tree_delete_under_count_tree_parent_updates_count() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"parent",
+            Element::empty_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful count tree insert");
+        db.insert(
+            [TEST_LEAF, b"parent"].as_ref(),
+            b"child",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful child tree insert");
+        db.insert(
+            [TEST_LEAF, b"parent", b"child"].as_ref(),
+            b"leaf",
+            Element::new_item(b"value".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful child item insert");
+
+        let before = db
+            .get([TEST_LEAF].as_ref(), b"parent", None, grove_version)
+            .unwrap()
+            .expect("expected parent count tree");
+        assert!(matches!(before, Element::CountTree(_, 1, _)));
+
+        db.delete(
+            [TEST_LEAF, b"parent"].as_ref(),
+            b"child",
+            Some(DeleteOptions {
+                allow_deleting_non_empty_trees: true,
+                deleting_non_empty_trees_returns_error: false,
+                ..Default::default()
+            }),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("delete non-empty child tree");
+
+        let after = db
+            .get([TEST_LEAF].as_ref(), b"parent", None, grove_version)
+            .unwrap()
+            .expect("expected parent count tree");
+        assert!(matches!(after, Element::CountTree(_, 0, _)));
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify grovedb");
+        assert!(issues.is_empty(), "verification issues: {:?}", issues);
+    }
+
+    /// Issue #686 regression: CountSumTree parent with a SumTree child —
+    /// both count and sum must settle after deleting the populated child.
+    #[test]
+    fn test_non_empty_tree_delete_under_count_sum_tree_parent_updates_count_and_sum() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"parent",
+            Element::empty_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful count sum tree insert");
+        db.insert(
+            [TEST_LEAF, b"parent"].as_ref(),
+            b"child",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful child sum tree insert");
+        db.insert(
+            [TEST_LEAF, b"parent", b"child"].as_ref(),
+            b"leaf",
+            Element::new_sum_item(7),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful child sum item insert");
+
+        let before = db
+            .get([TEST_LEAF].as_ref(), b"parent", None, grove_version)
+            .unwrap()
+            .expect("expected parent count sum tree");
+        assert!(matches!(before, Element::CountSumTree(_, 1, 7, _)));
+
+        db.delete(
+            [TEST_LEAF, b"parent"].as_ref(),
+            b"child",
+            Some(DeleteOptions {
+                allow_deleting_non_empty_trees: true,
+                deleting_non_empty_trees_returns_error: false,
+                ..Default::default()
+            }),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("delete non-empty child tree");
+
+        let after = db
+            .get([TEST_LEAF].as_ref(), b"parent", None, grove_version)
+            .unwrap()
+            .expect("expected parent count sum tree");
+        assert!(matches!(after, Element::CountSumTree(_, 0, 0, _)));
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify grovedb");
+        assert!(issues.is_empty(), "verification issues: {:?}", issues);
+    }
+
+    /// Issue #686, the case that actually diverges on current code: a
+    /// Provable* parent's link hash embeds its aggregate
+    /// (`hash_for_link`), so reopening the parent labeled with the child's
+    /// plain-tree type (legacy path) commits a wrong link hash into the
+    /// grandparent. Under GROVE_V4 the already-open parent Merk is reused
+    /// and the binding stays consistent.
+    #[test]
+    fn test_non_empty_tree_delete_under_provable_count_tree_parent_v4_keeps_binding() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"parent",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful provable count tree insert");
+        // A sibling keeps the parent Merk non-empty after the delete so the
+        // link hash is actually recomputed during propagation.
+        db.insert(
+            [TEST_LEAF, b"parent"].as_ref(),
+            b"sibling",
+            Element::new_item(b"s".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful sibling insert");
+        db.insert(
+            [TEST_LEAF, b"parent"].as_ref(),
+            b"child",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful child tree insert");
+        db.insert(
+            [TEST_LEAF, b"parent", b"child"].as_ref(),
+            b"leaf",
+            Element::new_item(b"value".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful child item insert");
+
+        db.delete(
+            [TEST_LEAF, b"parent"].as_ref(),
+            b"child",
+            Some(DeleteOptions {
+                allow_deleting_non_empty_trees: true,
+                deleting_non_empty_trees_returns_error: false,
+                ..Default::default()
+            }),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("delete non-empty child tree");
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify grovedb");
+        assert!(issues.is_empty(), "verification issues: {:?}", issues);
+    }
+
+    /// GROVE_V3 must keep the legacy path byte-for-byte: the same scenario
+    /// as `..._v4_keeps_binding` leaves a wrong link hash in the
+    /// grandparent, which `verify_grovedb` reports. Any such delete that
+    /// happened on a live v3 chain committed that hash into a consensus
+    /// root, so replay must reproduce it.
+    #[test]
+    fn test_non_empty_tree_delete_under_provable_count_tree_parent_v3_keeps_legacy() {
+        let grove_version = &GROVE_V3;
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"parent",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful provable count tree insert");
+        db.insert(
+            [TEST_LEAF, b"parent"].as_ref(),
+            b"sibling",
+            Element::new_item(b"s".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful sibling insert");
+        db.insert(
+            [TEST_LEAF, b"parent"].as_ref(),
+            b"child",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful child tree insert");
+        db.insert(
+            [TEST_LEAF, b"parent", b"child"].as_ref(),
+            b"leaf",
+            Element::new_item(b"value".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful child item insert");
+
+        db.delete(
+            [TEST_LEAF, b"parent"].as_ref(),
+            b"child",
+            Some(DeleteOptions {
+                allow_deleting_non_empty_trees: true,
+                deleting_non_empty_trees_returns_error: false,
+                ..Default::default()
+            }),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("legacy delete non-empty child tree");
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify grovedb");
+        assert!(
+            !issues.is_empty(),
+            "legacy v3 path is expected to leave a mismatched parent link hash; if this now \
+             verifies clean, the v3 behavior changed — that breaks replay compatibility"
+        );
+    }
+
+    /// Issue #686, panic variant: deleting a non-empty Provable* CHILD under
+    /// a plain parent made the legacy path reopen the parent labeled
+    /// ProvableCountTree; `hash_for_link` then panics on the parent's basic
+    /// nodes. Fixed under GROVE_V4 by reusing the correctly-labeled parent.
+    #[test]
+    fn test_non_empty_provable_child_delete_under_normal_parent_v4_no_panic() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"child",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful provable count child insert");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"sibling",
+            Element::new_item(b"s".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful sibling insert");
+        db.insert(
+            [TEST_LEAF, b"child"].as_ref(),
+            b"leaf",
+            Element::new_item(b"value".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful child item insert");
+
+        db.delete(
+            [TEST_LEAF].as_ref(),
+            b"child",
+            Some(DeleteOptions {
+                allow_deleting_non_empty_trees: true,
+                deleting_non_empty_trees_returns_error: false,
+                ..Default::default()
+            }),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("delete non-empty provable child tree");
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify grovedb");
+        assert!(issues.is_empty(), "verification issues: {:?}", issues);
+    }
+
+    /// Pins the legacy panic on GROVE_V3 (see
+    /// `..._v4_no_panic`). If this stops panicking the v3 code path
+    /// changed, which would break replay compatibility.
+    #[test]
+    #[should_panic(expected = "ProvableCountTree::hash_for_link")]
+    fn test_non_empty_provable_child_delete_under_normal_parent_v3_panics() {
+        let grove_version = &GROVE_V3;
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"child",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful provable count child insert");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"sibling",
+            Element::new_item(b"s".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful sibling insert");
+        db.insert(
+            [TEST_LEAF, b"child"].as_ref(),
+            b"leaf",
+            Element::new_item(b"value".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful child item insert");
+
+        let _ = db.delete(
+            [TEST_LEAF].as_ref(),
+            b"child",
+            Some(DeleteOptions {
+                allow_deleting_non_empty_trees: true,
+                deleting_non_empty_trees_returns_error: false,
+                ..Default::default()
+            }),
+            None,
+            grove_version,
+        );
+    }
+
+    /// GROVE_V3 keeps the legacy (version 0) delete path for plain aggregate
+    /// parents: the delete still lands and — on current code — the count
+    /// settles correctly (aggregates are read from node feature types, so
+    /// the mislabeled reopen is benign for non-Provable parents).
+    #[test]
+    fn test_legacy_non_empty_tree_delete_keeps_version_0_path() {
+        let grove_version = &GROVE_V3;
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"parent",
+            Element::empty_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful count tree insert");
+        db.insert(
+            [TEST_LEAF, b"parent"].as_ref(),
+            b"child",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful child tree insert");
+        db.insert(
+            [TEST_LEAF, b"parent", b"child"].as_ref(),
+            b"leaf",
+            Element::new_item(b"value".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful child item insert");
+
+        db.delete(
+            [TEST_LEAF, b"parent"].as_ref(),
+            b"child",
+            Some(DeleteOptions {
+                allow_deleting_non_empty_trees: true,
+                deleting_non_empty_trees_returns_error: false,
+                ..Default::default()
+            }),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("legacy delete non-empty child tree");
+
+        assert!(matches!(
+            db.get(
+                [TEST_LEAF, b"parent"].as_ref(),
+                b"child",
+                None,
+                grove_version
+            )
+            .unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ));
+        let after = db
+            .get([TEST_LEAF].as_ref(), b"parent", None, grove_version)
+            .unwrap()
+            .expect("expected parent count tree");
+        assert!(matches!(after, Element::CountTree(_, 0, _)));
+    }
 
     #[test]
     fn test_empty_subtree_deletion_without_transaction() {
@@ -2156,5 +2304,131 @@ mod tests {
             "expected CorruptedReferencePathKeyNotFound, got {:?}",
             err
         );
+    }
+
+    #[test]
+    fn delete_item_with_backward_references() {
+        // Deletion of an item with backward references shall trigger cascade
+        // deletions if the flag is set
+        let version = GroveVersion::latest();
+        let db = make_tree_with_bidi_references(version);
+
+        assert!(db
+            .get(&[TEST_LEAF, b"innertree"], b"ref", None, version)
+            .unwrap()
+            .is_ok());
+
+        db.delete(
+            &[b"deep_leaf".as_ref(), b"deep_node_1", b"deeper_2"],
+            b"key5",
+            Some(DeleteOptions {
+                allow_deleting_non_empty_trees: false,
+                deleting_non_empty_trees_returns_error: true,
+                base_root_storage_is_free: true,
+                validate_tree_at_path_exists: true,
+                propagate_backward_references: true,
+            }),
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(matches!(
+            db.get(&[TEST_LEAF, b"innertree"], b"ref", None, version)
+                .unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn recursive_deletion_with_bidirectional_references() {
+        // The purpose of this test is to check if bidirectional references
+        // chain propagation works properly when a part of it happens to be
+        // under a recursive deletion effect.
+        // The expected result is that references inside test_leaf and
+        // another_test_leaf shall be deleted as well; those that happened
+        // to be inside of deep_leaf are gone with the deleted subtree.
+
+        let version = GroveVersion::latest();
+
+        let db = make_tree_with_bidi_references(version);
+
+        let transaction = db.start_transaction();
+
+        // Perform recursive deletion:
+        db.delete(
+            SubtreePath::empty(),
+            b"deep_leaf",
+            Some(DeleteOptions {
+                allow_deleting_non_empty_trees: true,
+                deleting_non_empty_trees_returns_error: false,
+                base_root_storage_is_free: true,
+                validate_tree_at_path_exists: true,
+                propagate_backward_references: true,
+            }),
+            Some(&transaction),
+            version,
+        )
+        .unwrap()
+        .unwrap();
+
+        // Outside of deletion area:
+        assert!(matches!(
+            db.get(
+                &[TEST_LEAF, b"innertree"],
+                b"ref",
+                Some(&transaction),
+                version
+            )
+            .unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ));
+
+        // Inside:
+        assert!(matches!(
+            db.get(
+                &[b"deep_leaf".as_ref(), b"deep_node_1", b"deeper_1"],
+                b"ref3",
+                Some(&transaction),
+                version
+            )
+            .unwrap(),
+            Err(Error::PathParentLayerNotFound(_))
+        ));
+
+        // Commit and re-check against persisted state: the cascade must
+        // survive the transaction boundary, the whole graph must verify,
+        // and proofs over surviving data must check out against the new
+        // root hash.
+        db.commit_transaction(transaction).unwrap().unwrap();
+
+        assert!(matches!(
+            db.get(&[TEST_LEAF, b"innertree"], b"ref", None, version)
+                .unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ));
+        assert!(db
+            .verify_grovedb(None, true, true, version)
+            .unwrap()
+            .is_empty());
+
+        let mut query = crate::Query::new();
+        query.insert_all();
+        let path_query =
+            crate::PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query);
+        let proof = db
+            .prove_query(&path_query, None, version)
+            .unwrap()
+            .expect("should prove after cascade deletion");
+        let (proved_root, results) = crate::GroveDb::verify_query(&proof, &path_query, version)
+            .expect("proof should verify");
+        assert_eq!(
+            proved_root,
+            db.root_hash(None, version).unwrap().unwrap(),
+            "proved root must match the committed root"
+        );
+        // innertree originally held key1..key3 plus the now-cascaded `ref`.
+        assert_eq!(results.len(), 3);
     }
 }

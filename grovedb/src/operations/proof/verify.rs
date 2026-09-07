@@ -15,6 +15,7 @@ use grovedb_version::{
     check_grovedb_v0, version::GroveVersion, TryFromVersioned, TryIntoVersioned,
 };
 
+use super::position_intervals::PositionIntervals;
 #[cfg(feature = "proof_debug")]
 use crate::operations::proof::util::{
     hex_to_ascii, path_as_slices_hex_to_ascii, path_hex_to_ascii,
@@ -112,6 +113,16 @@ impl GroveDb {
         // (verify_query_with_options, verify_query_raw,
         // verify_query_get_parent_tree_info_with_options).
 
+        // Query-shape gates run BEFORE the proof bytes are decoded: the
+        // canonical decoder admits envelopes up to 256 MiB, and a query
+        // this verifier cannot serve should refuse without paying for
+        // (or error-shadowing) that parse. `verify_proof_internal`
+        // re-checks as defense in depth.
+        query.reject_unserved_per_instance_limits(grove_version)?;
+        if options.absence_proofs_for_non_existing_searched_keys {
+            query.reject_per_instance_limits("absence-proof verification")?;
+        }
+
         let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         let (root_hash, _, result) =
@@ -156,6 +167,12 @@ impl GroveDb {
             ));
         }
 
+        // Pre-decode query-shape gate — see `verify_query_with_options`.
+        query.reject_unserved_per_instance_limits(grove_version)?;
+        if options.absence_proofs_for_non_existing_searched_keys {
+            query.reject_per_instance_limits("absence-proof verification")?;
+        }
+
         let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         let (root_hash, tree_feature_type, result) =
@@ -184,6 +201,9 @@ impl GroveDb {
                 .proof
                 .verify_query_raw
         );
+        // Pre-decode query-shape gate — see `verify_query_with_options`.
+        query.reject_unserved_per_instance_limits(grove_version)?;
+
         let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         let (root_hash, _, result) = Self::verify_proof_raw_internal(
@@ -219,10 +239,22 @@ impl GroveDb {
         // thing.
         query.reject_unserved_read_mode()?;
 
+        // Per-instance limit gate: served by the V1 verifier from
+        // GROVE_V4; older grove versions fail closed, and zero caps are
+        // rejected as malformed. Absence-proof assembly stays rejected
+        // regardless: its terminal-keys projection reports every
+        // expected key the proof did not carry as absent, and which
+        // keys an instance-capped walk carries is data-dependent — keys
+        // beyond a cap would masquerade as proven-absent.
+        query.reject_unserved_per_instance_limits(grove_version)?;
+        if options.absence_proofs_for_non_existing_searched_keys {
+            query.reject_per_instance_limits("absence-proof verification")?;
+        }
+
         // Offset gate centralized in `apply_count_offset_envelope_gate`:
         // V0 envelopes reject any non-zero offset (V0 is a shipped
         // wire format that never supported `SizedQuery::offset`);
-        // V1 envelopes honor a non-zero offset iff the query
+        // V1 envelopes honor a non-zero offset if and only if the query
         // validates as offset-paginated. The tree-type check
         // (ProvableCountTree / ProvableCountSumTree) happens at
         // leaf-dispatch time inside `run_count_offset_layer_dispatch`.
@@ -230,6 +262,9 @@ impl GroveDb {
 
         match proof {
             GroveDBProof::V0(proof_v0) => {
+                // The V0 verifier is a frozen wire format whose limit
+                // accounting predates per-instance caps.
+                query.reject_per_instance_limits("the V0 verifier")?;
                 Self::verify_proof_v0_internal(proof_v0, query, options, grove_version)
             }
             GroveDBProof::V1(proof_v1) => {
@@ -359,8 +394,13 @@ impl GroveDb {
         options: VerifyOptions,
         grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, Option<TreeFeatureType>, ProvedPathKeyValues), Error> {
-        // Same fail-closed read-mode gate as `verify_proof_internal`.
+        // Same fail-closed read-mode and per-instance-limit gates as
+        // `verify_proof_internal`.
         query.reject_unserved_read_mode()?;
+        query.reject_unserved_per_instance_limits(grove_version)?;
+        if options.absence_proofs_for_non_existing_searched_keys {
+            query.reject_per_instance_limits("absence-proof verification")?;
+        }
 
         // Same V0-rejects / V1-relaxes envelope gate as
         // `verify_proof_internal` — see `apply_count_offset_envelope_gate`.
@@ -368,6 +408,9 @@ impl GroveDb {
 
         match proof {
             GroveDBProof::V0(proof_v0) => {
+                // See `verify_proof_internal`: V0 predates per-instance
+                // caps.
+                query.reject_per_instance_limits("the V0 verifier")?;
                 Self::verify_proof_raw_internal_v0(proof_v0, query, options, grove_version)
             }
             GroveDBProof::V1(proof_v1) => {
@@ -420,7 +463,7 @@ impl GroveDb {
         let prove_options = ProveOptions::default();
 
         let mut result = Vec::new();
-        let mut limit = query.query.limit;
+        let mut limit_state = super::V1LimitState::new(query.query.limit);
         let mut last_tree_feature_type = None;
         // This entry point serves key-selection queries only (read-mode
         // queries are gated out before reaching it), so axis outcomes
@@ -431,7 +474,8 @@ impl GroveDb {
             &proof.root_layer.lower_layers,
             &prove_options,
             query,
-            &mut limit,
+            &mut limit_state,
+            None,
             &[],
             &mut result,
             &mut axis_outcomes,
@@ -492,7 +536,7 @@ impl GroveDb {
             include_empty_trees_in_result: false,
         };
         let mut result = Vec::new();
-        let mut limit = query.query.limit;
+        let mut limit_state = super::V1LimitState::new(query.query.limit);
         let mut last_tree_feature_type = None;
         let mut axis_outcomes = Vec::new();
         let root_hash = Self::verify_layer_proof_v1(
@@ -500,7 +544,8 @@ impl GroveDb {
             &proof.root_layer.lower_layers,
             &prove_options,
             query,
-            &mut limit,
+            &mut limit_state,
+            None,
             &[],
             &mut result,
             &mut axis_outcomes,
@@ -521,7 +566,7 @@ impl GroveDb {
         let prove_options = ProveOptions::default();
 
         let mut result = Vec::new();
-        let mut limit = query.query.limit;
+        let mut limit_state = super::V1LimitState::new(query.query.limit);
         let mut last_tree_feature_type = None;
         // Key-selection-only entry point; see verify_proof_v1_internal.
         let mut axis_outcomes = Vec::new();
@@ -530,7 +575,8 @@ impl GroveDb {
             &proof.root_layer.lower_layers,
             &prove_options,
             query,
-            &mut limit,
+            &mut limit_state,
+            None,
             &[],
             &mut result,
             &mut axis_outcomes,
@@ -658,12 +704,20 @@ impl GroveDb {
             // NonCounted-wrapped values are checked **before**
             // unwrapping via `into_underlying`, since the wrapper
             // itself is the rejected shape. The merk-level prover
-            // already refuses to emit NonCounted entries as
-            // value-bearing nodes, so an honest proof can never
-            // surface one here. Reject as `InvalidProof`
-            // (forgery) rather than `NotSupported` to make the
-            // distinction visible.
-            if elem.is_non_counted() {
+            // already refuses to emit NonCounted entries of the proved
+            // tree as value-bearing nodes, so an honest proof can never
+            // surface one of the tree's OWN entries wrapped. Reject as
+            // `InvalidProof` (forgery) rather than `NotSupported` to
+            // make the distinction visible.
+            //
+            // A row resolved through a reference is the exception: a
+            // reference commits to its terminal's stored bytes verbatim
+            // (wrapper included — see `follow_reference_as_stored`), so
+            // a target that lives wrapped in a count-bearing tree
+            // legitimately surfaces here wrapped. The merk verifier
+            // flags those rows, and the wrapper is looked through below
+            // like everywhere else.
+            if elem.is_non_counted() && !item.resolved_from_reference {
                 return Err(Error::InvalidProof(
                     query.clone(),
                     format!(
@@ -1002,15 +1056,21 @@ impl GroveDb {
                     let secondary_query =
                         crate::query::axis_lowering::axis_bounded_merk_query(axis_query)?;
                     let left_to_right = secondary_query.left_to_right;
-                    // proof_version 0 (lenient) matches the standalone
-                    // envelope's choice and is safe HERE because the
-                    // axis decoders consume only `proved.key` — bound
-                    // into the recomputed secondary root — never
-                    // `proved.value`. If a future change starts reading
-                    // secondary VALUES, it must move to
-                    // PROOF_VERSION_LATEST first.
+                    // Strict mode (#863): the secondary stream must be
+                    // encoded in the family of the direction it is
+                    // walked in, or an upright stream handed to a
+                    // descending axis read would fill the page from the
+                    // wrong end of the range. The strict value checks
+                    // that come with it are moot here — the axis
+                    // decoders consume only `proved.key`, bound into the
+                    // recomputed secondary root — but harmless.
                     let (root, res) = secondary_query
-                        .execute_proof(&payload.secondary_proof, Some(*limit), left_to_right, 0)
+                        .execute_proof(
+                            &payload.secondary_proof,
+                            Some(*limit),
+                            left_to_right,
+                            PROOF_VERSION_LATEST,
+                        )
                         .unwrap()
                         .map_err(|e| {
                             Error::InvalidProof(
@@ -1203,12 +1263,18 @@ impl GroveDb {
                 )
             })?;
 
-        // Present rows only, in walk order; absent keys (value None)
-        // are covered by the proof but never scanned by the engine.
-        let window: Vec<(&Vec<u8>, &Vec<u8>)> = window_result
+        // Present rows only, in walk order, each kept WITH its binding
+        // evidence (the merk-surfaced value hash and whether a child hash
+        // was verified); absent keys (value None) are covered by the
+        // proof but never scanned by the engine.
+        let window: Vec<(&Vec<u8>, &Vec<u8>, &CryptoHash, bool)> = window_result
             .result_set
             .iter()
-            .filter_map(|row| row.value.as_ref().map(|value| (&row.key, value)))
+            .filter_map(|row| {
+                row.value
+                    .as_ref()
+                    .map(|value| (&row.key, value, &row.proof, row.child_hash_verified))
+            })
             .collect();
         if window.len() != payload.window_len as usize {
             return Err(Error::InvalidProof(
@@ -1233,7 +1299,7 @@ impl GroveDb {
         let mut matches: Vec<(Vec<u8>, i64)> = Vec::new();
         let mut hard_cap_tripped = false;
 
-        for (key, value_bytes) in &window {
+        for (key, value_bytes, row_value_hash, child_hash_verified) in &window {
             // Pre-element conditions (the engine's loop guards): a
             // window that continues past a fired stop hides where the
             // walk really ended.
@@ -1241,6 +1307,31 @@ impl GroveDb {
                 return Err(Error::InvalidProof(
                     query.clone(),
                     "sum-budget window continues past its stop condition".to_string(),
+                ));
+            }
+            // Binding evidence (#870): the fold/skip decision below reads
+            // the element bytes, so they must be the bytes the root
+            // commits. An item row is bound when the merk verifier hashed
+            // its value itself (`H(value) == value_hash`); a composite row
+            // (tree, reference) is bound only when the merk verifier
+            // checked `combine_hash(H(value), child_hash) == value_hash`
+            // on a node carrying the child hash; a backward-references
+            // item row (`KVBackwardsReferencesValueHash`) is bound the same
+            // way, the merk verifier having recomputed
+            // `combine_hash(H(stripped), referrer_list_hash)` into the root.
+            // A bare `KVValueHash` row satisfies neither: its bytes are
+            // free for a prover to rewrite under a genuine root, which is
+            // exactly how a sum item could be disguised as a tree and
+            // dropped.
+            let simply_bound = value_hash(value_bytes).value() == *row_value_hash;
+            if !simply_bound && !*child_hash_verified {
+                return Err(Error::InvalidProof(
+                    query.clone(),
+                    format!(
+                        "sum-budget window row {} presents element bytes the proof does not \
+                         bind: a composite row must carry its child hash",
+                        hex::encode(key)
+                    ),
                 ));
             }
             scanned = scanned.saturating_add(1);
@@ -1253,12 +1344,25 @@ impl GroveDb {
             let element = Element::deserialize(value_bytes, grove_version)?;
             // Provable fold semantics: references and non-sum elements
             // are skipped (they cannot be replayed / do not contribute).
+            // Their bytes are authenticated above, so the skip is too.
             if element.is_reference() || !element.is_sum_item() {
                 continue;
             }
+            // A plain sum item commits the plain hash of its bytes, and
+            // the merk verifier refuses item elements on child-hash nodes
+            // at proof version 1, so a row that reaches the fold is either
+            // simply bound or — for the backward-references sum items —
+            // bound through the recomputed referrer-list combination.
+            debug_assert!(
+                simply_bound || *child_hash_verified,
+                "a folded sum item row must be bound by its own hash or a recomputed \
+                 combined hash"
+            );
             let value = match element.into_underlying() {
-                Element::SumItem(value, _) => value,
-                Element::ItemWithSumItem(_, value, _) => value,
+                Element::SumItem(value, _)
+                | Element::ItemWithSumItem(_, value, _)
+                | Element::SumItemWithBackwardsReferences(value, _, _)
+                | Element::ItemWithSumItemWithBackwardsReferences(_, value, _, _) => value,
                 _ => {
                     return Err(Error::InvalidProof(
                         query.clone(),
@@ -1334,8 +1438,21 @@ impl GroveDb {
         merk_proof_bytes: &[u8],
         query: &PathQuery,
     ) -> Result<CryptoHash, Error> {
-        let (root_hash, _) = Query::new()
-            .execute_proof(merk_proof_bytes, None, true, PROOF_VERSION_LATEST)
+        // The layer was emitted in the direction of the query that
+        // generated the proof, which this (subset) query does not know.
+        // No row is reported, so the direction carries no semantics
+        // here; it only has to match the stream's own family for the
+        // #863 orientation check, which still refuses a mixed stream.
+        let left_to_right = grovedb_merk::proofs::query::proof_stream_direction(merk_proof_bytes)
+            .map_err(|e| {
+                Error::InvalidProof(
+                    query.clone(),
+                    format!("Invalid V1 lower layer proof (root derivation): {}", e),
+                )
+            })?
+            .unwrap_or(true);
+        let (root_hash, _) = Query::new_with_direction(left_to_right)
+            .execute_proof(merk_proof_bytes, None, left_to_right, PROOF_VERSION_LATEST)
             .unwrap()
             .map_err(|e| {
                 Error::InvalidProof(
@@ -1362,7 +1479,8 @@ impl GroveDb {
         lower_layers: &BTreeMap<Vec<u8>, LayerProof>,
         prove_options: &ProveOptions,
         query: &PathQuery,
-        limit_left: &mut Option<u16>,
+        limit_state: &mut super::V1LimitState,
+        inherited_instance: Option<u16>,
         current_path: &[&[u8]],
         result: &mut Vec<T>,
         axis_outcomes: &mut Vec<AxisWalkOutcome>,
@@ -1396,15 +1514,26 @@ impl GroveDb {
         // hash so the parent layer's `combine_hash(H(value),
         // lower_hash)` chain check matches.
         if current_path.len() == query.path.len() && query.has_non_zero_offset() {
-            return Self::run_count_offset_layer_dispatch(
+            // Count-offset queries reject per-instance limits, so the
+            // effective budget here is just the global one; the temp
+            // keeps the dispatch's own accounting and reports the
+            // consumed slots back through the shared state.
+            let mut count_offset_limit = limit_state.effective_layer_limit(inherited_instance);
+            let count_offset_before = count_offset_limit;
+            let dispatch_result = Self::run_count_offset_layer_dispatch(
                 query,
                 merk_proof_bytes,
                 lower_layers.is_empty(),
                 current_path,
-                limit_left,
+                &mut count_offset_limit,
                 result,
                 grove_version,
             );
+            let consumed = count_offset_before
+                .unwrap_or(0)
+                .saturating_sub(count_offset_limit.unwrap_or(0));
+            limit_state.charge_rows(consumed);
+            return dispatch_result;
         }
 
         let internal_query = query
@@ -1418,6 +1547,12 @@ impl GroveDb {
                     .join("/"),
                 query
             )))?;
+
+        // This frame's per-instance budget — fresh for this subtree,
+        // bounded by every enclosing cap; `None` throughout on queries
+        // without per-instance limits. Mirrors `prove_subqueries_v1`.
+        let mut frame_instance =
+            super::V1LimitState::min_caps(inherited_instance, internal_query.instance_limit);
 
         // Which direction this layer's op stream is encoded in.
         //
@@ -1447,6 +1582,17 @@ impl GroveDb {
         // binds the result stays where it was: the reconstructed root
         // hash still has to match what the parent layer committed, and
         // `QueryItem::contains` still gates every returned key.
+        //
+        // For every other level the direction is the query's, and
+        // `execute_proof` itself (#863) refuses a stream that is not
+        // homogeneous in that direction's op family — an upright
+        // stream walked descending, or a mixed stream that rebuilds
+        // the honest tree in a non-monotonic visit order, would
+        // otherwise read an absence, or a page from the wrong end of
+        // the range, out of an authentic root hash. The same check
+        // runs on a synthesized level, where the direction read off
+        // the stream trivially matches it (`proof_stream_direction`
+        // already refuses a mixed stream).
         let single_key_synthesized_level = internal_query.synthesized_path_component
             && matches!(
                 internal_query.items.as_slice(),
@@ -1473,10 +1619,29 @@ impl GroveDb {
             ..Default::default()
         };
 
+        // Mirror of the prover's per-layer limit rule: a pure terminal
+        // layer (no subquery branches) runs under the tighter of the
+        // global and instance budgets — its merk rows ARE result rows.
+        // A layer with subquery branches runs under the global budget
+        // only: the instance chain budgets descendant ROWS, not
+        // children, and must not truncate which children appear (an
+        // empty child consumes no instance budget, so a later populated
+        // child may still owe rows). Prover and verifier must derive
+        // the identical value here or honest proofs fail the
+        // more-data-than-limit check.
+        let layer_limit = if matches!(
+            internal_query.has_subquery,
+            crate::query::HasSubquery::NoSubquery
+        ) {
+            limit_state.effective_layer_limit(frame_instance)
+        } else {
+            limit_state.global
+        };
+
         let (root_hash, merk_result) = level_query
             .execute_proof(
                 merk_proof_bytes,
-                *limit_left,
+                layer_limit,
                 left_to_right,
                 PROOF_VERSION_LATEST, // V1 proof: strict mode rejects items in value hash nodes
             )
@@ -1492,9 +1657,9 @@ impl GroveDb {
 
         if merk_result.result_set.is_empty() {
             if prove_options.decrease_limit_on_empty_sub_query_result {
-                limit_left
-                    .iter_mut()
-                    .for_each(|limit| *limit = limit.saturating_sub(1));
+                // Global budget only — empty-layer charges bound
+                // traversal work, per-instance budgets bound rows.
+                limit_state.charge_empty_layer();
             }
         } else {
             for proved_key_value in merk_result.result_set {
@@ -1507,6 +1672,38 @@ impl GroveDb {
                     // wrapper byte, so cryptographic verification still works.
                     let element =
                         Element::deserialize(value_bytes, grove_version)?.into_underlying();
+
+                    // A raw reference can never be an honest V1 row. The
+                    // prover rewrites every reference the verifier will
+                    // consume into a `KVRefValueHash*` node carrying the
+                    // dereferenced TARGET bytes, so the bytes surfaced
+                    // here are the target's — never the reference's own.
+                    // A `KVValueHash` / `KVValueHashFeatureType` node
+                    // hashes only `(key, value_hash)`, and the merk-level
+                    // V1 guard refuses only *items* on those forms (it
+                    // cannot refuse references: a reference row past the
+                    // query limit legitimately stays bare there, and this
+                    // loop stops before reading it). So a forged proof can
+                    // pair genuine `value_hash` with arbitrary reference
+                    // bytes and still reconstruct the root. This is the
+                    // check that binds the row: refuse before the element
+                    // type can be returned as unauthenticated reference
+                    // metadata, or make "a reference has no lower layer"
+                    // silently skip a descent the query asked for
+                    // (issue #862).
+                    if element.is_reference() {
+                        return Err(Error::InvalidProof(
+                            query.clone(),
+                            format!(
+                                "V1 proof surfaces a raw {} at key {}: the prover serves \
+                                 references as KVRefValueHash nodes carrying the dereferenced \
+                                 target, so an unresolved reference row is unbound and \
+                                 malformed",
+                                element.type_str(),
+                                hex::encode(key),
+                            ),
+                        ));
+                    }
 
                     verified_keys.insert(key.clone());
 
@@ -1698,10 +1895,8 @@ impl GroveDb {
                                         path_key_optional_value
                                             .try_into_versioned(grove_version)?,
                                     );
-                                    limit_left
-                                        .iter_mut()
-                                        .for_each(|limit| *limit = limit.saturating_sub(1));
-                                    if limit_left == &Some(0) {
+                                    limit_state.charge_row_with_instance(&mut frame_instance);
+                                    if limit_state.is_exhausted(frame_instance) {
                                         break;
                                     }
                                 } else {
@@ -1752,12 +1947,14 @@ impl GroveDb {
                                     // deep-copied `lower_layers` at every
                                     // nesting level — memory an untrusted peer
                                     // could multiply by nesting depth.
+                                    let rows_before_descent = limit_state.consumed_rows;
                                     let primary_root_hash = Self::verify_layer_proof_v1(
                                         &cidx_bytes[32..],
                                         &lower_layer.lower_layers,
                                         prove_options,
                                         query,
-                                        limit_left,
+                                        limit_state,
+                                        frame_instance,
                                         &path,
                                         result,
                                         axis_outcomes,
@@ -1766,6 +1963,11 @@ impl GroveDb {
                                         current_depth + 1,
                                         grove_version,
                                     )?;
+                                    super::V1LimitState::settle_instance_after_descent(
+                                        &mut frame_instance,
+                                        rows_before_descent,
+                                        limit_state.consumed_rows,
+                                    );
 
                                     let combined_root_hash = combine_hash_three(
                                         value_hash(value_bytes).value(),
@@ -1786,7 +1988,7 @@ impl GroveDb {
                                             ),
                                         ));
                                     }
-                                    if limit_left == &Some(0) {
+                                    if limit_state.is_exhausted(frame_instance) {
                                         break;
                                     }
                                 }
@@ -1895,6 +2097,7 @@ impl GroveDb {
                                     // contents — every lower-layer flavour
                                     // computes its root independently of the
                                     // query, which only ever selects rows.
+                                    let rows_before_descent = limit_state.consumed_rows;
                                     let lower_hash = match &lower_layer.merk_proof {
                                         ProofBytes::Merk(_) => {
                                             // A sum-budget layer must carry
@@ -1920,7 +2123,8 @@ impl GroveDb {
                                                     &lower_layer.lower_layers,
                                                     prove_options,
                                                     query,
-                                                    limit_left,
+                                                    limit_state,
+                                                    frame_instance,
                                                     &path,
                                                     result,
                                                     axis_outcomes,
@@ -1950,51 +2154,134 @@ impl GroveDb {
                                                 grove_version,
                                             )?
                                         }
-                                        ProofBytes::MMR(mmr_bytes) => Self::verify_mmr_lower_layer(
-                                            mmr_bytes,
-                                            &element,
-                                            &path,
-                                            limit_left,
-                                            result,
-                                            query,
-                                            has_query_below,
-                                            grove_version,
-                                        )?,
+                                        ProofBytes::MMR(mmr_bytes) => {
+                                            // Mirror of the prover: min-compose
+                                            // the lower query's own per-instance
+                                            // cap — these adapters bypass the
+                                            // recursive frame creation.
+                                            let mut non_merk_effective = limit_state
+                                                .effective_lower_layer_limit(
+                                                    frame_instance,
+                                                    query
+                                                        .query_items_at_path(&path, grove_version)?
+                                                        .and_then(|lower_query| {
+                                                            lower_query.instance_limit
+                                                        }),
+                                                );
+                                            let non_merk_before = non_merk_effective;
+                                            let lower_hash = Self::verify_mmr_lower_layer(
+                                                mmr_bytes,
+                                                &element,
+                                                &path,
+                                                &mut non_merk_effective,
+                                                result,
+                                                query,
+                                                has_query_below,
+                                                grove_version,
+                                            )?;
+                                            limit_state.charge_rows(
+                                                non_merk_before.unwrap_or(0).saturating_sub(
+                                                    non_merk_effective.unwrap_or(0),
+                                                ),
+                                            );
+                                            lower_hash
+                                        }
                                         ProofBytes::BulkAppendTree(bulk_bytes) => {
-                                            Self::verify_bulk_append_lower_layer(
+                                            // Mirror of the prover: min-compose
+                                            // the lower query's own per-instance
+                                            // cap — these adapters bypass the
+                                            // recursive frame creation.
+                                            let mut non_merk_effective = limit_state
+                                                .effective_lower_layer_limit(
+                                                    frame_instance,
+                                                    query
+                                                        .query_items_at_path(&path, grove_version)?
+                                                        .and_then(|lower_query| {
+                                                            lower_query.instance_limit
+                                                        }),
+                                                );
+                                            let non_merk_before = non_merk_effective;
+                                            let lower_hash = Self::verify_bulk_append_lower_layer(
                                                 bulk_bytes,
                                                 &element,
                                                 &path,
-                                                limit_left,
+                                                &mut non_merk_effective,
                                                 result,
                                                 query,
                                                 has_query_below,
                                                 grove_version,
-                                            )?
+                                            )?;
+                                            limit_state.charge_rows(
+                                                non_merk_before.unwrap_or(0).saturating_sub(
+                                                    non_merk_effective.unwrap_or(0),
+                                                ),
+                                            );
+                                            lower_hash
                                         }
                                         ProofBytes::DenseTree(dense_bytes) => {
-                                            Self::verify_dense_tree_lower_layer(
+                                            // Mirror of the prover: min-compose
+                                            // the lower query's own per-instance
+                                            // cap — these adapters bypass the
+                                            // recursive frame creation.
+                                            let mut non_merk_effective = limit_state
+                                                .effective_lower_layer_limit(
+                                                    frame_instance,
+                                                    query
+                                                        .query_items_at_path(&path, grove_version)?
+                                                        .and_then(|lower_query| {
+                                                            lower_query.instance_limit
+                                                        }),
+                                                );
+                                            let non_merk_before = non_merk_effective;
+                                            let lower_hash = Self::verify_dense_tree_lower_layer(
                                                 dense_bytes,
                                                 &element,
                                                 &path,
-                                                limit_left,
+                                                &mut non_merk_effective,
                                                 result,
                                                 query,
                                                 has_query_below,
                                                 grove_version,
-                                            )?
+                                            )?;
+                                            limit_state.charge_rows(
+                                                non_merk_before.unwrap_or(0).saturating_sub(
+                                                    non_merk_effective.unwrap_or(0),
+                                                ),
+                                            );
+                                            lower_hash
                                         }
                                         ProofBytes::CommitmentTree(ct_bytes) => {
-                                            Self::verify_commitment_tree_lower_layer(
-                                                ct_bytes,
-                                                &element,
-                                                &path,
-                                                limit_left,
-                                                result,
-                                                query,
-                                                has_query_below,
-                                                grove_version,
-                                            )?
+                                            // Mirror of the prover: min-compose
+                                            // the lower query's own per-instance
+                                            // cap — these adapters bypass the
+                                            // recursive frame creation.
+                                            let mut non_merk_effective = limit_state
+                                                .effective_lower_layer_limit(
+                                                    frame_instance,
+                                                    query
+                                                        .query_items_at_path(&path, grove_version)?
+                                                        .and_then(|lower_query| {
+                                                            lower_query.instance_limit
+                                                        }),
+                                                );
+                                            let non_merk_before = non_merk_effective;
+                                            let lower_hash =
+                                                Self::verify_commitment_tree_lower_layer(
+                                                    ct_bytes,
+                                                    &element,
+                                                    &path,
+                                                    &mut non_merk_effective,
+                                                    result,
+                                                    query,
+                                                    has_query_below,
+                                                    grove_version,
+                                                )?;
+                                            limit_state.charge_rows(
+                                                non_merk_before.unwrap_or(0).saturating_sub(
+                                                    non_merk_effective.unwrap_or(0),
+                                                ),
+                                            );
+                                            lower_hash
                                         }
                                         ProofBytes::CountIndexedTree(_)
                                         | ProofBytes::IndexedTreeTerminal(_)
@@ -2014,6 +2301,12 @@ impl GroveDb {
                                             ));
                                         }
                                     };
+
+                                    super::V1LimitState::settle_instance_after_descent(
+                                        &mut frame_instance,
+                                        rows_before_descent,
+                                        limit_state.consumed_rows,
+                                    );
 
                                     let combined_root_hash =
                                         combine_hash(value_hash(value_bytes).value(), &lower_hash)
@@ -2053,12 +2346,10 @@ impl GroveDb {
                                             path_key_optional_value
                                                 .try_into_versioned(grove_version)?,
                                         );
-                                        limit_left
-                                            .iter_mut()
-                                            .for_each(|limit| *limit = limit.saturating_sub(1));
+                                        limit_state.charge_row_with_instance(&mut frame_instance);
                                     }
 
-                                    if limit_left == &Some(0) {
+                                    if limit_state.is_exhausted(frame_instance) {
                                         break;
                                     }
                                 }
@@ -2077,7 +2368,11 @@ impl GroveDb {
                             | Element::Item(..)
                             | Element::ItemWithSumItem(..)
                             | Element::Reference(..)
-                            | Element::ReferenceWithSumItem(..) => {
+                            | Element::ReferenceWithSumItem(..)
+                            | Element::BidirectionalReference(..)
+                            | Element::ItemWithBackwardsReferences(..)
+                            | Element::SumItemWithBackwardsReferences(..)
+                            | Element::ItemWithSumItemWithBackwardsReferences(..) => {
                                 return Err(Error::InvalidProof(
                                     query.clone(),
                                     "V1 proof has lower layer for a non-tree element.".to_string(),
@@ -2097,87 +2392,10 @@ impl GroveDb {
                                 || !matches!(element, Element::Tree(None, _)))
                     {
                         // For empty trees in the result set (no lower layer
-                        // proof), verify that the value_hash matches
-                        // combine_hash(H(value), NULL_HASH). Without this
-                        // check, an attacker could swap tree types (e.g.
-                        // SumTree→Tree) in KVValueHash nodes without breaking
-                        // the merk proof, since the value bytes are not part of
-                        // the KVValueHash tree hash computation.
-                        //
-                        // Indexed-tree elements (PCIT / PSIT / PCPSIT) have TWO
-                        // (or more) child Merks — a primary and one-or-more
-                        // secondaries — so their empty terminal proofs commit
-                        // `combine_hash_three(H(value), NULL_HASH, second)`
-                        // rather than the two-input `combine_hash`.
-                        //   - Empty PCIT / PSIT: `second = NULL_HASH` (the lone
-                        //     secondary's root hash while empty).
-                        //   - Empty PCPSIT: `second = axes_digest(zero_axes)`,
-                        //     the digest over the element's own axes list with
-                        //     every axis's secondary root hash = NULL_HASH.
-                        // These mirror the insert commit path in
-                        // add_element_on_transaction/v1.rs. Without the
-                        // indexed-specific arms, honest empty-indexed terminal
-                        // proofs fail verification.
-                        let empty_indexed_expected: Option<CryptoHash> = match &element {
-                            Element::ProvableCountIndexedTree(None, None, 0, _)
-                            | Element::ProvableSumIndexedTree(None, None, 0, _) => Some(
-                                combine_hash_three(
-                                    value_hash(value_bytes).value(),
-                                    &NULL_HASH,
-                                    &NULL_HASH,
-                                )
-                                .value()
-                                .to_owned(),
-                            ),
-                            Element::ProvableCountProvableSumIndexedTree(None, 0, 0, axes, _)
-                                if axes.iter().all(|(_, sk)| sk.is_none()) =>
-                            {
-                                let zero_axes: Vec<(u8, CryptoHash)> =
-                                    axes.iter().map(|(t, _)| (*t, NULL_HASH)).collect();
-                                let digest = axes_digest(&zero_axes).value().to_owned();
-                                Some(
-                                    combine_hash_three(
-                                        value_hash(value_bytes).value(),
-                                        &NULL_HASH,
-                                        &digest,
-                                    )
-                                    .value()
-                                    .to_owned(),
-                                )
-                            }
-                            _ => None,
-                        };
-                        if let Some(expected_value_hash) = empty_indexed_expected {
-                            if hash != &expected_value_hash {
-                                return Err(Error::InvalidProof(
-                                    query.clone(),
-                                    format!(
-                                        "V1 empty indexed-tree value hash mismatch at key {}: \
-                                         expected {}, got {}",
-                                        hex::encode(key),
-                                        hex::encode(hash),
-                                        hex::encode(expected_value_hash)
-                                    ),
-                                ));
-                            }
-                        } else if element.is_any_tree() && !element.is_non_empty_tree() {
-                            let expected_value_hash =
-                                combine_hash(value_hash(value_bytes).value(), &NULL_HASH)
-                                    .value()
-                                    .to_owned();
-                            if hash != &expected_value_hash {
-                                return Err(Error::InvalidProof(
-                                    query.clone(),
-                                    format!(
-                                        "V1 empty tree value hash mismatch at key {}: \
-                                         expected {}, got {}",
-                                        hex::encode(key),
-                                        hex::encode(hash),
-                                        hex::encode(expected_value_hash)
-                                    ),
-                                ));
-                            }
-                        }
+                        // proof), bind the element bytes to the proof's
+                        // value_hash before trusting anything decoded from
+                        // them (see `verify_empty_tree_binding`).
+                        Self::verify_empty_tree_binding(query, key, &element, value_bytes, hash)?;
 
                         // For trees reported without a subquery (no lower layer
                         // proof), the prover must use
@@ -2235,10 +2453,45 @@ impl GroveDb {
                                 proved_key_value,
                             );
                         result.push(path_key_optional_value.try_into_versioned(grove_version)?);
-                        limit_left
-                            .iter_mut()
-                            .for_each(|limit| *limit = limit.saturating_sub(1));
-                        if limit_left == &Some(0) {
+                        limit_state.charge_row_with_instance(&mut frame_instance);
+                        if limit_state.is_exhausted(frame_instance) {
+                            break;
+                        }
+                    } else if element.is_any_tree()
+                        && !element.is_non_empty_tree()
+                        && internal_query.has_subquery_or_matching_in_path_on_key(key)
+                    {
+                        // An EMPTY tree a subquery matches: an empty
+                        // child, not a result row. "Empty" is so far
+                        // only what the element bytes CLAIM, and a
+                        // `KVValueHash*` node does not hash those bytes
+                        // — a prover can rewrite a populated tree into
+                        // its empty form, omit the lower layer, and the
+                        // root still verifies. Bind the claim to the
+                        // proof's value_hash before acting on it; the
+                        // real tree's child hash is NULL_HASH only if it
+                        // really is empty (issue #869).
+                        Self::verify_empty_tree_binding(query, key, &element, value_bytes, hash)?;
+                        // When the governing query asks for parent-tree
+                        // inclusion, the matched parent is still
+                        // reported — empty and non-empty parents must
+                        // behave alike — and, like every parent-tree
+                        // row, it does not consume a budget slot (the
+                        // documented known limitation on the flag).
+                        if query.should_add_parent_tree_at_path(current_path, grove_version)? {
+                            let path_key_optional_value =
+                                ProvedPathKeyOptionalValue::from_proved_key_value(
+                                    path.iter().map(|p| p.to_vec()).collect(),
+                                    proved_key_value.clone(),
+                                );
+                            result.push(path_key_optional_value.try_into_versioned(grove_version)?);
+                        }
+                        // Mirror the prover's charge exactly — global
+                        // budget only (it bounds walks across many
+                        // empty children), per-instance budgets count
+                        // result rows.
+                        limit_state.charge_empty_layer();
+                        if limit_state.is_exhausted(frame_instance) {
                             break;
                         }
                     } else if element.is_non_empty_tree()
@@ -2248,6 +2501,32 @@ impl GroveDb {
                             query.clone(),
                             format!(
                                 "V1 proof is missing lower layer for non-empty tree at key {}",
+                                hex::encode(key),
+                            ),
+                        ));
+                    } else if element.is_any_tree() && !element.is_non_empty_tree() {
+                        // A claimed-empty plain `Tree` at a terminal
+                        // position while the caller excludes empty trees
+                        // from results (`include_empty_trees_in_result`
+                        // is false). It is not reported, but the claim
+                        // still decides that a key the trusted read
+                        // returns is absent from the result set — so it
+                        // must be bound exactly like a reported empty
+                        // tree (issue #869).
+                        Self::verify_empty_tree_binding(query, key, &element, value_bytes, hash)?;
+                    } else {
+                        // Every classification the verifier can act on
+                        // is either descended into (bound through its
+                        // lower layer), reported (bound above), or a
+                        // bound empty tree. Nothing else may be
+                        // silently skipped: the element bytes of a
+                        // `KVValueHash*` node are unauthenticated until
+                        // one of those paths binds them.
+                        return Err(Error::InvalidProof(
+                            query.clone(),
+                            format!(
+                                "V1 proof reports an element at key {} that is neither \
+                                 descended into nor bound to the proof",
                                 hex::encode(key),
                             ),
                         ));
@@ -2273,6 +2552,109 @@ impl GroveDb {
         }
 
         Ok(root_hash)
+    }
+
+    /// Bind a claimed-empty tree's element bytes to the proof's
+    /// authenticated `value_hash`.
+    ///
+    /// A merk `KVValueHash*` node hashes `(key, value_hash)`; the element
+    /// bytes it carries are NOT part of the merk root, so everything the
+    /// verifier decodes from them — tree type, emptiness — is a claim
+    /// until it is tied to `value_hash`. A non-empty tree is tied through
+    /// the lower layer it descends into (`combine_hash(H(value), lower
+    /// root)`) or the child hash it must carry when reported terminally.
+    /// An empty tree has no lower layer, so the tie is that its committed
+    /// child hash is NULL_HASH: `value_hash == combine_hash(H(value),
+    /// NULL_HASH)`. Without this a prover could swap tree types
+    /// (SumTree→Tree) or rewrite a populated tree into its empty form —
+    /// omitting the descent — without breaking the merk proof.
+    ///
+    /// Indexed-tree elements (PCIT / PSIT / PCPSIT) have TWO (or more)
+    /// child Merks — a primary and one-or-more secondaries — so their
+    /// empty form commits `combine_hash_three(H(value), NULL_HASH,
+    /// second)` rather than the two-input `combine_hash`:
+    ///   - Empty PCIT / PSIT: `second = NULL_HASH` (the lone secondary's
+    ///     root hash while empty).
+    ///   - Empty PCPSIT: `second = axes_digest(zero_axes)`, the digest
+    ///     over the element's own axes list with every axis's secondary
+    ///     root hash = NULL_HASH.
+    ///
+    /// These mirror the insert commit path in
+    /// add_element_on_transaction/v1.rs.
+    ///
+    /// GROVE_V1/V2 direct inserts committed empty `CountSumTree`,
+    /// `ProvableCountTree`, and `ProvableCountSumTree` as `H(value)`.
+    /// Those rows can coexist with layered commitments after an upgrade,
+    /// so accept that form for these types only when it authenticates the
+    /// exact serialized bytes, independently of the reader's version.
+    ///
+    /// Non-tree elements and non-empty trees pass through untouched:
+    /// their binding is the caller's responsibility.
+    fn verify_empty_tree_binding(
+        query: &PathQuery,
+        key: &[u8],
+        element: &Element,
+        value_bytes: &[u8],
+        hash: &CryptoHash,
+    ) -> Result<(), Error> {
+        let empty_indexed_expected: Option<CryptoHash> = match element {
+            Element::ProvableCountIndexedTree(None, None, 0, _)
+            | Element::ProvableSumIndexedTree(None, None, 0, _) => Some(
+                combine_hash_three(value_hash(value_bytes).value(), &NULL_HASH, &NULL_HASH)
+                    .value()
+                    .to_owned(),
+            ),
+            Element::ProvableCountProvableSumIndexedTree(None, 0, 0, axes, _)
+                if axes.iter().all(|(_, sk)| sk.is_none()) =>
+            {
+                let zero_axes: Vec<(u8, CryptoHash)> =
+                    axes.iter().map(|(t, _)| (*t, NULL_HASH)).collect();
+                let digest = axes_digest(&zero_axes).value().to_owned();
+                Some(
+                    combine_hash_three(value_hash(value_bytes).value(), &NULL_HASH, &digest)
+                        .value()
+                        .to_owned(),
+                )
+            }
+            _ => None,
+        };
+        if let Some(expected_value_hash) = empty_indexed_expected {
+            if hash != &expected_value_hash {
+                return Err(Error::InvalidProof(
+                    query.clone(),
+                    format!(
+                        "V1 empty indexed-tree value hash mismatch at key {}: expected {}, got {}",
+                        hex::encode(key),
+                        hex::encode(hash),
+                        hex::encode(expected_value_hash)
+                    ),
+                ));
+            }
+        } else if element.is_any_tree() && !element.is_non_empty_tree() {
+            let element_hash = value_hash(value_bytes).value().to_owned();
+            if matches!(
+                element,
+                Element::CountSumTree(None, ..)
+                    | Element::ProvableCountTree(None, ..)
+                    | Element::ProvableCountSumTree(None, ..)
+            ) && hash == &element_hash
+            {
+                return Ok(());
+            }
+            let expected_value_hash = combine_hash(&element_hash, &NULL_HASH).value().to_owned();
+            if hash != &expected_value_hash {
+                return Err(Error::InvalidProof(
+                    query.clone(),
+                    format!(
+                        "V1 empty tree value hash mismatch at key {}: expected {}, got {}",
+                        hex::encode(key),
+                        hex::encode(hash),
+                        hex::encode(expected_value_hash)
+                    ),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Verify an MMR lower layer proof and add results.
@@ -2357,36 +2739,48 @@ impl GroveDb {
                     "MMR path not found in query".to_string(),
                 ))?;
 
-        // Build expected and proved sets for completeness + soundness.
+        // Completeness + soundness over position INTERVALS, never an
+        // enumerated set. `element_mmr_size` is read from the parent
+        // element bytes carried by the proof, which are only bound to the
+        // trusted root after this layer returns, so nothing below may cost
+        // work proportional to it: the interval build is O(query items),
+        // and both checks are O(proved leaves), which the proof bytes bound
+        // (issue #856).
         let leaf_count = grovedb_merkle_mountain_range::mmr_size_to_leaf_count(element_mmr_size);
-        let expected_indices = Self::expand_query_to_u64_positions(&sub_query.items, leaf_count)?;
+        let expected_indices = PositionIntervals::from_query_items(&sub_query.items, leaf_count)?;
         let proved_indices: BTreeSet<u64> = verified_leaves.iter().map(|(idx, _)| *idx).collect();
 
         // Soundness: no unrequested leaves in the proof.
-        let extra: Vec<u64> = proved_indices
-            .difference(&expected_indices)
-            .copied()
-            .collect();
+        let extra = expected_indices.extra_in(proved_indices.iter());
         if !extra.is_empty() {
             return Err(Error::InvalidProof(
                 query.clone(),
-                format!("MMR proof contains unrequested leaf indices {:?}", extra),
+                format!(
+                    "MMR proof contains unrequested leaf indices ({})",
+                    extra.describe()
+                ),
             ));
         }
 
         // Completeness: every requested leaf must be in the proof.
-        let missing: Vec<u64> = expected_indices
-            .difference(&proved_indices)
-            .copied()
-            .collect();
+        let missing = expected_indices.missing_from(&proved_indices);
         if !missing.is_empty() {
             return Err(Error::InvalidProof(
                 query.clone(),
-                format!("MMR proof missing requested leaf indices {:?}", missing),
+                format!(
+                    "MMR proof missing requested leaf indices ({})",
+                    missing.describe()
+                ),
             ));
         }
 
-        // Add each verified leaf to the result set
+        // Add each verified leaf to the result set, following the query
+        // direction so a cap keeps the intended end of the range.
+        let mut verified_leaves = verified_leaves;
+        verified_leaves.sort_by_key(|(leaf_index, _)| *leaf_index);
+        if !sub_query.left_to_right {
+            verified_leaves.reverse();
+        }
         for (leaf_index, value) in verified_leaves {
             let key = leaf_index.to_be_bytes().to_vec();
             let element = Element::new_item(value);
@@ -2453,11 +2847,27 @@ impl GroveDb {
             .verify_and_compute_root(element_height, element_total_count)
             .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
 
+        // An empty `BulkAppendTree` element chains through NULL_HASH, not the
+        // domain-tagged empty state root: insert commits the element with a
+        // NULL_HASH child hash (there is no bulk state until the first
+        // append), and `verify_grovedb`'s integrity walk mirrors that. This
+        // is sound because `verify_and_compute_root` above already rejected
+        // any proof carrying data for a zero-count tree. `CommitmentTree` is
+        // different — its insert commits `EMPTY_COMMITMENT_TREE_STATE_ROOT`,
+        // which folds in the *computed* empty bulk root, so the CT wrapper
+        // (our caller) keeps the computed value.
+        let child_hash =
+            if element_total_count == 0 && matches!(element, Element::BulkAppendTree(..)) {
+                NULL_HASH
+            } else {
+                bulk_state_root
+            };
+
         // Root only: the caller is binding the parent element and does not
         // report this layer's entries, so there is no query at this path to
         // extract a position range from.
         if !report_contents {
-            return Ok(bulk_state_root);
+            return Ok(child_hash);
         }
 
         // Get the query range from the path query to extract matching values
@@ -2475,37 +2885,48 @@ impl GroveDb {
         let (start, end) = Self::extract_range_from_query_items(&sub_query.items)?;
         let end = end.min(proof_result.total_count);
 
-        let values = proof_result
+        let mut values = proof_result
             .values_in_range(start, end)
             .map_err(|e| Error::CorruptedData(format!("{}", e)))?;
+        // Result rows follow the query direction; the cap below then
+        // keeps the LAST positions for a descending query instead of
+        // truncating to the first ascending ones.
+        values.sort_by_key(|(position, _)| *position);
+        if !sub_query.left_to_right {
+            values.reverse();
+        }
 
         // Completeness: every position the query expects must be present in
-        // the proof values. Build the expected set and check coverage.
+        // the proof values. The expected set is kept as position INTERVALS,
+        // never enumerated: `element_total_count` comes from the parent
+        // element bytes carried by the proof, which are only bound to the
+        // trusted root after this layer returns, so nothing here may cost
+        // work proportional to it. The interval build is O(query items) and
+        // the coverage check is O(proved values), which the proof bytes
+        // bound (issue #856).
         let expected_positions =
-            Self::expand_query_to_u64_positions(&sub_query.items, element_total_count)?;
+            PositionIntervals::from_query_items(&sub_query.items, element_total_count)?;
         let proved_positions: BTreeSet<u64> = values.iter().map(|(pos, _)| *pos).collect();
-        let missing: Vec<u64> = expected_positions
-            .difference(&proved_positions)
-            .copied()
-            .collect();
+        let missing = expected_positions.missing_from(&proved_positions);
         if !missing.is_empty() {
             return Err(Error::InvalidProof(
                 query.clone(),
                 format!(
-                    "BulkAppendTree proof missing requested positions {:?}",
-                    missing
+                    "BulkAppendTree proof missing requested positions ({})",
+                    missing.describe()
                 ),
             ));
         }
 
         // Filter values by checking each position against the actual query
         // items. This enforces soundness: only positions matching the
-        // original query are included in results.
+        // original query are included in results (chunk-aligned proofs
+        // legitimately carry a superset of the queried positions).
         for (position, value) in values {
-            let key = position.to_be_bytes().to_vec();
-            if !sub_query.items.iter().any(|item| item.contains(&key)) {
+            if !expected_positions.contains(position) {
                 continue;
             }
+            let key = position.to_be_bytes().to_vec();
             let element = Element::new_item(value);
             let serialized = element.serialize(grove_version).map_err(|e| {
                 Error::CorruptedData(format!(
@@ -2530,8 +2951,8 @@ impl GroveDb {
             }
         }
 
-        // Return computed state_root as child Merk hash
-        Ok(bulk_state_root)
+        // Return the derived child Merk hash (see the empty-tree note above)
+        Ok(child_hash)
     }
 
     /// Verify a CommitmentTree lower layer proof and add results.
@@ -2655,6 +3076,13 @@ impl GroveDb {
             .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
 
         // Add each verified entry to the result set
+        // Follow the query direction so a cap keeps the intended end of
+        // the range.
+        let mut verified_entries = verified_entries;
+        verified_entries.sort_by_key(|(position, _)| *position);
+        if !sub_query.left_to_right {
+            verified_entries.reverse();
+        }
         for (position, value) in verified_entries {
             let key = position.to_be_bytes().to_vec();
             let elem = Element::new_item(value);
@@ -2816,143 +3244,19 @@ impl GroveDb {
             }
         }
 
-        if min_start == u64::MAX {
-            return Err(Error::InvalidInput(
-                "No valid range items found in BulkAppendTree query",
-            ));
+        // An empty selection — no items at all, only reversed spans, or a
+        // key at `u64::MAX` (a position no tree can hold) — is a valid
+        // query that matches nothing. The prover (`query_items_to_range`
+        // plus the normalized position set) proves and charges it as
+        // empty; rejecting it here turned an honest proof into an
+        // `InvalidInput` error (#865). Return the empty span explicitly
+        // so the caller extracts no values, expects no positions, and
+        // charges nothing.
+        if min_start >= max_end {
+            return Ok((0, 0));
         }
 
         Ok((min_start, max_end))
-    }
-
-    /// Expand query items (with BE u64 keys) into a set of individual positions
-    /// bounded by `count`. Used for completeness checking in non-Merk
-    /// verifiers.
-    fn expand_query_to_u64_positions(
-        items: &[grovedb_merk::proofs::query::QueryItem],
-        count: u64,
-    ) -> Result<BTreeSet<u64>, Error> {
-        use grovedb_merk::proofs::query::QueryItem;
-
-        fn be_u64(key: &[u8]) -> Result<u64, Error> {
-            let arr: [u8; 8] = key.try_into().map_err(|_| {
-                Error::InvalidInput("position key must be exactly 8 bytes (BE u64)")
-            })?;
-            Ok(u64::from_be_bytes(arr))
-        }
-
-        if count == 0 {
-            return Ok(BTreeSet::new());
-        }
-
-        const MAX_POSITIONS: usize = 10_000_000;
-        let max_idx = count - 1;
-        let mut positions = BTreeSet::new();
-
-        macro_rules! check_cap {
-            ($positions:expr) => {
-                if $positions.len() > MAX_POSITIONS {
-                    return Err(Error::InvalidInput("query range too large"));
-                }
-            };
-        }
-
-        for item in items {
-            match item {
-                QueryItem::Key(key) => {
-                    let idx = be_u64(key)?;
-                    if idx < count {
-                        positions.insert(idx);
-                    }
-                }
-                QueryItem::RangeInclusive(range) => {
-                    let s = be_u64(range.start())?;
-                    let e = be_u64(range.end())?.min(max_idx);
-                    for idx in s..=e {
-                        positions.insert(idx);
-                        check_cap!(positions);
-                    }
-                }
-                QueryItem::Range(range) => {
-                    let s = be_u64(&range.start)?;
-                    let e = be_u64(&range.end)?.min(count);
-                    for idx in s..e {
-                        positions.insert(idx);
-                        check_cap!(positions);
-                    }
-                }
-                QueryItem::RangeFrom(range) => {
-                    let s = be_u64(&range.start)?;
-                    for idx in s..count {
-                        positions.insert(idx);
-                        check_cap!(positions);
-                    }
-                }
-                QueryItem::RangeTo(range) => {
-                    let e = be_u64(&range.end)?.min(count);
-                    for idx in 0..e {
-                        positions.insert(idx);
-                        check_cap!(positions);
-                    }
-                }
-                QueryItem::RangeToInclusive(range) => {
-                    let e = be_u64(&range.end)?.min(max_idx);
-                    for idx in 0..=e {
-                        positions.insert(idx);
-                        check_cap!(positions);
-                    }
-                }
-                QueryItem::RangeFull(..) => {
-                    for idx in 0..count {
-                        positions.insert(idx);
-                        check_cap!(positions);
-                    }
-                }
-                QueryItem::RangeAfter(range) => {
-                    let s = be_u64(&range.start)?;
-                    for idx in s.saturating_add(1)..count {
-                        positions.insert(idx);
-                        check_cap!(positions);
-                    }
-                }
-                QueryItem::RangeAfterTo(range) => {
-                    let s = be_u64(&range.start)?;
-                    let e = be_u64(&range.end)?.min(count);
-                    for idx in s.saturating_add(1)..e {
-                        positions.insert(idx);
-                        check_cap!(positions);
-                    }
-                }
-                QueryItem::RangeAfterToInclusive(range) => {
-                    let s = be_u64(range.start())?;
-                    let e = be_u64(range.end())?.min(max_idx);
-                    for idx in s.saturating_add(1)..=e {
-                        positions.insert(idx);
-                        check_cap!(positions);
-                    }
-                }
-                QueryItem::AggregateCountOnRange(_) => {
-                    return Err(Error::InvalidInput(
-                        "AggregateCountOnRange is only supported on provable count trees, \
-                         not on this tree type",
-                    ));
-                }
-                QueryItem::AggregateSumOnRange(_) => {
-                    return Err(Error::InvalidInput(
-                        "AggregateSumOnRange is only supported on provable sum trees, \
-                         not on this tree type",
-                    ));
-                }
-                QueryItem::AggregateCountAndSumOnRange(_) => {
-                    return Err(Error::InvalidInput(
-                        "AggregateCountAndSumOnRange is only supported on \
-                         ProvableCountProvableSumTree, not on this tree type",
-                    ));
-                }
-            }
-        }
-
-        Ok(positions)
     }
 
     /// ╔══════════════════════════════════════════════════════════════════╗
@@ -3238,7 +3542,11 @@ impl GroveDb {
                             | Element::Item(..)
                             | Element::ItemWithSumItem(..)
                             | Element::Reference(..)
-                            | Element::ReferenceWithSumItem(..) => {
+                            | Element::ReferenceWithSumItem(..)
+                            | Element::BidirectionalReference(..)
+                            | Element::ItemWithBackwardsReferences(..)
+                            | Element::SumItemWithBackwardsReferences(..)
+                            | Element::ItemWithSumItemWithBackwardsReferences(..) => {
                                 return Err(Error::InvalidProof(
                                     query.clone(),
                                     "Proof has lower layer for a non Tree.".to_string(),
@@ -3387,6 +3695,152 @@ impl GroveDb {
             },
             grove_version,
         )
+    }
+
+    /// Verify a proof produced by [`GroveDb::prove_bulk_position_range`],
+    /// returning `(root_hash, page)` for the position range
+    /// `[start, start + limit)` of the append-only, BulkAppendTree-backed
+    /// element at `path`/`key` (`Element::BulkAppendTree` or
+    /// `Element::CommitmentTree`).
+    ///
+    /// The page's entries are the `(position, value)` pairs, ascending and
+    /// contiguous from `start`, clamped to the element's authenticated
+    /// `total_count` (returned in
+    /// [`RangePage::total_count`](grovedb_bulk_append_tree::RangePage::total_count)).
+    /// Completeness is enforced: a proof missing any requested position below
+    /// `total_count` is rejected. Absence beyond the end falls out of the
+    /// provable count — positions `>= total_count` do not exist — so a page
+    /// shorter than `limit` means the scan caught up with the tip; no
+    /// per-position absence proofs are involved.
+    ///
+    /// Both the entries and `total_count` are extracted from the same proof
+    /// bytes: the entries by verifying the canonical
+    /// [`PathQuery::new_bulk_position_range`] query, and `total_count` by
+    /// subset-verifying the element itself, whose serialized bytes are bound
+    /// to the parent Merk (and through it to `root_hash`).
+    pub fn verify_bulk_position_range_proof(
+        proof: &[u8],
+        path: Vec<Vec<u8>>,
+        key: &[u8],
+        start: u64,
+        limit: u16,
+        grove_version: &GroveVersion,
+    ) -> Result<(CryptoHash, grovedb_bulk_append_tree::RangePage), Error> {
+        check_grovedb_v0!(
+            "verify_bulk_position_range_proof",
+            grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .verify_bulk_position_range_proof
+        );
+        // 1. Verify the range entries against the canonical range query.
+        //    Succinctness cannot be required: range proofs are chunk-aligned
+        //    and intentionally carry whole chunk blobs — a superset of the
+        //    queried positions.
+        let range_query =
+            PathQuery::new_bulk_position_range(path.clone(), key.to_vec(), start, limit);
+        let (root_hash, results) = Self::verify_query_with_options(
+            proof,
+            &range_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: false,
+            },
+            grove_version,
+        )?;
+
+        // 2. Extract the element's authenticated total_count from the same
+        //    proof bytes via a single-key subset query on the element itself.
+        let element_query = PathQuery::new_single_key(path, key.to_vec());
+        let (element_root_hash, element_results) =
+            Self::verify_subset_query(proof, &element_query, grove_version)?;
+        if element_root_hash != root_hash {
+            return Err(Error::InvalidProof(
+                range_query,
+                "range and element sub-proofs derived different root hashes".to_string(),
+            ));
+        }
+        let total_count = match element_results.as_slice() {
+            [(_, element_key, Some(element))] if element_key.as_slice() == key => {
+                match element.underlying() {
+                    Element::BulkAppendTree(total_count, _, _)
+                    | Element::CommitmentTree(total_count, _, _) => *total_count,
+                    _ => {
+                        return Err(Error::InvalidProof(
+                            range_query,
+                            "element at path/key is not a BulkAppendTree or CommitmentTree"
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
+            _ => {
+                return Err(Error::InvalidProof(
+                    range_query,
+                    "proof does not bind the append-only element at path/key".to_string(),
+                ));
+            }
+        };
+
+        // 3. Map the results to (position, value) entries and require the
+        //    page to be exactly [start, min(start + limit, total_count)) —
+        //    ascending, contiguous, complete. The lower-layer verification
+        //    already enforces completeness; this re-check keeps the helper's
+        //    guarantee independent of that layer's internals.
+        let end = start
+            .saturating_add(limit as u64)
+            .min(total_count)
+            .max(start);
+        let mut entries = Vec::with_capacity((end - start) as usize);
+        let mut expected_position = start;
+        for (_, position_key, element) in results {
+            let position_bytes: [u8; 8] = position_key.as_slice().try_into().map_err(|_| {
+                Error::InvalidProof(
+                    range_query.clone(),
+                    "range entry key is not an 8-byte big-endian position".to_string(),
+                )
+            })?;
+            let position = u64::from_be_bytes(position_bytes);
+            let value = match element {
+                Some(Element::Item(value, _)) => value,
+                _ => {
+                    return Err(Error::InvalidProof(
+                        range_query,
+                        format!("range entry at position {} is not an item", position),
+                    ));
+                }
+            };
+            if position != expected_position {
+                return Err(Error::InvalidProof(
+                    range_query,
+                    format!(
+                        "range entries not contiguous: expected position {}, got {}",
+                        expected_position, position
+                    ),
+                ));
+            }
+            expected_position += 1;
+            entries.push((position, value));
+        }
+        if expected_position != end {
+            return Err(Error::InvalidProof(
+                range_query,
+                format!(
+                    "range proof incomplete: expected positions [{}, {}), got up to {}",
+                    start, end, expected_position
+                ),
+            ));
+        }
+
+        Ok((
+            root_hash,
+            grovedb_bulk_append_tree::RangePage {
+                entries,
+                total_count,
+            },
+        ))
     }
 
     /// The point of this query is to get the parent tree information which will
@@ -4168,75 +4622,11 @@ impl GroveDb {
 
         let element = Element::deserialize(&value, grove_version)?;
 
-        // Verify embedded value_hash for node types that carry one.
-        // Without this, an attacker could replace KV(key, real_value)
-        // with KVValueHash(key, forged_value, real_value_hash) and the
-        // merk execute() would accept it since it uses the embedded hash.
-        match &tree.node {
-            Node::KVValueHash(_, _, node_value_hash)
-            | Node::KVValueHashFeatureType(_, _, node_value_hash, _) => {
-                let computed_vh = value_hash(&value).value().to_owned();
-                if computed_vh != *node_value_hash {
-                    // For tree elements, value_hash = combine_hash(H(value),
-                    // child_root_hash). We can't decompose the combined hash,
-                    // but the hash chain verification already validates tree
-                    // elements through the merk proof structure.
-                    if !element.is_any_tree() {
-                        return Err(Error::InvalidProof(
-                            PathQuery::new_unsized(Vec::new(), Query::default()),
-                            format!(
-                                "trunk/branch proof value hash mismatch at key {}: \
-                                 H(value) = {} but embedded value_hash = {}",
-                                hex::encode(&key),
-                                hex::encode(computed_vh),
-                                hex::encode(node_value_hash),
-                            ),
-                        ));
-                    }
-                }
-            }
-            Node::KVValueHashFeatureTypeWithChildHash(_, _, node_value_hash, _, child_hash) => {
-                let element_vh = value_hash(&value).value().to_owned();
-                let computed_vh = combine_hash(&element_vh, child_hash).value().to_owned();
-                if computed_vh != *node_value_hash {
-                    return Err(Error::InvalidProof(
-                        PathQuery::new_unsized(Vec::new(), Query::default()),
-                        format!(
-                            "trunk/branch proof value/child hash mismatch at key {}: \
-                             combine_hash(H(value), child_hash) = {} but value_hash = {}",
-                            hex::encode(&key),
-                            hex::encode(computed_vh),
-                            hex::encode(node_value_hash),
-                        ),
-                    ));
-                }
-            }
-            Node::KVRefValueHash(..)
-            | Node::KVRefValueHashCount(..)
-            | Node::KVRefValueHashSum(..)
-            | Node::KVRefValueHashCountSum(..) => {
-                // KVRefValueHash{,Count,Sum,CountSum} carries an opaque
-                // node_value_hash that cannot be recomputed from the value
-                // bytes alone — the hash is `combine_hash(node_value_hash,
-                // value_hash(referenced_value))`, and the verifier never
-                // gets to see the referenced_value at this layer. Without
-                // this rejection, a forged value could ride along in a
-                // KVRefValueHashSum / KVRefValueHashCountSum trunk/branch
-                // node while the merk-level hash chain still appears
-                // valid, because the embedded opaque hash is treated as
-                // authoritative. These node types should never appear in
-                // trunk/branch chunk proofs.
-                return Err(Error::InvalidProof(
-                    PathQuery::new_unsized(Vec::new(), Query::default()),
-                    format!(
-                        "trunk/branch proof contains unexpected KVRefValueHash node at key {}",
-                        hex::encode(&key),
-                    ),
-                ));
-            }
-            // KV, KVCount: value is used directly in hash computation — safe
-            _ => {}
-        }
+        // A row only reaches here under a genuine root hash, but the merk
+        // root covers a tree's or reference's `value_hash`, not its bytes:
+        // whether the node form binds them is version-gated (#859).
+        Self::check_chunk_proof_row(&tree.node, &key, &value, &element, grove_version)?;
+
         elements.insert(key.clone(), element);
 
         // Check if this node has Hash children (making it a leaf)
@@ -4306,6 +4696,7 @@ impl GroveDb {
         match node {
             Node::KV(key, value)
             | Node::KVValueHash(key, value, ..)
+            | Node::KVBackwardsReferencesValueHash(key, value, ..)
             | Node::KVValueHashFeatureType(key, value, ..)
             | Node::KVValueHashFeatureTypeWithChildHash(key, value, ..)
             | Node::KVCount(key, value, ..)

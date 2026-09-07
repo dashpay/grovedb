@@ -11,6 +11,12 @@ mod aggregate_count_and_sum_query_tests;
 mod aggregate_count_query_tests;
 mod aggregate_sum_carrier_query_tests;
 mod aggregate_sum_query_tests;
+mod append_family_cost_bound_tests;
+mod append_layer_direction_tests;
+mod append_layer_limit_accounting_tests;
+mod append_storage_accounting_tests;
+mod batch_backward_references_cost_tests;
+mod batch_backward_references_tests;
 mod batch_coverage_tests;
 mod batch_delete_tree_tests;
 mod batch_indexed_fresh_create_tests;
@@ -19,13 +25,25 @@ mod batch_indexed_overwrite_tests;
 mod batch_indexed_tree_tests;
 mod batch_rejection_tests;
 mod batch_unit_tests;
+mod bidirectional_references_tests;
 mod bulk_append_tree_tests;
 mod checkpoint_tests;
 mod chunk_branch_proof_tests;
+mod chunk_proof_row_binding_tests;
 mod commitment_tree_cost_bound_tests;
 mod commitment_tree_tests;
 mod coverage_round7_tests;
+mod non_merk_completeness_budget_tests;
+mod non_merk_integrity_audit_tests;
+mod non_merk_limited_page_tests;
+mod ordinary_replacement_cost_tests;
+mod per_instance_gate_coverage_tests;
+mod per_instance_limit_tests;
 mod private_document_store_tests;
+mod reference_cycle_on_overwrite_tests;
+mod reference_to_tree_terminal_tests;
+mod unbound_empty_tree_tests;
+mod wrapped_terminal_reference_tests;
 // NOTE: the former `count_indexed_tree_tests` (~12.3k LOC) was written
 // against the now-removed non-provable `Element::CountIndexedTree` and was
 // carried here behind a `#[cfg(any())]` gate that made it permanently dead —
@@ -39,6 +57,7 @@ mod private_document_store_tests;
 // rejection cases it uniquely held are ported to
 // `generic_writes_against_pcit_primary_are_rejected`.
 mod axis_descent_proof_tests;
+mod axis_read_projection_tests;
 mod count_offset_paginated_tests;
 mod count_sum_tree_tests;
 mod count_tree_tests;
@@ -55,13 +74,16 @@ mod direct_insert_indexed_tests;
 mod error_display_tests;
 mod estimated_costs_average_case_tests;
 mod estimated_costs_worst_case_tests;
+mod flat_drop_tests;
 mod get_cost_estimator_tests;
 mod grove_query_result_tests;
+mod indexed_axis_keys_only_read_tests;
 mod indexed_axis_nested_and_bounds_tests;
 mod indexed_axis_offset_proof_tests;
 mod indexed_axis_paginated_cost_tests;
 mod indexed_axis_proof_tests;
 mod indexed_reference_row_tests;
+mod indexed_secondary_rekey_cost_tests;
 mod indexed_target_chain_tamper_tests;
 mod indexed_tree_secondary_drift_tests;
 mod indexed_tree_security_regression_tests;
@@ -78,6 +100,7 @@ mod partial_batch_consistency_tests;
 mod proof_advanced_tests;
 mod proof_coverage_tests;
 mod proof_depth_limit_tests;
+mod proof_orientation_tests;
 mod proof_size_measurement;
 mod provable_count_indexed_tree_tests;
 mod provable_count_provable_sum_indexed_tree_tests;
@@ -93,15 +116,22 @@ mod query_result_type_tests;
 mod read_mode_gate_tests;
 mod reference_path_tests;
 mod reference_with_sum_item_tests;
+mod replication_checkpoint_prune_tests;
+mod replication_fuzz_tests;
+mod replication_incremental_commit_tests;
+mod replication_scale_tests;
 mod replication_session_tests;
 mod replication_utils_tests;
+mod replication_version_tests;
 mod run_path_query_tests;
+mod snapshot_read_transaction_tests;
 mod succinctness_gap_test;
 mod sum_budget_proof_tests;
 mod test_compaction_sizes;
 mod test_provable_count_fresh;
 mod tree_hashes_tests;
 mod trunk_proof_tests;
+mod unbound_reference_row_tests;
 mod v1_cidx_descent_tests;
 mod v1_proof_tests;
 mod verify_grovedb_indexed_tests;
@@ -1138,9 +1168,13 @@ mod general_tests {
     use grovedb_merk::{
         element::get::ElementFetchFromStorageExtensions, proofs::query::SubqueryBranch,
     };
+    use operations::insert::InsertOptions;
 
     use super::*;
-    use crate::element::elements_iterator::ElementIteratorExtensions;
+    use crate::{
+        bidirectional_references::BidirectionalReference,
+        element::elements_iterator::ElementIteratorExtensions,
+    };
 
     #[test]
     fn test_init() {
@@ -4710,6 +4744,7 @@ mod general_tests {
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 },
                 limit: None,
                 offset: None,
@@ -4893,5 +4928,192 @@ mod general_tests {
             .verify_grovedb(None, true, false, grove_version)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn test_verify_bidirectional_references_dont_corrupt() {
+        // As opposed to regular references, bidirectional references with the
+        // propagation flag keep the reference chain hashes consistent when
+        // the target is updated:
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let transaction = db.start_transaction();
+
+        db.insert(
+            &[TEST_LEAF],
+            b"value",
+            Element::new_item_allowing_bidirectional_references(b"hello".to_vec()),
+            None,
+            Some(&transaction),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        db.insert(
+            &[TEST_LEAF],
+            b"refc",
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"value".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: None,
+                },
+                None,
+            ),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            Some(&transaction),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        db.insert(
+            &[TEST_LEAF],
+            b"refb",
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"refc".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: None,
+                },
+                None,
+            ),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            Some(&transaction),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        db.insert(
+            &[TEST_LEAF],
+            b"refa",
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"refb".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: None,
+                },
+                None,
+            ),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            Some(&transaction),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(db
+            .verify_grovedb(Some(&transaction), true, true, grove_version)
+            .unwrap()
+            .is_empty());
+
+        // "Breaking" things there:
+        db.insert(
+            &[TEST_LEAF],
+            b"value",
+            Element::new_item_allowing_bidirectional_references(b"not hello >:(".to_vec()),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            Some(&transaction),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        // But they're not broken!
+        assert!(db
+            .verify_grovedb(Some(&transaction), true, true, grove_version)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// Fail-closed gating: the backward-references element family requires
+    /// GROVE_V4. Under GROVE_V3 (live in production) every insert path
+    /// rejects them.
+    #[test]
+    fn backward_references_elements_rejected_before_v4() {
+        use grovedb_version::version::v3::GROVE_V3;
+
+        let db = make_test_grovedb(GroveVersion::latest());
+
+        let elements = [
+            Element::new_item_allowing_bidirectional_references(b"v".to_vec()),
+            Element::new_sum_item_allowing_bidirectional_references(1),
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"x".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: None,
+                },
+                None,
+            ),
+        ];
+
+        for element in elements {
+            assert!(
+                matches!(
+                    db.insert(&[TEST_LEAF], b"k", element.clone(), None, None, &GROVE_V3)
+                        .unwrap(),
+                    Err(Error::NotSupported(_))
+                ),
+                "expected NotSupported under GROVE_V3 for {element:?}"
+            );
+        }
+    }
+
+    /// Fail-closed: batches perform no backward-references bookkeeping, so
+    /// every batch entry point rejects ops carrying the element family.
+    #[test]
+    fn backward_references_elements_rejected_in_batches() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let elements = [
+            Element::new_item_allowing_bidirectional_references(b"v".to_vec()),
+            Element::new_sum_item_allowing_bidirectional_references(1),
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::SiblingReference(b"x".to_vec()),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: None,
+                },
+                None,
+            ),
+        ];
+
+        for element in elements {
+            let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"k".to_vec(),
+                element.clone(),
+            )];
+            assert!(
+                matches!(
+                    db.apply_batch(ops, None, None, grove_version).unwrap(),
+                    Err(Error::NotSupported(_))
+                ),
+                "expected NotSupported in batch for {element:?}"
+            );
+        }
     }
 }

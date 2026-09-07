@@ -487,7 +487,8 @@ mod storage_tests {
     #[test]
     fn test_open_empty_store() {
         let ctx = MockDataStorageContext::new();
-        let result = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx);
+        let result =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest());
         let ct = result.value.expect("open should succeed on empty store");
 
         assert_eq!(
@@ -508,7 +509,8 @@ mod storage_tests {
         let ctx = MockDataStorageContext::new();
 
         // Build a frontier with several leaves, save, then re-open
-        let result = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx);
+        let result =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest());
         let mut ct = result.value.expect("open should succeed");
         for i in 0..20u64 {
             ct.append(
@@ -527,7 +529,7 @@ mod storage_tests {
         let expected_total_count = ct.total_count();
 
         // Save
-        let save_result = ct.save();
+        let save_result = ct.save(GroveVersion::latest());
         save_result.value.expect("save should succeed");
         assert!(
             save_result.cost.seek_count > 0,
@@ -536,8 +538,12 @@ mod storage_tests {
 
         // Re-open from the same storage (extract from bulk tree)
         let storage = ct.bulk_tree.dense_tree.storage;
-        let load_result =
-            CommitmentTree::<_, DashMemo>::open(expected_total_count, TEST_CHUNK_POWER, storage);
+        let load_result = CommitmentTree::<_, DashMemo>::open(
+            expected_total_count,
+            TEST_CHUNK_POWER,
+            storage,
+            GroveVersion::latest(),
+        );
         let loaded = load_result.value.expect("open should succeed");
 
         assert_eq!(loaded.root_hash(), expected_root, "root hash should match");
@@ -556,12 +562,15 @@ mod storage_tests {
     #[test]
     fn test_save_overwrite_and_load() {
         let ctx = MockDataStorageContext::new();
-        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
-            .value
-            .expect("open should succeed");
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest())
+                .value
+                .expect("open should succeed");
 
         // Save empty
-        ct.save().value.expect("save empty should succeed");
+        ct.save(GroveVersion::latest())
+            .value
+            .expect("save empty should succeed");
 
         // Append and save again (overwrites)
         ct.append(
@@ -575,13 +584,20 @@ mod storage_tests {
         .expect("append should succeed");
         let expected_root = ct.root_hash();
         let total_count = ct.total_count();
-        ct.save().value.expect("save non-empty should succeed");
+        ct.save(GroveVersion::latest())
+            .value
+            .expect("save non-empty should succeed");
 
         // Re-open should return the latest (non-empty) frontier
         let storage = ct.bulk_tree.dense_tree.storage;
-        let loaded = CommitmentTree::<_, DashMemo>::open(total_count, TEST_CHUNK_POWER, storage)
-            .value
-            .expect("open should succeed");
+        let loaded = CommitmentTree::<_, DashMemo>::open(
+            total_count,
+            TEST_CHUNK_POWER,
+            storage,
+            GroveVersion::latest(),
+        )
+        .value
+        .expect("open should succeed");
         assert_eq!(
             loaded.root_hash(),
             expected_root,
@@ -593,7 +609,8 @@ mod storage_tests {
     fn test_open_corrupted_data_returns_error() {
         let ctx =
             MockDataStorageContext::with_raw_data(COMMITMENT_TREE_DATA_KEY, vec![0x01, 0x02, 0x03]);
-        let result = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx);
+        let result =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest());
         assert!(
             result.value.is_err(),
             "should return error for corrupted data"
@@ -603,13 +620,38 @@ mod storage_tests {
     #[test]
     fn test_open_storage_error_surfaces() {
         let ctx = FailingDataStorageContext;
-        let result = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx);
+        let result =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest());
         assert!(result.value.is_err(), "should surface storage get error");
         let err_msg = format!("{}", result.value.expect_err("should be storage error"));
         assert!(
             err_msg.contains("storage error loading frontier"),
             "error should contain context: {}",
             err_msg
+        );
+    }
+
+    /// An unknown frontier-save accounting version is rejected before any
+    /// write.
+    #[test]
+    fn test_save_rejects_unknown_accounting_version() {
+        let bulk_tree = BulkAppendTree::new(TEST_CHUNK_POWER, FailingDataStorageContext)
+            .expect("bulk tree new should succeed");
+        let ct: CommitmentTree<_, DashMemo> = CommitmentTree {
+            frontier: CommitmentFrontier::new(),
+            bulk_tree,
+            persisted_frontier_len: Some(74),
+            _memo: PhantomData,
+        };
+        let mut bad = GroveVersion::latest().clone();
+        bad.commitment_tree_versions
+            .cost
+            .frontier_save_storage_accounting = 99;
+        let result = ct.save(&bad);
+        assert!(
+            matches!(result.value, Err(CommitmentTreeError::VersionError(_))),
+            "unknown version must be rejected, not written: {:?}",
+            result.value
         );
     }
 
@@ -622,9 +664,10 @@ mod storage_tests {
         let ct: CommitmentTree<_, DashMemo> = CommitmentTree {
             frontier: CommitmentFrontier::new(),
             bulk_tree,
+            persisted_frontier_len: None,
             _memo: PhantomData,
         };
-        let result = ct.save();
+        let result = ct.save(GroveVersion::latest());
         assert!(result.value.is_err(), "should surface storage put error");
         let err_msg = format!("{}", result.value.expect_err("should be storage error"));
         assert!(
@@ -637,16 +680,24 @@ mod storage_tests {
     #[test]
     fn test_save_empty_and_reopen() {
         let ctx = MockDataStorageContext::new();
-        let ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
-            .value
-            .expect("open should succeed");
+        let ct =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest())
+                .value
+                .expect("open should succeed");
 
-        ct.save().value.expect("save empty should succeed");
+        ct.save(GroveVersion::latest())
+            .value
+            .expect("save empty should succeed");
 
         let storage = ct.bulk_tree.dense_tree.storage;
-        let loaded = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, storage)
-            .value
-            .expect("open should succeed");
+        let loaded = CommitmentTree::<_, DashMemo>::open(
+            0,
+            TEST_CHUNK_POWER,
+            storage,
+            GroveVersion::latest(),
+        )
+        .value
+        .expect("open should succeed");
         assert_eq!(
             loaded.position(),
             None,
@@ -662,9 +713,10 @@ mod storage_tests {
     #[test]
     fn test_roundtrip_with_many_leaves() {
         let ctx = MockDataStorageContext::new();
-        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
-            .value
-            .expect("open should succeed");
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest())
+                .value
+                .expect("open should succeed");
 
         for i in 0..500u64 {
             ct.append(
@@ -679,12 +731,19 @@ mod storage_tests {
         }
 
         let total_count = ct.total_count();
-        ct.save().value.expect("save should succeed");
+        ct.save(GroveVersion::latest())
+            .value
+            .expect("save should succeed");
 
         let storage = ct.bulk_tree.dense_tree.storage;
-        let loaded = CommitmentTree::<_, DashMemo>::open(total_count, TEST_CHUNK_POWER, storage)
-            .value
-            .expect("open should succeed");
+        let loaded = CommitmentTree::<_, DashMemo>::open(
+            total_count,
+            TEST_CHUNK_POWER,
+            storage,
+            GroveVersion::latest(),
+        )
+        .value
+        .expect("open should succeed");
 
         // Build an identical frontier to compare root hashes
         let mut expected = CommitmentFrontier::new();
@@ -702,9 +761,10 @@ mod storage_tests {
     #[test]
     fn test_append_returns_result_with_position() {
         let ctx = MockDataStorageContext::new();
-        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
-            .value
-            .expect("open should succeed");
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest())
+                .value
+                .expect("open should succeed");
 
         let r0 = ct
             .append(
@@ -751,12 +811,75 @@ mod storage_tests {
         assert_eq!(ct.total_count(), 0);
     }
 
+    /// Every version gate an append consults is resolved before its first
+    /// write: an unknown frontier cost model rejects the append with the
+    /// tree untouched — bulk count, anchor and frontier all as before — so a
+    /// retry under a known version does not append a duplicate.
+    #[test]
+    fn test_append_rejects_unknown_frontier_cost_model_before_mutating() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest())
+                .value
+                .expect("open should succeed");
+        ct.append(
+            test_leaf(0),
+            test_rho(0),
+            test_cv_net(0),
+            &test_ciphertext(0),
+            GroveVersion::latest(),
+        )
+        .value
+        .expect("append should succeed");
+        let anchor_before = ct.anchor();
+        let count_before = ct.total_count();
+        let bulk_root_before = ct
+            .bulk_tree
+            .compute_current_state_root(GroveVersion::latest())
+            .expect("root");
+
+        let mut bad = GroveVersion::latest().clone();
+        bad.commitment_tree_versions.cost.frontier_cost_model = 99;
+        let result = ct.append(
+            test_leaf(1),
+            test_rho(1),
+            test_cv_net(1),
+            &test_ciphertext(1),
+            &bad,
+        );
+        assert!(
+            matches!(result.value, Err(CommitmentTreeError::VersionError(_))),
+            "unknown version must be rejected: {:?}",
+            result.value
+        );
+        assert_eq!(ct.total_count(), count_before, "bulk tree untouched");
+        assert_eq!(ct.anchor(), anchor_before, "frontier untouched");
+        assert_eq!(
+            ct.bulk_tree
+                .compute_current_state_root(GroveVersion::latest())
+                .expect("root"),
+            bulk_root_before
+        );
+        // And a retry under a known version appends exactly once.
+        ct.append(
+            test_leaf(1),
+            test_rho(1),
+            test_cv_net(1),
+            &test_ciphertext(1),
+            GroveVersion::latest(),
+        )
+        .value
+        .expect("retry should succeed");
+        assert_eq!(ct.total_count(), count_before + 1);
+    }
+
     #[test]
     fn test_append_raw_rejects_wrong_payload_size() {
         let ctx = MockDataStorageContext::new();
-        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
-            .value
-            .expect("open should succeed");
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest())
+                .value
+                .expect("open should succeed");
 
         // Too small
         let result = ct.append_raw(
@@ -850,9 +973,10 @@ mod storage_tests {
     #[test]
     fn test_get_buffer_value_empty_tree() {
         let ctx = MockDataStorageContext::new();
-        let ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
-            .value
-            .expect("open should succeed");
+        let ct =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest())
+                .value
+                .expect("open should succeed");
 
         let result = ct
             .get_buffer_value(0)
@@ -863,9 +987,10 @@ mod storage_tests {
     #[test]
     fn test_get_buffer_value_after_appends() {
         let ctx = MockDataStorageContext::new();
-        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
-            .value
-            .expect("open should succeed");
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest())
+                .value
+                .expect("open should succeed");
 
         // Append one item (goes into buffer since epoch_size = 2 for chunk_power=1)
         ct.append(
@@ -893,9 +1018,10 @@ mod storage_tests {
     #[test]
     fn test_get_chunk_value_empty_tree() {
         let ctx = MockDataStorageContext::new();
-        let ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
-            .value
-            .expect("open should succeed");
+        let ct =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest())
+                .value
+                .expect("open should succeed");
 
         let result = ct
             .get_chunk_value(0)
@@ -906,9 +1032,10 @@ mod storage_tests {
     #[test]
     fn test_get_chunk_value_after_compaction() {
         let ctx = MockDataStorageContext::new();
-        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
-            .value
-            .expect("open should succeed");
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest())
+                .value
+                .expect("open should succeed");
 
         // chunk_power=1 → epoch_size=2. Append 2 items to trigger compaction.
         ct.append(
@@ -946,12 +1073,13 @@ mod storage_tests {
     #[test]
     fn test_compute_current_state_root_empty() {
         let ctx = MockDataStorageContext::new();
-        let ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
-            .value
-            .expect("open should succeed");
+        let ct =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest())
+                .value
+                .expect("open should succeed");
 
         let root = ct
-            .compute_current_state_root()
+            .compute_current_state_root(GroveVersion::latest())
             .expect("state root should succeed");
         // Empty tree still has a deterministic root
         assert_ne!(root, [0u8; 32], "empty state root should be non-zero");
@@ -960,9 +1088,10 @@ mod storage_tests {
     #[test]
     fn test_compute_current_state_root_matches_append_result() {
         let ctx = MockDataStorageContext::new();
-        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
-            .value
-            .expect("open should succeed");
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest())
+                .value
+                .expect("open should succeed");
 
         let r = ct
             .append(
@@ -976,7 +1105,7 @@ mod storage_tests {
             .expect("append 0");
 
         let computed = ct
-            .compute_current_state_root()
+            .compute_current_state_root(GroveVersion::latest())
             .expect("state root should succeed");
         let expected =
             crate::compute_commitment_tree_state_root(&r.sinsemilla_root, &r.bulk_state_root);
@@ -989,9 +1118,10 @@ mod storage_tests {
     #[test]
     fn test_epoch_size_and_chunk_count() {
         let ctx = MockDataStorageContext::new();
-        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
-            .value
-            .expect("open should succeed");
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest())
+                .value
+                .expect("open should succeed");
 
         assert_eq!(ct.epoch_size(), 2, "chunk_power=1 → epoch_size=2");
         assert_eq!(ct.chunk_count(), 0, "no chunks initially");
@@ -1044,9 +1174,10 @@ mod storage_tests {
     #[test]
     fn test_anchor_on_commitment_tree() {
         let ctx = MockDataStorageContext::new();
-        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
-            .value
-            .expect("open should succeed");
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest())
+                .value
+                .expect("open should succeed");
 
         let empty_anchor = ct.anchor();
         assert_eq!(
@@ -1076,9 +1207,10 @@ mod storage_tests {
     #[test]
     fn test_debug_fmt() {
         let ctx = MockDataStorageContext::new();
-        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
-            .value
-            .expect("open should succeed");
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest())
+                .value
+                .expect("open should succeed");
 
         // Debug on empty tree
         let s = format!("{:?}", ct);
@@ -1110,7 +1242,7 @@ mod storage_tests {
     fn test_open_from_state_error_invalid_chunk_power() {
         let ctx = MockDataStorageContext::new();
         // chunk_power=0 is invalid (must be 1..=16), causing from_state to fail
-        let result = CommitmentTree::<_, DashMemo>::open(0, 0, ctx);
+        let result = CommitmentTree::<_, DashMemo>::open(0, 0, ctx, GroveVersion::latest());
         let err = result
             .value
             .expect_err("should fail with invalid chunk_power");
@@ -1126,9 +1258,10 @@ mod storage_tests {
     fn test_open_frontier_total_count_mismatch() {
         // 1. Create a tree, append 1 item, save
         let ctx = MockDataStorageContext::new();
-        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
-            .value
-            .expect("open should succeed");
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest())
+                .value
+                .expect("open should succeed");
         ct.append(
             test_leaf(0),
             test_rho(0),
@@ -1138,11 +1271,18 @@ mod storage_tests {
         )
         .value
         .expect("append should succeed");
-        ct.save().value.expect("save should succeed");
+        ct.save(GroveVersion::latest())
+            .value
+            .expect("save should succeed");
 
         // 2. Re-open with total_count=0 but the frontier has tree_size=1
         let storage = ct.bulk_tree.dense_tree.storage;
-        let result = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, storage);
+        let result = CommitmentTree::<_, DashMemo>::open(
+            0,
+            TEST_CHUNK_POWER,
+            storage,
+            GroveVersion::latest(),
+        );
         let err = result
             .value
             .expect_err("should fail with frontier/total_count mismatch");
@@ -1157,9 +1297,10 @@ mod storage_tests {
     #[test]
     fn test_append_raw_rejects_invalid_cmx() {
         let ctx = MockDataStorageContext::new();
-        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
-            .value
-            .expect("open should succeed");
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx, GroveVersion::latest())
+                .value
+                .expect("open should succeed");
 
         // All 0xFF is not a valid Pallas field element
         let payload = vec![0u8; ciphertext_payload_size::<DashMemo>()];
@@ -1267,8 +1408,12 @@ mod storage_tests {
                 "frontier serialization mismatch at N={}: per-leaf vs append_many_raw",
                 n
             );
-            let a_state = a.compute_current_state_root().expect("state root A");
-            let b_state = b.compute_current_state_root().expect("state root B");
+            let a_state = a
+                .compute_current_state_root(GroveVersion::latest())
+                .expect("state root A");
+            let b_state = b
+                .compute_current_state_root(GroveVersion::latest())
+                .expect("state root B");
             assert_eq!(
                 a_state, b_state,
                 "bulk tree state_root mismatch at N={}: per-leaf vs append_many_raw",
@@ -1593,7 +1738,8 @@ mod storage_tests {
             .value
             .expect("warmup");
 
-        ct.commit_mmr().expect("commit_mmr should flush cleanly");
+        ct.commit_mmr(GroveVersion::latest())
+            .expect("commit_mmr should flush cleanly");
     }
 
     // ── cv_net round-trip + anchor invariance ───────────────────────────

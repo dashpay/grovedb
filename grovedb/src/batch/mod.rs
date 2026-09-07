@@ -1,5 +1,6 @@
 //! Apply multiple GroveDB operations atomically.
 
+mod backward_references;
 mod batch_structure;
 
 /// Indexed-tree helpers for the batch apply pipeline (pre-apply
@@ -57,6 +58,7 @@ use grovedb_costs::{
     },
     CostResult, CostsExt, OperationCost,
 };
+use grovedb_element::ElementType;
 use grovedb_merk::{
     element::{
         costs::ElementCostExtensions, delete::ElementDeleteFromStorageExtensions,
@@ -73,7 +75,10 @@ use grovedb_merk::{
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
-    rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch, StorageContext,
+    rocksdb_storage::{
+        pending_prefix_drops_namespace, PendingPrefixDropRecord, PrefixedRocksDbTransactionContext,
+    },
+    Storage, StorageBatch, StorageContext,
 };
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 use grovedb_visualize::{Drawer, Visualize};
@@ -88,6 +93,7 @@ pub use crate::batch::batch_structure::{OpsByLevelPath, OpsByPath};
 use crate::batch::estimated_costs::EstimatedCostsType;
 use crate::{
     batch::{batch_structure::BatchStructure, mode::BatchRunMode},
+    bidirectional_references::BidirectionalReference,
     element::{MaxReferenceHop, SumValue},
     operations::{delete::DeleteOptions, get::MAX_REFERENCE_HOPS, proof::util::hex_to_ascii},
     reference_path::{
@@ -102,26 +108,87 @@ use crate::{
 /// This enum is attached to each `DeleteTree` operation individually,
 /// replacing the old batch-level `allow_deleting_non_empty_trees` /
 /// `deleting_non_empty_trees_returns_error` flags on `BatchApplyOptions`.
+///
+/// The variants differ along two axes — whether emptiness is checked at
+/// apply time, and what happens to the subtree's storage:
+///
+/// | variant | assumes | emptiness check | contents' storage |
+/// |---|---|---|---|
+/// | `DontCheckWithNoCleanup` | already empty | skipped (proven earlier) | none exist |
+/// | `Error` | may be non-empty | yes → error | delete only proceeds when empty; defensive sweep |
+/// | `Skip` | may be non-empty | yes → skip op | delete only proceeds when empty; defensive sweep |
+/// | `DeleteChildren` | may be non-empty | skipped | cleaned up recursively, O(contents) |
+/// | `DropFlat` | populated, **no child subtrees** | skipped | range-tombstoned via redo record, O(1) |
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum SubelementsDeletionBehavior {
-    /// Do not check whether the subtree is empty before deleting, and skip
-    /// post-apply storage cleanup. The tree element is removed from the
-    /// parent Merk unconditionally but no child subtree storage is cleared.
-    /// Callers use this when they have already ensured the subtree is empty
-    /// and want to avoid the I/O cost of both the emptiness check and the
-    /// cleanup phase.
+    /// **Assumes the subtree is already empty.** Skips the apply-time
+    /// emptiness check and the post-apply storage cleanup: the tree
+    /// element is removed from the parent Merk unconditionally, and no
+    /// child storage is touched — because for an empty tree there is
+    /// nothing to clean, skipping is free, not a feature.
+    ///
+    /// This is an I/O optimization for callers that have *just proven*
+    /// emptiness, not a way to abandon contents. The canonical producer is
+    /// GroveDB's own op generation (`delete_operation_for_delete_internal`,
+    /// reached via `delete_operations_for_delete_up_tree_while_empty`),
+    /// which emits this variant only inside its `is_empty` branch — a
+    /// check that also counts same-batch deletes as removed and same-batch
+    /// inserts as making the tree non-empty. The window between that check
+    /// and apply is covered by `verify_consistency_of_operations` (on by
+    /// default), which rejects batches inserting under a deleted path.
+    ///
+    /// Misuse — applying this to a tree that still has contents — removes
+    /// the element anyway and silently orphans the contents' storage:
+    /// unreachable, un-tracked (nothing records the abandoned prefix), and
+    /// permanently leaked, with the stale bytes poisoning the identical
+    /// re-derived prefix if the path is ever re-created. To deliberately
+    /// drop a *populated* tree, use [`Self::DropFlat`] (no child subtrees,
+    /// O(1), storage reclaimed) or [`Self::DeleteChildren`] (recursive
+    /// cleanup, O(contents)).
+    ///
+    /// One exception to "touches no child storage": an indexed primary
+    /// still gets its per-axis secondary namespaces swept, because those
+    /// live outside the primary's prefix and can hold stale rows even when
+    /// the primary is empty. On an empty tree that sweep is a no-op.
+    ///
+    /// Note the non-batching path (`apply_operations_without_batching`)
+    /// maps this to `allow_deleting_non_empty_trees: true`, i.e. a full
+    /// recursive delete — the no-cleanup semantics only hold on the real
+    /// batch path.
     DontCheckWithNoCleanup,
-    /// Check emptiness. If the subtree is non-empty, return
-    /// `Error::DeletingNonEmptyTree`.
+    /// Check emptiness at apply time. If the subtree is non-empty, return
+    /// `Error::DeletingNonEmptyTree` and fail the batch.
     Error,
     /// Do not check whether the subtree is empty before deleting, but
     /// still perform post-apply storage cleanup to remove the child
-    /// subtree's storage (and any nested subtrees). Use this when the
-    /// subtree may contain children that should be recursively cleaned up.
+    /// subtree's storage (and any nested subtrees), walking the structure
+    /// via `find_subtrees` — O(contents). Use this when the subtree may
+    /// contain children that should be recursively cleaned up.
     DeleteChildren,
-    /// Check emptiness. If the subtree is non-empty, silently skip this
-    /// `DeleteTree` operation (no error, no deletion).
+    /// Check emptiness at apply time. If the subtree is non-empty,
+    /// silently skip this `DeleteTree` operation (no error, no deletion).
     Skip,
+    /// Flat-subtree drop (issue #848, `GROVE_V4`+): delete the tree
+    /// element from its parent Merk unconditionally — no emptiness check,
+    /// no content sweep, O(1) in the subtree's size — and stage the
+    /// subtree's storage prefixes (primary plus, for indexed primaries,
+    /// all three axis secondaries) in a durable redo record committed
+    /// atomically with the batch. Storage is reclaimed outside consensus
+    /// by DB-level range tombstones: immediately after the commit when
+    /// GroveDB owns the transaction, at the caller's next
+    /// `flush_pending_prefix_drops` otherwise.
+    ///
+    /// The caller declares the subtree contains **no child subtrees**; a
+    /// false declaration leaks the children's storage (unreachable,
+    /// invisible to hashes/proofs/sync) but never corrupts state. The
+    /// dropped path must not be re-created before its record drains. See
+    /// `operations::delete::flat_drop` for the full contract.
+    ///
+    /// This is the only variant whose contract permits contents: unlike
+    /// [`Self::DontCheckWithNoCleanup`] ("already empty, skip the
+    /// redundant check"), `DropFlat` means "full, drop it anyway — and
+    /// physically reclaim the storage, tracked and crash-safe".
+    DropFlat,
 }
 
 /// Metadata for non-Merk tree types, carrying tree-type-specific state
@@ -455,6 +522,25 @@ pub enum GroveOp {
     /// `reference_path_type`, `max_reference_hop`, and `flags` are
     /// used only for the average / worst case cost models in
     /// untrusted mode.
+    /// INTERNAL — derived by the backward-references batch preprocessor,
+    /// never accepted from callers. Writes `element` with the explicitly
+    /// provided node value hash, already combined per the family's
+    /// two-layer scheme: a referrer rewrite carries
+    /// `combine(element_combined, end_hash)`, a lazy referrer-list cleanup
+    /// carries the cleaned element's own combined hash.
+    #[non_exhaustive]
+    ReplaceBackwardReferenceFamilyMember {
+        /// The full family element to store (referrer lists included).
+        element: Element,
+        /// The node value hash the write installs.
+        node_value_hash: CryptoHash,
+        /// The resolved end-of-chain hash a bidirectional reference commits
+        /// to (`None` for the item variants); lets merk recompute the node
+        /// value hash if a flags-update callback rewrites the stored bytes.
+        end_hash: Option<CryptoHash>,
+    },
+    /// Re-resolves and rewrites a stored reference's value hash. See
+    /// [`RefreshReferenceMode`] for the per-variant contract.
     RefreshReference {
         /// The reference path written under trusted variants. Under
         /// untrusted variants the on-disk path is preserved; this
@@ -542,10 +628,11 @@ impl GroveOp {
             GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. } => 17,
             GroveOp::InsertAggregateIndexedTreeRootKeys { .. } => 18,
             GroveOp::PrivateDocumentStoreInsert { .. } => 19,
+            GroveOp::ReplaceBackwardReferenceFamilyMember { .. } => 20,
         }
     }
 
-    /// True iff this op, when applied at a cidx primary's path, can
+    /// True if and only if this op, when applied at a cidx primary's path, can
     /// change the `count_value` (or absence) of the element at the
     /// op's key — and therefore requires the cidx primary's secondary
     /// mirror to be updated for that key.
@@ -573,6 +660,7 @@ impl GroveOp {
             // key; delete removes it. All require secondary mirror.
             GroveOp::InsertWithKnownToNotAlreadyExist { .. }
             | GroveOp::InsertIfNotExists { .. }
+            | GroveOp::ReplaceBackwardReferenceFamilyMember { .. }
             | GroveOp::InsertOrReplace { .. }
             | GroveOp::Replace { .. }
             | GroveOp::Patch { .. }
@@ -629,6 +717,7 @@ impl GroveOp {
         match self {
             GroveOp::InsertWithKnownToNotAlreadyExist { .. }
             | GroveOp::InsertIfNotExists { .. }
+            | GroveOp::ReplaceBackwardReferenceFamilyMember { .. }
             | GroveOp::InsertOrReplace { .. }
             | GroveOp::Replace { .. }
             | GroveOp::Patch { .. }
@@ -921,6 +1010,15 @@ impl fmt::Debug for QualifiedGroveDbOp {
                     reference_path_type, max_reference_hop, mode_render, non_counted,
                 )
             }
+            GroveOp::ReplaceBackwardReferenceFamilyMember {
+                element,
+                node_value_hash,
+                ..
+            } => format!(
+                "Replace Backward-Reference Family Member {:?} (value hash {})",
+                element,
+                hex::encode(node_value_hash)
+            ),
             GroveOp::Delete => "Delete".to_string(),
             GroveOp::DeleteTree(tree_type, check) => {
                 format!("Delete Tree {} ({:?})", tree_type, check)
@@ -1552,6 +1650,12 @@ struct TreeCacheMerkByPath<S, F, F2> {
     /// `apply_batch`'s post-apply phase to select cleanup namespaces from
     /// what was really stored rather than what the op declared.
     deleted_tree_actual_types: Vec<(Vec<Vec<u8>>, TreeType)>,
+    /// Total secondary-mirror re-key churn bytes accumulated across every
+    /// indexed primary this apply mirrored. Consumed by `apply_batch`'s
+    /// commit-time cost assembly, which rebills this many bytes out of the
+    /// added and unattributed-removal lanes into `replaced_bytes` — a row
+    /// move is physically a delete plus an insert but logically an update.
+    indexed_mirror_rekey_churn_bytes: u32,
 }
 
 impl<S, F, F2> fmt::Debug for TreeCacheMerkByPath<S, F, F2> {
@@ -1573,6 +1677,79 @@ struct BatchApplyCaptures {
     /// target that was really deleted; cleanup namespaces are selected from
     /// the actual type, not the declared one.
     deleted_tree_actual_types: Vec<(Vec<Vec<u8>>, TreeType)>,
+    /// Total secondary-mirror re-key churn bytes; rebilled as
+    /// `replaced_bytes` at commit-time cost assembly.
+    indexed_mirror_rekey_churn_bytes: u32,
+}
+
+/// Rebill secondary-mirror re-key churn as the update it logically is.
+///
+/// A mirrored row MOVE is physically a delete at the old sort key plus an
+/// insert at the new one, so the raw commit accounting reports the old
+/// row's bytes as removed and the new row's as added — perpetual-storage
+/// price for churn that does not grow the store, with the removal
+/// unattributable (mirror rows carry no flags, so it lands in the
+/// unattributed lane: `BasicStorageRemoval`, or the
+/// `(Identifier::default(), UNKNOWN_EPOCH)` bucket once merged into a
+/// sectioned removal). This moves `churn_bytes` out of both lanes into
+/// `replaced_bytes`.
+///
+/// `churn_bytes` is a per-pair min of element-level charged sizes (see
+/// `build_axis_mirror_batch`), a conservative lower bound on both lanes'
+/// real contributions — and the caps below make the subtraction safe even
+/// if that ever ceased to hold: nothing is rebilled that the lanes cannot
+/// cover, and flagged (refundable) removal buckets are never touched.
+pub(crate) fn reclassify_indexed_mirror_rekey_churn(
+    storage_cost: &mut StorageCost,
+    churn_bytes: u32,
+) {
+    use grovedb_costs::storage_cost::removal::{Identifier, StorageRemovedBytes::*, UNKNOWN_EPOCH};
+    if churn_bytes == 0 {
+        return;
+    }
+    let unattributed_removal = match &storage_cost.removed_bytes {
+        NoStorageRemoval => 0,
+        BasicStorageRemoval(bytes) => *bytes,
+        SectionedStorageRemoval(by_identifier) => by_identifier
+            .get(&Identifier::default())
+            .and_then(|by_epoch| by_epoch.get(UNKNOWN_EPOCH))
+            .copied()
+            .unwrap_or(0),
+    };
+    let net = churn_bytes
+        .min(storage_cost.added_bytes)
+        .min(unattributed_removal);
+    if net == 0 {
+        return;
+    }
+    storage_cost.added_bytes -= net;
+    storage_cost.replaced_bytes += net;
+    match &mut storage_cost.removed_bytes {
+        NoStorageRemoval => unreachable!("net is capped by the unattributed removal"),
+        BasicStorageRemoval(bytes) => {
+            *bytes -= net;
+            if *bytes == 0 {
+                storage_cost.removed_bytes = NoStorageRemoval;
+            }
+        }
+        SectionedStorageRemoval(by_identifier) => {
+            let identifier = Identifier::default();
+            if let Some(by_epoch) = by_identifier.get_mut(&identifier) {
+                let remaining = by_epoch.get(UNKNOWN_EPOCH).copied().unwrap_or(0) - net;
+                if remaining == 0 {
+                    by_epoch.remove(UNKNOWN_EPOCH);
+                } else {
+                    by_epoch.insert(UNKNOWN_EPOCH, remaining);
+                }
+                if by_epoch.is_empty() {
+                    by_identifier.remove(&identifier);
+                }
+            }
+            if by_identifier.is_empty() {
+                storage_cost.removed_bytes = NoStorageRemoval;
+            }
+        }
+    }
 }
 
 /// Result of the pre-apply `DeleteTree` scan shared by
@@ -1611,6 +1788,7 @@ fn classify_captured_delete_trees(
     non_merk_delete_paths: &mut Vec<Vec<Vec<u8>>>,
     merk_delete_paths: &mut Vec<Vec<Vec<u8>>>,
     cidx_primary_delete_paths: &mut Vec<Vec<Vec<u8>>>,
+    flat_drop_records: &mut Vec<(Vec<Vec<u8>>, TreeType)>,
 ) {
     for (qualified_path, actual_tree_type) in captures {
         // Ops the pre-scan did not register (e.g. add-on DeleteTree ops
@@ -1645,6 +1823,14 @@ fn classify_captured_delete_trees(
                     }
                     merk_delete_paths.push(qualified_path);
                 }
+            }
+            SubelementsDeletionBehavior::DropFlat => {
+                // No in-batch storage cleanup at all: the drop stages a
+                // durable redo record instead, and reclamation happens
+                // outside consensus via range tombstones. The ACTUAL type
+                // decides whether the record also dooms the per-axis
+                // secondary prefixes.
+                flat_drop_records.push((qualified_path, actual_tree_type));
             }
         }
     }
@@ -1706,6 +1892,13 @@ trait TreeCache<G, SR> {
     /// type. Default impl returns an empty Vec.
     fn take_deleted_tree_actual_types(&mut self) -> Vec<(Vec<Vec<u8>>, TreeType)> {
         Vec::new()
+    }
+
+    /// After all level processing completes, `apply_batch` calls this to
+    /// retrieve the total secondary-mirror re-key churn bytes for the
+    /// commit-time cost reclassification. Default impl returns 0.
+    fn take_indexed_mirror_rekey_churn_bytes(&mut self) -> u32 {
+        0
     }
 }
 
@@ -1821,9 +2014,9 @@ where
                 )),
             };
 
-            let referenced_element_value_hash_opt = cost_return_on_error!(
+            let referenced_value_and_hash_opt = cost_return_on_error!(
                 &mut cost,
-                merk.get_value_hash(
+                merk.get_value_and_value_hash(
                     key.as_ref(),
                     true,
                     Some(Element::value_defined_cost_for_serialized_value),
@@ -1832,9 +2025,9 @@ where
                 .map_err(|e| Error::CorruptedData(e.to_string()))
             );
 
-            let referenced_element_value_hash = cost_return_on_error!(
+            let (referenced_value, referenced_element_value_hash) = cost_return_on_error!(
                 &mut cost,
-                referenced_element_value_hash_opt
+                referenced_value_and_hash_opt
                     .ok_or({
                         let reference_string = reference_path
                             .iter()
@@ -1849,6 +2042,48 @@ where
                     })
                     .wrap_with_cost(OperationCost::default())
             );
+
+            // One exception to the read-the-stored-hash shortcut: a
+            // backward-references item terminal stores the COMBINED
+            // (inner ‖ backrefs) hash, while every reference in a chain
+            // commits to the target's LOGICAL (stripped) hash — otherwise
+            // registering a referrer would ripple through chains. Sniff the
+            // type from the serialized bytes and recompute for that family
+            // only; everything else keeps the fast path unchanged.
+            if ElementType::from_serialized_value(&referenced_value)
+                .map(|et| et.is_backward_references_item())
+                .unwrap_or(false)
+            {
+                let element = cost_return_on_error_into_no_add!(
+                    cost,
+                    Element::deserialize(&referenced_value, grove_version)
+                );
+                let serialized = cost_return_on_error_into_no_add!(
+                    cost,
+                    element
+                        .stripped_of_backward_references()
+                        .serialize(grove_version)
+                );
+                let logical_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                return Ok(logical_hash).wrap_with_cost(cost);
+            }
+            // A bidirectional reference here means the declared hop budget
+            // ran out one hop short of a terminal: its stored hash is the
+            // COMBINED reference hash, never the terminal logical hash a
+            // dependent reference commits to. Fail closed rather than bake
+            // a hash that verify_grovedb will report as corrupt. (Plain
+            // references keep the long-standing documented contract: an
+            // ill-formed hop-1 chain surfaces at verification instead.)
+            if matches!(
+                ElementType::from_serialized_value(&referenced_value).map(|et| et.base()),
+                Ok(ElementType::BidirectionalReference)
+            ) {
+                return Err(Error::InvalidBatchOperation(
+                    "reference hop budget exhausted on a bidirectional reference; the chain \
+                     needs at least one more hop to reach its terminal",
+                ))
+                .wrap_with_cost(cost);
+            }
 
             return Ok(referenced_element_value_hash).wrap_with_cost(cost);
         }
@@ -2063,9 +2298,36 @@ where
                 let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                 Ok(val_hash).wrap_with_cost(cost)
             }
-            // Both reference variants follow the same chain-resolution path
-            // to compute their effective value hash.
-            Element::Reference(path, ..) | Element::ReferenceWithSumItem(path, ..) => {
+            // A chain terminal with backward references: every reference in
+            // a chain commits to the target's LOGICAL (stripped) hash — the
+            // referrer list is excluded so registrations never ripple
+            // through chains. (These elements reject aggregation wrappers,
+            // so the outer element IS the underlying one.)
+            Element::ItemWithBackwardsReferences(..)
+            | Element::SumItemWithBackwardsReferences(..)
+            | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                let serialized = cost_return_on_error_into_no_add!(
+                    cost,
+                    element
+                        .stripped_of_backward_references()
+                        .serialize(grove_version)
+                );
+                let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                Ok(val_hash).wrap_with_cost(cost)
+            }
+            // All reference variants follow the same chain-resolution path
+            // to compute their effective value hash. A pre-existing
+            // `BidirectionalReference` (inserted through the non-batch
+            // path) resolves through its forward path like any reference.
+            Element::Reference(path, ..)
+            | Element::ReferenceWithSumItem(path, ..)
+            | Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: path,
+                    ..
+                },
+                _,
+            ) => {
                 let path = cost_return_on_error_into_no_add!(
                     cost,
                     path_from_reference_qualified_path_type(path.clone(), qualified_path)
@@ -2156,6 +2418,46 @@ where
         if let Some(op) = ops_by_qualified_paths.get(qualified_path) {
             // the path is being modified, inserted or deleted in the batch of operations
             match op {
+                // A derived backward-references rewrite: dependent chains
+                // commit to the LOGICAL (stripped) hash of item terminals
+                // and follow bidirectional references through their forward
+                // path, exactly like the on-disk dispatch below.
+                GroveOp::ReplaceBackwardReferenceFamilyMember { element, .. } => match element {
+                    Element::ItemWithBackwardsReferences(..)
+                    | Element::SumItemWithBackwardsReferences(..)
+                    | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                        let serialized = cost_return_on_error_into_no_add!(
+                            cost,
+                            element
+                                .stripped_of_backward_references()
+                                .serialize(grove_version)
+                        );
+                        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                        Ok(val_hash).wrap_with_cost(cost)
+                    }
+                    Element::BidirectionalReference(reference, _) => {
+                        let path = cost_return_on_error_into_no_add!(
+                            cost,
+                            path_from_reference_qualified_path_type(
+                                reference.forward_reference_path.clone(),
+                                qualified_path
+                            )
+                        );
+                        self.follow_reference_get_value_hash(
+                            path.as_slice(),
+                            ops_by_qualified_paths,
+                            recursions_allowed - 1,
+                            flags_update,
+                            split_removal_bytes,
+                            visited,
+                            grove_version,
+                        )
+                    }
+                    _ => Err(Error::CorruptedCodeExecution(
+                        "derived backward-references op carries a non-family element",
+                    ))
+                    .wrap_with_cost(cost),
+                },
                 GroveOp::ReplaceTreeRootKey { .. }
                 | GroveOp::InsertTreeWithRootHash { .. }
                 | GroveOp::ReplaceNonMerkTreeRoot { .. }
@@ -2225,6 +2527,91 @@ where
                                 }
                             }
                         }
+                        // A pending write of a chain terminal with backward
+                        // references: dependent references commit to the
+                        // LOGICAL (stripped) hash — the referrer list is
+                        // excluded so registrations never ripple through
+                        // chains. (These elements reject aggregation
+                        // wrappers, so the outer element IS the underlying
+                        // one.)
+                        Element::ItemWithBackwardsReferences(..)
+                        | Element::SumItemWithBackwardsReferences(..)
+                        | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                            // Referrers commit to the LOGICAL (stripped)
+                            // hash — and, exactly like the `Item` arm above,
+                            // the hash must reflect the flags the APPLY path
+                            // will actually write, so storage flags go
+                            // through the same old-flags merge over the
+                            // stripped shape.
+                            let stripped = element.stripped_of_backward_references();
+                            let serialized = cost_return_on_error_into_no_add!(
+                                cost,
+                                stripped.serialize(grove_version)
+                            );
+                            if element.get_flags().is_none() {
+                                let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                                Ok(val_hash).wrap_with_cost(cost)
+                            } else {
+                                let mut new_element = stripped.clone();
+                                let (key, reference_path) = qualified_path
+                                    .split_last()
+                                    .expect("path validated non-empty above");
+                                let serialized_element_result = cost_return_on_error!(
+                                    &mut cost,
+                                    self.get_and_deserialize_referenced_element(
+                                        key,
+                                        reference_path,
+                                        grove_version
+                                    )
+                                );
+                                if let Some((old_element, old_serialized_element, is_in_sum_tree)) =
+                                    serialized_element_result
+                                {
+                                    let value_hash = cost_return_on_error!(
+                                        &mut cost,
+                                        Self::process_old_element_flags(
+                                            key,
+                                            &serialized,
+                                            &mut new_element,
+                                            old_element,
+                                            &old_serialized_element,
+                                            is_in_sum_tree,
+                                            flags_update,
+                                            split_removal_bytes,
+                                            grove_version,
+                                        )
+                                    );
+                                    Ok(value_hash).wrap_with_cost(cost)
+                                } else {
+                                    let value_hash =
+                                        value_hash(&serialized).unwrap_add_cost(&mut cost);
+                                    Ok(value_hash).wrap_with_cost(cost)
+                                }
+                            }
+                        }
+                        // A pending bidirectional reference resolves through
+                        // its forward path like any reference. (Under the
+                        // backward-references flag the preprocessor converts
+                        // these ops into the derived form, handled above;
+                        // this arm keeps the dispatch total.)
+                        Element::BidirectionalReference(reference, _) => {
+                            let path = cost_return_on_error_into_no_add!(
+                                cost,
+                                path_from_reference_qualified_path_type(
+                                    reference.forward_reference_path.clone(),
+                                    qualified_path
+                                )
+                            );
+                            self.follow_reference_get_value_hash(
+                                path.as_slice(),
+                                ops_by_qualified_paths,
+                                recursions_allowed - 1,
+                                flags_update,
+                                split_removal_bytes,
+                                visited,
+                                grove_version,
+                            )
+                        }
                         // Both reference variants follow the same chain.
                         Element::Reference(path, ..) | Element::ReferenceWithSumItem(path, ..) => {
                             let path = cost_return_on_error_into_no_add!(
@@ -2281,6 +2668,40 @@ where
                         );
                         let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                         Ok(val_hash).wrap_with_cost(cost)
+                    }
+                    // Same chain-hash convention as the InsertOrReplace
+                    // group above: item terminals commit the stripped
+                    // logical hash; a pending bidirectional reference
+                    // resolves through its forward path.
+                    Element::ItemWithBackwardsReferences(..)
+                    | Element::SumItemWithBackwardsReferences(..)
+                    | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                        let serialized = cost_return_on_error_into_no_add!(
+                            cost,
+                            element
+                                .stripped_of_backward_references()
+                                .serialize(grove_version)
+                        );
+                        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                        Ok(val_hash).wrap_with_cost(cost)
+                    }
+                    Element::BidirectionalReference(reference, _) => {
+                        let path = cost_return_on_error_into_no_add!(
+                            cost,
+                            path_from_reference_qualified_path_type(
+                                reference.forward_reference_path.clone(),
+                                qualified_path
+                            )
+                        );
+                        self.follow_reference_get_value_hash(
+                            path.as_slice(),
+                            ops_by_qualified_paths,
+                            recursions_allowed - 1,
+                            flags_update,
+                            split_removal_bytes,
+                            visited,
+                            grove_version,
+                        )
                     }
                     Element::Reference(path, ..) | Element::ReferenceWithSumItem(path, ..) => {
                         let path = cost_return_on_error_into_no_add!(
@@ -2431,6 +2852,10 @@ where
         std::mem::take(&mut self.deleted_tree_actual_types)
     }
 
+    fn take_indexed_mirror_rekey_churn_bytes(&mut self) -> u32 {
+        std::mem::take(&mut self.indexed_mirror_rekey_churn_bytes)
+    }
+
     fn update_base_merk_root_key(
         &mut self,
         root_key: Option<Vec<u8>>,
@@ -2514,6 +2939,51 @@ where
         let mut batch_operations: Vec<(Vec<u8>, Op)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {
+                // Derived by the backward-references preprocessor: write the
+                // full element with its precomputed combined node value hash
+                // (the two-layer scheme's combine for items; for referrer
+                // rewrites additionally combined with the resolved end
+                // hash).
+                GroveOp::ReplaceBackwardReferenceFamilyMember {
+                    element,
+                    node_value_hash,
+                    end_hash,
+                } => {
+                    use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
+                    // The same host-tree rules as direct insertion apply:
+                    // notably, backward-references ITEM variants are not
+                    // representable in Provable* aggregate hosts (no proof
+                    // node binds both their combined value hash and the
+                    // aggregate), so a derived rewrite may not create that
+                    // combination either.
+                    cost_return_on_error_into!(
+                        &mut cost,
+                        element
+                            .validate_insertable_into(in_tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    let serialized = cost_return_on_error_into!(
+                        &mut cost,
+                        element
+                            .serialize(grove_version)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    let merk_feature_type = cost_return_on_error_into!(
+                        &mut cost,
+                        element
+                            .get_feature_type(in_tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    batch_operations.push((
+                        key_info.get_key(),
+                        Op::PutWithProvidedValueHash(
+                            serialized,
+                            node_value_hash,
+                            end_hash,
+                            merk_feature_type,
+                        ),
+                    ));
+                }
                 op_ref @ (GroveOp::InsertWithKnownToNotAlreadyExist { .. }
                 | GroveOp::InsertIfNotExists { .. }
                 | GroveOp::InsertOrReplace { .. }
@@ -3153,6 +3623,97 @@ where
                                     grove_version,
                                 )
                             );
+                        }
+                        // Unreachable backstop: unflagged batches reject
+                        // bidirectional-reference ops at every entry point,
+                        // and under the flag the preprocessor converts them
+                        // into `ReplaceBackwardReferenceFamilyMember` (a
+                        // reference's node hash needs its resolved end hash,
+                        // which this generic path does not carry).
+                        Element::BidirectionalReference(..) => {
+                            return Err(Error::NotSupported(
+                                "BidirectionalReference ops must go through the \
+                                 backward-references batch preprocessor"
+                                    .to_owned(),
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        // Backward-references items store their COMBINED
+                        // (stripped ‖ referrer-list) hash; the preprocessor
+                        // has already replaced the caller-supplied referrer
+                        // list with the stored one.
+                        Element::ItemWithBackwardsReferences(..)
+                        | Element::SumItemWithBackwardsReferences(..)
+                        | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                            // Same guard the live `Element::insert` applies:
+                            // the family's combined value hash has no
+                            // aggregate-carrying proof-node variant, so
+                            // Provable* aggregate parents refuse it.
+                            {
+                                use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
+                                cost_return_on_error_into!(
+                                    &mut cost,
+                                    element
+                                        .validate_insertable_into(in_tree_type)
+                                        .wrap_with_cost(OperationCost::default())
+                                );
+                            }
+                            let merk_feature_type = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(in_tree_type)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            if is_insert_if_not_exists
+                                || batch_apply_options.validate_insertion_does_not_override
+                            {
+                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                                let exists = cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.element_at_key_already_exists(
+                                        merk,
+                                        key_info.as_slice(),
+                                        grove_version
+                                    )
+                                );
+                                if exists
+                                    && (error_if_exists
+                                        || batch_apply_options.validate_insertion_does_not_override)
+                                {
+                                    return Err(Error::InvalidBatchOperation(
+                                        "attempting to insert element that already exists",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+                                if exists {
+                                    // InsertIfNotExists over an existing key
+                                    // writes nothing.
+                                    continue;
+                                }
+                            }
+                            let serialized = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .serialize(grove_version)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            let hashes = {
+                                use grovedb_merk::element::ElementExt;
+                                cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.backward_references_hashes(grove_version)
+                                )
+                                .expect("backward-references elements carry hashes")
+                            };
+                            batch_operations.push((
+                                key_info.get_key(),
+                                Op::PutWithProvidedValueHash(
+                                    serialized,
+                                    hashes.combined,
+                                    None,
+                                    merk_feature_type,
+                                ),
+                            ));
                         }
                         Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                             let merk_feature_type = cost_return_on_error_into!(
@@ -4073,7 +4634,7 @@ where
             );
             let mut per_axis = Vec::with_capacity(secondaries.len());
             for (axis, mut secondary_merk) in secondaries {
-                let (sec_hash, sec_root_key) = cost_return_on_error!(
+                let (sec_hash, sec_root_key, rekey_churn_bytes) = cost_return_on_error!(
                     &mut cost,
                     indexed_tree::apply_indexed_secondary_mirror_post_apply(
                         &transitions,
@@ -4082,6 +4643,9 @@ where
                         grove_version,
                     )
                 );
+                self.indexed_mirror_rekey_churn_bytes = self
+                    .indexed_mirror_rekey_churn_bytes
+                    .saturating_add(rekey_churn_bytes);
                 per_axis.push((axis.tag(), sec_hash, sec_root_key));
             }
             self.indexed_secondary_after_apply
@@ -4588,6 +5152,16 @@ impl GroveDb {
                                                         .wrap_with_cost(cost);
                                                     }
                                                 }
+                                                GroveOp::ReplaceBackwardReferenceFamilyMember {
+                                                    ..
+                                                } => {
+                                                    return Err(Error::InvalidBatchOperation(
+                                                        "backward-references family members are \
+                                                         not trees and cannot receive child \
+                                                         propagation",
+                                                    ))
+                                                    .wrap_with_cost(cost);
+                                                }
                                                 GroveOp::RefreshReference { .. } => {
                                                     return Err(Error::InvalidBatchOperation(
                                                         "insertion of element under a refreshed \
@@ -4695,6 +5269,8 @@ impl GroveDb {
                     cidx_overwrite_cleanup_paths: merk_tree_cache
                         .take_cidx_overwrite_cleanup_paths(),
                     deleted_tree_actual_types: merk_tree_cache.take_deleted_tree_actual_types(),
+                    indexed_mirror_rekey_churn_bytes: merk_tree_cache
+                        .take_indexed_mirror_rekey_churn_bytes(),
                 };
                 return Ok((Some(ops_by_level_paths), captures)).wrap_with_cost(cost);
             }
@@ -4703,6 +5279,8 @@ impl GroveDb {
         let captures = BatchApplyCaptures {
             cidx_overwrite_cleanup_paths: merk_tree_cache.take_cidx_overwrite_cleanup_paths(),
             deleted_tree_actual_types: merk_tree_cache.take_deleted_tree_actual_types(),
+            indexed_mirror_rekey_churn_bytes: merk_tree_cache
+                .take_indexed_mirror_rekey_churn_bytes(),
         };
         Ok((None, captures)).wrap_with_cost(cost)
     }
@@ -4755,6 +5333,7 @@ impl GroveDb {
                     indexed_secondary_after_apply: Default::default(),
                     cidx_overwrite_cleanup_paths: Default::default(),
                     deleted_tree_actual_types: Default::default(),
+                    indexed_mirror_rekey_churn_bytes: 0,
                 },
                 grove_version
             )
@@ -4816,6 +5395,7 @@ impl GroveDb {
                     indexed_secondary_after_apply: Default::default(),
                     cidx_overwrite_cleanup_paths: Default::default(),
                     deleted_tree_actual_types: Default::default(),
+                    indexed_mirror_rekey_churn_bytes: 0,
                 },
                 grove_version
             )
@@ -4865,6 +5445,13 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         for op in ops.into_iter() {
             match op.op {
+                GroveOp::ReplaceBackwardReferenceFamilyMember { .. } => {
+                    return Err(Error::NotSupported(
+                        "derived backward-references ops cannot be applied without batching"
+                            .to_owned(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
                 GroveOp::InsertOrReplace { element } | GroveOp::Replace { element } => {
                     // TODO: paths in batches is something to think about
                     let path_slices: Vec<&[u8]> =
@@ -4979,6 +5566,24 @@ impl GroveDb {
                             .as_ref()
                             .ok_or(Error::InvalidBatchOperation("delete op is missing a key"))
                     );
+                    // DropFlat is its own operation, not a DeleteOptions
+                    // mapping: the O(1) flat drop with staged storage
+                    // reclamation (issue #848).
+                    if matches!(
+                        subelements_deletion_behavior,
+                        SubelementsDeletionBehavior::DropFlat
+                    ) {
+                        cost_return_on_error!(
+                            &mut cost,
+                            self.drop_flat_subtree(
+                                path_slices.as_slice(),
+                                key.as_slice(),
+                                transaction,
+                                grove_version
+                            )
+                        );
+                        continue;
+                    }
                     // Map the per-op enum to the lower-level DeleteOptions.
                     // DontCheckWithNoCleanup and DeleteChildren both set
                     // allow_deleting_non_empty_trees = true because the
@@ -5000,6 +5605,11 @@ impl GroveDb {
                             .as_ref()
                             .is_none_or(|o| o.base_root_storage_is_free),
                         validate_tree_at_path_exists: false,
+                        // Same decision as `as_delete_options`: the batch's
+                        // opt-in extends to its deletes.
+                        propagate_backward_references: options
+                            .as_ref()
+                            .is_some_and(|o| o.propagate_backward_references),
                     };
                     cost_return_on_error!(
                         &mut cost,
@@ -5343,6 +5953,48 @@ impl GroveDb {
         }
     }
 
+    /// Stage one pending-prefix-drop redo record per captured
+    /// `DeleteTree(_, DropFlat)` deletion into `storage_batch`, so the
+    /// records commit atomically with the batch (issue #848). The ACTUAL
+    /// stored tree type decides whether the record also dooms the per-axis
+    /// secondary prefixes. Reclamation happens after the commit, outside
+    /// consensus — see `operations::delete::flat_drop`.
+    fn stage_flat_drop_records<'db>(
+        &'db self,
+        flat_drop_records: &[(Vec<Vec<u8>>, TreeType)],
+        storage_batch: &'db StorageBatch,
+        tx: &'db Transaction,
+        cost: &mut OperationCost,
+    ) -> Result<(), Error> {
+        for (qualified_path, actual_tree_type) in flat_drop_records {
+            let subtree_path: SubtreePath<Vec<u8>> = qualified_path.as_slice().into();
+            let doomed_prefixes = crate::operations::delete::flat_drop::doomed_prefixes_for_drop(
+                subtree_path,
+                actual_tree_type.is_indexed_primary(),
+                cost,
+            );
+            let record = PendingPrefixDropRecord {
+                primary_prefix: doomed_prefixes[0],
+                path: qualified_path.clone(),
+                doomed_prefixes,
+            };
+            let record_value = record.encode().map_err(Error::StorageError)?;
+            let namespace_ctx = self
+                .db
+                .get_transactional_storage_context_by_subtree_prefix(
+                    *pending_prefix_drops_namespace(),
+                    Some(storage_batch),
+                    tx,
+                )
+                .unwrap_add_cost(cost);
+            namespace_ctx
+                .put_meta(record.primary_prefix, &record_value, None)
+                .unwrap_add_cost(cost)
+                .map_err(Error::StorageError)?;
+        }
+        Ok(())
+    }
+
     /// Pre-apply scan over a batch's `DeleteTree` ops, shared by
     /// `apply_batch_with_element_flags_update` and
     /// `apply_partial_batch_with_element_flags_update`.
@@ -5385,12 +6037,33 @@ impl GroveDb {
                 let mut child_path = op.path.to_path();
                 child_path.push(key.as_slice().to_vec());
 
+                // Capability gate for the flat-drop behavior (issue #848):
+                // fails closed on every version whose slot is not the
+                // active v1 implementation — V1..V3 hold it at 0.
+                if matches!(
+                    subelements_deletion_behavior,
+                    SubelementsDeletionBehavior::DropFlat
+                ) {
+                    cost_return_on_error_no_add!(
+                        cost,
+                        crate::operations::delete::flat_drop::check_flat_drop_enabled(
+                            "apply_batch DeleteTree(DropFlat)",
+                            grove_version
+                                .grovedb_versions
+                                .operations
+                                .flat_drop
+                                .batch_delete_tree_drop_flat,
+                        )
+                    );
+                }
+
                 if capture_actual_types {
                     scan.delete_tree_behaviors
                         .insert(child_path.clone(), *subelements_deletion_behavior);
                     match subelements_deletion_behavior {
                         SubelementsDeletionBehavior::DontCheckWithNoCleanup
-                        | SubelementsDeletionBehavior::DeleteChildren => {
+                        | SubelementsDeletionBehavior::DeleteChildren
+                        | SubelementsDeletionBehavior::DropFlat => {
                             // Nothing to check pre-apply; cleanup paths come
                             // from the captured actual types after apply.
                         }
@@ -5496,12 +6169,13 @@ impl GroveDb {
                                         scan.skipped_delete_paths.insert(child_path);
                                     }
                                     SubelementsDeletionBehavior::DontCheckWithNoCleanup
-                                    | SubelementsDeletionBehavior::DeleteChildren => {
+                                    | SubelementsDeletionBehavior::DeleteChildren
+                                    | SubelementsDeletionBehavior::DropFlat => {
                                         return Err(Error::CorruptedCodeExecution(
                                             "batch delete: DontCheckWithNoCleanup / \
-                                             DeleteChildren behaviors are handled before the \
-                                             non-empty-tree check and must not reach this \
-                                             match arm",
+                                             DeleteChildren / DropFlat behaviors are handled \
+                                             before the non-empty-tree check and must not \
+                                             reach this match arm",
                                         ))
                                         .wrap_with_cost(cost);
                                     }
@@ -5539,6 +6213,18 @@ impl GroveDb {
                     SubelementsDeletionBehavior::DeleteChildren => {
                         // No emptiness check, but still perform post-apply
                         // storage cleanup to remove child subtree storage.
+                    }
+                    SubelementsDeletionBehavior::DropFlat => {
+                        // Unreachable: the capability gate above rejects
+                        // DropFlat whenever `batch_delete_tree_drop_flat`
+                        // is not active, and every version that activates
+                        // it also has `delete_tree_cleanup_type_source >=
+                        // 1`, which routes ops through the capture branch
+                        // instead of this released V1..V3 path.
+                        return Err(Error::CorruptedCodeExecution(
+                            "batch delete: DropFlat behavior reached the V1..V3 scan path",
+                        ))
+                        .wrap_with_cost(cost);
                     }
                     SubelementsDeletionBehavior::Error | SubelementsDeletionBehavior::Skip => {
                         let is_empty = if tree_type.uses_non_merk_data_storage() {
@@ -5631,18 +6317,20 @@ impl GroveDb {
                                     scan.skipped_delete_paths.insert(child_path);
                                     continue;
                                 }
-                                // DontCheckWithNoCleanup / DeleteChildren never
-                                // reach the emptiness-check block above (they
-                                // either skip the check or delete children
-                                // unconditionally). Return a graceful error
-                                // rather than panicking if that invariant is
-                                // ever broken.
+                                // DontCheckWithNoCleanup / DeleteChildren /
+                                // DropFlat never reach the emptiness-check
+                                // block above (they either skip the check or
+                                // delete children unconditionally). Return a
+                                // graceful error rather than panicking if
+                                // that invariant is ever broken.
                                 SubelementsDeletionBehavior::DontCheckWithNoCleanup
-                                | SubelementsDeletionBehavior::DeleteChildren => {
+                                | SubelementsDeletionBehavior::DeleteChildren
+                                | SubelementsDeletionBehavior::DropFlat => {
                                     return Err(Error::CorruptedCodeExecution(
                                         "batch delete: DontCheckWithNoCleanup / DeleteChildren \
-                                         behaviors are handled before the non-empty-tree check \
-                                         and must not reach this match arm",
+                                         / DropFlat behaviors are handled before the \
+                                         non-empty-tree check and must not reach this match \
+                                         arm",
                                     ))
                                     .wrap_with_cost(cost);
                                 }
@@ -5664,6 +6352,59 @@ impl GroveDb {
             }
         }
         Ok(scan).wrap_with_cost(cost)
+    }
+
+    /// Backward-references family elements are only valid in batches that
+    /// opt into the bookkeeping via
+    /// `BatchApplyOptions::propagate_backward_references` (GROVE_V4+),
+    /// where the preprocessor expands them into the derived operations the
+    /// live flagged flow performs. Everywhere else (`allow_family` false:
+    /// unflagged batches, partial batches, partial-batch add-on ops) they
+    /// fail closed — the pipeline would otherwise silently produce
+    /// inconsistent backward-reference state (a `BidirectionalReference`
+    /// whose target never learns about it).
+    fn reject_backward_references_elements_in_batch(
+        ops: &[QualifiedGroveDbOp],
+        allow_family: bool,
+    ) -> Result<(), Error> {
+        for op in ops {
+            // The derived write op is internal to the preprocessor; a
+            // caller supplying one could install arbitrary value hashes.
+            if matches!(op.op, GroveOp::ReplaceBackwardReferenceFamilyMember { .. }) {
+                return Err(Error::NotSupported(
+                    "ReplaceBackwardReferenceFamilyMember is derived internally and cannot be \
+                     supplied in a batch"
+                        .to_owned(),
+                ));
+            }
+            let element = match &op.op {
+                GroveOp::InsertWithKnownToNotAlreadyExist { element }
+                | GroveOp::InsertIfNotExists { element, .. }
+                | GroveOp::InsertOrReplace { element }
+                | GroveOp::Replace { element }
+                | GroveOp::Patch { element, .. } => element,
+                _ => continue,
+            };
+            if element.underlying().supports_backward_references() {
+                // Never wrapped: the wrappers' constructors refuse the family
+                // and deserialization rejects the shape, so a hand-built
+                // `NonCounted(family)` must not be written.
+                if element.is_wrapped() {
+                    return Err(Error::InvalidBatchOperation(
+                        "backward-references family elements cannot be wrapped in NonCounted / \
+                         NotSummed / NotCountedOrSummed",
+                    ));
+                }
+                if !allow_family {
+                    return Err(Error::NotSupported(
+                        "backward-references family elements require \
+                         BatchApplyOptions::propagate_backward_references (GROVE_V4+)"
+                            .to_owned(),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Applies batch of operations on GroveDB
@@ -5694,6 +6435,13 @@ impl GroveDb {
                 .apply_batch
                 .apply_batch_with_element_flags_update
         );
+        let _storage_removal_version_guard =
+            grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(
+                grove_version
+                    .grovedb_versions
+                    .storage_costs
+                    .add_basic_storage_removal_to_sectioned_storage_removal,
+            );
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
 
@@ -5718,6 +6466,56 @@ impl GroveDb {
                 .wrap_with_cost(cost);
             }
         }
+
+        // Backward-references bookkeeping is a per-batch opt-in, and rides
+        // the same activation as the live flagged flow (`GROVE_V4`+, where
+        // `insert_on_transaction` dispatches to v1).
+        let backward_references_enabled = batch_apply_options
+            .as_ref()
+            .map(|options| options.propagate_backward_references)
+            .unwrap_or(false)
+            && grove_version
+                .grovedb_versions
+                .operations
+                .insert
+                .insert_on_transaction
+                >= 1;
+        cost_return_on_error_no_add!(
+            cost,
+            Self::reject_backward_references_elements_in_batch(&ops, backward_references_enabled)
+        );
+        let ops = if backward_references_enabled {
+            let ops = cost_return_on_error!(
+                &mut cost,
+                backward_references::expand_backward_references_ops(
+                    self,
+                    &tx,
+                    ops,
+                    batch_apply_options
+                        .as_ref()
+                        .map(|options| options.validate_insertion_does_not_override)
+                        .unwrap_or_default(),
+                    grove_version
+                )
+            );
+            // The expansion merges derived mutations into the batch under
+            // the M4 conflict rules and errors on everything ambiguous, so
+            // the expanded set should always be consistent; this re-check
+            // is a backstop against expansion bugs.
+            if check_batch_operation_consistency {
+                let consistency_result = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+                if !consistency_result.is_empty() {
+                    return Err(Error::InvalidBatchOperation(
+                        "derived backward-references operations conflict with the batch's own \
+                         operations",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+            }
+            ops
+        } else {
+            ops
+        };
 
         cost_return_on_error!(
             &mut cost,
@@ -5854,18 +6652,33 @@ impl GroveDb {
         let BatchApplyCaptures {
             cidx_overwrite_cleanup_paths,
             deleted_tree_actual_types,
+            indexed_mirror_rekey_churn_bytes,
         } = batch_apply_captures;
 
         // V4+: fold the `(path, ACTUAL stored type)` pairs captured during
         // the apply into the cleanup lists (no-op on V1..V3, where the
         // captures are empty and the lists were already built pre-apply from
         // the declared types).
+        let mut flat_drop_records: Vec<(Vec<Vec<u8>>, TreeType)> = Vec::new();
         classify_captured_delete_trees(
             deleted_tree_actual_types,
             &delete_tree_behaviors,
             &mut non_merk_delete_paths,
             &mut merk_delete_paths,
             &mut cidx_primary_delete_paths,
+            &mut flat_drop_records,
+        );
+
+        // Stage flat-drop redo records so they commit atomically with the
+        // batch (issue #848); their storage reclaims after the commit.
+        cost_return_on_error_no_add!(
+            cost,
+            self.stage_flat_drop_records(
+                &flat_drop_records,
+                &storage_batch,
+                tx.as_ref(),
+                &mut cost,
+            )
         );
 
         // Clean up data storage for deleted non-Merk trees.
@@ -6051,6 +6864,13 @@ impl GroveDb {
                 .map_err(|e| e.into())
         );
 
+        // Rebill mirrored re-key churn as replaced bytes now that the
+        // commit has folded every op's storage cost into `cost`.
+        reclassify_indexed_mirror_rekey_churn(
+            &mut cost.storage_cost,
+            indexed_mirror_rekey_churn_bytes,
+        );
+
         // Keep this commented for easy debugging in the future.
         // let issues = self
         //     .visualize_verify_grovedb(Some(tx), true,
@@ -6066,7 +6886,19 @@ impl GroveDb {
         //     );
         // }
 
-        tx.commit_local().wrap_with_cost(cost)
+        let owns_tx = tx.is_owned();
+        cost_return_on_error_no_add!(cost, tx.commit_local());
+
+        // Reclaim flat-drop storage right away when this call owns the
+        // just-committed transaction. Best-effort: on failure the redo
+        // records persist and the next flush retries (issue #848). When
+        // the caller owns the transaction, records stay invisible until
+        // the caller commits, and the host flushes afterwards.
+        if owns_tx && !flat_drop_records.is_empty() {
+            let _ = self.flush_pending_prefix_drops(grove_version);
+        }
+
+        Ok(()).wrap_with_cost(cost)
     }
 
     /// Applies a partial batch of operations on GroveDB
@@ -6104,6 +6936,13 @@ impl GroveDb {
                 .apply_batch
                 .apply_partial_batch_with_element_flags_update
         );
+        let _storage_removal_version_guard =
+            grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(
+                grove_version
+                    .grovedb_versions
+                    .storage_costs
+                    .add_basic_storage_removal_to_sectioned_storage_removal,
+            );
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
 
@@ -6128,6 +6967,11 @@ impl GroveDb {
                 .wrap_with_cost(cost);
             }
         }
+
+        cost_return_on_error_no_add!(
+            cost,
+            Self::reject_backward_references_elements_in_batch(&ops, false)
+        );
 
         cost_return_on_error!(
             &mut cost,
@@ -6311,6 +7155,14 @@ impl GroveDb {
             }
         }
 
+        // The callback is caller-provided, so add-on ops get the same
+        // backward-references gate the initial ops got — otherwise an op
+        // carrying the family would only fail deep inside execution.
+        cost_return_on_error_no_add!(
+            cost,
+            Self::reject_backward_references_elements_in_batch(&new_operations, false)
+        );
+
         // we are trying to finalize
         batch_apply_options.batch_pause_height = None;
 
@@ -6352,14 +7204,17 @@ impl GroveDb {
         let BatchApplyCaptures {
             cidx_overwrite_cleanup_paths: partial_cidx_overwrite_cleanup_paths,
             deleted_tree_actual_types: partial_deleted_tree_actual_types,
+            indexed_mirror_rekey_churn_bytes: partial_rekey_churn_bytes,
         } = partial_captures;
         let BatchApplyCaptures {
             cidx_overwrite_cleanup_paths: continue_cidx_overwrite_cleanup_paths,
             deleted_tree_actual_types: continue_deleted_tree_actual_types,
+            indexed_mirror_rekey_churn_bytes: continue_rekey_churn_bytes,
         } = continue_captures;
 
         // V4+: fold captures from BOTH applies into the cleanup lists
         // (no-op on V1..V3). The overwrite-cleanup paths are unioned below.
+        let mut flat_drop_records: Vec<(Vec<Vec<u8>>, TreeType)> = Vec::new();
         classify_captured_delete_trees(
             partial_deleted_tree_actual_types
                 .into_iter()
@@ -6369,6 +7224,19 @@ impl GroveDb {
             &mut non_merk_delete_paths,
             &mut merk_delete_paths,
             &mut cidx_primary_delete_paths,
+            &mut flat_drop_records,
+        );
+
+        // Stage flat-drop redo records so they commit atomically with the
+        // batch (issue #848); their storage reclaims after the commit.
+        cost_return_on_error_no_add!(
+            cost,
+            self.stage_flat_drop_records(
+                &flat_drop_records,
+                &continue_storage_batch,
+                tx.as_ref(),
+                &mut cost,
+            )
         );
 
         // Clean up data storage for deleted non-Merk trees.
@@ -6558,7 +7426,24 @@ impl GroveDb {
                 .map_err(|e| e.into())
         );
 
-        tx.commit_local().wrap_with_cost(cost)
+        // Rebill mirrored re-key churn from BOTH applies as replaced bytes
+        // (see apply_batch_with_element_flags_update).
+        reclassify_indexed_mirror_rekey_churn(
+            &mut cost.storage_cost,
+            partial_rekey_churn_bytes.saturating_add(continue_rekey_churn_bytes),
+        );
+
+        let owns_tx = tx.is_owned();
+        cost_return_on_error_no_add!(cost, tx.commit_local());
+
+        // Reclaim flat-drop storage right away when this call owns the
+        // just-committed transaction (see apply_batch_with_element_flags
+        // _update; issue #848).
+        if owns_tx && !flat_drop_records.is_empty() {
+            let _ = self.flush_pending_prefix_drops(grove_version);
+        }
+
+        Ok(()).wrap_with_cost(cost)
     }
 
     #[cfg(feature = "estimated_costs")]
@@ -6830,6 +7715,7 @@ mod tests {
                     disable_operation_consistency_check: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    propagate_backward_references: false,
                 }),
                 None,
                 grove_version
@@ -7435,6 +8321,7 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    propagate_backward_references: false,
                 }),
                 None,
                 grove_version
@@ -7476,6 +8363,7 @@ mod tests {
                     validate_insertion_does_not_override: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    propagate_backward_references: false,
                 }),
                 None,
                 grove_version
@@ -7509,6 +8397,7 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    propagate_backward_references: false,
                 }),
                 None,
                 grove_version

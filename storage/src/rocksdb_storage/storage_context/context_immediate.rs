@@ -39,7 +39,9 @@ use super::{make_prefixed_key, PrefixedRocksDbBatch, PrefixedRocksDbRawIterator}
 use crate::{
     error,
     error::Error::RocksDBError,
-    rocksdb_storage::storage::{Db, SubtreePrefix, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
+    rocksdb_storage::storage::{
+        Db, RawTx, SubtreePrefix, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME,
+    },
     StorageContext,
 };
 
@@ -87,7 +89,7 @@ impl<'db> PrefixedRocksDbImmediateStorageContext<'db> {
 
 impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     type Batch = PrefixedRocksDbBatch<'db>;
-    type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, Tx<'db>>>;
+    type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, RawTx<'db>>>;
 
     fn put<K: AsRef<[u8]>>(
         &self,
@@ -96,9 +98,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
         _children_sizes: ChildrenSizesWithIsSumTree,
         _cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
+        // Writes go through the transaction wrapper, which refuses a
+        // snapshot read transaction with a typed error — same for every
+        // put/delete below.
         self.transaction
             .put(make_prefixed_key(&self.prefix, &key), value)
-            .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
@@ -110,7 +114,6 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     ) -> CostResult<(), Error> {
         self.transaction
             .put_cf(self.cf_aux(), make_prefixed_key(&self.prefix, &key), value)
-            .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
@@ -126,7 +129,6 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
                 make_prefixed_key(&self.prefix, &key),
                 value,
             )
-            .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
@@ -138,7 +140,6 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     ) -> CostResult<(), Error> {
         self.transaction
             .put_cf(self.cf_meta(), make_prefixed_key(&self.prefix, &key), value)
-            .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
@@ -149,7 +150,6 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     ) -> CostResult<(), Error> {
         self.transaction
             .delete(make_prefixed_key(&self.prefix, key))
-            .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
@@ -160,7 +160,6 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     ) -> CostResult<(), Error> {
         self.transaction
             .delete_cf(self.cf_aux(), make_prefixed_key(&self.prefix, key))
-            .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
@@ -171,7 +170,6 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     ) -> CostResult<(), Error> {
         self.transaction
             .delete_cf(self.cf_roots(), make_prefixed_key(&self.prefix, key))
-            .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
@@ -182,11 +180,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     ) -> CostResult<(), Error> {
         self.transaction
             .delete_cf(self.cf_meta(), make_prefixed_key(&self.prefix, key))
-            .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
+        // Reads go through the transaction wrapper, which injects the
+        // transaction's snapshot (when one was requested at creation)
+        // into every read's options — same for every read below.
         self.transaction
             .get(make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
@@ -227,7 +227,6 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     fn commit_batch(&self, batch: Self::Batch) -> CostResult<(), Error> {
         self.transaction
             .rebuild_from_writebatch(&batch.batch)
-            .map_err(RocksDBError)
             .wrap_with_cost(batch.cost_acc)
     }
 

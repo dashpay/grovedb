@@ -13,7 +13,7 @@
 //! - **Boundary** → emit `KVDigestSum(key, value_hash, node_sum)` for
 //!   the current node, recurse into both children for descent, and add
 //!   `own_sum = node_sum − left_struct − right_struct` to the running
-//!   total iff the node's key is itself in range.
+//!   total if and only if the node's key is itself in range.
 
 use std::collections::LinkedList;
 

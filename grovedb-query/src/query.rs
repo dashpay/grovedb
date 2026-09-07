@@ -12,7 +12,6 @@ use crate::{query_item::QueryItem, Key, Path, ReadMode, SubqueryBranch};
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all the requested values.
 #[derive(Debug, Default, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Query {
     /// Items
     pub items: Vec<QueryItem>,
@@ -28,10 +27,12 @@ pub struct Query {
     /// # Known limitation
     ///
     /// Parent tree results added by this flag do **not** currently count
-    /// against `SizedQuery::limit`. A query with `limit = 10` may return
-    /// more than 10 results when this flag is active, because the limit
-    /// only governs child-level results. This will be resolved in a future
-    /// redesign that introduces per-level limits.
+    /// against `SizedQuery::limit` or the per-instance [`limit`](Self::limit).
+    /// A query with `limit = 10` may return more than 10 results when this
+    /// flag is active, because the budgets only govern child-level results.
+    /// Fixing this requires charging the prover at exactly the points the
+    /// verifier pushes parent rows, across every descent flavor — tracked
+    /// as follow-up work to the per-instance limits feature.
     ///
     /// # Absence-proof verification
     ///
@@ -44,10 +45,13 @@ pub struct Query {
     pub add_parent_tree_on_subquery: bool,
     /// How this node reads the tree its (sub)path names. `None` is
     /// plain key selection — all pre-existing behavior, byte-identical
-    /// on the wire (the encoding version byte stays `1`). `Some(_)`
-    /// switches the node to an axis-ordered or sum-budget read and
-    /// bumps the node's encoding version byte to `2`, which decoders
-    /// that predate read modes reject — fail-closed by construction.
+    /// on the wire. `Some(_)` switches the node to an axis-ordered or
+    /// sum-budget read and bumps the node's encoding to the lowest
+    /// version that can carry its optional fields: version `2` when
+    /// the read mode is the only one present, version `3` (with both
+    /// flags set) when a per-instance [`limit`](Self::limit) rides
+    /// along. Decoders that predate the respective version reject it —
+    /// fail-closed by construction.
     ///
     /// Placement rules (which items/branches may accompany a read mode,
     /// where in a `PathQuery` it may appear) are enforced by
@@ -62,21 +66,67 @@ pub struct Query {
     /// read-mode path and keeps `Query` cheap to clone, which the
     /// engine does constantly. It is invisible on the wire and in
     /// serde: `Box<T>` encodes exactly as `T`.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
+    ///
+    /// Serde: see the `query_serde` module — the representation is
+    /// versioned and hand-written, mirroring the bincode codec's
+    /// fail-closed rules across format generations.
     pub read_mode: Option<Box<ReadMode>>,
+    /// Per-instance result limit for this query node.
+    ///
+    /// Unlike `SizedQuery::limit` — one global budget shared by the
+    /// whole traversal — this cap is **per execution instance**: the
+    /// query node runs once for every parent key it is reached under
+    /// (via a default or conditional subquery branch), and each of
+    /// those runs gets a fresh budget of `limit` result rows for
+    /// everything originating in that instance's subtree (its own
+    /// pushed elements plus all descendant results). That is what
+    /// expresses "top k per parent": a parent selecting many keys with
+    /// a subquery whose `limit` is `Some(k)` returns at most `k` rows
+    /// under *each* matched key instead of `k` rows in total.
+    ///
+    /// Caps compose by `min`: an instance's effective budget is the
+    /// smaller of its own `limit` and whatever remains of every
+    /// enclosing budget (ancestor instances and the global
+    /// `SizedQuery::limit`). On the root query node — which executes
+    /// exactly once — this field is therefore equivalent to
+    /// `SizedQuery::limit`, and setting both means the smaller wins.
+    ///
+    /// `Some(0)` is rejected by every serving entry point (a node that
+    /// may select nothing is a malformed query, not an empty result).
+    /// Serving is version-gated (`GROVE_V4`+); older grove versions
+    /// fail closed, and on the wire a query carrying a per-instance
+    /// limit anywhere encodes that node as version 3, which decoders
+    /// that predate the field reject.
+    ///
+    /// Serde: see the `query_serde` module.
+    pub limit: Option<u16>,
 }
+
+/// Version-3 `Query` encoding flags byte: the node carries a read mode.
+const QUERY_V3_FLAG_READ_MODE: u8 = 0b0000_0001;
+/// Version-3 `Query` encoding flags byte: the node carries a
+/// per-instance limit. A version-3 node always has this flag set —
+/// a node without a per-instance limit encodes as version 1 or 2.
+const QUERY_V3_FLAG_INSTANCE_LIMIT: u8 = 0b0000_0010;
+const QUERY_V3_KNOWN_FLAGS: u8 = QUERY_V3_FLAG_READ_MODE | QUERY_V3_FLAG_INSTANCE_LIMIT;
 
 impl Encode for Query {
     fn encode<E: bincode::enc::Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
-        // Version byte. Queries without a read mode — everything that
-        // was expressible before read modes existed — keep encoding as
-        // version 1, byte-for-byte. Only a node that actually carries a
-        // read mode bumps to 2, so old decoders fail closed on exactly
-        // the queries they cannot execute and on nothing else.
-        if self.read_mode.is_some() {
+        // Version byte — always the lowest version that can represent
+        // this node, so every already-expressible query keeps its exact
+        // historical bytes and old decoders fail closed on exactly the
+        // queries they cannot execute and on nothing else:
+        // 1 = plain (pre-read-mode layout, byte-for-byte), 2 = carries
+        // a read mode, 3 = carries a per-instance limit (flags byte
+        // says whether a read mode rides along).
+        if self.limit.is_some() {
+            3u8.encode(encoder)?;
+            let mut flags = QUERY_V3_FLAG_INSTANCE_LIMIT;
+            if self.read_mode.is_some() {
+                flags |= QUERY_V3_FLAG_READ_MODE;
+            }
+            flags.encode(encoder)?;
+        } else if self.read_mode.is_some() {
             2u8.encode(encoder)?;
         } else {
             1u8.encode(encoder)?;
@@ -111,10 +161,17 @@ impl Encode for Query {
 
         self.add_parent_tree_on_subquery.encode(encoder)?;
 
-        // Version 2 appends the read mode. No presence flag: the
-        // version byte already says it's there.
+        // Versions 2 and 3 append the read mode when present. No
+        // per-field presence flag: the version byte (v2) or the flags
+        // byte (v3) already says it's there.
         if let Some(read_mode) = &self.read_mode {
             read_mode.encode(encoder)?;
+        }
+
+        // Version 3 appends the per-instance limit last; its presence
+        // is what selected version 3 in the first place.
+        if let Some(limit) = self.limit {
+            limit.encode(encoder)?;
         }
 
         Ok(())
@@ -145,9 +202,27 @@ impl Query {
             ));
         }
         let version = u8::decode(decoder)?;
-        if version != 1 && version != 2 {
+        if version != 1 && version != 2 && version != 3 {
             return Err(DecodeError::Other("unsupported Query encoding version"));
         }
+        // Version 3 carries a flags byte right after the version. The
+        // instance-limit flag must be set (a node without one encodes
+        // as version 1 or 2 — the encoding is canonical), and unknown
+        // flag bits fail closed.
+        let flags = if version == 3 {
+            let flags = u8::decode(decoder)?;
+            if flags & !QUERY_V3_KNOWN_FLAGS != 0 {
+                return Err(DecodeError::Other("unknown Query version 3 flags"));
+            }
+            if flags & QUERY_V3_FLAG_INSTANCE_LIMIT == 0 {
+                return Err(DecodeError::Other(
+                    "non-canonical Query version 3 encoding: no per-instance limit",
+                ));
+            }
+            flags
+        } else {
+            0
+        };
         let items_len = u64::decode(decoder)? as usize;
         if items_len > MAX_QUERY_ITEMS {
             return Err(DecodeError::Other("query items length exceeds maximum"));
@@ -180,10 +255,17 @@ impl Query {
         let left_to_right = bool::decode(decoder)?;
         let add_parent_tree_on_subquery = bool::decode(decoder)?;
 
-        // Version 2 carries a read mode; version 1 never does. No
-        // presence flag — the version byte is the flag.
-        let read_mode = if version == 2 {
+        // Version 2 always carries a read mode; version 3 carries one
+        // when its flags byte says so; version 1 never does.
+        let read_mode = if version == 2 || flags & QUERY_V3_FLAG_READ_MODE != 0 {
             Some(Box::new(ReadMode::decode(decoder)?))
+        } else {
+            None
+        };
+
+        // Version 3 always carries the per-instance limit last.
+        let limit = if version == 3 {
+            Some(u16::decode(decoder)?)
         } else {
             None
         };
@@ -195,6 +277,7 @@ impl Query {
             left_to_right,
             add_parent_tree_on_subquery,
             read_mode,
+            limit,
         })
     }
 
@@ -208,9 +291,25 @@ impl Query {
             ));
         }
         let version = u8::borrow_decode(decoder)?;
-        if version != 1 && version != 2 {
+        if version != 1 && version != 2 && version != 3 {
             return Err(DecodeError::Other("unsupported Query encoding version"));
         }
+        // See `decode_with_depth`: version 3 = flags byte, canonical,
+        // unknown bits fail closed.
+        let flags = if version == 3 {
+            let flags = u8::borrow_decode(decoder)?;
+            if flags & !QUERY_V3_KNOWN_FLAGS != 0 {
+                return Err(DecodeError::Other("unknown Query version 3 flags"));
+            }
+            if flags & QUERY_V3_FLAG_INSTANCE_LIMIT == 0 {
+                return Err(DecodeError::Other(
+                    "non-canonical Query version 3 encoding: no per-instance limit",
+                ));
+            }
+            flags
+        } else {
+            0
+        };
         let items_len = u64::borrow_decode(decoder)? as usize;
         if items_len > MAX_QUERY_ITEMS {
             return Err(DecodeError::Other("query items length exceeds maximum"));
@@ -243,9 +342,17 @@ impl Query {
         let left_to_right = bool::borrow_decode(decoder)?;
         let add_parent_tree_on_subquery = bool::borrow_decode(decoder)?;
 
-        // Version 2 carries a read mode; version 1 never does.
-        let read_mode = if version == 2 {
+        // Version 2 always carries a read mode; version 3 carries one
+        // when its flags byte says so; version 1 never does.
+        let read_mode = if version == 2 || flags & QUERY_V3_FLAG_READ_MODE != 0 {
             Some(Box::new(ReadMode::borrow_decode(decoder)?))
+        } else {
+            None
+        };
+
+        // Version 3 always carries the per-instance limit last.
+        let limit = if version == 3 {
+            Some(u16::borrow_decode(decoder)?)
         } else {
             None
         };
@@ -257,6 +364,7 @@ impl Query {
             left_to_right,
             add_parent_tree_on_subquery,
             read_mode,
+            limit,
         })
     }
 }
@@ -306,7 +414,43 @@ impl fmt::Display for Query {
         if let Some(read_mode) = &self.read_mode {
             writeln!(f, "  read_mode: {read_mode},")?;
         }
+        if let Some(limit) = self.limit {
+            writeln!(f, "  limit: {limit},")?;
+        }
         write!(f, "}}")
+    }
+}
+
+impl Query {
+    /// Whether this query — or any subquery below it, default or
+    /// conditional — carries a per-instance [`limit`](Self::limit).
+    /// Entry points that don't serve per-instance limits use this to
+    /// fail closed instead of silently running the query with the caps
+    /// ignored.
+    pub fn has_instance_limit_anywhere(&self) -> bool {
+        self.any_instance_limit(|limit| limit.is_some())
+    }
+
+    /// Whether any per-instance limit in this query tree is `Some(0)`.
+    /// A node that may select nothing is a malformed query, not an
+    /// empty result; serving entry points reject it.
+    pub fn has_zero_instance_limit_anywhere(&self) -> bool {
+        self.any_instance_limit(|limit| limit == Some(0))
+    }
+
+    fn any_instance_limit(&self, predicate: fn(Option<u16>) -> bool) -> bool {
+        let branch_matches = |branch: &SubqueryBranch| {
+            branch
+                .subquery
+                .as_deref()
+                .is_some_and(|subquery| subquery.any_instance_limit(predicate))
+        };
+        predicate(self.limit)
+            || branch_matches(&self.default_subquery_branch)
+            || self
+                .conditional_subquery_branches
+                .as_ref()
+                .is_some_and(|branches| branches.values().any(branch_matches))
     }
 }
 
@@ -542,6 +686,7 @@ impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
             left_to_right: true,
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         }
     }
 }
@@ -653,7 +798,7 @@ mod tests {
     fn query_decode_rejects_invalid_version() {
         // Craft a payload with an invalid version byte
         let mut payload = Vec::new();
-        payload.push(3u8); // invalid version (only versions 1 and 2 are supported)
+        payload.push(4u8); // invalid version (only versions 1..=3 are supported)
                            // Add some dummy data after
         payload.extend_from_slice(&[0; 20]);
 
@@ -781,5 +926,349 @@ mod tests {
             current.default_subquery_branch.subquery.is_none(),
             "innermost query should have no further subquery"
         );
+    }
+}
+
+/// Versioned serde representation for [`Query`].
+///
+/// The derived representation was unsafe across code generations in
+/// both directions: a positional (non-self-describing) serializer
+/// broke as fields were appended (`serde(default)` cannot turn EOF
+/// into an omitted field), and a self-describing reader from *before*
+/// a field silently ignored its unknown key — turning a bounded query
+/// into an unlimited one, or a read-mode query into plain key
+/// selection. This module mirrors the bincode codec's versioning
+/// instead:
+///
+/// - **Non-self-describing formats** (`!is_human_readable`, e.g.
+///   serde-bincode): a framed layout — a leading `MAGIC` sentinel,
+///   then a version integer, then every field always present. A
+///   plain `version: u8` alone would NOT fail closed: the released
+///   unframed layout begins with the `items` vector length, so a
+///   legacy reader would consume a small version byte as a length and
+///   reinterpret the remaining fields as query items. The magic
+///   decodes there as an absurd items length instead, which errors —
+///   and this reader requires the magic exactly, so released payloads
+///   error cleanly here too (positional layouts carry no
+///   self-description to migrate on).
+/// - **Self-describing formats** (`is_human_readable`, e.g. JSON):
+///   version 1 — the only content the **released** derived layout can
+///   serve — keeps the flat map layout (plus a `version` key old
+///   readers ignore). Versions 2 and 3 (read-mode- and limit-bearing
+///   forms) nest their fields under a `body` key, so an old reader
+///   hard-fails on the missing flat fields instead of silently
+///   dropping the read mode or the limit.
+///
+/// Decoding validates canonicality exactly like bincode: the version
+/// must be the lowest that can represent the contents.
+#[cfg(feature = "serde")]
+mod query_serde {
+    use std::fmt;
+
+    use serde::{
+        de::{self, MapAccess, Visitor},
+        Deserialize, Deserializer, Serialize, Serializer,
+    };
+
+    use super::*;
+
+    fn wire_version(read_mode: bool, limit: bool) -> u8 {
+        match (read_mode, limit) {
+            (_, true) => 3,
+            (true, false) => 2,
+            (false, false) => 1,
+        }
+    }
+
+    fn validate_canonical<E: de::Error>(
+        version: u8,
+        read_mode: bool,
+        limit: bool,
+    ) -> Result<(), E> {
+        let expected = wire_version(read_mode, limit);
+        if version != expected {
+            return Err(E::custom(format!(
+                "non-canonical Query serde version {version} for its contents (expected \
+                 {expected})"
+            )));
+        }
+        Ok(())
+    }
+
+    /// The positional frame sentinel. Chosen so a legacy unframed
+    /// reader, which decodes the leading bytes as its `items` vector
+    /// length, sees an absurd length and errors instead of
+    /// reinterpreting the payload.
+    const POSITIONAL_MAGIC: u64 = u64::from_be_bytes(*b"grvquery");
+
+    /// Framed positional layout — magic, version, then every field
+    /// always present.
+    #[derive(Serialize)]
+    struct PositionalRef<'a> {
+        magic: u64,
+        version: u8,
+        items: &'a Vec<QueryItem>,
+        default_subquery_branch: &'a SubqueryBranch,
+        conditional_subquery_branches: &'a Option<IndexMap<QueryItem, SubqueryBranch>>,
+        left_to_right: bool,
+        add_parent_tree_on_subquery: bool,
+        read_mode: &'a Option<Box<ReadMode>>,
+        limit: &'a Option<u16>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename = "Query")]
+    struct PositionalOwned {
+        magic: u64,
+        version: u8,
+        items: Vec<QueryItem>,
+        default_subquery_branch: SubqueryBranch,
+        conditional_subquery_branches: Option<IndexMap<QueryItem, SubqueryBranch>>,
+        left_to_right: bool,
+        add_parent_tree_on_subquery: bool,
+        read_mode: Option<Box<ReadMode>>,
+        limit: Option<u16>,
+    }
+
+    /// The nested body of the human-readable version-2 and version-3
+    /// forms.
+    #[derive(Serialize, Deserialize)]
+    struct BodyOwned {
+        items: Vec<QueryItem>,
+        default_subquery_branch: SubqueryBranch,
+        conditional_subquery_branches: Option<IndexMap<QueryItem, SubqueryBranch>>,
+        left_to_right: bool,
+        add_parent_tree_on_subquery: bool,
+        read_mode: Option<Box<ReadMode>>,
+        limit: Option<u16>,
+    }
+
+    #[derive(Serialize)]
+    struct BodyRef<'a> {
+        items: &'a Vec<QueryItem>,
+        default_subquery_branch: &'a SubqueryBranch,
+        conditional_subquery_branches: &'a Option<IndexMap<QueryItem, SubqueryBranch>>,
+        left_to_right: bool,
+        add_parent_tree_on_subquery: bool,
+        read_mode: &'a Option<Box<ReadMode>>,
+        limit: &'a Option<u16>,
+    }
+
+    impl Serialize for Query {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            let version = wire_version(self.read_mode.is_some(), self.limit.is_some());
+            if !serializer.is_human_readable() {
+                return PositionalRef {
+                    magic: POSITIONAL_MAGIC,
+                    version,
+                    items: &self.items,
+                    default_subquery_branch: &self.default_subquery_branch,
+                    conditional_subquery_branches: &self.conditional_subquery_branches,
+                    left_to_right: self.left_to_right,
+                    add_parent_tree_on_subquery: self.add_parent_tree_on_subquery,
+                    read_mode: &self.read_mode,
+                    limit: &self.limit,
+                }
+                .serialize(serializer);
+            }
+            use serde::ser::SerializeStruct;
+            match version {
+                2 | 3 => {
+                    // Both non-released forms nest: the released
+                    // derived reader ignores unknown flat keys, so
+                    // either feature would silently vanish in a flat
+                    // map.
+                    let mut state = serializer.serialize_struct("Query", 2)?;
+                    state.serialize_field("version", &version)?;
+                    state.serialize_field(
+                        "body",
+                        &BodyRef {
+                            items: &self.items,
+                            default_subquery_branch: &self.default_subquery_branch,
+                            conditional_subquery_branches: &self.conditional_subquery_branches,
+                            left_to_right: self.left_to_right,
+                            add_parent_tree_on_subquery: self.add_parent_tree_on_subquery,
+                            read_mode: &self.read_mode,
+                            limit: &self.limit,
+                        },
+                    )?;
+                    state.end()
+                }
+                _ => {
+                    let mut state = serializer.serialize_struct("Query", 6)?;
+                    state.serialize_field("version", &version)?;
+                    state.serialize_field("items", &self.items)?;
+                    state.serialize_field(
+                        "default_subquery_branch",
+                        &self.default_subquery_branch,
+                    )?;
+                    state.serialize_field(
+                        "conditional_subquery_branches",
+                        &self.conditional_subquery_branches,
+                    )?;
+                    state.serialize_field("left_to_right", &self.left_to_right)?;
+                    state.serialize_field(
+                        "add_parent_tree_on_subquery",
+                        &self.add_parent_tree_on_subquery,
+                    )?;
+                    state.end()
+                }
+            }
+        }
+    }
+
+    struct QueryVisitor;
+
+    impl<'de> Visitor<'de> for QueryVisitor {
+        type Value = Query;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a versioned Query map")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Query, A::Error> {
+            let mut version: Option<u8> = None;
+            let mut body: Option<BodyOwned> = None;
+            let mut items: Option<Vec<QueryItem>> = None;
+            let mut default_subquery_branch: Option<SubqueryBranch> = None;
+            let mut conditional_subquery_branches: Option<
+                Option<IndexMap<QueryItem, SubqueryBranch>>,
+            > = None;
+            let mut left_to_right: Option<bool> = None;
+            let mut add_parent_tree_on_subquery: Option<bool> = None;
+            let mut read_mode: Option<Option<Box<ReadMode>>> = None;
+
+            while let Some(key) = map.next_key::<String>()? {
+                match key.as_str() {
+                    "version" => version = Some(map.next_value()?),
+                    "body" => body = Some(map.next_value()?),
+                    "items" => items = Some(map.next_value()?),
+                    "default_subquery_branch" => default_subquery_branch = Some(map.next_value()?),
+                    "conditional_subquery_branches" => {
+                        conditional_subquery_branches = Some(map.next_value()?)
+                    }
+                    "left_to_right" => left_to_right = Some(map.next_value()?),
+                    "add_parent_tree_on_subquery" => {
+                        add_parent_tree_on_subquery = Some(map.next_value()?)
+                    }
+                    "read_mode" => read_mode = Some(map.next_value()?),
+                    other => {
+                        // Unknown keys fail closed: silently ignoring a
+                        // key is exactly how a limit was dropped by
+                        // pre-versioning readers.
+                        return Err(de::Error::unknown_field(
+                            other,
+                            &[
+                                "version",
+                                "body",
+                                "items",
+                                "default_subquery_branch",
+                                "conditional_subquery_branches",
+                                "left_to_right",
+                                "add_parent_tree_on_subquery",
+                                "read_mode",
+                            ],
+                        ));
+                    }
+                }
+            }
+
+            if let Some(body) = body {
+                let version = version.ok_or_else(|| de::Error::missing_field("version"))?;
+                if items.is_some()
+                    || default_subquery_branch.is_some()
+                    || conditional_subquery_branches.is_some()
+                    || left_to_right.is_some()
+                    || add_parent_tree_on_subquery.is_some()
+                    || read_mode.is_some()
+                {
+                    return Err(de::Error::custom(
+                        "a version-2 or version-3 Query nests every field under `body`; flat \
+                         fields may not accompany it",
+                    ));
+                }
+                validate_canonical::<A::Error>(
+                    version,
+                    body.read_mode.is_some(),
+                    body.limit.is_some(),
+                )?;
+                if version < 2 {
+                    return Err(de::Error::custom(
+                        "a nested Query body requires version 2 or 3",
+                    ));
+                }
+                return Ok(Query {
+                    items: body.items,
+                    default_subquery_branch: body.default_subquery_branch,
+                    conditional_subquery_branches: body.conditional_subquery_branches,
+                    left_to_right: body.left_to_right,
+                    add_parent_tree_on_subquery: body.add_parent_tree_on_subquery,
+                    read_mode: body.read_mode,
+                    limit: body.limit,
+                });
+            }
+
+            // The flat layout carries neither a read mode nor a limit
+            // (both bump the query to the nested form); a `read_mode`
+            // key in a flat map is refused rather than accepted, since
+            // the released reader would drop it silently and the two
+            // generations must not diverge on the same payload. A
+            // missing `version` key is the released pre-versioning
+            // layout — accepted for compatibility.
+            if read_mode
+                .as_ref()
+                .is_some_and(|read_mode| read_mode.is_some())
+            {
+                return Err(de::Error::custom(
+                    "a flat Query map may not carry a read mode; read-mode queries nest under \
+                     `body` (version 2)",
+                ));
+            }
+            let read_mode = read_mode.unwrap_or(None);
+            if let Some(version) = version {
+                validate_canonical::<A::Error>(version, false, false)?;
+            }
+            Ok(Query {
+                items: items.ok_or_else(|| de::Error::missing_field("items"))?,
+                default_subquery_branch: default_subquery_branch
+                    .ok_or_else(|| de::Error::missing_field("default_subquery_branch"))?,
+                conditional_subquery_branches: conditional_subquery_branches.unwrap_or(None),
+                left_to_right: left_to_right
+                    .ok_or_else(|| de::Error::missing_field("left_to_right"))?,
+                add_parent_tree_on_subquery: add_parent_tree_on_subquery
+                    .ok_or_else(|| de::Error::missing_field("add_parent_tree_on_subquery"))?,
+                read_mode,
+                limit: None,
+            })
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Query {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Query, D::Error> {
+            if !deserializer.is_human_readable() {
+                let wire = PositionalOwned::deserialize(deserializer)?;
+                if wire.magic != POSITIONAL_MAGIC {
+                    return Err(de::Error::custom(
+                        "positional Query payload does not carry the framed layout's magic \
+                         sentinel",
+                    ));
+                }
+                validate_canonical::<D::Error>(
+                    wire.version,
+                    wire.read_mode.is_some(),
+                    wire.limit.is_some(),
+                )?;
+                return Ok(Query {
+                    items: wire.items,
+                    default_subquery_branch: wire.default_subquery_branch,
+                    conditional_subquery_branches: wire.conditional_subquery_branches,
+                    left_to_right: wire.left_to_right,
+                    add_parent_tree_on_subquery: wire.add_parent_tree_on_subquery,
+                    read_mode: wire.read_mode,
+                    limit: wire.limit,
+                });
+            }
+            deserializer.deserialize_map(QueryVisitor)
+        }
     }
 }

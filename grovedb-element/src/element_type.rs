@@ -92,6 +92,18 @@ pub enum ProofNodeType {
     ///           ProvableCountTree parent
     KvValueHash,
 
+    /// Use `Node::KVBackwardsReferencesValueHash` — the node carries the
+    /// element's STRIPPED (inner) serialization plus the 32-byte hash of
+    /// its backward-references list; the verifier recomputes
+    /// `value_hash = combine(H(stripped), backrefs_hash)`, which binds the
+    /// payload bytes without shipping (or leaking) the referrer set.
+    ///
+    /// Used for: ItemWithBackwardsReferences, SumItemWithBackwardsReferences,
+    /// ItemWithSumItemWithBackwardsReferences
+    /// (which are rejected inside Provable* aggregate parents, so no
+    /// count/sum-carrying twin is needed).
+    KvBackwardsReferencesValueHash,
+
     /// Use `Node::KVRefValueHash` - like KVValueHash but for references.
     ///
     /// At the merk layer, this generates `KVValueHash` (since merk doesn't
@@ -297,6 +309,22 @@ pub enum ElementType {
     /// `BulkAppendTree`, with the `{entry_size, chunk_power}` config bound
     /// into the state root) - discriminant 24.
     PrivateDocumentStore = 24,
+    /// Bidirectional reference - discriminant 25. Resolves like `Reference`
+    /// (combined value hash, followed by the same reference chain) but also
+    /// registers a backward reference in its target's meta storage. No
+    /// wrapper twins: the aggregation wrappers reject it.
+    BidirectionalReference = 25,
+    /// Item that supports being targeted by bidirectional references -
+    /// discriminant 26. Hashes like `Item`. No wrapper twins.
+    ItemWithBackwardsReferences = 26,
+    /// Sum item that supports being targeted by bidirectional references -
+    /// discriminant 27. Hashes like `SumItem`. No wrapper twins.
+    SumItemWithBackwardsReferences = 27,
+    /// Item carrying an explicit sum value that supports being targeted by
+    /// bidirectional references - discriminant 28. Hashes through the
+    /// combined (stripped ‖ backrefs) scheme like the other two backward-
+    /// references item variants. No wrapper twins.
+    ItemWithSumItemWithBackwardsReferences = 28,
     /// Non-counted wrapper around `Item` - discriminant 128
     NonCountedItem = 128,
     /// Non-counted wrapper around `Reference` - discriminant 129
@@ -417,9 +445,13 @@ impl ElementType {
             // `23` (ProvableCountProvableSumIndexedTree), and `24`
             // (PrivateDocumentStore).
             // Bytes 15, 16, and 17 are the wrapper bytes themselves
-            // (nested wrappers forbidden in either direction); 25..=127
-            // are unallocated; 128..=152 are the synthetic NonCountedXxx
-            // twins which never appear on disk.
+            // (nested wrappers forbidden in either direction); 25..=28 are
+            // the backward-references family (BidirectionalReference /
+            // ItemWithBackwardsReferences / SumItemWithBackwardsReferences),
+            // which the aggregation wrappers deliberately reject (fail
+            // closed — their interaction with count/sum suppression is
+            // undefined); 29..=127 are unallocated; 128..=152 are the
+            // synthetic NonCountedXxx twins which never appear on disk.
             // Without this check, the bitwise OR below would collapse
             // `0x80 | inner_byte` into `inner_byte` and a payload like
             // `[15, 128, ...]` would silently parse as `NonCountedItem`.
@@ -574,6 +606,21 @@ impl ElementType {
         }
     }
 
+    /// True for the backward-references ITEM variants — the elements whose
+    /// stored node hash is the two-layer combined hash and whose
+    /// chain-terminal commitment is the stripped LOGICAL hash. Every site
+    /// that special-cases the family by serialized type must use this
+    /// predicate, so adding a member cannot silently miss a dispatch.
+    #[inline]
+    pub fn is_backward_references_item(self) -> bool {
+        matches!(
+            self.base(),
+            ElementType::ItemWithBackwardsReferences
+                | ElementType::SumItemWithBackwardsReferences
+                | ElementType::ItemWithSumItemWithBackwardsReferences
+        )
+    }
+
     /// Returns the type of proof node that should be used for this element
     /// type, given the parent tree type.
     ///
@@ -657,7 +704,17 @@ impl ElementType {
             || is_provable_count_and_provable_sum_tree;
 
         let base = self.base();
-        if base.has_simple_value_hash() {
+        if matches!(
+            base,
+            ElementType::ItemWithBackwardsReferences
+                | ElementType::SumItemWithBackwardsReferences
+                | ElementType::ItemWithSumItemWithBackwardsReferences
+        ) {
+            // Combined-hash items: stripped payload + backrefs hash. These
+            // are rejected inside Provable* aggregate parents at insertion,
+            // so no aggregate-carrying variant exists.
+            ProofNodeType::KvBackwardsReferencesValueHash
+        } else if base.has_simple_value_hash() {
             // Items (Item, SumItem, ItemWithSumItem)
             if is_provable_count_and_provable_sum_tree {
                 ProofNodeType::KvCountSum
@@ -776,14 +833,17 @@ impl ElementType {
     }
 
     /// Returns true if this element type is a reference. Looks through the
-    /// `NonCounted` wrapper. Both `Reference` and `ReferenceWithSumItem` are
-    /// references — they share the combined-value-hash proof shape and are
-    /// resolved by the same `follow_reference` chain.
+    /// `NonCounted` wrapper. `Reference`, `ReferenceWithSumItem`, and
+    /// `BidirectionalReference` are all references — they share the
+    /// combined-value-hash proof shape and are resolved by the same
+    /// `follow_reference` chain.
     #[inline]
     pub fn is_reference(&self) -> bool {
         matches!(
             self.base(),
-            ElementType::Reference | ElementType::ReferenceWithSumItem
+            ElementType::Reference
+                | ElementType::ReferenceWithSumItem
+                | ElementType::BidirectionalReference
         )
     }
 
@@ -793,7 +853,12 @@ impl ElementType {
     pub fn is_item(&self) -> bool {
         matches!(
             self.base(),
-            ElementType::Item | ElementType::SumItem | ElementType::ItemWithSumItem
+            ElementType::Item
+                | ElementType::SumItem
+                | ElementType::ItemWithSumItem
+                | ElementType::ItemWithBackwardsReferences
+                | ElementType::SumItemWithBackwardsReferences
+                | ElementType::ItemWithSumItemWithBackwardsReferences
         )
     }
 
@@ -824,6 +889,12 @@ impl ElementType {
                 "provable count provable sum indexed tree"
             }
             ElementType::PrivateDocumentStore => "private_document_store",
+            ElementType::BidirectionalReference => "bidirectional reference",
+            ElementType::ItemWithBackwardsReferences => "item with backwards references",
+            ElementType::SumItemWithBackwardsReferences => "sum item with backwards references",
+            ElementType::ItemWithSumItemWithBackwardsReferences => {
+                "item with sum item with backwards references"
+            }
             ElementType::NonCountedItem => "non_counted item",
             ElementType::NonCountedReference => "non_counted reference",
             ElementType::NonCountedTree => "non_counted tree",
@@ -914,6 +985,10 @@ impl TryFrom<u8> for ElementType {
             22 => Ok(ElementType::ProvableCountIndexedTree),
             23 => Ok(ElementType::ProvableCountProvableSumIndexedTree),
             24 => Ok(ElementType::PrivateDocumentStore),
+            25 => Ok(ElementType::BidirectionalReference),
+            26 => Ok(ElementType::ItemWithBackwardsReferences),
+            27 => Ok(ElementType::SumItemWithBackwardsReferences),
+            28 => Ok(ElementType::ItemWithSumItemWithBackwardsReferences),
             128 => Ok(ElementType::NonCountedItem),
             129 => Ok(ElementType::NonCountedReference),
             130 => Ok(ElementType::NonCountedTree),
@@ -1049,8 +1124,25 @@ mod tests {
             ElementType::try_from(24).unwrap(),
             ElementType::PrivateDocumentStore
         );
-        // 25..=127 are unallocated and invalid.
-        assert!(ElementType::try_from(25).is_err());
+        // 25..=28: the backward-references family.
+        assert_eq!(
+            ElementType::try_from(25).unwrap(),
+            ElementType::BidirectionalReference
+        );
+        assert_eq!(
+            ElementType::try_from(26).unwrap(),
+            ElementType::ItemWithBackwardsReferences
+        );
+        assert_eq!(
+            ElementType::try_from(27).unwrap(),
+            ElementType::SumItemWithBackwardsReferences
+        );
+        assert_eq!(
+            ElementType::try_from(28).unwrap(),
+            ElementType::ItemWithSumItemWithBackwardsReferences
+        );
+        // 29..=127 are unallocated and invalid.
+        assert!(ElementType::try_from(29).is_err());
         assert!(ElementType::try_from(100).is_err());
 
         // NonCounted twins (0x80 | base): 128..142, plus 146 (= 0x80|18 =
@@ -1751,12 +1843,17 @@ mod tests {
         // guard, `0x80 | 128 == 128` would silently parse as `NonCountedItem`.
         assert!(ElementType::from_serialized_value(&[15, 128]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 142]).is_err());
-        // Wrapper with an unallocated mid-range inner byte (16, 17,
-        // 25..=127) is also rejected, even though it has no high bit
-        // set.
+        // Wrapper with a non-wrappable mid-range inner byte is also
+        // rejected, even though it has no high bit set: 16/17 are the other
+        // wrapper bytes, 25..=28 are the backward-references family (which
+        // the aggregation wrappers refuse — fail closed), and 29..=127 are
+        // unallocated.
         assert!(ElementType::from_serialized_value(&[15, 16]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 17]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 25]).is_err());
+        assert!(ElementType::from_serialized_value(&[15, 26]).is_err());
+        assert!(ElementType::from_serialized_value(&[15, 27]).is_err());
+        assert!(ElementType::from_serialized_value(&[15, 28]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 100]).is_err());
 
         // Inner byte 18 (ReferenceWithSumItem) IS a legal base; resolves to

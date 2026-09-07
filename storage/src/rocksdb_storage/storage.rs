@@ -28,7 +28,11 @@
 
 //! Implementation for a storage abstraction over RocksDB.
 
-use std::path::Path;
+use std::{
+    path::Path,
+    sync::atomic::AtomicBool,
+    time::{Duration, Instant},
+};
 
 use error::Error;
 use grovedb_costs::{
@@ -42,8 +46,9 @@ use lazy_static::lazy_static;
 #[cfg(feature = "unsafe-dump-load")]
 use rocksdb::IngestExternalFileOptions;
 use rocksdb::{
-    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, FlushOptions,
-    OptimisticTransactionDB, Transaction, WriteBatchWithTransaction, DEFAULT_COLUMN_FAMILY_NAME,
+    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, DBRawIteratorWithThreadMode,
+    FlushOptions, OptimisticTransactionDB, OptimisticTransactionOptions, ReadOptions, Transaction,
+    WriteBatchWithTransaction, WriteOptions, DEFAULT_COLUMN_FAMILY_NAME,
 };
 
 use super::{PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbTransactionContext};
@@ -111,8 +116,236 @@ lazy_static! {
 /// Type alias for a database
 pub(crate) type Db = OptimisticTransactionDB;
 
-/// Type alias for a transaction
-pub(crate) type Tx<'db> = Transaction<'db, Db>;
+/// Type alias for the raw RocksDB transaction. Private to this module:
+/// every read and write the storage layer performs through a transaction
+/// must go through the [`Tx`] wrapper's methods, never the raw handle.
+pub(crate) type RawTx<'db> = Transaction<'db, Db>;
+
+/// Reads executing on a snapshot held longer than this trip a loud
+/// debug-build warning. A snapshot is O(1) to take but pins every
+/// post-snapshot version while held, so a leaked or session-scoped
+/// snapshot transaction silently turns into compaction debt and write
+/// amplification. The intended holders are millisecond-scoped
+/// multi-operation reads; one second is three orders of magnitude above
+/// that, so a trip is a bug in the caller, not load jitter.
+#[cfg(debug_assertions)]
+const SNAPSHOT_AGE_WARN_THRESHOLD: Duration = Duration::from_secs(1);
+
+/// A started storage transaction.
+///
+/// Wraps the raw RocksDB optimistic transaction together with the
+/// snapshot-read marker set by
+/// [`RocksDbStorage::start_snapshot_read_transaction`]. The wrapper is
+/// the single funnel for everything the storage layer does through a
+/// transaction:
+///
+/// - **Reads** ([`Tx::get`], [`Tx::get_cf`], [`Tx::raw_iterator`])
+///   inject the transaction's snapshot into every read's options.
+///   RocksDB transactions do NOT read from their snapshot by default,
+///   so a read added later that bypassed this funnel would silently
+///   revert to latest-committed reads; keeping the raw un-optioned
+///   accessors private makes that bypass impossible outside this
+///   module.
+/// - **Writes and commit** ([`Tx::put`], [`Tx::delete`],
+///   [`Tx::rebuild_from_writebatch`], [`Tx::commit`], and their `_cf`
+///   variants) refuse a snapshot read transaction with
+///   [`Error::SnapshotReadOnlyTransaction`]: `set_snapshot` arms
+///   commit-time conflict detection, so writes through one may fail
+///   with `Busy`/`TryAgain` where a plain transaction's would have
+///   committed. Refusing up front turns that timing-dependent trap
+///   into a deterministic typed error.
+pub struct Tx<'db> {
+    tx: RawTx<'db>,
+    /// `Some(creation time)` if and only if this transaction was
+    /// created via `start_snapshot_read_transaction`. Doubles as the
+    /// read-only marker and the age baseline for [`Tx::snapshot_age`].
+    snapshot_read_since: Option<Instant>,
+    /// Debug builds warn once per transaction on a long-held snapshot;
+    /// this remembers that the warning already fired.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    age_warned: AtomicBool,
+}
+
+impl<'db> Tx<'db> {
+    /// Wrap a plain transaction (reads latest committed state).
+    pub(crate) fn new_plain(tx: RawTx<'db>) -> Self {
+        Tx {
+            tx,
+            snapshot_read_since: None,
+            age_warned: AtomicBool::new(false),
+        }
+    }
+
+    /// Wrap a snapshot read transaction (reads pinned to creation-time
+    /// committed state; writes and commit refused).
+    pub(crate) fn new_snapshot_read(tx: RawTx<'db>) -> Self {
+        Tx {
+            tx,
+            snapshot_read_since: Some(Instant::now()),
+            age_warned: AtomicBool::new(false),
+        }
+    }
+
+    /// Whether this transaction was created via
+    /// `start_snapshot_read_transaction`: reads are pinned to its
+    /// creation-time committed state and writes/commit are refused.
+    pub fn is_snapshot_read(&self) -> bool {
+        self.snapshot_read_since.is_some()
+    }
+
+    /// How long this transaction's snapshot has been held, or `None`
+    /// for a plain transaction. While held, the snapshot pins every
+    /// post-snapshot version in RocksDB — intended holds are
+    /// millisecond-scoped, and debug builds log loudly when a read
+    /// executes on a snapshot older than one second.
+    pub fn snapshot_age(&self) -> Option<Duration> {
+        self.snapshot_read_since.map(|since| since.elapsed())
+    }
+
+    /// The typed refusal for write operations on a snapshot read
+    /// transaction, `Ok(())` on a plain transaction.
+    fn refuse_snapshot_write(&self, operation: &'static str) -> Result<(), Error> {
+        if self.is_snapshot_read() {
+            Err(Error::SnapshotReadOnlyTransaction(operation))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Read options honoring the transaction's snapshot, when one was
+    /// requested at creation.
+    ///
+    /// A plain transaction's snapshot handle is null, which RocksDB
+    /// documents as leaving reads on the latest committed state, so
+    /// this is a no-op for every non-snapshot transaction. The handle
+    /// stored into the options is owned by the transaction (which
+    /// outlives every context borrowing it); the temporary wrapper
+    /// only frees its C shell on drop.
+    fn read_options(&self) -> ReadOptions {
+        #[cfg(debug_assertions)]
+        if let Some(age) = self.snapshot_age()
+            && age > SNAPSHOT_AGE_WARN_THRESHOLD
+            && !self
+                .age_warned
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            eprintln!(
+                "WARNING (grovedb-storage): read on a snapshot read transaction whose \
+                 snapshot has been held for {age:?} (threshold {SNAPSHOT_AGE_WARN_THRESHOLD:?}). \
+                 A held snapshot pins every post-snapshot RocksDB version — a leaked or \
+                 session-scoped snapshot transaction becomes compaction debt and write \
+                 amplification under load. Scope snapshot transactions to a single \
+                 multi-operation read. (Warning fires once per transaction.)"
+            );
+        }
+        let mut read_options = ReadOptions::default();
+        read_options.set_snapshot(&self.tx.snapshot());
+        read_options
+    }
+
+    /// Snapshot-honoring point read from the default column family.
+    pub(crate) fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, rocksdb::Error> {
+        self.tx.get_opt(key, &self.read_options())
+    }
+
+    /// Snapshot-honoring point read from a named column family.
+    pub(crate) fn get_cf<K: AsRef<[u8]>>(
+        &self,
+        cf: &ColumnFamily,
+        key: K,
+    ) -> Result<Option<Vec<u8>>, rocksdb::Error> {
+        self.tx.get_cf_opt(cf, key, &self.read_options())
+    }
+
+    /// Snapshot-honoring raw iterator over the default column family.
+    pub(crate) fn raw_iterator(&self) -> DBRawIteratorWithThreadMode<'_, RawTx<'db>> {
+        self.tx.raw_iterator_opt(self.read_options())
+    }
+
+    /// Write into the default column family. Refused on a snapshot
+    /// read transaction.
+    pub(crate) fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(
+        &self,
+        key: K,
+        value: V,
+    ) -> Result<(), Error> {
+        self.refuse_snapshot_write("put")?;
+        self.tx.put(key, value).map_err(RocksDBError)
+    }
+
+    /// Write into a named column family. Refused on a snapshot read
+    /// transaction.
+    pub(crate) fn put_cf<K: AsRef<[u8]>, V: AsRef<[u8]>>(
+        &self,
+        cf: &ColumnFamily,
+        key: K,
+        value: V,
+    ) -> Result<(), Error> {
+        self.refuse_snapshot_write("put")?;
+        self.tx.put_cf(cf, key, value).map_err(RocksDBError)
+    }
+
+    /// Delete from the default column family. Refused on a snapshot
+    /// read transaction.
+    pub(crate) fn delete<K: AsRef<[u8]>>(&self, key: K) -> Result<(), Error> {
+        self.refuse_snapshot_write("delete")?;
+        self.tx.delete(key).map_err(RocksDBError)
+    }
+
+    /// Delete from a named column family. Refused on a snapshot read
+    /// transaction.
+    pub(crate) fn delete_cf<K: AsRef<[u8]>>(&self, cf: &ColumnFamily, key: K) -> Result<(), Error> {
+        self.refuse_snapshot_write("delete")?;
+        self.tx.delete_cf(cf, key).map_err(RocksDBError)
+    }
+
+    /// Replay a write batch into this transaction. Refused on a
+    /// snapshot read transaction — this is the batch-apply write entry
+    /// point.
+    pub(crate) fn rebuild_from_writebatch(
+        &self,
+        batch: &WriteBatchWithTransaction<true>,
+    ) -> Result<(), Error> {
+        self.refuse_snapshot_write("batch apply")?;
+        self.tx.rebuild_from_writebatch(batch).map_err(RocksDBError)
+    }
+
+    /// Consume and commit the transaction. Refused on a snapshot read
+    /// transaction (which by construction has nothing to commit — its
+    /// writes were already refused).
+    pub fn commit(self) -> Result<(), Error> {
+        self.refuse_snapshot_write("commit")?;
+        self.tx.commit().map_err(RocksDBError)
+    }
+
+    /// Roll back the transaction's pending writes. Allowed on a
+    /// snapshot read transaction: it is a harmless no-op there and an
+    /// error would only complicate callers' cleanup paths.
+    pub fn rollback(&self) -> Result<(), Error> {
+        self.tx.rollback().map_err(RocksDBError)
+    }
+
+    /// Set a savepoint: a later [`Tx::rollback_to_savepoint`] undoes
+    /// every operation in this transaction since this call. Used by
+    /// callers that interleave many independent write groups in one
+    /// transaction (e.g. per-state-transition savepoints in block
+    /// processing) to unwind one failed group without discarding the
+    /// transaction. Allowed on a snapshot read transaction — like
+    /// [`Tx::rollback`], the savepoint family only ever *unwinds*
+    /// writes (which a snapshot read transaction cannot accumulate),
+    /// so there is nothing to refuse.
+    pub fn set_savepoint(&self) {
+        self.tx.set_savepoint()
+    }
+
+    /// Undo all operations in this transaction since the most recent
+    /// [`Tx::set_savepoint`], popping that savepoint. See
+    /// [`Tx::set_savepoint`] for the intended use and the
+    /// snapshot-read policy.
+    pub fn rollback_to_savepoint(&self) -> Result<(), Error> {
+        self.tx.rollback_to_savepoint().map_err(RocksDBError)
+    }
+}
 
 /// Storage which uses RocksDB as its backend.
 ///
@@ -316,7 +549,13 @@ impl RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put(&key, &value);
-                    cost.seek_count += 1;
+                    // A fully prepaid put (`KeyValueStorageCost::prepaid`)
+                    // was billed by its owner in advance, the write
+                    // included: no seek here. Only the append-only family's
+                    // GROVE_V4 accounting issues such puts.
+                    if !cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
+                        cost.seek_count += 1;
+                    }
                     cost_return_on_error_no_add!(
                         cost,
                         pending_costs
@@ -335,7 +574,9 @@ impl RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put_cf(cf_aux(&self.db), &key, &value);
-                    cost.seek_count += 1;
+                    if !cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
+                        cost.seek_count += 1;
+                    }
                     cost_return_on_error_no_add!(
                         cost,
                         pending_costs
@@ -354,7 +595,9 @@ impl RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put_cf(cf_roots(&self.db), &key, &value);
-                    cost.seek_count += 1;
+                    if !cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
+                        cost.seek_count += 1;
+                    }
                     // We only add costs for put root if they are set, otherwise it is free
                     if cost_info.is_some() {
                         cost_return_on_error_no_add!(
@@ -376,7 +619,9 @@ impl RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put_cf(cf_meta(&self.db), &key, &value);
-                    cost.seek_count += 1;
+                    if !cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
+                        cost.seek_count += 1;
+                    }
                     cost_return_on_error_no_add!(
                         cost,
                         pending_costs
@@ -519,16 +764,15 @@ impl RocksDbStorage {
         transaction: Option<&<RocksDbStorage as Storage>::Transaction>,
     ) -> CostResult<(), Error> {
         let result = match transaction {
-            None => self.db.write(db_batch),
+            None => self.db.write(db_batch).map_err(RocksDBError),
+            // Refused with a typed error on a snapshot read transaction.
             Some(transaction) => transaction.rebuild_from_writebatch(&db_batch),
         };
 
         if result.is_ok() {
-            result.map_err(RocksDBError).wrap_with_cost(pending_costs)
+            result.wrap_with_cost(pending_costs)
         } else {
-            result
-                .map_err(RocksDBError)
-                .wrap_with_cost(OperationCost::default())
+            result.wrap_with_cost(OperationCost::default())
         }
     }
 
@@ -576,6 +820,43 @@ impl RocksDbStorage {
             })
     }
 
+    /// Start a transaction whose reads are **pinned to the committed
+    /// state as of this call** when routed through the transactional
+    /// storage contexts.
+    ///
+    /// A plain [`Storage::start_transaction`] transaction reads the
+    /// latest committed state on every operation: RocksDB transactions
+    /// do not read from a snapshot unless one is requested at creation
+    /// and injected into each read's options. This constructor requests
+    /// the snapshot; the contexts inject it (`read_options` on the
+    /// prefixed transaction contexts), so every get and iterator through
+    /// this transaction observes one consistent committed state, however
+    /// many operations the caller spreads over it.
+    ///
+    /// Intended for multi-operation READS that must not tear across a
+    /// concurrent commit — e.g. a branched axis read probing and walking
+    /// several subtrees. Read-only **enforced**: `set_snapshot` also arms
+    /// commit-time conflict detection against the snapshot, so writes
+    /// through such a transaction could fail with `Busy` where a plain
+    /// transaction's would have committed — instead of leaving that
+    /// timing-dependent trap open, every write entry point and `commit`
+    /// refuse the transaction with
+    /// [`Error::SnapshotReadOnlyTransaction`].
+    ///
+    /// A snapshot is O(1) to take but pins every post-snapshot RocksDB
+    /// version while held: scope the transaction to a single
+    /// multi-operation read and drop it promptly. [`Tx::snapshot_age`]
+    /// exposes the hold time, and debug builds log loudly when a read
+    /// executes on a snapshot held longer than a second.
+    pub fn start_snapshot_read_transaction(&self) -> Tx<'_> {
+        let mut transaction_options = OptimisticTransactionOptions::default();
+        transaction_options.set_snapshot(true);
+        Tx::new_snapshot_read(
+            self.db
+                .transaction_opt(&WriteOptions::default(), &transaction_options),
+        )
+    }
+
     /// Clears all data from the database using range deletion on each
     /// column family. Uses a single range tombstone per CF instead of
     /// iterating and deleting every key individually.
@@ -620,6 +901,223 @@ impl RocksDbStorage {
             })?;
         Ok(())
     }
+
+    /// Immediately delete every key under each of `prefixes` in all four
+    /// column families using one range tombstone per (prefix, CF) pair.
+    ///
+    /// This is a **DB-level** write that bypasses the transaction machinery:
+    /// RocksDB optimistic transactions cannot carry range deletes, so the
+    /// tombstones commit as soon as this returns. Callers must only pass
+    /// prefixes whose data is unreachable from the live element graph (an
+    /// orphaned subtree namespace after a flat drop); nothing else may ever
+    /// write under such a prefix, which is what makes the non-transactional
+    /// write safe. The operation is idempotent — re-running it after a crash
+    /// is a no-op.
+    ///
+    /// Readers holding an older RocksDB snapshot (state-sync sessions,
+    /// checkpoints) are unaffected: range tombstones are sequence-numbered,
+    /// so reads at an older sequence still see the pre-drop data.
+    pub fn delete_prefix_ranges(&self, prefixes: &[SubtreePrefix]) -> Result<(), Error> {
+        for prefix in prefixes {
+            // Upper bound: the prefix incremented as a 32-byte big-endian
+            // value. Every key `prefix ‖ suffix` sorts below it. An
+            // all-0xFF prefix cannot be incremented, but prefixes are
+            // Blake3 outputs, so that value has probability 1/2^256 —
+            // refuse it rather than wrap to all-zeros and delete the world.
+            let mut upper = *prefix;
+            let mut carried_past_top = true;
+            for byte in upper.iter_mut().rev() {
+                *byte = byte.wrapping_add(1);
+                if *byte != 0 {
+                    carried_past_top = false;
+                    break;
+                }
+            }
+            if carried_past_top {
+                return Err(Error::StorageError(
+                    "delete_prefix_ranges: refusing to range-delete the all-0xFF prefix"
+                        .to_string(),
+                ));
+            }
+            for (name, cf) in [
+                (DEFAULT_COLUMN_FAMILY_NAME, cf_default(&self.db)),
+                (AUX_CF_NAME, cf_aux(&self.db)),
+                (ROOTS_CF_NAME, cf_roots(&self.db)),
+                (META_CF_NAME, cf_meta(&self.db)),
+            ] {
+                self.db
+                    .delete_range_cf(cf, prefix.as_slice(), upper.as_slice())
+                    .map_err(|e| {
+                        Error::StorageError(format!(
+                            "delete_prefix_ranges({name}) delete_range_cf failed: {e}"
+                        ))
+                    })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// List every committed pending-prefix-drop redo record.
+    ///
+    /// Reads the meta column family under
+    /// [`pending_prefix_drops_namespace`]; records staged inside an
+    /// uncommitted transaction are invisible, which is exactly the contract
+    /// the drain relies on (never reclaim a drop that might still roll
+    /// back).
+    pub fn pending_prefix_drop_records(&self) -> Result<Vec<PendingPrefixDropRecord>, Error> {
+        let namespace = pending_prefix_drops_namespace();
+        let mut iter = self.db.raw_iterator_cf(cf_meta(&self.db));
+        iter.seek(namespace.as_slice());
+        let mut records = Vec::new();
+        while iter.valid() {
+            let Some(key) = iter.key() else { break };
+            if !key.starts_with(namespace.as_slice()) {
+                break;
+            }
+            let Some(value) = iter.value() else { break };
+            records.push(PendingPrefixDropRecord::decode(&key[32..], value)?);
+            iter.next();
+        }
+        Ok(records)
+    }
+
+    /// Remove one pending-prefix-drop redo record (DB-level write). Called
+    /// after its doomed prefixes have been tombstoned.
+    pub fn remove_pending_prefix_drop_record(
+        &self,
+        primary_prefix: &SubtreePrefix,
+    ) -> Result<(), Error> {
+        let mut key = pending_prefix_drops_namespace().to_vec();
+        key.extend_from_slice(primary_prefix);
+        self.db.delete_cf(cf_meta(&self.db), key).map_err(|e| {
+            Error::StorageError(format!(
+                "remove_pending_prefix_drop_record delete_cf failed: {e}"
+            ))
+        })
+    }
+}
+
+/// The reserved 32-byte namespace under which pending-prefix-drop redo
+/// records live in the meta column family. Records are keyed
+/// `namespace ‖ primary_prefix`.
+///
+/// The value is `Blake3("grovedb_pending_prefix_drops_v0")`. It cannot
+/// collide with any path-derived prefix (`build_prefix`), axis-derived
+/// secondary prefix (`secondary_prefix_for`), or the root prefix
+/// (`[0u8; 32]`) without a Blake3 preimage/collision, and the meta column
+/// family carries no production data outside this namespace.
+pub fn pending_prefix_drops_namespace() -> &'static SubtreePrefix {
+    static NAMESPACE: std::sync::OnceLock<SubtreePrefix> = std::sync::OnceLock::new();
+    NAMESPACE.get_or_init(|| *blake3::hash(b"grovedb_pending_prefix_drops_v0").as_bytes())
+}
+
+/// A durable redo record for one flat-subtree drop: the storage prefixes
+/// that became unreachable when the subtree's element was deleted from its
+/// parent Merk, plus the subtree's full path for the drain-time liveness
+/// guard.
+///
+/// The record is written in the same atomic commit as the parent-Merk
+/// delete and erased once every doomed prefix has been range-tombstoned,
+/// making reclamation crash-safe and idempotent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingPrefixDropRecord {
+    /// The dropped subtree's own path-derived prefix; also the record's key
+    /// suffix within the namespace.
+    pub primary_prefix: SubtreePrefix,
+    /// Full path of the dropped subtree (parent path segments plus its key
+    /// as the last segment). Used by the drain to verify the path does not
+    /// resolve to a live element before tombstoning.
+    pub path: Vec<Vec<u8>>,
+    /// Every prefix to range-delete: the primary prefix plus, for indexed
+    /// primaries, the per-axis secondary prefixes.
+    pub doomed_prefixes: Vec<SubtreePrefix>,
+}
+
+impl PendingPrefixDropRecord {
+    /// Wire version byte of the record value encoding.
+    const ENCODING_VERSION: u8 = 0;
+
+    /// Encode the record value:
+    /// `[version(1)] [doomed_count(1)] [doomed_count × 32] [segment_count(1)]
+    /// ([segment_len(1)] [segment_bytes])*`.
+    ///
+    /// Both counts and every segment length must fit in a `u8`; path
+    /// segments are already capped at 255 bytes by `build_prefix`, and the
+    /// doomed set is at most 1 + one prefix per index axis.
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        let doomed_count: u8 = self.doomed_prefixes.len().try_into().map_err(|_| {
+            Error::StorageError("pending-prefix-drop record: too many doomed prefixes".to_string())
+        })?;
+        let segment_count: u8 = self.path.len().try_into().map_err(|_| {
+            Error::StorageError("pending-prefix-drop record: path too deep".to_string())
+        })?;
+        let mut out = Vec::with_capacity(
+            3 + 32 * self.doomed_prefixes.len()
+                + self.path.iter().map(|s| 1 + s.len()).sum::<usize>(),
+        );
+        out.push(Self::ENCODING_VERSION);
+        out.push(doomed_count);
+        for prefix in &self.doomed_prefixes {
+            out.extend_from_slice(prefix);
+        }
+        out.push(segment_count);
+        for segment in &self.path {
+            let len: u8 = segment.len().try_into().map_err(|_| {
+                Error::StorageError(
+                    "pending-prefix-drop record: path segment over 255 bytes".to_string(),
+                )
+            })?;
+            out.push(len);
+            out.extend_from_slice(segment);
+        }
+        Ok(out)
+    }
+
+    /// Decode a record from its key suffix (the primary prefix) and value.
+    pub fn decode(key_suffix: &[u8], value: &[u8]) -> Result<Self, Error> {
+        let corrupt =
+            |what: &str| Error::StorageError(format!("corrupt pending-prefix-drop record: {what}"));
+        let primary_prefix: SubtreePrefix = key_suffix
+            .try_into()
+            .map_err(|_| corrupt("key suffix is not 32 bytes"))?;
+        fn take<'v>(rest: &mut &'v [u8], n: usize, what: &str) -> Result<&'v [u8], Error> {
+            if rest.len() < n {
+                return Err(Error::StorageError(format!(
+                    "corrupt pending-prefix-drop record: {what}"
+                )));
+            }
+            let (head, tail) = rest.split_at(n);
+            *rest = tail;
+            Ok(head)
+        }
+        let mut rest = value;
+        let version = take(&mut rest, 1, "missing version byte")?[0];
+        if version != Self::ENCODING_VERSION {
+            return Err(corrupt("unknown encoding version"));
+        }
+        let doomed_count = take(&mut rest, 1, "missing doomed count")?[0] as usize;
+        let mut doomed_prefixes = Vec::with_capacity(doomed_count);
+        for _ in 0..doomed_count {
+            let prefix: SubtreePrefix = take(&mut rest, 32, "truncated doomed prefix")?
+                .try_into()
+                .expect("split_at returned exactly 32 bytes");
+            doomed_prefixes.push(prefix);
+        }
+        let segment_count = take(&mut rest, 1, "missing segment count")?[0] as usize;
+        let mut path = Vec::with_capacity(segment_count);
+        for _ in 0..segment_count {
+            let len = take(&mut rest, 1, "missing segment length")?[0] as usize;
+            path.push(take(&mut rest, len, "truncated path segment")?.to_vec());
+        }
+        if !rest.is_empty() {
+            return Err(corrupt("trailing bytes"));
+        }
+        Ok(Self {
+            primary_prefix,
+            path,
+            doomed_prefixes,
+        })
+    }
 }
 
 impl<'db> Storage<'db> for RocksDbStorage {
@@ -628,22 +1126,20 @@ impl<'db> Storage<'db> for RocksDbStorage {
     type Transaction = Tx<'db>;
 
     fn start_transaction(&'db self) -> Self::Transaction {
-        self.db.transaction()
+        Tx::new_plain(self.db.transaction())
     }
 
     fn commit_transaction(&self, transaction: Self::Transaction) -> CostResult<(), Error> {
         // All transaction costs were provided on method calls.
         // Note: for OptimisticTransactionDB, commit() performs conflict
         // validation and may return a Busy or TryAgain error if another
-        // transaction modified the same keys concurrently.
-        transaction
-            .commit()
-            .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
+        // transaction modified the same keys concurrently. A snapshot
+        // read transaction is refused with a typed error.
+        transaction.commit().wrap_with_cost(Default::default())
     }
 
     fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Error> {
-        transaction.rollback().map_err(RocksDBError)
+        transaction.rollback()
     }
 
     fn flush(&self) -> Result<(), Error> {
@@ -777,6 +1273,117 @@ mod tests {
         RawIterator, Storage, StorageContext,
     };
     use grovedb_path::SubtreePath;
+
+    #[test]
+    fn pending_prefix_drop_record_roundtrip() {
+        let record = PendingPrefixDropRecord {
+            primary_prefix: [7u8; 32],
+            path: vec![b"contracts".to_vec(), vec![], b"bucket_17".to_vec()],
+            doomed_prefixes: vec![[7u8; 32], [8u8; 32], [9u8; 32], [10u8; 32]],
+        };
+        let encoded = record.encode().expect("encode");
+        let decoded =
+            PendingPrefixDropRecord::decode(&record.primary_prefix, &encoded).expect("decode");
+        assert_eq!(decoded, record);
+
+        // Corruption is rejected, not misread.
+        assert!(PendingPrefixDropRecord::decode(&[7u8; 31], &encoded).is_err());
+        assert!(PendingPrefixDropRecord::decode(&record.primary_prefix, &encoded[..5]).is_err());
+        let mut trailing = encoded.clone();
+        trailing.push(0);
+        assert!(PendingPrefixDropRecord::decode(&record.primary_prefix, &trailing).is_err());
+        let mut wrong_version = encoded;
+        wrong_version[0] = 1;
+        assert!(PendingPrefixDropRecord::decode(&record.primary_prefix, &wrong_version).is_err());
+    }
+
+    #[test]
+    fn pending_prefix_drops_namespace_is_domain_separated() {
+        let namespace = pending_prefix_drops_namespace();
+        assert_eq!(
+            namespace,
+            blake3::hash(b"grovedb_pending_prefix_drops_v0").as_bytes()
+        );
+        // Never the root prefix.
+        assert_ne!(namespace, &[0u8; 32]);
+    }
+
+    #[test]
+    fn delete_prefix_ranges_is_scoped_to_the_given_prefixes() {
+        let storage = TempStorage::new();
+        let db = &storage.db;
+
+        let doomed: SubtreePrefix = [3u8; 32];
+        let survivor: SubtreePrefix = [4u8; 32];
+        for prefix in [&doomed, &survivor] {
+            for cf in [cf_default(db), cf_aux(db), cf_roots(db), cf_meta(db)] {
+                let mut key = prefix.to_vec();
+                key.extend_from_slice(b"some_key");
+                db.put_cf(cf, &key, b"value").expect("put");
+            }
+        }
+
+        storage.delete_prefix_ranges(&[doomed]).expect("delete");
+
+        for (name, cf) in [
+            (DEFAULT_COLUMN_FAMILY_NAME, cf_default(db)),
+            (AUX_CF_NAME, cf_aux(db)),
+            (ROOTS_CF_NAME, cf_roots(db)),
+            (META_CF_NAME, cf_meta(db)),
+        ] {
+            let mut doomed_key = doomed.to_vec();
+            doomed_key.extend_from_slice(b"some_key");
+            assert!(
+                db.get_cf(cf, &doomed_key).expect("get").is_none(),
+                "doomed key survived in {name}"
+            );
+            let mut survivor_key = survivor.to_vec();
+            survivor_key.extend_from_slice(b"some_key");
+            assert!(
+                db.get_cf(cf, &survivor_key).expect("get").is_some(),
+                "survivor key was deleted in {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn pending_prefix_drop_records_listing_and_removal() {
+        let storage = TempStorage::new();
+        let db = &storage.db;
+
+        assert!(storage
+            .pending_prefix_drop_records()
+            .expect("list")
+            .is_empty());
+
+        let record_a = PendingPrefixDropRecord {
+            primary_prefix: [1u8; 32],
+            path: vec![b"a".to_vec()],
+            doomed_prefixes: vec![[1u8; 32]],
+        };
+        let record_b = PendingPrefixDropRecord {
+            primary_prefix: [2u8; 32],
+            path: vec![b"b".to_vec()],
+            doomed_prefixes: vec![[2u8; 32], [22u8; 32]],
+        };
+        for record in [&record_a, &record_b] {
+            let mut key = pending_prefix_drops_namespace().to_vec();
+            key.extend_from_slice(&record.primary_prefix);
+            db.put_cf(cf_meta(db), &key, record.encode().expect("encode"))
+                .expect("put");
+        }
+        // An unrelated meta key outside the namespace is not a record.
+        db.put_cf(cf_meta(db), b"unrelated", b"noise").expect("put");
+
+        let records = storage.pending_prefix_drop_records().expect("list");
+        assert_eq!(records, vec![record_a.clone(), record_b.clone()]);
+
+        storage
+            .remove_pending_prefix_drop_record(&record_a.primary_prefix)
+            .expect("remove");
+        let records = storage.pending_prefix_drop_records().expect("list");
+        assert_eq!(records, vec![record_b]);
+    }
 
     #[test]
     fn flush_persists_all_column_families() {
@@ -972,7 +1579,7 @@ mod tests {
         right.put(b"c", b"c", None, None).unwrap().unwrap();
 
         storage
-            .commit_multi_context_batch(batch, None)
+            .commit_multi_context_batch(batch, Some(&transaction))
             .unwrap()
             .expect("cannot commit batch");
 
@@ -1018,7 +1625,7 @@ mod tests {
         drop(iter);
 
         storage
-            .commit_multi_context_batch(batch, None)
+            .commit_multi_context_batch(batch, Some(&transaction))
             .unwrap()
             .expect("cannot commit batch");
 

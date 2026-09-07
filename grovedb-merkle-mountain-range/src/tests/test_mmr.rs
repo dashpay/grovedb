@@ -691,3 +691,98 @@ proptest! {
         test_gen_new_root_from_proof(count);
     }
 }
+
+/// Issue #854: the order the proof carries its leaves in is not
+/// authenticated (root computation sorts by position), so `verify` and
+/// `verify_and_get_root` must surface the canonical ascending order — a
+/// permuted proof yields the same root AND the same sequence, leaving a
+/// caller's limit/truncation nothing to be steered by.
+#[test]
+fn test_mmr_tree_proof_verified_leaves_are_canonically_ordered() {
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+    for i in 0u32..6 {
+        mmr.push(
+            MmrNode::leaf(i.to_le_bytes().to_vec()),
+            GroveVersion::latest(),
+        )
+        .unwrap()
+        .expect("push should succeed");
+    }
+    mmr.commit().unwrap().expect("commit should succeed");
+    let mmr_size = mmr.mmr_size;
+    let root = mmr
+        .get_root(GroveVersion::latest())
+        .unwrap()
+        .expect("get root should succeed");
+    let get_node = |pos: u64| -> crate::Result<Option<MmrNode>> {
+        (&store)
+            .element_at_position(pos)
+            .value
+            .map_err(|e| crate::Error::StoreError(format!("{}", e)))
+    };
+
+    let honest = MmrTreeProof::generate(mmr_size, &[0, 1, 2, 3, 4, 5], get_node)
+        .expect("generate should succeed");
+    let ascending: Vec<u64> = (0..6).collect();
+
+    // Rebuild the same proof with the leaves reversed, and once more with
+    // them shuffled; the proof items (sibling/peak hashes) are unchanged.
+    let mut reversed_leaves = honest.leaves().to_vec();
+    reversed_leaves.reverse();
+    let reversed = MmrTreeProof::new(mmr_size, reversed_leaves, honest.proof_items().to_vec());
+    let mut shuffled_leaves = honest.leaves().to_vec();
+    shuffled_leaves.swap(0, 4);
+    shuffled_leaves.swap(1, 5);
+    shuffled_leaves.swap(2, 3);
+    let shuffled = MmrTreeProof::new(mmr_size, shuffled_leaves, honest.proof_items().to_vec());
+
+    for (label, proof) in [
+        ("honest", &honest),
+        ("reversed", &reversed),
+        ("shuffled", &shuffled),
+    ] {
+        let verified = proof
+            .verify(&root.hash())
+            .unwrap_or_else(|e| panic!("{label}: verify should succeed: {e}"));
+        let indices: Vec<u64> = verified.iter().map(|(idx, _)| *idx).collect();
+        assert_eq!(
+            indices, ascending,
+            "{label}: verify must yield ascending leaf indices"
+        );
+        for (idx, value) in &verified {
+            assert_eq!(
+                value,
+                &(*idx as u32).to_le_bytes().to_vec(),
+                "{label}: value must stay bound to its index"
+            );
+        }
+
+        let (computed_root, verified) = proof
+            .verify_and_get_root()
+            .unwrap_or_else(|e| panic!("{label}: verify_and_get_root should succeed: {e}"));
+        assert_eq!(
+            computed_root,
+            root.hash(),
+            "{label}: root is order-independent"
+        );
+        let indices: Vec<u64> = verified.iter().map(|(idx, _)| *idx).collect();
+        assert_eq!(
+            indices, ascending,
+            "{label}: verify_and_get_root must yield ascending leaf indices"
+        );
+    }
+
+    // A duplicated index keeps its FIRST occurrence (matching what the root
+    // computation hashed) and still lands in canonical order.
+    let mut dup_leaves = honest.leaves().to_vec();
+    dup_leaves.reverse();
+    dup_leaves.push((3, b"never-hashed".to_vec()));
+    let dup = MmrTreeProof::new(mmr_size, dup_leaves, honest.proof_items().to_vec());
+    let verified = dup
+        .verify(&root.hash())
+        .expect("duplicate index is tolerated");
+    let indices: Vec<u64> = verified.iter().map(|(idx, _)| *idx).collect();
+    assert_eq!(indices, ascending);
+    assert_eq!(verified[3].1, 3u32.to_le_bytes().to_vec());
+}

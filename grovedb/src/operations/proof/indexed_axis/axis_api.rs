@@ -24,7 +24,7 @@ impl GroveDb {
     /// Prove the top-`k` entries of the count axis. Thin wrapper over
     /// [`Self::prove_indexed_axis_top_k`] with `axis = Count`.
     #[cfg(feature = "minimal")]
-    pub fn prove_indexed_count_top_k<'b, B, P>(
+    pub(crate) fn prove_indexed_count_top_k<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -48,7 +48,7 @@ impl GroveDb {
 
     /// Prove an offset-paginated top-`k` window on the count axis.
     #[cfg(feature = "minimal")]
-    pub fn prove_indexed_count_top_k_paginated<'b, B, P>(
+    pub(crate) fn prove_indexed_count_top_k_paginated<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -74,7 +74,7 @@ impl GroveDb {
 
     /// Prove an arbitrary query against the count-axis secondary.
     #[cfg(feature = "minimal")]
-    pub fn prove_indexed_count_query<'b, B, P>(
+    pub(crate) fn prove_indexed_count_query<'b, B, P>(
         &self,
         path: P,
         secondary_query: MerkQuery,
@@ -99,7 +99,7 @@ impl GroveDb {
     /// Prove the aggregate count of entries whose `count_value` is in
     /// `[lo_count, hi_count]`.
     #[cfg(feature = "minimal")]
-    pub fn prove_indexed_count_aggregate_over_value_range<'b, B, P>(
+    pub(crate) fn prove_indexed_count_aggregate_over_value_range<'b, B, P>(
         &self,
         path: P,
         lo_count: u64,
@@ -123,7 +123,7 @@ impl GroveDb {
     }
 
     /// Verify a count-axis top-k proof.
-    pub fn verify_indexed_count_top_k(
+    pub(crate) fn verify_indexed_count_top_k(
         proof_bytes: &[u8],
         path: &[&[u8]],
         expected_k: u16,
@@ -141,7 +141,7 @@ impl GroveDb {
     }
 
     /// Verify a count-axis paginated proof.
-    pub fn verify_indexed_count_top_k_paginated(
+    pub(crate) fn verify_indexed_count_top_k_paginated(
         proof_bytes: &[u8],
         path: &[&[u8]],
         expected_k: u16,
@@ -161,7 +161,7 @@ impl GroveDb {
     }
 
     /// Verify a count-axis arbitrary-query proof.
-    pub fn verify_indexed_count_query(
+    pub(crate) fn verify_indexed_count_query(
         proof_bytes: &[u8],
         path: &[&[u8]],
         secondary_query: MerkQuery,
@@ -179,7 +179,7 @@ impl GroveDb {
     }
 
     /// Verify a count-axis aggregate proof.
-    pub fn verify_indexed_count_aggregate_over_value_range(
+    pub(crate) fn verify_indexed_count_aggregate_over_value_range(
         proof_bytes: &[u8],
         path: &[&[u8]],
         expected_lo_count: u64,
@@ -201,7 +201,7 @@ impl GroveDb {
 
     /// Prove the top-`k` entries of the sum axis.
     #[cfg(feature = "minimal")]
-    pub fn prove_indexed_sum_top_k<'b, B, P>(
+    pub(crate) fn prove_indexed_sum_top_k<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -228,7 +228,7 @@ impl GroveDb {
     /// prefix is attested by counted subtree commitments and the proof
     /// size is O(log n + k) regardless of `offset`.
     #[cfg(feature = "minimal")]
-    pub fn prove_indexed_sum_top_k_paginated<'b, B, P>(
+    pub(crate) fn prove_indexed_sum_top_k_paginated<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -254,7 +254,7 @@ impl GroveDb {
 
     /// Prove an arbitrary query against the sum-axis secondary.
     #[cfg(feature = "minimal")]
-    pub fn prove_indexed_sum_query<'b, B, P>(
+    pub(crate) fn prove_indexed_sum_query<'b, B, P>(
         &self,
         path: P,
         secondary_query: MerkQuery,
@@ -279,7 +279,7 @@ impl GroveDb {
     /// Prove the aggregate sum of entries whose `sum_value` is in
     /// `[lo_sum, hi_sum]`.
     #[cfg(feature = "minimal")]
-    pub fn prove_indexed_sum_aggregate_over_value_range<'b, B, P>(
+    pub(crate) fn prove_indexed_sum_aggregate_over_value_range<'b, B, P>(
         &self,
         path: P,
         lo_sum: i64,
@@ -303,7 +303,7 @@ impl GroveDb {
     }
 
     /// Verify a sum-axis top-k proof.
-    pub fn verify_indexed_sum_top_k(
+    pub(crate) fn verify_indexed_sum_top_k(
         proof_bytes: &[u8],
         path: &[&[u8]],
         expected_k: u16,
@@ -321,7 +321,7 @@ impl GroveDb {
     }
 
     /// Verify a sum-axis paginated proof.
-    pub fn verify_indexed_sum_top_k_paginated(
+    pub(crate) fn verify_indexed_sum_top_k_paginated(
         proof_bytes: &[u8],
         path: &[&[u8]],
         expected_k: u16,
@@ -341,7 +341,7 @@ impl GroveDb {
     }
 
     /// Verify a sum-axis arbitrary-query proof.
-    pub fn verify_indexed_sum_query(
+    pub(crate) fn verify_indexed_sum_query(
         proof_bytes: &[u8],
         path: &[&[u8]],
         secondary_query: MerkQuery,
@@ -359,7 +359,7 @@ impl GroveDb {
     }
 
     /// Verify a sum-axis aggregate proof.
-    pub fn verify_indexed_sum_aggregate_over_value_range(
+    pub(crate) fn verify_indexed_sum_aggregate_over_value_range(
         proof_bytes: &[u8],
         path: &[&[u8]],
         expected_lo_sum: i64,
@@ -383,7 +383,7 @@ impl GroveDb {
     /// aggregate variant exists — averaging an average over a range is
     /// not closed-form.
     #[cfg(feature = "minimal")]
-    pub fn prove_indexed_avg_top_k<'b, B, P>(
+    pub(crate) fn prove_indexed_avg_top_k<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -407,7 +407,7 @@ impl GroveDb {
 
     /// Prove an offset-paginated top-`k` window on the avg axis.
     #[cfg(feature = "minimal")]
-    pub fn prove_indexed_avg_top_k_paginated<'b, B, P>(
+    pub(crate) fn prove_indexed_avg_top_k_paginated<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -433,7 +433,7 @@ impl GroveDb {
 
     /// Prove an arbitrary query against the avg-axis secondary.
     #[cfg(feature = "minimal")]
-    pub fn prove_indexed_avg_query<'b, B, P>(
+    pub(crate) fn prove_indexed_avg_query<'b, B, P>(
         &self,
         path: P,
         secondary_query: MerkQuery,
@@ -456,7 +456,7 @@ impl GroveDb {
     }
 
     /// Verify an avg-axis top-k proof.
-    pub fn verify_indexed_avg_top_k(
+    pub(crate) fn verify_indexed_avg_top_k(
         proof_bytes: &[u8],
         path: &[&[u8]],
         expected_k: u16,
@@ -474,7 +474,7 @@ impl GroveDb {
     }
 
     /// Verify an avg-axis paginated proof.
-    pub fn verify_indexed_avg_top_k_paginated(
+    pub(crate) fn verify_indexed_avg_top_k_paginated(
         proof_bytes: &[u8],
         path: &[&[u8]],
         expected_k: u16,
@@ -494,7 +494,7 @@ impl GroveDb {
     }
 
     /// Verify an avg-axis arbitrary-query proof.
-    pub fn verify_indexed_avg_query(
+    pub(crate) fn verify_indexed_avg_query(
         proof_bytes: &[u8],
         path: &[&[u8]],
         secondary_query: MerkQuery,

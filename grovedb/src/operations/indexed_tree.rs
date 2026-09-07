@@ -24,6 +24,21 @@
 //! Deep ops *under* a sub-tree of an indexed primary need none of this —
 //! they propagate through the ordinary
 //! `propagate_changes_with_transaction_with_initial_deferred` machinery.
+//!
+//! ## Reads: `PathQuery` is the only public surface
+//!
+//! The per-axis trusted-read wrappers here (`indexed_*_top_k*`,
+//! `indexed_*_range*`, the aggregate reads and the `_keys` projections)
+//! are `pub(crate)`: they are the engine [`GroveDb::run_path_query`]
+//! routes axis shapes to, not a public API. External callers build a
+//! [`crate::PathQuery`] with the axis constructors (`new_axis_top_k`,
+//! `new_axis_bounded`, `new_axis_rank_of_key`,
+//! `new_axis_aggregate_over_value_range`, or `new_axis` with a keys-only
+//! projection) and call `run_path_query` — the same query then proves
+//! through `prove_query` / `verify_path_query` without restating the
+//! request. The non-paginated top-k family is `#[cfg(test)]`: nothing
+//! routes to it (the paginated walk with `offset = 0` serves that case),
+//! and it survives only as a test oracle.
 
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
@@ -97,6 +112,40 @@ pub(crate) fn axis_secondary_tree_type(axis: IndexAxis) -> TreeType {
         IndexAxis::Sum => TreeType::ProvableCountProvableSumTree,
         // Each avg entry contributes (count = 1, sum = item's SumValue).
         IndexAxis::Avg => TreeType::ProvableCountProvableSumTree,
+    }
+}
+
+/// Decode the configured axes of an indexed-tree element as
+/// `(axis, secondary_root_key)` pairs in canonical element order: the
+/// single implicit axis for PCIT / PSIT, the 1..=3 entry TLV for PCPSIT.
+///
+/// Errors if `element` is not an indexed-tree variant or a PCPSIT axis tag
+/// is invalid. The one intentional non-caller is
+/// `cleanup_dedicated_indexed_child_storage`, which must stay tolerant of
+/// an invalid tag (cleanup of a corrupt element should still clear the
+/// valid axes rather than fail).
+pub(crate) fn indexed_element_axes(
+    element: &Element,
+) -> Result<Vec<(IndexAxis, Option<Vec<u8>>)>, Error> {
+    match element.underlying() {
+        Element::ProvableCountIndexedTree(_, s, ..) => Ok(vec![(IndexAxis::Count, s.clone())]),
+        Element::ProvableSumIndexedTree(_, s, ..) => Ok(vec![(IndexAxis::Sum, s.clone())]),
+        Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => axes
+            .iter()
+            .map(|(tag, root_key)| {
+                IndexAxis::try_from_tag(*tag)
+                    .map(|axis| (axis, root_key.clone()))
+                    .map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "invalid axis tag in indexed-tree element: {e}"
+                        ))
+                    })
+            })
+            .collect(),
+        other => Err(Error::CorruptedData(format!(
+            "expected an indexed-tree element, got {}",
+            other.type_str()
+        ))),
     }
 }
 
@@ -406,31 +455,12 @@ impl GroveDb {
                     .map_err(Error::MerkError)
             )
         };
-        let axes: Vec<(IndexAxis, Option<Vec<u8>>)> = match element.underlying() {
-            Element::ProvableCountIndexedTree(_, s, ..) => vec![(IndexAxis::Count, s.clone())],
-            Element::ProvableSumIndexedTree(_, s, ..) => vec![(IndexAxis::Sum, s.clone())],
-            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => {
-                let mut out = Vec::with_capacity(axes.len());
-                for (tag, root_key) in axes {
-                    let axis = cost_return_on_error_no_add!(
-                        cost,
-                        IndexAxis::try_from_tag(*tag).map_err(|e| Error::CorruptedData(format!(
-                            "open_indexed_secondaries_for_batch: invalid axis tag: {e}"
-                        )))
-                    );
-                    out.push((axis, root_key.clone()));
-                }
-                out
-            }
-            other => {
-                return Err(Error::CorruptedData(format!(
-                    "open_indexed_secondaries_for_batch: parent element is not an indexed tree, \
-                     got {}",
-                    other.type_str()
-                )))
-                .wrap_with_cost(cost);
-            }
-        };
+        let axes: Vec<(IndexAxis, Option<Vec<u8>>)> = cost_return_on_error_no_add!(
+            cost,
+            indexed_element_axes(&element).map_err(|e| Error::CorruptedData(format!(
+                "open_indexed_secondaries_for_batch: {e}"
+            )))
+        );
 
         let mut merks = Vec::with_capacity(axes.len());
         for (axis, root_key) in axes {
@@ -928,29 +958,12 @@ impl GroveDb {
             &mut cost,
             Element::get(&parent_merk, indexed_key, true, grove_version).map_err(Error::MerkError)
         );
-        let axes: Vec<(IndexAxis, Option<Vec<u8>>)> = match indexed_element.underlying() {
-            Element::ProvableCountIndexedTree(_, s, ..) => vec![(IndexAxis::Count, s.clone())],
-            Element::ProvableSumIndexedTree(_, s, ..) => vec![(IndexAxis::Sum, s.clone())],
-            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes_tlv, _) => {
-                let mut out = Vec::with_capacity(axes_tlv.len());
-                for (tag, root_key) in axes_tlv {
-                    let axis = cost_return_on_error_no_add!(
-                        cost,
-                        IndexAxis::try_from_tag(*tag).map_err(|e| Error::CorruptedData(format!(
-                            "reconcile_indexed_tree_secondaries: invalid axis tag: {e}"
-                        )))
-                    );
-                    out.push((axis, root_key.clone()));
-                }
-                out
-            }
-            _ => {
-                return Err(Error::CorruptedData(
-                    "parent element at the indexed key is not an indexed tree".to_string(),
-                ))
-                .wrap_with_cost(cost);
-            }
-        };
+        let axes: Vec<(IndexAxis, Option<Vec<u8>>)> = cost_return_on_error_no_add!(
+            cost,
+            indexed_element_axes(&indexed_element).map_err(|e| Error::CorruptedData(format!(
+                "reconcile_indexed_tree_secondaries: {e}"
+            )))
+        );
         // The tightest ceiling across the configured axes (avg prepends a
         // 16-byte sort key against count/sum's 8).
         let max_item_key_len = axes
@@ -1304,8 +1317,41 @@ impl GroveDb {
     // already uses in `operations/proof/indexed_axis.rs`.
     // -----------------------------------------------------------------
 
+    /// The ranking half of the `indexed_<axis>_top_k` shape: the top-`k`
+    /// `(value, original_key)` pairs straight from the secondary, with no
+    /// primary read. Both the resolving wrapper and the keys-only wrapper
+    /// are built on this, so the two can never disagree about the page.
+    #[cfg(test)]
+    fn indexed_axis_top_k_rows_generic<'b, B, T>(
+        &self,
+        path: SubtreePath<'b, B>,
+        axis: IndexAxis,
+        k: u16,
+        descending: bool,
+        tx_ref: &Transaction,
+        grove_version: &GroveVersion,
+        decode: impl Fn(&[u8]) -> Option<(T, Vec<u8>)>,
+    ) -> CostResult<Vec<(T, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_axis_top_k_generic",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
+        let mut cost = OperationCost::default();
+
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_validated_axis_secondary(path, axis, tx_ref, grove_version)
+        );
+
+        collect_top_k_via_iterator(&secondary_merk, axis, k, descending, &decode).add_cost(cost)
+    }
+
     /// One implementation of the `indexed_<axis>_top_k` shape. See the
     /// per-axis wrappers for the public contract.
+    #[cfg(test)]
     fn indexed_axis_top_k_generic<'b, B, T>(
         &self,
         path: SubtreePath<'b, B>,
@@ -1319,39 +1365,70 @@ impl GroveDb {
     where
         B: AsRef<[u8]> + 'b,
     {
-        grovedb_version::check_grovedb_v0_with_cost!(
-            "indexed_axis_top_k_generic",
-            grove_version.grovedb_versions.operations.indexed_axis.read
-        );
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
         let tx_ref = tx.as_ref();
-
-        let secondary_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_validated_axis_secondary(path.clone(), axis, tx_ref, grove_version)
-        );
-
         let rows = cost_return_on_error!(
             &mut cost,
-            collect_top_k_via_iterator(&secondary_merk, axis, k, descending, &decode)
+            self.indexed_axis_top_k_rows_generic(
+                path.clone(),
+                axis,
+                k,
+                descending,
+                tx_ref,
+                grove_version,
+                decode,
+            )
         );
-        drop(secondary_merk);
         resolve_axis_entries(self, path, rows, tx_ref, grove_version).add_cost(cost)
     }
 
+    /// Keys-only `indexed_<axis>_top_k`: the ranking pairs without
+    /// resolving any primary value. See
+    /// [`Self::indexed_count_top_k_keys`] for why this exists.
+    #[cfg(test)]
+    fn indexed_axis_top_k_keys_generic<'b, B, T>(
+        &self,
+        path: SubtreePath<'b, B>,
+        axis: IndexAxis,
+        k: u16,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+        decode: impl Fn(&[u8]) -> Option<(T, Vec<u8>)>,
+    ) -> CostResult<Vec<(T, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        let tx = TxRef::new(&self.db, transaction);
+        self.indexed_axis_top_k_rows_generic(
+            path,
+            axis,
+            k,
+            descending,
+            tx.as_ref(),
+            grove_version,
+            decode,
+        )
+    }
+
     /// One implementation of the `indexed_<axis>_top_k_paginated` shape.
-    fn indexed_axis_top_k_paginated_generic<'b, B, T>(
+    /// The ranking half of the `indexed_<axis>_top_k_paginated` shape:
+    /// the page's `(value, original_key)` pairs plus the skipped count,
+    /// produced entirely inside the pinned secondary view, with no primary
+    /// read. Both the resolving wrapper and the keys-only wrapper are built
+    /// on this.
+    fn indexed_axis_top_k_paginated_rows_generic<'b, B, T>(
         &self,
         path: SubtreePath<'b, B>,
         axis: IndexAxis,
         k: u16,
         offset: u64,
         descending: bool,
-        transaction: TransactionArg,
+        tx_ref: &Transaction,
         grove_version: &GroveVersion,
         decode: impl Fn(&[u8]) -> Option<(T, Vec<u8>)>,
-    ) -> CostResult<IndexedTopKPage<T>, Error>
+    ) -> CostResult<(Vec<(T, Vec<u8>)>, u64), Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -1360,8 +1437,6 @@ impl GroveDb {
             grove_version.grovedb_versions.operations.indexed_axis.read
         );
         let mut cost = OperationCost::default();
-        let tx = TxRef::new(&self.db, transaction);
-        let tx_ref = tx.as_ref();
 
         let secondary_merk = cost_return_on_error!(
             &mut cost,
@@ -1380,13 +1455,7 @@ impl GroveDb {
                 &mut cost,
                 collect_top_k_via_iterator(&secondary_merk, axis, k, descending, &decode)
             );
-            drop(secondary_merk);
-            return resolve_axis_entries(self, path, rows, tx_ref, grove_version)
-                .map_ok(|entries| IndexedTopKPage {
-                    entries,
-                    skipped: 0,
-                })
-                .add_cost(cost);
+            return Ok((rows, 0)).wrap_with_cost(cost);
         }
         // The open above serves validation (path shape, element variant,
         // axis compatibility) and the offset-0 fast path only. For the
@@ -1415,9 +1484,6 @@ impl GroveDb {
         };
         let parent_prefix =
             RocksDbStorage::build_prefix(parent_path.clone()).unwrap_add_cost(&mut cost);
-        // Kept for resolving the page's primary values once the counted
-        // descent has produced its keys.
-        let path_for_resolution = path.clone();
         let primary_prefix = RocksDbStorage::build_prefix(path).unwrap_add_cost(&mut cost);
         let secondary_prefix = RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
             .unwrap_add_cost(&mut cost);
@@ -1477,9 +1543,76 @@ impl GroveDb {
                 }
             }
         }
-        resolve_axis_entries(self, path_for_resolution, rows, tx_ref, grove_version)
+        Ok((rows, skipped)).wrap_with_cost(cost)
+    }
+
+    /// One implementation of the `indexed_<axis>_top_k_paginated` shape:
+    /// the ranking page with every entry's primary value resolved under
+    /// the same transaction the secondary was read under.
+    fn indexed_axis_top_k_paginated_generic<'b, B, T>(
+        &self,
+        path: SubtreePath<'b, B>,
+        axis: IndexAxis,
+        k: u16,
+        offset: u64,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+        decode: impl Fn(&[u8]) -> Option<(T, Vec<u8>)>,
+    ) -> CostResult<IndexedTopKPage<T>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+        let (rows, skipped) = cost_return_on_error!(
+            &mut cost,
+            self.indexed_axis_top_k_paginated_rows_generic(
+                path.clone(),
+                axis,
+                k,
+                offset,
+                descending,
+                tx_ref,
+                grove_version,
+                decode,
+            )
+        );
+        resolve_axis_entries(self, path, rows, tx_ref, grove_version)
             .map_ok(|entries| IndexedTopKPage { entries, skipped })
             .add_cost(cost)
+    }
+
+    /// Keys-only `indexed_<axis>_top_k_paginated`: the ranking page and
+    /// skipped count without resolving any primary value. See
+    /// [`Self::indexed_count_top_k_paginated_keys`] for why this exists.
+    fn indexed_axis_top_k_paginated_keys_generic<'b, B, T>(
+        &self,
+        path: SubtreePath<'b, B>,
+        axis: IndexAxis,
+        k: u16,
+        offset: u64,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+        decode: impl Fn(&[u8]) -> Option<(T, Vec<u8>)>,
+    ) -> CostResult<IndexedTopKKeysPage<T>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        let tx = TxRef::new(&self.db, transaction);
+        self.indexed_axis_top_k_paginated_rows_generic(
+            path,
+            axis,
+            k,
+            offset,
+            descending,
+            tx.as_ref(),
+            grove_version,
+            decode,
+        )
+        .map_ok(|(entries, skipped)| IndexedTopKKeysPage { entries, skipped })
     }
 
     /// One implementation of the `indexed_<axis>_range` shape. The
@@ -1489,7 +1622,11 @@ impl GroveDb {
     /// maximum) and passes them here. `decode` returns the typed value
     /// per matched key.
     #[allow(clippy::too_many_arguments)]
-    fn indexed_axis_range_generic<'b, B, T>(
+    /// The ranking half of the `indexed_<axis>_range` shape: the in-range
+    /// `(value, original_key)` pairs straight from the secondary, with no
+    /// primary read. Both the resolving wrapper and the keys-only wrapper
+    /// are built on this.
+    fn indexed_axis_range_rows_generic<'b, B, T>(
         &self,
         path: SubtreePath<'b, B>,
         axis: IndexAxis,
@@ -1497,10 +1634,10 @@ impl GroveDb {
         upper_bytes: Option<Vec<u8>>,
         descending: bool,
         limit: u16,
-        transaction: TransactionArg,
+        tx_ref: &Transaction,
         grove_version: &GroveVersion,
         decode: impl Fn(&[u8]) -> Option<(T, Vec<u8>)>,
-    ) -> CostResult<Vec<IndexedAxisEntry<T>>, Error>
+    ) -> CostResult<Vec<(T, Vec<u8>)>, Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -1509,12 +1646,10 @@ impl GroveDb {
             grove_version.grovedb_versions.operations.indexed_axis.read
         );
         let mut cost = OperationCost::default();
-        let tx = TxRef::new(&self.db, transaction);
-        let tx_ref = tx.as_ref();
 
         let secondary_merk = cost_return_on_error!(
             &mut cost,
-            self.open_validated_axis_secondary(path.clone(), axis, tx_ref, grove_version)
+            self.open_validated_axis_secondary(path, axis, tx_ref, grove_version)
         );
 
         let mut q = Query::new();
@@ -1543,7 +1678,77 @@ impl GroveDb {
         drop(iter);
         drop(secondary_merk);
 
-        resolve_axis_entries(self, path, results, tx_ref, grove_version).add_cost(cost)
+        Ok(results).wrap_with_cost(cost)
+    }
+
+    /// One implementation of the `indexed_<axis>_range` shape: the
+    /// in-range entries with every primary value resolved under the same
+    /// transaction the secondary was read under.
+    fn indexed_axis_range_generic<'b, B, T>(
+        &self,
+        path: SubtreePath<'b, B>,
+        axis: IndexAxis,
+        lo_bytes: Vec<u8>,
+        upper_bytes: Option<Vec<u8>>,
+        descending: bool,
+        limit: u16,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+        decode: impl Fn(&[u8]) -> Option<(T, Vec<u8>)>,
+    ) -> CostResult<Vec<IndexedAxisEntry<T>>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+        let rows = cost_return_on_error!(
+            &mut cost,
+            self.indexed_axis_range_rows_generic(
+                path.clone(),
+                axis,
+                lo_bytes,
+                upper_bytes,
+                descending,
+                limit,
+                tx_ref,
+                grove_version,
+                decode,
+            )
+        );
+        resolve_axis_entries(self, path, rows, tx_ref, grove_version).add_cost(cost)
+    }
+
+    /// Keys-only `indexed_<axis>_range`: the in-range ranking pairs
+    /// without resolving any primary value. See
+    /// [`Self::indexed_count_range_keys`] for why this exists.
+    fn indexed_axis_range_keys_generic<'b, B, T>(
+        &self,
+        path: SubtreePath<'b, B>,
+        axis: IndexAxis,
+        lo_bytes: Vec<u8>,
+        upper_bytes: Option<Vec<u8>>,
+        descending: bool,
+        limit: u16,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+        decode: impl Fn(&[u8]) -> Option<(T, Vec<u8>)>,
+    ) -> CostResult<Vec<(T, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        let tx = TxRef::new(&self.db, transaction);
+        self.indexed_axis_range_rows_generic(
+            path,
+            axis,
+            lo_bytes,
+            upper_bytes,
+            descending,
+            limit,
+            tx.as_ref(),
+            grove_version,
+            decode,
+        )
     }
 
     // ---- count axis ----
@@ -1565,7 +1770,8 @@ impl GroveDb {
     ///
     /// For a verifiable variant, see [`Self::prove_indexed_count_top_k`]
     /// and [`Self::verify_indexed_count_top_k`].
-    pub fn indexed_count_top_k<'b, B, P>(
+    #[cfg(test)]
+    pub(crate) fn indexed_count_top_k<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -1605,7 +1811,7 @@ impl GroveDb {
     /// variant use [`Self::prove_indexed_count_top_k_paginated`] which
     /// relies on the merk-level count-offset proof to commit the skipped
     /// count via `HashWithCount`.
-    pub fn indexed_count_top_k_paginated<'b, B, P>(
+    pub(crate) fn indexed_count_top_k_paginated<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -1637,7 +1843,7 @@ impl GroveDb {
     /// Bounds are inclusive on both sides; `(0, u64::MAX, false, limit)`
     /// is equivalent to a full scan. `lo_count > hi_count` returns an
     /// empty vector.
-    pub fn indexed_count_range<'b, B, P>(
+    pub(crate) fn indexed_count_range<'b, B, P>(
         &self,
         path: P,
         lo_count: u64,
@@ -1717,7 +1923,7 @@ impl GroveDb {
     /// verifiable count, use
     /// [`Self::prove_indexed_count_aggregate_over_value_range`] +
     /// [`Self::verify_indexed_count_aggregate_over_value_range`].
-    pub fn indexed_count_aggregate_over_value_range<'b, B, P>(
+    pub(crate) fn indexed_count_aggregate_over_value_range<'b, B, P>(
         &self,
         path: P,
         lo_count: u64,
@@ -1783,7 +1989,8 @@ impl GroveDb {
     /// Each returned entry is `(sum, original_key)`. The signed `i64`
     /// sum is decoded from the secondary's sign-flipped big-endian
     /// prefix (see [`grovedb_element::indexed::encode_sum_sort_key`]).
-    pub fn indexed_sum_top_k<'b, B, P>(
+    #[cfg(test)]
+    pub(crate) fn indexed_sum_top_k<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -1813,7 +2020,7 @@ impl GroveDb {
     /// secondary merk in `O(log n)` node loads, and
     /// [`IndexedTopKPage::skipped`] reports the true
     /// `min(offset, population)`. Not a verifiable / proof-bounded read.
-    pub fn indexed_sum_top_k_paginated<'b, B, P>(
+    pub(crate) fn indexed_sum_top_k_paginated<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -1845,7 +2052,7 @@ impl GroveDb {
     /// Bounds are inclusive on both sides. `lo_sum > hi_sum` returns
     /// an empty vector. `lo_sum == i64::MIN && hi_sum == i64::MAX` is
     /// equivalent to a full scan.
-    pub fn indexed_sum_range<'b, B, P>(
+    pub(crate) fn indexed_sum_range<'b, B, P>(
         &self,
         path: P,
         lo_sum: i64,
@@ -1917,7 +2124,7 @@ impl GroveDb {
     /// indexed-tree". Like the count counterpart, this call has no
     /// cryptographic guarantee; for a verifiable sum use the
     /// proof-bound variant in the proof submodule.
-    pub fn indexed_sum_aggregate_over_value_range<'b, B, P>(
+    pub(crate) fn indexed_sum_aggregate_over_value_range<'b, B, P>(
         &self,
         path: P,
         lo_sum: i64,
@@ -1977,7 +2184,7 @@ impl GroveDb {
     ///
     /// `O(log n)`: the walk folds contained subtrees' stored counts and
     /// descends only along the two band boundaries.
-    pub fn indexed_sum_population_over_value_range<'b, B, P>(
+    pub(crate) fn indexed_sum_population_over_value_range<'b, B, P>(
         &self,
         path: P,
         lo_sum: i64,
@@ -2039,7 +2246,7 @@ impl GroveDb {
     ///
     /// `O(log n)`: the walk folds contained subtrees' stored sums and
     /// descends only along the two band boundaries.
-    pub fn indexed_count_total_over_value_range<'b, B, P>(
+    pub(crate) fn indexed_count_total_over_value_range<'b, B, P>(
         &self,
         path: P,
         lo_count: u64,
@@ -2109,7 +2316,8 @@ impl GroveDb {
     /// view if you need one — noting an `f64` view is approximate at
     /// this scale; the `i128` fixed-point value is the exact consensus
     /// value.
-    pub fn indexed_avg_top_k<'b, B, P>(
+    #[cfg(test)]
+    pub(crate) fn indexed_avg_top_k<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -2139,7 +2347,7 @@ impl GroveDb {
     /// secondary merk in `O(log n)` node loads, and
     /// [`IndexedTopKPage::skipped`] reports the true
     /// `min(offset, population)`. Not a verifiable / proof-bounded read.
-    pub fn indexed_avg_top_k_paginated<'b, B, P>(
+    pub(crate) fn indexed_avg_top_k_paginated<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -2180,7 +2388,7 @@ impl GroveDb {
     /// "aggregate avg in range" should compute it client-side from
     /// `indexed_count_aggregate_over_value_range` + `indexed_sum_aggregate_over_value_range`
     /// against the same path's count and sum secondaries.
-    pub fn indexed_avg_range<'b, B, P>(
+    pub(crate) fn indexed_avg_range<'b, B, P>(
         &self,
         path: P,
         lo_avg: i128,
@@ -2235,6 +2443,298 @@ impl GroveDb {
         .add_cost(cost)
     }
 
+    // -----------------------------------------------------------------
+    // Keys-only reads.
+    //
+    // The resolving reads above return each entry with its primary value
+    // resolved. That resolution happens AFTER the secondary page was
+    // collected, through the transaction the caller supplied — and a
+    // caller that supplied `None` gets point reads outside the pinned
+    // iterator view the page came from, so a primary deleted or rewritten
+    // by a commit in between is reported as corruption or paired with a
+    // page from the older view. A caller that only ranks (leaderboards,
+    // ranking views, anything that projects to `key_pair()`) pays up to
+    // `k` primary reads for values it discards, and inherits that window
+    // for nothing.
+    //
+    // The `_keys` variants return the ranking pairs straight from the
+    // secondary view and never open the primary. They are served by the
+    // same `_rows_generic` cores as the resolving variants, so the two
+    // agree on the page by construction.
+    // -----------------------------------------------------------------
+
+    /// Keys-only [`Self::indexed_count_top_k`]: the top-`k`
+    /// `(count, original_key)` pairs, with no primary value resolved.
+    #[cfg(test)]
+    pub(crate) fn indexed_count_top_k_keys<'b, B, P>(
+        &self,
+        path: P,
+        k: u16,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(u64, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        self.indexed_axis_top_k_keys_generic(
+            path.into(),
+            IndexAxis::Count,
+            k,
+            descending,
+            transaction,
+            grove_version,
+            decode_secondary_key,
+        )
+    }
+
+    /// Keys-only [`Self::indexed_count_top_k_paginated`]: the page's
+    /// `(count, original_key)` pairs and the skipped count, produced
+    /// entirely inside the pinned secondary view, with no primary value
+    /// resolved.
+    pub(crate) fn indexed_count_top_k_paginated_keys<'b, B, P>(
+        &self,
+        path: P,
+        k: u16,
+        offset: u64,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<IndexedTopKKeysPage<u64>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        self.indexed_axis_top_k_paginated_keys_generic(
+            path.into(),
+            IndexAxis::Count,
+            k,
+            offset,
+            descending,
+            transaction,
+            grove_version,
+            decode_secondary_key,
+        )
+    }
+
+    /// Keys-only [`Self::indexed_count_range`]: the in-range
+    /// `(count, original_key)` pairs, with no primary value resolved.
+    pub(crate) fn indexed_count_range_keys<'b, B, P>(
+        &self,
+        path: P,
+        lo_count: u64,
+        hi_count: u64,
+        descending: bool,
+        limit: u16,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(u64, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_count_range",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
+        let cost = OperationCost::default();
+        if lo_count > hi_count {
+            return Ok(Vec::new()).wrap_with_cost(cost);
+        }
+        let (lo_bytes, upper_bytes) = count_range_bounds(lo_count, hi_count);
+        self.indexed_axis_range_keys_generic(
+            path.into(),
+            IndexAxis::Count,
+            lo_bytes,
+            upper_bytes,
+            descending,
+            limit,
+            transaction,
+            grove_version,
+            decode_secondary_key,
+        )
+        .add_cost(cost)
+    }
+
+    /// Keys-only [`Self::indexed_sum_top_k`].
+    #[cfg(test)]
+    pub(crate) fn indexed_sum_top_k_keys<'b, B, P>(
+        &self,
+        path: P,
+        k: u16,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(i64, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        self.indexed_axis_top_k_keys_generic(
+            path.into(),
+            IndexAxis::Sum,
+            k,
+            descending,
+            transaction,
+            grove_version,
+            decode_sum_secondary_key,
+        )
+    }
+
+    /// Keys-only [`Self::indexed_sum_top_k_paginated`].
+    pub(crate) fn indexed_sum_top_k_paginated_keys<'b, B, P>(
+        &self,
+        path: P,
+        k: u16,
+        offset: u64,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<IndexedTopKKeysPage<i64>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        self.indexed_axis_top_k_paginated_keys_generic(
+            path.into(),
+            IndexAxis::Sum,
+            k,
+            offset,
+            descending,
+            transaction,
+            grove_version,
+            decode_sum_secondary_key,
+        )
+    }
+
+    /// Keys-only [`Self::indexed_sum_range`].
+    pub(crate) fn indexed_sum_range_keys<'b, B, P>(
+        &self,
+        path: P,
+        lo_sum: i64,
+        hi_sum: i64,
+        descending: bool,
+        limit: u16,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(i64, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_sum_range",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
+        let cost = OperationCost::default();
+        if lo_sum > hi_sum {
+            return Ok(Vec::new()).wrap_with_cost(cost);
+        }
+        let (lo_bytes, upper_bytes) = sum_range_bounds(lo_sum, hi_sum);
+        self.indexed_axis_range_keys_generic(
+            path.into(),
+            IndexAxis::Sum,
+            lo_bytes,
+            upper_bytes,
+            descending,
+            limit,
+            transaction,
+            grove_version,
+            decode_sum_secondary_key,
+        )
+        .add_cost(cost)
+    }
+
+    /// Keys-only [`Self::indexed_avg_top_k`].
+    #[cfg(test)]
+    pub(crate) fn indexed_avg_top_k_keys<'b, B, P>(
+        &self,
+        path: P,
+        k: u16,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(i128, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        self.indexed_axis_top_k_keys_generic(
+            path.into(),
+            IndexAxis::Avg,
+            k,
+            descending,
+            transaction,
+            grove_version,
+            decode_avg_secondary_key,
+        )
+    }
+
+    /// Keys-only [`Self::indexed_avg_top_k_paginated`].
+    pub(crate) fn indexed_avg_top_k_paginated_keys<'b, B, P>(
+        &self,
+        path: P,
+        k: u16,
+        offset: u64,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<IndexedTopKKeysPage<i128>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        self.indexed_axis_top_k_paginated_keys_generic(
+            path.into(),
+            IndexAxis::Avg,
+            k,
+            offset,
+            descending,
+            transaction,
+            grove_version,
+            decode_avg_secondary_key,
+        )
+    }
+
+    /// Keys-only [`Self::indexed_avg_range`].
+    pub(crate) fn indexed_avg_range_keys<'b, B, P>(
+        &self,
+        path: P,
+        lo_avg: i128,
+        hi_avg: i128,
+        descending: bool,
+        limit: u16,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(i128, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_avg_range",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
+        let cost = OperationCost::default();
+        if lo_avg > hi_avg {
+            return Ok(Vec::new()).wrap_with_cost(cost);
+        }
+        let (lo_bytes, upper_bytes) = avg_range_bounds(lo_avg, hi_avg);
+        self.indexed_axis_range_keys_generic(
+            path.into(),
+            IndexAxis::Avg,
+            lo_bytes,
+            upper_bytes,
+            descending,
+            limit,
+            transaction,
+            grove_version,
+            decode_avg_secondary_key,
+        )
+        .add_cost(cost)
+    }
+
     /// Shared scaffolding for the per-axis direct query APIs: validate
     /// that the indexed-tree at `path` carries the requested `axis`,
     /// read that axis's secondary root key, and open the secondary
@@ -2283,11 +2783,11 @@ impl GroveDb {
     /// Axis-compatibility rules:
     /// - [`IndexAxis::Count`] accepts
     ///   [`Element::ProvableCountIndexedTree`] (single-axis, always count)
-    ///   or [`Element::ProvableCountProvableSumIndexedTree`] (PCPSIT) iff
+    ///   or [`Element::ProvableCountProvableSumIndexedTree`] (PCPSIT) if and only if
     ///   its TLV contains the count axis.
     /// - [`IndexAxis::Sum`] accepts
     ///   [`Element::ProvableSumIndexedTree`] (single-axis, always sum) or
-    ///   PCPSIT iff its TLV contains the sum axis.
+    ///   PCPSIT if and only if its TLV contains the sum axis.
     /// - [`IndexAxis::Avg`] only accepts PCPSIT, and only if its TLV
     ///   contains the avg axis.
     ///
@@ -2590,6 +3090,41 @@ pub(crate) fn max_item_key_len_for_axis(axis: IndexAxis) -> usize {
     }
 }
 
+/// Inclusive count range `[lo, hi]` → the secondary's byte bounds:
+/// `[encode(lo), encode(hi + 1))`, open-ended when `hi` is the maximum.
+fn count_range_bounds(lo_count: u64, hi_count: u64) -> (Vec<u8>, Option<Vec<u8>>) {
+    let lo_bytes = lo_count.to_be_bytes().to_vec();
+    let upper_bytes = if hi_count == u64::MAX {
+        None
+    } else {
+        Some((hi_count + 1).to_be_bytes().to_vec())
+    };
+    (lo_bytes, upper_bytes)
+}
+
+/// Inclusive sum range `[lo, hi]` → the secondary's byte bounds; the sum
+/// sort key is lex-equivalent to signed numeric order.
+fn sum_range_bounds(lo_sum: i64, hi_sum: i64) -> (Vec<u8>, Option<Vec<u8>>) {
+    let lo_bytes = encode_sum_sort_key(lo_sum).to_vec();
+    let upper_bytes = if hi_sum == i64::MAX {
+        None
+    } else {
+        Some(encode_sum_sort_key(hi_sum + 1).to_vec())
+    };
+    (lo_bytes, upper_bytes)
+}
+
+/// Inclusive avg range `[lo, hi]` → the secondary's byte bounds.
+fn avg_range_bounds(lo_avg: i128, hi_avg: i128) -> (Vec<u8>, Option<Vec<u8>>) {
+    let lo_bytes = encode_avg_sort_key(lo_avg).to_vec();
+    let upper_bytes = if hi_avg == i128::MAX {
+        None
+    } else {
+        Some(encode_avg_sort_key(hi_avg + 1).to_vec())
+    };
+    (lo_bytes, upper_bytes)
+}
+
 /// Inverse of `make_secondary_key`: split a secondary key into
 /// `(count, original_key)`. Returns `None` if the key is shorter than the
 /// 8-byte count prefix.
@@ -2806,6 +3341,18 @@ fn provable_count_from_aggregate(aggregate: AggregateData) -> Result<u64, Error>
             other
         ))),
     }
+}
+
+/// A keys-only page of a paginated indexed-axis read: the ranking pairs
+/// and the skipped count, with no primary values resolved. See
+/// [`GroveDb::indexed_count_top_k_paginated_keys`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedTopKKeysPage<T> {
+    /// `(ordering_value, original_key)` pairs in directional order.
+    pub entries: Vec<(T, Vec<u8>)>,
+    /// How many entries the offset actually skipped — the same quantity
+    /// [`IndexedTopKPage::skipped`] reports.
+    pub skipped: u64,
 }
 
 /// One page of an `indexed_<axis>_top_k_paginated` read.
@@ -4037,6 +4584,64 @@ mod direct_axis_mirror_tests {
             AggregateData::NoAggregateData,
             "an empty secondary reports no aggregate at all, so the removed row \
              cannot still be contributing"
+        );
+    }
+}
+
+#[cfg(test)]
+mod indexed_element_axes_tests {
+    use super::*;
+
+    /// Every indexed variant decodes to its configured axes in canonical
+    /// element order: the single implicit axis for PCIT / PSIT, the TLV
+    /// entries for PCPSIT.
+    #[test]
+    fn indexed_element_axes_decodes_every_indexed_variant() {
+        assert_eq!(
+            indexed_element_axes(&Element::empty_provable_count_indexed_tree()).unwrap(),
+            vec![(IndexAxis::Count, None)]
+        );
+        assert_eq!(
+            indexed_element_axes(&Element::empty_provable_sum_indexed_tree()).unwrap(),
+            vec![(IndexAxis::Sum, None)]
+        );
+        let pcpsit = Element::empty_provable_count_provable_sum_indexed_tree(vec![
+            (IndexAxis::Count.tag(), Some(b"count_root".to_vec())),
+            (IndexAxis::Sum.tag(), None),
+        ])
+        .expect("valid axes");
+        assert_eq!(
+            indexed_element_axes(&pcpsit).unwrap(),
+            vec![
+                (IndexAxis::Count, Some(b"count_root".to_vec())),
+                (IndexAxis::Sum, None),
+            ]
+        );
+    }
+
+    /// The decode fails closed on anything that is not an indexed tree and
+    /// on a stored PCPSIT axis tag no axis maps to (the constructors
+    /// validate tags, but a corrupt stored element can carry any byte).
+    #[test]
+    fn indexed_element_axes_rejects_non_indexed_elements_and_invalid_tags() {
+        for element in [
+            Element::empty_tree(),
+            Element::new_item(vec![1]),
+            Element::empty_sum_tree(),
+        ] {
+            let err = indexed_element_axes(&element).expect_err("not an indexed tree");
+            assert!(
+                matches!(&err, Error::CorruptedData(m) if m.contains("expected an indexed-tree element")),
+                "{err}"
+            );
+        }
+
+        let corrupt =
+            Element::ProvableCountProvableSumIndexedTree(None, 0, 0, vec![(0xFF, None)], None);
+        let err = indexed_element_axes(&corrupt).expect_err("invalid axis tag");
+        assert!(
+            matches!(&err, Error::CorruptedData(m) if m.contains("invalid axis tag")),
+            "{err}"
         );
     }
 }

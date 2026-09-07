@@ -10,6 +10,8 @@
 
 #[cfg(feature = "storage")]
 mod append;
+#[cfg(feature = "storage")]
+pub use append::MMR_ROOT_KEY;
 pub mod hash;
 
 #[cfg(feature = "storage")]
@@ -18,8 +20,12 @@ mod fetch;
 pub use fetch::{BufferQueryResult, ChunkQueryResult};
 
 #[cfg(all(test, feature = "storage"))]
+mod storage_accounting_tests;
+#[cfg(all(test, feature = "storage"))]
 mod tests;
 
+#[cfg(feature = "storage")]
+use grovedb_costs::OperationCost;
 use grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree;
 use grovedb_merkle_mountain_range::MmrNode;
 
@@ -38,6 +44,9 @@ pub struct AppendResult {
     pub hash_count: u32,
     /// Whether compaction (epoch flush) occurred.
     pub compacted: bool,
+    /// The storage-accounting cost the caller bills. See
+    /// [`AppendNoStateRootResult::storage_accounting_cost`].
+    pub storage_accounting_cost: OperationCost,
 }
 
 /// Result returned by [`BulkAppendTree::append_no_state_root`].
@@ -46,7 +55,7 @@ pub struct AppendResult {
 /// once at the end of a batch via
 /// [`BulkAppendTree::compute_current_state_root`].
 #[cfg(feature = "storage")]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct AppendNoStateRootResult {
     /// The 0-based global position of the appended value.
     pub global_position: u64,
@@ -55,6 +64,58 @@ pub struct AppendNoStateRootResult {
     pub hash_count: u32,
     /// Whether compaction (epoch flush) occurred.
     pub compacted: bool,
+    /// The cost of this append's storage accounting, which the
+    /// `Result`-returning appends cannot otherwise surface:
+    ///
+    /// - `storage_cost.added_bytes`: the entry's share of the chunk blob it
+    ///   will eventually be compacted into — its own bytes — plus its share
+    ///   of the blob framing and MMR nodes, charged at this append so that
+    ///   the compaction writes nothing that is not already paid for (issue
+    ///   #822);
+    /// - `storage_cost.replaced_bytes`: the entry's own bytes again, as its
+    ///   part of the blob rewrite the epoch's compaction performs;
+    /// - `seek_count` / `storage_loaded_bytes`: the dense buffer's
+    ///   root-maintenance reads — from GROVE_V4 the fixed model for the
+    ///   buffer's height (`v1_insert_model_cost`), whatever the position,
+    ///   compacting appends included.
+    ///
+    /// Zero under the shipped accounting (GROVE_V1..V3), where the blob is
+    /// charged in full at compaction and the buffer's reads are dropped.
+    ///
+    /// Like `hash_count`, this follows the "caller bills" convention of the
+    /// `Result`-returning appends ([`append`](BulkAppendTree::append),
+    /// [`append_no_state_root`](BulkAppendTree::append_no_state_root)): add it
+    /// to the operation's `OperationCost`. The `CostResult`-returning
+    /// [`append_deferred_roots`](BulkAppendTree::append_deferred_roots)
+    /// already includes it in the returned cost; there the field is a mirror
+    /// for information only — do not bill it twice.
+    pub storage_accounting_cost: OperationCost,
+}
+
+/// A dense-buffer hash record that disagrees with the values it should
+/// describe — what [`BulkAppendTree::buffer_record_mismatch`] reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BufferRecordMismatch {
+    /// The root the current position-0 hash record claims (what a GROVE_V4
+    /// root read returns).
+    pub recorded: [u8; 32],
+    /// The root walked from the stored values.
+    pub walked: [u8; 32],
+}
+
+/// A contiguous page of entries returned by a position-range read.
+///
+/// Produced by [`BulkAppendTree::get_range`], which fetches the entries for
+/// `[start, start + limit)` clamped to the tree's total count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RangePage {
+    /// `(global_position, value)` pairs, ascending and contiguous from the
+    /// requested start position (clamped to `total_count`).
+    pub entries: Vec<(u64, Vec<u8>)>,
+    /// Total number of entries in the tree at read time. Positions
+    /// `>= total_count` do not exist, so a page that ends before
+    /// `start + limit` is complete — there is nothing further to fetch.
+    pub total_count: u64,
 }
 
 /// Compute MMR size from leaf count: `2 * n - popcount(n)`.
@@ -107,6 +168,13 @@ pub struct BulkAppendTree<S> {
     ///
     /// [`from_state`]: BulkAppendTree::from_state
     pub(crate) last_mmr_root: Option<[u8; 32]>,
+    /// The one byte length every entry must have, when the owner declares it
+    /// (`with_fixed_entry_size`): appends of any other length are rejected
+    /// before anything is written, so every chunk blob takes the fixed
+    /// format and the fixed cost model charges no per-entry framing. `None`
+    /// — the default — admits any length and charges the variable format's
+    /// four-byte prefix on every entry (`VARIABLE_ENTRY_FRAMING_BYTES`).
+    pub(crate) fixed_entry_size: Option<u32>,
 }
 
 impl<S> BulkAppendTree<S> {

@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod proof_tests {
     use grovedb_query::Query;
+    use grovedb_version::version::GroveVersion;
 
     use crate::{proof::*, test_utils::MemStorageContext, tree::DenseFixedSizedMerkleTree};
 
@@ -9,7 +10,9 @@ mod proof_tests {
         let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new())
             .expect("height 3 should be valid");
         for i in 0..7u8 {
-            tree.insert(&[i]).unwrap().expect("insert should succeed");
+            tree.insert(&[i], GroveVersion::latest())
+                .unwrap()
+                .expect("insert should succeed");
         }
         tree
     }
@@ -19,7 +22,7 @@ mod proof_tests {
         let mut tree = DenseFixedSizedMerkleTree::new(4, MemStorageContext::new())
             .expect("height 4 should be valid");
         for i in 0u16..15 {
-            tree.insert(&i.to_be_bytes())
+            tree.insert(&i.to_be_bytes(), GroveVersion::latest())
                 .unwrap()
                 .expect("insert should succeed");
         }
@@ -31,7 +34,9 @@ mod proof_tests {
         let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new())
             .expect("height 3 should be valid");
         for i in 0..5u8 {
-            tree.insert(&[i]).unwrap().expect("insert should succeed");
+            tree.insert(&[i], GroveVersion::latest())
+                .unwrap()
+                .expect("insert should succeed");
         }
         tree
     }
@@ -88,7 +93,10 @@ mod proof_tests {
     #[test]
     fn test_proof_single_leaf() {
         let tree = make_tree_h3_full();
-        let root = tree.root_hash().unwrap().expect("root hash");
+        let root = tree
+            .root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash");
         let proof = DenseTreeProof::generate(&tree, &[4])
             .unwrap()
             .expect("generate should succeed");
@@ -105,7 +113,10 @@ mod proof_tests {
     #[test]
     fn test_proof_internal_node() {
         let tree = make_tree_h3_full();
-        let root = tree.root_hash().unwrap().expect("root hash");
+        let root = tree
+            .root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash");
         let proof = DenseTreeProof::generate(&tree, &[1])
             .unwrap()
             .expect("generate should succeed");
@@ -119,7 +130,10 @@ mod proof_tests {
     #[test]
     fn test_proof_root_node() {
         let tree = make_tree_h3_full();
-        let root = tree.root_hash().unwrap().expect("root hash");
+        let root = tree
+            .root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash");
         let proof = DenseTreeProof::generate(&tree, &[0])
             .unwrap()
             .expect("generate should succeed");
@@ -133,7 +147,10 @@ mod proof_tests {
     #[test]
     fn test_proof_multiple_positions() {
         let tree = make_tree_h3_full();
-        let root = tree.root_hash().unwrap().expect("root hash");
+        let root = tree
+            .root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash");
         let proof = DenseTreeProof::generate(&tree, &[3, 5, 6])
             .unwrap()
             .expect("generate should succeed");
@@ -149,7 +166,10 @@ mod proof_tests {
     #[test]
     fn test_proof_all_positions() {
         let tree = make_tree_h3_full();
-        let root = tree.root_hash().unwrap().expect("root hash");
+        let root = tree
+            .root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash");
         let proof = DenseTreeProof::generate(&tree, &[0, 1, 2, 3, 4, 5, 6])
             .unwrap()
             .expect("generate should succeed");
@@ -176,7 +196,10 @@ mod proof_tests {
     #[test]
     fn test_proof_encode_decode_roundtrip() {
         let tree = make_tree_h3_full();
-        let root = tree.root_hash().unwrap().expect("root hash");
+        let root = tree
+            .root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash");
         let proof = DenseTreeProof::generate(&tree, &[2, 4])
             .unwrap()
             .expect("generate should succeed");
@@ -209,9 +232,14 @@ mod proof_tests {
         let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new())
             .expect("height 3 should be valid");
         for i in 0..3u8 {
-            tree.insert(&[i]).unwrap().expect("insert should succeed");
+            tree.insert(&[i], GroveVersion::latest())
+                .unwrap()
+                .expect("insert should succeed");
         }
-        let root = tree.root_hash().unwrap().expect("root hash should succeed");
+        let root = tree
+            .root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash should succeed");
 
         let proof = DenseTreeProof::generate(&tree, &[0, 1, 2])
             .unwrap()
@@ -226,10 +254,13 @@ mod proof_tests {
     fn test_proof_height_1_tree() {
         let mut tree = DenseFixedSizedMerkleTree::new(1, MemStorageContext::new())
             .expect("height 1 should be valid");
-        tree.insert(b"hello")
+        tree.insert(b"hello", GroveVersion::latest())
             .unwrap()
             .expect("insert should succeed");
-        let root = tree.root_hash().unwrap().expect("root hash should succeed");
+        let root = tree
+            .root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash should succeed");
 
         let proof = DenseTreeProof::generate(&tree, &[0])
             .unwrap()
@@ -245,16 +276,19 @@ mod proof_tests {
     fn test_proof_height_2_tree() {
         let mut tree = DenseFixedSizedMerkleTree::new(2, MemStorageContext::new())
             .expect("height 2 should be valid");
-        tree.insert(b"root_val")
+        tree.insert(b"root_val", GroveVersion::latest())
             .unwrap()
             .expect("insert should succeed");
-        tree.insert(b"left_val")
+        tree.insert(b"left_val", GroveVersion::latest())
             .unwrap()
             .expect("insert should succeed");
-        tree.insert(b"right_val")
+        tree.insert(b"right_val", GroveVersion::latest())
             .unwrap()
             .expect("insert should succeed");
-        let root = tree.root_hash().unwrap().expect("root hash should succeed");
+        let root = tree
+            .root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash should succeed");
 
         let proof = DenseTreeProof::generate(&tree, &[2])
             .unwrap()
@@ -276,7 +310,10 @@ mod proof_tests {
     #[test]
     fn test_proof_deduplicates_positions() {
         let tree = make_tree_h3_full();
-        let root = tree.root_hash().unwrap().expect("root hash");
+        let root = tree
+            .root_hash(GroveVersion::latest())
+            .unwrap()
+            .expect("root hash");
         let proof = DenseTreeProof::generate(&tree, &[4, 4, 4])
             .unwrap()
             .expect("generate should succeed");
@@ -707,6 +744,45 @@ mod proof_tests {
             assert_eq!(entries[0].0, 5);
             assert_eq!(entries[1].0, 6);
         }
+
+        #[test]
+        fn empty_tree_yields_no_positions() {
+            let positions = query_to_positions(
+                &{
+                    let mut q = Query::new();
+                    q.insert_range_inclusive(vec![0]..=vec![0]);
+                    q
+                },
+                0,
+            )
+            .expect("should succeed");
+            assert!(positions.is_empty());
+        }
+
+        #[test]
+        fn empty_tree_malformed_bound_rejected() {
+            // Malformed inclusive bounds must still surface as InvalidData
+            // even when the tree is empty — the count==0 short-circuit must
+            // not skip bound validation.
+            use grovedb_query::QueryItem;
+            let mut q = Query::new();
+            q.items
+                .push(QueryItem::RangeInclusive(vec![0, 0, 0]..=vec![0]));
+            let err = query_to_positions(&q, 0)
+                .expect_err("malformed inclusive bound must error on empty tree");
+            assert!(
+                matches!(err, crate::DenseMerkleError::InvalidData(_)),
+                "expected InvalidData, got {:?}",
+                err
+            );
+
+            let mut q = Query::new();
+            q.items
+                .push(QueryItem::RangeInclusive(vec![0]..=vec![0, 0, 0]));
+            let err = query_to_positions(&q, 0)
+                .expect_err("malformed inclusive end must error on empty tree");
+            assert!(matches!(err, crate::DenseMerkleError::InvalidData(_)));
+        }
     }
 
     // =======================================================================
@@ -997,6 +1073,35 @@ mod proof_tests {
             let entries = gen_and_verify(&tree, &query);
             assert_eq!(entries.len(), 7);
         }
+
+        #[test]
+        fn empty_tree_yields_no_positions() {
+            let positions = query_to_positions(
+                &{
+                    let mut q = Query::new();
+                    q.insert_range_to_inclusive(..=vec![0]);
+                    q
+                },
+                0,
+            )
+            .expect("should succeed");
+            assert!(positions.is_empty());
+        }
+
+        #[test]
+        fn empty_tree_malformed_bound_rejected() {
+            // Malformed inclusive end must still surface as InvalidData even
+            // when the tree is empty.
+            let mut q = Query::new();
+            q.insert_range_to_inclusive(..=vec![0, 0, 0]);
+            let err = query_to_positions(&q, 0)
+                .expect_err("malformed inclusive end must error on empty tree");
+            assert!(
+                matches!(err, crate::DenseMerkleError::InvalidData(_)),
+                "expected InvalidData, got {:?}",
+                err
+            );
+        }
     }
 
     mod range_after {
@@ -1239,6 +1344,41 @@ mod proof_tests {
             assert_eq!(entries[0].0, 4);
             assert_eq!(entries[2].0, 6);
         }
+
+        #[test]
+        fn empty_tree_yields_no_positions() {
+            let positions = query_to_positions(
+                &{
+                    let mut q = Query::new();
+                    q.insert_range_after_to_inclusive(vec![0xff, 0xff]..=vec![0xff, 0xff]);
+                    q
+                },
+                0,
+            )
+            .expect("should succeed");
+            assert!(positions.is_empty());
+        }
+
+        #[test]
+        fn empty_tree_malformed_bound_rejected() {
+            // Malformed inclusive bounds must still surface as InvalidData
+            // even when the tree is empty.
+            let mut q = Query::new();
+            q.insert_range_after_to_inclusive(vec![0, 0, 0]..=vec![0xff, 0xff]);
+            let err = query_to_positions(&q, 0)
+                .expect_err("malformed inclusive start must error on empty tree");
+            assert!(
+                matches!(err, crate::DenseMerkleError::InvalidData(_)),
+                "expected InvalidData, got {:?}",
+                err
+            );
+
+            let mut q = Query::new();
+            q.insert_range_after_to_inclusive(vec![0xff, 0xff]..=vec![0, 0, 0]);
+            let err = query_to_positions(&q, 0)
+                .expect_err("malformed inclusive end must error on empty tree");
+            assert!(matches!(err, crate::DenseMerkleError::InvalidData(_)));
+        }
     }
 
     // =======================================================================
@@ -1468,9 +1608,57 @@ mod proof_tests {
         }
 
         #[test]
+        fn empty_tree_range_inclusive_query() {
+            let tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new())
+                .expect("height 3 should be valid");
+            let mut query = Query::new();
+            query.insert_range_inclusive(vec![0]..=vec![0]);
+            let proof = DenseTreeProof::generate_for_query(&tree, &query)
+                .unwrap()
+                .expect("should succeed for inclusive query on empty tree");
+            let (_root, entries) = proof
+                .verify_for_query::<Vec<(u16, Vec<u8>)>>(&query, 3, 0)
+                .expect("should succeed");
+            assert!(entries.is_empty());
+        }
+
+        #[test]
+        fn empty_tree_range_to_inclusive_query() {
+            let tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new())
+                .expect("height 3 should be valid");
+            let mut query = Query::new();
+            query.insert_range_to_inclusive(..=vec![0]);
+            let proof = DenseTreeProof::generate_for_query(&tree, &query)
+                .unwrap()
+                .expect("should succeed for inclusive query on empty tree");
+            let (_root, entries) = proof
+                .verify_for_query::<Vec<(u16, Vec<u8>)>>(&query, 3, 0)
+                .expect("should succeed");
+            assert!(entries.is_empty());
+        }
+
+        #[test]
+        fn empty_tree_range_after_to_inclusive_query() {
+            let tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new())
+                .expect("height 3 should be valid");
+            let mut query = Query::new();
+            query.insert_range_after_to_inclusive(vec![0xff, 0xff]..=vec![0xff, 0xff]);
+            let proof = DenseTreeProof::generate_for_query(&tree, &query)
+                .unwrap()
+                .expect("should succeed for inclusive query on empty tree");
+            let (_root, entries) = proof
+                .verify_for_query::<Vec<(u16, Vec<u8>)>>(&query, 3, 0)
+                .expect("should succeed");
+            assert!(entries.is_empty());
+        }
+
+        #[test]
         fn root_hash_consistency() {
             let tree = make_tree_h3_full();
-            let expected_root = tree.root_hash().unwrap().expect("root hash");
+            let expected_root = tree
+                .root_hash(GroveVersion::latest())
+                .unwrap()
+                .expect("root hash");
             let mut query = Query::new();
             query.insert_range(vec![2]..vec![5]);
             let proof = DenseTreeProof::generate_for_query(&tree, &query)
@@ -1528,7 +1716,10 @@ mod proof_tests {
         #[test]
         fn wrong_count_changes_root_hash() {
             let tree = make_tree_h3_full();
-            let expected_root = tree.root_hash().unwrap().expect("root hash");
+            let expected_root = tree
+                .root_hash(GroveVersion::latest())
+                .unwrap()
+                .expect("root hash");
             let query = Query::new_range_full();
             let proof = DenseTreeProof::generate_for_query(&tree, &query)
                 .unwrap()
@@ -1543,7 +1734,9 @@ mod proof_tests {
             let mut tree = DenseFixedSizedMerkleTree::new(4, MemStorageContext::new())
                 .expect("height 4 should be valid");
             for i in 0..11u8 {
-                tree.insert(&[i]).unwrap().expect("insert should succeed");
+                tree.insert(&[i], GroveVersion::latest())
+                    .unwrap()
+                    .expect("insert should succeed");
             }
             let mut query = Query::new();
             query.insert_range_from(vec![5]..);
@@ -1613,6 +1806,115 @@ mod proof_tests {
                 "expected capacity error, got: {:?}",
                 err
             );
+        }
+    }
+
+    /// Issue #854: the order the proof carries its entries in is not
+    /// authenticated (the root binds the position→value map), so every
+    /// verifier must surface the canonical ascending order — a permuted
+    /// proof yields the same root AND the same sequence, leaving a
+    /// caller's limit/truncation nothing to be steered by.
+    mod canonical_entry_order {
+        use super::*;
+
+        fn permuted_proofs(honest: &DenseTreeProof) -> Vec<(&'static str, DenseTreeProof)> {
+            let mut reversed = honest.clone();
+            reversed.entries.reverse();
+            let mut shuffled = honest.clone();
+            let n = shuffled.entries.len();
+            shuffled.entries.swap(0, n - 1);
+            shuffled.entries.swap(1, n / 2);
+            vec![
+                ("honest", honest.clone()),
+                ("reversed", reversed),
+                ("shuffled", shuffled),
+            ]
+        }
+
+        #[test]
+        fn verify_for_query_yields_ascending_positions_for_any_proof_order() {
+            let tree = make_tree_h3_full();
+            let (height, count) = (tree.height(), tree.count());
+            let expected_root = tree
+                .root_hash(GroveVersion::latest())
+                .unwrap()
+                .expect("root hash");
+            let mut query = Query::new();
+            query.insert_range_inclusive(vec![1]..=vec![5]);
+            let honest = DenseTreeProof::generate_for_query(&tree, &query)
+                .unwrap()
+                .expect("generate_for_query should succeed");
+            assert_eq!(honest.entries.len(), 5);
+
+            for (label, proof) in permuted_proofs(&honest) {
+                let (root, entries) = proof
+                    .verify_for_query::<Vec<(u16, Vec<u8>)>>(&query, height, count)
+                    .unwrap_or_else(|e| panic!("{label}: verify_for_query should succeed: {e}"));
+                assert_eq!(root, expected_root, "{label}: root is order-independent");
+                let positions: Vec<u16> = entries.iter().map(|(p, _)| *p).collect();
+                assert_eq!(
+                    positions,
+                    vec![1, 2, 3, 4, 5],
+                    "{label}: ascending positions"
+                );
+                for (pos, value) in &entries {
+                    assert_eq!(value, &vec![*pos as u8], "{label}: value bound to position");
+                }
+
+                // Direction is not a verifier concern: the same ascending
+                // sequence comes back for a descending query too, and the
+                // limit-applying caller reverses it.
+                let mut descending = query.clone();
+                descending.left_to_right = false;
+                let (_, entries) = proof
+                    .verify_for_query::<Vec<(u16, Vec<u8>)>>(&descending, height, count)
+                    .unwrap_or_else(|e| panic!("{label}: descending verify should succeed: {e}"));
+                let positions: Vec<u16> = entries.iter().map(|(p, _)| *p).collect();
+                assert_eq!(
+                    positions,
+                    vec![1, 2, 3, 4, 5],
+                    "{label}: direction-agnostic"
+                );
+            }
+        }
+
+        #[test]
+        fn root_verifiers_yield_ascending_positions_for_any_proof_order() {
+            let tree = make_tree_h4_full();
+            let (height, count) = (tree.height(), tree.count());
+            let expected_root = tree
+                .root_hash(GroveVersion::latest())
+                .unwrap()
+                .expect("root hash");
+            let honest = DenseTreeProof::generate(&tree, &[0, 3, 7, 9, 14])
+                .unwrap()
+                .expect("generate should succeed");
+
+            for (label, proof) in permuted_proofs(&honest) {
+                let entries: Vec<(u16, Vec<u8>)> = proof
+                    .verify_against_expected_root(&expected_root, height, count)
+                    .unwrap_or_else(|e| panic!("{label}: verify_against_expected_root: {e}"));
+                let positions: Vec<u16> = entries.iter().map(|(p, _)| *p).collect();
+                assert_eq!(
+                    positions,
+                    vec![0, 3, 7, 9, 14],
+                    "{label}: ascending positions"
+                );
+
+                let (root, entries) = proof
+                    .verify_and_get_root::<Vec<(u16, Vec<u8>)>>(height, count)
+                    .unwrap_or_else(|e| panic!("{label}: verify_and_get_root: {e}"));
+                assert_eq!(root, expected_root, "{label}: root is order-independent");
+                let positions: Vec<u16> = entries.iter().map(|(p, _)| *p).collect();
+                assert_eq!(
+                    positions,
+                    vec![0, 3, 7, 9, 14],
+                    "{label}: ascending positions"
+                );
+                for (pos, value) in &entries {
+                    assert_eq!(value, &pos.to_be_bytes().to_vec(), "{label}: value bound");
+                }
+            }
         }
     }
 }

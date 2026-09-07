@@ -12,8 +12,12 @@ use grovedb_costs::{
 };
 #[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::worst_case_costs::{
-    add_worst_case_merk_has_value, worst_case_merk_propagate, WorstCaseLayerInformation,
-    MERK_BIGGEST_VALUE_SIZE,
+    add_worst_case_get_merk_node, add_worst_case_merk_has_value, worst_case_merk_propagate,
+    WorstCaseLayerInformation, MERK_BIGGEST_KEY_SIZE, MERK_BIGGEST_VALUE_SIZE,
+};
+#[cfg(feature = "minimal")]
+use grovedb_merk::estimated_costs::{
+    add_cost_case_merk_replace_layered, add_cost_case_merk_replace_same_size,
 };
 use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions, tree::AggregateData, tree_type::TreeType,
@@ -41,9 +45,17 @@ use crate::{
 impl GroveOp {
     fn worst_case_cost(
         &self,
+        // The op's own path: sizes the inverted-registration growth bound
+        // (every `invert()` output is built from the origin's qualified
+        // path).
+        path: &KeyInfoPath,
         key: &KeyInfo,
         in_parent_tree_type: TreeType,
         worst_case_layer_element_estimates: &WorstCaseLayerInformation,
+        // Whether the batch opts into backward-references bookkeeping
+        // (`BatchApplyOptions::propagate_backward_references`): family ops
+        // and deletes then charge the derived fan-out on GROVE_V4+.
+        backward_references_enabled: bool,
         propagate: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -54,7 +66,112 @@ impl GroveOp {
                 None
             }
         };
+        let fan_out_version = grove_version
+            .grovedb_versions
+            .operations
+            .worst_case
+            .worst_case_backward_references_fan_out;
+        // The derived fan-out charged on top of an op's own model, per the
+        // documented worst-case bounds (see the model in `super`).
+        let backward_references_fan_out = |element: Option<&Element>| {
+            if !backward_references_enabled || fan_out_version == 0 {
+                return None;
+            }
+            match element {
+                Some(Element::BidirectionalReference(..)) => {
+                    // The registration entry appended to the target: an
+                    // inverted path built from the referrer's qualified
+                    // origin (this op's path segments plus its key — an
+                    // absolute inversion serializes them all), the cascade
+                    // flag, and framing.
+                    let origin_bytes: u32 = path
+                        .0
+                        .iter()
+                        .map(|segment| 4 + segment.max_length() as u32)
+                        .sum::<u32>()
+                        .saturating_add(4 + key.max_length() as u32);
+                    let entry_bound = origin_bytes.saturating_add(16);
+                    Some(super::BackwardReferencesFanOut::worst_reference(
+                        entry_bound,
+                    ))
+                }
+                // A backward-references ITEM write carries its own referrer
+                // capacity, and the apply path refuses it unless the
+                // referrers carried over from the displaced element fit
+                // that capacity — so its fan-out is bounded by what it
+                // DECLARES, not by the protocol ceiling.
+                Some(
+                    element @ (Element::ItemWithBackwardsReferences(..)
+                    | Element::SumItemWithBackwardsReferences(..)
+                    | Element::ItemWithSumItemWithBackwardsReferences(..)),
+                ) => Some(super::BackwardReferencesFanOut::worst_item_with_capacity(
+                    element.max_incoming_references().unwrap_or(0),
+                )),
+                // The estimator cannot see the STORED element the op
+                // displaces (or deletes): any other write can land on a
+                // registered family element whose propagation/cascade work
+                // is the full item bound at the protocol ceiling.
+                Some(_) | None => Some(super::BackwardReferencesFanOut::worst_item()),
+            }
+        };
+        let with_fan_out = |base: CostResult<(), Error>,
+                            fan_out: Option<super::BackwardReferencesFanOut>|
+         -> CostResult<(), Error> {
+            let Some(fan_out) = fan_out else { return base };
+            let mut extra = OperationCost::default();
+            match add_worst_case_backward_references_fan_out(
+                &mut extra,
+                fan_out,
+                in_parent_tree_type,
+                worst_case_layer_element_estimates,
+            ) {
+                Ok(()) => base.add_cost(extra),
+                Err(e) => Err(e).wrap_with_cost(extra),
+            }
+        };
+        // The flagged apply path probes a deleted tree's child subtree for
+        // emptiness (a merk open and its root read) before admitting the
+        // deletion — charged whenever the fan-out is active.
+        let flagged_delete_probe = || {
+            let mut probe = OperationCost::default();
+            if backward_references_enabled && fan_out_version != 0 {
+                for _ in 0..2 {
+                    let _ = add_worst_case_get_merk_node(
+                        &mut probe,
+                        MERK_BIGGEST_KEY_SIZE,
+                        MERK_BIGGEST_VALUE_SIZE,
+                        in_parent_tree_type.inner_node_type(),
+                    );
+                }
+            }
+            probe
+        };
         match self {
+            // The internal derived rewrite: a same-size element replace
+            // whose node hash is provided precombined — the standard
+            // replace model plus the two combine calls.
+            GroveOp::ReplaceBackwardReferenceFamilyMember { element, .. } => {
+                if fan_out_version == 0 {
+                    return Err(Error::NotSupported(
+                        "estimated costs for backward-references batch operations require \
+                         GROVE_V4+"
+                            .to_owned(),
+                    ))
+                    .wrap_with_cost(OperationCost::default());
+                }
+                let combine_cost = OperationCost {
+                    hash_node_calls: 2,
+                    ..Default::default()
+                };
+                GroveDb::worst_case_merk_replace_element(
+                    key,
+                    element,
+                    in_parent_tree_type,
+                    propagate_if_input(),
+                    grove_version,
+                )
+                .add_cost(combine_cost)
+            }
             GroveOp::ReplaceTreeRootKey { aggregate_data, .. } => {
                 GroveDb::worst_case_merk_replace_tree(
                     key,
@@ -83,15 +200,16 @@ impl GroveOp {
                 grove_version,
             ),
             GroveOp::InsertOrReplace { element }
-            | GroveOp::InsertWithKnownToNotAlreadyExist { element } => {
+            | GroveOp::InsertWithKnownToNotAlreadyExist { element } => with_fan_out(
                 GroveDb::worst_case_merk_insert_element(
                     key,
                     element,
                     in_parent_tree_type,
                     propagate_if_input(),
                     grove_version,
-                )
-            }
+                ),
+                backward_references_fan_out(Some(element)),
+            ),
             GroveOp::InsertIfNotExists { element, .. } => {
                 // Same insert cost as InsertWithKnownToNotAlreadyExist, plus an
                 // additional seek to check whether the key already exists.
@@ -104,12 +222,15 @@ impl GroveOp {
                     key.max_length() as u32,
                     MERK_BIGGEST_VALUE_SIZE,
                 );
-                GroveDb::worst_case_merk_insert_element(
-                    key,
-                    element,
-                    in_parent_tree_type,
-                    propagate_if_input(),
-                    grove_version,
+                with_fan_out(
+                    GroveDb::worst_case_merk_insert_element(
+                        key,
+                        element,
+                        in_parent_tree_type,
+                        propagate_if_input(),
+                        grove_version,
+                    ),
+                    backward_references_fan_out(Some(element)),
                 )
                 .add_cost(has_cost)
             }
@@ -162,36 +283,50 @@ impl GroveOp {
                     grove_version,
                 )
             }
-            GroveOp::Replace { element } => GroveDb::worst_case_merk_replace_element(
-                key,
-                element,
-                in_parent_tree_type,
-                propagate_if_input(),
-                grove_version,
+            GroveOp::Replace { element } => with_fan_out(
+                GroveDb::worst_case_merk_replace_element(
+                    key,
+                    element,
+                    in_parent_tree_type,
+                    propagate_if_input(),
+                    grove_version,
+                ),
+                backward_references_fan_out(Some(element)),
             ),
             GroveOp::Patch {
                 element,
                 change_in_bytes: _,
-            } => GroveDb::worst_case_merk_replace_element(
-                key,
-                element,
-                in_parent_tree_type,
-                propagate_if_input(),
-                grove_version,
+            } => with_fan_out(
+                GroveDb::worst_case_merk_replace_element(
+                    key,
+                    element,
+                    in_parent_tree_type,
+                    propagate_if_input(),
+                    grove_version,
+                ),
+                backward_references_fan_out(Some(element)),
             ),
-            GroveOp::Delete => GroveDb::worst_case_merk_delete_element(
-                key,
-                worst_case_layer_element_estimates,
-                propagate,
-                grove_version,
-            ),
-            GroveOp::DeleteTree(tree_type, _) => GroveDb::worst_case_merk_delete_tree(
-                key,
-                *tree_type,
-                worst_case_layer_element_estimates,
-                propagate,
-                grove_version,
-            ),
+            GroveOp::Delete => with_fan_out(
+                GroveDb::worst_case_merk_delete_element(
+                    key,
+                    worst_case_layer_element_estimates,
+                    propagate,
+                    grove_version,
+                ),
+                backward_references_fan_out(None),
+            )
+            .add_cost(flagged_delete_probe()),
+            GroveOp::DeleteTree(tree_type, _) => with_fan_out(
+                GroveDb::worst_case_merk_delete_tree(
+                    key,
+                    *tree_type,
+                    worst_case_layer_element_estimates,
+                    propagate,
+                    grove_version,
+                ),
+                backward_references_fan_out(None),
+            )
+            .add_cost(flagged_delete_probe()),
             GroveOp::CommitmentTreeInsert { payload, .. } => {
                 Self::worst_case_commitment_tree_insert(
                     payload,
@@ -248,33 +383,49 @@ impl GroveOp {
                     propagate,
                     grove_version,
                 );
-                // Worst case: compaction trigger. Buffer fills → serialize
-                // chunk blob → compute dense Merkle root → push to MMR.
+                // The fixed per-append model at the physical ceiling (the op
+                // carries only the value): the buffer's root-maintenance
+                // model, the amortized compaction, the value's chunk-blob
+                // share and its churn — plus the compacting append's puts as
+                // a bound, the one position-dependent residual.
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
-                // Chunk blob worst case depends on epoch_size. For a single
-                // append the value itself is always written. If compaction
-                // triggers, the chunk blob is epoch_size * avg_value_size.
-                // We use value.len() for the per-append write and a capped
-                // compaction overhead.
                 let value_size = value.len() as u32;
-                // Max compaction overhead: 64KB safe bound for chunk blob
-                const MAX_COMPACTION_BLOB: u32 = 65536;
-                // Dense Merkle root: epoch_size hashes. Buffer hash: 1.
-                // MMR push: up to 64 merges.
-                // epoch hashes + buffer + MMR
-                const MAX_HASH_CALLS: u32 = 1024 + 1 + 65;
-                // Writes: buffer entry + chunk blob + MMR nodes
-                const MAX_WRITES: u32 = 1 + 1 + 65;
-                const MAX_READS: u32 = 64; // MMR sibling reads
+                let buffer = super::dense_buffer_model(super::PHYSICAL_MAX_CHUNK_POWER);
+                // The compaction share shrinks with the epoch: the smallest
+                // epoch is the bound.
+                let amortized_compaction_added = super::max_amortized_compaction_added_bytes();
+                const PER_PUT_KEY_AND_LENGTHS: u32 = 50;
+                let paid_value = value_size.saturating_add(5); // + the value-length varint
                 item_cost.add_cost(OperationCost {
-                    seek_count: MAX_WRITES + MAX_READS,
+                    // The stored element read, the slot and record writes, the
+                    // model's record reads, the compaction's commit-time puts
+                    // amortized at the smallest epoch.
+                    seek_count: 3u32
+                        .saturating_add(buffer.cost.seek_count)
+                        .saturating_add(grovedb_bulk_append_tree::max_amortized_compaction_seeks()),
                     storage_cost: StorageCost {
-                        added_bytes: value_size + MAX_COMPACTION_BLOB,
-                        replaced_bytes: 0,
+                        // Value + the variable format's per-entry prefix +
+                        // the compaction share.
+                        added_bytes: value_size
+                            .saturating_add(grovedb_bulk_append_tree::VARIABLE_ENTRY_FRAMING_BYTES)
+                            .saturating_add(amortized_compaction_added),
+                        // Slot (key included as a bound), record, and the
+                        // value's part of the blob rewrite.
+                        replaced_bytes: paid_value
+                            .saturating_add(PER_PUT_KEY_AND_LENGTHS)
+                            .saturating_add(buffer.record_len)
+                            .saturating_add(PER_PUT_KEY_AND_LENGTHS)
+                            .saturating_add(value_size),
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
-                    storage_loaded_bytes: (33 * MAX_READS) as u64,
-                    hash_node_calls: MAX_HASH_CALLS,
+                    // The stored element with the largest flags a Merk node
+                    // can hold, and the model's records.
+                    storage_loaded_bytes: (super::CT_ELEMENT_LOAD_BASE + MERK_BIGGEST_VALUE_SIZE)
+                        as u64
+                        + buffer.cost.storage_loaded_bytes,
+                    hash_node_calls: buffer.cost.hash_node_calls
+                        + grovedb_bulk_append_tree::max_amortized_compaction_hashes()
+                        + 1,
                     sinsemilla_hash_calls: 0,
                 })
             }
@@ -289,97 +440,26 @@ impl GroveOp {
                     grove_version,
                 );
                 // A genuine UPPER BOUND over every configuration the type
-                // permits, not a typical-case figure. `chunk_power` is
-                // validated to 1..=16, so the dense buffer holds at most
-                // `2^16 - 1 = 65535` entries and an epoch is at most
-                // `2^16 = 65536` entries.
-                //
-                // The costly op is the compacting append: the dense-root walk
-                // hashes every filled position twice, the epoch is serialized
-                // into one chunk blob, and the blob is pushed to the MMR.
-                //
-                // This deliberately OVER-estimates smaller configurations —
-                // a `chunk_power = 4` store pays the `chunk_power = 16`
-                // bound — because `GroveOp::PrivateDocumentStoreInsert`
-                // carries only the entry, not the store's committed config,
-                // and the config is not knowable here. Over-estimating is the
-                // safe direction for a fee admission bound (an under-estimate
-                // makes a legitimate block fail replay). Threading the
-                // committed `{entry_size, chunk_power}` into the estimate is
-                // the way to tighten this; it needs the op or the layer
-                // estimate to carry the config.
-                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
-                let entry_size = entry.len() as u32;
-                /// Largest epoch the type permits: `2^16` entries.
-                const MAX_EPOCH_ENTRIES: u32 = 1 << 16;
-                /// Largest dense buffer: `2^16 - 1` filled positions, each
-                /// costing a value hash and a node hash on the root walk.
-                const MAX_DENSE_HASHES: u32 = 2 * (MAX_EPOCH_ENTRIES - 1);
-                /// MMR push merges (bounded by the 64-bit position space).
-                const MAX_MMR_MERGES: u32 = 65;
-                /// Bulk state root + composite pds_state root + the
-                /// committed-config hash paid when the store is opened.
-                const ROOT_AND_CONFIG_HASHES: u32 = 3;
-                const MAX_HASH_CALLS: u32 =
-                    MAX_DENSE_HASHES + MAX_MMR_MERGES + ROOT_AND_CONFIG_HASHES;
-                // Writes: buffer entry + chunk blob + MMR nodes
-                const MAX_WRITES: u32 = 1 + 1 + MAX_MMR_MERGES;
-                const MAX_MMR_READS: u32 = 64; // MMR sibling reads
-                /// Dense-buffer reads, which dominate the seek count and are
-                /// easy to miss: the buffer lives in storage, so BOTH the
-                /// dense-root walk and compaction read it position by
-                /// position. A reopened store at `chunk_power = 16` walks up
-                /// to `2^16 - 1` filled positions to derive the root, and a
-                /// compacting append reads the whole epoch again to build the
-                /// chunk blob. Counting only the MMR's 64 sibling reads left
-                /// `seek_count` three orders of magnitude below the true
-                /// worst case, which is not an upper bound at all.
-                const MAX_DENSE_READS: u32 = 2 * (MAX_EPOCH_ENTRIES - 1);
-                // A compacted epoch is not stored as a bare payload: the
-                // chunk blob carries a 9-byte header, sits inside a 37-byte
-                // MMR leaf envelope, and every internal MMR node the push
-                // creates costs a further 33 bytes. Counting only the raw
-                // payload made the "upper bound" fall short — for
-                // `entry_size = 1` the very first compaction already exceeded
-                // it.
-                const CHUNK_HEADER_BYTES: u32 = 9;
-                const MMR_LEAF_ENVELOPE_BYTES: u32 = 37;
-                const MMR_INTERNAL_NODE_BYTES: u32 = 33;
-                const MMR_SERIALIZATION_OVERHEAD: u32 = CHUNK_HEADER_BYTES
-                    + MMR_LEAF_ENVELOPE_BYTES
-                    + MMR_INTERNAL_NODE_BYTES * MAX_MMR_MERGES;
-                // The compaction blob holds a whole epoch of entries, so its
-                // size scales with the committed entry size — a flat byte
-                // constant is not a bound. `entry_size` is capped at
-                // `u16::MAX` at every creation site precisely so this product
-                // stays representable in the u32 `added_bytes` field.
-                let max_compaction_blob = MAX_EPOCH_ENTRIES
-                    .saturating_mul(entry_size)
-                    .saturating_add(MMR_SERIALIZATION_OVERHEAD);
-                item_cost.add_cost(OperationCost {
-                    seek_count: MAX_WRITES
-                        .saturating_add(MAX_MMR_READS)
-                        .saturating_add(MAX_DENSE_READS),
-                    storage_cost: StorageCost {
-                        // +1 for the NonCounted wrapper byte a preserved
-                        // wrapper adds to the replaced parent element; the op
-                        // does not record whether this store is wrapped, so
-                        // the bound charges it unconditionally.
-                        added_bytes: entry_size
-                            .saturating_add(max_compaction_blob)
-                            .saturating_add(1),
-                        replaced_bytes: 0,
-                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
-                    },
-                    // Each dense read returns one entry, so the bytes those
-                    // reads load scale with the committed entry size. This
-                    // product exceeds u32, hence the u64 arithmetic.
-                    storage_loaded_bytes: (33 * MAX_MMR_READS) as u64
-                        + max_compaction_blob as u64
-                        + (MAX_DENSE_READS as u64).saturating_mul(entry_size as u64),
-                    hash_node_calls: MAX_HASH_CALLS,
-                    sinsemilla_hash_calls: 0,
-                })
+                // permits, not a typical-case figure: `chunk_power` is
+                // validated to 1..=16, so the model is charged at the
+                // physical ceiling. This deliberately OVER-estimates smaller
+                // configurations — a `chunk_power = 4` store pays the
+                // `chunk_power = 16` bound — because the op carries only the
+                // entry, not the store's committed config, and the config is
+                // not knowable here. Over-estimating is the safe direction
+                // for a fee admission bound (an under-estimate makes a
+                // legitimate block fail replay). Threading the committed
+                // `{entry_size, chunk_power}` into the estimate is the way
+                // to tighten this; it needs the op or the layer estimate to
+                // carry the config. Caller-supplied element flags have no
+                // declared bound in the worst-case paths — charge the
+                // largest value a Merk node can store.
+                item_cost.add_cost(super::private_document_store_insert_op_cost(
+                    entry.len() as u32,
+                    super::PHYSICAL_MAX_CHUNK_POWER,
+                    MERK_BIGGEST_VALUE_SIZE,
+                    super::max_amortized_compaction_added_bytes(),
+                ))
             }
             GroveOp::DenseTreeInsert { value } => {
                 // Cost of updating parent element in the Merk
@@ -391,27 +471,17 @@ impl GroveOp {
                     propagate,
                     grove_version,
                 );
-                // Worst-case: 1 value write + full root hash recomputation.
-                // compute_root_hash visits ALL filled positions: each does
-                // 1 read + 2 hashes (value_hash + node_hash).
-                // Max height = 15 (u16 count), so max positions = 2^15-1 = 32767.
-                // Using practical max: height 8 → 255 positions.
-                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
-                let value_size = value.len() as u32;
-                const MAX_COUNT: u32 = 255; // practical worst case (height 8)
-                                            // 2 hash calls per node (value_hash + node_hash)
-                const MAX_HASH_CALLS: u32 = MAX_COUNT * 2;
-                item_cost.add_cost(OperationCost {
-                    seek_count: 1 + MAX_COUNT, // 1 write + MAX_COUNT reads
-                    storage_cost: StorageCost {
-                        added_bytes: value_size,
-                        replaced_bytes: 0,
-                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
-                    },
-                    storage_loaded_bytes: (value_size as u64) * (MAX_COUNT as u64),
-                    hash_node_calls: MAX_HASH_CALLS,
-                    sinsemilla_hash_calls: 0,
-                })
+                // The op carries only the value, not the tree's height, so
+                // the bound is taken at the physical ceiling: a full-buffer
+                // walk (the GROVE_V1..V3 root recompute, and the one-time
+                // catch-up a buffer filled under those versions pays at its
+                // first GROVE_V4 insert) plus the GROVE_V4 hash-record
+                // maintenance. Over-estimating smaller trees is the safe
+                // direction for an admission bound.
+                item_cost.add_cost(super::dense_tree_insert_op_cost(
+                    value.len() as u32,
+                    super::PHYSICAL_MAX_CHUNK_POWER,
+                ))
             }
             GroveOp::ReplaceNonMerkTreeRoot { meta, .. } => GroveDb::worst_case_merk_replace_tree(
                 key,
@@ -608,8 +678,108 @@ impl GroveOp {
             // worst-case paths — charge the largest value a Merk node can
             // store, consistent with the rest of the worst-case machinery.
             MERK_BIGGEST_VALUE_SIZE,
+            // The buffer model grows with the height, the compaction share
+            // shrinks with the epoch: each at its own worst.
+            super::max_amortized_compaction_added_bytes(),
         ))
     }
+}
+
+#[cfg(feature = "minimal")]
+/// Charge the derived backward-references fan-out at its worst (see the
+/// model in `super`): each rewrite is a biggest-node load plus a same-size
+/// biggest-node rewrite with the family's hash calls, each resolution a
+/// biggest-node load, and each propagation a replay of the layer's merk
+/// propagation.
+fn add_worst_case_backward_references_fan_out(
+    cost: &mut OperationCost,
+    fan_out: super::BackwardReferencesFanOut,
+    in_parent_tree_type: TreeType,
+    worst_case_layer_element_estimates: &WorstCaseLayerInformation,
+) -> Result<(), Error> {
+    let node_type = in_parent_tree_type.inner_node_type();
+    for _ in 0..fan_out.rewrites {
+        add_worst_case_get_merk_node(
+            cost,
+            MERK_BIGGEST_KEY_SIZE,
+            MERK_BIGGEST_VALUE_SIZE,
+            node_type,
+        )
+        .map_err(Error::MerkError)?;
+        add_cost_case_merk_replace_same_size(
+            cost,
+            MERK_BIGGEST_KEY_SIZE,
+            MERK_BIGGEST_VALUE_SIZE,
+            in_parent_tree_type,
+        );
+        cost.hash_node_calls = cost
+            .hash_node_calls
+            .saturating_add(super::BACKWARD_REFERENCES_REWRITE_HASH_CALLS);
+    }
+    for _ in 0..fan_out.resolution_loads {
+        add_worst_case_get_merk_node(
+            cost,
+            MERK_BIGGEST_KEY_SIZE,
+            MERK_BIGGEST_VALUE_SIZE,
+            node_type,
+        )
+        .map_err(Error::MerkError)?;
+    }
+    cost.storage_cost.added_bytes = cost
+        .storage_cost
+        .added_bytes
+        .saturating_add(fan_out.registration_added_bytes);
+    for _ in 0..fan_out.propagations {
+        worst_case_merk_propagate(worst_case_layer_element_estimates)
+            .unwrap_add_cost(cost)
+            .map_err(Error::MerkError)?;
+    }
+    // A derived write in a FOREIGN subtree also propagates up the Grove.
+    // Per ancestor level (the registration rule bounds every
+    // bidirectional-edge position to
+    // `MAX_BACKWARD_REFERENCES_GROVE_DEPTH` levels), actual bubbling
+    // opens the parent Merk, rewrites the changed tree element, and
+    // propagates it THROUGH that Merk to its root — height-dependent
+    // work, charged as the declared layer's full worst-case propagation
+    // per level. The declared layer must therefore dominate every Merk
+    // in the component, ancestor Merks of referrer subtrees included
+    // (see the model contract in `super`). The per-level unit is
+    // computed once and scaled saturatingly: at full fan-out the true
+    // bound exceeds the u32 cost domain, which no real batch can reach.
+    let mut level_cost = OperationCost::default();
+    // The parent-Merk open (its root node load)…
+    add_worst_case_get_merk_node(
+        &mut level_cost,
+        MERK_BIGGEST_KEY_SIZE,
+        MERK_BIGGEST_VALUE_SIZE,
+        node_type,
+    )
+    .map_err(Error::MerkError)?;
+    // …the changed tree element's load and layered rewrite…
+    add_worst_case_get_merk_node(
+        &mut level_cost,
+        MERK_BIGGEST_KEY_SIZE,
+        MERK_BIGGEST_VALUE_SIZE,
+        node_type,
+    )
+    .map_err(Error::MerkError)?;
+    add_cost_case_merk_replace_layered(
+        &mut level_cost,
+        MERK_BIGGEST_KEY_SIZE,
+        MERK_BIGGEST_VALUE_SIZE,
+        in_parent_tree_type,
+    );
+    // …and the in-Merk propagation to that Merk's root.
+    worst_case_merk_propagate(worst_case_layer_element_estimates)
+        .unwrap_add_cost(&mut level_cost)
+        .map_err(Error::MerkError)?;
+    super::add_saturating_scaled(
+        cost,
+        &level_cost,
+        fan_out.propagations as u64
+            * crate::bidirectional_references::MAX_BACKWARD_REFERENCES_GROVE_DEPTH as u64,
+    );
+    Ok(())
 }
 
 #[cfg(feature = "minimal")]
@@ -668,7 +838,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         path: &KeyInfoPath,
         ops_at_path_by_key: BTreeMap<KeyInfo, GroveOp>,
         _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, GroveOp>,
-        _batch_apply_options: &BatchApplyOptions,
+        batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
         grove_version: &GroveVersion,
@@ -700,12 +870,26 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         }
 
         for (key, op) in ops_at_path_by_key.into_iter() {
+            // A flat drop additionally stages a redo record (issue #848);
+            // charged here because the record's size depends on the op's
+            // full path, which the per-op dispatch below does not see.
+            if let GroveOp::DeleteTree(
+                tree_type,
+                crate::batch::SubelementsDeletionBehavior::DropFlat,
+            ) = &op
+            {
+                crate::operations::delete::flat_drop::add_flat_drop_record_put_estimate(
+                    &mut cost, path, &key, tree_type,
+                );
+            }
             cost_return_on_error!(
                 &mut cost,
                 op.worst_case_cost(
+                    path,
                     &key,
                     TreeType::NormalTree,
                     worst_case_layer_element_estimates,
+                    batch_apply_options.propagate_backward_references,
                     false,
                     grove_version
                 )
@@ -1364,9 +1548,11 @@ mod tests {
         let key = KeyInfo::KnownKey(b"tree_key".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 false,
                 grove_version,
             )
@@ -1388,9 +1574,11 @@ mod tests {
         let key = KeyInfo::KnownKey(b"tree_key".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 true,
                 grove_version,
             )
@@ -1411,9 +1599,11 @@ mod tests {
         let key = KeyInfo::KnownKey(b"mmr_key".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 false,
                 grove_version,
             )
@@ -1434,9 +1624,11 @@ mod tests {
         let key = KeyInfo::KnownKey(b"bulk_key".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 false,
                 grove_version,
             )
@@ -1456,9 +1648,11 @@ mod tests {
         let key = KeyInfo::KnownKey(b"pds_key".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 false,
                 grove_version,
             )
@@ -1466,9 +1660,18 @@ mod tests {
             .expect("expected worst case cost for private document store insert");
         assert!(cost.seek_count > 0);
         assert!(cost.hash_node_calls > 0);
-        // The worst case includes the compaction blob bound plus the
-        // entry-size-parametrized per-append write.
-        assert!(cost.storage_cost.added_bytes >= 128 + 65536);
+        // The worst case includes the entry-size-parametrized compaction
+        // blob at the physical ceiling — reported as a replacement of the
+        // epoch's prepaid entry bytes (GROVE_V4 accounting, issue #822) —
+        // plus the per-append slot write and chunk-blob share as added.
+        // The fixed model: the entry's slot and blob-rewrite part replaced,
+        // its share added; nothing scales with the epoch any more.
+        assert!(cost.storage_cost.replaced_bytes >= 2 * 128);
+        assert!(cost.storage_cost.replaced_bytes < 128 * 65536);
+        assert!(cost.storage_cost.added_bytes >= 128 + 1);
+        // The compaction's read-back is amortized into the model: no
+        // epoch-sized seek count any more.
+        assert!(cost.seek_count < 65535);
         assert_eq!(cost.sinsemilla_hash_calls, 0);
     }
 
@@ -1481,9 +1684,11 @@ mod tests {
         let key = KeyInfo::KnownKey(b"dense_key".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 false,
                 grove_version,
             )
@@ -1507,9 +1712,11 @@ mod tests {
         let key = KeyInfo::KnownKey(b"nmerk_key".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 true,
                 grove_version,
             )
@@ -1529,9 +1736,11 @@ mod tests {
         let key = KeyInfo::KnownKey(b"nmerk_mmr".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(50),
+                false,
                 true,
                 grove_version,
             )
@@ -1559,9 +1768,11 @@ mod tests {
         let key = KeyInfo::KnownKey(b"new_dense".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 false,
                 grove_version,
             )
@@ -1589,9 +1800,11 @@ mod tests {
         let key = KeyInfo::KnownKey(b"new_bulk".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 true,
                 grove_version,
             )
@@ -1623,9 +1836,11 @@ mod tests {
                 not_counted_or_summed,
             };
             op.worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 false,
                 grove_version,
             )
@@ -1677,9 +1892,11 @@ mod tests {
                 non_counted,
             };
             op.worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 false,
                 grove_version,
             )
@@ -1746,9 +1963,11 @@ mod tests {
         };
         let cost_count = op_count
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 false,
                 grove_version,
             )
@@ -1771,9 +1990,11 @@ mod tests {
         };
         let cost_pcount = op_pcount
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 true,
                 grove_version,
             )
@@ -1819,9 +2040,11 @@ mod tests {
 
         let arm_cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &layer_info,
+                false,
                 false,
                 grove_version,
             )
@@ -1861,8 +2084,9 @@ mod tests {
     /// with an oversized payload (the op type is public; the apply path only
     /// rejects wrong-sized payloads later) drives the physical-ceiling epoch
     /// term past u32. The estimate must saturate at u32::MAX — never panic
-    /// in debug builds nor wrap in release builds, since a wrapped
-    /// added_bytes would silently UNDER-estimate.
+    /// in debug builds nor wrap in release builds, since a wrapped figure
+    /// would silently UNDER-estimate. The epoch term is the compaction
+    /// blob, which the V4 accounting reports as replaced (issue #822).
     #[test]
     fn test_commitment_tree_insert_worst_case_cost_oversized_payload_saturates() {
         let grove_version = GroveVersion::latest();
@@ -1876,18 +2100,30 @@ mod tests {
         let key = KeyInfo::KnownKey(b"tree_key".to_vec());
         let cost = op
             .worst_case_cost(
+                &KeyInfoPath(vec![]),
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
+                false,
                 false,
                 grove_version,
             )
             .cost_as_result()
             .expect("expected worst case cost for oversized payload");
-        assert_eq!(
-            cost.storage_cost.added_bytes,
-            u32::MAX,
-            "oversized-payload estimate must saturate, not wrap",
+        // The epoch no longer multiplies anything: the compaction is
+        // amortized into the per-note model, so the figure is finite and
+        // per-note — the u64 sums exist for hand-built payloads only.
+        assert!(
+            cost.storage_cost.replaced_bytes < u32::MAX,
+            "the per-note estimate does not scale with the epoch: {cost:?}",
+        );
+        assert!(cost.storage_cost.replaced_bytes >= 2 * (96 + 70_000));
+        // The per-note added term (slot + blob share + frontier + framing)
+        // is epoch-independent and stays far from saturation.
+        assert!(
+            cost.storage_cost.added_bytes < 1_000_000,
+            "added_bytes is per-note, not epoch-scaled: {}",
+            cost.storage_cost.added_bytes
         );
     }
 }

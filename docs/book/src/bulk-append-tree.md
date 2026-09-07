@@ -71,7 +71,11 @@ Step 4: Compute new state root (+1 blake3 call)
 
 The **buffer IS a DenseFixedSizedMerkleTree** (see Chapter 16). Its root hash
 changes after every insert, providing a commitment to all current buffer entries.
-This root hash is what flows into the state root computation.
+This root hash is what flows into the state root computation. How the dense tree
+keeps that root is version-selected (`dense_tree_versions.root_maintenance`): under
+GROVE_V1..V3 every insert re-walks the whole buffer (O(count) reads and hashes);
+from GROVE_V4 it maintains per-position hash records and an insert touches only its
+ancestor path (O(height)) — see Chapter 16, "Hash Records".
 
 ## Chunk Compaction
 
@@ -209,6 +213,8 @@ All BulkAppendTree data lives in the **data** namespace, keyed with single-chara
 | `b` + `{index}` | `b` + u32 BE | 5B | Buffer entry at index |
 | `e` + `{index}` | `e` + u64 BE | 9B | Chunk blob at index |
 | `m` + `{pos}` | `m` + u64 BE | 9B | MMR node at position |
+| `h` + `{index}` | `h` + u16 BE | 3B | Path record of the insert at index (GROVE_V4+, see Chapter 16) |
+| `r` | 1 byte | 1B | Persisted chunk-MMR root, written at each compaction (GROVE_V4+) so a reopened tree does not bag the peaks' blobs; a tree that last compacted before V4 gets it backfilled by its first V4 append |
 
 **Metadata** stores `mmr_size` (8 bytes BE). The `total_count` and `chunk_power` are
 stored in the Element itself (in the parent Merk), not in data namespace metadata.
@@ -245,7 +251,7 @@ The buffer IS a `DenseFixedSizedMerkleTree` — its root hash is `dense_tree_roo
 
 ## GroveDB Operations
 
-The BulkAppendTree integrates with GroveDB through six operations defined in
+The BulkAppendTree integrates with GroveDB through seven operations defined in
 `grovedb/src/operations/bulk_append_tree.rs`:
 
 ### bulk_append
@@ -272,6 +278,7 @@ append operation are added to `cost.hash_node_calls`.
 |---|---|---|
 | `bulk_get_value(path, key, position)` | Value at global position | Yes — reads from chunk blob or buffer |
 | `bulk_get_chunk(path, key, chunk_index)` | Raw chunk blob | Yes — reads chunk key |
+| `bulk_get_range(path, key, start, limit)` | `RangePage { entries, total_count }` — positions `[start, start+limit)` clipped to the tree | Yes — each overlapping chunk blob read once, plus one read per buffer entry |
 | `bulk_get_buffer(path, key)` | All current buffer entries | Yes — reads buffer keys |
 | `bulk_count(path, key)` | Total count (u64) | No — reads from element |
 | `bulk_chunk_count(path, key)` | Completed chunks (u64) | No — computed from element |
@@ -427,6 +434,18 @@ After verification succeeds, the `BulkAppendTreeProofResult` provides a
 `values_in_range(start, end)` method that extracts specific values from the verified
 chunk blobs and buffer entries.
 
+### Paginated position-range proofs
+
+`GroveDb::prove_bulk_position_range(path, key, start, limit)` proves one page of
+a cursor scan; `GroveDb::verify_bulk_position_range_proof` verifies it and
+returns the page entries (ascending, contiguous, complete) together with the
+authenticated `total_count` from the same proof bytes. Both sides derive the
+query from `(start, limit)` via `PathQuery::new_bulk_position_range`, so a
+scanning client only needs its cursor and page size. Absence beyond the end
+falls out of the proved count (`position >= total_count` does not exist), so a
+page shorter than `limit` means the scan caught up with the tip. The same entry
+points serve `CommitmentTree` elements.
+
 ## How It Ties to the GroveDB Root Hash
 
 The BulkAppendTree is a **non-Merk tree** — it stores data in the data namespace,
@@ -456,24 +475,41 @@ Each operation's hash cost is tracked explicitly:
 
 | Operation | Blake3 calls | Notes |
 |---|---|---|
-| Single append (no compaction) | 3 | 2 for buffer hash chain + 1 for state root |
-| Single append (with compaction) | 3 + 2C - 1 + ~2 | Chain + dense Merkle (C=chunk_size) + MMR push + state root |
+| Single append (no compaction), GROVE_V1..V3 | 2·k + 1 | Full buffer walk over the k filled positions + 1 for state root |
+| Single append (no compaction), GROVE_V4+ | model(chunk_power) + 1 | The height's fixed model (`2 + ⌈avg depth⌉` blake3: 12 at chunk_power 11) + state root — the same at every position |
+| Single append (with compaction), GROVE_V4+ | model(chunk_power) + ⌈65 / 2^chunk_power⌉ | Charged exactly like a buffered append: the compaction's chunk-leaf hash, MMR merges and bagging (≤ 65 per chunk) are amortized over the epoch as a bound on every append (1 blake3 from chunk_power 7); physically it hashes the blob once and merges the MMR, reading the buffer back |
+| Single append (with compaction), GROVE_V1..V3 | 1 + MMR merges + 1 | Chunk-leaf hash + MMR push/bagging + state root, billed where they happen |
 | `get_value` from chunk | 0 | Pure deserialization, no hashing |
 | `get_value` from buffer | 0 | Direct key lookup |
 | Proof generation | Depends on chunk count | Dense Merkle root per chunk + MMR proof |
 | Proof verification | 2C·K - K + B·2 + 1 | K chunks, B buffer entries, C chunk_size |
 
-**Amortized cost per append**: For chunk_size=1024 (chunk_power=10), the compaction overhead of ~2047
-hashes (dense Merkle root) is amortized over 1024 appends, adding ~2 hashes per
-append. Combined with the 3 per-append hashes, the amortized total is **~5 blake3
-calls per append** — very efficient for a cryptographically authenticated structure.
+**Per-append cost**: under GROVE_V1..V3 the k-th append of an epoch re-walks k
+positions, so the amortized cost is ~chunk_size hashes per append (≈ 2k at
+chunk_power 11, peaking at ≈ 4k), and the compacting append pays the blob and MMR
+work where it happens. From GROVE_V4 **every append is charged the same fixed
+model**, whatever its position: the buffer's root-maintenance model for its height
+(12 blake3 calls and 18 record reads at chunk_power 11), the amortized compaction
+bound (⌈65 / 2^chunk_power⌉ blake3 — 1 at chunk_power 11), its long-term footprint as
+`added` (the chunk-blob share, plus the variable format's 4-byte per-entry prefix
+unless the owner declared a fixed entry size with `with_fixed_entry_size` — the
+commitment tree and the private document store do — plus the epoch's share of the
+blob framing and MMR nodes — 1 byte at chunk_power 11) and its churn as
+`replaced` (slot, path record, its part of the blob rewrite). The compacting append
+writes the blob, the MMR nodes and the persisted MMR root prepaid
+(`KeyValueStorageCost::prepaid()` — no bytes and no seek at commit; their seeks are
+amortized into every append as ⌈34 / 2^chunk_power⌉, 1 at chunk_power 11, and the
+compacting append is charged the slot + record seeks it does not issue) and is charged
+the same; physically it still reads the epoch back and hashes the blob once. Nothing
+about the charge depends on the position. A buffer filled under GROVE_V1..V3 is caught
+up from its values by the V4 appends that need it, read-only and billed the same model.
 
 ## Comparison with MmrTree
 
 | | BulkAppendTree | MmrTree |
 |---|---|---|
 | **Architecture** | Two-level (buffer + chunk MMR) | Single MMR |
-| **Per-append hash cost** | 3 (+ amortized ~2 for compaction) | ~2 |
+| **Per-append hash cost** | fixed model: 2 + ⌈avg depth⌉ + 1 (GROVE_V4+) | ~2 |
 | **Proof granularity** | Range queries over positions | Individual leaf proofs |
 | **Immutable snapshots** | Yes (chunk blobs) | No |
 | **CDN-friendly** | Yes (chunk blobs cacheable) | No |

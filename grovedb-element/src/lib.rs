@@ -1,6 +1,13 @@
+mod bidirectional_reference;
 mod element;
 mod element_type;
 
+pub use bidirectional_reference::{
+    deserialize_backward_references, serialize_backward_references, BackwardReference,
+    BackwardReferences, BidirectionalReference, CascadeOnUpdate,
+    DEFAULT_BACKWARD_REFERENCES_CAPACITY, MAX_BACKWARD_REFERENCES,
+    MAX_BACKWARD_REFERENCES_ON_REFERENCE,
+};
 pub use element::*;
 pub use element_type::{ElementType, ProofNodeType};
 pub mod error;

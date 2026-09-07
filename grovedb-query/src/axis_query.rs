@@ -340,6 +340,59 @@ impl<'de, Context> BorrowDecode<'de, Context> for AxisTraversal {
     }
 }
 
+/// What an entry-listing axis read ([`AxisTraversal::RankedPage`],
+/// [`AxisTraversal::Bounded`]) returns for each entry.
+///
+/// This is an **unproved-read** choice. A proof always carries the
+/// referenced primary values (the axis descent emits reference-aware
+/// nodes and the verifier authenticates them), and verification yields
+/// entries; keys are a strict projection of those, so a prover and a
+/// verifier handed a `Keys` query behave exactly as for `Entries`. What
+/// the projection changes is `run_path_query`: a `Keys` read returns the
+/// ranking pairs straight from the pinned secondary view and never opens
+/// the primary — no primary point reads after the page was collected
+/// (which, through a caller-supplied `None` transaction, would sit
+/// outside the iterator's view), and no reads for values the caller was
+/// going to discard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum AxisProjection {
+    /// The ranking pair **and** the resolved primary value per entry
+    /// (`IndexedAxisEntry`). The default.
+    #[default]
+    Entries,
+    /// The ranking pair only: `(ordering_value, original_key)`.
+    Keys,
+}
+
+impl AxisProjection {
+    /// Frozen wire tag.
+    pub const fn tag(self) -> u8 {
+        match self {
+            AxisProjection::Entries => 0,
+            AxisProjection::Keys => 1,
+        }
+    }
+
+    /// Decode a wire tag; `Err` carries the unknown byte.
+    pub const fn try_from_tag(b: u8) -> Result<Self, u8> {
+        match b {
+            0 => Ok(AxisProjection::Entries),
+            1 => Ok(AxisProjection::Keys),
+            other => Err(other),
+        }
+    }
+}
+
+impl fmt::Display for AxisProjection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AxisProjection::Entries => write!(f, "entries"),
+            AxisProjection::Keys => write!(f, "keys"),
+        }
+    }
+}
+
 /// What to read from one indexed tree's per-axis secondary: which axis,
 /// how to walk it, and in which direction. The axis-ordered counterpart
 /// of a key-selecting [`Query`](crate::Query).
@@ -364,13 +417,17 @@ pub struct AxisQuery {
     /// directional scan over `sort_key ‖ original_key`, not a separate
     /// rule.
     pub descending: bool,
+    /// Whether an entry-listing read returns entries (with primary
+    /// values) or ranking pairs only. See [`AxisProjection`].
+    pub projection: AxisProjection,
 }
 
 impl Encode for AxisQuery {
     fn encode<E: Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
         self.axis.tag().encode(encoder)?;
         self.traversal.encode(encoder)?;
-        self.descending.encode(encoder)
+        self.descending.encode(encoder)?;
+        self.projection.tag().encode(encoder)
     }
 }
 
@@ -379,10 +436,15 @@ impl<Context> Decode<Context> for AxisQuery {
         let tag = u8::decode(decoder)?;
         let axis = IndexAxis::try_from_tag(tag)
             .map_err(|_| DecodeError::Other("unknown index axis tag"))?;
+        let traversal = AxisTraversal::decode(decoder)?;
+        let descending = bool::decode(decoder)?;
+        let projection = AxisProjection::try_from_tag(u8::decode(decoder)?)
+            .map_err(|_| DecodeError::Other("unknown axis projection tag"))?;
         Ok(Self {
             axis,
-            traversal: AxisTraversal::decode(decoder)?,
-            descending: bool::decode(decoder)?,
+            traversal,
+            descending,
+            projection,
         })
     }
 }
@@ -407,6 +469,7 @@ impl AxisQuery {
             axis,
             traversal: AxisTraversal::RankedPage { k, offset },
             descending,
+            projection: AxisProjection::Entries,
         }
     }
 
@@ -423,6 +486,7 @@ impl AxisQuery {
             axis,
             traversal: AxisTraversal::RankedPage { k, offset },
             descending: false,
+            projection: AxisProjection::Entries,
         }
     }
 
@@ -438,6 +502,7 @@ impl AxisQuery {
             axis,
             traversal: AxisTraversal::Bounded { lo, hi, limit },
             descending,
+            projection: AxisProjection::Entries,
         }
     }
 
@@ -447,6 +512,7 @@ impl AxisQuery {
             axis,
             traversal: AxisTraversal::RankOfKey { key },
             descending,
+            projection: AxisProjection::Entries,
         }
     }
 
@@ -465,6 +531,7 @@ impl AxisQuery {
             axis,
             traversal: AxisTraversal::AggregateOverValueRange { lo, hi, fold },
             descending: false,
+            projection: AxisProjection::Entries,
         }
     }
 
@@ -519,6 +586,18 @@ impl AxisQuery {
                 self.validate_bounds(*lo, *hi)?;
             }
         }
+        if self.projection == AxisProjection::Keys
+            && !matches!(
+                self.traversal,
+                AxisTraversal::RankedPage { .. } | AxisTraversal::Bounded { .. }
+            )
+        {
+            return Err(Error::InvalidOperation(
+                "axis query: the keys projection applies to entry-listing traversals (ranked \
+                 page, bounded); rank-of-key and value-range aggregates return no entries to \
+                 project",
+            ));
+        }
         Ok(())
     }
 
@@ -549,6 +628,18 @@ impl AxisQuery {
             // domain is the whole i128 range; nothing is out of domain.
             IndexAxis::Avg => false,
         }
+    }
+
+    /// The same read with the given [`AxisProjection`].
+    pub const fn with_projection(mut self, projection: AxisProjection) -> Self {
+        self.projection = projection;
+        self
+    }
+
+    /// The same read returning ranking pairs only — see
+    /// [`AxisProjection::Keys`].
+    pub const fn keys_only(self) -> Self {
+        self.with_projection(AxisProjection::Keys)
     }
 
     /// The number of entries this query can return, when that is a
@@ -591,14 +682,15 @@ impl fmt::Display for AxisQuery {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "AxisQuery {{ axis: {:?}, {}, {} }}",
+            "AxisQuery {{ axis: {:?}, {}, {}, {} }}",
             self.axis,
             self.traversal,
             if self.descending {
                 "descending"
             } else {
                 "ascending"
-            }
+            },
+            self.projection
         )
     }
 }
@@ -662,6 +754,7 @@ mod tests {
                         axis,
                         traversal: traversal.clone(),
                         descending,
+                        projection: AxisProjection::Entries,
                     };
                     let bytes = bincode::encode_to_vec(&q, config::standard()).unwrap();
                     let (decoded, consumed): (AxisQuery, usize) =
@@ -685,6 +778,56 @@ mod tests {
         let q = AxisQuery::top_k(IndexAxis::Avg, 1, 0, true);
         let bytes = bincode::encode_to_vec(&q, config::standard()).unwrap();
         assert_eq!(bytes[0], 2);
+    }
+
+    #[test]
+    fn projection_round_trips_and_its_tag_is_frozen() {
+        let entries = AxisQuery::top_k(IndexAxis::Count, 3, 0, true);
+        let keys = entries.clone().keys_only();
+        assert_eq!(entries.projection, AxisProjection::Entries);
+        assert_eq!(keys.projection, AxisProjection::Keys);
+        for q in [entries, keys] {
+            let bytes = bincode::encode_to_vec(&q, config::standard()).unwrap();
+            // The projection tag is the last byte of the encoding.
+            assert_eq!(*bytes.last().unwrap(), q.projection.tag());
+            let (decoded, consumed): (AxisQuery, usize) =
+                bincode::decode_from_slice(&bytes, config::standard()).unwrap();
+            assert_eq!(consumed, bytes.len());
+            assert_eq!(decoded, q);
+        }
+        assert_eq!(AxisProjection::Entries.tag(), 0);
+        assert_eq!(AxisProjection::Keys.tag(), 1);
+        assert_eq!(AxisProjection::try_from_tag(2), Err(2));
+        // An unknown projection byte is rejected, not defaulted.
+        let mut bytes = bincode::encode_to_vec(
+            AxisQuery::top_k(IndexAxis::Count, 1, 0, true),
+            config::standard(),
+        )
+        .unwrap();
+        *bytes.last_mut().unwrap() = 7;
+        assert!(bincode::decode_from_slice::<AxisQuery, _>(&bytes, config::standard()).is_err());
+    }
+
+    #[test]
+    fn keys_projection_is_rejected_on_non_listing_traversals() {
+        assert!(AxisQuery::top_k(IndexAxis::Sum, 2, 0, true)
+            .keys_only()
+            .validate()
+            .is_ok());
+        assert!(AxisQuery::bounded(IndexAxis::Sum, 0, 10, 5, false)
+            .keys_only()
+            .validate()
+            .is_ok());
+        assert!(AxisQuery::rank_of_key(IndexAxis::Sum, vec![1], true)
+            .keys_only()
+            .validate()
+            .is_err());
+        assert!(
+            AxisQuery::aggregate_over_value_range(IndexAxis::Sum, 0, 10, AggregateFold::Total)
+                .keys_only()
+                .validate()
+                .is_err()
+        );
     }
 
     #[test]

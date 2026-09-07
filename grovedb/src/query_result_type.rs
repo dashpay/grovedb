@@ -64,6 +64,37 @@ impl<T: Clone> IndexedAxisEntrySliceExt<T> for [IndexedAxisEntry<T>] {
     }
 }
 
+/// The keys-only projection of an entry-listing axis read: the
+/// `(ordering_value, original_key)` pairs of one axis, in walk order,
+/// with no primary value resolved. What `run_path_query` returns for an
+/// `AxisProjection::Keys` read; a strict projection of the matching
+/// entries (`AxisEntries::to_keys`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AxisKeys {
+    /// Count axis: `(count, original_key)` pairs.
+    Count(Vec<(u64, Vec<u8>)>),
+    /// Sum axis: `(sum, original_key)` pairs.
+    Sum(Vec<(i64, Vec<u8>)>),
+    /// Avg axis: `(fixed-point average, original_key)` pairs.
+    Avg(Vec<(i128, Vec<u8>)>),
+}
+
+impl AxisKeys {
+    /// Number of pairs.
+    pub fn len(&self) -> usize {
+        match self {
+            AxisKeys::Count(v) => v.len(),
+            AxisKeys::Sum(v) => v.len(),
+            AxisKeys::Avg(v) => v.len(),
+        }
+    }
+
+    /// Whether the page is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 use grovedb_version::{version::GroveVersion, TryFromVersioned};
 
 use crate::element::SumValue;

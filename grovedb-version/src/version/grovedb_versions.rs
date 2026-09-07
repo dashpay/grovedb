@@ -7,8 +7,19 @@ pub struct GroveDBVersions {
     pub operations: GroveDBOperationsVersions,
     pub aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions,
     pub path_query_methods: GroveDBPathQueryMethodVersions,
+    pub storage_costs: GroveDBStorageCostVersions,
     pub replication: GroveDBReplicationVersions,
     pub query_limits: GroveDBQueryLimits,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct GroveDBStorageCostVersions {
+    /// `StorageRemovedBytes` addition between basic and sectioned removals.
+    ///
+    /// Version 0 preserves the legacy behavior where adding basic removal
+    /// bytes to an existing default section can drop that default section.
+    /// Version 1 reinserts the updated default section.
+    pub add_basic_storage_removal_to_sectioned_storage_removal: FeatureVersion,
 }
 
 #[derive(Clone, Debug)]
@@ -53,6 +64,26 @@ pub struct GroveDBPathQueryMethodVersions {
     /// at which the two sides can disagree about whether a read-mode
     /// shape exists.
     pub unified_read_mode: FeatureVersion,
+    /// Serving gate for per-instance query limits (`Query::limit` —
+    /// a fresh result budget for each execution instance of a query
+    /// node, i.e. "top k per parent", alongside the global
+    /// `SizedQuery::limit`).
+    ///
+    /// - `0` (GROVE_V1..=V3): any `PathQuery` carrying a per-instance
+    ///   limit anywhere is rejected with `NotSupported` at every read /
+    ///   prove / verify entry point. The field itself still encodes and
+    ///   decodes (`Query` encoding version 3) — the gate is about
+    ///   *serving*, so a query built ahead of activation fails closed
+    ///   instead of running with its caps silently ignored.
+    /// - `1` (GROVE_V4+): trusted reads (the `element.path_query_push`
+    ///   v1 engine), V1 proofs, and merges (which lift a merged input's
+    ///   global limit onto its exclusive branch) serve per-instance
+    ///   limits. Absence-proof assembly and the terminal-keys
+    ///   projections keep rejecting them at every version — which keys
+    ///   an instance-capped walk carries is data-dependent, so their
+    ///   expected-key projections would report keys beyond a cap as
+    ///   falsely absent.
+    pub per_instance_query_limits: FeatureVersion,
 }
 
 /// Method versions for the standalone indexed-axis query family — the
@@ -159,6 +190,32 @@ pub struct GroveDBOperationsVersions {
     pub average_case: GroveDBOperationsAverageCaseVersions,
     pub worst_case: GroveDBOperationsWorstCaseVersions,
     pub private_document_store: GroveDBOperationsPrivateDocumentStoreVersions,
+    pub flat_drop: GroveDBOperationsFlatDropVersions,
+}
+
+/// Version slots for the flat-subtree drop family (issue #848): O(1)
+/// removal of a populated subtree that is declared to contain no child
+/// subtrees, with storage reclaimed by DB-level range tombstones driven
+/// from a durable redo record.
+///
+/// Like [`GroveDBOperationsPrivateDocumentStoreVersions`], these slots are
+/// **capability gates**, not implementation selectors: slot value `0`
+/// means the operation is unavailable and fails closed with a
+/// version-mismatch error; `1` means the v1 implementation is active.
+/// `GROVE_V1`..`GROVE_V3` hold every slot at `0`; `GROVE_V4` flips them to
+/// `1`.
+///
+/// `GroveDb::flush_pending_prefix_drops` is deliberately ungated: it only
+/// reclaims storage for redo records that a gated operation already
+/// created, never touches the root hash, and is a no-op when no records
+/// exist.
+#[derive(Clone, Debug, Default)]
+pub struct GroveDBOperationsFlatDropVersions {
+    /// The standalone `GroveDb::drop_flat_subtree` operation.
+    pub drop_flat_subtree: FeatureVersion,
+    /// The `SubelementsDeletionBehavior::DropFlat` behavior on batch
+    /// `DeleteTree` ops.
+    pub batch_delete_tree_drop_flat: FeatureVersion,
 }
 
 /// Version slots for the PrivateDocumentStore operation family.
@@ -195,6 +252,7 @@ pub struct GroveDBOperationsGetVersions {
     pub get: FeatureVersion,
     pub get_caching_optional: FeatureVersion,
     pub follow_reference: FeatureVersion,
+    pub ref_path_follow_reference: FeatureVersion,
     pub follow_reference_once: FeatureVersion,
     pub get_raw: FeatureVersion,
     pub get_raw_caching_optional: FeatureVersion,
@@ -222,6 +280,8 @@ pub struct GroveDBOperationsProofVersions {
     pub prove_trunk_chunk_non_serialized: FeatureVersion,
     pub prove_branch_chunk: FeatureVersion,
     pub prove_branch_chunk_non_serialized: FeatureVersion,
+    pub prove_bulk_position_range: FeatureVersion,
+    pub verify_bulk_position_range_proof: FeatureVersion,
     pub verify_query_with_options: FeatureVersion,
     pub verify_query_raw: FeatureVersion,
     pub verify_layer_proof: FeatureVersion,
@@ -260,6 +320,40 @@ pub struct GroveDBOperationsProofVersions {
     /// non-empty **Merk** trees have required the child hash since V3 and
     /// stay bound at every version.
     pub terminal_non_merk_tree_child_hash: FeatureVersion,
+    /// Whether a **trunk / branch chunk proof** binds every composite row —
+    /// a tree of any kind, or a reference — to the `value_hash` its Merk
+    /// commits to.
+    ///
+    /// A merk chunk proof (`prove_trunk_chunk` / `prove_branch_chunk`) binds
+    /// an item row through `KV`, whose value bytes the verifier hashes itself,
+    /// but a tree or reference row through `KVValueHash` /
+    /// `KVValueHashFeatureType`, whose embedded `value_hash` the merk verifier
+    /// treats as opaque. That hash is `combine_hash(H(value), child_root)` for
+    /// a tree (`combine_hash(H(value), H(referenced))` for a reference), which
+    /// cannot be reproduced from the value bytes alone.
+    ///
+    /// - `0` (V1..V3): the prover leaves those rows as the merk chunk emitted
+    ///   them, and the verifier waives the `H(value) == value_hash` check for
+    ///   any row whose bytes deserialize as a tree. The returned tree metadata
+    ///   — tree type, aggregate count or sum, root key — is therefore unbound:
+    ///   a prover can substitute any tree-family element (or disguise an item
+    ///   as a tree) under a genuine root hash. Reference rows never verify at
+    ///   all under these versions, since they are not waived.
+    /// - `1` (V4+): the prover rewrites every composite row to
+    ///   `KVValueHashFeatureTypeWithChildHash` carrying the child Merk root
+    ///   (`NULL_HASH` for an empty tree), the non-Merk tree's own state root,
+    ///   or the referenced element's value hash, and the verifier requires
+    ///   that node for every tree or reference row, closing the loop with the
+    ///   merk-level `combine_hash(H(value), child_hash) == value_hash` check.
+    ///   Indexed trees commit a three-input hash no proof node can carry, so
+    ///   the prover refuses to serve a chunk containing one and the verifier
+    ///   rejects any such row rather than return its metadata as verified.
+    ///
+    /// Gated because it flips an accepted/rejected outcome — an upgraded
+    /// verifier rejects the unbound rows released provers emit — and because
+    /// deriving each child root costs the prover storage reads and hash
+    /// calls the released path never paid.
+    pub chunk_proof_row_binding: FeatureVersion,
     /// Whether the V1 proof envelope carries **axis-ordered descents**
     /// into indexed trees (`ProofBytes::IndexedTreeAxisDescent`),
     /// serving `PathQuery`s whose query node holds `ReadMode::Axis`.
@@ -350,6 +444,20 @@ pub struct GroveDBOperationsAverageCaseVersions {
     ///   full ommer cascade, dense-buffer recompute, and epoch compaction
     ///   (issue #812).
     pub average_case_commitment_tree_insert: FeatureVersion,
+    /// Cost model for backward-references family ops in batch estimation.
+    ///
+    /// - `0` (V1..V3): the family is estimated like plain elements with no
+    ///   derived fan-out, and `ReplaceBackwardReferenceFamilyMember` is
+    ///   refused. Matches those versions' apply path, which rejects the
+    ///   family in batches, so historical admission decisions replay
+    ///   byte-identically.
+    /// - `1` (V4+): family-carrying ops and (under
+    ///   `BatchApplyOptions::propagate_backward_references`) deletes charge
+    ///   the derived registration / propagation / cascade fan-out, bounded
+    ///   by the apply path's budgets (≤32 referrers per item, ≤10-hop
+    ///   chains, 1 referrer per reference), and the derived op itself gets
+    ///   a real model.
+    pub average_case_backward_references_fan_out: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -377,15 +485,18 @@ pub struct GroveDBOperationsWorstCaseVersions {
     ///   full ommer cascade, dense-buffer recompute, and epoch compaction
     ///   (issue #812).
     pub worst_case_commitment_tree_insert: FeatureVersion,
+    /// Cost model for backward-references family ops in batch estimation.
+    /// Same contract as
+    /// `GroveDBOperationsAverageCaseVersions::average_case_backward_references_fan_out`,
+    /// with the worst-case bounds charged in full.
+    pub worst_case_backward_references_fan_out: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct GroveDBOperationsInsertVersions {
     pub insert: FeatureVersion,
     pub insert_on_transaction: FeatureVersion,
-    pub insert_without_transaction: FeatureVersion,
     pub add_element_on_transaction: FeatureVersion,
-    pub add_element_without_transaction: FeatureVersion,
     pub insert_if_not_exists: FeatureVersion,
     pub insert_if_not_exists_return_existing_element: FeatureVersion,
     pub insert_if_changed_value: FeatureVersion,
@@ -400,7 +511,6 @@ pub struct GroveDBOperationsDeleteVersions {
     pub delete_if_empty_tree_with_sectional_storage_function: FeatureVersion,
     pub delete_operation_for_delete_internal: FeatureVersion,
     pub delete_internal_on_transaction: FeatureVersion,
-    pub delete_internal_without_transaction: FeatureVersion,
     pub average_case_delete_operation_for_delete: FeatureVersion,
     pub worst_case_delete_operation_for_delete: FeatureVersion,
 }
@@ -455,6 +565,7 @@ pub struct GroveDBElementMethodVersions {
     pub insert_if_not_exists: FeatureVersion,
     pub insert_if_not_exists_into_batch_operations: FeatureVersion,
     pub insert_if_changed_value: FeatureVersion,
+    pub insert_subtree_if_changed: FeatureVersion,
     pub insert_if_changed_value_into_batch_operations: FeatureVersion,
     pub insert_reference: FeatureVersion,
     pub insert_reference_into_batch_operations: FeatureVersion,

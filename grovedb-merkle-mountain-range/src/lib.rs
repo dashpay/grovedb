@@ -53,4 +53,4 @@ pub use mmr_store::{MMRBatch, MMRStoreReadOps, MMRStoreWriteOps};
 pub use node::{blake3_merge, leaf_hash, MmrNode};
 pub use proof::{MerkleProof, MmrTreeProof, VerifiedLeaves};
 #[cfg(feature = "storage")]
-pub use storage_adapter::MmrStore;
+pub use storage_adapter::{LeafValueStorageCost, MmrStore};

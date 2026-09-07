@@ -68,7 +68,7 @@ where
 
         cost_return_on_error!(
             &mut cost,
-            self.create_chunk_internal(&mut proof, depth, tree_type, grove_version)
+            self.create_chunk_internal(&mut proof, depth, tree_type, false, grove_version)
         );
 
         Ok(proof).wrap_with_cost(cost)
@@ -79,6 +79,7 @@ where
         proof: &mut Vec<Op>,
         remaining_depth: usize,
         tree_type: TreeType,
+        preserve_features: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -107,12 +108,34 @@ where
             .expect("confirmed is some");
             cost_return_on_error!(
                 &mut cost,
-                left.create_chunk_internal(proof, remaining_depth - 1, tree_type, grove_version)
+                left.create_chunk_internal(
+                    proof,
+                    remaining_depth - 1,
+                    tree_type,
+                    preserve_features,
+                    grove_version
+                )
             );
         }
 
         // Determine the correct node type based on element type and tree type
-        let node = self.create_proof_node_for_chunk(tree_type);
+        // Restoration must preserve features omitted by query proof nodes,
+        // including for opaque values that happen to encode an Element.
+        // Trunk/branch proofs keep their existing node selection: their
+        // verifiers require value-binding node types for Item elements.
+        let node = if preserve_features
+            && matches!(
+                tree_type,
+                TreeType::SumTree
+                    | TreeType::BigSumTree
+                    | TreeType::CountTree
+                    | TreeType::CountSumTree
+                    | TreeType::ProvableCountSumTree
+            ) {
+            self.to_kv_value_hash_feature_type_node()
+        } else {
+            self.create_proof_node_for_chunk(tree_type)
+        };
         proof.push(Op::Push(node));
 
         if has_left_child {
@@ -131,7 +154,13 @@ where
         if let Some(mut right) = maybe_right {
             cost_return_on_error!(
                 &mut cost,
-                right.create_chunk_internal(proof, remaining_depth - 1, tree_type, grove_version)
+                right.create_chunk_internal(
+                    proof,
+                    remaining_depth - 1,
+                    tree_type,
+                    preserve_features,
+                    grove_version
+                )
             );
 
             proof.push(Op::Child);
@@ -169,6 +198,15 @@ where
             ProofNodeType::KvSum => self.to_kv_sum_node(),
             ProofNodeType::KvCountSum => self.to_kv_count_sum_node(),
             ProofNodeType::KvValueHash => self.to_kv_value_hash_node(),
+            // Chunks must restore the FULL element (the referrer list is
+            // state), so the stripped/backrefs query node cannot be used.
+            // Emit KVValueHashFeatureType: it carries the full bytes, the
+            // stored (combined) value hash, and the feature type — and the
+            // restorer recomputes the combined hash from the bytes for the
+            // item variants, binding them (see `write_chunk`).
+            ProofNodeType::KvBackwardsReferencesValueHash => {
+                self.to_kv_value_hash_feature_type_node()
+            }
             ProofNodeType::KvValueHashFeatureType => self.to_kv_value_hash_feature_type_node(),
             // References: at merk level, generate same node type as non-ref counterpart
             // GroveDB will post-process if needed
@@ -188,12 +226,42 @@ where
         tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<Op>, Error> {
+        self.traverse_and_build_chunk_with_features(
+            instructions,
+            depth,
+            tree_type,
+            false,
+            grove_version,
+        )
+    }
+
+    /// The chunk producer preserves restoration metadata, while trunk and
+    /// branch query proofs use their established compact node types.
+    pub(crate) fn traverse_and_build_chunk_with_features(
+        &mut self,
+        instructions: &[bool],
+        depth: usize,
+        tree_type: TreeType,
+        preserve_features: bool,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<Op>, Error> {
         let mut cost = OperationCost::default();
 
         // base case
         if instructions.is_empty() {
             // we are at the desired node
-            return self.create_chunk(depth, tree_type, grove_version);
+            let mut proof = Vec::new();
+            cost_return_on_error!(
+                &mut cost,
+                self.create_chunk_internal(
+                    &mut proof,
+                    depth,
+                    tree_type,
+                    preserve_features,
+                    grove_version
+                )
+            );
+            return Ok(proof).wrap_with_cost(cost);
         }
 
         // link must exist
@@ -218,7 +286,13 @@ where
 
         // recurse on child
         child
-            .traverse_and_build_chunk(&instructions[1..], depth, tree_type, grove_version)
+            .traverse_and_build_chunk_with_features(
+                &instructions[1..],
+                depth,
+                tree_type,
+                preserve_features,
+                grove_version,
+            )
             .add_cost(cost)
     }
 

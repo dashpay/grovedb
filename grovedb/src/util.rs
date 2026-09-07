@@ -1,4 +1,5 @@
 pub(crate) mod compat;
+pub(crate) mod visitor;
 
 use grovedb_storage::Storage;
 
@@ -18,12 +19,16 @@ impl<'a, 'db> TxRef<'a, 'db> {
         }
     }
 
+    /// Whether this transaction was started locally (and so will really
+    /// commit in `commit_local`) rather than borrowed from the caller.
+    pub(crate) fn is_owned(&self) -> bool {
+        matches!(self, TxRef::Owned(_))
+    }
+
     /// Commit the transaction if it wasn't received from outside
     pub(crate) fn commit_local(self) -> Result<(), Error> {
         match self {
-            TxRef::Owned(tx) => tx
-                .commit()
-                .map_err(|e| grovedb_storage::Error::from(e).into()),
+            TxRef::Owned(tx) => tx.commit().map_err(Into::into),
             TxRef::Borrowed(_) => Ok(()),
         }
     }

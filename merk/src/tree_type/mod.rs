@@ -627,7 +627,7 @@ mod tests {
         // children are accepted.
         assert!(TreeType::ProvableCountProvableSumTree.is_count_and_sum_bearing());
 
-        // Equivalence: is_count_and_sum_bearing iff both is_count_bearing
+        // Equivalence: is_count_and_sum_bearing if and only if both is_count_bearing
         // and is_sum_bearing.
         for tt in [
             TreeType::NormalTree,

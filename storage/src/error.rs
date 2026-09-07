@@ -37,6 +37,15 @@ pub enum Error {
     /// Cost Error
     #[error("cost error: {0}")]
     CostError(grovedb_costs::error::Error),
+    /// A write or commit was attempted through a snapshot read
+    /// transaction. Snapshot read transactions
+    /// (`start_snapshot_read_transaction`) exist to pin multi-operation
+    /// READS to one committed state; writing through one is refused
+    /// because `set_snapshot` arms commit-time conflict detection, which
+    /// can fail such a commit with `Busy` where a plain transaction's
+    /// would have succeeded. The payload names the refused operation.
+    #[error("snapshot read transaction is read-only: refused {0}")]
+    SnapshotReadOnlyTransaction(&'static str),
     /// Rocks DB error
     #[error("rocksDB error: {0}")]
     #[cfg(feature = "rocksdb_storage")]

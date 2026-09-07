@@ -13,6 +13,11 @@ pub enum CommitmentTreeError {
     /// A 32-byte value is not a valid Pallas field element.
     #[error("invalid Pallas field element")]
     InvalidFieldElement,
+
+    /// An unknown grove version was supplied for a versioned accounting
+    /// decision.
+    #[error("version error: {0}")]
+    VersionError(String),
     /// The ciphertext payload length does not match the expected size for the
     /// configured `MemoSize`.
     #[error("invalid payload size: expected {expected}, got {actual}")]

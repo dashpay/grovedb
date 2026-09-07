@@ -80,16 +80,18 @@ mod tests {
             merk.for_merk(|m| {
                 ref_a
                     .insert_reference(m, b"a", NULL_HASH, None, grove_version)
-                    .unwrap()
-                    .expect("should insert ref_a at merk level");
-            });
+                    .map_err(crate::Error::MerkError)
+            })
+            .unwrap()
+            .expect("should insert ref_a at merk level");
 
             merk.for_merk(|m| {
                 ref_b
                     .insert_reference(m, b"b", NULL_HASH, None, grove_version)
-                    .unwrap()
-                    .expect("should insert ref_b at merk level");
-            });
+                    .map_err(crate::Error::MerkError)
+            })
+            .unwrap()
+            .expect("should insert ref_b at merk level");
 
             drop(merk);
 
@@ -171,9 +173,10 @@ mod tests {
                 merk.for_merk(|m| {
                     ref_element
                         .insert_reference(m, keygen(i), NULL_HASH, None, grove_version)
-                        .unwrap()
-                        .expect("should insert reference at merk level");
-                });
+                        .map_err(crate::Error::MerkError)
+                })
+                .unwrap()
+                .expect("should insert reference at merk level");
 
                 drop(merk);
             }

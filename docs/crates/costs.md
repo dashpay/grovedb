@@ -42,6 +42,82 @@ pub struct StorageCost {
 - `replaced_bytes`: Existing data overwritten
 - `removed_bytes`: Data deleted from storage
 
+#### Removed bytes: folding a basic removal into a sectioned one (issue #683)
+
+`removed_bytes` is a `StorageRemovedBytes`: `NoStorageRemoval`, a plain
+`BasicStorageRemoval(u32)`, or a `SectionedStorageRemoval` map of
+`owner identifier → epoch → bytes` (Drive attributes refunds by owner and
+epoch through it). When a basic removal is combined with a sectioned one the
+basic bytes are folded into the **default owner's** (`[0; 32]`) section
+under `UNKNOWN_EPOCH`. Four operator arms do this: `Basic + Sectioned`,
+`Sectioned + Basic`, `Basic += Sectioned` and `Sectioned += Basic`.
+
+Three of them shipped with a defect: when the default owner already had a
+section they detached its epoch map, folded the basic bytes in, and never
+reinserted it, so the owner's existing epoch attribution AND the incoming
+basic bytes were both lost (only identity-owned sections survived).
+`Sectioned += Basic` always reinserted correctly and is version-independent.
+
+Drive's storage-flags callback returns basic/basic removals for unflagged
+elements and sectioned/sectioned removals for flagged elements (or no removal
+for zero bytes). Its mixed-removal case arises when those results are
+aggregated. Drive separates the default identifier's section into
+`FeeResult.removed_bytes_from_system` before calculating identity refunds;
+identity-owned sections are unaffected by this defect. The GroveDB deletion
+regressions use custom basic/sectioned callbacks to exercise the arithmetic
+directly, so their lost-byte totals do not establish lost identity refunds.
+
+The arithmetic is selected by
+`grovedb_versions.storage_costs.add_basic_storage_removal_to_sectioned_storage_removal`:
+
+| arm | GROVE_V1..V3 (v0, legacy) | GROVE_V4 (v1) |
+|---|---|---|
+| `Basic + Sectioned`, `Sectioned + Basic`, `Basic += Sectioned` | default owner present: its section is dropped (its epochs and the basic bytes vanish); default owner absent: correct | default section preserved, basic bytes added to its `UNKNOWN_EPOCH` entry |
+| `Sectioned += Basic` | correct | correct (unchanged) |
+
+Legacy output is kept byte-exact because removal totals are part of the
+replayed cost record. Because the operator impls cannot carry a
+`GroveVersion` (and `grovedb-costs` has no `grovedb-version` dependency),
+the selected version travels in a thread-local installed by an RAII guard
+(`use_basic_sectioned_removal_addition_version` /
+`with_basic_sectioned_removal_addition_version`) at the version-aware entry
+points: `Merk::apply_unchecked_with_old_value_observer` (which every Merk
+apply funnels through), `GroveDb::delete_with_sectional_storage_function`,
+`delete_if_empty_tree_with_sectional_storage_function`,
+`apply_batch_with_element_flags_update` and
+`apply_partial_batch_with_element_flags_update` (so `delete_up_tree_while_empty_with_sectional_storage`
+is covered too). The storage-batch commit that sums
+`KeyValueStorageCost::combined_removed_bytes` runs inside those scopes.
+
+The unguarded default is `0` (legacy): a caller that never installs a guard
+reproduces shipped output rather than silently upgrading. **Any consumer
+that combines `StorageRemovedBytes` outside a GroveDB call** — for example
+summing per-operation `OperationCost`s or `StorageCost`s across operations —
+runs the legacy arithmetic even under GROVE_V4 unless it installs the guard
+itself around that aggregation.
+
+The guard is `!Send` and `!Sync` so it stays on its originating thread. Keep it
+in a synchronous scope, drop nested guards in reverse creation order, and
+never hold it across an `.await`: even on one thread, other tasks would
+observe its version while the owning task is suspended. The closure helper
+also scopes only synchronous work, not a future returned by the closure.
+For example:
+
+```rust
+let _guard = grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(
+    grove_version
+        .grovedb_versions
+        .storage_costs
+        .add_basic_storage_removal_to_sectioned_storage_removal,
+);
+total_cost += op_cost; // basic-into-default-section folds now use the selected version
+```
+
+The exact per-arm maps for both versions are pinned in
+`costs/tests/coverage_regression.rs` (the `*_basic_sectioned_removal_matrix_*`
+tests) and the GroveDB entry points in
+`grovedb/src/batch/single_deletion_cost_tests.rs`.
+
 ### CostResult
 
 A wrapper type that pairs computation results with their costs:
@@ -116,6 +192,64 @@ pub fn sum_tree_cost_size(
 Count trees add overhead for maintaining element counts:
 - Additional 8 bytes for count storage
 - Propagation costs through parent trees
+
+#### Append-only trees (BulkAppendTree, CommitmentTree, PrivateDocumentStore)
+
+The append-only family writes four kinds of data rows: dense-buffer slots
+(one per position, keys reused every epoch), from GROVE_V4 the buffer's
+path records (one per append, under the inserting position's key
+`b'h' || position`, never rewritten within an epoch), the chunk blob an
+epoch is compacted into (plus the MMR internal nodes), and — for the
+commitment tree — the frontier, one value rewritten on every append. How those writes are
+reported to the fee layer is version-gated
+(`bulk_append_tree_versions.cost.append_storage_accounting`,
+`commitment_tree_versions.cost.frontier_save_storage_accounting`; the
+records exist only under `dense_tree_versions.root_maintenance = 1`):
+
+| write | GROVE_V1..V3 (v0) | GROVE_V4 (v1, issue #822) |
+|---|---|---|
+| buffer slot, any epoch | key + value `added` | value `replaced` (its own paid size); nothing added, key not charged, nothing read |
+| entry's chunk-blob share | — (blob charged at compaction) | entry bytes `added` at the entry's own append (plus the variable format's 4-byte per-entry prefix unless the owner declared a fixed entry size — the commitment tree and the private document store do), plus the epoch's share of the blob framing and MMR nodes (`amortized_compaction_added_bytes`, 1 byte at `chunk_power` 11) |
+| entry's part of the blob rewrite | — | entry bytes `replaced` at the entry's own append |
+| compaction blob, MMR internal nodes, persisted MMR root (`r`) | key + whole blob `added`; nodes `added`; no persisted root; one seek per put | prepaid (`KeyValueStorageCost::prepaid()`): no bytes, no key, no seek at commit — their seeks are amortized into every append (`amortized_compaction_seeks`, 1 at `chunk_power` 11) |
+| frontier rewrite | key + value `added` every save | 556 bytes `replaced` every save — the model's 554-byte frontier plus its two-byte length varint (`frontier_cost_model`), first save included |
+| buffer path record (one per append, `42 + 32·chunk_power` bytes) | — (no records) | `replaced` (its own paid size); nothing added, key not charged |
+
+Under v0 every note is billed roughly twice over its life (slot + blob) and
+the whole blob (≈ 630 KB at `chunk_power` 11) lands on one append per
+epoch. Under v1 each entry's `added_bytes` are its long-term footprint —
+its permanent bytes charged once, at its own append, plus the epoch's share
+of the blob framing and MMR nodes — and everything else (the rolling
+buffer's slots and records, its part of the blob rewrite, the frontier) is
+replacement; the compacting append is charged the same as any other (its
+hashes — at most 65 per chunk — are amortized as a bound over the epoch,
+`⌈65 / 2^chunk_power⌉` blake3 per append, its writes are prepaid, and it
+is charged the slot / record churn it does not write); the dense buffer's
+physical bytes, a bounded per-tree overhead rewritten every epoch, are
+deliberately charged to nobody as growth. `removed_bytes` stays
+`NoStorageRemoval` in both — a rolling buffer refunds nobody. Stored bytes,
+roots and proofs are identical under both versions.
+
+Mechanically: the MMR `MmrStore` takes a `LeafValueStorageCost::PartlyPrepaid`
+policy that the bulk tree feeds `chunk_blob_entry_bytes`; the
+`Result`-returning appends report a `storage_accounting_cost` (the prepaid
+share plus the buffer model's reads) for the caller to bill, while the
+`CostResult`-returning `append_deferred_roots` already includes it in its
+cost.
+
+Under v1 the bulk-append tree asks the dense tree for
+`SlotWriteAccounting::Churn`: the slot put and the path record put are
+issued as in-place replacements of their own size
+(`for_in_place_value_rewrite(len, len)`), whatever the keys held — the
+buffer is not an entry's long-term storage, so nothing of it is ever
+`added` and nothing is read to size a rewrite. The dense tree's
+root-maintenance charge is a fixed model for the buffer's height
+(`v1_insert_model_cost`: the blake3 calls and record reads averaged over a
+full buffer, rounded up); the `Result`-returning appends forward it as
+`hash_count` plus the reads in `storage_accounting_cost`, and
+`append_deferred_roots` (the `PrivateDocumentStore` path) bills it directly.
+A standalone `DenseAppendOnlyFixedSizeTree` keeps `AsNew`: its buffer is its
+long-term storage, so its records are new storage.
 
 ## Cost Context
 

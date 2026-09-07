@@ -96,6 +96,26 @@ fn private_document_store_slots_are_gated_to_v4() {
 }
 
 #[test]
+fn flat_drop_slots_are_gated_to_v4() {
+    // The flat-subtree drop family (issue #848) fails closed on every
+    // released version: all slots must be 0 on V1..V3 and 1 on V4.
+    // Changing a V1..V3 value would retroactively enable an O(1) drop of
+    // populated subtrees on a live protocol version — a consensus break.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3] {
+        let flat_drop = &v.grovedb_versions.operations.flat_drop;
+        assert_eq!(flat_drop.drop_flat_subtree, 0, "v{}", v.protocol_version);
+        assert_eq!(
+            flat_drop.batch_delete_tree_drop_flat, 0,
+            "v{}",
+            v.protocol_version
+        );
+    }
+    let flat_drop = &GROVE_V4.grovedb_versions.operations.flat_drop;
+    assert_eq!(flat_drop.drop_flat_subtree, 1);
+    assert_eq!(flat_drop.batch_delete_tree_drop_flat, 1);
+}
+
+#[test]
 fn grove_versions_ordered_by_protocol_version() {
     for window in GROVE_VERSIONS.windows(2) {
         assert!(window[0].protocol_version < window[1].protocol_version);
@@ -174,6 +194,41 @@ fn v2_has_updated_merk_average_case_costs() {
             .merk_versions
             .average_case_costs
             .sum_tree_estimated_size,
+        1
+    );
+}
+
+#[test]
+fn v4_uses_fixed_basic_to_sectioned_storage_removal_addition() {
+    // v1..v3 are live on mainnet with the legacy (default-section-dropping)
+    // removal arithmetic; only v4+ activates the fix. A `1` on any earlier
+    // version would change replayed historical costs.
+    assert_eq!(
+        GROVE_V1
+            .grovedb_versions
+            .storage_costs
+            .add_basic_storage_removal_to_sectioned_storage_removal,
+        0
+    );
+    assert_eq!(
+        GROVE_V2
+            .grovedb_versions
+            .storage_costs
+            .add_basic_storage_removal_to_sectioned_storage_removal,
+        0
+    );
+    assert_eq!(
+        GROVE_V3
+            .grovedb_versions
+            .storage_costs
+            .add_basic_storage_removal_to_sectioned_storage_removal,
+        0
+    );
+    assert_eq!(
+        GROVE_V4
+            .grovedb_versions
+            .storage_costs
+            .add_basic_storage_removal_to_sectioned_storage_removal,
         1
     );
 }
@@ -489,6 +544,56 @@ fn terminal_keys_is_legacy_until_v4() {
         GROVE_V4.grovedb_versions.path_query_methods.terminal_keys,
         1
     );
+}
+
+#[test]
+fn delete_internal_on_transaction_is_legacy_until_v4() {
+    // Reusing the already-open parent Merk for non-empty child tree deletes
+    // (issue #686) activates at GROVE_V4; v1-v3 are live in production and
+    // must keep the legacy reopen labeled with the child's tree type.
+    // GROVE_V4 selects v2: the backward-references router, whose flag-less
+    // calls run the exact v1 (parent-reuse) body.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3] {
+        assert_eq!(
+            v.grovedb_versions
+                .operations
+                .delete
+                .delete_internal_on_transaction,
+            0
+        );
+    }
+    assert_eq!(
+        GROVE_V4
+            .grovedb_versions
+            .operations
+            .delete
+            .delete_internal_on_transaction,
+        2
+    );
+}
+
+#[test]
+fn backward_references_flows_activate_at_v4() {
+    // The backward-references feature (PR #345) gates on GROVE_V4: the
+    // insert router (v1), the delete router (v2, above), and the
+    // element-level insert_if_changed_value Merk-read variant (v1). All
+    // shipped versions stay at 0.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3] {
+        assert_eq!(
+            v.grovedb_versions.operations.insert.insert_on_transaction,
+            0
+        );
+        assert_eq!(v.grovedb_versions.element.insert_if_changed_value, 0);
+    }
+    assert_eq!(
+        GROVE_V4
+            .grovedb_versions
+            .operations
+            .insert
+            .insert_on_transaction,
+        1
+    );
+    assert_eq!(GROVE_V4.grovedb_versions.element.insert_if_changed_value, 1);
 }
 
 #[test]

@@ -199,7 +199,7 @@ impl GroveDb {
         let new_total_count = store.total_count();
 
         // Flush MMR overlay to storage (through the batch).
-        cost_return_on_error_no_add!(cost, store.commit_mmr().map_err(map_pds_err));
+        cost_return_on_error_no_add!(cost, store.commit_mmr(grove_version).map_err(map_pds_err));
 
         // Drop the store (and its storage context) before opening merk.
         drop(store);
@@ -557,7 +557,10 @@ impl GroveDb {
             let current_total_count = store.total_count();
 
             // Flush MMR overlay to storage (through the batch).
-            cost_return_on_error_no_add!(cost, store.commit_mmr().map_err(map_pds_err));
+            cost_return_on_error_no_add!(
+                cost,
+                store.commit_mmr(grove_version).map_err(map_pds_err)
+            );
 
             // Drop the store (and its storage context).
             drop(store);

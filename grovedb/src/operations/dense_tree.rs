@@ -86,7 +86,7 @@ impl GroveDb {
 
         let (new_root_hash, position) = cost_return_on_error!(
             &mut cost,
-            tree.insert(&value)
+            tree.insert(&value, grove_version)
                 .map_err(|e| Error::CorruptedData(format!("dense tree insert failed: {}", e)))
         );
 
@@ -282,7 +282,7 @@ impl GroveDb {
 
         let root_hash = cost_return_on_error!(
             &mut cost,
-            tree.root_hash()
+            tree.root_hash(grove_version)
                 .map_err(|e| Error::CorruptedData(format!("dense tree root hash error: {}", e)))
         );
 
@@ -449,7 +449,7 @@ impl GroveDb {
             for value in values {
                 let (hash, _pos) = cost_return_on_error!(
                     &mut cost,
-                    tree.insert(value).map_err(|e| {
+                    tree.insert(value, grove_version).map_err(|e| {
                         Error::CorruptedData(format!("dense tree insert failed: {}", e))
                     })
                 );

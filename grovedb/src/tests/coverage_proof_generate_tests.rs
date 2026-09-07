@@ -158,6 +158,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 },
                 limit,
                 offset: None,
@@ -300,7 +301,7 @@ mod tests {
         assert!(
             matches!(err, Error::NotSupported(ref msg)
                 if msg.contains("V0 proofs do not support subqueries into")
-                    && msg.contains("prove_query_v1")),
+                    && msg.contains("use a V1 proof")),
             "expected the V0 indexed-subquery NotSupported error, got {err:?}"
         );
     }

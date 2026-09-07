@@ -14,7 +14,7 @@
 //!    independently re-derive:
 //!    - `skipped` — number of in-range items the prover claims to have
 //!      skipped via offset. Must equal the requested offset (or be ≤
-//!      it iff the in-range population was smaller, see "Truncated
+//!      it if and only if the in-range population was smaller, see "Truncated
 //!      offset" below).
 //!    - `returned_items` — the actual values the verifier reconstructs
 //!      from value-bearing nodes inside the limit window.
@@ -106,6 +106,18 @@ pub struct CountOffsetReturnedItem {
     /// `child_hash_verified = true` for non-empty trees); callers must
     /// not silently treat a `false` here as `true`.
     pub child_hash_verified: bool,
+    /// Whether this row was surfaced through a `KVRefValueHash*` node,
+    /// i.e. `value` holds the RESOLVED reference target's stored bytes
+    /// rather than the proved tree's own entry bytes.
+    ///
+    /// The caller needs this to tell an honest dereferenced target apart
+    /// from a forged own-entry: a reference commits to its terminal's
+    /// stored bytes verbatim, wrapper included, so a target that lives
+    /// wrapped in `NonCounted` legitimately surfaces here wrapped. The
+    /// proved tree's own entries can never surface wrapped (the prover
+    /// rejects them), so a wrapped value with this flag `false` is a
+    /// forgery.
+    pub resolved_from_reference: bool,
 }
 
 /// The verifier's reconstructed view of an offset-paginated count-tree
@@ -595,6 +607,7 @@ fn classify_self<'a>(
             }
             let vh = compute_value_hash(value.as_slice()).unwrap();
             Ok(BoundaryKind::ValueReturned {
+                resolved_from_reference: false,
                 key: key.as_slice(),
                 value: value.as_slice(),
                 value_hash: vh,
@@ -620,6 +633,7 @@ fn classify_self<'a>(
             }
             let vh = compute_value_hash(value.as_slice()).unwrap();
             Ok(BoundaryKind::ValueReturned {
+                resolved_from_reference: false,
                 key: key.as_slice(),
                 value: value.as_slice(),
                 value_hash: vh,
@@ -693,6 +707,7 @@ fn classify_self<'a>(
                 ));
             }
             Ok(BoundaryKind::ValueReturned {
+                resolved_from_reference: false,
                 key: key.as_slice(),
                 value: value.as_slice(),
                 value_hash: *vh,
@@ -728,6 +743,7 @@ fn classify_self<'a>(
                 )));
             }
             Ok(BoundaryKind::ValueReturned {
+                resolved_from_reference: true,
                 key: key.as_slice(),
                 value: value.as_slice(),
                 // The committed value hash for a combined reference is
@@ -755,6 +771,7 @@ fn classify_self<'a>(
                 )));
             }
             Ok(BoundaryKind::ValueReturned {
+                resolved_from_reference: true,
                 key: key.as_slice(),
                 value: value.as_slice(),
                 value_hash: crate::tree::combine_hash(
@@ -823,6 +840,10 @@ enum BoundaryKind<'a> {
         /// proof-carried value_hash (tree-flavored entries store
         /// `combine_hash(H(value), child_root)`).
         value_hash: CryptoHash,
+        /// `true` for the `KVRefValueHash*` family — `value` is the
+        /// dereferenced target's stored bytes. See
+        /// [`CountOffsetReturnedItem::resolved_from_reference`].
+        resolved_from_reference: bool,
     },
 }
 
@@ -864,6 +885,7 @@ fn apply_self_state(disposition: &BoundaryKind<'_>, state: &mut VerifyState) -> 
             key,
             value,
             value_hash,
+            resolved_from_reference,
         } => {
             if state.offset_remaining > 0 {
                 return Err(Error::InvalidProofError(
@@ -886,6 +908,7 @@ fn apply_self_state(disposition: &BoundaryKind<'_>, state: &mut VerifyState) -> 
                 key: key.to_vec(),
                 value: value.to_vec(),
                 value_hash: *value_hash,
+                resolved_from_reference: *resolved_from_reference,
                 // The current count-offset prover never emits
                 // `KVValueHashFeatureTypeWithChildHash` (it has no need
                 // to — Items in count trees don't have child merks to

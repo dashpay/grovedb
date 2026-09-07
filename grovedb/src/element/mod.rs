@@ -14,6 +14,9 @@ mod path_query_push_args;
 #[cfg(feature = "minimal")]
 /// Query execution logic for elements, including path queries and sized queries.
 pub mod query;
+#[cfg(feature = "minimal")]
+/// Per-frame limit/offset budget state for the trusted query walk.
+pub mod query_budget;
 /// Options for controlling query behavior.
 pub mod query_options;
 

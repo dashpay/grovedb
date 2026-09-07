@@ -245,6 +245,7 @@ where
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
         cost_return_on_error_no_add!(
@@ -256,7 +257,8 @@ where
                     old_specialized_cost,
                     get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
-                    section_removal_bytes
+                    section_removal_bytes,
+                    grove_version
                 )
                 .unwrap_add_cost(&mut cost))
         );
@@ -336,6 +338,7 @@ where
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
         cost_return_on_error_no_add!(
@@ -348,7 +351,59 @@ where
                     old_specialized_cost,
                     get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
-                    section_removal_bytes
+                    section_removal_bytes,
+                    grove_version
+                )
+                .unwrap_add_cost(&mut cost))
+        );
+        Ok(self).wrap_with_cost(cost)
+    }
+
+    /// Similar to `Tree#put_value_with_provided_value_hash`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn put_value_with_provided_value_hash(
+        mut self,
+        value: Vec<u8>,
+        value_hash: CryptoHash,
+        end_hash: Option<CryptoHash>,
+        feature_type: TreeFeatureType,
+        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        get_temp_new_value_with_old_flags: &impl Fn(
+            &Vec<u8>,
+            &Vec<u8>,
+        ) -> Result<Option<Vec<u8>>, Error>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Self, Error> {
+        let mut cost = OperationCost::default();
+        cost_return_on_error_no_add!(
+            cost,
+            self.tree.own_result(|t| t
+                .put_value_with_provided_value_hash(
+                    value,
+                    value_hash,
+                    end_hash,
+                    feature_type,
+                    old_specialized_cost,
+                    get_temp_new_value_with_old_flags,
+                    update_tree_value_based_on_costs,
+                    section_removal_bytes,
+                    grove_version,
                 )
                 .unwrap_add_cost(&mut cost))
         );

@@ -20,6 +20,8 @@ pub mod kv;
 mod link;
 #[cfg(feature = "minimal")]
 mod ops;
+#[cfg(feature = "minimal")]
+mod put_value;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod tree_feature_type;
 #[cfg(feature = "minimal")]
@@ -215,6 +217,7 @@ impl TreeNode {
             value_storage_cost,
             new_node: self.old_value.is_none(),
             needs_value_verification: self.inner.kv.value_defined_cost.is_none(),
+            prepaid: false,
         };
 
         Ok((current_value_byte_cost, key_value_storage_cost))
@@ -406,6 +409,17 @@ impl TreeNode {
     #[inline]
     pub fn feature_type(&self) -> TreeFeatureType {
         self.inner.kv.feature_type
+    }
+
+    /// Replaces this node's feature type in place, leaving key, value and
+    /// cached hashes untouched (the feature type does not participate in
+    /// the kv hash). Used by chunk restoration to re-derive a node's OWN
+    /// aggregate contribution — chunk proof nodes for the `Provable*`
+    /// families carry subtree AGGREGATES, not own values (see
+    /// `Restorer::rewrite_aggregates`).
+    #[inline]
+    pub(crate) fn set_feature_type(&mut self, feature_type: TreeFeatureType) {
+        self.inner.kv.feature_type = feature_type;
     }
 
     /// Returns the root node's key as a slice.
@@ -1116,59 +1130,6 @@ impl TreeNode {
     /// Replaces the root node's value with the given value and returns the
     /// modified `Tree`.
     #[inline]
-    pub fn put_value(
-        mut self,
-        value: Vec<u8>,
-        feature_type: TreeFeatureType,
-        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
-        get_temp_new_value_with_old_flags: &impl Fn(
-            &Vec<u8>,
-            &Vec<u8>,
-        ) -> Result<Option<Vec<u8>>, Error>,
-        update_tree_value_based_on_costs: &mut impl FnMut(
-            &StorageCost,
-            &Vec<u8>,
-            &mut Vec<u8>,
-        ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
-            Error,
-        >,
-        section_removal_bytes: &mut impl FnMut(
-            &Vec<u8>,
-            u32,
-            u32,
-        ) -> Result<
-            (StorageRemovedBytes, StorageRemovedBytes),
-            Error,
-        >,
-    ) -> CostResult<Self, Error> {
-        let mut cost = OperationCost::default();
-
-        self.inner.kv = self.inner.kv.put_value_no_update_of_hashes(value);
-        self.inner.kv.feature_type = feature_type;
-
-        if self.old_value.is_some() {
-            // we are replacing a value
-            // in this case there is a possibility that the client would want to update the
-            // element flags based on the change of values
-            cost_return_on_error_no_add!(
-                cost,
-                self.just_in_time_tree_node_value_update(
-                    old_specialized_cost,
-                    get_temp_new_value_with_old_flags,
-                    update_tree_value_based_on_costs,
-                    section_removal_bytes
-                )
-            );
-        }
-
-        self.inner.kv = self.inner.kv.update_hashes().unwrap_add_cost(&mut cost);
-        Ok(self).wrap_with_cost(cost)
-    }
-
-    /// Replaces the root node's value with the given value and returns the
-    /// modified `Tree`.
-    #[inline]
     pub fn put_value_with_fixed_cost(
         mut self,
         value: Vec<u8>,
@@ -1222,13 +1183,21 @@ impl TreeNode {
         Ok(self).wrap_with_cost(cost)
     }
 
-    /// Replaces the root node's value with the given value and value hash
-    /// and returns the modified `Tree`.
-    #[inline]
-    pub fn put_value_and_reference_value_hash(
+    /// Replaces the value and sets the node's value hash to the provided
+    /// (already fully computed) hash. Used by backward-references elements.
+    ///
+    /// `end_hash` is the resolved end-of-chain hash a bidirectional
+    /// reference commits to (`None` for the item variants). It is needed
+    /// only when a just-in-time value update rewrites the bytes of a
+    /// replaced element: the node value hash is then recomputed from the
+    /// final bytes with the family's two-layer scheme, so a flags-update
+    /// callback can never commit bytes that disagree with their hash.
+    #[allow(clippy::too_many_arguments)]
+    pub fn put_value_with_provided_value_hash(
         mut self,
         value: Vec<u8>,
         value_hash: CryptoHash,
+        end_hash: Option<CryptoHash>,
         feature_type: TreeFeatureType,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         get_temp_new_value_with_old_flags: &impl Fn(
@@ -1251,16 +1220,19 @@ impl TreeNode {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
 
         self.inner.kv = self.inner.kv.put_value_no_update_of_hashes(value);
         self.inner.kv.feature_type = feature_type;
 
+        let mut value_hash = value_hash;
         if self.old_value.is_some() {
             // we are replacing a value
             // in this case there is a possibility that the client would want to update the
             // element flags based on the change of values
+            let value_before_update = self.inner.kv.value_as_slice().to_vec();
             cost_return_on_error_no_add!(
                 cost,
                 self.just_in_time_tree_node_value_update(
@@ -1270,14 +1242,103 @@ impl TreeNode {
                     section_removal_bytes
                 )
             );
+            // The provided hash was computed over the bytes supplied by the
+            // caller. A just-in-time value mutation (a flags carry-over or
+            // a flags-update callback rewrite, e.g. storage flags absorbing
+            // the bytes an added referrer entry costs) changes those bytes,
+            // so the node value hash is recomputed from the FINAL bytes
+            // with the family's two-layer scheme: combine(H(stripped),
+            // H(referrer list)), further combined with the end hash for a
+            // bidirectional reference. Only backward-references elements
+            // are written this way; anything else mutated here would
+            // commit bytes no scheme rebinds — fail closed.
+            if self.inner.kv.value_as_slice() != value_before_update.as_slice() {
+                value_hash = cost_return_on_error!(
+                    &mut cost,
+                    Self::recompute_backward_references_value_hash(
+                        self.inner.kv.value_as_slice(),
+                        end_hash,
+                        grove_version,
+                    )
+                );
+            }
         }
 
         self.inner.kv = self
             .inner
             .kv
-            .update_hashes_using_reference_value_hash(value_hash)
+            .update_hashes_with_provided_value_hash(value_hash)
             .unwrap_add_cost(&mut cost);
         Ok(self).wrap_with_cost(cost)
+    }
+
+    /// The node value hash a backward-references element with these stored
+    /// bytes commits to: `combine(H(stripped), H(referrer list))`, combined
+    /// once more with `end_hash` for a bidirectional reference (which must
+    /// carry one). Errors for bytes that are not a backward-references
+    /// element.
+    fn recompute_backward_references_value_hash(
+        bytes: &[u8],
+        end_hash: Option<CryptoHash>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<CryptoHash, Error> {
+        use crate::element::ElementExt;
+
+        let mut cost = OperationCost::default();
+        let element = cost_return_on_error_no_add!(
+            cost,
+            grovedb_element::Element::deserialize(bytes, grove_version).map_err(|e| {
+                Error::ClientCorruptionError(format!(
+                    "a just-in-time value update left a provided-value-hash write with bytes \
+                     that do not decode as an element: {e}"
+                ))
+            })
+        );
+        let hashes = cost_return_on_error!(
+            &mut cost,
+            element
+                .backward_references_hashes(grove_version)
+                .map_err(|e| Error::ClientCorruptionError(format!(
+                    "cannot rehash a provided-value-hash write after a just-in-time value \
+                     update: {e}"
+                )))
+        );
+        let Some(hashes) = hashes else {
+            return Err(Error::ClientCorruptionError(
+                "a just-in-time value update cannot apply to a provided-value-hash write of a \
+                 non-backward-references element: the mutated bytes would no longer match \
+                 the authenticated hash"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        };
+        let is_reference = matches!(
+            element,
+            grovedb_element::Element::BidirectionalReference(..)
+        );
+        let value_hash = match (is_reference, end_hash) {
+            (true, Some(end_hash)) => {
+                hash::combine_hash(&hashes.combined, &end_hash).unwrap_add_cost(&mut cost)
+            }
+            (false, None) => hashes.combined,
+            (true, None) => {
+                return Err(Error::ClientCorruptionError(
+                    "a provided-value-hash write of a bidirectional reference must carry its \
+                     end hash to survive a just-in-time value update"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+            (false, Some(_)) => {
+                return Err(Error::ClientCorruptionError(
+                    "a provided-value-hash write carries an end hash but its bytes are not a \
+                     bidirectional reference"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+        };
+        Ok(value_hash).wrap_with_cost(cost)
     }
 
     /// H1-A variant: replaces the root node's value with the given value,

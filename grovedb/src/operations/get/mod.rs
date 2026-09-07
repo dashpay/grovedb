@@ -18,11 +18,17 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
     CostsExt, OperationCost,
 };
-use grovedb_merk::{element::get::ElementFetchFromStorageExtensions, error::MerkErrorExt};
+use grovedb_merk::{
+    element::{get::ElementFetchFromStorageExtensions, ElementExt},
+    error::MerkErrorExt,
+    tree::combine_hash,
+    CryptoHash,
+};
 use grovedb_path::SubtreePath;
 use grovedb_storage::StorageContext;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
+use crate::bidirectional_references::BidirectionalReference;
 use crate::{
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
     util::TxRef,
@@ -104,16 +110,130 @@ impl GroveDb {
                 )
                 .add_cost(cost)
             }
-            other => Ok(other).wrap_with_cost(cost),
+            // A bidirectional reference's declared `max_hop` bounds the
+            // whole resolution, exactly like the query surfaces (plain
+            // references keep their historical global-budget behavior).
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: reference_path,
+                    max_hop,
+                    ..
+                },
+                _,
+            ) => {
+                let path_owned = cost_return_on_error_into!(
+                    &mut cost,
+                    path_from_reference_path_type(reference_path, &path.to_vec(), Some(key))
+                        .wrap_with_cost(OperationCost::default())
+                );
+                self.follow_reference_with_max_hop(
+                    path_owned.as_slice().into(),
+                    max_hop,
+                    allow_cache,
+                    transaction,
+                    grove_version,
+                )
+                .add_cost(cost)
+            }
+            other => Ok(other.stripped_of_backward_references()).wrap_with_cost(cost),
         }
     }
 
-    /// Return the Element that a reference points to.
+    /// Return the Element that a reference points to, **for presentation**.
     /// If the reference points to another reference, keep following until
     /// base element is reached.
+    ///
+    /// The terminal is returned looked-through: a `NonCounted`-wrapped
+    /// terminal comes back as its inner element, which is what `get` /
+    /// query callers want. Anything that must reproduce the reference's
+    /// *commitment* — the hash a reference node binds — must start with
+    /// [`Self::follow_reference_as_stored`] instead. GROVE_V4 writes commit to
+    /// the terminal's stored bytes, wrapper included. Readers of existing nodes
+    /// must also account for legacy direct writes that hashed the inner value.
     pub fn follow_reference<B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<B>,
+        allow_cache: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Element, Error> {
+        self.follow_reference_as_stored(path, allow_cache, transaction, grove_version)
+            .map_ok(Element::into_underlying)
+    }
+
+    /// Return the terminal Element of a reference chain **exactly as it is
+    /// stored**, i.e. commitment-preserving.
+    ///
+    /// Wrappers are looked through only to decide whether to keep hopping
+    /// (a `NonCounted(Reference)` is followed like a bare `Reference`); the
+    /// terminal itself is returned with its wrapper intact. This is the
+    /// element whose serialized bytes hash to the merk-stored `value_hash`
+    /// of the terminal node, so `terminal.value_hash()` is the value a
+    /// reference node must combine into its own hash. The batch reference
+    /// resolver (`process_reference` in `batch/mod.rs`) commits to the same
+    /// representation — it either reads the terminal's stored value hash
+    /// directly or hashes the outer element's bytes. Direct writes on GROVE_V4
+    /// use that representation too. Proof generation and integrity checks
+    /// additionally select the legacy unwrapped representation when it matches
+    /// an existing reference's committed hash; the current read version does
+    /// not identify which write path originally produced the node.
+    ///
+    /// Use [`Self::follow_reference`] when the caller only needs the value
+    /// the reference denotes.
+    pub fn follow_reference_as_stored<B: AsRef<[u8]>>(
+        &self,
+        path: SubtreePath<B>,
+        allow_cache: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Element, Error> {
+        self.follow_reference_as_stored_visiting(
+            path,
+            HashSet::new(),
+            allow_cache,
+            transaction,
+            grove_version,
+        )
+    }
+
+    /// [`Self::follow_reference_as_stored`] for a reference that is *being
+    /// written* at `referrer_qualified_path` (its parent path plus its key):
+    /// the chain is refused with [`Error::CyclicReference`] the moment it
+    /// reaches the referrer's own position.
+    ///
+    /// Resolving from the target alone cannot see that case. The position
+    /// being written still holds its previous element in storage, so a chain
+    /// that runs back to it reads that stale element — an item, say — and
+    /// looks acyclic, while the state about to be committed is the cycle
+    /// `referrer -> ... -> referrer`, which every later read of any key on it
+    /// fails on. The MerkCache follower (`reference_path::follow_reference`)
+    /// and the batch resolver (`follow_reference_get_value_hash`) already
+    /// account for the referrer's position; this is the direct-write
+    /// equivalent.
+    pub(crate) fn follow_reference_as_stored_for_write<B: AsRef<[u8]>>(
+        &self,
+        referrer_qualified_path: Vec<Vec<u8>>,
+        path: SubtreePath<B>,
+        allow_cache: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Element, Error> {
+        self.follow_reference_as_stored_visiting(
+            path,
+            HashSet::from([referrer_qualified_path]),
+            allow_cache,
+            transaction,
+            grove_version,
+        )
+    }
+
+    /// The walk behind both `follow_reference_as_stored*` entry points.
+    /// `visited` seeds the cycle check: the chain is refused as cyclic as
+    /// soon as it reaches any qualified path already in the set.
+    fn follow_reference_as_stored_visiting<B: AsRef<[u8]>>(
+        &self,
+        path: SubtreePath<B>,
+        visited: HashSet<Vec<Vec<u8>>>,
         allow_cache: bool,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
@@ -127,11 +247,62 @@ impl GroveDb {
                 .follow_reference
         );
 
+        self.follow_reference_with_max_hop_visiting(
+            path,
+            None,
+            visited,
+            allow_cache,
+            transaction,
+            grove_version,
+        )
+    }
+
+    /// [`Self::follow_reference`] with the FIRST edge's declared `max_hop`
+    /// applied on top of the global budget. Mid-chain bidirectional edges
+    /// additionally cap the remaining budget with their own declarations, so
+    /// a chain never resolves through more hops than any of its
+    /// bidirectional members allow.
+    pub(crate) fn follow_reference_with_max_hop<B: AsRef<[u8]>>(
+        &self,
+        path: SubtreePath<B>,
+        max_hop: Option<u8>,
+        allow_cache: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Element, Error> {
+        self.follow_reference_with_max_hop_visiting(
+            path,
+            max_hop,
+            HashSet::new(),
+            allow_cache,
+            transaction,
+            grove_version,
+        )
+    }
+
+    /// The single walk behind every `follow_reference*` entry point:
+    /// `max_hop` is the first edge's declared budget (bidirectional edges
+    /// met along the way cap the remainder with their own), and `visited`
+    /// seeds the cycle check so a chain is refused as cyclic as soon as it
+    /// reaches any qualified path already in the set (a reference being
+    /// written seeds its own position; see
+    /// [`Self::follow_reference_as_stored_for_write`]).
+    fn follow_reference_with_max_hop_visiting<B: AsRef<[u8]>>(
+        &self,
+        path: SubtreePath<B>,
+        max_hop: Option<u8>,
+        mut visited: HashSet<Vec<Vec<u8>>>,
+        allow_cache: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
 
-        let mut hops_left = MAX_REFERENCE_HOPS;
+        let mut hops_left = max_hop
+            .map(|m| m as usize)
+            .unwrap_or(MAX_REFERENCE_HOPS)
+            .min(MAX_REFERENCE_HOPS);
         let mut current_element;
-        let mut visited = HashSet::new();
         // TODO, still have to do because of references handling
         let mut current_path = path.to_vec();
 
@@ -169,21 +340,79 @@ impl GroveDb {
             // Look through `NonCounted` so a chain that hops via a wrapped
             // reference is followed instead of being returned as a value.
             // `ReferenceWithSumItem` is also followed — the carried sum is
-            // irrelevant to chain destination.
-            match current_element.into_underlying() {
+            // irrelevant to chain destination. The terminal is handed back
+            // with its wrapper intact (it is the stored element); only its
+            // referrer list is stripped, see below.
+            //
+            // A bidirectional edge additionally carries a per-edge budget:
+            // this edge's declaration caps however much of the global
+            // budget remains. The fetch of THIS node is already paid for
+            // (the decrement below), and the edge's budget counts hops from
+            // here on — so cap at `edge_budget + 1`, leaving exactly
+            // `edge_budget` further fetches. An edge declaring `max_hop: 1`
+            // may reach its direct target but no reference beyond it.
+            let next_hop = match current_element.underlying() {
                 Element::Reference(reference_path, ..)
                 | Element::ReferenceWithSumItem(reference_path, ..) => {
+                    Some((reference_path.clone(), None))
+                }
+                Element::BidirectionalReference(reference, _) => {
+                    Some((reference.forward_reference_path.clone(), reference.max_hop))
+                }
+                _ => None,
+            };
+            match next_hop {
+                Some((reference_path, edge_budget)) => {
+                    if let Some(edge_budget) = edge_budget {
+                        hops_left = hops_left.min(edge_budget as usize + 1);
+                    }
                     current_path = cost_return_on_error_into!(
                         &mut cost,
                         path_from_reference_qualified_path_type(reference_path, &current_path)
                             .wrap_with_cost(OperationCost::default())
                     )
                 }
-                other => return Ok(other).wrap_with_cost(cost),
+                None => {
+                    // The referrer list is internal bookkeeping; reads return
+                    // the logical (stripped) form, matching what proofs carry
+                    // and what forward references commit to. For every other
+                    // element this is the stored element unchanged.
+                    return Ok(current_element.stripped_of_backward_references())
+                        .wrap_with_cost(cost);
+                }
             }
             hops_left -= 1;
         }
         Err(Error::ReferenceLimit).wrap_with_cost(cost)
+    }
+
+    /// Select the terminal representation bound by an existing reference.
+    ///
+    /// Pre-V4 direct writes hashed the unwrapped terminal, while batch writes
+    /// and V4 direct writes hash its stored bytes. Both can coexist, even after
+    /// an upgrade, so select the legacy form only when its combined hash matches
+    /// the reference's actual commitment. Otherwise retain the stored form:
+    /// callers still detect a stale reference if neither representation matches.
+    /// This is a read-side compatibility step and must not be used for writes.
+    pub(crate) fn reference_terminal_as_committed(
+        terminal: Element,
+        reference_element_hash: &CryptoHash,
+        committed_value_hash: &CryptoHash,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Element, Error> {
+        let mut cost = OperationCost::default();
+        if terminal.is_wrapped() {
+            let legacy_terminal_hash = cost_return_on_error_into!(
+                &mut cost,
+                terminal.underlying().value_hash(grove_version)
+            );
+            let legacy_commitment = combine_hash(reference_element_hash, &legacy_terminal_hash)
+                .unwrap_add_cost(&mut cost);
+            if &legacy_commitment == committed_value_hash {
+                return Ok(terminal.into_underlying()).wrap_with_cost(cost);
+            }
+        }
+        Ok(terminal).wrap_with_cost(cost)
     }
 
     /// Get Element at specified path and key
@@ -230,6 +459,7 @@ impl GroveDb {
             tx.as_ref(),
             grove_version,
         )
+        .map_ok(|element| element.stripped_of_backward_references())
     }
 
     /// Get Element at specified path and key
@@ -281,6 +511,7 @@ impl GroveDb {
             tx.as_ref(),
             grove_version,
         )
+        .map_ok(|element| element.map(|e| e.stripped_of_backward_references()))
     }
 
     /// Get tree item without following references
@@ -399,29 +630,14 @@ impl GroveDb {
                     .map_err(|e| e.into())
             }
             .unwrap_add_cost(&mut cost);
-            // Look through `NonCounted` so a parent stored as
-            // `NonCounted(Tree)` (or any wrapped tree variant) still
-            // validates as a subtree. Without this, APIs that gate on
-            // check_subtree_exists would reject paths through wrapped
-            // parents — breaking the wrapper-transparency contract.
-            match element.map(|e| e.into_underlying()) {
-                Ok(Element::Tree(..))
-                | Ok(Element::SumTree(..))
-                | Ok(Element::BigSumTree(..))
-                | Ok(Element::CountTree(..))
-                | Ok(Element::CountSumTree(..))
-                | Ok(Element::ProvableCountTree(..))
-                | Ok(Element::ProvableCountSumTree(..))
-                | Ok(Element::ProvableSumTree(..))
-                | Ok(Element::ProvableCountProvableSumTree(..))
-                | Ok(Element::ProvableCountIndexedTree(..))
-                | Ok(Element::ProvableSumIndexedTree(..))
-                | Ok(Element::ProvableCountProvableSumIndexedTree(..))
-                | Ok(Element::CommitmentTree(..))
-                | Ok(Element::MmrTree(..))
-                | Ok(Element::BulkAppendTree(..))
-                | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
-                | Ok(Element::PrivateDocumentStore(..)) => Ok(()).wrap_with_cost(cost),
+            // `is_any_tree()` is the single source of truth for "this
+            // element is a subtree" (every Merk and non-Merk tree variant),
+            // and it looks through `NonCounted` itself, so a parent stored
+            // as `NonCounted(Tree)` (or any wrapped tree variant) still
+            // validates. Enumerating variants here instead has repeatedly
+            // drifted behind new tree types (#710, #657, #787).
+            match element {
+                Ok(ref e) if e.is_any_tree() => Ok(()).wrap_with_cost(cost),
                 Ok(_) | Err(Error::PathKeyNotFound(_)) => Err(error_fn()).wrap_with_cost(cost),
                 Err(e) => Err(e).wrap_with_cost(cost),
             }

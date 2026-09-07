@@ -261,6 +261,8 @@ the same column using distinct key prefixes. No aux namespace is used.
 │    b"m" || pos (u64 BE)  → MMR node blobs                        │
 │    b"b" || index (u64 BE)→ buffer entries (cmx||rho||cv_net||ciphertext) │
 │    b"e" || chunk (u64 BE)→ chunk blobs (compacted buffer)         │
+│    b"h" || index (u16 BE)→ buffer path records (GROVE_V4+, §16)   │
+│    b"r"                  → persisted chunk-MMR root (GROVE_V4+)   │
 │    b"M"                  → BulkAppendTree metadata                │
 │                                                                   │
 │  Sinsemilla frontier:                                             │
@@ -306,7 +308,7 @@ sub-merk recursion for these types.
 
 ## GroveDB Operations
 
-CommitmentTree provides four operations. The insert operation is generic over
+CommitmentTree provides five operations. The insert operation is generic over
 `M: MemoSize` (from the `orchard` crate), which controls ciphertext payload
 size validation. The default `M = DashMemo` gives a 216-byte payload
 (32 epk + 104 enc + 80 out).
@@ -324,6 +326,9 @@ db.commitment_tree_anchor(path, key, tx, version)
 
 // Retrieve a value by global position
 db.commitment_tree_get_value(path, key, position, tx, version)
+
+// Retrieve a page of values: positions [start, start + limit), plus total_count
+db.commitment_tree_get_range(path, key, start, limit, tx, version)
 
 // Get the current item count
 db.commitment_tree_count(path, key, tx, version)
@@ -903,6 +908,10 @@ Individual items (cmx || rho || cv_net || payload) can be queried by position an
 V1 proofs (§9.6), the same mechanism used by standalone BulkAppendTree. The
 V1 proof includes the BulkAppendTree authentication path for the requested
 position, chained to the parent Merk proof for the CommitmentTree element.
+Paginated scans use `GroveDb::prove_bulk_position_range` /
+`GroveDb::verify_bulk_position_range_proof`, which dispatch on the element type
+and so serve CommitmentTree pages through the same `ProofBytes::CommitmentTree`
+envelope (see the BulkAppendTree chapter).
 
 ## Cost Tracking
 
@@ -926,12 +935,12 @@ and ZK circuit cost.
 
 | Component | Average case | Worst case |
 |---|---|---|
-| Sinsemilla hashes | 33 (32 root + 1 ommer avg) | 64 (32 root + 32 ommers) |
+| Sinsemilla hashes | GROVE_V4+: fixed 33 (32 root + the average ommer merge); GROVE_V1..V3: 32 + trailing_ones(position) | GROVE_V4+: 33; GROVE_V1..V3: 64 |
 | Frontier I/O seeks | 2 (get + put) | 2 |
-| Frontier bytes loaded | 554 (~16 ommers) | 1,066 (32 ommers) |
-| Frontier bytes written | 554 | 1,066 |
-| BulkAppendTree hashes | ~5 Blake3 (amortized, see §14.15) | O(chunk_size) on compaction |
-| BulkAppendTree I/O | 2-3 seeks (metadata + buffer) | +2 on chunk compaction |
+| Frontier bytes loaded | GROVE_V4+: fixed 554 (the average frontier); GROVE_V1..V3: the actual 42 + 32·popcount(position) | GROVE_V4+: 554; GROVE_V1..V3: 1,066 |
+| Frontier bytes written | GROVE_V4+: 554 `replaced`; GROVE_V1..V3: actual | same |
+| BulkAppendTree hashes | GROVE_V4+: fixed model (12 + ⌈65 / 2^chunk_power⌉ = 1 amortized compaction + 1 state root at chunk_power 11, every append, compacting included); GROVE_V1..V3: 2·(buffer fill) + 1 | GROVE_V4+: the same; GROVE_V1..V3: ≈ 2·chunk_size on the last buffered append |
+| BulkAppendTree I/O | GROVE_V4+: the model's record reads (18 at chunk_power 11) + 1 amortized compaction seek, slot + record puts (churn: `replaced`, never `added`), blob share + 1 B amortized framing `added` | GROVE_V4+: the same (the compacting append's puts are prepaid, no seek); GROVE_V1..V3: + epoch read-back and MMR writes on chunk compaction |
 
 **Cost estimation constants** (from `average_case_costs.rs` and
 `worst_case_costs.rs`):

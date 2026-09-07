@@ -136,6 +136,8 @@
 #[cfg(feature = "minimal")]
 pub mod batch;
 #[cfg(feature = "minimal")]
+mod bidirectional_references;
+#[cfg(feature = "minimal")]
 mod checkpoints;
 #[cfg(feature = "grovedbg")]
 pub mod debugger;
@@ -172,6 +174,8 @@ use std::sync::Arc;
 #[cfg(feature = "minimal")]
 use std::{collections::HashMap, option::Option::None, path::Path};
 
+#[cfg(feature = "minimal")]
+use bidirectional_references::BidirectionalReference;
 #[cfg(feature = "grovedbg")]
 use debugger::start_visualizer;
 #[cfg(any(feature = "minimal", feature = "verify"))]
@@ -180,11 +184,19 @@ pub use element::aggregate_sum_query::{AggregateSumQueryOptions, AggregateSumQue
 pub use element::Element;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use element::ElementFlags;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grovedb_bulk_append_tree::RangePage;
 #[cfg(feature = "minimal")]
 use grovedb_costs::cost_return_on_error_into;
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
+/// The declared referrer capacity of backward-references items: the list
+/// type carrying it, the capacity the plain constructors declare, and the
+/// protocol ceiling.
+pub use grovedb_element::{
+    BackwardReferences, DEFAULT_BACKWARD_REFERENCES_CAPACITY, MAX_BACKWARD_REFERENCES,
 };
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::calculate_max_tree_depth_from_count;
@@ -207,6 +219,11 @@ pub use grovedb_merk::proofs::query::query_item::QueryItem;
 pub use grovedb_merk::proofs::query::SubqueryBranch;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::proofs::query::VerifyOptions;
+/// The axis-read vocabulary: callers build an [`AxisQuery`] (or use
+/// `PathQuery`'s typed axis constructors) and run/prove/verify it
+/// through the unified surface.
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grovedb_merk::proofs::query::{AxisProjection, AxisQuery, AxisTraversal};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::proofs::Query;
 #[cfg(any(feature = "minimal", feature = "verify"))]
@@ -241,6 +258,11 @@ use grovedb_storage::{Storage, StorageContext};
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "minimal")]
 use grovedb_visualize::DebugByteVectors;
+/// Telemetry counts from one `flush_pending_prefix_drops` pass — re-exported
+/// so hosts can name the flat-drop reclamation report without reaching into
+/// `operations::delete`.
+#[cfg(feature = "minimal")]
+pub use operations::delete::PendingPrefixDropsReport;
 /// The unified read dispatch's result types. `operations::get` is
 /// crate-private, so without this re-export `run_path_query` would be
 /// callable from outside the crate but its return type unnameable.
@@ -252,7 +274,7 @@ pub use operations::get::{AxisAggregateValue, PathQueryRun};
 // never name this type, so widening the gate here to `any(minimal, verify)`
 // only breaks that cut on an unresolved import.
 #[cfg(feature = "minimal")]
-pub use operations::indexed_tree::IndexedTopKPage;
+pub use operations::indexed_tree::{IndexedTopKKeysPage, IndexedTopKPage};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use query::{
     aggregate_sum_path_query::AggregateSumPathQuery, AggregateKind, GroveBranchQueryResult,
@@ -260,7 +282,7 @@ pub use query::{
     PathTrunkChunkQuery, SizedQuery,
 };
 #[cfg(any(feature = "minimal", feature = "verify"))]
-pub use query_result_type::{IndexedAxisEntry, IndexedAxisEntrySliceExt};
+pub use query_result_type::{AxisKeys, IndexedAxisEntry, IndexedAxisEntrySliceExt};
 #[cfg(feature = "minimal")]
 use reference_path::path_from_reference_path_type;
 #[cfg(feature = "grovedbg")]
@@ -326,12 +348,18 @@ type VerificationIssues = HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoH
 /// It represents a tuple containing:
 /// - A `Merk` instance with a prefixed RocksDB immediate storage context.
 /// - An optional `root_key`, represented as a vector of bytes.
-/// - A boolean indicating whether the Merk is a sum tree.
+/// - The `TreeType` of the subtree (with its parameters, e.g. chunk power,
+///   preserved from the parent element).
+/// - The parent-declared `Element` for this subtree, or `None` when opening
+///   the root subtree (which has no parent element). Replication needs the
+///   full element for non-Merk append-only trees, whose entry counts and
+///   parameters drive the raw-replay restore path.
 #[cfg(feature = "minimal")]
 type OpenedMerkForReplication<'tx> = (
     Merk<PrefixedRocksDbImmediateStorageContext<'tx>>,
     Option<Vec<u8>>,
     TreeType,
+    Option<Element>,
 );
 
 /// Verify that an indexed tree's secondary projection is exactly derivable
@@ -564,7 +592,7 @@ impl GroveDb {
                     ))
                 })
                 .unwrap()?;
-            if let Some((root_key, tree_type)) = element.root_key_and_tree_type_owned() {
+            if let Some((root_key, tree_type)) = element.clone().root_key_and_tree_type_owned() {
                 Ok((
                     Merk::open_layered_with_root_key(
                         storage,
@@ -581,6 +609,7 @@ impl GroveDb {
                     .unwrap()?,
                     root_key,
                     tree_type,
+                    Some(element),
                 ))
             } else {
                 Err(Error::CorruptedPath(
@@ -599,6 +628,7 @@ impl GroveDb {
                 .unwrap()?,
                 None,
                 TreeType::NormalTree,
+                None,
             ))
         }
     }
@@ -610,17 +640,10 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Vec<u8>>, Error> {
-        let mut cost = OperationCost {
-            ..Default::default()
-        };
-
         let tx = TxRef::new(&self.db, transaction);
 
-        let root_merk =
-            cost_return_on_error!(&mut cost, self.open_root_merk(tx.as_ref(), grove_version));
-
-        let root_key = root_merk.root_key();
-        Ok(root_key).wrap_with_cost(cost)
+        self.open_root_merk(tx.as_ref(), grove_version)
+            .map_ok(|merk| merk.root_key())
     }
 
     /// Returns root hash of GroveDb.
@@ -1864,6 +1887,41 @@ impl GroveDb {
         self.db.start_transaction()
     }
 
+    /// Begin a transaction whose reads are **pinned to the committed
+    /// state as of this call**: every get and iterator routed through it
+    /// reads the same RocksDB snapshot, however many operations the
+    /// caller spreads over the transaction.
+    ///
+    /// This is the read-consistency primitive a multi-operation read
+    /// needs. A plain [`GroveDb::start_transaction`] transaction — and a
+    /// `None` transaction argument — reads the *latest* committed state
+    /// on every operation, so a concurrent commit landing between two
+    /// operations can make one logical read observe two different
+    /// committed states. Under this transaction it cannot: the branched
+    /// axis read's per-branch probes and walks, for example, all see one
+    /// state.
+    ///
+    /// Read-only **enforced**: `set_snapshot` also arms commit-time
+    /// conflict detection against the snapshot, so writes through this
+    /// transaction could fail with `Busy` where a plain transaction's
+    /// commit would not — instead of leaving that timing-dependent trap
+    /// open, every write entry point and [`GroveDb::commit_transaction`]
+    /// refuse a snapshot read transaction with a typed
+    /// `SnapshotReadOnlyTransaction` storage error. Take a plain
+    /// transaction to write.
+    ///
+    /// The snapshot is O(1) to take but pins every post-snapshot
+    /// RocksDB version while held — a transaction kept across a client
+    /// session, or leaked on an error path, silently becomes compaction
+    /// debt and write amplification. Scope it to a single
+    /// multi-operation read and drop it promptly. `snapshot_age()` on
+    /// the returned transaction exposes the hold time, and debug builds
+    /// log loudly when a read executes on a snapshot held longer than a
+    /// second.
+    pub fn start_snapshot_read_transaction(&self) -> Transaction<'_> {
+        self.db.start_snapshot_read_transaction()
+    }
+
     /// Consumes and commits a previously started transaction.
     ///
     /// On success the transaction's writes become visible to subsequent
@@ -2254,6 +2312,100 @@ impl GroveDb {
         Ok(())
     }
 
+    /// Reciprocal audit for one element's authenticated referrer list:
+    /// every backward entry must name a live `BidirectionalReference`
+    /// whose forward path resolves back to this exact position, and no
+    /// inverted path may appear twice. Violations are recorded in
+    /// `issues` keyed by the REFERRER's qualified path, with a zero hash
+    /// in the middle slot marking a reciprocity (not value-hash) failure.
+    #[allow(clippy::too_many_arguments)]
+    fn verify_reciprocal_backward_references<B: AsRef<[u8]>>(
+        &self,
+        element: &Element,
+        path: &SubtreePath<B>,
+        key: &[u8],
+        allow_cache: bool,
+        transaction: &Transaction,
+        grove_version: &GroveVersion,
+        issues: &mut HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>,
+    ) -> Result<(), Error> {
+        let Some(backward_references) = element.backward_references() else {
+            return Ok(());
+        };
+        let hashes = element
+            .backward_references_hashes(grove_version)
+            .unwrap()?
+            .expect("backward-references elements carry hashes");
+        let mut expected_forward = path.to_vec();
+        expected_forward.push(key.to_vec());
+
+        let mut seen: std::collections::HashSet<Vec<Vec<u8>>> = Default::default();
+        for entry in backward_references {
+            let referrer_qualified = match path_from_reference_path_type(
+                entry.inverted_reference.clone(),
+                &path.to_vec(),
+                Some(key),
+            ) {
+                Ok(qualified) => qualified,
+                Err(_) => {
+                    let mut marker = expected_forward.clone();
+                    marker.push(b"?invalid-inverse".to_vec());
+                    issues.insert(marker, (hashes.combined, [0; 32], hashes.combined));
+                    continue;
+                }
+            };
+            if !seen.insert(referrer_qualified.clone()) {
+                let mut marker = referrer_qualified.clone();
+                marker.push(b"?duplicate-inverse".to_vec());
+                issues.insert(marker, (hashes.combined, [0; 32], hashes.combined));
+                continue;
+            }
+            let Some((referrer_key, referrer_path)) = referrer_qualified.split_last() else {
+                // A corrupt inverse (e.g. `AbsolutePathReference([])`)
+                // resolves to an EMPTY qualified path: report it instead of
+                // silently passing the audit.
+                let mut marker = expected_forward.clone();
+                marker.push(b"?invalid-inverse".to_vec());
+                issues.insert(marker, (hashes.combined, [0; 32], hashes.combined));
+                continue;
+            };
+            let referrer_path_slices: Vec<&[u8]> =
+                referrer_path.iter().map(|p| p.as_slice()).collect();
+            let occupant = self
+                .get_raw_optional(
+                    referrer_path_slices.as_slice().into(),
+                    referrer_key,
+                    Some(transaction),
+                    grove_version,
+                )
+                .unwrap();
+            let reciprocal = match occupant {
+                Ok(Some(Element::BidirectionalReference(ref referrer, _))) => {
+                    path_from_reference_path_type(
+                        referrer.forward_reference_path.clone(),
+                        referrer_path,
+                        Some(referrer_key),
+                    )
+                    .map(|forward| forward == expected_forward)
+                    .unwrap_or(false)
+                }
+                Ok(_) => false,
+                Err(_) => false,
+            };
+            if !reciprocal {
+                // A marker component keeps this reciprocity diagnostic from
+                // clobbering (or being clobbered by) the referrer's own
+                // value-hash entry at the bare path, mirroring the
+                // `?invalid-inverse` convention above.
+                let mut marker = referrer_qualified;
+                marker.push(b"?no-reciprocal-forward-edge".to_vec());
+                issues.insert(marker, (hashes.combined, [0; 32], hashes.combined));
+            }
+        }
+        let _ = allow_cache;
+        Ok(())
+    }
+
     fn verify_merk_and_submerks_in_transaction<'db, B: AsRef<[u8]>, S: StorageContext<'db>>(
         &'db self,
         merk: Merk<S>,
@@ -2468,6 +2620,27 @@ impl GroveDb {
                         );
                     }
 
+                    // Dense-buffer hash records (GROVE_V4 root maintenance)
+                    // are derived state that normal root reads trust; the
+                    // hash comparison above walks the values instead, so a
+                    // record that disagrees with the values — a payload
+                    // altered behind it, or records written for other
+                    // values — would pass it while every V4 read returned
+                    // the other root. Audit them explicitly.
+                    if let Some(grovedb_bulk_append_tree::BufferRecordMismatch {
+                        recorded,
+                        walked,
+                    }) = self.dense_buffer_record_issue(
+                        &element,
+                        new_path_ref.clone(),
+                        transaction,
+                        grove_version,
+                    ) {
+                        let mut issue_path = new_path.to_vec();
+                        issue_path.push(b"__dense_hash_records__".to_vec());
+                        issues.insert(issue_path, (root_hash, walked, recorded));
+                    }
+
                     // Software-consistency check: the aggregate fields
                     // stored in the parent's tree element (e.g.
                     // `sum_value` in `ProvableSumTree(_, sum_value, _)`)
@@ -2602,12 +2775,62 @@ impl GroveDb {
                         );
                     }
                 }
+                Element::ItemWithBackwardsReferences(..)
+                | Element::SumItemWithBackwardsReferences(..)
+                | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                    // The node commits to combine(inner_hash, backrefs_hash),
+                    // both recomputable from the stored bytes.
+                    let (_, element_value_hash) = merk
+                        .get_value_and_value_hash(
+                            &key,
+                            allow_cache,
+                            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                            grove_version,
+                        )
+                        .unwrap()
+                        .map_err(MerkError)?
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for {}",
+                            hex_to_ascii(&key),
+                            element.type_str()
+                        )))?;
+                    let hashes = element
+                        .backward_references_hashes(grove_version)
+                        .unwrap()?
+                        .expect("backward-references elements carry hashes");
+                    if hashes.combined != element_value_hash {
+                        issues.insert(
+                            path.derive_owned_with_child(key.clone()).to_vec(),
+                            (hashes.combined, element_value_hash, hashes.combined),
+                        );
+                    }
+                    if verify_references {
+                        self.verify_reciprocal_backward_references(
+                            &element,
+                            path,
+                            &key,
+                            allow_cache,
+                            transaction,
+                            grove_version,
+                            &mut issues,
+                        )?;
+                    }
+                }
                 Element::Reference(ref reference_path, ..)
-                | Element::ReferenceWithSumItem(ref reference_path, ..) => {
+                | Element::ReferenceWithSumItem(ref reference_path, ..)
+                | Element::BidirectionalReference(
+                    BidirectionalReference {
+                        forward_reference_path: ref reference_path,
+                        ..
+                    },
+                    _,
+                ) => {
                     // Skip this whole check if we don't `verify_references`.
                     // `ReferenceWithSumItem` shares this verification path —
                     // the sum is hashed as part of the serialized value
                     // bytes, so the combined-hash check below is identical.
+                    // `BidirectionalReference` likewise: its forward path is
+                    // followed exactly like a plain reference's.
                     if !verify_references {
                         continue;
                     }
@@ -2627,34 +2850,131 @@ impl GroveDb {
                             hex_to_ascii(&key)
                         )))?;
 
+                    // A bidirectional reference commits to THREE inputs: its
+                    // stripped bytes, the resolved end hash, and its
+                    // referrer-list hash — its "self" hash in the commitment
+                    // is combine(inner, backrefs), not H(stored bytes).
+                    let self_actual_value_hash =
+                        if let Element::BidirectionalReference(..) = &element {
+                            element
+                                .backward_references_hashes(grove_version)
+                                .unwrap()?
+                                .expect("bidirectional references carry hashes")
+                                .combined
+                        } else {
+                            value_hash(&kv_value).unwrap()
+                        };
                     let referenced_value_hash = {
                         let full_path = path_from_reference_path_type(
                             reference_path.clone(),
                             &path.to_vec(),
                             Some(&key),
                         )?;
+                        // Resolve the stored terminal, then preserve whichever
+                        // representation this existing reference committed to.
                         let item = self
-                            .follow_reference(
+                            .follow_reference_as_stored(
                                 (full_path.as_slice()).into(),
                                 allow_cache,
                                 Some(transaction),
                                 grove_version,
                             )
                             .unwrap()?;
-                        item.value_hash(grove_version).unwrap()?
+                        let item = Self::reference_terminal_as_committed(
+                            item,
+                            &self_actual_value_hash,
+                            &element_value_hash,
+                            grove_version,
+                        )
+                        .unwrap()?;
+                        // Every reference in a chain commits to the
+                        // terminal's LOGICAL hash (referrer list stripped).
+                        item.logical_value_hash(grove_version).unwrap()?
                     };
 
-                    // Take the current item (reference) hash and combine it with referenced value's
-                    // hash
-                    let self_actual_value_hash = value_hash(&kv_value).unwrap();
+                    // Check the commitment without rewriting the stored reference.
                     let combined_value_hash =
                         combine_hash(&self_actual_value_hash, &referenced_value_hash).unwrap();
 
                     if combined_value_hash != element_value_hash {
                         issues.insert(
-                            path.derive_owned_with_child(key).to_vec(),
+                            path.derive_owned_with_child(key.clone()).to_vec(),
                             (combined_value_hash, element_value_hash, combined_value_hash),
                         );
+                    }
+
+                    if matches!(element, Element::BidirectionalReference(..)) {
+                        self.verify_reciprocal_backward_references(
+                            &element,
+                            path,
+                            &key,
+                            allow_cache,
+                            transaction,
+                            grove_version,
+                            &mut issues,
+                        )?;
+                        // The FORWARD direction of the reciprocity audit:
+                        // this edge's immediate target must carry the
+                        // edge's canonical inverse in its referrer list —
+                        // a missing registration leaves a live edge with
+                        // no reverse path for propagation or cascade to
+                        // follow.
+                        if let Element::BidirectionalReference(ref reference, _) = element {
+                            let target_qualified = path_from_reference_path_type(
+                                reference.forward_reference_path.clone(),
+                                &path.to_vec(),
+                                Some(&key),
+                            )?;
+                            let expected_inverse = reference
+                                .forward_reference_path
+                                .clone()
+                                .invert(path.clone(), &key);
+                            let registered = match (target_qualified.split_last(), expected_inverse)
+                            {
+                                (Some((target_key, target_path)), Some(inverse)) => {
+                                    // Merk-level read: public reads STRIP
+                                    // referrer lists, and the list is
+                                    // exactly what this audit inspects.
+                                    let target_path_slices: Vec<&[u8]> =
+                                        target_path.iter().map(|p| p.as_slice()).collect();
+                                    let target_element = self
+                                        .open_transactional_merk_at_path(
+                                            target_path_slices.as_slice().into(),
+                                            transaction,
+                                            batch,
+                                            grove_version,
+                                        )
+                                        .unwrap()
+                                        .ok()
+                                        .and_then(|target_merk| {
+                                            Element::get_optional(
+                                                &target_merk,
+                                                target_key,
+                                                allow_cache,
+                                                grove_version,
+                                            )
+                                            .unwrap()
+                                            .ok()
+                                            .flatten()
+                                        });
+                                    match target_element {
+                                        Some(target) => target
+                                            .backward_references()
+                                            .map(|refs| {
+                                                refs.iter().any(|r| r.inverted_reference == inverse)
+                                            })
+                                            .unwrap_or(false),
+                                        None => false,
+                                    }
+                                }
+                                _ => false,
+                            };
+                            if !registered {
+                                let mut marker = target_qualified;
+                                marker.push(b"?missing-registration".to_vec());
+                                issues.insert(marker, ([0; 32], [0; 32], [0; 32]));
+                            }
+                        }
                     }
                 }
                 // ProvableSumIndexedTree integrity: identical shape to
@@ -2904,9 +3224,112 @@ impl GroveDb {
         }
     }
 
+    /// Audit a non-Merk tree's dense-buffer hash records (GROVE_V4 root
+    /// maintenance) against its values: `Some` when a
+    /// current position-0 record exists and disagrees with the root walked
+    /// from the values. `None` for other elements, empty trees, trees whose
+    /// buffer has no current record (filled under GROVE_V1..V3 — caught up by
+    /// the next append, not an error), agreement, or a tree that cannot be
+    /// opened (the hash comparison reports that).
+    fn dense_buffer_record_issue<'b, B: AsRef<[u8]>>(
+        &self,
+        element: &Element,
+        subtree_path: SubtreePath<'b, B>,
+        transaction: &Transaction,
+        grove_version: &GroveVersion,
+    ) -> Option<grovedb_bulk_append_tree::BufferRecordMismatch> {
+        match element.underlying() {
+            Element::CommitmentTree(total_count, chunk_power, _) => {
+                if *total_count == 0 {
+                    return None;
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                grovedb_commitment_tree::CommitmentTree::<_>::open(
+                    *total_count,
+                    *chunk_power,
+                    storage_ctx,
+                    grove_version,
+                )
+                .value
+                .ok()?
+                .buffer_record_mismatch(grove_version)
+                .ok()
+                .flatten()
+            }
+            Element::BulkAppendTree(total_count, chunk_power, _) => {
+                if *total_count == 0 {
+                    return None;
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                grovedb_bulk_append_tree::BulkAppendTree::from_state(
+                    *total_count,
+                    *chunk_power,
+                    storage_ctx,
+                )
+                .ok()?
+                .buffer_record_mismatch(grove_version)
+                .ok()
+                .flatten()
+            }
+            Element::DenseAppendOnlyFixedSizeTree(count, height, _) => {
+                if *count == 0 {
+                    return None;
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                let tree =
+                    grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree::from_state(
+                        *height,
+                        *count,
+                        storage_ctx,
+                    )
+                    .ok()?;
+                let recorded = tree.recorded_root().unwrap().ok()??;
+                let walked = tree.root_hash_from_values().unwrap().ok()?;
+                (recorded != walked)
+                    .then_some(grovedb_bulk_append_tree::BufferRecordMismatch { recorded, walked })
+            }
+            Element::PrivateDocumentStore(total_count, entry_size, chunk_power, _) => {
+                if *total_count == 0 {
+                    return None;
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                grovedb_private_document_store::PrivateDocumentStore::from_state(
+                    *total_count,
+                    *entry_size,
+                    *chunk_power,
+                    storage_ctx,
+                )
+                .unwrap()
+                .ok()?
+                .buffer_record_mismatch(grove_version)
+                .ok()
+                .flatten()
+            }
+            _ => None,
+        }
+    }
+
     /// Compute the child hash for a non-Merk tree element by reconstructing
     /// its tree from storage and computing the state root.
     /// Falls back to `merk_root_hash` on any error or for standard Merk trees.
+    ///
+    /// This is an integrity audit, so the dense buffer's root is walked from
+    /// the stored VALUES (`*_from_values`), never read from the GROVE_V4 hash
+    /// records: the record fast path would return what the records say and
+    /// miss a payload altered underneath them. The records themselves are
+    /// audited against the values separately (`dense_buffer_record_issue`).
     fn compute_non_merk_child_hash<'b, B: AsRef<[u8]>>(
         &self,
         element: &Element,
@@ -2928,10 +3351,13 @@ impl GroveDb {
                     *total_count,
                     *chunk_power,
                     storage_ctx,
+                    grove_version,
                 )
                 .value
                 {
-                    Ok(ct) => ct.compute_current_state_root().unwrap_or(merk_root_hash),
+                    Ok(ct) => ct
+                        .compute_current_state_root_from_values()
+                        .unwrap_or(merk_root_hash),
                     Err(_) => merk_root_hash,
                 }
             }
@@ -2948,7 +3374,9 @@ impl GroveDb {
                     *chunk_power,
                     storage_ctx,
                 ) {
-                    Ok(tree) => tree.compute_current_state_root().unwrap_or(merk_root_hash),
+                    Ok(tree) => tree
+                        .compute_current_state_root_from_values()
+                        .unwrap_or(merk_root_hash),
                     Err(_) => merk_root_hash,
                 }
             }
@@ -2977,7 +3405,7 @@ impl GroveDb {
                     .unwrap();
                 use grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree;
                 match DenseFixedSizedMerkleTree::from_state(*height, *count, storage_ctx) {
-                    Ok(t) => match t.root_hash().unwrap() {
+                    Ok(t) => match t.root_hash_from_values().unwrap() {
                         Ok(hash) => hash,
                         Err(_) => merk_root_hash,
                     },
@@ -3014,11 +3442,181 @@ impl GroveDb {
                     // instead of being laundered into an opaque hash
                     // mismatch — and a transient storage error during that
                     // walk no longer masquerades as corruption.
-                    Ok(store) => store.compute_current_state_root().unwrap_or(merk_root_hash),
+                    Ok(store) => store
+                        .compute_current_state_root_from_values()
+                        .unwrap_or(merk_root_hash),
                     Err(_) => merk_root_hash,
                 }
             }
             _ => merk_root_hash,
+        }
+    }
+
+    /// Strict variant of [`Self::compute_non_merk_child_hash`] for callers
+    /// that must not silently fall back when the payload is unreadable —
+    /// notably state-sync restore, where a missing or corrupt payload has to
+    /// reject the subtree rather than slip through as a hash that may
+    /// coincidentally match.
+    ///
+    /// Recomputes the tree-type-specific state root from the payload stored
+    /// in the subtree's data namespace:
+    /// - `CommitmentTree`: `blake3("ct_state" || sinsemilla_root ||
+    ///   bulk_state_root)` (reads the frontier and the bulk store)
+    /// - `BulkAppendTree`: `blake3("bulk_state" || mmr_root || dense_root)`
+    /// - `MmrTree`: the MMR root hash
+    /// - `DenseAppendOnlyFixedSizeTree`: the dense tree root hash
+    /// - `PrivateDocumentStore`: `blake3("pds_state" || config_hash ||
+    ///   bulk_state_root)`
+    ///
+    /// For empty trees this returns the same conventions the insert path
+    /// binds into the parent: `EMPTY_COMMITMENT_TREE_STATE_ROOT` for an
+    /// empty commitment tree, the config-parametrized empty state root for
+    /// an empty private document store, and `NULL_HASH` (the empty Merk
+    /// root) for the other three types.
+    ///
+    /// Returns an error if `element` is not a non-Merk data tree, or if the
+    /// payload cannot be read back as a consistent tree of the declared
+    /// size.
+    pub(crate) fn compute_non_merk_state_root<'b, B: AsRef<[u8]>>(
+        &self,
+        element: &Element,
+        subtree_path: SubtreePath<'b, B>,
+        transaction: &Transaction,
+        grove_version: &GroveVersion,
+    ) -> Result<CryptoHash, Error> {
+        use grovedb_merk::tree::hash::NULL_HASH;
+        match element.underlying() {
+            Element::CommitmentTree(total_count, chunk_power, _) => {
+                if *total_count == 0 {
+                    return Ok(grovedb_commitment_tree::EMPTY_COMMITMENT_TREE_STATE_ROOT);
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                let ct = grovedb_commitment_tree::CommitmentTree::<_>::open(
+                    *total_count,
+                    *chunk_power,
+                    storage_ctx,
+                    grove_version,
+                )
+                .value
+                .map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "cannot open commitment tree of {total_count} entries from payload: {e}"
+                    ))
+                })?;
+                ct.compute_current_state_root_from_values().map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "cannot compute commitment tree state root from payload: {e}"
+                    ))
+                })
+            }
+            Element::BulkAppendTree(total_count, chunk_power, _) => {
+                if *total_count == 0 {
+                    return Ok(NULL_HASH);
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                let tree = grovedb_bulk_append_tree::BulkAppendTree::from_state(
+                    *total_count,
+                    *chunk_power,
+                    storage_ctx,
+                )
+                .map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "cannot open bulk append tree of {total_count} entries from payload: {e}"
+                    ))
+                })?;
+                tree.compute_current_state_root_from_values().map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "cannot compute bulk append tree state root from payload: {e}"
+                    ))
+                })
+            }
+            Element::MmrTree(mmr_size, _) => {
+                if *mmr_size == 0 {
+                    return Ok(NULL_HASH);
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                let store = grovedb_merkle_mountain_range::MmrStore::new(&storage_ctx);
+                let mmr = grovedb_merkle_mountain_range::MMR::new(*mmr_size, &store);
+                mmr.get_root(grove_version)
+                    .value
+                    .map(|root| root.hash())
+                    .map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "cannot compute MMR root of size {mmr_size} from payload: {e}"
+                        ))
+                    })
+            }
+            Element::DenseAppendOnlyFixedSizeTree(count, height, _) => {
+                if *count == 0 {
+                    return Ok(NULL_HASH);
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                use grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree;
+                DenseFixedSizedMerkleTree::from_state(*height, *count, storage_ctx)
+                    .map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "cannot open dense tree of {count} entries from payload: {e}"
+                        ))
+                    })?
+                    .root_hash_from_values()
+                    .unwrap()
+                    .map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "cannot compute dense tree root from payload: {e}"
+                        ))
+                    })
+            }
+            Element::PrivateDocumentStore(total_count, entry_size, chunk_power, _) => {
+                // The state root binds the committed config even when the
+                // store is empty, so the empty case is the
+                // config-parametrized empty root rather than NULL_HASH.
+                if *total_count == 0 {
+                    return Ok(
+                        grovedb_private_document_store::empty_private_document_store_state_root(
+                            *entry_size,
+                            *chunk_power,
+                        ),
+                    );
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                let store = grovedb_private_document_store::PrivateDocumentStore::from_state(
+                    *total_count,
+                    *entry_size,
+                    *chunk_power,
+                    storage_ctx,
+                )
+                .unwrap()
+                .map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "cannot open private document store of {total_count} entries from \
+                         payload: {e}"
+                    ))
+                })?;
+                store.compute_current_state_root_from_values().map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "cannot compute private document store state root from payload: {e}"
+                    ))
+                })
+            }
+            _ => Err(Error::InternalError(format!(
+                "compute_non_merk_state_root called on a non append-only element: {}",
+                element.type_str()
+            ))),
         }
     }
 }

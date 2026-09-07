@@ -39,4 +39,6 @@ pub use storage_context::{
     PrefixedRocksDbTransactionContext,
 };
 
-pub use self::storage::RocksDbStorage;
+pub use self::storage::{
+    pending_prefix_drops_namespace, PendingPrefixDropRecord, RocksDbStorage, Tx,
+};

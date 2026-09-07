@@ -126,26 +126,42 @@ fn populate_plain_count_tree(n: usize) -> (TempDir, GroveDb, &'static GroveVersi
     (dir, db, grove_version)
 }
 
-/// top_k via cidx: secondary range scan, `O(log n + k)`.
+/// top_k via cidx: secondary range scan, `O(log n + k)` — measured
+/// through the public surface (`run_path_query` over an axis
+/// `PathQuery`), the route production reads take.
 #[cfg(feature = "minimal")]
 fn bench_cidx_top_k(c: &mut Criterion) {
+    use grovedb::element::IndexAxis;
+    use grovedb::query_result_type::QueryResultType;
+    use grovedb::{PathQuery, PathQueryRun};
+
     let mut group = c.benchmark_group("cidx_top_k");
     for &n in &[100usize, 1_000, 10_000] {
         let (_dir, db, gv) = populate_cidx(n);
-        group.bench_function(format!("n={}_k=10", n), |b| {
-            b.iter(|| {
-                db.indexed_count_top_k([b"cidx".as_slice()].as_ref(), 10, true, None, gv)
-                    .unwrap()
-                    .expect("bench_cidx_top_k: count_indexed_top_k k=10")
+        for k in [10u16, 100] {
+            let path_query =
+                PathQuery::new_axis_top_k(vec![b"cidx".to_vec()], IndexAxis::Count, k, 0, true);
+            group.bench_function(format!("n={}_k={}", n, k), |b| {
+                b.iter(|| {
+                    match db
+                        .run_path_query(
+                            &path_query,
+                            true,
+                            true,
+                            true,
+                            QueryResultType::QueryPathKeyElementTrioResultType,
+                            None,
+                            gv,
+                        )
+                        .unwrap()
+                        .expect("bench_cidx_top_k: axis top-k read")
+                    {
+                        PathQueryRun::AxisEntries { entries, .. } => entries,
+                        other => panic!("expected AxisEntries, got {other:?}"),
+                    }
+                });
             });
-        });
-        group.bench_function(format!("n={}_k=100", n), |b| {
-            b.iter(|| {
-                db.indexed_count_top_k([b"cidx".as_slice()].as_ref(), 100, true, None, gv)
-                    .unwrap()
-                    .expect("bench_cidx_top_k: count_indexed_top_k k=100")
-            });
-        });
+        }
     }
     group.finish();
 }

@@ -24,7 +24,50 @@ pub struct BulkAppendTreeCostVersions {
     /// compaction's own `get_root` performs, so a compaction landing on a
     /// multi-peak MMR under-reports by `peaks - 1`.
     ///
-    /// Version 1 adds that bagging term. Shipped chunk bytes and roots are
-    /// unaffected; what moves is the fee a compacting append is charged.
+    /// Version 1 reports nothing for the compaction itself: its hashes (the
+    /// chunk-leaf hash, the push merges, the root bagging — at most 65 per
+    /// chunk with 32-bit MMR keys) are amortized over the epoch and charged
+    /// on every append as the per-chunk bound over `2^chunk_power`, rounded
+    /// up (`amortized_compaction_hashes`: one blake3 per append from
+    /// `chunk_power` 7, 33 at `chunk_power` 1), so a compacting append is
+    /// charged what any other append is and no prefix of the tree's life is
+    /// ever under-prepaid. Shipped chunk bytes and roots are unaffected;
+    /// what moves is where the fee lands.
     pub compaction_hash_count: FeatureVersion,
+    /// How an append's data-storage writes are reported to the storage cost
+    /// layer (issue #822).
+    ///
+    /// Version 0 issues every put with no cost information, so the commit
+    /// path charges key + value as NEW storage: a dense-buffer slot rewritten
+    /// in epoch 2 and later, and the chunk blob that supersedes the buffer it
+    /// was built from, are both billed as permanent growth — the whole blob
+    /// (≈ 630 KB at `chunk_power` 11) lands on the one compacting append.
+    ///
+    /// Version 1 charges every append the FIXED per-append model, whatever
+    /// its position: the entry's long-term footprint as added storage — its
+    /// chunk-blob share (`value.len()`, plus the variable format's four-byte
+    /// per-entry prefix unless the owner declared a fixed entry size with
+    /// `BulkAppendTree::with_fixed_entry_size`, as `CommitmentTree` and
+    /// `PrivateDocumentStore` do) plus the epoch's share of the blob framing
+    /// and MMR nodes (`amortized_compaction_added_bytes`) — and
+    /// churn as replaced storage — its buffer slot and path record (epoch 1
+    /// included, nothing read to size them; the buffer is a fixed-size
+    /// per-tree scratch area rewritten every epoch) and its own bytes again
+    /// as its part of the blob rewrite; plus the buffer's fixed
+    /// root-maintenance model (`dense_tree_versions.root_maintenance`), the
+    /// amortized compaction blake3 and the compaction's commit-time puts
+    /// amortized as seeks (`amortized_compaction_seeks`). The compacting
+    /// append writes the blob and the MMR nodes prepaid
+    /// (`KeyValueStorageCost::prepaid()`: no bytes, no seek at commit) and
+    /// is charged the slot / record churn — bytes and seeks — it does not
+    /// write, so its figure is the same, seek count included; it also
+    /// persists the MMR root (key `r`, 32 bytes, prepaid)
+    /// so a reopened tree reads it instead of bagging the peaks' blobs, and
+    /// the state root's two root reads are charged as the model. A tree
+    /// whose last compaction predates version 1 has no such key: its first
+    /// version-1 append bags the peaks once and backfills the key (one
+    /// prepaid put, not billed — like the dense buffer's read-only
+    /// catch-up). Stored chunks and roots are identical under both
+    /// versions; version 1 adds the persisted root key.
+    pub append_storage_accounting: FeatureVersion,
 }

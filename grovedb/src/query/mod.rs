@@ -4,6 +4,7 @@ pub mod aggregate_sum_path_query;
 pub(crate) mod axis_lowering;
 mod grove_branch_query_result;
 mod grove_trunk_query_result;
+pub(crate) mod merge;
 mod path_branch_chunk_query;
 mod path_trunk_chunk_query;
 pub(crate) mod shape;
@@ -145,6 +146,7 @@ impl SizedQuery {
     ///   end up in the proof, and the use case for that hasn't been
     ///   designed yet.
     pub fn validate_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
+        self.reject_instance_limits_for_aggregates()?;
         // Inner classification first, then per-shape size-constraint
         // check. Queries that aren't aggregate-count at all (neither leaf
         // nor carrier) fall through to the Query-level validator below,
@@ -167,6 +169,7 @@ impl SizedQuery {
     /// (`SizedQuery::limit` / `SizedQuery::offset`) is rejected — see
     /// [`Self::check_leaf_aggregate_count_size_constraints`].
     pub fn validate_leaf_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
+        self.reject_instance_limits_for_aggregates()?;
         self.check_leaf_aggregate_count_size_constraints()?;
         self.query
             .validate_leaf_aggregate_count_on_range()
@@ -211,6 +214,18 @@ impl SizedQuery {
         Ok(())
     }
 
+    /// Aggregate shapes have their own result semantics (a single value
+    /// or one value per outer key); per-instance limits (`Query::limit`)
+    /// have no defined meaning there and are rejected.
+    fn reject_instance_limits_for_aggregates(&self) -> Result<(), Error> {
+        if self.query.has_instance_limit_anywhere() {
+            return Err(Error::InvalidQuery(
+                "aggregate queries may not carry per-instance limits (Query::limit)",
+            ));
+        }
+        Ok(())
+    }
+
     /// Validates that this `SizedQuery` is a well-formed offset-paginated
     /// range query against a `ProvableCountTree` / `ProvableCountSumTree` /
     /// `ProvableCountProvableSumTree`. On success returns a reference
@@ -237,6 +252,11 @@ impl SizedQuery {
     /// time, because it requires opening the merk. This function is
     /// purely syntactic.
     pub fn validate_count_offset_paginated(&self) -> Result<&QueryItem, Error> {
+        if self.query.has_instance_limit_anywhere() {
+            return Err(Error::InvalidQuery(
+                "count-offset paginated queries may not carry per-instance limits (Query::limit)",
+            ));
+        }
         // Must actually be paginated.
         if !matches!(self.offset, Some(o) if o > 0) {
             return Err(Error::InvalidQuery(
@@ -335,6 +355,7 @@ impl SizedQuery {
     ///   end up in the proof, and the use case for that hasn't been
     ///   designed yet.
     pub fn validate_aggregate_sum_on_range(&self) -> Result<&QueryItem, Error> {
+        self.reject_instance_limits_for_aggregates()?;
         // Inner classification first, then per-shape size-constraint
         // check. Queries that aren't aggregate-sum at all (neither leaf
         // nor carrier) fall through to the Query-level validator below,
@@ -357,6 +378,7 @@ impl SizedQuery {
     /// (`SizedQuery::limit` / `SizedQuery::offset`) is rejected — see
     /// [`Self::check_leaf_aggregate_sum_size_constraints`].
     pub fn validate_leaf_aggregate_sum_on_range(&self) -> Result<&QueryItem, Error> {
+        self.reject_instance_limits_for_aggregates()?;
         self.check_leaf_aggregate_sum_size_constraints()?;
         self.query
             .validate_leaf_aggregate_sum_on_range()
@@ -407,6 +429,7 @@ impl SizedQuery {
     /// additionally enforces the appropriate per-shape size-constraint
     /// rules — same model as the sum side.
     pub fn validate_aggregate_count_and_sum_on_range(&self) -> Result<&QueryItem, Error> {
+        self.reject_instance_limits_for_aggregates()?;
         if self.query.aggregate_count_and_sum_on_range().is_some() {
             self.check_leaf_aggregate_count_and_sum_size_constraints()?;
         } else if self.query.has_aggregate_count_and_sum_on_range_anywhere() {
@@ -423,6 +446,7 @@ impl SizedQuery {
     /// accepts the **leaf** shape. Used by entry points that produce a
     /// single `(u64, i64)` and need to reject the carrier shape up front.
     pub fn validate_leaf_aggregate_count_and_sum_on_range(&self) -> Result<&QueryItem, Error> {
+        self.reject_instance_limits_for_aggregates()?;
         self.check_leaf_aggregate_count_and_sum_size_constraints()?;
         self.query
             .validate_leaf_aggregate_count_and_sum_on_range()
@@ -532,6 +556,50 @@ impl PathQuery {
         Self { path, query }
     }
 
+    /// Canonical `PathQuery` for a paginated position-range read of an
+    /// append-only, BulkAppendTree-backed element (`BulkAppendTree` or
+    /// `CommitmentTree`) at `path`/`key`.
+    ///
+    /// Selects the element at `key` and subqueries positions
+    /// `[start, start + limit)`, encoded as 8-byte big-endian keys
+    /// (`start + limit` saturates at `u64::MAX`). Prover and verifier both
+    /// derive this query from `(start, limit)`, so a scanning client only
+    /// needs its cursor and page size — see
+    /// [`GroveDb::prove_bulk_position_range`] and
+    /// [`GroveDb::verify_bulk_position_range_proof`].
+    ///
+    /// [`GroveDb::prove_bulk_position_range`]:
+    ///     crate::GroveDb::prove_bulk_position_range
+    /// [`GroveDb::verify_bulk_position_range_proof`]:
+    ///     crate::GroveDb::verify_bulk_position_range_proof
+    pub fn new_bulk_position_range(
+        path: Vec<Vec<u8>>,
+        key: Vec<u8>,
+        start: u64,
+        limit: u16,
+    ) -> Self {
+        let position_query = grovedb_bulk_append_tree::position_range_query(start, limit);
+        Self {
+            path,
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::Key(key)],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: None,
+                        subquery: Some(position_query.into()),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
+                    read_mode: None,
+                    limit: None,
+                },
+                limit: None,
+                offset: None,
+            },
+        }
+    }
+
     /// Construct a `PathQuery` for an aggregate-count-on-range query against
     /// the subtree at `path`. `range` is the inner `QueryItem` describing the
     /// keys to count over; see [`Query::new_aggregate_count_on_range`] for the
@@ -566,6 +634,14 @@ impl PathQuery {
             read_mode: Some(Box::new(ReadMode::Axis(axis_query))),
             ..Query::new()
         }
+    }
+
+    /// An axis-ordered read of the indexed tree at `path`, from an
+    /// already-built [`AxisQuery`] — use it to set a non-default
+    /// projection (`AxisQuery::keys_only`); the typed constructors below
+    /// cover the default cases.
+    pub fn new_axis(path: Vec<Vec<u8>>, axis_query: AxisQuery) -> Self {
+        Self::new_unsized(path, Self::axis_read_node(axis_query))
     }
 
     /// An axis-ordered read of the indexed tree at `path`: a page of
@@ -702,6 +778,39 @@ impl PathQuery {
                 "this entry point does not serve read-mode (axis / sum-budget) path queries"
                     .to_string(),
             ))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Whether this query — at any nesting level — carries a
+    /// per-instance limit ([`Query::limit`]). Entry points that don't
+    /// serve per-instance limits use this to fail closed instead of
+    /// silently running the query with its caps ignored.
+    pub fn has_instance_limits(&self) -> bool {
+        self.query.query.has_instance_limit_anywhere()
+    }
+
+    /// Fail-closed gate for queries carrying per-instance limits
+    /// ([`Query::limit`]) — see
+    /// [`reject_unserved_instance_limits_in_query`].
+    pub(crate) fn reject_unserved_per_instance_limits(
+        &self,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        reject_unserved_instance_limits_in_query(&self.query.query, grove_version)
+    }
+
+    /// Fail-closed gate for entry points that never serve per-instance
+    /// limits ([`Query::limit`]) at any grove version — today: proof
+    /// generation and verification, and absence-proof result assembly
+    /// (whose expected-key projection would report keys beyond an
+    /// instance cap as absent).
+    pub(crate) fn reject_per_instance_limits(&self, context: &str) -> Result<(), Error> {
+        if self.has_instance_limits() {
+            Err(Error::NotSupported(format!(
+                "{context} does not serve per-instance query limits (Query::limit)"
+            )))
         } else {
             Ok(())
         }
@@ -955,20 +1064,22 @@ impl PathQuery {
     }
 
     /// Combines multiple path queries into one equivalent path query
+    /// rooted at their common path prefix.
+    ///
+    /// Behavior is version-gated on `path_query_methods.merge` — see
+    /// the [`merge`](crate::query::merge) module for the v0/v1
+    /// semantics (direction handling and, from `GROVE_V4`'s v1, limit
+    /// lifting). The checks below are version-independent: an empty
+    /// input is malformed, read-mode queries have no merge semantics at
+    /// any version, and a single input merges to itself.
     pub fn merge(
         mut path_queries: Vec<&PathQuery>,
         grove_version: &GroveVersion,
     ) -> Result<Self, Error> {
-        let merge_version = grove_version.grovedb_versions.path_query_methods.merge;
-        if merge_version > 1 {
-            return Err(Error::VersionError(
-                grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
-                    method: "merge".to_string(),
-                    known_versions: vec![0, 1],
-                    received: merge_version,
-                },
-            ));
-        }
+        // An unknown merge version fails closed before anything else —
+        // even for inputs the version-independent checks below would
+        // short-circuit.
+        merge::validate_version(grove_version)?;
         if path_queries.is_empty() {
             return Err(Error::InvalidInput(
                 "merge function requires at least 1 path query",
@@ -992,115 +1103,7 @@ impl PathQuery {
             return Ok(path_queries.remove(0).clone());
         }
 
-        // Direction handling, version-gated. `merge` slot 0 (V1..V3)
-        // keeps the long-standing behavior: input directions are
-        // silently dropped (sub-level inputs end up under a synthesized
-        // root whose direction is the default). Slot 1 (V4+) requires
-        // every input to agree and propagates the shared direction to
-        // the merged root. Merged queries feed proofs and the verifier
-        // re-runs the same merge with the same grove version, so both
-        // sides stay in agreement at every version.
-        let shared_direction = path_queries[0].query.query.left_to_right;
-        if merge_version >= 1
-            && path_queries
-                .iter()
-                .any(|path_query| path_query.query.query.left_to_right != shared_direction)
-        {
-            return Err(Error::NotSupported(
-                "can not merge path queries with conflicting directions (left_to_right \
-                 differs); align the directions before merging"
-                    .to_string(),
-            ));
-        }
-
-        let (common_path, next_index) = PathQuery::get_common_path(&path_queries);
-
-        let mut queries_for_common_path_this_level: Vec<Query> = vec![];
-
-        let mut queries_for_common_path_sub_level: Vec<SubqueryBranch> = vec![];
-
-        // convert all the paths after the common path to queries
-        path_queries.into_iter().try_for_each(|path_query| {
-            if path_query.query.offset.is_some() {
-                return Err(Error::NotSupported(
-                    "can not merge pathqueries with offsets".to_string(),
-                ));
-            }
-            if path_query.query.limit.is_some() {
-                return Err(Error::NotSupported(
-                    "can not merge pathqueries with limits, consider setting the limit after the \
-                     merge"
-                        .to_string(),
-                ));
-            }
-            path_query
-                .to_subquery_branch_with_offset_start_index(next_index)
-                .and_then(|unsized_path_query| {
-                    if unsized_path_query.subquery_path.is_none() {
-                        queries_for_common_path_this_level.push(
-                            *unsized_path_query
-                                .subquery
-                                .ok_or(Error::CorruptedCodeExecution(
-                                    "subquery must exist when subquery_path is none in merge",
-                                ))?,
-                        );
-                    } else {
-                        queries_for_common_path_sub_level.push(unsized_path_query);
-                    }
-                    Ok(())
-                })
-        })?;
-
-        // Version-gated direction handling. The `merge` slot's `0`
-        // (V1..V3) keeps the long-standing silent first-wins behavior;
-        // `1` (V4+) requires every merged query to agree on
-        // `left_to_right` and propagates it, erroring on conflict —
-        // merged queries feed proofs, and the verifier re-runs the same
-        // merge with the same grove version, so both sides stay in
-        // agreement at every version.
-        let mut merged_query = match merge_version {
-            0 => Query::merge_multiple(queries_for_common_path_this_level)
-                .map_err(|e| Error::NotSupported(e.to_string()))?,
-            _ => Query::merge_multiple_directional(queries_for_common_path_this_level)
-                .map_err(|e| Error::NotSupported(e.to_string()))?,
-        };
-        // add conditional subqueries
-        for sub_path_query in queries_for_common_path_sub_level {
-            let SubqueryBranch {
-                subquery_path,
-                subquery,
-            } = sub_path_query;
-            let mut subquery_path =
-                subquery_path.ok_or(Error::CorruptedCodeExecution("subquery path must exist"))?;
-            let key = subquery_path.remove(0); // must exist
-            merged_query.insert_item(QueryItem::Key(key.clone()));
-            let rest_of_path = if subquery_path.is_empty() {
-                None
-            } else {
-                Some(subquery_path)
-            };
-            let subquery_branch = SubqueryBranch {
-                subquery_path: rest_of_path,
-                subquery,
-            };
-            // The read-mode gate at the top of `merge` already rejected
-            // any input carrying one, so this cannot fire today —
-            // propagate rather than discard, so a future path that
-            // reaches here with a read mode surfaces it instead of
-            // silently dropping the mode.
-            merged_query
-                .merge_conditional_boxed_subquery(QueryItem::Key(key), subquery_branch)
-                .map_err(|e| Error::NotSupported(e.to_string()))?;
-        }
-
-        // V4+: the agreed direction travels to the merged root (it
-        // would otherwise be lost whenever the inputs land at a sub
-        // level under a synthesized root query).
-        if merge_version >= 1 {
-            merged_query.left_to_right = shared_direction;
-        }
-
-        Ok(PathQuery::new_unsized(common_path, merged_query))
+        merge::merge(path_queries, grove_version)
     }
 
     /// Given a set of path queries, this returns an array of path keys that are
@@ -1581,6 +1584,85 @@ impl HasSubquery<'_> {
     }
 }
 
+/// The whole-query serving gate for per-instance limits
+/// ([`Query::limit`]), shared by every entry point that walks a query:
+///
+/// - the capability slot
+///   (`path_query_methods.per_instance_query_limits`) is validated
+///   **exactly** — `0` fails closed with `NotSupported`, an unknown
+///   future value is a typed `VersionError` instead of silently running
+///   today's semantics;
+/// - when serving, the version table must also be **coherent**: it has
+///   to select a read engine that accounts for instance budgets
+///   (`element.path_query_push >= 1`) — a doctored or future table that
+///   serves the capability but selects the v0 engine would otherwise
+///   silently drop ancestor budgets;
+/// - a zero cap anywhere is rejected outright — a node that may select
+///   nothing is a malformed query, not an empty result.
+///
+/// Queries without instance limits pass untouched. The per-frame O(1)
+/// check inside the read walk mirrors this as defense in depth for
+/// nodes the walk actually reaches; this recursive form is what public
+/// entry points run once up front, so limits hiding in unmatched
+/// conditional branches cannot slip past the frame checks.
+pub(crate) fn reject_unserved_instance_limits_in_query(
+    query: &Query,
+    grove_version: &GroveVersion,
+) -> Result<(), Error> {
+    if !query.has_instance_limit_anywhere() {
+        return Ok(());
+    }
+    match grove_version
+        .grovedb_versions
+        .path_query_methods
+        .per_instance_query_limits
+    {
+        0 => Err(Error::NotSupported(
+            "per-instance query limits (Query::limit) require a grove version that serves them"
+                .to_string(),
+        )),
+        1 => {
+            // The engine selector is validated exactly: the dispatcher
+            // supports [0, 1], so an unknown future value must be a
+            // typed version error here too — otherwise a limited query
+            // that happens to match no data would silently succeed
+            // while the same table errors once data matches, making
+            // version validation data-dependent.
+            match grove_version.grovedb_versions.element.path_query_push {
+                0 => {
+                    return Err(Error::CorruptedCodeExecution(
+                        "grove version table serves per-instance limits but selects the v0 \
+                         path_query_push engine, which cannot account for them",
+                    ));
+                }
+                1 => {}
+                version => {
+                    return Err(Error::VersionError(
+                        grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                            method: "path_query_push".to_string(),
+                            known_versions: vec![0, 1],
+                            received: version,
+                        },
+                    ));
+                }
+            }
+            if query.has_zero_instance_limit_anywhere() {
+                return Err(Error::InvalidQuery(
+                    "Query::limit must be at least 1 when set",
+                ));
+            }
+            Ok(())
+        }
+        version => Err(Error::VersionError(
+            grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                method: "per_instance_query_limits".to_string(),
+                known_versions: vec![0, 1],
+                received: version,
+            },
+        )),
+    }
+}
+
 /// This represents a query where the items might be borrowed, it is used to get
 /// subquery information
 
@@ -1617,6 +1699,11 @@ pub struct SinglePathSubquery<'a> {
     /// *generation* keeps using `left_to_right` verbatim, so proof
     /// bytes are unaffected.
     pub synthesized_path_component: bool,
+    /// The resolved query node's per-instance limit ([`Query::limit`]).
+    /// `None` on synthesized path components — a one-key level selects
+    /// that key or nothing, and the enclosing instance chain passes
+    /// through it unchanged.
+    pub instance_limit: Option<u16>,
 }
 
 impl fmt::Display for SinglePathSubquery<'_> {
@@ -1677,6 +1764,7 @@ impl<'a> SinglePathSubquery<'a> {
             left_to_right: true,
             in_path,
             synthesized_path_component: true,
+            instance_limit: None,
         }
     }
 
@@ -1700,6 +1788,7 @@ impl<'a> SinglePathSubquery<'a> {
             left_to_right: query.left_to_right,
             in_path: None,
             synthesized_path_component: false,
+            instance_limit: query.limit,
         }
     }
 }
@@ -2413,6 +2502,7 @@ mod tests {
             conditional_subquery_branches: None,
             add_parent_tree_on_subquery: false,
             read_mode: None,
+            limit: None,
         };
 
         // Constructing the PathQuery
@@ -2432,6 +2522,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 },
                 limit: Some(2),
                 offset: None,
@@ -2453,6 +2544,7 @@ mod tests {
                     left_to_right: true,
                     in_path: Some(Cow::Borrowed(&root_path_key_2)),
                     synthesized_path_component: true,
+                    instance_limit: None,
                 }
             );
         }
@@ -2474,6 +2566,7 @@ mod tests {
                     left_to_right: true,
                     in_path: None,
                     synthesized_path_component: false,
+                    instance_limit: None,
                 }
             );
         }
@@ -2498,6 +2591,7 @@ mod tests {
                     left_to_right: true,
                     in_path: Some(Cow::Borrowed(&subquery_path_key_1)),
                     synthesized_path_component: true,
+                    instance_limit: None,
                 }
             );
         }
@@ -2523,6 +2617,7 @@ mod tests {
                     left_to_right: true,
                     in_path: Some(Cow::Borrowed(&subquery_path_key_2)),
                     synthesized_path_component: true,
+                    instance_limit: None,
                 }
             );
         }
@@ -2550,6 +2645,7 @@ mod tests {
                     left_to_right: true,
                     in_path: None,
                     synthesized_path_component: false,
+                    instance_limit: None,
                 }
             );
         }
@@ -2577,6 +2673,7 @@ mod tests {
                     left_to_right: true,
                     in_path: None,
                     synthesized_path_component: true,
+                    instance_limit: None,
                 }
             );
         }
@@ -2604,6 +2701,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 },
                 limit: Some(100),
                 offset: None,
@@ -2626,6 +2724,7 @@ mod tests {
                     left_to_right: true,
                     in_path: None,
                     synthesized_path_component: false,
+                    instance_limit: None,
                 }
             );
         }
@@ -2647,6 +2746,7 @@ mod tests {
                     // There should be no path: we are at the end of the path
                     in_path: None,
                     synthesized_path_component: true,
+                    instance_limit: None,
                 }
             );
         }
@@ -2680,6 +2780,7 @@ mod tests {
                     conditional_subquery_branches: Some(conditional_subquery_branches),
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 },
                 limit: Some(100),
                 offset: None,
@@ -2702,6 +2803,7 @@ mod tests {
                     left_to_right: true,
                     in_path: Some(Cow::Borrowed(&zero_vec)),
                     synthesized_path_component: true,
+                    instance_limit: None,
                 }
             );
         }
@@ -2732,6 +2834,7 @@ mod tests {
                     conditional_subquery_branches: None,
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 })),
             },
         )]);
@@ -2751,6 +2854,7 @@ mod tests {
                         conditional_subquery_branches: None,
                         add_parent_tree_on_subquery: false,
                         read_mode: None,
+                        limit: None,
                     })),
                 },
             ),
@@ -2770,6 +2874,7 @@ mod tests {
                         left_to_right: true,
                         add_parent_tree_on_subquery: false,
                         read_mode: None,
+                        limit: None,
                     })),
                 },
             ),
@@ -2788,6 +2893,7 @@ mod tests {
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 },
                 limit: Some(100),
                 offset: None,
@@ -2813,6 +2919,7 @@ mod tests {
                     left_to_right: true,
                     in_path: None,
                     synthesized_path_component: false,
+                    instance_limit: None,
                 }
             );
         }
@@ -2832,6 +2939,7 @@ mod tests {
                     left_to_right: true,
                     in_path: Some(Cow::Borrowed(&identity_id)),
                     synthesized_path_component: true,
+                    instance_limit: None,
                 }
             );
         }
@@ -2853,6 +2961,7 @@ mod tests {
                     left_to_right: true,
                     in_path: None,
                     synthesized_path_component: false,
+                    instance_limit: None,
                 }
             );
         }
@@ -2872,6 +2981,7 @@ mod tests {
                     left_to_right: true,
                     in_path: None,
                     synthesized_path_component: false,
+                    instance_limit: None,
                 }
             );
         }
@@ -2922,6 +3032,7 @@ mod tests {
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 },
                 limit: None,
                 offset: None,
@@ -2946,6 +3057,7 @@ mod tests {
                     left_to_right: false,
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 },
                 limit: Some(10),
                 offset: Some(2),
@@ -2970,6 +3082,7 @@ mod tests {
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 },
                 limit: Some(5),
                 offset: None,
@@ -3003,6 +3116,7 @@ mod tests {
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 },
                 limit: None,
                 offset: None,
@@ -3048,6 +3162,7 @@ mod tests {
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 },
                 limit: None,
                 offset: None,
@@ -3072,6 +3187,7 @@ mod tests {
                     left_to_right: false,
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 },
                 limit: Some(100),
                 offset: Some(10),
@@ -3098,6 +3214,7 @@ mod tests {
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 })),
             },
         );
@@ -3112,6 +3229,7 @@ mod tests {
                     left_to_right: false,
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 })),
             },
         );
@@ -3126,6 +3244,7 @@ mod tests {
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 },
                 limit: Some(50),
                 offset: Some(5),
@@ -3154,12 +3273,14 @@ mod tests {
                             left_to_right: true,
                             add_parent_tree_on_subquery: false,
                             read_mode: None,
+                            limit: None,
                         })),
                     },
                     conditional_subquery_branches: None,
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 },
                 limit: None,
                 offset: None,
@@ -3184,6 +3305,7 @@ mod tests {
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 },
                 limit: Some(20),
                 offset: None,

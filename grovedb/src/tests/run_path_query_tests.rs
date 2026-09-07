@@ -206,8 +206,8 @@ mod tests {
                 .unwrap()
                 .expect("unified top-k");
             assert_eq!(
-                run_entries(run),
-                AxisEntries::Sum(direct.entries),
+                run_entries_and_skip(run),
+                (AxisEntries::Sum(direct.entries), Some(direct.skipped)),
                 "top-k k={k} offset={offset} descending={descending}"
             );
         }
@@ -246,7 +246,140 @@ mod tests {
             )
             .unwrap()
             .expect("unified bounded");
-        assert_eq!(run_entries(run), AxisEntries::Sum(direct));
+        assert_eq!(
+            run_entries_and_skip(run),
+            (AxisEntries::Sum(direct), None),
+            "bounded traversals have no skip concept"
+        );
+    }
+
+    /// The attested skip across the offset spectrum: at offset 0 the
+    /// skip is 0, at a mid-population offset it equals the offset, and
+    /// at or past the end the page is empty and `skipped` attests the
+    /// population. In every case the unified read returns exactly the
+    /// `(entries, skipped)` pair the direct primitive returns — for
+    /// both the entries and the keys projections — and the unproved
+    /// skip equals the proof-attested one.
+    #[test]
+    fn axis_top_k_skip_matches_direct_primitive_across_the_offset_spectrum() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_psit(&db, grove_version, PSIT_ENTRIES);
+        let population = PSIT_ENTRIES.len() as u64;
+
+        for descending in [true, false] {
+            // offset 0 (full page), mid-population, exactly the end,
+            // and past the end (both end cases: empty page, skipped =
+            // population).
+            for offset in [0u64, 3, population, population + 3] {
+                let k = 3u16;
+
+                // Entries projection against the direct primitive.
+                let direct = db
+                    .indexed_sum_top_k_paginated(
+                        [TEST_LEAF, b"psit"].as_ref(),
+                        k,
+                        offset,
+                        descending,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("direct top-k");
+                if offset >= population {
+                    assert!(direct.entries.is_empty(), "offset {offset} is past the end");
+                    assert_eq!(
+                        direct.skipped, population,
+                        "the empty page's skip attests the population"
+                    );
+                } else {
+                    assert_eq!(direct.skipped, offset);
+                }
+                let entries_pq =
+                    PathQuery::new_axis_top_k(psit_path(), IndexAxis::Sum, k, offset, descending);
+                let run = db
+                    .run_path_query(
+                        &entries_pq,
+                        true,
+                        true,
+                        true,
+                        QueryResultType::QueryKeyElementPairResultType,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("unified top-k");
+                assert_eq!(
+                    run_entries_and_skip(run),
+                    (
+                        AxisEntries::Sum(direct.entries.clone()),
+                        Some(direct.skipped)
+                    ),
+                    "entries: offset={offset} descending={descending}"
+                );
+
+                // Keys projection against its direct primitive.
+                let direct_keys = db
+                    .indexed_sum_top_k_paginated_keys(
+                        [TEST_LEAF, b"psit"].as_ref(),
+                        k,
+                        offset,
+                        descending,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("direct top-k keys");
+                assert_eq!(direct_keys.skipped, direct.skipped);
+                let keys_pq = PathQuery::new_axis(
+                    psit_path(),
+                    AxisQuery::top_k(IndexAxis::Sum, k, offset, descending).keys_only(),
+                );
+                let run = db
+                    .run_path_query(
+                        &keys_pq,
+                        true,
+                        true,
+                        true,
+                        QueryResultType::QueryKeyElementPairResultType,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("unified top-k keys");
+                match run {
+                    PathQueryRun::AxisKeys { keys, skipped } => {
+                        assert_eq!(
+                            (keys, skipped),
+                            (
+                                crate::query_result_type::AxisKeys::Sum(direct_keys.entries),
+                                Some(direct_keys.skipped)
+                            ),
+                            "keys: offset={offset} descending={descending}"
+                        );
+                    }
+                    other => panic!("expected AxisKeys, got {other:?}"),
+                }
+
+                // The unproved skip mirrors the proof-attested one.
+                let proof = db
+                    .prove_query(&entries_pq, None, grove_version)
+                    .unwrap()
+                    .expect("prove top-k");
+                let crate::operations::proof::VerifiedPathQuery::AxisEntries {
+                    skipped: verified_skipped,
+                    ..
+                } = GroveDb::verify_path_query(&proof, &entries_pq, grove_version).expect("verify")
+                else {
+                    panic!("expected verified AxisEntries");
+                };
+                assert_eq!(
+                    verified_skipped,
+                    Some(direct.skipped),
+                    "verified skip: offset={offset} descending={descending}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -482,6 +615,110 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A snapshot read transaction pins the ENTIRE branched read — every
+    /// per-branch absence probe and every axis walk — to the committed
+    /// state at the transaction's creation: commits landing afterwards
+    /// are invisible through it, while a plain transaction and a `None`
+    /// read see them. This is the primitive a caller uses to make a
+    /// multi-operation read observe exactly one committed state.
+    #[test]
+    fn snapshot_read_transaction_pins_a_branched_read_to_one_committed_state() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_branched_psits(
+            &db,
+            grove_version,
+            &[
+                (b"alice", &[(b"m1", 10), (b"m2", 30)]),
+                (b"carol", &[(b"m1", 7)]),
+            ],
+        );
+        let alice_path = [TEST_LEAF, b"alice".as_slice(), b"scores".as_slice()];
+        let alice_before = db
+            .indexed_sum_top_k_paginated(alice_path.as_ref(), 2, 0, true, None, grove_version)
+            .unwrap()
+            .expect("alice pre-commit page")
+            .entries;
+
+        let snapshot_transaction = db.start_snapshot_read_transaction();
+        let plain_transaction = db.start_transaction();
+
+        // A "concurrent block commit" lands after both transactions
+        // began: bob's branch springs into existence and alice gains a
+        // row that changes her top-k.
+        build_branched_psits(&db, grove_version, &[(b"bob", &[(b"m1", 99)])]);
+        db.insert_into_provable_sum_indexed_tree(
+            alice_path.as_ref(),
+            b"m3",
+            Element::new_sum_item(100),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert post-snapshot alice entry");
+        let alice_after = db
+            .indexed_sum_top_k_paginated(alice_path.as_ref(), 2, 0, true, None, grove_version)
+            .unwrap()
+            .expect("alice post-commit page")
+            .entries;
+        assert_ne!(alice_before, alice_after, "the commit changed alice's page");
+
+        let axis_query = AxisQuery::top_k(IndexAxis::Sum, 2, 0, true);
+        let path_query = PathQuery::new_branched_axis(
+            vec![TEST_LEAF.to_vec()],
+            vec![b"alice".to_vec(), b"bob".to_vec(), b"carol".to_vec()],
+            vec![b"scores".to_vec()],
+            axis_query,
+        );
+        let read = |transaction| {
+            let run = db
+                .run_path_query(
+                    &path_query,
+                    true,
+                    true,
+                    true,
+                    QueryResultType::QueryKeyElementPairResultType,
+                    transaction,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("branched read");
+            let PathQueryRun::BranchedAxisEntries(branches) = run else {
+                panic!("expected BranchedAxisEntries");
+            };
+            branches
+        };
+
+        // Under the snapshot: bob is still absent and alice's page is
+        // her pre-commit top-k — the whole union, absence probes
+        // included, reads the snapshot's state.
+        let pinned = read(Some(&snapshot_transaction));
+        assert!(
+            pinned[1].1.is_none(),
+            "bob must stay absent under the snapshot"
+        );
+        assert_eq!(
+            pinned[0].1.as_ref().expect("alice present"),
+            &AxisEntries::Sum(alice_before),
+            "alice's page under the snapshot is her pre-commit top-k"
+        );
+
+        // A plain transaction started at the same moment reads LATEST
+        // committed state on each operation — the exact gap the
+        // snapshot transaction closes.
+        let unpinned = read(Some(&plain_transaction));
+        assert!(unpinned[1].1.is_some(), "a plain transaction sees bob");
+
+        // A `None` read sees the new state too.
+        let fresh = read(None);
+        assert!(fresh[1].1.is_some(), "a committed read sees bob");
+        assert_eq!(
+            fresh[0].1.as_ref().expect("alice present"),
+            &AxisEntries::Sum(alice_after),
+            "the committed read reflects the new row"
+        );
     }
 
     // -----------------------------------------------------------------
@@ -735,7 +972,10 @@ mod tests {
             )
             .unwrap()
             .expect("unified count top-k");
-        assert_eq!(run_entries(run), AxisEntries::Count(direct.entries));
+        assert_eq!(
+            run_entries_and_skip(run),
+            (AxisEntries::Count(direct.entries), Some(direct.skipped))
+        );
 
         // Bounded on the count axis, with bounds deliberately below and
         // above the u64 domain so the count clamp is exercised (the sum
@@ -763,7 +1003,10 @@ mod tests {
             )
             .unwrap()
             .expect("unified count bounded");
-        assert_eq!(run_entries(run), AxisEntries::Count(direct));
+        assert_eq!(
+            run_entries_and_skip(run),
+            (AxisEntries::Count(direct), None)
+        );
 
         // Aggregate over the value range on the count axis.
         let direct = db
@@ -842,7 +1085,10 @@ mod tests {
             )
             .unwrap()
             .expect("unified avg top-k");
-        assert_eq!(run_entries(run), AxisEntries::Avg(direct.entries));
+        assert_eq!(
+            run_entries_and_skip(run),
+            (AxisEntries::Avg(direct.entries), Some(direct.skipped))
+        );
 
         // Bounded on the avg axis takes the i128 bounds unclamped — the
         // avg domain is the whole i128 range.
@@ -877,7 +1123,7 @@ mod tests {
             )
             .unwrap()
             .expect("unified avg bounded");
-        assert_eq!(run_entries(run), AxisEntries::Avg(direct));
+        assert_eq!(run_entries_and_skip(run), (AxisEntries::Avg(direct), None));
     }
 
     // -----------------------------------------------------------------
@@ -1478,8 +1724,12 @@ mod tests {
     // -----------------------------------------------------------------
 
     fn run_entries(run: PathQueryRun) -> AxisEntries {
+        run_entries_and_skip(run).0
+    }
+
+    fn run_entries_and_skip(run: PathQueryRun) -> (AxisEntries, Option<u64>) {
         match run {
-            PathQueryRun::AxisEntries(entries) => entries,
+            PathQueryRun::AxisEntries { entries, skipped } => (entries, skipped),
             other => panic!("expected AxisEntries, got {other:?}"),
         }
     }

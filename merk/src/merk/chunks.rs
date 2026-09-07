@@ -158,10 +158,11 @@ where
         let chunk = self
             .merk
             .walk(|maybe_walker| match maybe_walker {
-                Some(mut walker) => walker.traverse_and_build_chunk(
+                Some(mut walker) => walker.traverse_and_build_chunk_with_features(
                     &traversal_instructions,
                     chunk_height,
                     tree_type,
+                    true,
                     grove_version,
                 ),
                 None => Err(Error::ChunkingError(ChunkError::EmptyTree(
@@ -477,6 +478,7 @@ mod test {
                 Node::KVHash(_) => counts.kv_hash += 1,
                 Node::KV(..) => counts.kv += 1,
                 Node::KVValueHash(..) => counts.kv_value_hash += 1,
+                Node::KVBackwardsReferencesValueHash(..) => counts.kv_value_hash += 1,
                 Node::KVDigest(..) => counts.kv_digest += 1,
                 Node::KVDigestCount(..) => counts.kv_digest += 1,
                 Node::KVRefValueHash(..) => counts.kv_ref_value_hash += 1,

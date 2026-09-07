@@ -273,6 +273,46 @@ pub fn follow_reference(...) -> CostResult<ResolvedReference, Error> {
 }
 ```
 
+### Presentation vs. commitment
+
+GroveDB exposes two resolvers over the same loop:
+
+- `follow_reference` — the **presentation** read used by `get` and queries. The
+  terminal is returned looked-through: a `NonCounted`-wrapped item comes back as
+  the inner item.
+- `follow_reference_as_stored` — the **commitment-preserving** read. The terminal
+  is returned exactly as stored, wrapper included. Wrappers are still looked
+  through to decide whether to keep hopping (a `NonCounted(Reference)` is
+  followed), but they are never stripped from the terminal.
+
+The distinction matters because a reference node's `value_hash` combines the
+hash of the reference's own bytes with the hash of the terminal's **stored**
+bytes (see below). Direct insert on `GROVE_V4`+ and the batch reference resolver
+use the stored form, so a reference written directly and the same reference
+applied in a batch commit the same root and verify with the same proof.
+
+References written directly before `GROVE_V4` committed to the unwrapped
+terminal instead. Those existing commitments remain valid: the V1 prover
+(including paginated proofs) and `verify_grovedb` select the unwrapped terminal
+only if its combined hash matches the reference node's stored commitment.
+Otherwise they use the stored terminal. This works for mixed write histories
+and after an upgrade without rewriting data or changing roots. A changed
+terminal that matches neither representation still fails verification.
+
+### A reference must terminate at a value
+
+The terminal of a reference chain must be an item (`Item`, `SumItem`,
+`ItemWithSumItem`, optionally `NonCounted`-wrapped). A tree element cannot be a
+terminal: the reference would only bind `H(tree element bytes)`, which says
+nothing about the subtree behind it, so the subtree could change without
+disturbing the reference's commitment or `verify_grovedb`, and the row could
+not be proved (the V1 verifier expects a lower layer for a non-empty tree).
+The batch reference resolver has always rejected such a reference with
+`InvalidBatchOperation("references can not point to trees being updated")`.
+Direct insert on `GROVE_V4`+ rejects it too, with
+`InvalidInput("references can not point to trees")`; `GROVE_V3` direct inserts
+keep the legacy behaviour of accepting it.
+
 ## Cycle Detection
 
 The `visited` HashSet tracks all paths we've seen. If we encounter a path we've
@@ -299,6 +339,24 @@ graph LR
 > | 4 | C → A | A already in visited! | **Error::CyclicRef** |
 >
 > Without cycle detection, this would loop forever. `MAX_REFERENCE_HOPS = 10` also caps traversal depth for long chains.
+
+### Cycles are refused at write time
+
+Reads detect a cycle only once it exists, and once one is committed every
+`get`, proof and `verify_grovedb` that touches a key on it fails. Writes
+therefore refuse the reference that would close one. A reference is resolved
+to its terminal when it is written, and that walk treats the position being
+written as already visited: storage still holds the element that position had
+before — an item, say — so a chain resolved from the target alone would read
+that stale element and look acyclic. Overwriting `B` in `A → B(item)` with a
+reference back to `A` is the canonical case.
+
+- `apply_batch` has always refused it: the batch resolver sees the overwriting
+  op in the batch and follows the new reference instead of the stored item.
+- Direct `insert` refuses it from `GROVE_V4` (`add_element_on_transaction: 2`)
+  by seeding the stored-terminal walk with the referrer's own path. `GROVE_V3`
+  is live and keeps accepting the overwrite, so that outcome is preserved for
+  replay.
 
 ## References in Merk — Combined Value Hashes
 

@@ -13,6 +13,9 @@ mod aggregate_sum;
 /// `value_hash`. Consensus-critical — see the module docs.
 #[cfg(feature = "minimal")]
 mod bind_terminal_non_merk_tree;
+/// Trunk / branch chunk proofs: composite-row binding (#859), versioned.
+#[cfg(any(feature = "minimal", feature = "verify"))]
+mod chunk_proof_row_binding;
 #[cfg(feature = "minimal")]
 mod generate;
 // The prover lives in `indexed_axis::generate` and is `minimal`-gated there;
@@ -21,6 +24,10 @@ mod generate;
 // proof-verification layer with `--no-default-features --features verify`).
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod indexed_axis;
+/// Interval arithmetic over u64 positions for the append-only tree
+/// verifiers' completeness/soundness checks (count-independent cost).
+#[cfg(any(feature = "minimal", feature = "verify"))]
+mod position_intervals;
 /// Utility functions for proof display and conversion.
 pub mod util;
 mod verify;
@@ -152,6 +159,130 @@ impl Default for ProveOptions {
     }
 }
 
+/// Shared limit accounting for the V1 prover and verifier walks.
+///
+/// The **global** budget (`SizedQuery::limit`) stays one counter shared
+/// by the whole walk, exactly as before; the two consumption counters
+/// are what let a frame observe how much a lower layer charged — which
+/// the old code inferred by diffing the `Option<u16>` itself, a test
+/// that goes blind when the global limit is `None` (possible once
+/// per-instance limits exist without a global one).
+///
+/// - `consumed_rows` counts result rows only — what per-instance
+///   budgets (`Query::limit`) are settled from.
+/// - `consumed_total` additionally counts empty-layer charges
+///   (`decrease_limit_on_empty_sub_query_result`) — the
+///   "did anything at all move" signal that decides whether a layer
+///   itself is charged as empty. Empty-layer charges never consume
+///   per-instance budgets: they bound traversal work, and the caps
+///   bound result rows.
+///
+/// Per-instance budgets themselves are frame-local values
+/// (`min(inherited remaining, the layer query's own limit)`), not part
+/// of this struct — each recursion frame derives and settles its own.
+#[derive(Debug)]
+pub(crate) struct V1LimitState {
+    /// Remaining global budget; `None` = unlimited.
+    pub global: Option<u16>,
+    /// Result rows charged so far across the whole walk.
+    pub consumed_rows: u64,
+    /// Rows plus empty-layer charges across the whole walk.
+    pub consumed_total: u64,
+}
+
+impl V1LimitState {
+    pub(crate) fn new(global: Option<u16>) -> Self {
+        V1LimitState {
+            global,
+            consumed_rows: 0,
+            consumed_total: 0,
+        }
+    }
+
+    /// `min` over two optional caps, treating `None` as unlimited —
+    /// how an inherited instance budget combines with a layer query's
+    /// own `Query::limit`.
+    pub(crate) fn min_caps(a: Option<u16>, b: Option<u16>) -> Option<u16> {
+        match (a, b) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, b) => b,
+        }
+    }
+
+    /// Charge `n` result rows against the global budget.
+    pub(crate) fn charge_rows(&mut self, n: u16) {
+        if let Some(global) = self.global.as_mut() {
+            *global = global.saturating_sub(n);
+        }
+        self.consumed_rows += n as u64;
+        self.consumed_total += n as u64;
+    }
+
+    /// Charge one result row against the global budget and the current
+    /// frame's per-instance budget.
+    pub(crate) fn charge_row_with_instance(&mut self, frame_instance: &mut Option<u16>) {
+        self.charge_rows(1);
+        if let Some(instance) = frame_instance.as_mut() {
+            *instance = instance.saturating_sub(1);
+        }
+    }
+
+    /// Charge one empty-layer slot: global budget only.
+    pub(crate) fn charge_empty_layer(&mut self) {
+        if let Some(global) = self.global.as_mut() {
+            *global = global.saturating_sub(1);
+        }
+        self.consumed_total += 1;
+    }
+
+    /// The effective budget for a specialized (non-Merk) lower layer:
+    /// the tighter of the global budget, the enclosing frame's
+    /// instance budget, and the lower query's own per-instance cap.
+    /// The adapters bypass recursive frame creation, so prover and
+    /// verifier both derive the lower budget through this single
+    /// helper — a divergence here would silently split their
+    /// accounting.
+    pub(crate) fn effective_lower_layer_limit(
+        &self,
+        frame_instance: Option<u16>,
+        lower_instance_limit: Option<u16>,
+    ) -> Option<u16> {
+        self.effective_layer_limit(Self::min_caps(frame_instance, lower_instance_limit))
+    }
+
+    /// The budget a single layer's merk walk may still produce under —
+    /// the tighter of the global budget and the frame's instance
+    /// budget.
+    pub(crate) fn effective_layer_limit(&self, frame_instance: Option<u16>) -> Option<u16> {
+        match (self.global, frame_instance) {
+            (Some(global), Some(instance)) => Some(global.min(instance)),
+            (Some(global), None) => Some(global),
+            (None, instance) => instance,
+        }
+    }
+
+    /// Whether the walk must stop producing results in the current
+    /// frame.
+    pub(crate) fn is_exhausted(&self, frame_instance: Option<u16>) -> bool {
+        self.global == Some(0) || frame_instance == Some(0)
+    }
+
+    /// Settle a frame's instance budget after a lower layer returned:
+    /// the rows the descent consumed come out of the enclosing
+    /// instance budget too.
+    pub(crate) fn settle_instance_after_descent(
+        frame_instance: &mut Option<u16>,
+        rows_before: u64,
+        rows_after: u64,
+    ) {
+        if let Some(instance) = frame_instance.as_mut() {
+            let delta = rows_after.saturating_sub(rows_before).min(u16::MAX as u64) as u16;
+            *instance = instance.saturating_sub(delta);
+        }
+    }
+}
+
 /// A single layer of a legacy (v0) GroveDB proof containing only merk proofs.
 ///
 /// Uses a custom `Decode` implementation that enforces [`MAX_PROOF_DEPTH`]
@@ -253,8 +384,8 @@ pub enum ProofBytes {
     /// `merk_proof` is a standard Merk proof against the cidx **primary**
     /// covering the subquery result set; subqueries into cidx via the
     /// generic V1 envelope use the primary as the descent target. Callers
-    /// who want secondary-ordered output should use the dedicated
-    /// `prove_indexed_count_top_k` proof shape instead.
+    /// who want secondary-ordered output should use an axis read
+    /// (`PathQuery::new_axis_top_k` and friends) instead.
     CountIndexedTree(Vec<u8>),
     /// Terminal attestation for an indexed tree that is itself a query
     /// result with nothing queried below it:
@@ -377,7 +508,7 @@ impl SumBudgetWindowProof {
 ///   `other_axes_root_hashes` + the recomputed queried-axis root for
 ///   PCPSIT), which must equal the parent-committed `value_hash` — any
 ///   forgery fails that comparison.
-/// - `rank` is present iff the traversal is `RankOfKey`: the verifier
+/// - `rank` is present if and only if the traversal is `RankOfKey`: the verifier
 ///   needs the claimed rank to drive the count-offset verification
 ///   walk, whose counted commitments then attest it (a wrong claim
 ///   fails verification), and the single yielded entry must be the
@@ -982,6 +1113,12 @@ fn node_to_string(node: &Node) -> Result<String, fmt::Error> {
             element_hex_to_ascii(value)?,
             hex::encode(value_hash)
         ),
+        Node::KVBackwardsReferencesValueHash(key, value, backrefs_hash) => format!(
+            "KVBackwardsReferencesValueHash({}, {}, HASH[{}])",
+            hex_to_ascii(key),
+            element_hex_to_ascii(value)?,
+            hex::encode(backrefs_hash)
+        ),
         Node::KVDigest(key, value_hash) => format!(
             "KVDigest({}, HASH[{}])",
             hex_to_ascii(key),
@@ -1221,5 +1358,23 @@ fn decode_dense_proof(bytes: &[u8]) -> String {
             s
         }
         Err(e) => format!("Error decoding DenseTree proof: {}", e),
+    }
+}
+
+/// Test-only seam: fired by both `prove_query` entry points (V0 and V1)
+/// right after the generation snapshot is taken and before any layer is
+/// generated, so a test can land a commit deterministically inside the
+/// generation window and prove the whole recursive generation reads that
+/// snapshot.
+#[cfg(test)]
+pub(crate) mod prove_test_hooks {
+    use std::cell::RefCell;
+    thread_local! {
+        pub(crate) static AFTER_PROOF_SNAPSHOT: RefCell<Option<Box<dyn FnMut()>>> =
+            const { RefCell::new(None) };
+        // One-shot seam after chunk ops are collected, before composite rows
+        // read their child roots or referenced values.
+        pub(crate) static BEFORE_CHUNK_ROW_BINDING: RefCell<Option<Box<dyn FnOnce()>>> =
+            const { RefCell::new(None) };
     }
 }
