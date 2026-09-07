@@ -34,6 +34,40 @@ fn u64_to_i64(value_name: &str, value: u64) -> Result<i64, SqliteShardStoreError
     })
 }
 
+/// Run `f` inside a SQLite savepoint named `name`, releasing it on success
+/// and rolling back (then releasing) on error.
+///
+/// Savepoints nest — unlike `BEGIN`, which fails inside an open transaction —
+/// so multi-statement helpers wrapped in this compose both with an enclosing
+/// operation-level savepoint (see `ClientPersistentCommitmentTree`) and with
+/// a caller-owned wallet transaction on a shared connection.
+pub(crate) fn with_savepoint<T>(
+    conn: &Connection,
+    name: &str,
+    f: impl FnOnce(&Connection) -> Result<T, SqliteShardStoreError>,
+) -> Result<T, SqliteShardStoreError> {
+    conn.execute_batch(&format!("SAVEPOINT {name}"))?;
+    match f(conn) {
+        Ok(value) => {
+            conn.execute_batch(&format!("RELEASE SAVEPOINT {name}"))?;
+            Ok(value)
+        }
+        Err(e) => {
+            // ROLLBACK TO undoes the writes but leaves the savepoint on the
+            // stack; RELEASE pops it so the caller's transaction state is
+            // exactly as before this call.
+            if let Err(rollback_err) = conn.execute_batch(&format!(
+                "ROLLBACK TO SAVEPOINT {name}; RELEASE SAVEPOINT {name}"
+            )) {
+                return Err(SqliteShardStoreError::Serialization(format!(
+                    "failed to roll back savepoint {name} after error ({e}): {rollback_err}"
+                )));
+            }
+            Err(e)
+        }
+    }
+}
+
 pub(crate) fn create_tables(conn: &Connection) -> Result<(), SqliteShardStoreError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS commitment_tree_shards (
@@ -226,21 +260,21 @@ pub(crate) fn sql_add_checkpoint(
         .map(|mark_pos| u64_to_i64("mark position", u64::from(*mark_pos)))
         .collect::<Result<_, _>>()?;
 
-    let tx = conn.unchecked_transaction()?;
-    tx.execute(
-        "INSERT INTO commitment_tree_checkpoints (checkpoint_id, position) VALUES (?1, ?2)",
-        params![checkpoint_id, position],
-    )?;
-
-    for mark_pos in mark_positions {
-        tx.execute(
-            "INSERT INTO commitment_tree_checkpoint_marks_removed (checkpoint_id, position) \
-             VALUES (?1, ?2)",
-            params![checkpoint_id, mark_pos],
+    with_savepoint(conn, "commitment_tree_add_checkpoint", |conn| {
+        conn.execute(
+            "INSERT INTO commitment_tree_checkpoints (checkpoint_id, position) VALUES (?1, ?2)",
+            params![checkpoint_id, position],
         )?;
-    }
-    tx.commit()?;
-    Ok(())
+
+        for mark_pos in mark_positions {
+            conn.execute(
+                "INSERT INTO commitment_tree_checkpoint_marks_removed (checkpoint_id, position) \
+                 VALUES (?1, ?2)",
+                params![checkpoint_id, mark_pos],
+            )?;
+        }
+        Ok(())
+    })
 }
 
 pub(crate) fn sql_checkpoint_count(conn: &Connection) -> Result<usize, SqliteShardStoreError> {
@@ -347,24 +381,26 @@ where
                 .map(|mark_pos| u64_to_i64("mark position", u64::from(*mark_pos)))
                 .collect::<Result<_, _>>()?;
 
-            let tx = conn.unchecked_transaction()?;
-            tx.execute(
-                "DELETE FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id = ?1",
-                params![checkpoint_id],
-            )?;
-            tx.execute(
-                "UPDATE commitment_tree_checkpoints SET position = ?1 WHERE checkpoint_id = ?2",
-                params![position, checkpoint_id],
-            )?;
-            for mark_pos in mark_positions {
-                tx.execute(
-                    "INSERT INTO commitment_tree_checkpoint_marks_removed (checkpoint_id, \
-                     position) VALUES (?1, ?2)",
-                    params![checkpoint_id, mark_pos],
+            with_savepoint(conn, "commitment_tree_update_checkpoint", |conn| {
+                conn.execute(
+                    "DELETE FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id = \
+                     ?1",
+                    params![checkpoint_id],
                 )?;
-            }
-            tx.commit()?;
-            Ok(true)
+                conn.execute(
+                    "UPDATE commitment_tree_checkpoints SET position = ?1 WHERE checkpoint_id = \
+                     ?2",
+                    params![position, checkpoint_id],
+                )?;
+                for mark_pos in mark_positions {
+                    conn.execute(
+                        "INSERT INTO commitment_tree_checkpoint_marks_removed (checkpoint_id, \
+                         position) VALUES (?1, ?2)",
+                        params![checkpoint_id, mark_pos],
+                    )?;
+                }
+                Ok(true)
+            })
         }
     }
 }
@@ -373,38 +409,38 @@ pub(crate) fn sql_remove_checkpoint(
     conn: &Connection,
     checkpoint_id: u32,
 ) -> Result<(), SqliteShardStoreError> {
-    let tx = conn.unchecked_transaction()?;
-    tx.execute(
-        "DELETE FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id = ?1",
-        params![checkpoint_id],
-    )?;
-    tx.execute(
-        "DELETE FROM commitment_tree_checkpoints WHERE checkpoint_id = ?1",
-        params![checkpoint_id],
-    )?;
-    tx.commit()?;
-    Ok(())
+    with_savepoint(conn, "commitment_tree_remove_checkpoint", |conn| {
+        conn.execute(
+            "DELETE FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id = ?1",
+            params![checkpoint_id],
+        )?;
+        conn.execute(
+            "DELETE FROM commitment_tree_checkpoints WHERE checkpoint_id = ?1",
+            params![checkpoint_id],
+        )?;
+        Ok(())
+    })
 }
 
 pub(crate) fn sql_truncate_checkpoints_retaining(
     conn: &Connection,
     checkpoint_id: u32,
 ) -> Result<(), SqliteShardStoreError> {
-    let tx = conn.unchecked_transaction()?;
-    tx.execute(
-        "DELETE FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id > ?1",
-        params![checkpoint_id],
-    )?;
-    tx.execute(
-        "DELETE FROM commitment_tree_checkpoints WHERE checkpoint_id > ?1",
-        params![checkpoint_id],
-    )?;
-    tx.execute(
-        "DELETE FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id = ?1",
-        params![checkpoint_id],
-    )?;
-    tx.commit()?;
-    Ok(())
+    with_savepoint(conn, "commitment_tree_truncate_checkpoints", |conn| {
+        conn.execute(
+            "DELETE FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id > ?1",
+            params![checkpoint_id],
+        )?;
+        conn.execute(
+            "DELETE FROM commitment_tree_checkpoints WHERE checkpoint_id > ?1",
+            params![checkpoint_id],
+        )?;
+        conn.execute(
+            "DELETE FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id = ?1",
+            params![checkpoint_id],
+        )?;
+        Ok(())
+    })
 }
 
 /// Load a full Checkpoint (including marks_removed).
