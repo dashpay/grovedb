@@ -412,6 +412,21 @@ impl StorageBatch {
         self.len() == 0
     }
 
+    /// Move every pending operation out into a new batch, leaving this one
+    /// empty but alive.
+    ///
+    /// Storage contexts hold a shared reference to the batch they write
+    /// into, so a batch cannot be consumed while any of them is still open.
+    /// A caller that needs to flush part-way (the partial batch apply
+    /// reports the initial segment's pending cost to its caller before the
+    /// continuation runs) drains the batch here and keeps writing into the
+    /// same object afterwards.
+    pub fn take_pending(&self) -> StorageBatch {
+        StorageBatch {
+            operations: RefCell::new(std::mem::take(&mut *self.operations.borrow_mut())),
+        }
+    }
+
     /// Add deferred `put` operation
     pub(crate) fn put(
         &self,

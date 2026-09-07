@@ -100,6 +100,7 @@ mod non_counted_tests;
 mod not_counted_or_summed_tests;
 mod not_summed_tests;
 mod operations_coverage_tests;
+mod partial_batch_coherence_tests;
 mod partial_batch_consistency_tests;
 mod proof_advanced_tests;
 mod proof_coverage_tests;
@@ -5084,8 +5085,8 @@ mod general_tests {
         }
     }
 
-    /// Fail-closed: batches perform no backward-references bookkeeping, so
-    /// every batch entry point rejects ops carrying the element family.
+    /// Without opt-in bookkeeping, every batch entry point rejects the
+    /// backward-references family and leaves preceding valid writes uncommitted.
     #[test]
     fn backward_references_elements_rejected_in_batches() {
         let grove_version = GroveVersion::latest();
@@ -5106,18 +5107,64 @@ mod general_tests {
         ];
 
         for element in elements {
-            let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            let valid_op = |key: &[u8]| {
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec()],
+                    key.to_vec(),
+                    Element::new_item(b"valid".to_vec()),
+                )
+            };
+            let rejected_op = QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"k".to_vec(),
                 element.clone(),
-            )];
-            assert!(
-                matches!(
-                    db.apply_batch(ops, None, None, grove_version).unwrap(),
-                    Err(Error::NotSupported(_))
-                ),
-                "expected NotSupported in batch for {element:?}"
             );
+            // Exercise ordinary batch rejection, initial partial rejection,
+            // and rejection after a successful initial partial segment.
+            for phase in ["ordinary", "initial", "continuation"] {
+                let before = db.root_hash(None, grove_version).unwrap().unwrap();
+                let ops = vec![valid_op(b"a_valid"), rejected_op.clone()];
+                let result = match phase {
+                    "ordinary" => db.apply_batch(ops, None, None, grove_version).unwrap(),
+                    "initial" => db
+                        .apply_partial_batch(
+                            ops,
+                            None,
+                            |_, _| {
+                                panic!("rejected initial segment must not call the add-on closure")
+                            },
+                            None,
+                            grove_version,
+                        )
+                        .unwrap(),
+                    _ => db
+                        .apply_partial_batch(
+                            vec![valid_op(b"initial_valid")],
+                            None,
+                            |_, _| Ok(ops.clone()),
+                            None,
+                            grove_version,
+                        )
+                        .unwrap(),
+                };
+                assert!(
+                    matches!(result, Err(Error::NotSupported(_))),
+                    "expected NotSupported in {phase} batch for {element:?}: {result:?}"
+                );
+                assert_eq!(db.root_hash(None, grove_version).unwrap().unwrap(), before);
+                for key in [b"a_valid".as_slice(), b"initial_valid", b"k"] {
+                    assert!(
+                        db.get([TEST_LEAF].as_ref(), key, None, grove_version)
+                            .unwrap()
+                            .is_err(),
+                        "{phase} rejection committed {key:?}"
+                    );
+                }
+                assert!(db
+                    .verify_grovedb(None, true, true, grove_version)
+                    .unwrap()
+                    .is_empty());
+            }
         }
     }
 }
