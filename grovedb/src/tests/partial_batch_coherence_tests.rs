@@ -430,6 +430,94 @@ mod tests {
     }
 
     #[test]
+    fn new_pcit_via_insert_if_not_exists_populated_by_continuation() {
+        // Same shape as above, but the indexed tree is created with
+        // InsertIfNotExists: the continuation's secondary opener must find
+        // the pending element through that op variant too.
+        let grove_version = GroveVersion::latest();
+        let cidx_path = vec![TEST_LEAF.to_vec(), b"cidx".to_vec()];
+        let mut second = vec![count_child_op(cidx_path.clone(), b"a")];
+        second.extend((0..3u64).map(|k| bump(b"cidx", b"a", k)));
+        let rows = assert_three_flows_agree(
+            make_test_grovedb,
+            vec![QualifiedGroveDbOp::insert_if_not_exists_op(
+                vec![TEST_LEAF.to_vec()],
+                b"cidx".to_vec(),
+                Element::empty_provable_count_indexed_tree(),
+            )],
+            second,
+            Some(BatchApplyOptions::default()),
+            |db, gv| top_k(db, b"cidx", gv),
+            grove_version,
+        );
+        assert_eq!(rows, vec![(3, b"a".to_vec())]);
+    }
+
+    #[test]
+    fn continuation_write_under_pcit_overwritten_by_initial_segment_is_refused() {
+        // The initial segment safe-subset-OVERWRITES a committed indexed
+        // tree; the continuation writes under it. The old element's storage
+        // is swept at commit, which would clear the continuation's writes —
+        // the same shape one combined batch refuses with NotSupported — so
+        // the partial flow must refuse it too, committing nothing.
+        let grove_version = GroveVersion::latest();
+        let db = two_group_pcit(grove_version);
+        let before = root_hash(&db, grove_version);
+
+        let overwrite = QualifiedGroveDbOp::replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"cidx".to_vec(),
+            Element::empty_provable_count_indexed_tree(),
+        );
+        let populate = count_child_op(vec![TEST_LEAF.to_vec(), b"cidx".to_vec()], b"a");
+
+        let combined = db.apply_batch(
+            vec![overwrite.clone(), populate.clone()],
+            Some(BatchApplyOptions::default()),
+            None,
+            grove_version,
+        );
+        assert!(
+            matches!(combined.unwrap(), Err(Error::NotSupported(_))),
+            "the combined batch must refuse overwrite-then-populate"
+        );
+
+        let result = apply_partial(
+            &db,
+            vec![overwrite],
+            vec![populate],
+            Some(BatchApplyOptions::default()),
+            grove_version,
+        );
+        assert!(
+            matches!(result, Err(Error::InvalidBatchOperation(_))),
+            "{result:?}"
+        );
+        assert_untouched(&db, before, grove_version);
+    }
+
+    #[test]
+    fn continuation_replace_overwrite_of_committed_pcit_with_empty_one_cleans_up() {
+        // The Replace-op variant of the safe-subset overwrite from the
+        // continuation (no writes under it afterwards): allowed, and the
+        // old rows are swept exactly like the InsertOrReplace variant.
+        let grove_version = GroveVersion::latest();
+        let rows = assert_three_flows_agree(
+            two_group_pcit,
+            vec![item_op(vec![TEST_LEAF.to_vec()], 1)],
+            vec![QualifiedGroveDbOp::replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"cidx".to_vec(),
+                Element::empty_provable_count_indexed_tree(),
+            )],
+            Some(BatchApplyOptions::default()),
+            |db, gv| top_k(db, b"cidx", gv),
+            grove_version,
+        );
+        assert!(rows.is_empty(), "{rows:?}");
+    }
+
+    #[test]
     fn new_pcit_from_initial_segment_populated_by_continuation() {
         // The initial segment creates an EMPTY indexed tree under
         // TEST_LEAF (its element is written into the cached TEST_LEAF

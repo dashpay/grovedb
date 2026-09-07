@@ -7412,6 +7412,29 @@ impl GroveDb {
         if let Some(footprint) = initial_segment_footprint.as_ref() {
             cost_return_on_error_no_add!(cost, footprint.verify_add_on_ops(&new_operations));
         }
+        // A continuation write under an indexed primary the initial segment
+        // safe-subset-OVERWROTE would land in the very storage prefixes the
+        // post-apply sweep below clears (the old element's primary subtree
+        // and secondary namespaces). The ordinary batch refuses this shape
+        // in one batch for the same reason — see the NotSupported arm of
+        // `reject_indexed_overwrite_with_descendants` — so refuse it here
+        // before the continuation applies. `cidx_overwrite_cleanup_paths`
+        // is exactly the list of primaries the initial segment overwrote.
+        for op in &new_operations {
+            let path = op.path.to_path();
+            if partial_captures
+                .cidx_overwrite_cleanup_paths
+                .iter()
+                .any(|overwritten| path.starts_with(overwritten))
+            {
+                return Err(Error::InvalidBatchOperation(
+                    "add-on operation writes under an indexed tree the initial segment \
+                     overwrote; the old element's storage is swept at commit and would \
+                     clear the new writes",
+                ))
+                .wrap_with_cost(cost);
+            }
+        }
         // Add-on ops get the same indexed-overwrite preflight as the initial
         // batch. It reads committed state, so it covers committed
         // descendants; descendants the initial segment wrote are covered by
