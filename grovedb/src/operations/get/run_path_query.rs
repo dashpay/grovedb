@@ -29,14 +29,12 @@
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt};
 use grovedb_merk::proofs::query::{AggregateFold, AxisProjection, AxisTraversal, IndexAxis};
 use grovedb_path::SubtreePath;
-use grovedb_version::{
-    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 use crate::{
     element::aggregate_sum_query::AggregateSumQueryResult,
     operations::proof::indexed_axis::AxisEntries,
-    query::{AggregateKind, PathQueryShape},
+    query::{validated::ValidatedPathQuery, AggregateKind, PathQueryShape},
     query_result_type::AxisKeys,
     query_result_type::{QueryResultElements, QueryResultType},
     AggregateSumPathQuery, Error, GroveDb, PathQuery, TransactionArg,
@@ -153,48 +151,13 @@ impl GroveDb {
         );
         let mut cost = Default::default();
 
-        let shape = match path_query.classify() {
-            Ok(shape) => shape,
+        let validated = match ValidatedPathQuery::for_read(path_query, grove_version) {
+            Ok(validated) => validated,
             Err(e) => return Err(e).wrap_with_cost(cost),
         };
+        let path_query = validated.query();
 
-        // Read-mode shapes are gated on `unified_read_mode`; the
-        // key-selection and aggregate shapes below are served at every
-        // version, exactly as their dedicated entry points serve them.
-        if matches!(
-            shape,
-            PathQueryShape::AxisRead { .. }
-                | PathQueryShape::BranchedAxisRead { .. }
-                | PathQueryShape::SumBudget { .. }
-        ) {
-            match grove_version
-                .grovedb_versions
-                .path_query_methods
-                .unified_read_mode
-            {
-                0 => {
-                    return Err(Error::NotSupported(
-                        "read-mode (axis / sum-budget) path queries are not served at this \
-                         grove version"
-                            .to_string(),
-                    ))
-                    .wrap_with_cost(cost);
-                }
-                1 => {}
-                received => {
-                    return Err(Error::VersionError(
-                        GroveVersionError::UnknownVersionMismatch {
-                            method: "run_path_query (unified_read_mode)".to_string(),
-                            known_versions: vec![0, 1],
-                            received,
-                        },
-                    ))
-                    .wrap_with_cost(cost);
-                }
-            }
-        }
-
-        match shape {
+        match validated.shape() {
             PathQueryShape::KeySelection | PathQueryShape::CountOffsetPaginated { .. } => {
                 let (elements, skipped) = cost_return_on_error!(
                     &mut cost,

@@ -142,6 +142,7 @@ mod trunk_proof_tests;
 mod unbound_reference_row_tests;
 mod v1_cidx_descent_tests;
 mod v1_proof_tests;
+mod validated_path_query_tests;
 mod verify_grovedb_indexed_tests;
 mod verify_path_query_shape_tests;
 mod visualize_tests;

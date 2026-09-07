@@ -1956,7 +1956,12 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"t".to_vec()], query);
 
         let grovedb_proof = db
-            .prove_query_non_serialized_v1(&path_query, None, grove_version)
+            .prove_query_non_serialized_v1(
+                &crate::query::validated::ValidatedPathQuery::for_proof(&path_query, grove_version)
+                    .unwrap(),
+                None,
+                grove_version,
+            )
             .unwrap()
             .expect("should prove v1 non-serialized");
 

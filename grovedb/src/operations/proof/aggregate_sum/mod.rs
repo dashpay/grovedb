@@ -54,6 +54,7 @@ use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 use crate::{
     operations::proof::{GroveDBProof, LayerProof},
+    query::AggregateKind,
     Error, GroveDb, PathQuery,
 };
 
@@ -210,5 +211,9 @@ fn require_v1_envelope<'a>(
     proof: &'a GroveDBProof,
     path_query: &PathQuery,
 ) -> Result<&'a LayerProof, Error> {
-    super::aggregate_common::require_v1_envelope(proof, path_query, "AggregateSumOnRange")
+    super::aggregate_common::require_v1_envelope(
+        proof,
+        path_query,
+        AggregateKind::Sum.proof_family_name(),
+    )
 }
