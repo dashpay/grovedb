@@ -250,14 +250,16 @@ These rejection branches all have dedicated forging tests in
 ## Unsupported in-range value shapes (P1 / P2)
 
 The count-offset proof flow's scope is **plain `Item` / `SumItem` /
-`ItemWithSumItem` and empty trees inside a count tree**. Three shapes
-are explicitly rejected by both the prover and the verifier:
+`ItemWithSumItem` and empty trees inside a count tree**. These shapes
+are explicitly rejected by the prover (and, where it can see them, the
+verifier):
 
 | Rejected shape                              | Primary defense                                                                                                                                                                                                                                              |
 |---------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **`NonCounted`-wrapped entry**              | Rejected at **insert time** by PR [#672](https://github.com/dashpay/grovedb/pull/672) — `NonCounted` cannot be stored inside a `ProvableCountTree` / `ProvableCountSumTree` at all. The merk-level prover and the verifier still reject defensively (against pre-#672 data on disk or any lower-level builder that bypasses the insert restriction). |
 | **`Reference` / `ReferenceWithSumItem`**    | The regular flow's reference post-pass dereferences these to the target's value bytes. The count-offset short-circuit returns *before* that post-pass, so a verified result would expose the raw `Element::Reference` rather than the dereferenced target. Prover rejects at descent; verifier rejects in returned items. |
 | **Non-empty tree** (any tree variant)       | V1 strict-mode requires a `KVValueHashFeatureTypeWithChildHash` proof node for these, which the count-offset prover doesn't emit. Accepting one without that node would silently bypass the child-hash invariant the regular flow enforces.                    |
+| **Nested count-bearing tree in the offset region** | A `CountTree` / `ProvableCountTree` / … stored in the host contributes its own aggregate count (0 when empty, N with N descendants) but is one row to ordinary pagination. The prover walks every subtree before collapsing it for offset and refuses unless each row contributes exactly one unit; a non-unit row it descends through is refused too. Only the prover can see this — a collapsed `HashWithCount` commits nothing about physical row count. See [issue #864](https://github.com/dashpay/grovedb/issues/864). |
 
 ### Why the `NonCounted` rejection is enforced at insert time
 
@@ -275,11 +277,42 @@ contained subtree like `[counted-a, NonCounted-b, counted-c]` with
 and verify with `returned = []`, while regular pagination would return
 `[c]`. That's a silent semantic divergence.
 
-#672 closes the gap at the only place it can be closed without changing
-the proof wire format: the `Element::insert` / batch path refuses to
-store `NonCounted` inside a `Provable*` count parent. With that
-invariant in place, `subtree_count` always equals the actual entry
-count for these trees, and the collapse rule is safe.
+#672 closes the gap for `NonCounted` at the insert path: the
+`Element::insert` / batch path refuses to store `NonCounted` inside a
+`Provable*` count parent.
+
+That alone does **not** make `subtree_count` equal the entry count. A
+nested count-bearing tree is a permitted child of a `Provable*` count
+tree — Platform's `range_countable` indexes put `CountTree` value trees
+under a `ProvableCountTree` on purpose, so the parent's count is the
+total number of documents — and it contributes its own aggregate count
+(0 when empty) rather than 1. With `[a, count-tree-b(3 rows), c]` and
+`offset = 5`, a collapse as `HashWithCount(5)` would skip three rows
+and return the row after `c`, while regular pagination skips five rows.
+Because that layout is live, it cannot be refused at insert time, and
+because a collapsed op commits only the count, the verifier cannot
+detect it either.
+
+### Why the nested-tree rule is enforced by the prover
+
+The prover is the only party that can see inside a subtree it is about
+to collapse. Before an offset collapse it walks the subtree and checks
+that every row's own contribution (`aggregate − left − right`) is
+exactly 1, refusing the query otherwise. The walk reads O(skipped)
+nodes — the same I/O the trusted read pays to skip those rows — and the
+emitted proof stays a single op, so proof size is unchanged. Disjoint
+and past-limit collapses never touch the offset budget and are not
+walked. A non-unit row met on descent (in range or on the path) is
+refused with the same message, since the verifier derives `own_count`
+for every descended row and rejects anything above 1.
+
+The verifier's `skipped` is therefore exactly "count units skipped";
+it equals rows on every host an honest prover agrees to serve. A
+consumer that must have row semantics from an untrusted prover on a
+host that may nest count trees should treat the page as "after
+`skipped` count units" — the result is still fully determined by the
+committed tree (a malicious prover cannot choose a different page, only
+refuse), so there is no forgery surface, only a semantic caveat.
 
 ### Lifting the remaining restrictions (follow-up work)
 
