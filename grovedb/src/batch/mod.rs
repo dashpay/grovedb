@@ -1618,6 +1618,23 @@ impl GroveDbOpConsistencyResults {
 /// Cache for Merk trees by their paths.
 struct TreeCacheMerkByPath<S, F, F2> {
     merks: HashMap<Vec<Vec<u8>>, Merk<S>>,
+    /// Every axis secondary opened for an indexed primary, keyed by the
+    /// primary's path, in the element's canonical axis order. A primary's
+    /// secondaries are opened once and then reused for the life of the
+    /// cache — a partial batch's continuation mirrors into the very Merks
+    /// the initial segment already moved rows in (their pending root keys
+    /// exist only in memory and in the initial segment's leftover
+    /// propagation op), never into a copy reopened from committed state.
+    secondary_merks: HashMap<Vec<Vec<u8>>, Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>>,
+    /// Indexed-tree elements this batch INSERTS, keyed by their qualified
+    /// path. An indexed primary created in-batch has no stored element for
+    /// the secondary opener to read, so its axes come from here. Populated
+    /// while the ops are scanned (`remember_indexed_element`), which is
+    /// what lets a partial batch's continuation populate an indexed tree
+    /// the initial segment created: the creating op is no longer among the
+    /// continuation's own ops, and the parent Merk's copy of the element is
+    /// only pending.
+    pending_indexed_elements: HashMap<Vec<Vec<u8>>, Element>,
     get_merk_fn: F,
     /// Opens EVERY configured axis secondary for an indexed primary, given
     /// the primary's path. Used when ops mutate an indexed primary so the
@@ -1661,6 +1678,82 @@ struct TreeCacheMerkByPath<S, F, F2> {
 impl<S, F, F2> fmt::Debug for TreeCacheMerkByPath<S, F, F2> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TreeCacheMerkByPath").finish()
+    }
+}
+
+/// What the initial segment of a partial batch wrote and deleted, for the
+/// cross-segment consistency gate (issue #842).
+///
+/// The per-batch consistency check only sees one segment at a time, so a
+/// continuation could otherwise write under a subtree the initial segment
+/// deleted, or replace / delete a subtree the initial segment wrote into.
+/// The continuation runs on the initial segment's live Merk cache, which
+/// makes writes into the same subtrees coherent — but neither of those two
+/// shapes has a coherent outcome: the first leaves rows under a deleted
+/// prefix, the second orphans the initial segment's rows behind a fresh
+/// root. Both are refused before the continuation applies.
+struct InitialSegmentFootprint {
+    /// Qualified path (path ‖ key) of every element the segment deleted.
+    deleted: Vec<Vec<Vec<u8>>>,
+    /// Path of the Merk every op in the segment wrote into.
+    written_paths: Vec<Vec<Vec<u8>>>,
+}
+
+impl InitialSegmentFootprint {
+    fn from_ops(ops: &[QualifiedGroveDbOp]) -> Self {
+        let mut deleted = Vec::new();
+        let mut written_paths = Vec::with_capacity(ops.len());
+        for op in ops {
+            let path = op.path.to_path();
+            if matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..))
+                && let Some(key) = op.key.as_ref()
+            {
+                let mut qualified = path.clone();
+                qualified.push(key.get_key_clone());
+                deleted.push(qualified);
+            }
+            written_paths.push(path);
+        }
+        Self {
+            deleted,
+            written_paths,
+        }
+    }
+
+    /// Refuse add-on ops that cannot be applied coherently after this
+    /// segment (see the type docs).
+    fn verify_add_on_ops(&self, add_on_ops: &[QualifiedGroveDbOp]) -> Result<(), Error> {
+        for op in add_on_ops {
+            let path = op.path.to_path();
+            if self.deleted.iter().any(|deleted| path.starts_with(deleted)) {
+                return Err(Error::InvalidBatchOperation(
+                    "add-on operation writes under a path the initial segment deleted",
+                ));
+            }
+            let replaces_or_deletes_subtree = match &op.op {
+                GroveOp::Delete | GroveOp::DeleteTree(..) => true,
+                GroveOp::InsertOrReplace { element }
+                | GroveOp::InsertWithKnownToNotAlreadyExist { element }
+                | GroveOp::InsertIfNotExists { element, .. }
+                | GroveOp::Replace { element }
+                | GroveOp::Patch { element, .. } => element.tree_type().is_some(),
+                _ => false,
+            };
+            if replaces_or_deletes_subtree && let Some(key) = op.key.as_ref() {
+                let mut qualified = path;
+                qualified.push(key.get_key_clone());
+                if self
+                    .written_paths
+                    .iter()
+                    .any(|written| written.starts_with(&qualified))
+                {
+                    return Err(Error::InvalidBatchOperation(
+                        "add-on op replaces or deletes a subtree the initial segment wrote into",
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1846,6 +1939,17 @@ trait TreeCache<G, SR> {
     ) -> CostResult<(), Error>;
 
     fn get_batch_run_mode(&self) -> BatchRunMode;
+
+    /// Called for every indexed-tree element the batch inserts, before any
+    /// level executes. Caches that open secondaries keep the element so the
+    /// primary's axes are known even when no stored element exists yet.
+    fn remember_indexed_element(
+        &mut self,
+        _path: &KeyInfoPath,
+        _key: &KeyInfo,
+        _element: &Element,
+    ) {
+    }
 
     /// We will also be returning an op mode, this is to be used in propagation
     fn execute_ops_on_path(
@@ -2842,6 +2946,13 @@ where
         path: &[Vec<u8>],
     ) -> Option<Vec<(u8, CryptoHash, Option<Vec<u8>>)>> {
         self.indexed_secondary_after_apply.remove(path)
+    }
+
+    fn remember_indexed_element(&mut self, path: &KeyInfoPath, key: &KeyInfo, element: &Element) {
+        let mut qualified_path = path.to_path();
+        qualified_path.push(key.get_key_clone());
+        self.pending_indexed_elements
+            .insert(qualified_path, element.clone());
     }
 
     fn take_cidx_overwrite_cleanup_paths(&mut self) -> Vec<Vec<Vec<u8>>> {
@@ -4607,22 +4718,30 @@ where
             // the read-from-parent path. Overwrite-with-descendants is
             // rejected in preflight, so an in-batch insert op at this exact
             // path means the element is fresh.
-            let fresh_indexed_element = ops_by_qualified_paths.get(path).and_then(|op| match op {
-                GroveOp::InsertOrReplace { element }
-                | GroveOp::InsertWithKnownToNotAlreadyExist { element }
-                | GroveOp::InsertIfNotExists { element, .. }
-                | GroveOp::Replace { element }
-                | GroveOp::Patch { element, .. }
-                    if element.is_indexed_tree() =>
-                {
-                    Some(element)
-                }
-                _ => None,
-            });
-            let secondaries = cost_return_on_error!(
-                &mut cost,
-                (self.get_secondary_merks_fn)(path, fresh_indexed_element)
-            );
+            let fresh_indexed_element = ops_by_qualified_paths
+                .get(path)
+                .and_then(|op| match op {
+                    GroveOp::InsertOrReplace { element }
+                    | GroveOp::InsertWithKnownToNotAlreadyExist { element }
+                    | GroveOp::InsertIfNotExists { element, .. }
+                    | GroveOp::Replace { element }
+                    | GroveOp::Patch { element, .. }
+                        if element.is_indexed_tree() =>
+                    {
+                        Some(element)
+                    }
+                    _ => None,
+                })
+                // The creating op may belong to an earlier segment of a
+                // partial batch (see `pending_indexed_elements`).
+                .or_else(|| self.pending_indexed_elements.get(path));
+            let secondaries = match self.secondary_merks.entry(path.to_vec()) {
+                HashMapEntry::Occupied(o) => o.into_mut(),
+                HashMapEntry::Vacant(v) => v.insert(cost_return_on_error!(
+                    &mut cost,
+                    (self.get_secondary_merks_fn)(path, fresh_indexed_element)
+                )),
+            };
             let primary_merk = self.merks.get(path).expect("the Merk is cached");
             // One post-state read per captured key, shared by every axis: the
             // (count, sum) transitions are axis-independent, only the sort-key
@@ -4633,13 +4752,13 @@ where
                 indexed_tree::read_post_apply_transitions(primary_merk, &pre, grove_version)
             );
             let mut per_axis = Vec::with_capacity(secondaries.len());
-            for (axis, mut secondary_merk) in secondaries {
+            for (axis, secondary_merk) in secondaries.iter_mut() {
                 let (sec_hash, sec_root_key, rekey_churn_bytes) = cost_return_on_error!(
                     &mut cost,
                     indexed_tree::apply_indexed_secondary_mirror_post_apply(
                         &transitions,
-                        axis,
-                        &mut secondary_merk,
+                        *axis,
+                        secondary_merk,
                         grove_version,
                     )
                 );
@@ -4669,9 +4788,12 @@ impl GroveDb {
     /// are returned
     /// Runs the level-by-level batch propagation.
     ///
-    /// Returns `(leftover_ops, captures)`:
+    /// Returns `(leftover_ops, captures, merk_tree_cache)`:
     ///   - `leftover_ops` is `Some(...)` only if a `batch_pause_height`
     ///     was set and pruning paused before reaching the root.
+    ///   - `merk_tree_cache` is the cache the body ran against, handed back
+    ///     so a paused apply can be continued on the same live Merks (see
+    ///     `continue_partial_apply_body`).
     ///   - `captures` is the [`BatchApplyCaptures`] collected while the
     ///     body applied, for the caller's post-apply cleanup passes:
     ///     `cidx_overwrite_cleanup_paths` lists the cidx primary paths
@@ -4685,7 +4807,7 @@ impl GroveDb {
         batch_structure: BatchStructure<C, F, SR>,
         batch_apply_options: Option<BatchApplyOptions>,
         grove_version: &GroveVersion,
-    ) -> CostResult<(Option<OpsByLevelPath>, BatchApplyCaptures), Error>
+    ) -> CostResult<(Option<OpsByLevelPath>, BatchApplyCaptures, C), Error>
     where
         F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
         SR: FnMut(
@@ -5272,7 +5394,8 @@ impl GroveDb {
                     indexed_mirror_rekey_churn_bytes: merk_tree_cache
                         .take_indexed_mirror_rekey_churn_bytes(),
                 };
-                return Ok((Some(ops_by_level_paths), captures)).wrap_with_cost(cost);
+                return Ok((Some(ops_by_level_paths), captures, merk_tree_cache))
+                    .wrap_with_cost(cost);
             }
             current_level = current_level.saturating_sub(1);
         }
@@ -5282,13 +5405,14 @@ impl GroveDb {
             indexed_mirror_rekey_churn_bytes: merk_tree_cache
                 .take_indexed_mirror_rekey_churn_bytes(),
         };
-        Ok((None, captures)).wrap_with_cost(cost)
+        Ok((None, captures, merk_tree_cache)).wrap_with_cost(cost)
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
     /// If the pause height is set in the batch apply options
-    /// Then return the list of leftover operations
-    fn apply_body<'db, S: StorageContext<'db>>(
+    /// Then return the list of leftover operations, together with the live
+    /// Merk cache the body ran against so the apply can be continued on it.
+    fn apply_body<'db, S, F, F2>(
         &self,
         ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
@@ -5305,16 +5429,26 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
-        get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
-        get_secondary_merks_fn: impl FnMut(
+        get_merk_fn: F,
+        get_secondary_merks_fn: F2,
+        grove_version: &GroveVersion,
+    ) -> CostResult<
+        (
+            Option<OpsByLevelPath>,
+            BatchApplyCaptures,
+            TreeCacheMerkByPath<S, F, F2>,
+        ),
+        Error,
+    >
+    where
+        S: StorageContext<'db>,
+        F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
+        F2: FnMut(
             &[Vec<u8>],
             Option<&Element>,
-        ) -> CostResult<
-            Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>,
-            Error,
-        >,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(Option<OpsByLevelPath>, BatchApplyCaptures), Error> {
+        )
+            -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
+    {
         check_grovedb_v0_with_cost!(
             "apply_body",
             grove_version.grovedb_versions.apply_batch.apply_body
@@ -5328,6 +5462,8 @@ impl GroveDb {
                 split_removed_bytes_function,
                 TreeCacheMerkByPath {
                     merks: Default::default(),
+                    secondary_merks: Default::default(),
+                    pending_indexed_elements: Default::default(),
                     get_merk_fn,
                     get_secondary_merks_fn,
                     indexed_secondary_after_apply: Default::default(),
@@ -5342,10 +5478,17 @@ impl GroveDb {
             .add_cost(cost)
     }
 
-    /// Method to propagate updated subtree root hashes up to GroveDB root
-    /// If the pause height is set in the batch apply options
-    /// Then return the list of leftover operations
-    fn continue_partial_apply_body<'db, S: StorageContext<'db>>(
+    /// Continue a paused `apply_body` on the SAME live Merk cache it ran
+    /// against, folding `additional_ops` into its leftover operations.
+    ///
+    /// The cache is what keeps the two segments of a partial batch
+    /// coherent (issue #842): every primary and secondary Merk the initial
+    /// segment touched is still open here with its pending in-memory state
+    /// — including root keys that exist nowhere in storage yet because the
+    /// op carrying them is still a leftover — so the continuation applies
+    /// on top of that state instead of reopening stale copies from
+    /// committed storage and rewriting nodes the initial segment deleted.
+    fn continue_partial_apply_body<'db, S, F, F2>(
         &self,
         previous_leftover_operations: Option<OpsByLevelPath>,
         additional_ops: Vec<QualifiedGroveDbOp>,
@@ -5363,16 +5506,18 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
-        get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
-        get_secondary_merks_fn: impl FnMut(
+        merk_tree_cache: TreeCacheMerkByPath<S, F, F2>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(Option<OpsByLevelPath>, BatchApplyCaptures), Error>
+    where
+        S: StorageContext<'db>,
+        F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
+        F2: FnMut(
             &[Vec<u8>],
             Option<&Element>,
-        ) -> CostResult<
-            Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>,
-            Error,
-        >,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(Option<OpsByLevelPath>, BatchApplyCaptures), Error> {
+        )
+            -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
+    {
         check_grovedb_v0_with_cost!(
             "continue_partial_apply_body",
             grove_version
@@ -5388,20 +5533,17 @@ impl GroveDb {
                 additional_ops,
                 update_element_flags_function,
                 split_removed_bytes_function,
-                TreeCacheMerkByPath {
-                    merks: Default::default(),
-                    get_merk_fn,
-                    get_secondary_merks_fn,
-                    indexed_secondary_after_apply: Default::default(),
-                    cidx_overwrite_cleanup_paths: Default::default(),
-                    deleted_tree_actual_types: Default::default(),
-                    indexed_mirror_rekey_churn_bytes: 0,
-                },
+                merk_tree_cache,
                 grove_version
             )
         );
-        Self::apply_batch_structure(batch_structure, batch_apply_options, grove_version)
-            .add_cost(cost)
+        // The cache is dropped here: its Merks borrow the storage batch,
+        // which the caller drains and consumes next.
+        let (leftover, captures, _merk_tree_cache) = cost_return_on_error!(
+            &mut cost,
+            Self::apply_batch_structure(batch_structure, batch_apply_options, grove_version)
+        );
+        Ok((leftover, captures)).wrap_with_cost(cost)
     }
 
     /// Applies operations on GroveDB one at a time, without batching.
@@ -6617,7 +6759,7 @@ impl GroveDb {
         // 5. Remove operation from the tree, repeat until there are operations to do;
         // 6. Add root leaves save operation to the batch
         // 7. Apply storage_cost batch
-        let (_leftover, batch_apply_captures) = cost_return_on_error!(
+        let (_leftover, batch_apply_captures, _) = cost_return_on_error!(
             &mut cost,
             self.apply_body(
                 ops,
@@ -7065,6 +7207,21 @@ impl GroveDb {
             batch_apply_options.batch_pause_height = Some(1);
         }
 
+        let initial_segment_footprint =
+            check_batch_operation_consistency.then(|| InitialSegmentFootprint::from_ops(&ops));
+
+        // Both segments run against ONE storage batch and ONE live Merk
+        // cache (issue #842). The initial segment's writes are only pending
+        // in the batch, so a continuation that reopened Merks from the
+        // transaction would apply on top of stale trees — re-writing nodes
+        // the initial segment deleted (an indexed secondary's old
+        // `(count ‖ key)` row came back that way) and opening pause-level
+        // Merks at root keys that are still only in the leftover ops. The
+        // cache carries every touched Merk, primaries and secondaries, with
+        // its pending state into the continuation. Nothing reaches the
+        // transaction before the single commit below, so a failing
+        // continuation still leaves it untouched.
+        //
         // With the only one difference (if there is a transaction) do the following:
         // 2. If nothing left to do and we were on a non-leaf subtree or we're done with
         //    one subtree and moved to another then add propagation operation to the
@@ -7075,7 +7232,7 @@ impl GroveDb {
         // 5. Remove operation from the tree, repeat until there are operations to do;
         // 6. Add root leaves save operation to the batch
         // 7. Apply storage_cost batch
-        let (left_over_operations, partial_captures) = cost_return_on_error!(
+        let (left_over_operations, partial_captures, merk_tree_cache) = cost_return_on_error!(
             &mut cost,
             self.apply_body(
                 ops,
@@ -7109,11 +7266,13 @@ impl GroveDb {
         // if we paused at the root height, the left over operations would be to replace
         // a lot of leaf nodes in the root tree
 
-        // let's build the write batch
+        // Drain the initial segment's pending writes into the write batch
+        // so their cost can be reported to the caller. The batch object
+        // stays alive (and empty): the cached Merks keep writing into it.
         let (mut write_batch, mut pending_costs) = cost_return_on_error!(
             &mut cost,
             self.db
-                .build_write_batch(storage_batch)
+                .build_write_batch(storage_batch.take_pending())
                 .map_err(|e| e.into())
         );
 
@@ -7154,6 +7313,24 @@ impl GroveDb {
                 .wrap_with_cost(cost);
             }
         }
+        // Cross-segment gate: the two shapes the live cache cannot make
+        // coherent (see `InitialSegmentFootprint`).
+        if let Some(footprint) = initial_segment_footprint.as_ref() {
+            cost_return_on_error_no_add!(cost, footprint.verify_add_on_ops(&new_operations));
+        }
+        // Add-on ops get the same indexed-overwrite preflight as the initial
+        // batch. It reads committed state, so it covers committed
+        // descendants; descendants the initial segment wrote are covered by
+        // the cross-segment gate above.
+        cost_return_on_error!(
+            &mut cost,
+            indexed_tree::reject_indexed_overwrite_with_descendants(
+                self,
+                &new_operations,
+                tx.as_ref(),
+                grove_version,
+            )
+        );
 
         // The callback is caller-provided, so add-on ops get the same
         // backward-references gate the initial ops got — otherwise an op
@@ -7166,8 +7343,6 @@ impl GroveDb {
         // we are trying to finalize
         batch_apply_options.batch_pause_height = None;
 
-        let continue_storage_batch = StorageBatch::new();
-
         let (_leftover_unused, continue_captures) = cost_return_on_error!(
             &mut cost,
             self.continue_partial_apply_body(
@@ -7176,27 +7351,7 @@ impl GroveDb {
                 Some(batch_apply_options),
                 update_element_flags_function,
                 split_removal_bytes_function,
-                |path, new_merk| {
-                    self.open_batch_transactional_merk_at_path(
-                        &continue_storage_batch,
-                        path.into(),
-                        tx.as_ref(),
-                        new_merk,
-                        grove_version,
-                    )
-                },
-                |primary_path: &[Vec<u8>], fresh_element: Option<&Element>| {
-                    let primary_refs: Vec<&[u8]> =
-                        primary_path.iter().map(|v| v.as_slice()).collect();
-                    let cidx_path: SubtreePath<&[u8]> = primary_refs.as_slice().into();
-                    self.open_indexed_secondaries_for_batch(
-                        cidx_path,
-                        fresh_element,
-                        &continue_storage_batch,
-                        tx.as_ref(),
-                        grove_version,
-                    )
-                },
+                merk_tree_cache,
                 grove_version
             )
         );
@@ -7233,7 +7388,7 @@ impl GroveDb {
             cost,
             self.stage_flat_drop_records(
                 &flat_drop_records,
-                &continue_storage_batch,
+                &storage_batch,
                 tx.as_ref(),
                 &mut cost,
             )
@@ -7246,7 +7401,7 @@ impl GroveDb {
                 .db
                 .get_transactional_storage_context(
                     child_subtree_path,
-                    Some(&continue_storage_batch),
+                    Some(&storage_batch),
                     tx.as_ref(),
                 )
                 .unwrap_add_cost(&mut cost);
@@ -7281,11 +7436,7 @@ impl GroveDb {
                 let p: SubtreePath<_> = subtree_path.as_slice().into();
                 let mut storage = self
                     .db
-                    .get_transactional_storage_context(
-                        p,
-                        Some(&continue_storage_batch),
-                        tx.as_ref(),
-                    )
+                    .get_transactional_storage_context(p, Some(&storage_batch), tx.as_ref())
                     .unwrap_add_cost(&mut cost);
                 cost_return_on_error!(
                     &mut cost,
@@ -7321,7 +7472,7 @@ impl GroveDb {
                     .db
                     .get_transactional_storage_context_by_subtree_prefix(
                         secondary_prefix,
-                        Some(&continue_storage_batch),
+                        Some(&storage_batch),
                         tx.as_ref(),
                     )
                     .unwrap_add_cost(&mut cost);
@@ -7356,11 +7507,7 @@ impl GroveDb {
                 let p: SubtreePath<_> = subtree_path.as_slice().into();
                 let mut storage = self
                     .db
-                    .get_transactional_storage_context(
-                        p,
-                        Some(&continue_storage_batch),
-                        tx.as_ref(),
-                    )
+                    .get_transactional_storage_context(p, Some(&storage_batch), tx.as_ref())
                     .unwrap_add_cost(&mut cost);
                 cost_return_on_error!(
                     &mut cost,
@@ -7391,7 +7538,7 @@ impl GroveDb {
                     .db
                     .get_transactional_storage_context_by_subtree_prefix(
                         secondary_prefix,
-                        Some(&continue_storage_batch),
+                        Some(&storage_batch),
                         tx.as_ref(),
                     )
                     .unwrap_add_cost(&mut cost);
@@ -7412,7 +7559,7 @@ impl GroveDb {
         let continued_pending_costs = cost_return_on_error!(
             &mut cost,
             self.db
-                .continue_write_batch(&mut write_batch, continue_storage_batch)
+                .continue_write_batch(&mut write_batch, storage_batch)
                 .map_err(|e| e.into())
         );
 

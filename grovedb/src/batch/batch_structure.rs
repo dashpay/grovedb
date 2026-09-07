@@ -234,6 +234,9 @@ where
                             merk_tree_cache.insert(&op_path, &key, tree_type)
                         );
                     }
+                    if element.is_indexed_tree() {
+                        merk_tree_cache.remember_indexed_element(&op_path, &key, element);
+                    }
                     Ok(())
                 }
                 GroveOp::RefreshReference { .. } | GroveOp::Delete | GroveOp::DeleteTree(..) => {
