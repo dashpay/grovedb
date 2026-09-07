@@ -222,6 +222,23 @@ where
                     .wrap_with_cost(cost);
             }
 
+            // A conditional insert colliding with an ancestor update targets a
+            // tree that already exists (possibly created by the initial batch).
+            // Resolve it before reference registration or cache insertion: a
+            // skipped insert must not install the callback's element or reopen
+            // its subtree as a fresh Merk.
+            if merge_add_on_collisions
+                && matches!(&grove_op, GroveOp::InsertIfNotExists { .. })
+                && let Some(pending) = ops_by_level_paths
+                    .get(op_path.len())
+                    .and_then(|level| level.get(&op_path))
+                    .and_then(|path_ops| path_ops.get(&key))
+                && pending.is_pending_ancestor_update()
+            {
+                cost_return_on_error_no_add!(cost, merge_add_on_op_over_pending(pending, grove_op));
+                continue;
+            }
+
             // Build qualified path (path + key) for reference lookups.
             // Keyless append ops are skipped: they are not elements a
             // reference can target, and their synthetic keys must not
@@ -328,8 +345,10 @@ where
 /// hash — the subtree is orphaned. So the add-on is merged the way upward
 /// propagation merges an in-batch insert with its child's computed state:
 ///
-/// - an insert-family op supplies the element bytes and inherits the
-///   pending hash / root key / aggregate (and per-axis state);
+/// - an unconditional insert-family op must preserve the tree type and
+///   inherits the pending hash / root key / aggregate (and per-axis state);
+/// - a conditional insert targets an already-existing tree, so it errors
+///   or retains the pending op unchanged, according to `error_if_exists`;
 /// - a delete is accepted only if the child ended the batch empty
 ///   (`root_key == None`), matching the in-batch rule;
 /// - a reference refresh, or a collision with a pending non-Merk root
@@ -344,6 +363,20 @@ where
 /// (`GroveOp::is_pending_ancestor_update`).
 #[cfg(feature = "minimal")]
 fn merge_add_on_op_over_pending(pending: &GroveOp, add_on: GroveOp) -> Result<GroveOp, Error> {
+    if pending.is_pending_ancestor_update()
+        && let GroveOp::InsertIfNotExists {
+            error_if_exists, ..
+        } = &add_on
+    {
+        return if *error_if_exists {
+            Err(Error::InvalidBatchOperation(
+                "attempting to insert subtree that already exists",
+            ))
+        } else {
+            Ok(pending.clone())
+        };
+    }
+
     let (hash, root_key, aggregate_data, axes) = match pending {
         GroveOp::ReplaceTreeRootKey {
             hash,
@@ -388,13 +421,29 @@ fn merge_add_on_op_over_pending(pending: &GroveOp, add_on: GroveOp) -> Result<Gr
         | GroveOp::InsertWithKnownToNotAlreadyExist { element }
         | GroveOp::InsertIfNotExists { element, .. }
         | GroveOp::Replace { element }
-        | GroveOp::Patch { element, .. } => crate::batch::insert_op_with_propagated_root(
-            element,
-            hash,
-            root_key,
-            aggregate_data,
-            axes,
-        ),
+        | GroveOp::Patch { element, .. } => {
+            // The pending state was computed using the child's original node
+            // layout and hash scheme. It cannot authenticate a different tree
+            // type, including an indexed/non-indexed counterpart with the same
+            // aggregate payload, or a non-Merk tree.
+            let pending_tree_type = if axes.is_some() {
+                aggregate_data.indexed_parent_tree_type()
+            } else {
+                Some(aggregate_data.parent_tree_type())
+            };
+            if pending_tree_type.is_none() || element.tree_type() != pending_tree_type {
+                return Err(Error::InvalidBatchOperation(
+                    "add-on element must preserve the pending tree type",
+                ));
+            }
+            crate::batch::insert_op_with_propagated_root(
+                element,
+                hash,
+                root_key,
+                aggregate_data,
+                axes,
+            )
+        }
         GroveOp::Delete | GroveOp::DeleteTree(..) => {
             if root_key.is_some() {
                 Err(Error::InvalidBatchOperation(
@@ -563,15 +612,11 @@ mod tests {
     }
 
     #[test]
-    fn every_insert_family_add_on_composes_with_pending_root() {
-        let element = Element::empty_tree_with_flags(flags());
+    fn unconditional_insert_family_add_on_composes_with_pending_root() {
+        let element = Element::empty_sum_tree_with_flags(flags());
         for add_on in [
             GroveOp::InsertWithKnownToNotAlreadyExist {
                 element: element.clone(),
-            },
-            GroveOp::InsertIfNotExists {
-                element: element.clone(),
-                error_if_exists: true,
             },
             GroveOp::Replace {
                 element: element.clone(),
@@ -587,12 +632,108 @@ mod tests {
                     hash: HASH,
                     root_key: root_key(),
                     flags: flags(),
-                    aggregate_data: AggregateData::NoAggregateData,
+                    aggregate_data: AggregateData::Sum(5),
                     non_counted: false,
                     not_summed: false,
                     not_counted_or_summed: false,
                 }
             );
+        }
+    }
+
+    #[test]
+    fn add_on_cannot_change_aggregate_or_indexed_tree_kind() {
+        let indexed = GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+            primary_hash: HASH,
+            primary_root_key: root_key(),
+            primary_aggregate_data: AggregateData::ProvableCount(3),
+            axes: axes(),
+        };
+        for element in [
+            Element::empty_tree(),
+            Element::empty_count_tree(),
+            Element::empty_mmr_tree(),
+            Element::empty_provable_sum_tree(),
+        ] {
+            assert_refused(merge_add_on_op_over_pending(
+                &pending_merk(),
+                insert(element),
+            ));
+        }
+        // The regular and indexed count trees have the SAME aggregate, but
+        // their root commitments and owned storage namespaces differ.
+        assert_refused(merge_add_on_op_over_pending(
+            &indexed,
+            insert(Element::empty_provable_count_tree()),
+        ));
+        assert_refused(merge_add_on_op_over_pending(
+            &indexed,
+            insert(Element::empty_provable_sum_indexed_tree()),
+        ));
+        let regular = GroveOp::ReplaceTreeRootKey {
+            hash: HASH,
+            root_key: root_key(),
+            aggregate_data: AggregateData::ProvableCount(3),
+        };
+        assert_refused(merge_add_on_op_over_pending(
+            &regular,
+            insert(Element::empty_provable_count_indexed_tree()),
+        ));
+    }
+
+    #[test]
+    fn conditional_insert_preserves_every_pending_ancestor_variant() {
+        for pending in [
+            pending_merk(),
+            GroveOp::InsertTreeWithRootHash {
+                hash: HASH,
+                root_key: None,
+                flags: flags(),
+                aggregate_data: AggregateData::Sum(0),
+                non_counted: false,
+                not_summed: false,
+                not_counted_or_summed: false,
+            },
+            GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+                primary_hash: HASH,
+                primary_root_key: root_key(),
+                primary_aggregate_data: AggregateData::ProvableCount(3),
+                axes: axes(),
+            },
+            GroveOp::InsertAggregateIndexedTreeRootKeys {
+                element: Element::empty_provable_count_indexed_tree_with_flags(flags()),
+                primary_hash: HASH,
+                primary_root_key: root_key(),
+                primary_aggregate_data: AggregateData::ProvableCount(3),
+                axes: axes(),
+            },
+            GroveOp::ReplaceNonMerkTreeRoot {
+                hash: HASH,
+                meta: NonMerkTreeMeta::MmrTree { mmr_size: 4 },
+            },
+            GroveOp::InsertNonMerkTree {
+                hash: HASH,
+                root_key: None,
+                flags: flags(),
+                aggregate_data: AggregateData::NoAggregateData,
+                meta: NonMerkTreeMeta::MmrTree { mmr_size: 0 },
+                non_counted: false,
+            },
+        ] {
+            for error_if_exists in [true, false] {
+                let result = merge_add_on_op_over_pending(
+                    &pending,
+                    GroveOp::InsertIfNotExists {
+                        element: Element::new_item(b"ignored".to_vec()),
+                        error_if_exists,
+                    },
+                );
+                if error_if_exists {
+                    assert_refused(result);
+                } else {
+                    assert_eq!(result.unwrap(), pending);
+                }
+            }
         }
     }
 

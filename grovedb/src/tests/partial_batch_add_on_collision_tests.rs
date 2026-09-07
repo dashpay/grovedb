@@ -18,7 +18,9 @@
 //! (`apply_batch.add_on_op_collision: 1`): a colliding add-on insert is
 //! merged with the pending propagation state exactly as the propagation
 //! step merges an in-batch insert (element bytes from the callback, root
-//! state from the batch), a colliding delete is accepted only if the child
+//! state from the batch). Replacements must preserve the pending tree type;
+//! conditional inserts error or preserve the pending op unchanged. A colliding
+//! delete is accepted only if the child
 //! ended the batch empty, and a collision with a pending non-Merk root
 //! update is refused. An add-on that duplicates a still-unexecuted user op
 //! of the initial batch is refused by the entry point's consistency check
@@ -96,6 +98,170 @@ mod tests {
             ),
             "expected a pending root propagation, got {op:?}"
         );
+    }
+
+    #[test]
+    fn add_on_tree_type_change_is_atomic() {
+        let version = GroveVersion::latest();
+        for replacement in [
+            Element::empty_mmr_tree(),
+            Element::empty_sum_tree(),
+            Element::empty_provable_count_indexed_tree(),
+        ] {
+            let db = seed(version);
+            let root_before = db.root_hash(None, version).unwrap().unwrap();
+            let result = db
+                .apply_partial_batch(
+                    vec![child_insert()],
+                    None,
+                    |_, _| {
+                        Ok(vec![QualifiedGroveDbOp::insert_or_replace_op(
+                            vec![],
+                            TEST_LEAF.to_vec(),
+                            replacement.clone(),
+                        )])
+                    },
+                    None,
+                    version,
+                )
+                .unwrap();
+            assert!(
+                matches!(result, Err(Error::InvalidBatchOperation(_))),
+                "{result:?}"
+            );
+            assert_eq!(db.root_hash(None, version).unwrap().unwrap(), root_before);
+            assert!(matches!(
+                db.get([TEST_LEAF].as_ref(), CHILD, None, version).unwrap(),
+                Err(Error::PathKeyNotFound(_))
+            ));
+            assert_eq!(
+                db.get([TEST_LEAF].as_ref(), EXISTING, None, version)
+                    .unwrap()
+                    .unwrap(),
+                Element::new_item(EXISTING_VALUE.to_vec())
+            );
+            assert_clean(&db, version);
+        }
+    }
+
+    #[test]
+    fn add_on_conditional_insert_errors_for_existing_and_just_created_trees() {
+        let version = GroveVersion::latest();
+        for created_in_batch in [false, true] {
+            let db = seed(version);
+            let tree_key = if created_in_batch {
+                b"new_tree".as_slice()
+            } else {
+                TEST_LEAF
+            };
+            let mut ops = vec![];
+            if created_in_batch {
+                ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![],
+                    tree_key.to_vec(),
+                    Element::empty_tree(),
+                ));
+            }
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![tree_key.to_vec()],
+                CHILD.to_vec(),
+                Element::new_item(CHILD_VALUE.to_vec()),
+            ));
+            let root_before = db.root_hash(None, version).unwrap().unwrap();
+            let result = db
+                .apply_partial_batch(
+                    ops,
+                    None,
+                    |_, _| {
+                        Ok(vec![QualifiedGroveDbOp::insert_if_not_exists_op(
+                            vec![],
+                            tree_key.to_vec(),
+                            Element::empty_tree_with_flags(Some(NEW_FLAGS.to_vec())),
+                        )])
+                    },
+                    None,
+                    version,
+                )
+                .unwrap();
+            assert!(
+                matches!(
+                    result,
+                    Err(Error::InvalidBatchOperation(
+                        "attempting to insert subtree that already exists"
+                    ))
+                ),
+                "{result:?}"
+            );
+            assert_eq!(db.root_hash(None, version).unwrap().unwrap(), root_before);
+            assert_clean(&db, version);
+        }
+    }
+
+    #[test]
+    fn add_on_conditional_skip_preserves_flags_and_child_state() {
+        let version = GroveVersion::latest();
+        for created_in_batch in [false, true] {
+            // Even an incompatible replacement must be ignored in skip mode.
+            for replacement in [
+                Element::empty_tree_with_flags(Some(NEW_FLAGS.to_vec())),
+                Element::empty_mmr_tree(),
+            ] {
+                let db = seed(version);
+                let tree_key = if created_in_batch {
+                    b"new_tree".as_slice()
+                } else {
+                    TEST_LEAF
+                };
+                let mut ops = vec![];
+                if created_in_batch {
+                    ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                        vec![],
+                        tree_key.to_vec(),
+                        Element::empty_tree(),
+                    ));
+                }
+                ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![tree_key.to_vec()],
+                    CHILD.to_vec(),
+                    Element::new_item(CHILD_VALUE.to_vec()),
+                ));
+                db.apply_partial_batch(
+                    ops,
+                    None,
+                    |_, _| {
+                        Ok(vec![QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+                            vec![],
+                            tree_key.to_vec(),
+                            replacement.clone(),
+                        )])
+                    },
+                    None,
+                    version,
+                )
+                .unwrap()
+                .unwrap();
+                let tree = db
+                    .get(EMPTY_PATH, tree_key, None, version)
+                    .unwrap()
+                    .unwrap();
+                assert!(matches!(tree, Element::Tree(Some(_), None)), "{tree:?}");
+                assert_eq!(
+                    db.get([tree_key].as_ref(), CHILD, None, version)
+                        .unwrap()
+                        .unwrap(),
+                    Element::new_item(CHILD_VALUE.to_vec())
+                );
+                if !created_in_batch {
+                    assert_eq!(
+                        db.get([tree_key].as_ref(), EXISTING, None, version)
+                            .unwrap()
+                            .unwrap(),
+                        Element::new_item(EXISTING_VALUE.to_vec())
+                    );
+                }
+                assert_clean(&db, version);
+            }
+        }
     }
 
     #[test]

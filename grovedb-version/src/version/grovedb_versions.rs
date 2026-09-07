@@ -178,7 +178,9 @@ pub struct GroveDBApplyBatchVersions {
     /// - `1` (V4+): a colliding add-on insert is merged with the pending
     ///   root state the way upward propagation merges an in-batch insert
     ///   (element bytes from the add-on, root hash / key / aggregate from
-    ///   the batch); a colliding delete is accepted only if the child ended
+    ///   the batch), provided the tree type is unchanged. Conditional inserts
+    ///   error or retain the pending update unchanged; a colliding delete is
+    ///   accepted only if the child ended
     ///   the batch empty; a collision with a pending non-Merk root update is
     ///   refused with `InvalidBatchOperation`. An add-on op that duplicates
     ///   a still-unexecuted *user* op of the initial batch is refused by
