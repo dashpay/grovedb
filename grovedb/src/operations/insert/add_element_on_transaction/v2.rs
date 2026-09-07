@@ -31,6 +31,19 @@
 //! updated"`), but v0/v1 accepted it and committed only `H(tree element
 //! bytes)` — a commitment that does not bind the subtree's contents and whose
 //! row cannot be proved. v1 keeps accepting it for the same consensus reason.
+//!
+//! v2 also binds a non-empty indexed-tree element's claimed secondary root
+//! keys (PCIT / PSIT secondary, PCPSIT per-axis roots) to the **stored**
+//! element's values before opening the secondaries (issue #897). v0/v1 opened
+//! each secondary Merk with the incoming key and compared the returned root
+//! key against that same input — circular, since every row of a secondary
+//! Merk is a node key in its storage and any of them opens successfully as a
+//! "root". A caller supplying the canonical primary root key and aggregates
+//! but a non-root node key as a secondary root committed the hash of an
+//! interior/leaf node, authenticating a strict subtree of the index as the
+//! whole index. The stored element's bytes are hash-committed by the parent
+//! Merk, so they are the canonical authority; v1 keeps the circular check for
+//! the same consensus reason.
 
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
@@ -426,6 +439,8 @@ impl GroveDb {
                         ))
                         .wrap_with_cost(cost);
                     }
+                    // Fetch the STORED element once — it serves two guards.
+                    //
                     // In-place conversion guard: a DIFFERENT tree element
                     // already stored at this key can pass every check above
                     // (a plain ProvableCountTree's subtree is byte-compatible
@@ -434,23 +449,61 @@ impl GroveDb {
                     // would start EMPTY over a populated primary — the same
                     // no-reindex hazard as an axes schema change. Refuse
                     // the conversion.
-                    let stored_is_other_tree = cost_return_on_error!(
+                    //
+                    // Canonical secondary binding (issue #897): the claimed
+                    // secondary_root_key must equal the STORED element's.
+                    // The primary is bound canonically already — its Merk is
+                    // opened with the root key read from the stored parent
+                    // element — but the secondary Merk is opened WITH the
+                    // incoming key, so comparing the returned root key
+                    // against that same input is circular: every row of the
+                    // secondary Merk is a node key in its storage, any of
+                    // them opens successfully as a "root", and the caller
+                    // would commit the hash of an interior/leaf node,
+                    // authenticating a strict subtree of the index as the
+                    // whole index. The stored element's bytes are
+                    // hash-committed by the parent Merk, so its
+                    // secondary_root_key is the canonical authority.
+                    let stored_underlying = cost_return_on_error!(
                         &mut cost,
                         Element::get_optional(&subtree_to_insert_into, key, true, grove_version)
                             .map_err(Error::MerkError)
                     )
-                    .is_some_and(|existing| {
-                        let u = existing.into_underlying();
-                        u.is_any_tree() && !matches!(u, Element::ProvableCountIndexedTree(..))
-                    });
-                    if stored_is_other_tree {
-                        return Err(Error::InvalidInput(
-                            "CountIndexedTree direct insertion: an existing tree of a \
+                    .map(|existing| existing.into_underlying());
+                    match stored_underlying {
+                        Some(Element::ProvableCountIndexedTree(_, stored_secondary, _, _)) => {
+                            if &stored_secondary != secondary {
+                                return Err(Error::InvalidInput(
+                                    "CountIndexedTree direct insertion: provided \
+                                     secondary_root_key does not match the stored element's \
+                                     canonical secondary root key",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                        }
+                        Some(other) if other.is_any_tree() => {
+                            return Err(Error::InvalidInput(
+                                "CountIndexedTree direct insertion: an existing tree of a \
                                  different type is stored at this key; converting it in place \
                                  would leave the secondary index empty over a populated \
                                  primary (no reindex path)",
-                        ))
-                        .wrap_with_cost(cost);
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        // No stored element / stored non-tree cannot occur:
+                        // `open_transactional_merk_at_path` above only
+                        // succeeds when a stored TREE element exists at this
+                        // key. Fail closed anyway — with no stored
+                        // same-variant element there is no canonical
+                        // authority to bind the claimed secondary to.
+                        _ => {
+                            return Err(Error::InvalidInput(
+                                "CountIndexedTree direct insertion: a non-empty claim \
+                                 requires an existing stored indexed element to validate \
+                                 the secondary root key against",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
                     }
                     // Also bind the claimed count_value to the primary's
                     // actual aggregate. Without this, a caller could
@@ -556,6 +609,8 @@ impl GroveDb {
                         ))
                         .wrap_with_cost(cost);
                     }
+                    // Fetch the STORED element once — it serves two guards.
+                    //
                     // In-place conversion guard: a DIFFERENT tree element
                     // already stored at this key can pass every check above
                     // (a plain ProvableSumTree's subtree is byte-compatible
@@ -564,23 +619,52 @@ impl GroveDb {
                     // would start EMPTY over a populated primary — the same
                     // no-reindex hazard as an axes schema change. Refuse
                     // the conversion.
-                    let stored_is_other_tree = cost_return_on_error!(
+                    //
+                    // Canonical secondary binding (issue #897): the claimed
+                    // secondary_root_key must equal the STORED element's —
+                    // the secondary Merk below is opened WITH the incoming
+                    // key, so comparing the returned root key against that
+                    // same input is circular (any row node key of the
+                    // secondary opens successfully as a "root"). See the
+                    // PCIT arm above for the full rationale.
+                    let stored_underlying = cost_return_on_error!(
                         &mut cost,
                         Element::get_optional(&subtree_to_insert_into, key, true, grove_version)
                             .map_err(Error::MerkError)
                     )
-                    .is_some_and(|existing| {
-                        let u = existing.into_underlying();
-                        u.is_any_tree() && !matches!(u, Element::ProvableSumIndexedTree(..))
-                    });
-                    if stored_is_other_tree {
-                        return Err(Error::InvalidInput(
-                            "ProvableSumIndexedTree direct insertion: an existing tree of a \
+                    .map(|existing| existing.into_underlying());
+                    match stored_underlying {
+                        Some(Element::ProvableSumIndexedTree(_, stored_secondary, _, _)) => {
+                            if &stored_secondary != secondary {
+                                return Err(Error::InvalidInput(
+                                    "ProvableSumIndexedTree direct insertion: provided \
+                                     secondary_root_key does not match the stored element's \
+                                     canonical secondary root key",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                        }
+                        Some(other) if other.is_any_tree() => {
+                            return Err(Error::InvalidInput(
+                                "ProvableSumIndexedTree direct insertion: an existing tree of a \
                                  different type is stored at this key; converting it in place \
                                  would leave the secondary index empty over a populated \
                                  primary (no reindex path)",
-                        ))
-                        .wrap_with_cost(cost);
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        // No stored element / stored non-tree cannot occur:
+                        // `open_transactional_merk_at_path` above only
+                        // succeeds when a stored TREE element exists at this
+                        // key. Fail closed anyway.
+                        _ => {
+                            return Err(Error::InvalidInput(
+                                "ProvableSumIndexedTree direct insertion: a non-empty claim \
+                                 requires an existing stored indexed element to validate the \
+                                 secondary root key against",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
                     }
                     if p_aggregate.as_sum_i64() != *sum_value {
                         return Err(Error::InvalidInput(
@@ -737,14 +821,48 @@ impl GroveDb {
                     // axes). Dropping an axis likewise orphans a populated
                     // secondary Merk. There is no backfill/reindex API, so
                     // the only safe answer is to refuse the schema change.
-                    let stored_axis_tags: Option<Vec<u8>> = cost_return_on_error!(
+                    // Canonical axis-root binding (issue #897) rides the same
+                    // stored-element fetch: each claimed per-axis
+                    // secondary_root_key must equal the STORED element's —
+                    // the per-axis Merks below are opened WITH the incoming
+                    // keys, so comparing the returned root key against that
+                    // same input is circular (any row node key of an axis
+                    // secondary opens successfully as a "root"). See the
+                    // PCIT arm above for the full rationale.
+                    let stored_underlying = cost_return_on_error!(
                         &mut cost,
                         Element::get_optional(&subtree_to_insert_into, key, true, grove_version)
                             .map_err(Error::MerkError)
                     )
-                    .and_then(|existing| match existing.into_underlying() {
-                        Element::ProvableCountProvableSumIndexedTree(_, _, _, stored_axes, _) => {
-                            Some(stored_axes.iter().map(|(t, _)| *t).collect::<Vec<u8>>())
+                    .map(|existing| existing.into_underlying());
+                    match stored_underlying {
+                        Some(Element::ProvableCountProvableSumIndexedTree(
+                            _,
+                            _,
+                            _,
+                            stored_axes,
+                            _,
+                        )) => {
+                            let stored_tags: Vec<u8> =
+                                stored_axes.iter().map(|(t, _)| *t).collect();
+                            let incoming_tags: Vec<u8> = axes.iter().map(|(t, _)| *t).collect();
+                            if stored_tags != incoming_tags {
+                                return Err(Error::InvalidInput(
+                                    "ProvableCountProvableSumIndexedTree direct insertion: the \
+                                     axes schema does not match the stored element; axes cannot \
+                                     be added or removed on an existing indexed tree (no reindex \
+                                     path exists)",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                            if &stored_axes != axes {
+                                return Err(Error::InvalidInput(
+                                    "ProvableCountProvableSumIndexedTree direct insertion: a \
+                                     provided axis secondary_root_key does not match the stored \
+                                     element's canonical axis root key",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
                         }
                         // In-place conversion guard: a stored tree of a
                         // DIFFERENT type (e.g. a plain
@@ -752,13 +870,9 @@ impl GroveDb {
                         // byte-compatible with a PCPSIT primary) would pass the
                         // aggregate checks above while the axis secondaries
                         // start EMPTY over a populated primary — the same
-                        // no-reindex hazard as an axes schema change. Mark it
-                        // for rejection below.
-                        other if other.is_any_tree() => Some(vec![u8::MAX]),
-                        _ => None,
-                    });
-                    if let Some(stored_tags) = stored_axis_tags {
-                        if stored_tags == vec![u8::MAX] {
+                        // no-reindex hazard as an axes schema change. Refuse
+                        // the conversion.
+                        Some(other) if other.is_any_tree() => {
                             return Err(Error::InvalidInput(
                                 "ProvableCountProvableSumIndexedTree direct insertion: an \
                                  existing tree of a different type is stored at this key; \
@@ -767,12 +881,15 @@ impl GroveDb {
                             ))
                             .wrap_with_cost(cost);
                         }
-                        let incoming_tags: Vec<u8> = axes.iter().map(|(t, _)| *t).collect();
-                        if stored_tags != incoming_tags {
+                        // No stored element / stored non-tree cannot occur:
+                        // `open_transactional_merk_at_path` above only
+                        // succeeds when a stored TREE element exists at this
+                        // key. Fail closed anyway.
+                        _ => {
                             return Err(Error::InvalidInput(
-                                "ProvableCountProvableSumIndexedTree direct insertion: the axes \
-                                 schema does not match the stored element; axes cannot be added \
-                                 or removed on an existing indexed tree (no reindex path exists)",
+                                "ProvableCountProvableSumIndexedTree direct insertion: a \
+                                 non-empty claim requires an existing stored indexed element to \
+                                 validate the axis secondary root keys against",
                             ))
                             .wrap_with_cost(cost);
                         }

@@ -1184,6 +1184,275 @@ mod tests {
         assert!(matches!(result, Err(Error::InvalidInput(_))));
     }
 
+    // -----------------------------------------------------------------
+    // Issue #897: the claimed secondary root key must be validated
+    // against the STORED element (canonical authority), not against the
+    // Merk opened WITH that same claimed key. Every row of a secondary
+    // Merk is a node key in its storage, so `open_layered_with_root_key`
+    // succeeds for any of them and returns the claimed key back —
+    // a circular check. Before the fix, a caller supplying the canonical
+    // primary root key and aggregate but a NON-ROOT node key as the
+    // secondary root committed the hash of an interior/leaf node,
+    // authenticating a strict subtree of the index as the whole index.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn direct_insert_pcit_existing_nonroot_secondary_node_key_rejected() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        // Three children, each deriving count 1, so the count-axis
+        // secondary Merk holds three row nodes (one of them the root).
+        for k in [b"a".as_ref(), b"b", b"c"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::empty_provable_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate");
+            db.insert(
+                [TEST_LEAF, b"cidx", k].as_ref(),
+                b"row",
+                Element::new_item(b"v".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("derive child count");
+        }
+        let elem = db
+            .get_raw([TEST_LEAF].as_ref().into(), b"cidx", None, grove_version)
+            .unwrap()
+            .expect("get");
+        let (real_primary, real_secondary, real_count) = match elem.underlying() {
+            Element::ProvableCountIndexedTree(p, s, c, _) => (p.clone(), s.clone(), *c),
+            other => panic!("expected PCIT, got {:?}", other),
+        };
+        assert_eq!(real_count, 3);
+        let canonical_root = real_secondary.expect("secondary root");
+
+        // Compute the three CURRENT secondary row keys
+        // (`count_be(1) ‖ item_key`) and pick one that is NOT the root:
+        // it exists in the secondary Merk's storage as a non-root node.
+        let forged = [b"a".as_ref(), b"b", b"c"]
+            .iter()
+            .map(|k| {
+                let mut sk = grovedb_element::indexed::encode_count_sort_key(1).to_vec();
+                sk.extend_from_slice(k);
+                sk
+            })
+            .find(|sk| *sk != canonical_root)
+            .expect("a non-root row key");
+
+        let bogus = Element::new_provable_count_indexed_tree_with_root_keys_and_count_value(
+            real_primary,
+            Some(forged),
+            real_count,
+            None,
+        );
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"cidx",
+                bogus,
+                Some(override_tree_opts()),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidInput(_))),
+            "a forged secondary root key that exists as a non-root node must be rejected, \
+             got {:?}",
+            result
+        );
+        // The canonical state must be untouched and verifiable.
+        let issues = db
+            .verify_grovedb(None, true, true, grove_version)
+            .expect("verify");
+        assert!(issues.is_empty(), "issues: {:?}", issues);
+    }
+
+    #[test]
+    fn direct_insert_psit_existing_nonroot_secondary_node_key_rejected() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"psit",
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        let rows: [(&[u8], i64); 3] = [(b"a", 5), (b"b", 7), (b"c", 9)];
+        for (k, sum) in rows {
+            db.insert_into_provable_sum_indexed_tree(
+                [TEST_LEAF, b"psit"].as_ref(),
+                k,
+                Element::new_sum_item(sum),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate");
+        }
+        let elem = db
+            .get_raw([TEST_LEAF].as_ref().into(), b"psit", None, grove_version)
+            .unwrap()
+            .expect("get");
+        let (real_primary, real_secondary, real_sum) = match elem.underlying() {
+            Element::ProvableSumIndexedTree(p, s, sv, _) => (p.clone(), s.clone(), *sv),
+            other => panic!("expected PSIT, got {:?}", other),
+        };
+        assert_eq!(real_sum, 21);
+        let canonical_root = real_secondary.expect("secondary root");
+
+        // Sum-axis row keys are `sum_sortable_be(8) ‖ item_key`.
+        let forged = rows
+            .iter()
+            .map(|(k, sum)| {
+                let mut sk = grovedb_element::indexed::encode_sum_sort_key(*sum).to_vec();
+                sk.extend_from_slice(k);
+                sk
+            })
+            .find(|sk| *sk != canonical_root)
+            .expect("a non-root row key");
+
+        let bogus = Element::ProvableSumIndexedTree(real_primary, Some(forged), real_sum, None);
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"psit",
+                bogus,
+                Some(override_tree_opts()),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidInput(_))),
+            "a forged secondary root key that exists as a non-root node must be rejected, \
+             got {:?}",
+            result
+        );
+        let issues = db
+            .verify_grovedb(None, true, true, grove_version)
+            .expect("verify");
+        assert!(issues.is_empty(), "issues: {:?}", issues);
+    }
+
+    #[test]
+    fn direct_insert_pcpsit_existing_nonroot_axis_node_key_rejected() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let axes: Vec<(u8, Option<Vec<u8>>)> =
+            vec![(IndexAxis::Count.tag(), None), (IndexAxis::Sum.tag(), None)];
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit",
+            Element::empty_provable_count_provable_sum_indexed_tree(axes).expect("axes canonical"),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        let rows: [(&[u8], i64); 3] = [(b"a", 10), (b"b", -3), (b"c", 7)];
+        for (k, sum) in rows {
+            db.insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                k,
+                Element::new_item_with_sum_item(b"v".to_vec(), sum),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate");
+        }
+        let elem = db
+            .get_raw([TEST_LEAF].as_ref().into(), b"pcpsit", None, grove_version)
+            .unwrap()
+            .expect("get");
+        let (real_primary, real_count, real_sum, real_axes) = match elem.underlying() {
+            Element::ProvableCountProvableSumIndexedTree(p, c, s, a, _) => {
+                (p.clone(), *c, *s, a.clone())
+            }
+            other => panic!("expected PCPSIT, got {:?}", other),
+        };
+        assert_eq!(real_count, 3);
+        assert_eq!(real_sum, 14);
+
+        // Forge the SUM axis root with one of its non-root row node keys
+        // (`sum_sortable_be(8) ‖ item_key`); keep the count axis canonical.
+        let canonical_sum_root = real_axes
+            .iter()
+            .find(|(t, _)| *t == IndexAxis::Sum.tag())
+            .and_then(|(_, rk)| rk.clone())
+            .expect("sum axis root");
+        let forged = rows
+            .iter()
+            .map(|(k, sum)| {
+                let mut sk = grovedb_element::indexed::encode_sum_sort_key(*sum).to_vec();
+                sk.extend_from_slice(k);
+                sk
+            })
+            .find(|sk| *sk != canonical_sum_root)
+            .expect("a non-root row key");
+        let forged_axes: Vec<(u8, Option<Vec<u8>>)> = real_axes
+            .iter()
+            .map(|(t, rk)| {
+                if *t == IndexAxis::Sum.tag() {
+                    (*t, Some(forged.clone()))
+                } else {
+                    (*t, rk.clone())
+                }
+            })
+            .collect();
+
+        let bogus = Element::ProvableCountProvableSumIndexedTree(
+            real_primary,
+            real_count,
+            real_sum,
+            forged_axes,
+            None,
+        );
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcpsit",
+                bogus,
+                Some(override_tree_opts()),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidInput(_))),
+            "a forged axis root key that exists as a non-root node must be rejected, got {:?}",
+            result
+        );
+        let issues = db
+            .verify_grovedb(None, true, true, grove_version)
+            .expect("verify");
+        assert!(issues.is_empty(), "issues: {:?}", issues);
+    }
+
     #[test]
     fn non_counted_indexed_child_rejected_in_provable_count_tree() {
         let grove_version = GroveVersion::latest();

@@ -1402,6 +1402,14 @@ mod tests {
             grove_version,
         );
 
+        // Rebind the parent element to the tampered secondary root through
+        // the GROVE_V3 insert arm: since issue #897 the V4+ arm validates
+        // the claimed secondary root key against the stored element and
+        // refuses this exact write (pinned by
+        // `direct_insert_psit_existing_nonroot_secondary_node_key_rejected`),
+        // but V3 accepted it, and states written that way can exist on
+        // disk. The commitment bytes V3 produces are identical to V4's, so
+        // this stays a faithful setup for the relational verifier below.
         db.insert(
             [TEST_LEAF].as_ref(),
             b"psit",
@@ -1413,10 +1421,10 @@ mod tests {
                 propagate_backward_references: false,
             }),
             None,
-            grove_version,
+            &grovedb_version::version::v3::GROVE_V3,
         )
         .unwrap()
-        .expect("rebind authenticated secondary root");
+        .expect("rebind authenticated secondary root via the pre-#897 V3 arm");
 
         let issues = db
             .verify_grovedb(None, false, true, grove_version)

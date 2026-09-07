@@ -14,6 +14,11 @@
 //! `value_hash(serialized)` to `combine_hash(value_hash(serialized), NULL_HASH)`,
 //! which changes the grovedb root and breaks consensus when v11 is replayed.
 //!
+//! KNOWN, DELIBERATELY PRESERVED FLAW (issue #897, fixed in [`super::v2`]):
+//! the indexed-tree arms validate a non-empty element's claimed secondary
+//! root key circularly (opening the secondary WITH the claimed key). Frozen
+//! here for replay; do not tighten.
+//!
 //! v0 therefore differs from [`super::v1`] ONLY in the placement of those three
 //! match arms: here they join the `Op::Put` arm; there they join the layered
 //! arm. Everything else is identical. (The v12-only `ProvableSumTree` /
