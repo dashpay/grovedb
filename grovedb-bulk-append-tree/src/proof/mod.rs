@@ -539,6 +539,15 @@ impl BulkAppendTreeProof {
     /// Returns matched `(global_position, value)` pairs collected into `C`.
     /// `C` can be `Vec<(u64, Vec<u8>)>`, `BTreeMap<u64, Vec<u8>>`,
     /// `HashMap<u64, Vec<u8>>`, or any `FromIterator<(u64, Vec<u8>)>`.
+    ///
+    /// The pairs are yielded in the query's direction — ascending
+    /// positions for `left_to_right`, descending otherwise — and
+    /// `query.limit` (when set) caps the yield to the FIRST `limit`
+    /// pairs of that ordering. So a descending limited query returns the
+    /// highest matched positions, exactly as the GroveDB verifier and a
+    /// direct tree read would. Completeness is still checked against the
+    /// full query ranges before the cap applies: the proof must carry
+    /// every matched position, not merely the window it yields.
     pub fn verify_against_query<C>(
         &self,
         expected_state_root: &[u8; 32],
@@ -635,7 +644,16 @@ impl BulkAppendTreeProof {
             }
         }
 
+        // Order by the trusted query direction BEFORE applying the
+        // cap, so a descending limit keeps the highest positions rather
+        // than truncating the ascending order to its lowest ones.
         values.sort_by_key(|(pos, _)| *pos);
+        if !query.left_to_right {
+            values.reverse();
+        }
+        if let Some(limit) = query.limit {
+            values.truncate(limit as usize);
+        }
         Ok(values.into_iter().collect())
     }
 

@@ -32,6 +32,20 @@
 //!   flips a rejected/accepted outcome and because deriving the state root
 //!   costs the prover extra storage reads and hash calls.
 //!
+//! - `proof.chunk_proof_row_binding: 1` — a trunk or branch chunk proof
+//!   (`prove_trunk_chunk` / `prove_branch_chunk`) carries every tree and
+//!   reference row as `KVValueHashFeatureTypeWithChildHash`, with the child
+//!   Merk root, the non-Merk tree's state root, or the referenced value hash,
+//!   and the verifier requires that node for every such row. V1..V3 emit a
+//!   bare `KVValueHash` and the verifier waives the value-hash check for any
+//!   row that deserializes as a tree, so the returned tree metadata (type,
+//!   aggregate count or sum, root key) is unbound and an item can be disguised
+//!   as a tree under a genuine root hash. Indexed-tree rows, whose three-input
+//!   binding no proof node carries, are refused by the prover and rejected by
+//!   the verifier. Gated because it flips an accepted/rejected outcome and
+//!   because deriving each child root costs the prover storage reads and hash
+//!   calls.
+//!
 //! - `proof.axis_descent_in_v1_envelope: 1` — the V1 proof envelope carries
 //!   axis-ordered descents into indexed trees
 //!   (`ProofBytes::IndexedTreeAxisDescent`): a proof over the queried
@@ -55,20 +69,29 @@
 //!   Gated because terminal keys shape the absence-proof result set assembled
 //!   by verifiers and the `query_keys_optional` result set.
 //!
-//! - `element.path_query_push: 1` — the trusted (non-proof) query walk no
-//!   longer charges the outer limit for a subquery whose matches were
-//!   entirely consumed by `offset` (issue #690): an empty inner result eats
-//!   a limit slot only when nothing was skipped. V1..V3 keep the legacy
-//!   accounting, where e.g. `limit=2, offset=1` can return a single element.
-//!   Proof generation rejects non-zero offsets and never runs this path, so
-//!   only trusted-read result sets are gated.
+//! - `element.path_query_push: 1` — the trusted (non-proof) query walk
+//!   serves per-instance limits (`Query::limit`, "top k per parent") and
+//!   reconciles subquery descents by total *consumed* budget (rows plus
+//!   empty-subtree charges) instead of returned rows only, aligning the
+//!   read path's global-limit accounting with the prover's shared-counter
+//!   accounting for nested empty subtrees. It also fixes issue #690: an
+//!   empty inner result eats a limit slot only when nothing was skipped.
+//!   V1..V3 keep the legacy v0 accounting, where e.g. `limit=2,
+//!   offset=1` can return a single element. Proof generation rejects
+//!   non-zero offsets and never runs this path, so only trusted-read
+//!   result sets are gated.
 //!
 //! - `path_query_methods.merge: 1` — `PathQuery::merge` requires every input
 //!   to agree on `left_to_right` (typed error on conflict) and propagates the
-//!   shared direction to the merged root. V1..V3 keep the long-standing
-//!   silent behavior (input directions dropped; sub-level merges take the
-//!   synthesized default). Gated because merged queries feed proofs and both
-//!   sides must re-derive the identical merged query.
+//!   shared direction to the merged root, and merges limited path queries by
+//!   *lifting*: an input's global `SizedQuery::limit` becomes its merged
+//!   branch's per-instance cap (`Query::limit`) — exact, because the branch
+//!   instance executes once — and per-instance limits ride along on their
+//!   branches. Limits merge only as exclusive grafts: a limited input
+//!   landing at the merged root, or two colliding limited branches, are
+//!   refused with typed errors. V1..V3 keep the long-standing behavior (all
+//!   limits refused; input directions dropped). Gated because merged queries
+//!   feed proofs and both sides must re-derive the identical merged query.
 //!
 //! - `path_query_methods.unified_read_mode: 1` — `PathQuery` read modes
 //!   (axis-ordered and sum-budget reads carried in `Query::read_mode`) are
@@ -77,6 +100,35 @@
 //!   with `NotSupported` at every entry point — those versions also reject
 //!   the version-2 `Query` wire encoding outright, so the slot's `0` value
 //!   is the in-process mirror of that fail-closed decode.
+//!
+//! - `path_query_methods.per_instance_query_limits: 1` — per-instance
+//!   limits (`Query::limit`: a fresh result budget per execution instance
+//!   of a query node, alongside the global `SizedQuery::limit`) are served
+//!   on trusted reads. Proofs still reject them until the V1
+//!   prover/verifier learn the accounting. V1..V3 reject any query
+//!   carrying one with `NotSupported` at every entry point — those
+//!   versions also reject the version-3 `Query` wire encoding outright,
+//!   so the slot's `0` value is the in-process mirror of that fail-closed
+//!   decode.
+//!
+//! - `operations.flat_drop.drop_flat_subtree: 1` and
+//!   `operations.flat_drop.batch_delete_tree_drop_flat: 1` — the
+//!   flat-subtree drop family (issue #848): `GroveDb::drop_flat_subtree`
+//!   and the `SubelementsDeletionBehavior::DropFlat` batch behavior remove
+//!   a populated subtree's element from its parent Merk in O(1) —
+//!   no emptiness check, no content sweep — and stage the subtree's
+//!   storage prefixes (primary plus, for indexed primaries, all three
+//!   axis secondaries) in a durable redo record committed atomically with
+//!   the delete. Reclamation happens outside consensus via DB-level range
+//!   tombstones (immediately when GroveDB owns the transaction, at the
+//!   next `flush_pending_prefix_drops` otherwise) and never contributes
+//!   to the operation's returned cost. The caller declares the subtree
+//!   contains no child subtrees; a false declaration leaks the children's
+//!   storage (unreachable, invisible to hashes/proofs/sync) but never
+//!   corrupts state. V1..V3 hold both slots at 0 and fail closed. Gated
+//!   because the drop's cost class (O(1) versus O(contents)) and the
+//!   accepted/rejected outcome for non-empty trees are both
+//!   consensus-observable.
 //!
 //! - `apply_batch.keyless_op_cost_dispatch: 1` — keyless append-only ops
 //!   (`CommitmentTreeInsert`, `MmrTreeAppend`, `BulkAppend`,
@@ -167,6 +219,25 @@
 //!   the epoch the switch happened in). Gated because the work — and so the
 //!   fee — moves, and because V4 writes keys V1..V3 never read.
 //!
+//! - `insert.add_element_on_transaction: 2` — a directly inserted
+//!   `Reference` / `ReferenceWithSumItem` (i) binds the value hash of its
+//!   terminal's STORED bytes, wrapper included for a `NonCounted`-wrapped
+//!   terminal, which is what the batch resolver has always committed to
+//!   (issue #858; v1 hashed the looked-through terminal, so the same
+//!   reference written directly and in a batch produced different roots),
+//!   and (ii) is refused with `CyclicReference` if its chain runs back
+//!   through the position being written. v1 resolved the chain from the
+//!   target alone and read the stale element still stored at that position,
+//!   so overwriting the item `B` of `A -> B` with a reference to `A` looked
+//!   acyclic and committed `A -> B -> A`, after which every `get`, proof and
+//!   `verify_grovedb` on either key failed. The batch path already refuses
+//!   it. (iii) It is refused with `InvalidInput` if its chain terminates at
+//!   a tree element, which the batch resolver has always rejected; v1
+//!   accepted it and committed only `H(tree element bytes)`, a hash that does
+//!   not bind the subtree's contents, so the row could not be proved and
+//!   subtree changes never disturbed it. Gated because (i) moves a committed
+//!   root and (ii)/(iii) flip an accepted/rejected outcome.
+//!
 //! Note that `GroveVersion::latest()` resolves to this version, so anything
 //! defaulting to "latest" — tests, benchmarks, tools — exercises every gate
 //! listed above rather than V3 behaviour.
@@ -191,15 +262,16 @@ use crate::version::{
     grovedb_versions::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
-        GroveDBOperationsDeleteVersions, GroveDBOperationsGetVersions,
-        GroveDBOperationsIndexedAxisVersions, GroveDBOperationsInsertVersions,
-        GroveDBOperationsPrivateDocumentStoreVersions, GroveDBOperationsProofVersions,
-        GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
+        GroveDBOperationsDeleteVersions, GroveDBOperationsFlatDropVersions,
+        GroveDBOperationsGetVersions, GroveDBOperationsIndexedAxisVersions,
+        GroveDBOperationsInsertVersions, GroveDBOperationsPrivateDocumentStoreVersions,
+        GroveDBOperationsProofVersions, GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
         GroveDBReplicationVersions, GroveDBVersions,
     },
     merk_versions::{
-        MerkAverageCaseCostsVersions, MerkBatchVersions, MerkProofVersions, MerkVersions,
+        MerkAverageCaseCostsVersions, MerkBatchVersions, MerkProofVersions, MerkTreeVersions,
+        MerkVersions,
     },
     mmr_versions::{MmrCostVersions, MmrVersions},
     GroveVersion,
@@ -264,8 +336,11 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             get_aggregate_sum_query_apply_function: 0,
             // Bumped from 0 → 1: v1 no longer decrements the outer limit when
             // a subquery's emptiness was caused by offset skips rather than a
-            // true no-match (issue #690). v0 keeps the legacy accounting for
-            // shipped grove versions.
+            // true no-match (issue #690), serves per-instance limits
+            // (`Query::limit`) and reconciles subquery descents by total
+            // consumed budget (rows plus empty-subtree charges) instead of
+            // returned rows only — see the module-level doc above. v0 keeps
+            // the legacy accounting for shipped grove versions.
             path_query_push: 1,
             aggregate_sum_path_query_push: 0,
             query_item: 0,
@@ -307,11 +382,21 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 // BidirectionalReference nor set
                 // propagate_backward_references run the exact v0 body.
                 insert_on_transaction: 1,
-                // v1: non-batch insert writes CountSumTree / ProvableCountTree /
-                // ProvableCountSumTree as layered subtrees, consistent with the
-                // batch path. GROVE_V1 / GROVE_V2 keep v0 (Op::Put) to preserve
-                // the protocol-v11 consensus root (testnet block 245,344).
-                add_element_on_transaction: 1,
+                // v2: a directly inserted Reference binds the value hash of its
+                // terminal's STORED bytes (wrapper included for a NonCounted
+                // terminal), matching what the batch reference resolver has
+                // always committed to. v1 (GROVE_V3) hashed the looked-through
+                // terminal, so direct and batch writes of the same reference
+                // disagreed on the root (issue #858). v2 also refuses a
+                // reference whose chain runs back through the position being
+                // written: v1 resolved from the target alone and read the
+                // stale element still stored at that position, so an
+                // overwrite could commit a cycle every later read fails on.
+                // The batch path already refuses it.
+                // It also refuses a reference whose terminal is a tree
+                // element, matching the batch resolver; v1 accepted it and
+                // committed a hash that does not bind the subtree's contents.
+                add_element_on_transaction: 2,
                 insert_if_not_exists: 0,
                 insert_if_not_exists_return_existing_element: 0,
                 insert_if_changed_value: 0,
@@ -385,6 +470,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 verify_query_with_chained_path_queries: 0,
                 verify_query_get_parent_tree_info_with_options: 0,
                 terminal_non_merk_tree_child_hash: 1, // bind terminal non-Merk tree element bytes to the parent value_hash
+                chunk_proof_row_binding: 1, // bind every tree / reference row of a trunk or branch chunk proof
                 axis_descent_in_v1_envelope: 1, // axis-ordered descents in the V1 envelope (ReadMode::Axis)
                 sum_budget_in_v1_envelope: 1, // sum-budget windows in the V1 envelope (ReadMode::SumBudget)
             },
@@ -428,14 +514,20 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 get_value: 1,
                 count: 1,
             },
+            // Flat-subtree drop (issue #848) activates in GROVE_V4.
+            flat_drop: GroveDBOperationsFlatDropVersions {
+                drop_flat_subtree: 1,
+                batch_delete_tree_drop_flat: 1,
+            },
         },
         aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions { merge: 0 },
         path_query_methods: GroveDBPathQueryMethodVersions {
             terminal_keys: 1, // per-item conditional resolution (V4+), see issue #689
-            merge: 1,         // direction-aware merge: agreement required and propagated (V4+)
+            merge: 1,         // direction agreement + per-instance limit lifting (V4+)
             query_items_at_path: 0,
             should_add_parent_tree_at_path: 0,
             unified_read_mode: 1,
+            per_instance_query_limits: 1, // Query::limit served on trusted reads (V4+)
         },
         replication: GroveDBReplicationVersions {
             get_subtrees_metadata: 0,
@@ -474,6 +566,9 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             // proof envelope.
             prove_count_offset_on_range: 0,
         },
+        // Bumped 0 -> 1: ordinary (Item / Reference) replacements of a
+        // specialized value are charged from their own bytes (issue #908).
+        tree: MerkTreeVersions { put_value: 1 },
     },
     // MMR hash charges: one hash per blake3 merge actually computed —
     // `push` per collapsed peak, `get_root` and `gen_proof` per peak

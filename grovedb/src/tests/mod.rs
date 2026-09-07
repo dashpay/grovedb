@@ -12,6 +12,8 @@ mod aggregate_count_query_tests;
 mod aggregate_sum_carrier_query_tests;
 mod aggregate_sum_query_tests;
 mod append_family_cost_bound_tests;
+mod append_layer_direction_tests;
+mod append_layer_limit_accounting_tests;
 mod append_storage_accounting_tests;
 mod batch_backward_references_cost_tests;
 mod batch_backward_references_tests;
@@ -27,11 +29,21 @@ mod bidirectional_references_tests;
 mod bulk_append_tree_tests;
 mod checkpoint_tests;
 mod chunk_branch_proof_tests;
+mod chunk_proof_row_binding_tests;
 mod commitment_tree_cost_bound_tests;
 mod commitment_tree_tests;
 mod coverage_round7_tests;
+mod non_merk_completeness_budget_tests;
 mod non_merk_integrity_audit_tests;
+mod non_merk_limited_page_tests;
+mod ordinary_replacement_cost_tests;
+mod per_instance_gate_coverage_tests;
+mod per_instance_limit_tests;
 mod private_document_store_tests;
+mod reference_cycle_on_overwrite_tests;
+mod reference_to_tree_terminal_tests;
+mod unbound_empty_tree_tests;
+mod wrapped_terminal_reference_tests;
 // NOTE: the former `count_indexed_tree_tests` (~12.3k LOC) was written
 // against the now-removed non-provable `Element::CountIndexedTree` and was
 // carried here behind a `#[cfg(any())]` gate that made it permanently dead —
@@ -62,6 +74,7 @@ mod direct_insert_indexed_tests;
 mod error_display_tests;
 mod estimated_costs_average_case_tests;
 mod estimated_costs_worst_case_tests;
+mod flat_drop_tests;
 mod get_cost_estimator_tests;
 mod grove_query_result_tests;
 mod indexed_axis_keys_only_read_tests;
@@ -70,6 +83,7 @@ mod indexed_axis_offset_proof_tests;
 mod indexed_axis_paginated_cost_tests;
 mod indexed_axis_proof_tests;
 mod indexed_reference_row_tests;
+mod indexed_secondary_rekey_cost_tests;
 mod indexed_target_chain_tamper_tests;
 mod indexed_tree_secondary_drift_tests;
 mod indexed_tree_security_regression_tests;
@@ -86,6 +100,7 @@ mod partial_batch_consistency_tests;
 mod proof_advanced_tests;
 mod proof_coverage_tests;
 mod proof_depth_limit_tests;
+mod proof_orientation_tests;
 mod proof_size_measurement;
 mod provable_count_indexed_tree_tests;
 mod provable_count_provable_sum_indexed_tree_tests;
@@ -101,8 +116,13 @@ mod query_result_type_tests;
 mod read_mode_gate_tests;
 mod reference_path_tests;
 mod reference_with_sum_item_tests;
+mod replication_checkpoint_prune_tests;
+mod replication_fuzz_tests;
+mod replication_incremental_commit_tests;
+mod replication_scale_tests;
 mod replication_session_tests;
 mod replication_utils_tests;
+mod replication_version_tests;
 mod run_path_query_tests;
 mod snapshot_read_transaction_tests;
 mod succinctness_gap_test;
@@ -111,6 +131,7 @@ mod test_compaction_sizes;
 mod test_provable_count_fresh;
 mod tree_hashes_tests;
 mod trunk_proof_tests;
+mod unbound_reference_row_tests;
 mod v1_cidx_descent_tests;
 mod v1_proof_tests;
 mod verify_grovedb_indexed_tests;
@@ -4723,6 +4744,7 @@ mod general_tests {
                     left_to_right: true,
                     add_parent_tree_on_subquery: false,
                     read_mode: None,
+                    limit: None,
                 },
                 limit: None,
                 offset: None,

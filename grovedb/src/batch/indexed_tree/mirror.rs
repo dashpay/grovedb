@@ -78,7 +78,60 @@ pub(crate) fn read_post_apply_transitions<'db, S: StorageContext<'db>>(
     Ok(transitions).wrap_with_cost(cost)
 }
 
-/// Assemble one axis's secondary row moves into a sorted Merk batch.
+/// The varint-encoded length of `n` — the same measure
+/// `integer_encoding::VarInt::required_space` gives, hand-rolled so the
+/// core build does not depend on the feature-gated crate.
+fn varint_len(n: u32) -> u32 {
+    match n {
+        0..=0x7F => 1,
+        0x80..=0x3FFF => 2,
+        0x4000..=0x1F_FFFF => 3,
+        0x20_0000..=0xFFF_FFFF => 4,
+        _ => 5,
+    }
+}
+
+/// The charged storage bytes of one secondary row, as the two op paths
+/// account them: the value side is the specialized value cost — exactly
+/// what the delete's `old_specialized_cost` reports as removed and what
+/// the put reports as added — and the key side is the prefixed-key
+/// measure both the merk delete arm and the storage batch's put use
+/// (`HASH_LENGTH + key_len`, varint-framed).
+fn charged_row_bytes(
+    secondary_key: &[u8],
+    row: &Element,
+    secondary_tree_type: grovedb_merk::TreeType,
+    grove_version: &GroveVersion,
+) -> Result<u32, Error> {
+    let serialized = row.serialize(grove_version).map_err(|e| {
+        Error::CorruptedData(format!("indexed mirror churn row serialization: {e}"))
+    })?;
+    let value_cost = Element::specialized_costs_for_key_value(
+        secondary_key,
+        &serialized,
+        secondary_tree_type.inner_node_type(),
+        grove_version,
+    )
+    .map_err(|e| Error::CorruptedData(format!("indexed mirror churn value cost: {e}")))?;
+    let prefixed_key_len = grovedb_merk::HASH_LENGTH_U32 + secondary_key.len() as u32;
+    let key_cost = prefixed_key_len + varint_len(prefixed_key_len);
+    Ok(value_cost + key_cost)
+}
+
+/// Assemble one axis's secondary row moves into a sorted Merk batch, plus
+/// the batch's re-key CHURN: for every row that MOVES (old and new rows
+/// both exist, on different sort keys), the smaller of the two rows'
+/// charged bytes. The raw accounting of a move is a full removal plus a
+/// full addition; the churn is the portion of that which is logically an
+/// update — [`apply_indexed_secondary_mirror_post_apply`] surfaces it so
+/// batch-commit cost assembly can rebill it as `replaced_bytes`.
+/// (Unconditional: the indexed-tree family has never shipped in a
+/// released version, so there is no historical accounting to preserve —
+/// the same in-place rule the rest of this machinery follows.)
+/// Taking the min of element-level measures
+/// keeps the churn a conservative lower bound on both lanes' real
+/// contributions (which additionally carry AVL link overhead), so the
+/// later reclassification can never underflow either lane.
 ///
 /// Each transition is compared as this axis's `(key, row, target hash)`
 /// rather than the raw aggregates: on the avg axis two different
@@ -91,14 +144,16 @@ pub(crate) fn read_post_apply_transitions<'db, S: StorageContext<'db>>(
 /// representation buys: a value-only primary update — and equally a deep
 /// mutation that only changes a child subtree's root, or a
 /// `RefreshReference` on a reference-shaped primary — now rewrites every
-/// configured axis's row.
+/// configured axis's row. (A fixed-key rewrite is a plain put, already in
+/// the replaced lane — it contributes no churn here.)
 fn build_axis_mirror_batch(
     transitions: &[AggregateTransition],
     axis: IndexAxis,
     grove_version: &GroveVersion,
-) -> CostResult<Vec<BatchEntry<Vec<u8>>>, Error> {
+) -> CostResult<(Vec<BatchEntry<Vec<u8>>>, u32), Error> {
     let mut cost = OperationCost::default();
     let secondary_tree_type = crate::operations::indexed_tree::axis_secondary_tree_type(axis);
+    let mut rekey_churn_bytes: u32 = 0;
     let mut secondary_batch: Vec<BatchEntry<Vec<u8>>> = Vec::with_capacity(transitions.len() * 2);
     for (key, old_state, new_state) in transitions {
         let entry_for = |state: &MaybeEntryState| -> Result<_, Error> {
@@ -125,9 +180,30 @@ fn build_axis_mirror_batch(
         // failing the whole GroveDB batch. Where the key is unchanged the put
         // alone overwrites the payload, which is what the row needs.
         let new_secondary_key_ref = new_entry.as_ref().map(|(key, ..)| key);
-        if let Some((old_secondary_key, ..)) = &old_entry
+        if let Some((old_secondary_key, old_row, _)) = &old_entry
             && Some(old_secondary_key) != new_secondary_key_ref
         {
+            if let Some((new_secondary_key, new_row, _)) = &new_entry {
+                let old_bytes = cost_return_on_error_no_add!(
+                    cost,
+                    charged_row_bytes(
+                        old_secondary_key,
+                        old_row,
+                        secondary_tree_type,
+                        grove_version
+                    )
+                );
+                let new_bytes = cost_return_on_error_no_add!(
+                    cost,
+                    charged_row_bytes(
+                        new_secondary_key,
+                        new_row,
+                        secondary_tree_type,
+                        grove_version
+                    )
+                );
+                rekey_churn_bytes = rekey_churn_bytes.saturating_add(old_bytes.min(new_bytes));
+            }
             cost_return_on_error!(
                 &mut cost,
                 Element::delete_into_batch_operations(
@@ -169,14 +245,16 @@ fn build_axis_mirror_batch(
         }
     }
     secondary_batch.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(secondary_batch).wrap_with_cost(cost)
+    Ok((secondary_batch, rekey_churn_bytes)).wrap_with_cost(cost)
 }
 
 /// Apply one axis's secondary-mirror update for every captured transition,
 /// after the primary merk's batch ops have been applied. Returns that axis
 /// secondary's post-mirror `(root_hash, root_key)` so the caller can fold it
 /// into the parent's H1-A composition — directly for the single-axis
-/// variants, or through `axes_digest` for PCPSIT.
+/// variants, or through `axes_digest` for PCPSIT — plus the batch's re-key
+/// churn bytes (see [`build_axis_mirror_batch`]), which the caller
+/// accumulates for the commit-time cost reclassification.
 ///
 /// Call once per configured axis, with the SAME transitions slice from one
 /// [`read_post_apply_transitions`] call. Each axis derives its own sort key
@@ -195,14 +273,14 @@ pub(crate) fn apply_indexed_secondary_mirror_post_apply<'db, S: StorageContext<'
     axis: IndexAxis,
     secondary_merk: &mut Merk<S>,
     grove_version: &GroveVersion,
-) -> CostResult<(CryptoHash, Option<Vec<u8>>), Error> {
+) -> CostResult<(CryptoHash, Option<Vec<u8>>, u32), Error> {
     let mut cost = OperationCost::default();
 
     cost_return_on_error_no_add!(
         cost,
         enforce_axis_item_key_bound(transitions.iter().map(|(key, ..)| key), axis)
     );
-    let secondary_batch = cost_return_on_error!(
+    let (secondary_batch, rekey_churn_bytes) = cost_return_on_error!(
         &mut cost,
         build_axis_mirror_batch(transitions, axis, grove_version)
     );
@@ -239,5 +317,5 @@ pub(crate) fn apply_indexed_secondary_mirror_post_apply<'db, S: StorageContext<'
                 "indexed secondary root hash capture after mirror: {e}"
             )))
     );
-    Ok((sec_hash, sec_root_key)).wrap_with_cost(cost)
+    Ok((sec_hash, sec_root_key, rekey_churn_bytes)).wrap_with_cost(cost)
 }

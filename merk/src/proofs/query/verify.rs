@@ -155,7 +155,50 @@ impl QueryProofVerify for Query {
 
         let mut decoder = Decoder::new(bytes);
 
-        let root_wrapped = execute(decoder.by_ref(), true, |node| {
+        // Issue #863: the stream must be encoded in the op family of the
+        // direction it is walked in, and in that family only.
+        //
+        // `execute` checks per op that upright pushes ascend and inverted
+        // pushes descend, but it never ties the family to `left_to_right`
+        // and it lets the two families mix. Everything below that turns a
+        // visited node into a bound witness — "the previous push was
+        // key-bearing, so nothing lies between it and this key", "this is
+        // the first push, so it is the leftmost (rightmost) node", "the
+        // limit is met, so the abridged tail is fine" — assumes the visit
+        // order is the tree's in-order for an ascending walk and its exact
+        // reverse for a descending one. That holds only for a homogeneous
+        // stream in the walk's own family: an upright stream walked
+        // descending reads the smallest revealed key as the rightmost
+        // node, and a mixed stream can rebuild the honest tree while
+        // visiting an abridged root *after* both of its children, so two
+        // revealed leaves look adjacent. Either way an authentic root hash
+        // carries a wrong absence or a page filled from the wrong end.
+        //
+        // Enforced for V1 proofs only: V0 is a locked wire format whose
+        // verifier is not to change, and it is gated at `proof_version`
+        // like the other V1-only strictness checks in this function.
+        let oriented_ops = decoder.by_ref().map(|op_result| {
+            let op = op_result?;
+            if proof_version >= 1 && op_is_upright(&op) != left_to_right {
+                return Err(Error::InvalidProofError(format!(
+                    "Proof op family does not match the query direction: {} op in a {} walk; a \
+                     layer proof is emitted entirely in the family of its own direction",
+                    if op_is_upright(&op) {
+                        "upright"
+                    } else {
+                        "inverted"
+                    },
+                    if left_to_right {
+                        "left-to-right"
+                    } else {
+                        "right-to-left"
+                    },
+                )));
+            }
+            Ok(op)
+        });
+
+        let root_wrapped = execute(oriented_ops, true, |node| {
             let mut execute_node = |key: &Vec<u8>,
                                     value: Option<&Vec<u8>>,
                                     value_hash: CryptoHash,
@@ -404,6 +447,18 @@ impl QueryProofVerify for Query {
                     // attacker substitutes a KV node with KVValueHash to inject
                     // a fake value while keeping the original hash.
                     // Skipped for V0 backwards compatibility.
+                    //
+                    // Reference elements deliberately PASS here even though
+                    // this node hashes only (key, value_hash) and so binds
+                    // none of their bytes. A reference row that lies past
+                    // the query limit legitimately stays a bare KVValueHash
+                    // in released V1 proofs — the GroveDB post-pass only
+                    // rewrites rows within the limit into KVRefValueHash* —
+                    // so refusing references at this level would reject
+                    // honest proofs. The binding contract for reference
+                    // bytes is enforced by the only consumer of these rows:
+                    // `verify_layer_proof_v1` rejects any raw reference row
+                    // it consumes (issue #862).
                     if proof_version >= 1 {
                         let element_type =
                             ElementType::from_serialized_value(value).map_err(|e| {
@@ -473,12 +528,16 @@ impl QueryProofVerify for Query {
                     // The node's combined hash is recomputed from the
                     // stripped payload bytes it carries, so the bytes are
                     // bound; the result set receives the stripped element.
+                    // The row is reported as hash-bound (`combine_hash(H(value),
+                    // backrefs_hash) == value_hash` was checked end to end),
+                    // the same evidence a child-hash node yields — readers that
+                    // classify rows from their bytes may trust these bytes.
                     let combined = value_hash(value)
                         .unwrap()
                         .wrap_with_cost(Default::default())
                         .flat_map(|inner| crate::tree::hash::combine_hash(&inner, backrefs_hash))
                         .unwrap();
-                    execute_node(key, Some(value), combined, false, false)?;
+                    execute_node(key, Some(value), combined, true, false)?;
                 }
                 Node::KVCount(key, value, _count) => {
                     #[cfg(feature = "proof_debug")]
@@ -493,6 +552,10 @@ impl QueryProofVerify for Query {
                         println!("Processing KVValueHashFeatureType node");
                     }
                     // Same check as KVValueHash — reject item elements.
+                    // References pass here for the same reason as on
+                    // KVValueHash (beyond-limit reference rows stay bare in
+                    // released proofs); `verify_layer_proof_v1` refuses any
+                    // raw reference row it consumes.
                     // Skipped for V0 backwards compatibility.
                     if proof_version >= 1 {
                         let element_type =
@@ -773,9 +836,12 @@ pub struct ProvedKeyOptionalValue {
     pub value: Option<Vec<u8>>,
     /// Proof
     pub proof: CryptoHash,
-    /// Whether the merk verifier confirmed combine_hash(H(value), child_hash)
-    /// == value_hash for this element (true only for
-    /// KVValueHashFeatureTypeWithChildHash nodes).
+    /// Whether the merk verifier confirmed `combine_hash(H(value), other)
+    /// == value_hash` for this element, binding the presented value bytes
+    /// through a recomputed combined hash. True for
+    /// `KVValueHashFeatureTypeWithChildHash` nodes (`other` = the carried
+    /// child hash) and for `KVBackwardsReferencesValueHash` nodes (`other`
+    /// = the referrer-list hash, recomputed into the merk root itself).
     pub child_hash_verified: bool,
 }
 
@@ -1199,6 +1265,19 @@ mod provable_count_provable_sum_tree_bound_regression_tests {
     }
 }
 
+/// Whether `op` belongs to the upright (left-to-right) op family.
+///
+/// `Push` / `Parent` / `Child` are the family an ascending walk is
+/// encoded in; `PushInverted` / `ParentInverted` / `ChildInverted` are
+/// the descending family. A layer proof is emitted entirely in one
+/// family, chosen by the generating query's direction.
+pub fn op_is_upright(op: &Op) -> bool {
+    match op {
+        Op::Push(_) | Op::Parent | Op::Child => true,
+        Op::PushInverted(_) | Op::ParentInverted | Op::ChildInverted => false,
+    }
+}
+
 /// The orientation of a Merk layer proof's op stream, read off the op
 /// families in the bytes themselves.
 ///
@@ -1245,10 +1324,7 @@ pub fn proof_stream_direction(proof_bytes: &[u8]) -> Result<Option<bool>, Error>
                 MAX_PROOF_OPS
             )));
         }
-        let upright = match op_result? {
-            Op::Push(_) | Op::Parent | Op::Child => true,
-            Op::PushInverted(_) | Op::ParentInverted | Op::ChildInverted => false,
-        };
+        let upright = op_is_upright(&op_result?);
         match direction {
             None => direction = Some(upright),
             Some(previous) if previous == upright => {}

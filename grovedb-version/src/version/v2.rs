@@ -6,15 +6,16 @@ use crate::version::{
     grovedb_versions::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
-        GroveDBOperationsDeleteVersions, GroveDBOperationsGetVersions,
-        GroveDBOperationsIndexedAxisVersions, GroveDBOperationsInsertVersions,
-        GroveDBOperationsPrivateDocumentStoreVersions, GroveDBOperationsProofVersions,
-        GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
+        GroveDBOperationsDeleteVersions, GroveDBOperationsFlatDropVersions,
+        GroveDBOperationsGetVersions, GroveDBOperationsIndexedAxisVersions,
+        GroveDBOperationsInsertVersions, GroveDBOperationsPrivateDocumentStoreVersions,
+        GroveDBOperationsProofVersions, GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
         GroveDBReplicationVersions, GroveDBVersions,
     },
     merk_versions::{
-        MerkAverageCaseCostsVersions, MerkBatchVersions, MerkProofVersions, MerkVersions,
+        MerkAverageCaseCostsVersions, MerkBatchVersions, MerkProofVersions, MerkTreeVersions,
+        MerkVersions,
     },
     mmr_versions::{MmrCostVersions, MmrVersions},
     GroveVersion,
@@ -180,6 +181,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 verify_query_with_chained_path_queries: 0,
                 verify_query_get_parent_tree_info_with_options: 0,
                 terminal_non_merk_tree_child_hash: 0,
+                chunk_proof_row_binding: 0,
                 axis_descent_in_v1_envelope: 0,
                 sum_budget_in_v1_envelope: 0,
             },
@@ -224,6 +226,12 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 get_value: 0,
                 count: 0,
             },
+            // Flat-subtree drop (issue #848) is unavailable before
+            // GROVE_V4: every slot is 0 and the operations fail closed.
+            flat_drop: GroveDBOperationsFlatDropVersions {
+                drop_flat_subtree: 0,
+                batch_delete_tree_drop_flat: 0,
+            },
         },
         aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions { merge: 0 },
         path_query_methods: GroveDBPathQueryMethodVersions {
@@ -232,6 +240,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             query_items_at_path: 0,
             should_add_parent_tree_at_path: 0,
             unified_read_mode: 0,
+            per_instance_query_limits: 0,
         },
         replication: GroveDBReplicationVersions {
             get_subtrees_metadata: 0,
@@ -259,6 +268,9 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
         proof: MerkProofVersions {
             prove_count_offset_on_range: 0,
         },
+        // Ordinary replacements keep the loaded `value_defined_cost`
+        // metadata (issue #908); consensus-locked, bumped in v4.
+        tree: MerkTreeVersions { put_value: 0 },
     },
     // MMR hash charges: the shipped accounting, which billed the
     // storage reads each operation performed but not the blake3 merges

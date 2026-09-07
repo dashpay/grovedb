@@ -53,6 +53,26 @@ pub struct GroveDBPathQueryMethodVersions {
     /// at which the two sides can disagree about whether a read-mode
     /// shape exists.
     pub unified_read_mode: FeatureVersion,
+    /// Serving gate for per-instance query limits (`Query::limit` —
+    /// a fresh result budget for each execution instance of a query
+    /// node, i.e. "top k per parent", alongside the global
+    /// `SizedQuery::limit`).
+    ///
+    /// - `0` (GROVE_V1..=V3): any `PathQuery` carrying a per-instance
+    ///   limit anywhere is rejected with `NotSupported` at every read /
+    ///   prove / verify entry point. The field itself still encodes and
+    ///   decodes (`Query` encoding version 3) — the gate is about
+    ///   *serving*, so a query built ahead of activation fails closed
+    ///   instead of running with its caps silently ignored.
+    /// - `1` (GROVE_V4+): trusted reads (the `element.path_query_push`
+    ///   v1 engine), V1 proofs, and merges (which lift a merged input's
+    ///   global limit onto its exclusive branch) serve per-instance
+    ///   limits. Absence-proof assembly and the terminal-keys
+    ///   projections keep rejecting them at every version — which keys
+    ///   an instance-capped walk carries is data-dependent, so their
+    ///   expected-key projections would report keys beyond a cap as
+    ///   falsely absent.
+    pub per_instance_query_limits: FeatureVersion,
 }
 
 /// Method versions for the standalone indexed-axis query family — the
@@ -159,6 +179,32 @@ pub struct GroveDBOperationsVersions {
     pub average_case: GroveDBOperationsAverageCaseVersions,
     pub worst_case: GroveDBOperationsWorstCaseVersions,
     pub private_document_store: GroveDBOperationsPrivateDocumentStoreVersions,
+    pub flat_drop: GroveDBOperationsFlatDropVersions,
+}
+
+/// Version slots for the flat-subtree drop family (issue #848): O(1)
+/// removal of a populated subtree that is declared to contain no child
+/// subtrees, with storage reclaimed by DB-level range tombstones driven
+/// from a durable redo record.
+///
+/// Like [`GroveDBOperationsPrivateDocumentStoreVersions`], these slots are
+/// **capability gates**, not implementation selectors: slot value `0`
+/// means the operation is unavailable and fails closed with a
+/// version-mismatch error; `1` means the v1 implementation is active.
+/// `GROVE_V1`..`GROVE_V3` hold every slot at `0`; `GROVE_V4` flips them to
+/// `1`.
+///
+/// `GroveDb::flush_pending_prefix_drops` is deliberately ungated: it only
+/// reclaims storage for redo records that a gated operation already
+/// created, never touches the root hash, and is a no-op when no records
+/// exist.
+#[derive(Clone, Debug, Default)]
+pub struct GroveDBOperationsFlatDropVersions {
+    /// The standalone `GroveDb::drop_flat_subtree` operation.
+    pub drop_flat_subtree: FeatureVersion,
+    /// The `SubelementsDeletionBehavior::DropFlat` behavior on batch
+    /// `DeleteTree` ops.
+    pub batch_delete_tree_drop_flat: FeatureVersion,
 }
 
 /// Version slots for the PrivateDocumentStore operation family.
@@ -263,6 +309,40 @@ pub struct GroveDBOperationsProofVersions {
     /// non-empty **Merk** trees have required the child hash since V3 and
     /// stay bound at every version.
     pub terminal_non_merk_tree_child_hash: FeatureVersion,
+    /// Whether a **trunk / branch chunk proof** binds every composite row —
+    /// a tree of any kind, or a reference — to the `value_hash` its Merk
+    /// commits to.
+    ///
+    /// A merk chunk proof (`prove_trunk_chunk` / `prove_branch_chunk`) binds
+    /// an item row through `KV`, whose value bytes the verifier hashes itself,
+    /// but a tree or reference row through `KVValueHash` /
+    /// `KVValueHashFeatureType`, whose embedded `value_hash` the merk verifier
+    /// treats as opaque. That hash is `combine_hash(H(value), child_root)` for
+    /// a tree (`combine_hash(H(value), H(referenced))` for a reference), which
+    /// cannot be reproduced from the value bytes alone.
+    ///
+    /// - `0` (V1..V3): the prover leaves those rows as the merk chunk emitted
+    ///   them, and the verifier waives the `H(value) == value_hash` check for
+    ///   any row whose bytes deserialize as a tree. The returned tree metadata
+    ///   — tree type, aggregate count or sum, root key — is therefore unbound:
+    ///   a prover can substitute any tree-family element (or disguise an item
+    ///   as a tree) under a genuine root hash. Reference rows never verify at
+    ///   all under these versions, since they are not waived.
+    /// - `1` (V4+): the prover rewrites every composite row to
+    ///   `KVValueHashFeatureTypeWithChildHash` carrying the child Merk root
+    ///   (`NULL_HASH` for an empty tree), the non-Merk tree's own state root,
+    ///   or the referenced element's value hash, and the verifier requires
+    ///   that node for every tree or reference row, closing the loop with the
+    ///   merk-level `combine_hash(H(value), child_hash) == value_hash` check.
+    ///   Indexed trees commit a three-input hash no proof node can carry, so
+    ///   the prover refuses to serve a chunk containing one and the verifier
+    ///   rejects any such row rather than return its metadata as verified.
+    ///
+    /// Gated because it flips an accepted/rejected outcome — an upgraded
+    /// verifier rejects the unbound rows released provers emit — and because
+    /// deriving each child root costs the prover storage reads and hash
+    /// calls the released path never paid.
+    pub chunk_proof_row_binding: FeatureVersion,
     /// Whether the V1 proof envelope carries **axis-ordered descents**
     /// into indexed trees (`ProofBytes::IndexedTreeAxisDescent`),
     /// serving `PathQuery`s whose query node holds `ReadMode::Axis`.

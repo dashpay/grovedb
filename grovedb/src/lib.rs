@@ -258,6 +258,11 @@ use grovedb_storage::{Storage, StorageContext};
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "minimal")]
 use grovedb_visualize::DebugByteVectors;
+/// Telemetry counts from one `flush_pending_prefix_drops` pass — re-exported
+/// so hosts can name the flat-drop reclamation report without reaching into
+/// `operations::delete`.
+#[cfg(feature = "minimal")]
+pub use operations::delete::PendingPrefixDropsReport;
 /// The unified read dispatch's result types. `operations::get` is
 /// crate-private, so without this re-export `run_path_query` would be
 /// callable from outside the crate but its return type unnameable.
@@ -2845,38 +2850,51 @@ impl GroveDb {
                             hex_to_ascii(&key)
                         )))?;
 
+                    // A bidirectional reference commits to THREE inputs: its
+                    // stripped bytes, the resolved end hash, and its
+                    // referrer-list hash — its "self" hash in the commitment
+                    // is combine(inner, backrefs), not H(stored bytes).
+                    let self_actual_value_hash =
+                        if let Element::BidirectionalReference(..) = &element {
+                            element
+                                .backward_references_hashes(grove_version)
+                                .unwrap()?
+                                .expect("bidirectional references carry hashes")
+                                .combined
+                        } else {
+                            value_hash(&kv_value).unwrap()
+                        };
                     let referenced_value_hash = {
                         let full_path = path_from_reference_path_type(
                             reference_path.clone(),
                             &path.to_vec(),
                             Some(&key),
                         )?;
+                        // Resolve the stored terminal, then preserve whichever
+                        // representation this existing reference committed to.
                         let item = self
-                            .follow_reference(
+                            .follow_reference_as_stored(
                                 (full_path.as_slice()).into(),
                                 allow_cache,
                                 Some(transaction),
                                 grove_version,
                             )
                             .unwrap()?;
+                        let item = Self::reference_terminal_as_committed(
+                            item,
+                            &self_actual_value_hash,
+                            &element_value_hash,
+                            grove_version,
+                        )
+                        .unwrap()?;
+                        // Every reference in a chain commits to the
+                        // terminal's LOGICAL hash (referrer list stripped).
                         item.logical_value_hash(grove_version).unwrap()?
                     };
 
-                    // Take the current reference's own hash and combine it
-                    // with the referenced value's hash. A bidirectional
-                    // reference commits to THREE inputs: its stripped bytes,
-                    // the resolved end hash, and its referrer-list hash.
-                    let combined_value_hash = if let Element::BidirectionalReference(..) = &element
-                    {
-                        let hashes = element
-                            .backward_references_hashes(grove_version)
-                            .unwrap()?
-                            .expect("bidirectional references carry hashes");
-                        combine_hash(&hashes.combined, &referenced_value_hash).unwrap()
-                    } else {
-                        let self_actual_value_hash = value_hash(&kv_value).unwrap();
-                        combine_hash(&self_actual_value_hash, &referenced_value_hash).unwrap()
-                    };
+                    // Check the commitment without rewriting the stored reference.
+                    let combined_value_hash =
+                        combine_hash(&self_actual_value_hash, &referenced_value_hash).unwrap();
 
                     if combined_value_hash != element_value_hash {
                         issues.insert(
@@ -3447,11 +3465,14 @@ impl GroveDb {
     /// - `BulkAppendTree`: `blake3("bulk_state" || mmr_root || dense_root)`
     /// - `MmrTree`: the MMR root hash
     /// - `DenseAppendOnlyFixedSizeTree`: the dense tree root hash
+    /// - `PrivateDocumentStore`: `blake3("pds_state" || config_hash ||
+    ///   bulk_state_root)`
     ///
     /// For empty trees this returns the same conventions the insert path
     /// binds into the parent: `EMPTY_COMMITMENT_TREE_STATE_ROOT` for an
-    /// empty commitment tree, `NULL_HASH` (the empty Merk root) for the
-    /// other three types.
+    /// empty commitment tree, the config-parametrized empty state root for
+    /// an empty private document store, and `NULL_HASH` (the empty Merk
+    /// root) for the other three types.
     ///
     /// Returns an error if `element` is not a non-Merk data tree, or if the
     /// payload cannot be read back as a consistent tree of the declared
@@ -3556,6 +3577,41 @@ impl GroveDb {
                             "cannot compute dense tree root from payload: {e}"
                         ))
                     })
+            }
+            Element::PrivateDocumentStore(total_count, entry_size, chunk_power, _) => {
+                // The state root binds the committed config even when the
+                // store is empty, so the empty case is the
+                // config-parametrized empty root rather than NULL_HASH.
+                if *total_count == 0 {
+                    return Ok(
+                        grovedb_private_document_store::empty_private_document_store_state_root(
+                            *entry_size,
+                            *chunk_power,
+                        ),
+                    );
+                }
+                let storage_ctx = self
+                    .db
+                    .get_transactional_storage_context(subtree_path, None, transaction)
+                    .unwrap();
+                let store = grovedb_private_document_store::PrivateDocumentStore::from_state(
+                    *total_count,
+                    *entry_size,
+                    *chunk_power,
+                    storage_ctx,
+                )
+                .unwrap()
+                .map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "cannot open private document store of {total_count} entries from \
+                         payload: {e}"
+                    ))
+                })?;
+                store.compute_current_state_root_from_values().map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "cannot compute private document store state root from payload: {e}"
+                    ))
+                })
             }
             _ => Err(Error::InternalError(format!(
                 "compute_non_merk_state_root called on a non append-only element: {}",

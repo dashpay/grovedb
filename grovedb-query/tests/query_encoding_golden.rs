@@ -124,9 +124,105 @@ fn version_2_payload_without_read_mode_bytes_is_rejected() {
     );
 }
 
+fn instance_limited_query() -> Query {
+    let mut query = Query::new_single_query_item(QueryItem::RangeFull(..));
+    query.limit = Some(3);
+    query
+}
+
+fn nested_instance_limited_query() -> Query {
+    // The common real shape: an unlimited outer selection whose subquery
+    // caps each parent instance ("top 2 per parent").
+    let mut inner = Query::new_range_full();
+    inner.limit = Some(2);
+    let mut outer = Query::new_single_query_item(QueryItem::RangeFull(..));
+    outer.set_subquery(inner);
+    outer
+}
+
+#[test]
+fn print_golden_v3_bytes() {
+    // Helper to (re)generate the version-3 literals below.
+    println!("limited: {:?}", encode(&instance_limited_query()));
+    println!(
+        "nested_limited: {:?}",
+        encode(&nested_instance_limited_query())
+    );
+}
+
+#[test]
+fn instance_limit_queries_use_version_3_and_round_trip() {
+    let bytes = encode(&instance_limited_query());
+    assert_eq!(bytes[0], 3, "instance-limited queries encode as version 3");
+    assert_eq!(bytes[1], 0b10, "flags byte carries only the limit flag");
+    assert_eq!(bytes, GOLDEN_LIMITED, "instance-limited encoding changed");
+    assert_eq!(decode(&bytes), instance_limited_query());
+
+    // A nested query carrying the limit only in its subquery: the outer
+    // node stays version 1, the inner node is version 3, and the whole
+    // payload round-trips.
+    let outer = nested_instance_limited_query();
+    let bytes = encode(&outer);
+    assert_eq!(bytes[0], 1, "outer node without a limit stays version 1");
+    assert_eq!(bytes, GOLDEN_NESTED_LIMITED);
+    assert_eq!(decode(&bytes), outer);
+
+    // Limit and read mode together: version 3 with both flags.
+    let mut both = Query::new();
+    both.limit = Some(7);
+    both.read_mode = Some(Box::new(ReadMode::SumBudget(SumBudgetRead {
+        sum_limit: 500,
+        match_limit: Some(100),
+    })));
+    let bytes = encode(&both);
+    assert_eq!(bytes[0], 3);
+    assert_eq!(bytes[1], 0b11, "flags byte carries both flags");
+    assert_eq!(decode(&bytes), both);
+}
+
+#[test]
+fn version_3_flags_are_canonical_and_fail_closed() {
+    // A version-3 node whose flags byte lacks the instance-limit flag is
+    // non-canonical (it was expressible as version 1 or 2) — rejected.
+    let mut bytes = encode(&instance_limited_query());
+    bytes[1] = 0b00;
+    assert!(
+        bincode::decode_from_slice::<Query, _>(&bytes, config::standard()).is_err(),
+        "version 3 without the limit flag must be rejected"
+    );
+    let mut bytes = encode(&instance_limited_query());
+    bytes[1] = 0b01;
+    assert!(
+        bincode::decode_from_slice::<Query, _>(&bytes, config::standard()).is_err(),
+        "version 3 with only the read-mode flag must be rejected"
+    );
+    // Unknown flag bits fail closed.
+    let mut bytes = encode(&instance_limited_query());
+    bytes[1] = 0b110;
+    assert!(
+        bincode::decode_from_slice::<Query, _>(&bytes, config::standard()).is_err(),
+        "unknown version 3 flag bits must be rejected"
+    );
+}
+
+#[test]
+fn version_3_payload_missing_limit_bytes_is_rejected() {
+    // Drop the trailing limit bytes: the decoder now expects a u16 that
+    // isn't there.
+    let full = encode(&instance_limited_query());
+    let truncated = &full[..full.len() - 1];
+    assert!(
+        bincode::decode_from_slice::<Query, _>(truncated, config::standard()).is_err(),
+        "version-3 payload missing its limit must be rejected"
+    );
+}
+
 // Captured from the encoding as of develop @ a2791bbd (pre-read_mode).
 const GOLDEN_SIMPLE: &[u8] = &[1, 2, 0, 1, 48, 1, 1, 97, 1, 122, 0, 0, 0, 1, 0];
 const GOLDEN_NESTED: &[u8] = &[
     1, 1, 4, 1, 109, 1, 1, 3, 115, 117, 98, 1, 1, 1, 0, 4, 108, 101, 97, 102, 0, 0, 0, 0, 0, 1, 1,
     0, 4, 99, 111, 110, 100, 1, 1, 1, 112, 1, 1, 1, 0, 2, 99, 107, 0, 0, 0, 1, 0, 1, 1,
 ];
+// Version-3 pins, captured at introduction of the per-instance limit.
+const GOLDEN_LIMITED: &[u8] = &[3, 2, 1, 3, 0, 0, 0, 1, 0, 3];
+const GOLDEN_NESTED_LIMITED: &[u8] = &[1, 1, 3, 0, 1, 3, 2, 1, 3, 0, 0, 0, 1, 0, 2, 0, 1, 0];

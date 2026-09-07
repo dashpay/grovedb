@@ -158,10 +158,11 @@ where
         let chunk = self
             .merk
             .walk(|maybe_walker| match maybe_walker {
-                Some(mut walker) => walker.traverse_and_build_chunk(
+                Some(mut walker) => walker.traverse_and_build_chunk_with_features(
                     &traversal_instructions,
                     chunk_height,
                     tree_type,
+                    true,
                     grove_version,
                 ),
                 None => Err(Error::ChunkingError(ChunkError::EmptyTree(

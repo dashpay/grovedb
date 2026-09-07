@@ -511,9 +511,17 @@ mod tests {
         exercise_all_add_element_arms(&GROVE_V1);
     }
 
-    /// Coverage for the v1 (layered) snapshot — `GROVE_V3` (latest).
+    /// Coverage for the v1 (layered) snapshot — `GROVE_V3`.
     #[test]
     fn add_element_on_transaction_v1_covers_all_arms() {
+        use grovedb_version::version::v3::GROVE_V3;
+        exercise_all_add_element_arms(&GROVE_V3);
+    }
+
+    /// Coverage for the v2 (stored-terminal reference commitment) snapshot —
+    /// `GROVE_V4` (latest).
+    #[test]
+    fn add_element_on_transaction_v2_covers_all_arms() {
         exercise_all_add_element_arms(GroveVersion::latest());
     }
 
@@ -525,7 +533,7 @@ mod tests {
         bad.grovedb_versions
             .operations
             .insert
-            .add_element_on_transaction = 2;
+            .add_element_on_transaction = 3;
         let db = make_empty_grovedb();
         let err = db
             .insert(EMPTY_PATH, b"x", Element::empty_tree(), None, None, &bad)

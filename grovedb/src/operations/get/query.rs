@@ -1306,6 +1306,12 @@ where {
         if let Err(e) = path_query.reject_unserved_read_mode() {
             return Err(e).wrap_with_cost(OperationCost::default());
         }
+        // Per-instance limit gate: fail closed on grove versions that
+        // don't serve them, and reject zero caps, before any walking
+        // (the engine re-checks per frame as defense in depth).
+        if let Err(e) = path_query.reject_unserved_per_instance_limits(grove_version) {
+            return Err(e).wrap_with_cost(OperationCost::default());
+        }
         Element::get_path_query(
             &self.db,
             path_query,
@@ -1314,6 +1320,7 @@ where {
                 allow_cache,
                 decrease_limit_on_range_with_no_sub_elements,
                 error_if_intermediate_path_tree_not_present,
+                decrease_instance_limits_on_range_with_no_sub_elements: false,
             },
             result_type,
             transaction,
@@ -1348,6 +1355,13 @@ where {
                 "offsets are not supported in query_raw_keys_optional".to_string(),
             ))
             .wrap_with_cost(OperationCost::default());
+        }
+        // The terminal-keys projection reports every expected key the
+        // walk didn't return as `None`; a per-instance cap makes which
+        // keys the walk returns data-dependent, so keys beyond a cap
+        // would masquerade as absent. Fail closed.
+        if let Err(e) = path_query.reject_per_instance_limits("query_keys_optional") {
+            return Err(e).wrap_with_cost(OperationCost::default());
         }
         let mut cost = OperationCost::default();
 
@@ -1407,6 +1421,11 @@ where {
                 "offsets are not supported in query_raw_keys_optional".to_string(),
             ))
             .wrap_with_cost(OperationCost::default());
+        }
+        // Same false-absence hazard as `query_keys_optional`: the
+        // terminal-keys projection cannot express per-instance caps.
+        if let Err(e) = path_query.reject_per_instance_limits("query_raw_keys_optional") {
+            return Err(e).wrap_with_cost(OperationCost::default());
         }
         let mut cost = OperationCost::default();
 

@@ -5,6 +5,30 @@ pub struct MerkVersions {
     pub batch: MerkBatchVersions,
     pub average_case_costs: MerkAverageCaseCostsVersions,
     pub proof: MerkProofVersions,
+    pub tree: MerkTreeVersions,
+}
+
+/// Merk tree-node method versions.
+#[derive(Clone, Debug, Default)]
+pub struct MerkTreeVersions {
+    /// `TreeNode::put_value` / `TreeNode::put_value_and_reference_value_hash`
+    /// — the ordinary `Op::Put` / `Op::PutCombinedReference` replacement of
+    /// an existing node's value (Items and References).
+    ///
+    /// Version 0 keeps the `value_defined_cost` metadata stamped on the node
+    /// when it was loaded from storage. When the predecessor was a
+    /// specialized element (a tree or a sum item) that metadata is the
+    /// predecessor's fixed cost size, so the replacement's storage charge is
+    /// derived from the predecessor's fixed size and the physical-size check
+    /// is skipped, even though the full replacement bytes are written
+    /// (issue #908). Consensus-locked for grove v1..v3.
+    ///
+    /// Version 1 clears the metadata on every ordinary replacement so the
+    /// charge is computed from the replacement's own serialized bytes and
+    /// verified against the bytes actually written. Old-value removal
+    /// accounting is unchanged: it is always computed from the stored
+    /// predecessor bytes.
+    pub put_value: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

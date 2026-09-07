@@ -225,7 +225,7 @@ mod tests {
         let db = make_empty_grovedb();
         let path_query = make_simple_path_query();
         let prove_options = ProveOptions::default();
-        let mut limit = Some(100u16);
+        let mut limit_state = crate::operations::proof::V1LimitState::new(Some(100u16));
 
         // Call with depth already past the limit
         let result = db
@@ -233,7 +233,8 @@ mod tests {
                 &db.start_transaction(),
                 vec![b"deep".as_slice()],
                 &path_query,
-                &mut limit,
+                &mut limit_state,
+                None,
                 &prove_options,
                 MAX_PROOF_DEPTH + 1,
                 grove_version,
@@ -318,7 +319,7 @@ mod tests {
             lower_layers: BTreeMap::new(),
         };
 
-        let mut limit: Option<u16> = Some(100);
+        let mut limit_state = crate::operations::proof::V1LimitState::new(Some(100));
         let mut last_tree_type = None;
         let mut result: Vec<PathKeyOptionalElementTrio> = Vec::new();
         let mut axis_outcomes = Vec::new();
@@ -331,7 +332,8 @@ mod tests {
             &dummy_proof.lower_layers,
             &prove_options,
             &path_query,
-            &mut limit,
+            &mut limit_state,
+            None,
             &[],
             &mut result,
             &mut axis_outcomes,
@@ -716,7 +718,7 @@ mod tests {
             lower_layers: BTreeMap::new(),
         };
 
-        let mut limit: Option<u16> = Some(100);
+        let mut limit_state = crate::operations::proof::V1LimitState::new(Some(100));
         let mut last_tree_type = None;
         let mut result: Vec<PathKeyOptionalElementTrio> = Vec::new();
         let mut axis_outcomes = Vec::new();
@@ -729,7 +731,8 @@ mod tests {
             &dummy_proof.lower_layers,
             &prove_options,
             &path_query,
-            &mut limit,
+            &mut limit_state,
+            None,
             &[b"deep"],
             &mut result,
             &mut axis_outcomes,

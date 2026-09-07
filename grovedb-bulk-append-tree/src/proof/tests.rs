@@ -34,7 +34,7 @@ mod proof_tests {
 
     /// Helper: build a range query [start..end).
     fn range_query(start: u64, end: u64) -> Query {
-        let mut q = Query::default();
+        let mut q = Query::new();
         q.items
             .push(QueryItem::Range(pos_bytes(start)..pos_bytes(end)));
         q
@@ -42,7 +42,7 @@ mod proof_tests {
 
     /// Helper: build a full-range query.
     fn full_range_query() -> Query {
-        let mut q = Query::default();
+        let mut q = Query::new();
         q.items.push(QueryItem::RangeFull(..));
         q
     }
@@ -215,7 +215,7 @@ mod proof_tests {
         let query = full_range_query();
         let proof = BulkAppendTreeProof::generate(&query, &tree).expect("generate proof");
 
-        let mut verify_query = Query::default();
+        let mut verify_query = Query::new();
         verify_query.items.push(QueryItem::Key(pos_bytes(1)));
         verify_query.items.push(QueryItem::Key(pos_bytes(5)));
         verify_query.items.push(QueryItem::Key(pos_bytes(8)));
@@ -230,6 +230,124 @@ mod proof_tests {
     }
 
     #[test]
+    fn test_verify_against_query_descending_yields_highest_positions_first() {
+        // height=2, chunk size 4. 10 values -> 2 completed chunks + 2 buffer.
+        // A descending query must yield the SAME set as its ascending
+        // twin, in reverse order — positions from both chunk blobs and
+        // the dense buffer interleave correctly.
+        let height = 2u8;
+        let values: Vec<Vec<u8>> = (0..10u32)
+            .map(|i| format!("v_{}", i).into_bytes())
+            .collect();
+        let (state_root, tree) = build_test_tree(height, &values);
+        let total_count = tree.total_count;
+
+        let mut asc = range_query(2, 9);
+        asc.left_to_right = true;
+        let mut desc = range_query(2, 9);
+        desc.left_to_right = false;
+
+        let proof = BulkAppendTreeProof::generate(&desc, &tree).expect("generate proof");
+
+        let asc_vals: Vec<(u64, Vec<u8>)> = proof
+            .verify_against_query(&state_root, height, total_count, &asc)
+            .expect("verify ascending");
+        let desc_vals: Vec<(u64, Vec<u8>)> = proof
+            .verify_against_query(&state_root, height, total_count, &desc)
+            .expect("verify descending");
+
+        let asc_positions: Vec<u64> = asc_vals.iter().map(|(p, _)| *p).collect();
+        let desc_positions: Vec<u64> = desc_vals.iter().map(|(p, _)| *p).collect();
+        assert_eq!(asc_positions, (2..9).collect::<Vec<u64>>());
+        assert_eq!(desc_positions, (2..9).rev().collect::<Vec<u64>>());
+        for (p, v) in &desc_vals {
+            assert_eq!(v, &format!("v_{}", p).into_bytes());
+        }
+    }
+
+    #[test]
+    fn test_verify_against_query_limit_applies_after_direction() {
+        // The cap keeps the FIRST `limit` rows of the directed order: the
+        // lowest positions ascending, the HIGHEST positions descending.
+        // Before this was applied the descending limited read handed back
+        // the opposite end of the range (issue #855).
+        let height = 2u8;
+        let values: Vec<Vec<u8>> = (0..10u32)
+            .map(|i| format!("v_{}", i).into_bytes())
+            .collect();
+        let (state_root, tree) = build_test_tree(height, &values);
+        let total_count = tree.total_count;
+
+        let proof =
+            BulkAppendTreeProof::generate(&full_range_query(), &tree).expect("generate proof");
+
+        let mut asc = full_range_query();
+        asc.left_to_right = true;
+        asc.limit = Some(3);
+        let asc_vals: Vec<(u64, Vec<u8>)> = proof
+            .verify_against_query(&state_root, height, total_count, &asc)
+            .expect("verify ascending limited");
+        assert_eq!(
+            asc_vals.iter().map(|(p, _)| *p).collect::<Vec<u64>>(),
+            vec![0, 1, 2]
+        );
+
+        let mut desc = full_range_query();
+        desc.left_to_right = false;
+        desc.limit = Some(3);
+        let desc_vals: Vec<(u64, Vec<u8>)> = proof
+            .verify_against_query(&state_root, height, total_count, &desc)
+            .expect("verify descending limited");
+        assert_eq!(
+            desc_vals.iter().map(|(p, _)| *p).collect::<Vec<u64>>(),
+            vec![9, 8, 7],
+            "descending limit must keep the highest positions"
+        );
+        assert_eq!(desc_vals[0].1, b"v_9".to_vec());
+
+        // A limit wider than the match set is a no-op.
+        let mut wide = full_range_query();
+        wide.left_to_right = false;
+        wide.limit = Some(50);
+        let wide_vals: Vec<(u64, Vec<u8>)> = proof
+            .verify_against_query(&state_root, height, total_count, &wide)
+            .expect("verify wide limit");
+        assert_eq!(wide_vals.len(), 10);
+        assert_eq!(wide_vals[0].0, 9);
+        assert_eq!(wide_vals[9].0, 0);
+    }
+
+    #[test]
+    fn test_verify_against_query_limit_does_not_relax_completeness() {
+        // The cap only trims what is YIELDED; the proof must still carry
+        // every matched position. A proof generated for a narrower query
+        // than the one verified against is rejected even when the limit
+        // would have hidden the missing tail.
+        let height = 2u8;
+        let values: Vec<Vec<u8>> = (0..10u32)
+            .map(|i| format!("v_{}", i).into_bytes())
+            .collect();
+        let (state_root, tree) = build_test_tree(height, &values);
+        let total_count = tree.total_count;
+
+        // Proves only chunk 0 (positions 0..4).
+        let narrow_proof =
+            BulkAppendTreeProof::generate(&range_query(0, 4), &tree).expect("generate proof");
+
+        // Ascending limit 2 over the full range would yield positions 0
+        // and 1 — both present — but chunk 1 and the buffer are missing.
+        let mut asc = full_range_query();
+        asc.limit = Some(2);
+        let err = narrow_proof
+            .verify_against_query::<Vec<(u64, Vec<u8>)>>(&state_root, height, total_count, &asc)
+            .expect_err("limit must not hide missing positions");
+        assert!(
+            matches!(err, BulkAppendError::InvalidProof(_)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
     fn test_verify_against_query_empty_result() {
         // Query beyond total_count — positions clamped, returns empty
         let height = 2u8;
@@ -240,7 +358,7 @@ mod proof_tests {
         let query = range_query(0, 1);
         let proof = BulkAppendTreeProof::generate(&query, &tree).expect("generate proof");
 
-        let mut far_query = Query::default();
+        let mut far_query = Query::new();
         far_query.items.push(QueryItem::Key(pos_bytes(100)));
 
         let vals: Vec<(u64, Vec<u8>)> = proof
@@ -317,7 +435,7 @@ mod proof_tests {
         // BulkAppendTree has no count commitment in its node hash, so the
         // index-resolution helper must reject AggregateCountOnRange
         // outright rather than silently fall through.
-        let mut query = Query::default();
+        let mut query = Query::new();
         query.items.push(QueryItem::AggregateCountOnRange(Box::new(
             QueryItem::Range(pos_bytes(0)..pos_bytes(5)),
         )));
@@ -336,7 +454,7 @@ mod proof_tests {
     fn test_query_to_ranges_rejects_aggregate_sum_on_range() {
         // Same rationale as count: BulkAppendTree has no sum commitment
         // either, so AggregateSumOnRange is rejected at index resolution.
-        let mut query = Query::default();
+        let mut query = Query::new();
         query
             .items
             .push(QueryItem::AggregateSumOnRange(Box::new(QueryItem::Range(
@@ -355,7 +473,7 @@ mod proof_tests {
 
     #[test]
     fn test_query_to_ranges_merges_clamps_and_filters() {
-        let mut query = Query::default();
+        let mut query = Query::new();
         query
             .items
             .push(QueryItem::Range(pos_bytes(2)..pos_bytes(5))); // [2,5)
@@ -396,7 +514,7 @@ mod proof_tests {
         let values: Vec<Vec<u8>> = (0..5u32).map(|i| format!("z_{}", i).into_bytes()).collect();
         let (state_root, tree) = build_test_tree(height, &values);
 
-        let mut query = Query::default();
+        let mut query = Query::new();
         query.items.push(QueryItem::Key(pos_bytes(4))); // only buffer position
         let proof = BulkAppendTreeProof::generate(&query, &tree).expect("generate proof");
 
@@ -514,7 +632,7 @@ mod proof_tests {
         let (state_root, tree) = build_test_tree(height, &values);
 
         // Proof includes only global position 4 (buffer local pos 0).
-        let mut single = Query::default();
+        let mut single = Query::new();
         single.items.push(QueryItem::Key(pos_bytes(4)));
         let proof = BulkAppendTreeProof::generate(&single, &tree).expect("generate proof");
 
@@ -535,7 +653,7 @@ mod proof_tests {
         let values: Vec<Vec<u8>> = vec![b"a".to_vec()];
         let (_state_root, tree) = build_test_tree(height, &values);
 
-        let mut query = Query::default();
+        let mut query = Query::new();
         query.items.push(QueryItem::Key(Vec::new())); // invalid: length must be 1..=8
 
         let err =
@@ -745,7 +863,7 @@ mod proof_tests {
         let (state_root, tree) = build_test_tree(height, &values);
         let total_count = tree.total_count;
 
-        let mut query = Query::default();
+        let mut query = Query::new();
         query
             .items
             .push(QueryItem::RangeInclusive(pos_bytes(2)..=pos_bytes(6)));
@@ -775,7 +893,7 @@ mod proof_tests {
         let (state_root, tree) = build_test_tree(height, &values);
         let total_count = tree.total_count;
 
-        let mut query = Query::default();
+        let mut query = Query::new();
         query.items.push(QueryItem::RangeFrom(pos_bytes(6)..));
 
         let proof = BulkAppendTreeProof::generate(&query, &tree).expect("generate proof");
@@ -803,7 +921,7 @@ mod proof_tests {
 
         // RangeAfter (5..), positions > 5 -> 6,7,8
         {
-            let mut query = Query::default();
+            let mut query = Query::new();
             query.items.push(QueryItem::RangeAfter(pos_bytes(5)..));
 
             let proof = BulkAppendTreeProof::generate(&query, &tree).expect("generate proof");
@@ -817,7 +935,7 @@ mod proof_tests {
 
         // RangeToInclusive (..=2), positions 0,1,2
         {
-            let mut query = Query::default();
+            let mut query = Query::new();
             query
                 .items
                 .push(QueryItem::RangeToInclusive(..=pos_bytes(2)));
@@ -834,7 +952,7 @@ mod proof_tests {
 
         // RangeAfterToInclusive (3..=6], positions 4,5,6
         {
-            let mut query = Query::default();
+            let mut query = Query::new();
             query.items.push(QueryItem::RangeAfterToInclusive(
                 pos_bytes(3)..=pos_bytes(6),
             ));
@@ -858,7 +976,7 @@ mod proof_tests {
 
         // RangeInclusive: s >= e after clamping (line 76)
         {
-            let mut q = Query::default();
+            let mut q = Query::new();
             q.items
                 .push(QueryItem::RangeInclusive(pos_bytes(10)..=pos_bytes(12)));
             let ranges =
@@ -871,7 +989,7 @@ mod proof_tests {
 
         // RangeFrom: s >= total_count (line 89)
         {
-            let mut q = Query::default();
+            let mut q = Query::new();
             q.items.push(QueryItem::RangeFrom(pos_bytes(5)..));
             let ranges = super::super::query_to_ranges(&q, total_count).expect("RangeFrom oob");
             assert!(
@@ -882,7 +1000,7 @@ mod proof_tests {
 
         // RangeTo: e == 0 (line 96)
         {
-            let mut q = Query::default();
+            let mut q = Query::new();
             q.items.push(QueryItem::RangeTo(..pos_bytes(0)));
             let ranges = super::super::query_to_ranges(&q, total_count).expect("RangeTo e=0");
             assert!(
@@ -896,7 +1014,7 @@ mod proof_tests {
         // but min(total_count) gives 1 which is > 0, so we can't hit e==0 this
         // way unless total_count is 0. Use total_count=0 for this variant.
         {
-            let mut q = Query::default();
+            let mut q = Query::new();
             q.items.push(QueryItem::RangeToInclusive(..=pos_bytes(5)));
             let ranges = super::super::query_to_ranges(&q, 0).expect("RangeToInclusive empty tree");
             assert!(
@@ -907,7 +1025,7 @@ mod proof_tests {
 
         // RangeAfter: s >= total_count (line 112)
         {
-            let mut q = Query::default();
+            let mut q = Query::new();
             q.items.push(QueryItem::RangeAfter(pos_bytes(4)..));
             let ranges = super::super::query_to_ranges(&q, total_count).expect("RangeAfter oob");
             assert!(
@@ -918,7 +1036,7 @@ mod proof_tests {
 
         // RangeAfterTo: s >= e (line 120)
         {
-            let mut q = Query::default();
+            let mut q = Query::new();
             q.items
                 .push(QueryItem::RangeAfterTo(pos_bytes(5)..pos_bytes(3)));
             let ranges =
@@ -931,7 +1049,7 @@ mod proof_tests {
 
         // RangeAfterToInclusive: s >= e (line 130)
         {
-            let mut q = Query::default();
+            let mut q = Query::new();
             q.items.push(QueryItem::RangeAfterToInclusive(
                 pos_bytes(10)..=pos_bytes(8),
             ));
