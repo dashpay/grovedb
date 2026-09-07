@@ -134,17 +134,19 @@ where
     // self-verifying `HashWithCount` op.
     //
     //   Disjoint                                       → always collapse
-    //   Contained + sub ≤ offset_remaining             → collapse, offset −= sub
     //   Contained + offset == 0 && limit_remaining == 0 → collapse
+    //   Contained + sub ≤ offset_remaining             → collapse, offset −= sub
     //
     // Anything else falls through to per-element descent below.
     let collapse_action = match class {
         SubtreeClassification::Disjoint => Some(CollapseAction::Disjoint),
         SubtreeClassification::Contained => {
-            if subtree_count <= state.offset_remaining {
-                Some(CollapseAction::SkippedByOffset)
-            } else if state.offset_remaining == 0 && state.limit_remaining == Some(0) {
+            // A zero-count subtree also fits a zero remaining offset, but
+            // after the page is complete it must be exempt from skip validation.
+            if state.offset_remaining == 0 && state.limit_remaining == Some(0) {
                 Some(CollapseAction::PastLimit)
+            } else if subtree_count <= state.offset_remaining {
+                Some(CollapseAction::SkippedByOffset)
             } else {
                 None
             }

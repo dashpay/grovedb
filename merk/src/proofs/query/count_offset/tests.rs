@@ -1505,15 +1505,38 @@ fn make_15_key_tree_with_non_unit_row(
     own: u64,
     grove_version: &GroveVersion,
 ) -> (TempMerk, [u8; 32]) {
-    let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::ProvableCountTree);
+    make_15_key_tree_with_non_unit_row_and_type(
+        key,
+        own,
+        TreeType::ProvableCountTree,
+        grove_version,
+    )
+}
+
+fn make_15_key_tree_with_non_unit_row_and_type(
+    key: u8,
+    own: u64,
+    tree_type: TreeType,
+    grove_version: &GroveVersion,
+) -> (TempMerk, [u8; 32]) {
+    use crate::tree::TreeFeatureType::{
+        ProvableCountedAndProvableSummedMerkNode, ProvableCountedSummedMerkNode,
+    };
+
+    let mut merk = TempMerk::new_with_tree_type(grove_version, tree_type);
     let entries: Vec<(Vec<u8>, Op)> = (b'a'..=b'o')
         .enumerate()
         .map(|(i, c)| {
             let count = if c == key { own } else { 1 };
-            (
-                vec![c],
-                Op::Put(vec![i as u8], ProvableCountedMerkNode(count)),
-            )
+            let feature_type = match tree_type {
+                TreeType::ProvableCountTree => ProvableCountedMerkNode(count),
+                TreeType::ProvableCountSumTree => ProvableCountedSummedMerkNode(count, 0),
+                TreeType::ProvableCountProvableSumTree => {
+                    ProvableCountedAndProvableSummedMerkNode(count, 0)
+                }
+                _ => panic!("fixture requires a provable count-bearing tree"),
+            };
+            (vec![c], Op::Put(vec![i as u8], feature_type))
         })
         .collect();
     merk.apply::<_, Vec<_>>(&entries, &[], None, grove_version)
@@ -1680,6 +1703,37 @@ fn non_unit_row_outside_offset_region_still_proves() {
         &[b"o"],
         grove_version,
     );
+}
+
+/// A zero-count subtree after the page is complete must collapse as
+/// PastLimit, even though its count also fits the remaining zero offset.
+#[test]
+fn zero_count_subtree_past_limit_still_proves_in_all_count_hosts() {
+    let grove_version = GroveVersion::latest();
+    for tree_type in [
+        TreeType::ProvableCountTree,
+        TreeType::ProvableCountSumTree,
+        TreeType::ProvableCountProvableSumTree,
+    ] {
+        for (ltr, zero_key, returned_key) in [(true, b'c', b'b'), (false, b'm', b'n')] {
+            let (merk, root) =
+                make_15_key_tree_with_non_unit_row_and_type(zero_key, 0, tree_type, grove_version);
+            assert_eq!(merk.root_key(), Some(b"h".to_vec()));
+            // Ascending skips a, returns b, then visits the zero-count c.
+            // Descending skips o, returns n, then visits the zero-count m.
+            round_trip_keys(
+                &merk,
+                root,
+                QueryItem::RangeFull(..),
+                1,
+                Some(1),
+                ltr,
+                1,
+                &[&[returned_key]],
+                grove_version,
+            );
+        }
+    }
 }
 
 /// The pre-collapse unit-row walk reads nodes the emitter would otherwise

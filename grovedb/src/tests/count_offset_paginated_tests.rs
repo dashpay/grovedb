@@ -1829,6 +1829,24 @@ mod tests {
         assert_eq!(proved_keys(&proved), raw_asc);
     }
 
+    /// An empty count tree just after the completed page contributes zero,
+    /// but must not trigger offset validation once the limit is exhausted.
+    #[test]
+    fn empty_nested_count_tree_past_limit_still_proves_and_matches_raw() {
+        let v = GroveVersion::latest();
+        for (ltr, empty_key, returned_key) in [(true, b'c', b'b'), (false, b'e', b'f')] {
+            let db = make_host_with_nested_count_tree(empty_key, 0, v);
+            let pq = full_range_page(Some(1), 1, ltr);
+            let raw = raw_page_keys(&db, &pq, v);
+            assert_eq!(raw, vec![vec![returned_key]]);
+
+            let proof = db.prove_query(&pq, None, v).unwrap().expect("prove");
+            let (root, proved) = GroveDb::verify_query_raw(&proof, &pq, v).expect("verify");
+            assert_eq!(root, db.root_hash(None, v).unwrap().unwrap());
+            assert_eq!(proved_keys(&proved), raw);
+        }
+    }
+
     /// A nested count tree holding exactly ONE row contributes one unit,
     /// which is what it is to row pagination too. Skipping over it is
     /// sound and the page agrees with the trusted read.
