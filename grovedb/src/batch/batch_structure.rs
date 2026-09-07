@@ -127,6 +127,7 @@ where
     ) -> CostResult<BatchStructure<C, F, SR>, Error> {
         Self::continue_from_ops(
             None,
+            None,
             ops,
             update_element_flags_function,
             split_remove_bytes_function,
@@ -136,8 +137,16 @@ where
     }
 
     /// Create batch structure from a list of ops. Returns CostResult.
+    ///
+    /// `previous_ops_by_qualified_paths` seeds the reference-resolution map
+    /// with an earlier segment's user ops, so a continuation's reference
+    /// ops resolve targets that segment wrote exactly as one combined batch
+    /// would (in-batch, from the op's own element) instead of reading a
+    /// possibly stale committed value. Ops in `ops` override seeded entries
+    /// at the same qualified path.
     pub(super) fn continue_from_ops(
         previous_ops: Option<OpsByLevelPath>,
+        previous_ops_by_qualified_paths: Option<BTreeMap<Vec<Vec<u8>>, GroveOp>>,
         ops: Vec<QualifiedGroveDbOp>,
         update_element_flags_function: F,
         split_remove_bytes_function: SR,
@@ -156,7 +165,8 @@ where
             ops_by_level_paths.iter().map(|(k, _)| k).max().unwrap_or(0);
 
         // qualified paths meaning path + key
-        let mut ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, GroveOp> = BTreeMap::new();
+        let mut ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, GroveOp> =
+            previous_ops_by_qualified_paths.unwrap_or_default();
 
         for (op_index, op) in ops.into_iter().enumerate() {
             let QualifiedGroveDbOp {

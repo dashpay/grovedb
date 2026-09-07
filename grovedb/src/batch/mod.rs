@@ -1697,12 +1697,21 @@ struct InitialSegmentFootprint {
     deleted: Vec<Vec<Vec<u8>>>,
     /// Path of the Merk every op in the segment wrote into.
     written_paths: Vec<Vec<Vec<u8>>>,
+    /// Qualified path of every non-Merk tree the segment appended into,
+    /// created, or replaced. Add-on typed appends are preprocessed against
+    /// COMMITTED state (see `preprocess_commitment_tree_ops` and friends),
+    /// so a target whose data namespace or element only exists pending in
+    /// the batch cannot be appended to coherently — and deleting or
+    /// replacing such a tree would strand the segment's pending data-row
+    /// writes behind a cleanup pass that cannot see them.
+    non_merk_tree_targets: Vec<Vec<Vec<u8>>>,
 }
 
 impl InitialSegmentFootprint {
     fn from_ops(ops: &[QualifiedGroveDbOp]) -> Self {
         let mut deleted = Vec::new();
         let mut written_paths = Vec::with_capacity(ops.len());
+        let mut non_merk_tree_targets = Vec::new();
         for op in ops {
             let path = op.path.to_path();
             if matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..))
@@ -1712,11 +1721,31 @@ impl InitialSegmentFootprint {
                 qualified.push(key.get_key_clone());
                 deleted.push(qualified);
             }
+            // Typed appends were rewritten into ReplaceNonMerkTreeRoot by
+            // preprocessing before the footprint is taken; insert-family
+            // ops can create or replace a non-Merk tree element directly.
+            let non_merk_tree_target = match &op.op {
+                GroveOp::ReplaceNonMerkTreeRoot { .. } => true,
+                GroveOp::InsertOrReplace { element }
+                | GroveOp::InsertWithKnownToNotAlreadyExist { element }
+                | GroveOp::InsertIfNotExists { element, .. }
+                | GroveOp::Replace { element }
+                | GroveOp::Patch { element, .. } => element
+                    .tree_type()
+                    .is_some_and(|tree_type| tree_type.uses_non_merk_data_storage()),
+                _ => false,
+            };
+            if non_merk_tree_target && let Some(key) = op.key.as_ref() {
+                let mut qualified = path.clone();
+                qualified.push(key.get_key_clone());
+                non_merk_tree_targets.push(qualified);
+            }
             written_paths.push(path);
         }
         Self {
             deleted,
             written_paths,
+            non_merk_tree_targets,
         }
     }
 
@@ -1730,15 +1759,38 @@ impl InitialSegmentFootprint {
                     "add-on operation writes under a path the initial segment deleted",
                 ));
             }
-            let replaces_or_deletes_subtree = match &op.op {
-                GroveOp::Delete | GroveOp::DeleteTree(..) => true,
-                GroveOp::InsertOrReplace { element }
-                | GroveOp::InsertWithKnownToNotAlreadyExist { element }
-                | GroveOp::InsertIfNotExists { element, .. }
-                | GroveOp::Replace { element }
-                | GroveOp::Patch { element, .. } => element.tree_type().is_some(),
-                _ => false,
-            };
+            // Add-on typed appends (keyless; the tree key is the path's
+            // last segment) are preprocessed against committed state, so a
+            // target this segment appended into, created, or replaced has
+            // no coherent committed root to append onto.
+            if matches!(
+                op.op,
+                GroveOp::CommitmentTreeInsert { .. }
+                    | GroveOp::MmrTreeAppend { .. }
+                    | GroveOp::BulkAppend { .. }
+                    | GroveOp::DenseTreeInsert { .. }
+                    | GroveOp::PrivateDocumentStoreInsert { .. }
+            ) && self.non_merk_tree_targets.contains(&path)
+            {
+                return Err(Error::InvalidBatchOperation(
+                    "add-on append targets a non-Merk tree the initial segment wrote",
+                ));
+            }
+            // Whether an op orphans what the initial segment wrote depends
+            // only on what was AT the target, never on what the new element
+            // is: overwriting a written-into subtree with a plain item
+            // strands the segment's pending child writes just as surely as
+            // overwriting it with a fresh tree.
+            let replaces_or_deletes_subtree = matches!(
+                op.op,
+                GroveOp::Delete
+                    | GroveOp::DeleteTree(..)
+                    | GroveOp::InsertOrReplace { .. }
+                    | GroveOp::InsertWithKnownToNotAlreadyExist { .. }
+                    | GroveOp::InsertIfNotExists { .. }
+                    | GroveOp::Replace { .. }
+                    | GroveOp::Patch { .. }
+            );
             if replaces_or_deletes_subtree && let Some(key) = op.key.as_ref() {
                 let mut qualified = path;
                 qualified.push(key.get_key_clone());
@@ -1749,6 +1801,11 @@ impl InitialSegmentFootprint {
                 {
                     return Err(Error::InvalidBatchOperation(
                         "add-on op replaces or deletes a subtree the initial segment wrote into",
+                    ));
+                }
+                if self.non_merk_tree_targets.contains(&qualified) {
+                    return Err(Error::InvalidBatchOperation(
+                        "add-on op replaces or deletes a non-Merk tree the initial segment wrote",
                     ));
                 }
             }
@@ -4788,12 +4845,16 @@ impl GroveDb {
     /// are returned
     /// Runs the level-by-level batch propagation.
     ///
-    /// Returns `(leftover_ops, captures, merk_tree_cache)`:
+    /// Returns `(leftover_ops, captures, merk_tree_cache,
+    /// ops_by_qualified_paths)`:
     ///   - `leftover_ops` is `Some(...)` only if a `batch_pause_height`
     ///     was set and pruning paused before reaching the root.
     ///   - `merk_tree_cache` is the cache the body ran against, handed back
     ///     so a paused apply can be continued on the same live Merks (see
     ///     `continue_partial_apply_body`).
+    ///   - `ops_by_qualified_paths` is the reference-resolution map the body
+    ///     ran against, handed back so a continuation's reference ops can
+    ///     resolve this body's in-batch targets like one combined batch.
     ///   - `captures` is the [`BatchApplyCaptures`] collected while the
     ///     body applied, for the caller's post-apply cleanup passes:
     ///     `cidx_overwrite_cleanup_paths` lists the cidx primary paths
@@ -4807,7 +4868,15 @@ impl GroveDb {
         batch_structure: BatchStructure<C, F, SR>,
         batch_apply_options: Option<BatchApplyOptions>,
         grove_version: &GroveVersion,
-    ) -> CostResult<(Option<OpsByLevelPath>, BatchApplyCaptures, C), Error>
+    ) -> CostResult<
+        (
+            Option<OpsByLevelPath>,
+            BatchApplyCaptures,
+            C,
+            BTreeMap<Vec<Vec<u8>>, GroveOp>,
+        ),
+        Error,
+    >
     where
         F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
         SR: FnMut(
@@ -5394,8 +5463,13 @@ impl GroveDb {
                     indexed_mirror_rekey_churn_bytes: merk_tree_cache
                         .take_indexed_mirror_rekey_churn_bytes(),
                 };
-                return Ok((Some(ops_by_level_paths), captures, merk_tree_cache))
-                    .wrap_with_cost(cost);
+                return Ok((
+                    Some(ops_by_level_paths),
+                    captures,
+                    merk_tree_cache,
+                    ops_by_qualified_paths,
+                ))
+                .wrap_with_cost(cost);
             }
             current_level = current_level.saturating_sub(1);
         }
@@ -5405,7 +5479,7 @@ impl GroveDb {
             indexed_mirror_rekey_churn_bytes: merk_tree_cache
                 .take_indexed_mirror_rekey_churn_bytes(),
         };
-        Ok((None, captures, merk_tree_cache)).wrap_with_cost(cost)
+        Ok((None, captures, merk_tree_cache, ops_by_qualified_paths)).wrap_with_cost(cost)
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
@@ -5437,6 +5511,7 @@ impl GroveDb {
             Option<OpsByLevelPath>,
             BatchApplyCaptures,
             TreeCacheMerkByPath<S, F, F2>,
+            BTreeMap<Vec<Vec<u8>>, GroveOp>,
         ),
         Error,
     >
@@ -5479,7 +5554,10 @@ impl GroveDb {
     }
 
     /// Continue a paused `apply_body` on the SAME live Merk cache it ran
-    /// against, folding `additional_ops` into its leftover operations.
+    /// against, folding `additional_ops` into its leftover operations and
+    /// seeding reference resolution with the paused body's
+    /// `ops_by_qualified_paths`, so `additional_ops` references resolve
+    /// the initial segment's in-batch targets like one combined batch.
     ///
     /// The cache is what keeps the two segments of a partial batch
     /// coherent (issue #842): every primary and secondary Merk the initial
@@ -5491,6 +5569,7 @@ impl GroveDb {
     fn continue_partial_apply_body<'db, S, F, F2>(
         &self,
         previous_leftover_operations: Option<OpsByLevelPath>,
+        previous_ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, GroveOp>,
         additional_ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
         update_element_flags_function: impl FnMut(
@@ -5530,6 +5609,7 @@ impl GroveDb {
             &mut cost,
             BatchStructure::continue_from_ops(
                 previous_leftover_operations,
+                Some(previous_ops_by_qualified_paths),
                 additional_ops,
                 update_element_flags_function,
                 split_removed_bytes_function,
@@ -5539,7 +5619,7 @@ impl GroveDb {
         );
         // The cache is dropped here: its Merks borrow the storage batch,
         // which the caller drains and consumes next.
-        let (leftover, captures, _merk_tree_cache) = cost_return_on_error!(
+        let (leftover, captures, _merk_tree_cache, _ops_by_qualified_paths) = cost_return_on_error!(
             &mut cost,
             Self::apply_batch_structure(batch_structure, batch_apply_options, grove_version)
         );
@@ -6591,6 +6671,26 @@ impl GroveDb {
             return Ok(()).wrap_with_cost(cost);
         }
 
+        // An ordinary batch must fully propagate. A nonzero
+        // `batch_pause_height` would make `apply_body` pause mid-propagation
+        // and hand back leftover ancestor ops — which this entry point has
+        // no continuation for, so it would commit the paused result and
+        // silently discard them, leaving child state inconsistent with
+        // retained ancestor commitments (issue #889). Only
+        // `apply_partial_batch*` may pause. A pause height of 0 is complete
+        // propagation (level 0 is processed, base root key included, before
+        // the pause check fires) and stays accepted.
+        if batch_apply_options
+            .as_ref()
+            .and_then(|options| options.batch_pause_height)
+            .is_some_and(|pause_height| pause_height > 0)
+        {
+            return Err(Error::InvalidBatchOperation(
+                "a nonzero batch_pause_height is only supported by apply_partial_batch",
+            ))
+            .wrap_with_cost(cost);
+        }
+
         // Check batch operation consistency BEFORE preprocessing so that
         // conflicting ops (e.g., CommitmentTreeInsert + Delete on the same
         // path/key) are caught before any work is done.
@@ -6759,7 +6859,7 @@ impl GroveDb {
         // 5. Remove operation from the tree, repeat until there are operations to do;
         // 6. Add root leaves save operation to the batch
         // 7. Apply storage_cost batch
-        let (_leftover, batch_apply_captures, _) = cost_return_on_error!(
+        let (_leftover, batch_apply_captures, _, _) = cost_return_on_error!(
             &mut cost,
             self.apply_body(
                 ops,
@@ -7178,7 +7278,7 @@ impl GroveDb {
             mut merk_delete_paths,
             mut cidx_primary_delete_paths,
             skipped_delete_paths,
-            delete_tree_behaviors,
+            mut delete_tree_behaviors,
         } = cost_return_on_error!(
             &mut cost,
             self.scan_delete_tree_ops(&ops, &storage_batch, tx.as_ref(), grove_version)
@@ -7232,7 +7332,12 @@ impl GroveDb {
         // 5. Remove operation from the tree, repeat until there are operations to do;
         // 6. Add root leaves save operation to the batch
         // 7. Apply storage_cost batch
-        let (left_over_operations, partial_captures, merk_tree_cache) = cost_return_on_error!(
+        let (
+            left_over_operations,
+            partial_captures,
+            merk_tree_cache,
+            initial_ops_by_qualified_paths,
+        ) = cost_return_on_error!(
             &mut cost,
             self.apply_body(
                 ops,
@@ -7292,17 +7397,6 @@ impl GroveDb {
         // caller-provided, so the returned operations could contain duplicates,
         // internal-only ops, or inserts under paths being deleted. Apply the
         // same consistency gate used for the initial batch.
-        //
-        // Limitation: add-on DeleteTree ops bypass the
-        // SubelementsDeletionBehavior preflight (emptiness check, Skip
-        // filtering, cleanup path collection) that runs on the initial
-        // batch.  They go straight into continue_partial_apply_body →
-        // apply_body, where DeleteTree is a simple layered Merk delete
-        // with no emptiness enforcement.  In practice this is safe because
-        // partial-batch callers (Platform) control the callback and only
-        // return root-level propagation ops, not new DeleteTree ops.  If
-        // add-on DeleteTree support is needed in the future, the preflight
-        // must be extended to cover new_operations as well.
         if check_batch_operation_consistency && !new_operations.is_empty() {
             let consistency_result =
                 QualifiedGroveDbOp::verify_consistency_of_operations(&new_operations);
@@ -7313,7 +7407,7 @@ impl GroveDb {
                 .wrap_with_cost(cost);
             }
         }
-        // Cross-segment gate: the two shapes the live cache cannot make
+        // Cross-segment gate: the shapes the live cache cannot make
         // coherent (see `InitialSegmentFootprint`).
         if let Some(footprint) = initial_segment_footprint.as_ref() {
             cost_return_on_error_no_add!(cost, footprint.verify_add_on_ops(&new_operations));
@@ -7340,6 +7434,106 @@ impl GroveDb {
             Self::reject_backward_references_elements_in_batch(&new_operations, false)
         );
 
+        // Add-on typed appends (CommitmentTreeInsert, MmrTreeAppend,
+        // BulkAppend, DenseTreeInsert, PrivateDocumentStoreInsert) get the
+        // same preprocessing as the initial segment (issue #895): without
+        // it they are keyless, so ordinary batch construction either drops
+        // them silently (V1..V3) or execution refuses them loudly.
+        // Preprocessing reads committed state, which is coherent here
+        // because the cross-segment gate above refused any append whose
+        // target tree the initial segment appended into, created, replaced,
+        // or deleted.
+        let new_operations = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_commitment_tree_ops(
+                new_operations,
+                tx.as_ref(),
+                &storage_batch,
+                grove_version
+            )
+        );
+        let new_operations = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_mmr_tree_ops(
+                new_operations,
+                tx.as_ref(),
+                &storage_batch,
+                grove_version
+            )
+        );
+        let new_operations = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_bulk_append_ops(
+                new_operations,
+                tx.as_ref(),
+                &storage_batch,
+                grove_version
+            )
+        );
+        let new_operations = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_dense_tree_ops(
+                new_operations,
+                tx.as_ref(),
+                &storage_batch,
+                grove_version
+            )
+        );
+        let new_operations = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_private_document_store_ops(
+                new_operations,
+                tx.as_ref(),
+                &storage_batch,
+                grove_version
+            )
+        );
+
+        // Add-on DeleteTree ops get the same SubelementsDeletionBehavior
+        // preflight as the initial segment (issue #709): the emptiness
+        // check behind Error / Skip, Skip filtering, and the cleanup
+        // path / behavior collection the post-apply passes below run on.
+        // The scan reads committed state, which is coherent here because
+        // the cross-segment gate refused deletes of anything the initial
+        // segment wrote into; a target the initial segment CREATED has no
+        // committed element yet, so an Error / Skip emptiness check on it
+        // fails closed before the continuation applies anything.
+        let DeleteTreePreScan {
+            non_merk_delete_paths: add_on_non_merk_delete_paths,
+            merk_delete_paths: add_on_merk_delete_paths,
+            cidx_primary_delete_paths: add_on_cidx_primary_delete_paths,
+            skipped_delete_paths: add_on_skipped_delete_paths,
+            delete_tree_behaviors: add_on_delete_tree_behaviors,
+        } = cost_return_on_error!(
+            &mut cost,
+            self.scan_delete_tree_ops(&new_operations, &storage_batch, tx.as_ref(), grove_version)
+        );
+        non_merk_delete_paths.extend(add_on_non_merk_delete_paths);
+        merk_delete_paths.extend(add_on_merk_delete_paths);
+        cidx_primary_delete_paths.extend(add_on_cidx_primary_delete_paths);
+        delete_tree_behaviors.extend(add_on_delete_tree_behaviors);
+
+        // Filter out add-on DeleteTree ops skipped by
+        // SubelementsDeletionBehavior::Skip on non-empty trees, exactly
+        // like the initial segment's filtering above.
+        let new_operations = if !add_on_skipped_delete_paths.is_empty() {
+            new_operations
+                .into_iter()
+                .filter(|op| {
+                    if let GroveOp::DeleteTree(..) = &op.op
+                        && let Some(key) = op.key.as_ref()
+                    {
+                        let mut child_path = op.path.to_path();
+                        child_path.push(key.as_slice().to_vec());
+                        return !add_on_skipped_delete_paths.contains(&child_path);
+                    }
+                    true
+                })
+                .collect()
+        } else {
+            new_operations
+        };
+
         // we are trying to finalize
         batch_apply_options.batch_pause_height = None;
 
@@ -7347,6 +7541,7 @@ impl GroveDb {
             &mut cost,
             self.continue_partial_apply_body(
                 left_over_operations,
+                initial_ops_by_qualified_paths,
                 new_operations,
                 Some(batch_apply_options),
                 update_element_flags_function,

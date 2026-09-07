@@ -21,6 +21,7 @@ mod tests {
 
     use crate::{
         batch::{BatchApplyOptions, QualifiedGroveDbOp, SubelementsDeletionBehavior},
+        reference_path::ReferencePathType,
         tests::{make_test_grovedb, TempGroveDb, TEST_LEAF},
         Element, Error, GroveDb, IndexedAxisEntrySliceExt,
     };
@@ -727,6 +728,392 @@ mod tests {
         assert_eq!(
             top_k(&db, b"cidx", grove_version),
             vec![(3, b"q".to_vec()), (3, b"p".to_vec())]
+        );
+        assert_verify_clean(&db, grove_version);
+    }
+
+    // -----------------------------------------------------------------
+    // Cross-segment gate: overwrites are refused whatever the new element
+    // is — a plain item over a written-into subtree orphans its pending
+    // child writes just like a fresh tree would
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn continuation_nontree_overwrite_of_subtree_initial_segment_wrote_into_is_refused() {
+        let grove_version = GroveVersion::latest();
+        let db = two_group_pcit(grove_version);
+        let before = root_hash(&db, grove_version);
+
+        let result = apply_partial(
+            &db,
+            vec![bump(b"cidx", b"p", 2)],
+            vec![QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"cidx".to_vec(),
+                Element::new_item(vec![]),
+            )],
+            Some(BatchApplyOptions::default()),
+            grove_version,
+        );
+        assert!(
+            matches!(result, Err(Error::InvalidBatchOperation(_))),
+            "{result:?}"
+        );
+        assert_untouched(&db, before, grove_version);
+    }
+
+    // -----------------------------------------------------------------
+    // Ordinary apply_batch has no continuation, so it must not pause
+    // (issue #889: it used to commit the paused result and silently
+    // discard the leftover ancestor propagation ops)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn ordinary_batch_with_nonzero_pause_height_is_refused() {
+        let grove_version = GroveVersion::latest();
+        let db = two_group_pcit(grove_version);
+        let before = root_hash(&db, grove_version);
+
+        let result = db
+            .apply_batch(
+                vec![bump(b"cidx", b"p", 2)],
+                Some(BatchApplyOptions {
+                    batch_pause_height: Some(1),
+                    ..Default::default()
+                }),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidBatchOperation(_))),
+            "{result:?}"
+        );
+        assert_untouched(&db, before, grove_version);
+    }
+
+    // -----------------------------------------------------------------
+    // Add-on DeleteTree ops get the SubelementsDeletionBehavior preflight
+    // (issue #709): the Error emptiness check, Skip filtering, and the
+    // descendant storage cleanup all apply to the continuation too
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn continuation_delete_tree_error_behavior_on_nonempty_tree_is_refused() {
+        let grove_version = GroveVersion::latest();
+        let db = ordinary_subtree(grove_version);
+        let before = root_hash(&db, grove_version);
+
+        let result = apply_partial(
+            &db,
+            vec![item_op(vec![TEST_LEAF.to_vec()], 10)],
+            vec![QualifiedGroveDbOp::delete_tree_op(
+                vec![TEST_LEAF.to_vec()],
+                b"sub".to_vec(),
+                TreeType::NormalTree,
+                SubelementsDeletionBehavior::Error,
+            )],
+            Some(BatchApplyOptions::default()),
+            grove_version,
+        );
+        assert!(
+            matches!(result, Err(Error::DeletingNonEmptyTree(_))),
+            "{result:?}"
+        );
+        assert_eq!(root_hash(&db, grove_version), before, "root hash changed");
+        assert_eq!(
+            present_keys(&db, &[TEST_LEAF, b"sub"], grove_version),
+            (0..8u64).collect::<Vec<_>>(),
+            "the non-empty tree must survive intact"
+        );
+        assert_verify_clean(&db, grove_version);
+    }
+
+    #[test]
+    fn continuation_delete_tree_skip_behavior_on_nonempty_tree_skips() {
+        // A Skip DeleteTree in the continuation of a non-empty tree is
+        // filtered out, exactly like in the initial segment: the tree
+        // survives and the rest of the continuation still applies.
+        let grove_version = GroveVersion::latest();
+        let rows = assert_three_flows_agree(
+            ordinary_subtree,
+            vec![item_op(vec![TEST_LEAF.to_vec()], 10)],
+            vec![
+                QualifiedGroveDbOp::delete_tree_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"sub".to_vec(),
+                    TreeType::NormalTree,
+                    SubelementsDeletionBehavior::Skip,
+                ),
+                item_op(vec![TEST_LEAF.to_vec()], 11),
+            ],
+            Some(BatchApplyOptions::default()),
+            |db, gv| {
+                (
+                    present_keys(db, &[TEST_LEAF, b"sub"], gv),
+                    present_keys(db, &[TEST_LEAF], gv),
+                )
+            },
+            grove_version,
+        );
+        assert_eq!(rows, ((0..8u64).collect::<Vec<_>>(), vec![10, 11]));
+    }
+
+    #[test]
+    fn continuation_delete_tree_delete_children_cleans_descendants() {
+        let grove_version = GroveVersion::latest();
+        let rows = assert_three_flows_agree(
+            ordinary_subtree,
+            vec![item_op(vec![TEST_LEAF.to_vec()], 10)],
+            vec![QualifiedGroveDbOp::delete_tree_op(
+                vec![TEST_LEAF.to_vec()],
+                b"sub".to_vec(),
+                TreeType::NormalTree,
+                SubelementsDeletionBehavior::DeleteChildren,
+            )],
+            Some(BatchApplyOptions::default()),
+            |db, gv| {
+                (
+                    db.get_raw([TEST_LEAF].as_ref().into(), b"sub", None, gv)
+                        .unwrap()
+                        .is_ok(),
+                    present_keys(db, &[TEST_LEAF], gv),
+                )
+            },
+            grove_version,
+        );
+        assert_eq!(rows, (false, vec![10]));
+    }
+
+    #[test]
+    fn continuation_delete_tree_delete_children_reinsert_produces_clean_tree() {
+        // Pin the descendant STORAGE cleanup the behavior map drives: after
+        // the continuation's DeleteChildren, re-creating the same tree must
+        // produce a genuinely empty one with none of the old rows.
+        let grove_version = GroveVersion::latest();
+        let db = ordinary_subtree(grove_version);
+
+        apply_partial(
+            &db,
+            vec![item_op(vec![TEST_LEAF.to_vec()], 10)],
+            vec![QualifiedGroveDbOp::delete_tree_op(
+                vec![TEST_LEAF.to_vec()],
+                b"sub".to_vec(),
+                TreeType::NormalTree,
+                SubelementsDeletionBehavior::DeleteChildren,
+            )],
+            Some(BatchApplyOptions::default()),
+            grove_version,
+        )
+        .expect("partial batch applies");
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"sub",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("re-insert tree at the same path");
+        assert!(
+            present_keys(&db, &[TEST_LEAF, b"sub"], grove_version).is_empty(),
+            "old rows must not survive into the re-created tree"
+        );
+        assert_verify_clean(&db, grove_version);
+    }
+
+    // -----------------------------------------------------------------
+    // Add-on typed appends are preprocessed like the initial segment's
+    // (issue #895: they used to be silently dropped), and appends whose
+    // target the initial segment wrote are refused — their preprocessing
+    // reads committed state no cache can make coherent
+    // -----------------------------------------------------------------
+
+    fn ordinary_subtree_with_mmr(grove_version: &GroveVersion) -> TempGroveDb {
+        let db = ordinary_subtree(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"mmr",
+            Element::empty_mmr_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert mmr tree");
+        db
+    }
+
+    #[test]
+    fn continuation_typed_append_is_executed() {
+        let grove_version = GroveVersion::latest();
+        let rows = assert_three_flows_agree(
+            ordinary_subtree_with_mmr,
+            vec![item_op(vec![TEST_LEAF.to_vec()], 10)],
+            vec![QualifiedGroveDbOp::mmr_tree_append_op(
+                vec![TEST_LEAF.to_vec(), b"mmr".to_vec()],
+                b"leaf-0".to_vec(),
+            )],
+            Some(BatchApplyOptions::default()),
+            |db, gv| {
+                (
+                    db.mmr_tree_leaf_count([TEST_LEAF].as_ref(), b"mmr", None, gv)
+                        .unwrap()
+                        .expect("leaf count"),
+                    db.mmr_tree_get_value([TEST_LEAF].as_ref(), b"mmr", 0, None, gv)
+                        .unwrap()
+                        .expect("leaf value"),
+                )
+            },
+            grove_version,
+        );
+        assert_eq!(rows, (1, Some(b"leaf-0".to_vec())));
+    }
+
+    #[test]
+    fn continuation_typed_append_to_tree_initial_segment_appended_is_refused() {
+        let grove_version = GroveVersion::latest();
+        let db = ordinary_subtree_with_mmr(grove_version);
+        let before = root_hash(&db, grove_version);
+
+        let result = apply_partial(
+            &db,
+            vec![QualifiedGroveDbOp::mmr_tree_append_op(
+                vec![TEST_LEAF.to_vec(), b"mmr".to_vec()],
+                b"a".to_vec(),
+            )],
+            vec![QualifiedGroveDbOp::mmr_tree_append_op(
+                vec![TEST_LEAF.to_vec(), b"mmr".to_vec()],
+                b"b".to_vec(),
+            )],
+            Some(BatchApplyOptions::default()),
+            grove_version,
+        );
+        assert!(
+            matches!(result, Err(Error::InvalidBatchOperation(_))),
+            "{result:?}"
+        );
+        assert_eq!(root_hash(&db, grove_version), before, "root hash changed");
+        assert_eq!(
+            db.mmr_tree_leaf_count([TEST_LEAF].as_ref(), b"mmr", None, grove_version)
+                .unwrap()
+                .expect("leaf count"),
+            0,
+            "neither append may land"
+        );
+        assert_verify_clean(&db, grove_version);
+    }
+
+    #[test]
+    fn continuation_delete_of_non_merk_tree_initial_segment_appended_to_is_refused() {
+        let grove_version = GroveVersion::latest();
+        let db = ordinary_subtree_with_mmr(grove_version);
+        let before = root_hash(&db, grove_version);
+
+        let result = apply_partial(
+            &db,
+            vec![QualifiedGroveDbOp::mmr_tree_append_op(
+                vec![TEST_LEAF.to_vec(), b"mmr".to_vec()],
+                b"a".to_vec(),
+            )],
+            vec![QualifiedGroveDbOp::delete_op(
+                vec![TEST_LEAF.to_vec()],
+                b"mmr".to_vec(),
+            )],
+            Some(BatchApplyOptions::default()),
+            grove_version,
+        );
+        assert!(
+            matches!(result, Err(Error::InvalidBatchOperation(_))),
+            "{result:?}"
+        );
+        assert_eq!(root_hash(&db, grove_version), before, "root hash changed");
+        assert_verify_clean(&db, grove_version);
+    }
+
+    // -----------------------------------------------------------------
+    // Add-on reference ops resolve targets the initial segment wrote the
+    // way one combined batch would: through the segment's in-batch op
+    // -----------------------------------------------------------------
+
+    fn reference_op_to(path: Vec<Vec<u8>>, key: &[u8], target: Vec<Vec<u8>>) -> QualifiedGroveDbOp {
+        QualifiedGroveDbOp::insert_or_replace_op(
+            path,
+            key.to_vec(),
+            Element::new_reference(ReferencePathType::AbsolutePathReference(target)),
+        )
+    }
+
+    #[test]
+    fn continuation_reference_to_item_rewritten_by_initial_segment() {
+        // The initial segment rewrites `sub/0`; the continuation inserts a
+        // reference to it. The reference must commit to the segment's NEW
+        // value, exactly as a combined batch would.
+        let grove_version = GroveVersion::latest();
+        let sub = vec![TEST_LEAF.to_vec(), b"sub".to_vec()];
+        let target = vec![
+            TEST_LEAF.to_vec(),
+            b"sub".to_vec(),
+            0u64.to_be_bytes().to_vec(),
+        ];
+        let rows = assert_three_flows_agree(
+            ordinary_subtree,
+            vec![QualifiedGroveDbOp::insert_or_replace_op(
+                sub,
+                0u64.to_be_bytes().to_vec(),
+                Element::new_item(vec![9]),
+            )],
+            vec![reference_op_to(
+                vec![TEST_LEAF.to_vec()],
+                b"ref",
+                target.clone(),
+            )],
+            Some(BatchApplyOptions::default()),
+            |db, gv| {
+                db.get([TEST_LEAF].as_ref(), b"ref", None, gv)
+                    .unwrap()
+                    .expect("follow reference")
+            },
+            grove_version,
+        );
+        assert_eq!(rows, Element::new_item(vec![9]));
+    }
+
+    #[test]
+    fn continuation_reference_to_item_deleted_by_initial_segment_fails() {
+        // The reference target was deleted by the initial segment: the
+        // continuation must fail (as one combined batch would) and commit
+        // nothing.
+        let grove_version = GroveVersion::latest();
+        let db = ordinary_subtree(grove_version);
+        let before = root_hash(&db, grove_version);
+
+        let result = apply_partial(
+            &db,
+            vec![QualifiedGroveDbOp::delete_op(
+                vec![TEST_LEAF.to_vec(), b"sub".to_vec()],
+                0u64.to_be_bytes().to_vec(),
+            )],
+            vec![reference_op_to(
+                vec![TEST_LEAF.to_vec()],
+                b"ref",
+                vec![
+                    TEST_LEAF.to_vec(),
+                    b"sub".to_vec(),
+                    0u64.to_be_bytes().to_vec(),
+                ],
+            )],
+            Some(BatchApplyOptions::default()),
+            grove_version,
+        );
+        assert!(result.is_err(), "reference to a deleted target must fail");
+        assert_eq!(root_hash(&db, grove_version), before, "root hash changed");
+        assert_eq!(
+            present_keys(&db, &[TEST_LEAF, b"sub"], grove_version),
+            (0..8u64).collect::<Vec<_>>(),
+            "the failed partial batch must not commit its delete"
         );
         assert_verify_clean(&db, grove_version);
     }
