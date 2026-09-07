@@ -547,8 +547,8 @@ fn amortized_compaction_hashes_prepay_every_prefix_at_every_height() {
             );
         }
     }
-    assert_eq!(actual((1u64 << 31) - 1), 1 + 31 + 0);
-    assert_eq!(actual((1u64 << 31) - 2), 1 + 0 + 30);
+    assert_eq!(actual((1u64 << 31) - 1), 1 + 31);
+    assert_eq!(actual((1u64 << 31) - 2), 1 + 30);
     // Prefix sums at the smallest heights, exhaustively over many chunks.
     for chunk_power in 1..=4u8 {
         let epoch = 1u64 << chunk_power;

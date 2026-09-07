@@ -1953,8 +1953,8 @@ fn batch_flagged_non_empty_subtree_deletion_is_refused() {
     // A subtree created AND populated within the same batch cannot be
     // deleted by it either.
     let db2 = make_test_grovedb(grove_version);
-    assert!(matches!(
-        db2.apply_batch(
+    assert!(db2
+        .apply_batch(
             vec![
                 QualifiedGroveDbOp::insert_or_replace_op(
                     vec![TEST_LEAF.to_vec()],
@@ -1972,9 +1972,8 @@ fn batch_flagged_non_empty_subtree_deletion_is_refused() {
             None,
             grove_version,
         )
-        .unwrap(),
-        Err(_)
-    ));
+        .unwrap()
+        .is_err());
 
     // An EMPTY subtree still deletes under the flag.
     let db3 = make_test_grovedb(grove_version);

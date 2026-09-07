@@ -1668,7 +1668,7 @@ mod tests {
         // its share added; nothing scales with the epoch any more.
         assert!(cost.storage_cost.replaced_bytes >= 2 * 128);
         assert!(cost.storage_cost.replaced_bytes < 128 * 65536);
-        assert!(cost.storage_cost.added_bytes >= 128 + 1);
+        assert!(cost.storage_cost.added_bytes > 128);
         // The compaction's read-back is amortized into the model: no
         // epoch-sized seek count any more.
         assert!(cost.seek_count < 65535);

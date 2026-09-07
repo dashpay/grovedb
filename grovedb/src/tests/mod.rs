@@ -34,6 +34,9 @@ mod commitment_tree_cost_bound_tests;
 mod commitment_tree_tests;
 mod coverage_round7_tests;
 mod non_merk_completeness_budget_tests;
+// Tampers with raw storage via `GroveDb::raw_storage`, which is only
+// compiled under the `unsafe-dump-load` feature.
+#[cfg(feature = "unsafe-dump-load")]
 mod non_merk_integrity_audit_tests;
 mod non_merk_limited_page_tests;
 mod ordinary_replacement_cost_tests;

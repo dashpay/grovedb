@@ -1723,10 +1723,6 @@ mod tests {
     // Helpers
     // -----------------------------------------------------------------
 
-    fn run_entries(run: PathQueryRun) -> AxisEntries {
-        run_entries_and_skip(run).0
-    }
-
     fn run_entries_and_skip(run: PathQueryRun) -> (AxisEntries, Option<u64>) {
         match run {
             PathQueryRun::AxisEntries { entries, skipped } => (entries, skipped),

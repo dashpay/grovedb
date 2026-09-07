@@ -57,7 +57,7 @@ mod tests {
     #[test]
     fn meta_storage_data_retrieval() {
         let version = GroveVersion::latest();
-        let mut merk = TempMerk::new(&version);
+        let mut merk = TempMerk::new(version);
 
         merk.put_meta(b"key".to_vec(), b"value".to_vec())
             .unwrap()
@@ -76,7 +76,7 @@ mod tests {
     #[test]
     fn meta_storage_works_uncommitted() {
         let version = GroveVersion::latest();
-        let mut merk = TempMerk::new(&version);
+        let mut merk = TempMerk::new(version);
 
         let mut cost_1: OperationCost = Default::default();
         assert!(merk
@@ -98,7 +98,7 @@ mod tests {
     #[test]
     fn meta_storage_deletion() {
         let version = GroveVersion::latest();
-        let mut merk = TempMerk::new(&version);
+        let mut merk = TempMerk::new(version);
 
         merk.put_meta(b"key".to_vec(), b"value".to_vec())
             .unwrap()
