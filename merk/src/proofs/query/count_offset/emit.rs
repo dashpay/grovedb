@@ -45,7 +45,9 @@
 
 use std::collections::LinkedList;
 
-use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
 use grovedb_element::{Element, ElementType, ProofNodeType};
 use grovedb_version::version::GroveVersion;
 
@@ -572,20 +574,20 @@ where
         .link(false)
         .map(|l| l.aggregate_data().as_count_u64())
         .unwrap_or(0);
-    let own = subtree_count
-        .checked_sub(left_count)
-        .and_then(|c| c.checked_sub(right_count));
-    match own {
-        Some(1) => {}
-        Some(own) => {
-            return Err(non_unit_row_error(walker.tree().key(), own)).wrap_with_cost(cost);
-        }
-        None => {
-            return Err(Error::CorruptedState(
+    // The subtraction cannot underflow on a tree whose link aggregates
+    // are consistent with its node aggregate; the error is built eagerly
+    // rather than in a closure so the guard leaves no unreachable region.
+    let own = cost_return_on_error_no_add!(
+        cost,
+        subtree_count
+            .checked_sub(left_count)
+            .and_then(|c| c.checked_sub(right_count))
+            .ok_or(Error::CorruptedState(
                 "count-offset proof: child aggregate counts exceed the parent's aggregate",
             ))
-            .wrap_with_cost(cost);
-        }
+    );
+    if own != 1 {
+        return Err(non_unit_row_error(walker.tree().key(), own)).wrap_with_cost(cost);
     }
 
     for (left, child_count) in [(true, left_count), (false, right_count)] {
@@ -600,15 +602,14 @@ where
                 grove_version,
             )
         );
-        let mut child = match walked {
-            Some(w) => w,
-            None => {
-                return Err(Error::CorruptedState(
-                    "tree.link(dir) was Some but walk returned None",
-                ))
-                .wrap_with_cost(cost)
-            }
-        };
+        // `walk` returns `None` only for a missing link, ruled out just
+        // above; same eager-error shape as the `own` guard.
+        let mut child = cost_return_on_error_no_add!(
+            cost,
+            walked.ok_or(Error::CorruptedState(
+                "tree.link(dir) was Some but walk returned None",
+            ))
+        );
         cost_return_on_error!(
             &mut cost,
             ensure_every_row_is_a_unit(&mut child, child_count, grove_version)
