@@ -1,11 +1,14 @@
 //! Batch structure
 
 #[cfg(feature = "minimal")]
-use std::{collections::BTreeMap, fmt};
+use std::{
+    collections::{btree_map::Entry, BTreeMap},
+    fmt,
+};
 
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
-    cost_return_on_error,
+    cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::{removal::StorageRemovedBytes, StorageCost},
     CostResult, CostsExt, OperationCost,
 };
@@ -151,6 +154,15 @@ where
             >= 1;
         let mut cost = OperationCost::default();
 
+        // Only a continuation (a partial batch resuming with the callback's
+        // add-on ops) carries pending ops an incoming op can collide with.
+        let merge_add_on_collisions = previous_ops.is_some()
+            && grove_version
+                .grovedb_versions
+                .apply_batch
+                .add_on_op_collision
+                >= 1;
+
         let mut ops_by_level_paths: OpsByLevelPath = previous_ops.unwrap_or_default();
         let mut current_last_level: u32 =
             ops_by_level_paths.iter().map(|(k, _)| k).max().unwrap_or(0);
@@ -270,10 +282,26 @@ where
                 }
                 BTreeMap::new()
             });
-            ops_on_level
-                .entry(op_path)
-                .or_default()
-                .insert(key, grove_op);
+            match ops_on_level.entry(op_path).or_default().entry(key) {
+                Entry::Vacant(vacant) => {
+                    vacant.insert(grove_op);
+                }
+                Entry::Occupied(occupied) => {
+                    // Pre-V4 the incoming op replaced whatever was filed —
+                    // including a pending root propagation, which orphaned
+                    // the subtree it carried (issue #708). See
+                    // `merge_add_on_op_over_pending`.
+                    let op = if merge_add_on_collisions {
+                        cost_return_on_error_no_add!(
+                            cost,
+                            merge_add_on_op_over_pending(occupied.get(), grove_op)
+                        )
+                    } else {
+                        grove_op
+                    };
+                    *occupied.into_mut() = op;
+                }
+            }
         }
 
         Ok(BatchStructure {
@@ -285,5 +313,105 @@ where
             last_level: current_last_level,
         })
         .wrap_with_cost(cost)
+    }
+}
+
+/// Resolve an add-on op (returned by a partial batch's callback) that lands
+/// on a `(path, key)` the paused batch still has an op filed for.
+///
+/// The pending op is almost always the internal root propagation of a child
+/// tree the batch already executed — `ReplaceTreeRootKey` /
+/// `InsertTreeWithRootHash` for a Merk tree, the aggregate-indexed variants
+/// for an indexed primary. Replacing it wholesale (the pre-`GROVE_V4`
+/// behaviour, issue #708) commits the child's writes but rewrites the parent
+/// element from the add-on's bytes: root key `None`, stale aggregate, stale
+/// hash — the subtree is orphaned. So the add-on is merged the way upward
+/// propagation merges an in-batch insert with its child's computed state:
+///
+/// - an insert-family op supplies the element bytes and inherits the
+///   pending hash / root key / aggregate (and per-axis state);
+/// - a delete is accepted only if the child ended the batch empty
+///   (`root_key == None`), matching the in-batch rule;
+/// - a reference refresh, or a collision with a pending non-Merk root
+///   update (`ReplaceNonMerkTreeRoot` / `InsertNonMerkTree`, whose metadata
+///   the add-on element cannot reproduce), is refused.
+///
+/// A pending *user* op (one the paused batch filed but has not executed
+/// yet, or an earlier op of the same add-on list) is not root state and is
+/// left to the same last-op-wins rule a single batch applies when its
+/// consistency check is disabled; with the check enabled the entry point
+/// refuses such cross-segment duplicates before the continuation is built
+/// (`GroveOp::is_pending_ancestor_update`).
+#[cfg(feature = "minimal")]
+fn merge_add_on_op_over_pending(pending: &GroveOp, add_on: GroveOp) -> Result<GroveOp, Error> {
+    let (hash, root_key, aggregate_data, axes) = match pending {
+        GroveOp::ReplaceTreeRootKey {
+            hash,
+            root_key,
+            aggregate_data,
+        }
+        | GroveOp::InsertTreeWithRootHash {
+            hash,
+            root_key,
+            aggregate_data,
+            ..
+        } => (*hash, root_key.clone(), *aggregate_data, None),
+        GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+            primary_hash,
+            primary_root_key,
+            primary_aggregate_data,
+            axes,
+        }
+        | GroveOp::InsertAggregateIndexedTreeRootKeys {
+            primary_hash,
+            primary_root_key,
+            primary_aggregate_data,
+            axes,
+            ..
+        } => (
+            *primary_hash,
+            primary_root_key.clone(),
+            *primary_aggregate_data,
+            Some(axes.clone()),
+        ),
+        GroveOp::ReplaceNonMerkTreeRoot { .. } | GroveOp::InsertNonMerkTree { .. } => {
+            return Err(Error::InvalidBatchOperation(
+                "add-on operation collides with a pending non-Merk tree root update",
+            ));
+        }
+        // A user op carries no root state to preserve: last op wins.
+        _ => return Ok(add_on),
+    };
+
+    match &add_on {
+        GroveOp::InsertOrReplace { element }
+        | GroveOp::InsertWithKnownToNotAlreadyExist { element }
+        | GroveOp::InsertIfNotExists { element, .. }
+        | GroveOp::Replace { element }
+        | GroveOp::Patch { element, .. } => crate::batch::insert_op_with_propagated_root(
+            element,
+            hash,
+            root_key,
+            aggregate_data,
+            axes,
+        ),
+        GroveOp::Delete | GroveOp::DeleteTree(..) => {
+            if root_key.is_some() {
+                Err(Error::InvalidBatchOperation(
+                    "modification of tree when it will be deleted",
+                ))
+            } else {
+                Ok(add_on)
+            }
+        }
+        GroveOp::RefreshReference { .. } => Err(Error::InvalidBatchOperation(
+            "insertion of element under a refreshed reference",
+        )),
+        // Internal variants were already refused by the op loop above; the
+        // append-only user ops must have been preprocessed before reaching
+        // the batch structure.
+        _ => Err(Error::InvalidBatchOperation(
+            "add-on operation cannot be merged with a pending ancestor update",
+        )),
     }
 }
