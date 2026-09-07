@@ -562,6 +562,29 @@ mod tests {
         assert_untouched(&db, before, grove_version);
     }
 
+    #[test]
+    fn continuation_overwrite_of_committed_pcit_with_empty_one_cleans_up() {
+        // Add-on ops get the indexed-overwrite preflight too. Overwriting
+        // a committed, populated indexed tree with an EMPTY one is the
+        // safe-subset overwrite it allows (the old primary subtrees and
+        // secondaries are swept at commit), so the partial flow must land
+        // on the same clean, empty tree as the other flows.
+        let grove_version = GroveVersion::latest();
+        let rows = assert_three_flows_agree(
+            two_group_pcit,
+            vec![item_op(vec![TEST_LEAF.to_vec()], 1)],
+            vec![QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"cidx".to_vec(),
+                Element::empty_provable_count_indexed_tree(),
+            )],
+            Some(BatchApplyOptions::default()),
+            |db, gv| top_k(db, b"cidx", gv),
+            grove_version,
+        );
+        assert!(rows.is_empty(), "{rows:?}");
+    }
+
     // -----------------------------------------------------------------
     // Root metadata (pause height 0: the initial segment writes the base
     // root key itself)
