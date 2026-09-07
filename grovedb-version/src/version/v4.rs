@@ -140,6 +140,19 @@
 //!   apply path is unaffected on every version (preprocessing rewrites
 //!   keyless ops before the batch structure is built).
 //!
+//! - `apply_batch.non_merk_parent_keyed_ops_rejection: 1` — batch execution
+//!   refuses ordinary keyed ops at a level whose parent is a non-Merk data
+//!   tree (`CommitmentTree`, `MmrTree`, `BulkAppendTree`, `DenseTree`,
+//!   `PrivateDocumentStore`), whether the parent already exists or is
+//!   created in the same batch. V1..V3 let such ops run through ordinary
+//!   Merk dispatch: the level's Merk root is committed into the parent
+//!   element's hash while the element keeps its typed metadata, so the
+//!   acknowledged write is unreachable through typed readers and
+//!   `verify_grovedb` reports the subtree corrupted (issue #900). Gated
+//!   because it flips an accepted batch into a refused one. Typed append
+//!   ops are unaffected on every version (preprocessing rewrites them at
+//!   the parent level).
+//!
 //! - `operations.average_case.average_case_commitment_tree_insert: 1` and
 //!   `operations.worst_case.worst_case_commitment_tree_insert: 1` — the
 //!   `CommitmentTreeInsert` estimation arms charge the depth-derived
@@ -305,6 +318,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             delete_tree_cleanup_type_source: 1,
             overwrite_indexed_cleanup_inspection: 1,
             keyless_op_cost_dispatch: 1,
+            non_merk_parent_keyed_ops_rejection: 1,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,
