@@ -58,6 +58,9 @@ impl GroveDb {
         );
 
         // Look through NonCounted: a wrapped BulkAppendTree is still one.
+        // Remember it so the element rewrite below can restore it when the
+        // grove version calls for that.
+        let stored_was_non_counted = element.is_non_counted();
         let (total_count, chunk_power, existing_flags) = match element.underlying() {
             Element::BulkAppendTree(tc, cp, flags) => (*tc, *cp, flags.clone()),
             _ => {
@@ -141,6 +144,17 @@ impl GroveDb {
 
         let updated_element =
             Element::new_bulk_append_tree(new_total_count, chunk_power, existing_flags);
+        // Restore a stored NonCounted wrapper if the grove version calls
+        // for it (consensus-gated — see
+        // `rewrap_non_merk_tree_parent_element`).
+        let updated_element = cost_return_on_error_no_add!(
+            cost,
+            GroveDb::rewrap_non_merk_tree_parent_element(
+                updated_element,
+                stored_was_non_counted,
+                grove_version,
+            )
+        );
 
         cost_return_on_error_into!(
             &mut cost,

@@ -4069,8 +4069,9 @@ where
                     );
                 }
                 GroveOp::ReplaceNonMerkTreeRoot { hash, meta } => {
-                    // Read existing element to preserve flags (and, for a
-                    // PrivateDocumentStore, its NonCounted wrapper).
+                    // Read existing element to preserve flags (and its
+                    // NonCounted wrapper, where the grove version calls for
+                    // that).
                     let merk = self.merks.get(path).expect("the Merk is cached");
                     let existing = cost_return_on_error!(
                         &mut cost,
@@ -4083,32 +4084,22 @@ where
                     // `meta.to_element` always builds a BARE element, so a
                     // stored `NonCounted(tree)` would come back counted and
                     // change its parent count tree's aggregate — and with it
-                    // the root hash. Restore the wrapper.
-                    //
-                    // Scoped to PrivateDocumentStore deliberately: the same
-                    // latent defect exists for CommitmentTree / MmrTree /
-                    // BulkAppendTree / DenseTree, but those are live on
-                    // GROVE_V1..V3, so repairing them changes a released
-                    // consensus outcome and belongs in its own version-gated
-                    // change. PDS cannot exist before V4, so fixing it here
-                    // alters nothing that has ever been committed. The
-                    // element was already read above, so this costs nothing
-                    // extra.
-                    let element = if existing_non_counted
-                        && matches!(meta, NonMerkTreeMeta::PrivateDocumentStore { .. })
-                    {
-                        cost_return_on_error_no_add!(
-                            cost,
-                            element.into_non_counted().map_err(|_| {
-                                Error::CorruptedCodeExecution(
-                                    "into_non_counted called on a wrapped element during \
-                                     ReplaceNonMerkTreeRoot",
-                                )
-                            })
+                    // the root hash. Restore the wrapper if the grove
+                    // version calls for it: GROVE_V4+ restores it for every
+                    // family, while V1..V3 restore it for
+                    // PrivateDocumentStore alone and keep the released
+                    // wrapper drop for CommitmentTree / MmrTree /
+                    // BulkAppendTree / DenseTree (consensus-gated — see
+                    // `rewrap_non_merk_tree_parent_element`). The element
+                    // was already read above, so this costs nothing extra.
+                    let element = cost_return_on_error_no_add!(
+                        cost,
+                        GroveDb::rewrap_non_merk_tree_parent_element(
+                            element,
+                            existing_non_counted,
+                            grove_version,
                         )
-                    } else {
-                        element
-                    };
+                    );
                     let merk_feature_type = cost_return_on_error_into_no_add!(
                         cost,
                         element.get_feature_type(in_tree_type)

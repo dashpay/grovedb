@@ -61,7 +61,9 @@ impl GroveDb {
 
         // Look through `NonCounted`: a wrapped MmrTree is still an MmrTree
         // for typed-API purposes; the wrapper only affects parent count
-        // aggregation.
+        // aggregation. Remember it so the element rewrite below can restore
+        // it when the grove version calls for that.
+        let stored_was_non_counted = element.is_non_counted();
         let (mmr_size, existing_flags) = match element.underlying() {
             Element::MmrTree(size, flags) => (*size, flags.clone()),
             _ => {
@@ -151,6 +153,17 @@ impl GroveDb {
         );
 
         let updated_element = Element::new_mmr_tree(new_mmr_size, existing_flags);
+        // Restore a stored NonCounted wrapper if the grove version calls
+        // for it (consensus-gated — see
+        // `rewrap_non_merk_tree_parent_element`).
+        let updated_element = cost_return_on_error_no_add!(
+            cost,
+            GroveDb::rewrap_non_merk_tree_parent_element(
+                updated_element,
+                stored_was_non_counted,
+                grove_version,
+            )
+        );
 
         // A canonical indexed secondary row binds this entry's committed
         // value hash, and an append moves it while leaving `(count, sum)`

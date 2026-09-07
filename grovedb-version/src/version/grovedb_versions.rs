@@ -191,6 +191,33 @@ pub struct GroveDBOperationsVersions {
     pub worst_case: GroveDBOperationsWorstCaseVersions,
     pub private_document_store: GroveDBOperationsPrivateDocumentStoreVersions,
     pub flat_drop: GroveDBOperationsFlatDropVersions,
+    pub non_merk_tree: GroveDBOperationsNonMerkTreeVersions,
+}
+
+/// Version slots shared by the non-Merk data-tree families
+/// (`CommitmentTree`, `MmrTree`, `BulkAppendTree`,
+/// `DenseAppendOnlyFixedSizeTree`, `PrivateDocumentStore`).
+#[derive(Clone, Debug, Default)]
+pub struct GroveDBOperationsNonMerkTreeVersions {
+    /// How a typed write (a direct append, or the batch
+    /// `ReplaceNonMerkTreeRoot` op every batch append preprocesses into)
+    /// rebuilds the parent-Merk element that anchors the tree.
+    ///
+    /// - `0` (V1..V3): the rebuilt element is written BARE, so a stored
+    ///   `NonCounted(tree)` loses its wrapper on its first append. That
+    ///   flips the tree's contribution to a `CountTree` / `CountSumTree`
+    ///   parent from 0 to 1, changing the parent aggregate and with it the
+    ///   root hash. The one exception is `PrivateDocumentStore`, whose
+    ///   wrapper was always restored: the element type cannot exist before
+    ///   `GROVE_V4`, so preserving it never altered a released outcome.
+    /// - `1` (V4+): the wrapper is restored for every family.
+    ///
+    /// Every rewrite path already reads the old element (flags are
+    /// preserved from it), so the version costs no extra read — the slot
+    /// gates the fix because restoring the wrapper moves a committed root
+    /// hash and rewrites the wrapper's serialized bytes that V1..V3
+    /// dropped.
+    pub parent_element_rewrap: FeatureVersion,
 }
 
 /// Version slots for the flat-subtree drop family (issue #848): O(1)

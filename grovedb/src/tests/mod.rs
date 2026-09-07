@@ -96,6 +96,7 @@ mod merged_descending_subset_bound_tests;
 mod misc_coverage_tests;
 mod mmr_tree_tests;
 mod non_counted_tests;
+mod non_merk_wrapper_preservation_tests;
 mod not_counted_or_summed_tests;
 mod not_summed_tests;
 mod operations_coverage_tests;

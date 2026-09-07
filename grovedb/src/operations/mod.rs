@@ -29,6 +29,9 @@ pub mod dense_tree;
 /// Private document store operations
 pub mod private_document_store;
 
+#[cfg(feature = "minimal")]
+pub(crate) mod rewrap_non_merk_tree_parent_element;
+
 /// Caller-driven subtree-root replacement. Bypasses grovedb's normal
 /// "compute child hash from subtree state" invariant — see the module-level
 /// docs in `replace_subtree_root.rs` for the safety contract.
