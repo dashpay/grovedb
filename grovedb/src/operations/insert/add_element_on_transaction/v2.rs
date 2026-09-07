@@ -24,6 +24,13 @@
 //! `CyclicReference`. The batch resolver has always refused this, because the
 //! overwriting op is in `ops_by_qualified_paths`. Refusing it here flips an
 //! accepted/rejected outcome, hence the gate.
+//!
+//! v2 further refuses a reference whose chain terminates at a tree element (any
+//! `is_any_tree()` terminal, empty or populated). The batch reference resolver
+//! has always rejected that shape (`"references can not point to trees being
+//! updated"`), but v0/v1 accepted it and committed only `H(tree element
+//! bytes)` — a commitment that does not bind the subtree's contents and whose
+//! row cannot be proved. v1 keeps accepting it for the same consensus reason.
 
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
@@ -150,6 +157,20 @@ impl GroveDb {
                         grove_version
                     )
                 );
+
+                // A reference must terminate at a value. A tree terminal
+                // would only bind `H(tree element bytes)`: the subtree
+                // behind it is not part of the commitment, so mutating
+                // the subtree leaves the reference (and `verify_grovedb`)
+                // untouched, a subquery through the reference errors, and
+                // the row cannot be proved (the V1 verifier expects a lower
+                // layer for a non-empty tree). The batch reference resolver
+                // has always refused this; refuse it on the direct path too.
+                // `is_any_tree` looks through a `NonCounted` wrapper.
+                if referenced_item.is_any_tree() {
+                    return Err(Error::InvalidInput("references can not point to trees"))
+                        .wrap_with_cost(cost);
+                }
 
                 let referenced_element_value_hash = cost_return_on_error_into!(
                     &mut cost,

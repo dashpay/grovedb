@@ -220,8 +220,12 @@
 //!   so overwriting the item `B` of `A -> B` with a reference to `A` looked
 //!   acyclic and committed `A -> B -> A`, after which every `get`, proof and
 //!   `verify_grovedb` on either key failed. The batch path already refuses
-//!   it. Gated because (i) moves a committed root and (ii) flips an
-//!   accepted/rejected outcome.
+//!   it. (iii) It is refused with `InvalidInput` if its chain terminates at
+//!   a tree element, which the batch resolver has always rejected; v1
+//!   accepted it and committed only `H(tree element bytes)`, a hash that does
+//!   not bind the subtree's contents, so the row could not be proved and
+//!   subtree changes never disturbed it. Gated because (i) moves a committed
+//!   root and (ii)/(iii) flip an accepted/rejected outcome.
 //!
 //! Note that `GroveVersion::latest()` resolves to this version, so anything
 //! defaulting to "latest" — tests, benchmarks, tools — exercises every gate
@@ -255,7 +259,8 @@ use crate::version::{
         GroveDBReplicationVersions, GroveDBVersions,
     },
     merk_versions::{
-        MerkAverageCaseCostsVersions, MerkBatchVersions, MerkProofVersions, MerkVersions,
+        MerkAverageCaseCostsVersions, MerkBatchVersions, MerkProofVersions, MerkTreeVersions,
+        MerkVersions,
     },
     mmr_versions::{MmrCostVersions, MmrVersions},
     GroveVersion,
@@ -371,6 +376,9 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 // stale element still stored at that position, so an
                 // overwrite could commit a cycle every later read fails on.
                 // The batch path already refuses it.
+                // It also refuses a reference whose terminal is a tree
+                // element, matching the batch resolver; v1 accepted it and
+                // committed a hash that does not bind the subtree's contents.
                 add_element_on_transaction: 2,
                 add_element_without_transaction: 0,
                 insert_if_not_exists: 0,
@@ -539,6 +547,9 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             // proof envelope.
             prove_count_offset_on_range: 0,
         },
+        // Bumped 0 -> 1: ordinary (Item / Reference) replacements of a
+        // specialized value are charged from their own bytes (issue #908).
+        tree: MerkTreeVersions { put_value: 1 },
     },
     // MMR hash charges: one hash per blake3 merge actually computed —
     // `push` per collapsed peak, `get_root` and `gen_proof` per peak

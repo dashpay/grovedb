@@ -11,7 +11,7 @@ mod tests {
         proofs::Query as MerkQuery,
         tree_type::TreeType,
     };
-    use grovedb_version::version::GroveVersion;
+    use grovedb_version::version::{v3::GROVE_V3, GroveVersion};
 
     use crate::{
         batch::KeyInfoPath,
@@ -198,6 +198,11 @@ mod tests {
     /// Same three element types, but reached through absolute-path
     /// references: `follow_reference` resolves to the indexed tree and
     /// the reference branch maps the aggregates identically.
+    ///
+    /// Direct insert refuses a reference to a tree from GROVE_V4 on (the
+    /// batch path always has), so such rows can only exist as legacy data
+    /// written before the refusal. The fixture writes them under GROVE_V3
+    /// and reads them under the latest version.
     #[test]
     fn query_item_value_or_sum_follows_references_to_indexed_trees() {
         let grove_version = GroveVersion::latest();
@@ -228,10 +233,10 @@ mod tests {
                 ])),
                 None,
                 None,
-                grove_version,
+                &GROVE_V3,
             )
             .unwrap()
-            .expect("insert reference to indexed tree");
+            .expect("insert legacy reference to indexed tree under GROVE_V3");
         }
 
         let mut query = MerkQuery::new();

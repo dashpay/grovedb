@@ -555,6 +555,7 @@ where
                             get_temp_new_value_with_old_flags,
                             update_tree_value_based_on_costs,
                             section_removal_bytes,
+                            grove_version,
                         )
                     )
                 }
@@ -584,6 +585,7 @@ where
                             get_temp_new_value_with_old_flags,
                             update_tree_value_based_on_costs,
                             section_removal_bytes,
+                            grove_version,
                         )
                     )
                 }
