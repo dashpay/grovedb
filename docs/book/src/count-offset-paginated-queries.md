@@ -336,10 +336,22 @@ refuse), so there is no forgery surface, only a semantic caveat.
 ## API surface
 
 Count-offset paginated queries go through the **same** `prove_query` /
-`verify_query_raw` / `verify_query_with_options` entry points as every
+`verify_query_raw` / `verify_query_with_options` /
+`verify_query_get_parent_tree_info_with_options` entry points as every
 other path query — there is no dedicated entry point. The query envelope
 (`PathQuery` with a `SizedQuery` carrying a non-zero `offset`) is what
-selects the count-offset dispatch.
+selects the count-offset dispatch. Parent-tree information describes the
+queried tree even when it is empty: its count (and sum, if present) is zero.
+A page past the end of a populated tree still returns that tree's full aggregates.
+
+One verify option is off the table: `absence_proofs_for_non_existing_searched_keys`
+is refused (`NotSupported`) whenever the query carries a non-zero offset.
+Absence assembly projects the verified rows onto the query's expected keys
+(`terminal_keys`), and a count-offset proof does not reveal which rows the
+offset skipped — the projection would report that skipped prefix (rows that
+exist) as proven absent. The refusal fires before proof decoding on the
+public entry points and again in `verify_proof_internal`, so the decoded
+`GroveDBProof::verify_*_with_absence_proof` methods refuse too.
 
 **Prover side:**
 
@@ -360,6 +372,7 @@ calls `Merk::prove_count_offset_on_range`, and wraps the bytes in a
 // Same entry points as every other path query.
 GroveDb::verify_query_with_options(proof, &path_query, options, grove_version)
 GroveDb::verify_query_raw(proof, &path_query, grove_version)
+GroveDb::verify_query_get_parent_tree_info_with_options(proof, &path_query, options, grove_version)
 ```
 
 `verify_proof_internal` / `verify_proof_raw_internal` enforce the V0/V1

@@ -817,6 +817,30 @@ impl PathQuery {
         }
     }
 
+    /// Fail-closed gate for absence-proof result assembly on an
+    /// offset-paginated query (non-zero [`SizedQuery::offset`]).
+    ///
+    /// Absence assembly projects the verified rows onto the query's
+    /// expected keys ([`Self::terminal_keys`]), which enumerates a range
+    /// from its first key and knows nothing about pagination. A
+    /// count-offset proof skips `offset` *existing* rows without
+    /// revealing which keys they were, so no projection can tell a
+    /// skipped row from an absent key — serving the combination would
+    /// report the skipped prefix (rows that exist) as proven absent.
+    /// `Some(0)` is not pagination and passes.
+    pub(crate) fn reject_absence_proofs_with_offset(&self) -> Result<(), Error> {
+        if self.has_non_zero_offset() {
+            Err(Error::NotSupported(
+                "absence-proof verification does not serve offset-paginated path queries \
+                 (SizedQuery::offset): the expected-key projection cannot tell skipped rows \
+                 from absent keys"
+                    .to_string(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Validates that this `PathQuery` is a well-formed
     /// `AggregateCountOnRange` query in either the leaf or carrier shape.
     /// On success, returns a reference to the leaf inner range item.
