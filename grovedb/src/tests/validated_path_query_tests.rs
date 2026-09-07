@@ -1,8 +1,14 @@
 //! Cross-consumer contracts and compatibility fixtures for query dispatch.
 
 use grovedb_costs::{CostResult, OperationCost};
-use grovedb_merk::proofs::{query::QueryItem, Query};
-use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
+use grovedb_merk::proofs::{
+    query::{AxisQuery, IndexAxis, QueryItem},
+    Query,
+};
+use grovedb_version::{
+    error::GroveVersionError,
+    version::{GroveVersion, GROVE_VERSIONS},
+};
 
 use crate::{
     operations::{get::PathQueryRun, proof::VerifiedPathQuery},
@@ -236,6 +242,126 @@ fn conflicting_shapes_fail_identically_before_storage_or_proof_decode() {
             ),
             expected
         );
+    }
+}
+
+#[test]
+fn unknown_proof_versions_preserve_validation_precedence() {
+    let latest = GroveVersion::latest();
+    let db = make_test_grovedb(latest);
+    insert(&db, &[TEST_LEAF], b"a", Element::new_item(vec![1]), latest);
+    let selection = PathQuery::new_single_key(vec![TEST_LEAF.to_vec()], b"a".to_vec());
+    let proof = db.prove_query(&selection, None, latest).unwrap().unwrap();
+
+    for received in [2, u16::MAX] {
+        let mut version = latest.clone();
+        version
+            .grovedb_versions
+            .operations
+            .proof
+            .prove_query_non_serialized = received;
+        // This slot governs generation only: reads and verification of an
+        // existing proof must keep working with their supported versions.
+        assert_agree(
+            run(&db, &selection, &version).unwrap().unwrap(),
+            GroveDb::verify_path_query(&proof, &selection, &version).unwrap(),
+        );
+
+        for offset in [None, Some(0), Some(1)] {
+            for item in [QueryItem::Key(b"a".to_vec()), QueryItem::RangeFull(..)] {
+                let query = PathQuery::new(
+                    vec![b"missing".to_vec()],
+                    SizedQuery::new(Query::new_single_query_item(item), Some(1), offset),
+                );
+                // Even the invalid key+offset shape reaches the historical
+                // envelope-version gate before pagination syntax validation.
+                let result = db.prove_query(&query, None, &version);
+                assert_eq!(result.cost, OperationCost::default());
+                match result.unwrap().unwrap_err() {
+                    Error::VersionError(GroveVersionError::UnknownVersionMismatch {
+                        method,
+                        known_versions,
+                        received: actual,
+                    }) => {
+                        assert_eq!(method, "prove_query_non_serialized");
+                        assert_eq!(known_versions, vec![0, 1]);
+                        assert_eq!(actual, received);
+                    }
+                    error => panic!("expected unknown proof version, got {error:?}"),
+                }
+            }
+        }
+
+        // Aggregate syntax precedes that gate, including when an offset is
+        // present. Refactoring dispatch must not replace its error.
+        for kind in [
+            AggregateKind::Count,
+            AggregateKind::Sum,
+            AggregateKind::CountAndSum,
+        ] {
+            let query = PathQuery::new(
+                vec![b"missing".to_vec()],
+                SizedQuery::new(aggregate(kind), None, Some(1)),
+            );
+            let expected = format!("{:?}", query.classify().unwrap_err());
+            let result = db.prove_query(&query, None, &version);
+            assert_eq!(result.cost, OperationCost::default());
+            assert_eq!(format!("{:?}", result.unwrap().unwrap_err()), expected);
+        }
+    }
+}
+
+#[test]
+fn legacy_envelopes_reject_read_modes_before_storage_or_proof_walk() {
+    let path = vec![b"missing".to_vec()];
+    let cases = [
+        (
+            PathQuery::new_axis_top_k(path.clone(), IndexAxis::Count, 1, 0, true),
+            "axis-ordered",
+        ),
+        (
+            PathQuery::new_branched_axis(
+                path.clone(),
+                vec![b"branch".to_vec()],
+                vec![b"suffix".to_vec()],
+                AxisQuery::top_k(IndexAxis::Sum, 1, 0, true),
+            ),
+            "axis-ordered",
+        ),
+        (
+            PathQuery::new_sum_budget(path, vec![QueryItem::RangeFull(..)], true, 10, None),
+            "sum-budget",
+        ),
+    ];
+    for version in GROVE_VERSIONS.iter().filter(|version| {
+        version
+            .grovedb_versions
+            .operations
+            .proof
+            .prove_query_non_serialized
+            == 0
+    }) {
+        let db = make_test_grovedb(version);
+        let selection = PathQuery::new_single_key(vec![TEST_LEAF.to_vec()], b"a".to_vec());
+        let proof = db.prove_query(&selection, None, version).unwrap().unwrap();
+        for (query, family) in &cases {
+            let result = db.prove_query(query, None, version);
+            assert_eq!(result.cost, OperationCost::default());
+            assert!(matches!(
+                result.unwrap(),
+                Err(Error::NotSupported(message)) if message == format!(
+                    "{family} path queries require V1 proof envelopes; upgrade the grove version producing the proof"
+                )
+            ));
+            // The latest verifier supports these shapes, but must reject a
+            // canonical V0 envelope before inspecting its layers or paths.
+            assert!(matches!(
+                GroveDb::verify_path_query(&proof, query, GroveVersion::latest()),
+                Err(Error::NotSupported(message)) if message == format!(
+                    "{family} path queries require V1 proof envelopes"
+                )
+            ));
+        }
     }
 }
 
