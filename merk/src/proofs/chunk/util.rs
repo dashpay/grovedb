@@ -201,6 +201,19 @@ pub fn generate_traversal_instruction(
     Ok(instructions)
 }
 
+/// The longest traversal instruction that addresses a node of a tree of the
+/// given height.
+///
+/// The root is reached by the empty instruction and the deepest leaves by
+/// `height - 1` steps, so no instruction longer than that can address any
+/// node, chunk boundary or not. Chunk producers use this as the request
+/// bound: a chunk id longer than this is refused before any recovery work,
+/// which keeps the work a request can cause proportional to the local tree
+/// rather than to the request (issue #883).
+pub fn max_traversal_instruction_len(height: usize) -> usize {
+    height.saturating_sub(1)
+}
+
 /// Determine the chunk index given the traversal instruction and the max height
 /// of the tree
 pub fn chunk_index_from_traversal_instruction(
@@ -210,6 +223,15 @@ pub fn chunk_index_from_traversal_instruction(
     // empty traversal instruction points to the first chunk
     if traversal_instruction.is_empty() {
         return Ok(1);
+    }
+
+    // a non-empty instruction can never address a node the tree does not
+    // have (see `max_traversal_instruction_len`); this also covers the
+    // empty tree, whose layer list is empty
+    if traversal_instruction.len() > max_traversal_instruction_len(height) {
+        return Err(Error::ChunkingError(BadTraversalInstruction(
+            "traversal instruction is longer than the tree is deep",
+        )));
     }
 
     let mut chunk_count = number_of_chunks(height);
@@ -226,7 +248,8 @@ pub fn chunk_index_from_traversal_instruction(
     //      height 2 is represented by [left] or [right] len of 1
     // therefore last chunk root node is address with total_height -
     // last_chunk_height
-    if traversal_instruction.len() > height - last_layer_height {
+    // (saturating: a one-node tree still gets a chunk layer of height 2)
+    if traversal_instruction.len() > height.saturating_sub(last_layer_height) {
         return Err(Error::ChunkingError(BadTraversalInstruction(
             "traversal instruction should not address nodes past the root of the last layer chunks",
         )));
@@ -288,18 +311,35 @@ pub fn chunk_index_from_traversal_instruction(
 /// of the tree. This can recover from traversal instructions not pointing to a
 /// chunk boundary, in such a case, it backtracks until it hits a chunk
 /// boundary.
+///
+/// Recovery only applies to instructions that address a node the tree
+/// actually has, i.e. of length at most [`max_traversal_instruction_len`];
+/// a longer instruction is refused up front. That keeps the work bounded by
+/// the tree's depth rather than by the length of the (possibly
+/// peer-supplied) instruction: the backtracking loop shortens the
+/// instruction at most `height - 1` times, and the empty instruction always
+/// resolves to the first chunk (issue #883).
 pub fn chunk_index_from_traversal_instruction_with_recovery(
     traversal_instruction: &[bool],
     height: usize,
 ) -> Result<usize, Error> {
-    let chunk_index_result = chunk_index_from_traversal_instruction(traversal_instruction, height);
-    if chunk_index_result.is_err() {
-        return chunk_index_from_traversal_instruction_with_recovery(
-            &traversal_instruction[0..traversal_instruction.len() - 1],
-            height,
-        );
+    if traversal_instruction.len() > max_traversal_instruction_len(height) {
+        return Err(Error::ChunkingError(BadTraversalInstruction(
+            "traversal instruction is longer than the tree is deep",
+        )));
     }
-    chunk_index_result
+
+    let mut candidate = traversal_instruction;
+    loop {
+        match chunk_index_from_traversal_instruction(candidate, height) {
+            Ok(chunk_index) => return Ok(chunk_index),
+            // nothing left to backtrack to; never reached in practice since
+            // the empty instruction is always the first chunk, but it must
+            // not underflow either way
+            Err(error) if candidate.is_empty() => return Err(error),
+            Err(_) => candidate = &candidate[..candidate.len() - 1],
+        }
+    }
 }
 
 /// Generate instruction for traversing to a given chunk index in a binary tree,
@@ -677,9 +717,92 @@ mod test {
                 .unwrap(),
             3
         );
+        // the deepest node of a height-5 tree is addressed by 4 steps;
+        // recovery from there still lands on the nearest boundary
         assert_eq!(
-            chunk_index_from_traversal_instruction_with_recovery(&[LEFT; 50], 5).unwrap(),
+            chunk_index_from_traversal_instruction_with_recovery(&[LEFT; 4], 5).unwrap(),
             2
         );
+        // anything longer walks past the leaves and is refused rather than
+        // backtracked (see `max_traversal_instruction_len`)
+        assert!(matches!(
+            chunk_index_from_traversal_instruction_with_recovery(&[LEFT; 5], 5),
+            Err(Error::ChunkingError(BadTraversalInstruction(_)))
+        ));
+        assert!(matches!(
+            chunk_index_from_traversal_instruction_with_recovery(&[LEFT; 50], 5),
+            Err(Error::ChunkingError(BadTraversalInstruction(_)))
+        ));
+    }
+
+    #[test]
+    fn test_max_traversal_instruction_len() {
+        assert_eq!(max_traversal_instruction_len(0), 0);
+        assert_eq!(max_traversal_instruction_len(1), 0);
+        assert_eq!(max_traversal_instruction_len(2), 1);
+        assert_eq!(max_traversal_instruction_len(5), 4);
+        // every chunk boundary of every height lies within the bound
+        for height in 1..=20 {
+            for chunk_index in 1..=number_of_chunks(height) {
+                let instruction = generate_traversal_instruction(height, chunk_index).unwrap();
+                assert!(instruction.len() <= max_traversal_instruction_len(height));
+                assert_eq!(
+                    chunk_index_from_traversal_instruction_with_recovery(&instruction, height)
+                        .unwrap(),
+                    chunk_index
+                );
+            }
+        }
+    }
+
+    /// Issue #883: recovery used to backtrack one recursion level per
+    /// instruction step, so a request carrying a million steps against a
+    /// tiny tree did a million levels of work (and blew the stack) before
+    /// failing. The work is now bounded by the tree's own depth.
+    #[test]
+    fn test_chunk_index_recovery_is_bounded_by_tree_depth() {
+        let handle = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let instruction = vec![LEFT; 1_000_000];
+                for height in 0..=10 {
+                    assert!(
+                        matches!(
+                            chunk_index_from_traversal_instruction_with_recovery(
+                                &instruction,
+                                height
+                            ),
+                            Err(Error::ChunkingError(BadTraversalInstruction(_)))
+                        ),
+                        "height {height}"
+                    );
+                }
+            })
+            .expect("spawn thread");
+        handle.join().expect("recovery must not overflow the stack");
+    }
+
+    /// The empty instruction is the root chunk at every height, and an
+    /// instruction that is too long for a one-node (or empty) tree is an
+    /// error rather than an arithmetic underflow.
+    #[test]
+    fn test_chunk_index_recovery_empty_and_tiny_trees() {
+        for height in 0..=10 {
+            assert_eq!(
+                chunk_index_from_traversal_instruction_with_recovery(&[], height).unwrap(),
+                1,
+                "height {height}"
+            );
+        }
+        for height in [0, 1] {
+            assert!(matches!(
+                chunk_index_from_traversal_instruction(&[LEFT], height),
+                Err(Error::ChunkingError(BadTraversalInstruction(_)))
+            ));
+            assert!(matches!(
+                chunk_index_from_traversal_instruction_with_recovery(&[LEFT], height),
+                Err(Error::ChunkingError(BadTraversalInstruction(_)))
+            ));
+        }
     }
 }

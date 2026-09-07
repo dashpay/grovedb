@@ -357,6 +357,53 @@ mod tests {
         }
     }
 
+    /// `SumItemWithBackwardsReferences` passes the verifier's sum-item
+    /// check, so its value must also be extracted by the sum fold —
+    /// previously the extraction match missed the variant and rejected an
+    /// honest proof as invalid.
+    #[test]
+    fn budget_window_includes_backward_references_sum_items() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_sum_tree_grovedb(grove_version);
+        // Mix both backward-references sum shapes: the plain sum item and
+        // the item-with-sum twin.
+        for (key, sum) in [(b"a".as_ref(), 7i64), (b"c", 11)] {
+            db.insert(
+                [TEST_LEAF].as_ref(),
+                key,
+                Element::new_sum_item_allowing_bidirectional_references(sum),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert backward-references sum item");
+        }
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"b",
+            Element::new_item_with_sum_item_allowing_bidirectional_references(b"pay".to_vec(), 5),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert backward-references item-with-sum twin");
+
+        let pq = budget_query(20, None);
+        let (proved_root, matches, consumed, stop) =
+            verify_budget(&prove(&db, &pq, grove_version), &pq, grove_version);
+
+        assert_eq!(proved_root, root_hash(&db, grove_version));
+        assert_eq!(stop, SumBudgetStop::BudgetReached);
+        // 7 + 5 + 11 crosses the 20 budget on the third element.
+        assert_eq!(consumed, 23);
+        assert_eq!(
+            matches,
+            vec![(b"a".to_vec(), 7), (b"b".to_vec(), 5), (b"c".to_vec(), 11)]
+        );
+    }
+
     // -----------------------------------------------------------------
     // Row binding (#870): every row's classification must rest on
     // authenticated element bytes
@@ -975,12 +1022,11 @@ mod tests {
                                 _,
                                 child_hash,
                             )) = op
+                                && row_key == key
                             {
-                                if row_key == key {
-                                    assert_ne!(*child_hash, wrong_hash);
-                                    *child_hash = wrong_hash;
-                                    hit = true;
-                                }
+                                assert_ne!(*child_hash, wrong_hash);
+                                *child_hash = wrong_hash;
+                                hit = true;
                             }
                         }
                         assert!(hit, "the reference row must carry a bound witness");

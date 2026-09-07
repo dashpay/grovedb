@@ -17,7 +17,7 @@ mod tests {
     };
     use crate::reference_path::ReferencePathType;
     use crate::tests::{common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, TEST_LEAF};
-    use crate::Element;
+    use crate::{Element, Error};
 
     // ===================================================================
     // Group 1: NonMerkTreeMeta::to_tree_type() and count()
@@ -349,7 +349,7 @@ mod tests {
                 "Insert Or Replace",
             ),
             (
-                QualifiedGroveDbOp::insert_only_op(
+                QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                     vec![b"p".to_vec()],
                     b"k".to_vec(),
                     element.clone(),
@@ -662,7 +662,7 @@ mod tests {
     fn test_consistency_insert_only_under_deleted_path() {
         let ops = vec![
             QualifiedGroveDbOp::delete_op(vec![b"root".to_vec()], b"subtree".to_vec()),
-            QualifiedGroveDbOp::insert_only_op(
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                 vec![b"root".to_vec(), b"subtree".to_vec()],
                 b"key".to_vec(),
                 Element::new_item(b"val".to_vec()),
@@ -820,149 +820,89 @@ mod tests {
     // ===================================================================
     // Group 7: Non-Merk tree propagation in apply_batch
     //
-    // Exercises the propagation branches at L2400-2469 where a non-Merk
-    // tree element in an Occupied entry is converted to InsertNonMerkTree.
     // Pattern: batch-insert the non-Merk tree AND an item under it so
-    // the root hash propagates to the parent's occupied InsertOrReplace.
+    // the root hash propagates to the parent's occupied InsertOrReplace,
+    // converting it to InsertNonMerkTree.
+    //
+    // That propagation is exactly the representation corruption of issue
+    // #900 — the parent element commits a Merk root over keyed children
+    // that typed readers never see — so on V4+
+    // (`non_merk_parent_keyed_ops_rejection`) the batch is refused before
+    // any write. GROVE_V3 preserves the released accepting behavior, which
+    // these tests still run to keep the Occupied-entry →
+    // InsertNonMerkTree conversion branches covered.
     // ===================================================================
+
+    fn assert_batch_propagation_non_merk_tree(key: &[u8], element: Element) {
+        let latest = GroveVersion::latest();
+        for grove_version in [&GROVE_V3, latest] {
+            let db = make_empty_grovedb();
+
+            // Insert a parent tree so the non-Merk tree is at level 1
+            db.insert(
+                EMPTY_PATH,
+                b"parent",
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert parent");
+
+            // Batch: create the non-Merk tree under parent AND insert an
+            // item under it. The item triggers propagation back to the
+            // tree's entry.
+            let ops = vec![
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![b"parent".to_vec()],
+                    key.to_vec(),
+                    element.clone(),
+                ),
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![b"parent".to_vec(), key.to_vec()],
+                    b"item".to_vec(),
+                    Element::new_item(b"value".to_vec()),
+                ),
+            ];
+
+            let result = db.apply_batch(ops, None, None, grove_version).value;
+            if grove_version.protocol_version >= 4 {
+                assert!(
+                    matches!(result, Err(Error::InvalidBatchOperation(_))),
+                    "V4+ must reject the keyed child under the non-Merk parent, got {:?}",
+                    result
+                );
+            } else {
+                result.expect("V3 must preserve the released (accepting) propagation");
+            }
+        }
+    }
 
     #[test]
     fn test_batch_propagation_commitment_tree() {
-        let grove_version = GroveVersion::latest();
-        let db = make_empty_grovedb();
-
-        // Insert a parent tree so the CommitmentTree is at level 1
-        db.insert(
-            EMPTY_PATH,
-            b"parent",
-            Element::empty_tree(),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("insert parent");
-
-        // Batch: create CommitmentTree under parent AND insert an item under it.
-        // The item triggers propagation back to the CommitmentTree entry.
-        let ops = vec![
-            QualifiedGroveDbOp::insert_or_replace_op(
-                vec![b"parent".to_vec()],
-                b"ct".to_vec(),
-                Element::empty_commitment_tree(10).expect("valid chunk_power"),
-            ),
-            QualifiedGroveDbOp::insert_or_replace_op(
-                vec![b"parent".to_vec(), b"ct".to_vec()],
-                b"item".to_vec(),
-                Element::new_item(b"value".to_vec()),
-            ),
-        ];
-
-        db.apply_batch(ops, None, None, grove_version)
-            .unwrap()
-            .expect("batch propagation through CommitmentTree");
+        assert_batch_propagation_non_merk_tree(
+            b"ct",
+            Element::empty_commitment_tree(10).expect("valid chunk_power"),
+        );
     }
 
     #[test]
     fn test_batch_propagation_mmr_tree() {
-        let grove_version = GroveVersion::latest();
-        let db = make_empty_grovedb();
-
-        db.insert(
-            EMPTY_PATH,
-            b"parent",
-            Element::empty_tree(),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("insert parent");
-
-        let ops = vec![
-            QualifiedGroveDbOp::insert_or_replace_op(
-                vec![b"parent".to_vec()],
-                b"mmr".to_vec(),
-                Element::empty_mmr_tree(),
-            ),
-            QualifiedGroveDbOp::insert_or_replace_op(
-                vec![b"parent".to_vec(), b"mmr".to_vec()],
-                b"item".to_vec(),
-                Element::new_item(b"value".to_vec()),
-            ),
-        ];
-
-        db.apply_batch(ops, None, None, grove_version)
-            .unwrap()
-            .expect("batch propagation through MmrTree");
+        assert_batch_propagation_non_merk_tree(b"mmr", Element::empty_mmr_tree());
     }
 
     #[test]
     fn test_batch_propagation_bulk_append_tree() {
-        let grove_version = GroveVersion::latest();
-        let db = make_empty_grovedb();
-
-        db.insert(
-            EMPTY_PATH,
-            b"parent",
-            Element::empty_tree(),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("insert parent");
-
-        let ops = vec![
-            QualifiedGroveDbOp::insert_or_replace_op(
-                vec![b"parent".to_vec()],
-                b"bulk".to_vec(),
-                Element::empty_bulk_append_tree(10).expect("valid chunk_power"),
-            ),
-            QualifiedGroveDbOp::insert_or_replace_op(
-                vec![b"parent".to_vec(), b"bulk".to_vec()],
-                b"item".to_vec(),
-                Element::new_item(b"value".to_vec()),
-            ),
-        ];
-
-        db.apply_batch(ops, None, None, grove_version)
-            .unwrap()
-            .expect("batch propagation through BulkAppendTree");
+        assert_batch_propagation_non_merk_tree(
+            b"bulk",
+            Element::empty_bulk_append_tree(10).expect("valid chunk_power"),
+        );
     }
 
     #[test]
     fn test_batch_propagation_dense_tree() {
-        let grove_version = GroveVersion::latest();
-        let db = make_empty_grovedb();
-
-        db.insert(
-            EMPTY_PATH,
-            b"parent",
-            Element::empty_tree(),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("insert parent");
-
-        let ops = vec![
-            QualifiedGroveDbOp::insert_or_replace_op(
-                vec![b"parent".to_vec()],
-                b"dense".to_vec(),
-                Element::empty_dense_tree(4),
-            ),
-            QualifiedGroveDbOp::insert_or_replace_op(
-                vec![b"parent".to_vec(), b"dense".to_vec()],
-                b"item".to_vec(),
-                Element::new_item(b"value".to_vec()),
-            ),
-        ];
-
-        db.apply_batch(ops, None, None, grove_version)
-            .unwrap()
-            .expect("batch propagation through DenseTree");
+        assert_batch_propagation_non_merk_tree(b"dense", Element::empty_dense_tree(4));
     }
 
     // ===================================================================
@@ -980,7 +920,7 @@ mod tests {
         let db = make_test_grovedb(grove_version);
 
         let ops = vec![
-            QualifiedGroveDbOp::insert_only_op(
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                 vec![TEST_LEAF.to_vec()],
                 b"only_item".to_vec(),
                 Element::new_item(b"hello".to_vec()),
@@ -1029,7 +969,7 @@ mod tests {
 
         // Batch: InsertWithKnownToNotAlreadyExist a reference to base_item, then another ref to that
         let ops = vec![
-            QualifiedGroveDbOp::insert_only_op(
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                 vec![TEST_LEAF.to_vec()],
                 b"ref_b".to_vec(),
                 Element::new_reference(ReferencePathType::AbsolutePathReference(vec![

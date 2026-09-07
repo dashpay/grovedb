@@ -1,6 +1,12 @@
 //! Apply multiple GroveDB operations atomically.
 
+mod backward_references;
 mod batch_structure;
+
+/// The cross-segment consistency gate of `apply_partial_batch`: what the
+/// initial segment wrote and deleted, so add-on ops that cannot be applied
+/// coherently after it are refused (issue #842).
+mod initial_segment_footprint;
 
 /// Indexed-tree helpers for the batch apply pipeline (pre-apply
 /// aggregate capture + post-apply secondary mirror) — covers
@@ -57,6 +63,7 @@ use grovedb_costs::{
     },
     CostResult, CostsExt, OperationCost,
 };
+use grovedb_element::ElementType;
 use grovedb_merk::{
     element::{
         costs::ElementCostExtensions, delete::ElementDeleteFromStorageExtensions,
@@ -80,6 +87,7 @@ use grovedb_storage::{
 };
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 use grovedb_visualize::{Drawer, Visualize};
+use initial_segment_footprint::InitialSegmentFootprint;
 use integer_encoding::VarInt;
 use itertools::Itertools;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
@@ -91,6 +99,7 @@ pub use crate::batch::batch_structure::{OpsByLevelPath, OpsByPath};
 use crate::batch::estimated_costs::EstimatedCostsType;
 use crate::{
     batch::{batch_structure::BatchStructure, mode::BatchRunMode},
+    bidirectional_references::BidirectionalReference,
     element::{MaxReferenceHop, SumValue},
     operations::{delete::DeleteOptions, get::MAX_REFERENCE_HOPS, proof::util::hex_to_ascii},
     reference_path::{
@@ -519,6 +528,25 @@ pub enum GroveOp {
     /// `reference_path_type`, `max_reference_hop`, and `flags` are
     /// used only for the average / worst case cost models in
     /// untrusted mode.
+    /// INTERNAL — derived by the backward-references batch preprocessor,
+    /// never accepted from callers. Writes `element` with the explicitly
+    /// provided node value hash, already combined per the family's
+    /// two-layer scheme: a referrer rewrite carries
+    /// `combine(element_combined, end_hash)`, a lazy referrer-list cleanup
+    /// carries the cleaned element's own combined hash.
+    #[non_exhaustive]
+    ReplaceBackwardReferenceFamilyMember {
+        /// The full family element to store (referrer lists included).
+        element: Element,
+        /// The node value hash the write installs.
+        node_value_hash: CryptoHash,
+        /// The resolved end-of-chain hash a bidirectional reference commits
+        /// to (`None` for the item variants); lets merk recompute the node
+        /// value hash if a flags-update callback rewrites the stored bytes.
+        end_hash: Option<CryptoHash>,
+    },
+    /// Re-resolves and rewrites a stored reference's value hash. See
+    /// [`RefreshReferenceMode`] for the per-variant contract.
     RefreshReference {
         /// The reference path written under trusted variants. Under
         /// untrusted variants the on-disk path is preserved; this
@@ -606,6 +634,7 @@ impl GroveOp {
             GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. } => 17,
             GroveOp::InsertAggregateIndexedTreeRootKeys { .. } => 18,
             GroveOp::PrivateDocumentStoreInsert { .. } => 19,
+            GroveOp::ReplaceBackwardReferenceFamilyMember { .. } => 20,
         }
     }
 
@@ -637,6 +666,7 @@ impl GroveOp {
             // key; delete removes it. All require secondary mirror.
             GroveOp::InsertWithKnownToNotAlreadyExist { .. }
             | GroveOp::InsertIfNotExists { .. }
+            | GroveOp::ReplaceBackwardReferenceFamilyMember { .. }
             | GroveOp::InsertOrReplace { .. }
             | GroveOp::Replace { .. }
             | GroveOp::Patch { .. }
@@ -715,6 +745,7 @@ impl GroveOp {
         match self {
             GroveOp::InsertWithKnownToNotAlreadyExist { .. }
             | GroveOp::InsertIfNotExists { .. }
+            | GroveOp::ReplaceBackwardReferenceFamilyMember { .. }
             | GroveOp::InsertOrReplace { .. }
             | GroveOp::Replace { .. }
             | GroveOp::Patch { .. }
@@ -1007,6 +1038,15 @@ impl fmt::Debug for QualifiedGroveDbOp {
                     reference_path_type, max_reference_hop, mode_render, non_counted,
                 )
             }
+            GroveOp::ReplaceBackwardReferenceFamilyMember {
+                element,
+                node_value_hash,
+                ..
+            } => format!(
+                "Replace Backward-Reference Family Member {:?} (value hash {})",
+                element,
+                hex::encode(node_value_hash)
+            ),
             GroveOp::Delete => "Delete".to_string(),
             GroveOp::DeleteTree(tree_type, check) => {
                 format!("Delete Tree {} ({:?})", tree_type, check)
@@ -1606,6 +1646,30 @@ impl GroveDbOpConsistencyResults {
 /// Cache for Merk trees by their paths.
 struct TreeCacheMerkByPath<S, F, F2> {
     merks: HashMap<Vec<Vec<u8>>, Merk<S>>,
+    /// Empty Merks reserved while scanning tree insertions, with no path
+    /// operations applied yet. A skipped insertion must not carry its
+    /// unused placeholder into a continuation as if it were the stored tree.
+    unused_new_merks: HashSet<Vec<Vec<u8>>>,
+    /// Conditional insertions that emitted no Merk write. Their proposed
+    /// elements must not seed reference resolution in the next segment.
+    skipped_insert_paths: HashSet<Vec<Vec<u8>>>,
+    /// Every axis secondary opened for an indexed primary, keyed by the
+    /// primary's path, in the element's canonical axis order. A primary's
+    /// secondaries are opened once and then reused for the life of the
+    /// cache — a partial batch's continuation mirrors into the very Merks
+    /// the initial segment already moved rows in (their pending root keys
+    /// exist only in memory and in the initial segment's leftover
+    /// propagation op), never into a copy reopened from committed state.
+    secondary_merks: HashMap<Vec<Vec<u8>>, Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>>,
+    /// Indexed-tree elements this batch INSERTS, keyed by their qualified
+    /// path. An indexed primary created in-batch has no stored element for
+    /// the secondary opener to read, so its axes come from here. Populated
+    /// while the ops are scanned (`remember_indexed_element`), which is
+    /// what lets a partial batch's continuation populate an indexed tree
+    /// the initial segment created: the creating op is no longer among the
+    /// continuation's own ops, and the parent Merk's copy of the element is
+    /// only pending.
+    pending_indexed_elements: HashMap<Vec<Vec<u8>>, Element>,
     get_merk_fn: F,
     /// Opens EVERY configured axis secondary for an indexed primary, given
     /// the primary's path. Used when ops mutate an indexed primary so the
@@ -1835,6 +1899,17 @@ trait TreeCache<G, SR> {
 
     fn get_batch_run_mode(&self) -> BatchRunMode;
 
+    /// Called for every indexed-tree element the batch inserts, before any
+    /// level executes. Caches that open secondaries keep the element so the
+    /// primary's axes are known even when no stored element exists yet.
+    fn remember_indexed_element(
+        &mut self,
+        _path: &KeyInfoPath,
+        _key: &KeyInfo,
+        _element: &Element,
+    ) {
+    }
+
     /// We will also be returning an op mode, this is to be used in propagation
     fn execute_ops_on_path(
         &mut self,
@@ -2002,9 +2077,9 @@ where
                 )),
             };
 
-            let referenced_element_value_hash_opt = cost_return_on_error!(
+            let referenced_value_and_hash_opt = cost_return_on_error!(
                 &mut cost,
-                merk.get_value_hash(
+                merk.get_value_and_value_hash(
                     key.as_ref(),
                     true,
                     Some(Element::value_defined_cost_for_serialized_value),
@@ -2013,9 +2088,9 @@ where
                 .map_err(|e| Error::CorruptedData(e.to_string()))
             );
 
-            let referenced_element_value_hash = cost_return_on_error!(
+            let (referenced_value, referenced_element_value_hash) = cost_return_on_error!(
                 &mut cost,
-                referenced_element_value_hash_opt
+                referenced_value_and_hash_opt
                     .ok_or({
                         let reference_string = reference_path
                             .iter()
@@ -2030,6 +2105,48 @@ where
                     })
                     .wrap_with_cost(OperationCost::default())
             );
+
+            // One exception to the read-the-stored-hash shortcut: a
+            // backward-references item terminal stores the COMBINED
+            // (inner ‖ backrefs) hash, while every reference in a chain
+            // commits to the target's LOGICAL (stripped) hash — otherwise
+            // registering a referrer would ripple through chains. Sniff the
+            // type from the serialized bytes and recompute for that family
+            // only; everything else keeps the fast path unchanged.
+            if ElementType::from_serialized_value(&referenced_value)
+                .map(|et| et.is_backward_references_item())
+                .unwrap_or(false)
+            {
+                let element = cost_return_on_error_into_no_add!(
+                    cost,
+                    Element::deserialize(&referenced_value, grove_version)
+                );
+                let serialized = cost_return_on_error_into_no_add!(
+                    cost,
+                    element
+                        .stripped_of_backward_references()
+                        .serialize(grove_version)
+                );
+                let logical_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                return Ok(logical_hash).wrap_with_cost(cost);
+            }
+            // A bidirectional reference here means the declared hop budget
+            // ran out one hop short of a terminal: its stored hash is the
+            // COMBINED reference hash, never the terminal logical hash a
+            // dependent reference commits to. Fail closed rather than bake
+            // a hash that verify_grovedb will report as corrupt. (Plain
+            // references keep the long-standing documented contract: an
+            // ill-formed hop-1 chain surfaces at verification instead.)
+            if matches!(
+                ElementType::from_serialized_value(&referenced_value).map(|et| et.base()),
+                Ok(ElementType::BidirectionalReference)
+            ) {
+                return Err(Error::InvalidBatchOperation(
+                    "reference hop budget exhausted on a bidirectional reference; the chain \
+                     needs at least one more hop to reach its terminal",
+                ))
+                .wrap_with_cost(cost);
+            }
 
             return Ok(referenced_element_value_hash).wrap_with_cost(cost);
         }
@@ -2244,9 +2361,36 @@ where
                 let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                 Ok(val_hash).wrap_with_cost(cost)
             }
-            // Both reference variants follow the same chain-resolution path
-            // to compute their effective value hash.
-            Element::Reference(path, ..) | Element::ReferenceWithSumItem(path, ..) => {
+            // A chain terminal with backward references: every reference in
+            // a chain commits to the target's LOGICAL (stripped) hash — the
+            // referrer list is excluded so registrations never ripple
+            // through chains. (These elements reject aggregation wrappers,
+            // so the outer element IS the underlying one.)
+            Element::ItemWithBackwardsReferences(..)
+            | Element::SumItemWithBackwardsReferences(..)
+            | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                let serialized = cost_return_on_error_into_no_add!(
+                    cost,
+                    element
+                        .stripped_of_backward_references()
+                        .serialize(grove_version)
+                );
+                let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                Ok(val_hash).wrap_with_cost(cost)
+            }
+            // All reference variants follow the same chain-resolution path
+            // to compute their effective value hash. A pre-existing
+            // `BidirectionalReference` (inserted through the non-batch
+            // path) resolves through its forward path like any reference.
+            Element::Reference(path, ..)
+            | Element::ReferenceWithSumItem(path, ..)
+            | Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: path,
+                    ..
+                },
+                _,
+            ) => {
                 let path = cost_return_on_error_into_no_add!(
                     cost,
                     path_from_reference_qualified_path_type(path.clone(), qualified_path)
@@ -2337,6 +2481,46 @@ where
         if let Some(op) = ops_by_qualified_paths.get(qualified_path) {
             // the path is being modified, inserted or deleted in the batch of operations
             match op {
+                // A derived backward-references rewrite: dependent chains
+                // commit to the LOGICAL (stripped) hash of item terminals
+                // and follow bidirectional references through their forward
+                // path, exactly like the on-disk dispatch below.
+                GroveOp::ReplaceBackwardReferenceFamilyMember { element, .. } => match element {
+                    Element::ItemWithBackwardsReferences(..)
+                    | Element::SumItemWithBackwardsReferences(..)
+                    | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                        let serialized = cost_return_on_error_into_no_add!(
+                            cost,
+                            element
+                                .stripped_of_backward_references()
+                                .serialize(grove_version)
+                        );
+                        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                        Ok(val_hash).wrap_with_cost(cost)
+                    }
+                    Element::BidirectionalReference(reference, _) => {
+                        let path = cost_return_on_error_into_no_add!(
+                            cost,
+                            path_from_reference_qualified_path_type(
+                                reference.forward_reference_path.clone(),
+                                qualified_path
+                            )
+                        );
+                        self.follow_reference_get_value_hash(
+                            path.as_slice(),
+                            ops_by_qualified_paths,
+                            recursions_allowed - 1,
+                            flags_update,
+                            split_removal_bytes,
+                            visited,
+                            grove_version,
+                        )
+                    }
+                    _ => Err(Error::CorruptedCodeExecution(
+                        "derived backward-references op carries a non-family element",
+                    ))
+                    .wrap_with_cost(cost),
+                },
                 GroveOp::ReplaceTreeRootKey { .. }
                 | GroveOp::InsertTreeWithRootHash { .. }
                 | GroveOp::ReplaceNonMerkTreeRoot { .. }
@@ -2406,6 +2590,91 @@ where
                                 }
                             }
                         }
+                        // A pending write of a chain terminal with backward
+                        // references: dependent references commit to the
+                        // LOGICAL (stripped) hash — the referrer list is
+                        // excluded so registrations never ripple through
+                        // chains. (These elements reject aggregation
+                        // wrappers, so the outer element IS the underlying
+                        // one.)
+                        Element::ItemWithBackwardsReferences(..)
+                        | Element::SumItemWithBackwardsReferences(..)
+                        | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                            // Referrers commit to the LOGICAL (stripped)
+                            // hash — and, exactly like the `Item` arm above,
+                            // the hash must reflect the flags the APPLY path
+                            // will actually write, so storage flags go
+                            // through the same old-flags merge over the
+                            // stripped shape.
+                            let stripped = element.stripped_of_backward_references();
+                            let serialized = cost_return_on_error_into_no_add!(
+                                cost,
+                                stripped.serialize(grove_version)
+                            );
+                            if element.get_flags().is_none() {
+                                let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                                Ok(val_hash).wrap_with_cost(cost)
+                            } else {
+                                let mut new_element = stripped.clone();
+                                let (key, reference_path) = qualified_path
+                                    .split_last()
+                                    .expect("path validated non-empty above");
+                                let serialized_element_result = cost_return_on_error!(
+                                    &mut cost,
+                                    self.get_and_deserialize_referenced_element(
+                                        key,
+                                        reference_path,
+                                        grove_version
+                                    )
+                                );
+                                if let Some((old_element, old_serialized_element, is_in_sum_tree)) =
+                                    serialized_element_result
+                                {
+                                    let value_hash = cost_return_on_error!(
+                                        &mut cost,
+                                        Self::process_old_element_flags(
+                                            key,
+                                            &serialized,
+                                            &mut new_element,
+                                            old_element,
+                                            &old_serialized_element,
+                                            is_in_sum_tree,
+                                            flags_update,
+                                            split_removal_bytes,
+                                            grove_version,
+                                        )
+                                    );
+                                    Ok(value_hash).wrap_with_cost(cost)
+                                } else {
+                                    let value_hash =
+                                        value_hash(&serialized).unwrap_add_cost(&mut cost);
+                                    Ok(value_hash).wrap_with_cost(cost)
+                                }
+                            }
+                        }
+                        // A pending bidirectional reference resolves through
+                        // its forward path like any reference. (Under the
+                        // backward-references flag the preprocessor converts
+                        // these ops into the derived form, handled above;
+                        // this arm keeps the dispatch total.)
+                        Element::BidirectionalReference(reference, _) => {
+                            let path = cost_return_on_error_into_no_add!(
+                                cost,
+                                path_from_reference_qualified_path_type(
+                                    reference.forward_reference_path.clone(),
+                                    qualified_path
+                                )
+                            );
+                            self.follow_reference_get_value_hash(
+                                path.as_slice(),
+                                ops_by_qualified_paths,
+                                recursions_allowed - 1,
+                                flags_update,
+                                split_removal_bytes,
+                                visited,
+                                grove_version,
+                            )
+                        }
                         // Both reference variants follow the same chain.
                         Element::Reference(path, ..) | Element::ReferenceWithSumItem(path, ..) => {
                             let path = cost_return_on_error_into_no_add!(
@@ -2462,6 +2731,40 @@ where
                         );
                         let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                         Ok(val_hash).wrap_with_cost(cost)
+                    }
+                    // Same chain-hash convention as the InsertOrReplace
+                    // group above: item terminals commit the stripped
+                    // logical hash; a pending bidirectional reference
+                    // resolves through its forward path.
+                    Element::ItemWithBackwardsReferences(..)
+                    | Element::SumItemWithBackwardsReferences(..)
+                    | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                        let serialized = cost_return_on_error_into_no_add!(
+                            cost,
+                            element
+                                .stripped_of_backward_references()
+                                .serialize(grove_version)
+                        );
+                        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                        Ok(val_hash).wrap_with_cost(cost)
+                    }
+                    Element::BidirectionalReference(reference, _) => {
+                        let path = cost_return_on_error_into_no_add!(
+                            cost,
+                            path_from_reference_qualified_path_type(
+                                reference.forward_reference_path.clone(),
+                                qualified_path
+                            )
+                        );
+                        self.follow_reference_get_value_hash(
+                            path.as_slice(),
+                            ops_by_qualified_paths,
+                            recursions_allowed - 1,
+                            flags_update,
+                            split_removal_bytes,
+                            visited,
+                            grove_version,
+                        )
                     }
                     Element::Reference(path, ..) | Element::ReferenceWithSumItem(path, ..) => {
                         let path = cost_return_on_error_into_no_add!(
@@ -2592,6 +2895,7 @@ where
                 cost_return_on_error!(&mut cost, (self.get_merk_fn)(&inserted_path, true));
             merk.tree_type = tree_type;
             e.insert(merk);
+            self.unused_new_merks.insert(inserted_path);
         }
 
         Ok(()).wrap_with_cost(cost)
@@ -2602,6 +2906,13 @@ where
         path: &[Vec<u8>],
     ) -> Option<Vec<(u8, CryptoHash, Option<Vec<u8>>)>> {
         self.indexed_secondary_after_apply.remove(path)
+    }
+
+    fn remember_indexed_element(&mut self, path: &KeyInfoPath, key: &KeyInfo, element: &Element) {
+        let mut qualified_path = path.to_path();
+        qualified_path.push(key.get_key_clone());
+        self.pending_indexed_elements
+            .insert(qualified_path, element.clone());
     }
 
     fn take_cidx_overwrite_cleanup_paths(&mut self) -> Vec<Vec<Vec<u8>>> {
@@ -2651,6 +2962,7 @@ where
         // todo: fix this
         let p = path.to_path();
         let path = &p;
+        self.unused_new_merks.remove(path);
 
         // This also populates Merk trees cache
         let in_tree_type = {
@@ -2663,6 +2975,33 @@ where
             };
             merk.tree_type
         };
+
+        // Every op at this level executes through Merk dispatch against the
+        // parent's Merk namespace. Non-Merk data trees keep their state in
+        // the data namespace and commit a typed root instead: letting a Merk
+        // root form here would propagate it into the parent element's hash
+        // while the element keeps its typed metadata and no root key — an
+        // acknowledged write that typed readers never see, unreachable rows,
+        // and a verify_grovedb failure (issue #900). This catches parents
+        // that already exist (the open above derives the tree type from the
+        // stored element) and parents created in this same batch (the batch
+        // structure registers them in the cache with their real tree type).
+        // Typed appends never reach this path: preprocessing rewrites them
+        // into ReplaceNonMerkTreeRoot ops at the PARENT level.
+        if in_tree_type.uses_non_merk_data_storage()
+            && grove_version
+                .grovedb_versions
+                .apply_batch
+                .non_merk_parent_keyed_ops_rejection
+                >= 1
+        {
+            return Err(Error::InvalidBatchOperation(
+                "non-Merk trees (CommitmentTree, MmrTree, BulkAppendTree, DenseTree, \
+                 PrivateDocumentStore) cannot hold keyed child elements; entries are added \
+                 through their typed operations",
+            ))
+            .wrap_with_cost(cost);
+        }
 
         // For cidx primaries, capture the pre-apply count value of every
         // key that this level's ops will mutate. After
@@ -2696,9 +3035,69 @@ where
         let mut pending_overwrite_inspections: BTreeMap<Vec<u8>, Element> = BTreeMap::new();
         let mut pending_delete_tree_checks: BTreeMap<Vec<u8>, TreeType> = BTreeMap::new();
 
+        // Derive skipped insertions from the writes actually emitted below,
+        // covering every element variant without another existence read.
+        let mut skipped_insert_keys: HashSet<Vec<u8>> = ops_at_path_by_key
+            .iter()
+            .filter(|(_, op)| {
+                matches!(
+                    op,
+                    GroveOp::InsertIfNotExists {
+                        error_if_exists: false,
+                        ..
+                    }
+                )
+            })
+            .map(|(key, _)| key.get_key_clone())
+            .collect();
         let mut batch_operations: Vec<(Vec<u8>, Op)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {
+                // Derived by the backward-references preprocessor: write the
+                // full element with its precomputed combined node value hash
+                // (the two-layer scheme's combine for items; for referrer
+                // rewrites additionally combined with the resolved end
+                // hash).
+                GroveOp::ReplaceBackwardReferenceFamilyMember {
+                    element,
+                    node_value_hash,
+                    end_hash,
+                } => {
+                    use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
+                    // The same host-tree rules as direct insertion apply:
+                    // notably, backward-references ITEM variants are not
+                    // representable in Provable* aggregate hosts (no proof
+                    // node binds both their combined value hash and the
+                    // aggregate), so a derived rewrite may not create that
+                    // combination either.
+                    cost_return_on_error_into!(
+                        &mut cost,
+                        element
+                            .validate_insertable_into(in_tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    let serialized = cost_return_on_error_into!(
+                        &mut cost,
+                        element
+                            .serialize(grove_version)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    let merk_feature_type = cost_return_on_error_into!(
+                        &mut cost,
+                        element
+                            .get_feature_type(in_tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    batch_operations.push((
+                        key_info.get_key(),
+                        Op::PutWithProvidedValueHash(
+                            serialized,
+                            node_value_hash,
+                            end_hash,
+                            merk_feature_type,
+                        ),
+                    ));
+                }
                 op_ref @ (GroveOp::InsertWithKnownToNotAlreadyExist { .. }
                 | GroveOp::InsertIfNotExists { .. }
                 | GroveOp::InsertOrReplace { .. }
@@ -3338,6 +3737,97 @@ where
                                     grove_version,
                                 )
                             );
+                        }
+                        // Unreachable backstop: unflagged batches reject
+                        // bidirectional-reference ops at every entry point,
+                        // and under the flag the preprocessor converts them
+                        // into `ReplaceBackwardReferenceFamilyMember` (a
+                        // reference's node hash needs its resolved end hash,
+                        // which this generic path does not carry).
+                        Element::BidirectionalReference(..) => {
+                            return Err(Error::NotSupported(
+                                "BidirectionalReference ops must go through the \
+                                 backward-references batch preprocessor"
+                                    .to_owned(),
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        // Backward-references items store their COMBINED
+                        // (stripped ‖ referrer-list) hash; the preprocessor
+                        // has already replaced the caller-supplied referrer
+                        // list with the stored one.
+                        Element::ItemWithBackwardsReferences(..)
+                        | Element::SumItemWithBackwardsReferences(..)
+                        | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                            // Same guard the live `Element::insert` applies:
+                            // the family's combined value hash has no
+                            // aggregate-carrying proof-node variant, so
+                            // Provable* aggregate parents refuse it.
+                            {
+                                use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
+                                cost_return_on_error_into!(
+                                    &mut cost,
+                                    element
+                                        .validate_insertable_into(in_tree_type)
+                                        .wrap_with_cost(OperationCost::default())
+                                );
+                            }
+                            let merk_feature_type = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(in_tree_type)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            if is_insert_if_not_exists
+                                || batch_apply_options.validate_insertion_does_not_override
+                            {
+                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                                let exists = cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.element_at_key_already_exists(
+                                        merk,
+                                        key_info.as_slice(),
+                                        grove_version
+                                    )
+                                );
+                                if exists
+                                    && (error_if_exists
+                                        || batch_apply_options.validate_insertion_does_not_override)
+                                {
+                                    return Err(Error::InvalidBatchOperation(
+                                        "attempting to insert element that already exists",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+                                if exists {
+                                    // InsertIfNotExists over an existing key
+                                    // writes nothing.
+                                    continue;
+                                }
+                            }
+                            let serialized = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .serialize(grove_version)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            let hashes = {
+                                use grovedb_merk::element::ElementExt;
+                                cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.backward_references_hashes(grove_version)
+                                )
+                                .expect("backward-references elements carry hashes")
+                            };
+                            batch_operations.push((
+                                key_info.get_key(),
+                                Op::PutWithProvidedValueHash(
+                                    serialized,
+                                    hashes.combined,
+                                    None,
+                                    merk_feature_type,
+                                ),
+                            ));
                         }
                         Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                             let merk_feature_type = cost_return_on_error_into!(
@@ -3992,6 +4482,16 @@ where
             }
         }
 
+        for (key, _) in &batch_operations {
+            skipped_insert_keys.remove(key);
+        }
+        self.skipped_insert_paths
+            .extend(skipped_insert_keys.into_iter().map(|key| {
+                let mut qualified_path = path.clone();
+                qualified_path.push(key);
+                qualified_path
+            }));
+
         let merk = self.merks.get_mut(path).expect("the Merk is cached");
 
         // V4 gate results collected by the old-value observer while the merk
@@ -4231,22 +4731,30 @@ where
             // the read-from-parent path. Overwrite-with-descendants is
             // rejected in preflight, so an in-batch insert op at this exact
             // path means the element is fresh.
-            let fresh_indexed_element = ops_by_qualified_paths.get(path).and_then(|op| match op {
-                GroveOp::InsertOrReplace { element }
-                | GroveOp::InsertWithKnownToNotAlreadyExist { element }
-                | GroveOp::InsertIfNotExists { element, .. }
-                | GroveOp::Replace { element }
-                | GroveOp::Patch { element, .. }
-                    if element.is_indexed_tree() =>
-                {
-                    Some(element)
-                }
-                _ => None,
-            });
-            let secondaries = cost_return_on_error!(
-                &mut cost,
-                (self.get_secondary_merks_fn)(path, fresh_indexed_element)
-            );
+            let fresh_indexed_element = ops_by_qualified_paths
+                .get(path)
+                .and_then(|op| match op {
+                    GroveOp::InsertOrReplace { element }
+                    | GroveOp::InsertWithKnownToNotAlreadyExist { element }
+                    | GroveOp::InsertIfNotExists { element, .. }
+                    | GroveOp::Replace { element }
+                    | GroveOp::Patch { element, .. }
+                        if element.is_indexed_tree() =>
+                    {
+                        Some(element)
+                    }
+                    _ => None,
+                })
+                // The creating op may belong to an earlier segment of a
+                // partial batch (see `pending_indexed_elements`).
+                .or_else(|| self.pending_indexed_elements.get(path));
+            let secondaries = match self.secondary_merks.entry(path.to_vec()) {
+                HashMapEntry::Occupied(o) => o.into_mut(),
+                HashMapEntry::Vacant(v) => v.insert(cost_return_on_error!(
+                    &mut cost,
+                    (self.get_secondary_merks_fn)(path, fresh_indexed_element)
+                )),
+            };
             let primary_merk = self.merks.get(path).expect("the Merk is cached");
             // One post-state read per captured key, shared by every axis: the
             // (count, sum) transitions are axis-independent, only the sort-key
@@ -4257,13 +4765,13 @@ where
                 indexed_tree::read_post_apply_transitions(primary_merk, &pre, grove_version)
             );
             let mut per_axis = Vec::with_capacity(secondaries.len());
-            for (axis, mut secondary_merk) in secondaries {
+            for (axis, secondary_merk) in secondaries.iter_mut() {
                 let (sec_hash, sec_root_key, rekey_churn_bytes) = cost_return_on_error!(
                     &mut cost,
                     indexed_tree::apply_indexed_secondary_mirror_post_apply(
                         &transitions,
-                        axis,
-                        &mut secondary_merk,
+                        *axis,
+                        secondary_merk,
                         grove_version,
                     )
                 );
@@ -4432,9 +4940,16 @@ impl GroveDb {
     /// are returned
     /// Runs the level-by-level batch propagation.
     ///
-    /// Returns `(leftover_ops, captures)`:
+    /// Returns `(leftover_ops, captures, merk_tree_cache,
+    /// ops_by_qualified_paths)`:
     ///   - `leftover_ops` is `Some(...)` only if a `batch_pause_height`
     ///     was set and pruning paused before reaching the root.
+    ///   - `merk_tree_cache` is the cache the body ran against, handed back
+    ///     so a paused apply can be continued on the same live Merks (see
+    ///     `continue_partial_apply_body`).
+    ///   - `ops_by_qualified_paths` is the reference-resolution map the body
+    ///     ran against, handed back so a continuation's reference ops can
+    ///     resolve this body's in-batch targets like one combined batch.
     ///   - `captures` is the [`BatchApplyCaptures`] collected while the
     ///     body applied, for the caller's post-apply cleanup passes:
     ///     `cidx_overwrite_cleanup_paths` lists the cidx primary paths
@@ -4448,7 +4963,15 @@ impl GroveDb {
         batch_structure: BatchStructure<C, F, SR>,
         batch_apply_options: Option<BatchApplyOptions>,
         grove_version: &GroveVersion,
-    ) -> CostResult<(Option<OpsByLevelPath>, BatchApplyCaptures), Error>
+    ) -> CostResult<
+        (
+            Option<OpsByLevelPath>,
+            BatchApplyCaptures,
+            C,
+            BTreeMap<Vec<Vec<u8>>, GroveOp>,
+        ),
+        Error,
+    >
     where
         F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
         SR: FnMut(
@@ -4629,6 +5152,16 @@ impl GroveDb {
                                                         )
                                                     );
                                                 }
+                                                GroveOp::ReplaceBackwardReferenceFamilyMember {
+                                                    ..
+                                                } => {
+                                                    return Err(Error::InvalidBatchOperation(
+                                                        "backward-references family members are \
+                                                         not trees and cannot receive child \
+                                                         propagation",
+                                                    ))
+                                                    .wrap_with_cost(cost);
+                                                }
                                                 GroveOp::RefreshReference { .. } => {
                                                     return Err(Error::InvalidBatchOperation(
                                                         "insertion of element under a refreshed \
@@ -4739,7 +5272,13 @@ impl GroveDb {
                     indexed_mirror_rekey_churn_bytes: merk_tree_cache
                         .take_indexed_mirror_rekey_churn_bytes(),
                 };
-                return Ok((Some(ops_by_level_paths), captures)).wrap_with_cost(cost);
+                return Ok((
+                    Some(ops_by_level_paths),
+                    captures,
+                    merk_tree_cache,
+                    ops_by_qualified_paths,
+                ))
+                .wrap_with_cost(cost);
             }
             current_level = current_level.saturating_sub(1);
         }
@@ -4749,13 +5288,14 @@ impl GroveDb {
             indexed_mirror_rekey_churn_bytes: merk_tree_cache
                 .take_indexed_mirror_rekey_churn_bytes(),
         };
-        Ok((None, captures)).wrap_with_cost(cost)
+        Ok((None, captures, merk_tree_cache, ops_by_qualified_paths)).wrap_with_cost(cost)
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
     /// If the pause height is set in the batch apply options
-    /// Then return the list of leftover operations
-    fn apply_body<'db, S: StorageContext<'db>>(
+    /// Then return the list of leftover operations, together with the live
+    /// Merk cache the body ran against so the apply can be continued on it.
+    fn apply_body<'db, S, F, F2>(
         &self,
         ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
@@ -4772,16 +5312,27 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
-        get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
-        get_secondary_merks_fn: impl FnMut(
+        get_merk_fn: F,
+        get_secondary_merks_fn: F2,
+        grove_version: &GroveVersion,
+    ) -> CostResult<
+        (
+            Option<OpsByLevelPath>,
+            BatchApplyCaptures,
+            TreeCacheMerkByPath<S, F, F2>,
+            BTreeMap<Vec<Vec<u8>>, GroveOp>,
+        ),
+        Error,
+    >
+    where
+        S: StorageContext<'db>,
+        F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
+        F2: FnMut(
             &[Vec<u8>],
             Option<&Element>,
-        ) -> CostResult<
-            Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>,
-            Error,
-        >,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(Option<OpsByLevelPath>, BatchApplyCaptures), Error> {
+        )
+            -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
+    {
         check_grovedb_v0_with_cost!(
             "apply_body",
             grove_version.grovedb_versions.apply_batch.apply_body
@@ -4795,6 +5346,10 @@ impl GroveDb {
                 split_removed_bytes_function,
                 TreeCacheMerkByPath {
                     merks: Default::default(),
+                    unused_new_merks: Default::default(),
+                    skipped_insert_paths: Default::default(),
+                    secondary_merks: Default::default(),
+                    pending_indexed_elements: Default::default(),
                     get_merk_fn,
                     get_secondary_merks_fn,
                     indexed_secondary_after_apply: Default::default(),
@@ -4809,12 +5364,23 @@ impl GroveDb {
             .add_cost(cost)
     }
 
-    /// Method to propagate updated subtree root hashes up to GroveDB root
-    /// If the pause height is set in the batch apply options
-    /// Then return the list of leftover operations
-    fn continue_partial_apply_body<'db, S: StorageContext<'db>>(
+    /// Continue a paused `apply_body` on the SAME live Merk cache it ran
+    /// against, folding `additional_ops` into its leftover operations and
+    /// seeding reference resolution with the paused body's
+    /// `ops_by_qualified_paths`, so `additional_ops` references resolve
+    /// the initial segment's in-batch targets like one combined batch.
+    ///
+    /// The cache is what keeps the two segments of a partial batch
+    /// coherent (issue #842): every primary and secondary Merk the initial
+    /// segment touched is still open here with its pending in-memory state
+    /// — including root keys that exist nowhere in storage yet because the
+    /// op carrying them is still a leftover — so the continuation applies
+    /// on top of that state instead of reopening stale copies from
+    /// committed storage and rewriting nodes the initial segment deleted.
+    fn continue_partial_apply_body<'db, S, F, F2>(
         &self,
         previous_leftover_operations: Option<OpsByLevelPath>,
+        mut previous_ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, GroveOp>,
         additional_ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
         update_element_flags_function: impl FnMut(
@@ -4830,16 +5396,18 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
-        get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
-        get_secondary_merks_fn: impl FnMut(
+        mut merk_tree_cache: TreeCacheMerkByPath<S, F, F2>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(Option<OpsByLevelPath>, BatchApplyCaptures), Error>
+    where
+        S: StorageContext<'db>,
+        F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
+        F2: FnMut(
             &[Vec<u8>],
             Option<&Element>,
-        ) -> CostResult<
-            Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>,
-            Error,
-        >,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(Option<OpsByLevelPath>, BatchApplyCaptures), Error> {
+        )
+            -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
+    {
         check_grovedb_v0_with_cost!(
             "continue_partial_apply_body",
             grove_version
@@ -4847,28 +5415,37 @@ impl GroveDb {
                 .apply_batch
                 .continue_partial_apply_body
         );
+        // The first segment's conditional insertions may have been skipped.
+        // Keep their actual stored values authoritative for references and
+        // discard only unused placeholders reserved for the attempted trees.
+        // Merks with applied operations still carry live pending state.
+        for path in merk_tree_cache.skipped_insert_paths.drain() {
+            previous_ops_by_qualified_paths.remove(&path);
+            merk_tree_cache.pending_indexed_elements.remove(&path);
+            if merk_tree_cache.unused_new_merks.remove(&path) {
+                merk_tree_cache.merks.remove(&path);
+            }
+        }
         let mut cost = OperationCost::default();
         let batch_structure = cost_return_on_error!(
             &mut cost,
             BatchStructure::continue_from_ops(
                 previous_leftover_operations,
+                Some(previous_ops_by_qualified_paths),
                 additional_ops,
                 update_element_flags_function,
                 split_removed_bytes_function,
-                TreeCacheMerkByPath {
-                    merks: Default::default(),
-                    get_merk_fn,
-                    get_secondary_merks_fn,
-                    indexed_secondary_after_apply: Default::default(),
-                    cidx_overwrite_cleanup_paths: Default::default(),
-                    deleted_tree_actual_types: Default::default(),
-                    indexed_mirror_rekey_churn_bytes: 0,
-                },
+                merk_tree_cache,
                 grove_version
             )
         );
-        Self::apply_batch_structure(batch_structure, batch_apply_options, grove_version)
-            .add_cost(cost)
+        // The cache is dropped here: its Merks borrow the storage batch,
+        // which the caller drains and consumes next.
+        let (leftover, captures, _merk_tree_cache, _ops_by_qualified_paths) = cost_return_on_error!(
+            &mut cost,
+            Self::apply_batch_structure(batch_structure, batch_apply_options, grove_version)
+        );
+        Ok((leftover, captures)).wrap_with_cost(cost)
     }
 
     /// Applies operations on GroveDB one at a time, without batching.
@@ -4912,6 +5489,13 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         for op in ops.into_iter() {
             match op.op {
+                GroveOp::ReplaceBackwardReferenceFamilyMember { .. } => {
+                    return Err(Error::NotSupported(
+                        "derived backward-references ops cannot be applied without batching"
+                            .to_owned(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
                 GroveOp::InsertOrReplace { element } | GroveOp::Replace { element } => {
                     // TODO: paths in batches is something to think about
                     let path_slices: Vec<&[u8]> =
@@ -5065,6 +5649,11 @@ impl GroveDb {
                             .as_ref()
                             .is_none_or(|o| o.base_root_storage_is_free),
                         validate_tree_at_path_exists: false,
+                        // Same decision as `as_delete_options`: the batch's
+                        // opt-in extends to its deletes.
+                        propagate_backward_references: options
+                            .as_ref()
+                            .is_some_and(|o| o.propagate_backward_references),
                     };
                     cost_return_on_error!(
                         &mut cost,
@@ -5809,6 +6398,59 @@ impl GroveDb {
         Ok(scan).wrap_with_cost(cost)
     }
 
+    /// Backward-references family elements are only valid in batches that
+    /// opt into the bookkeeping via
+    /// `BatchApplyOptions::propagate_backward_references` (GROVE_V4+),
+    /// where the preprocessor expands them into the derived operations the
+    /// live flagged flow performs. Everywhere else (`allow_family` false:
+    /// unflagged batches, partial batches, partial-batch add-on ops) they
+    /// fail closed — the pipeline would otherwise silently produce
+    /// inconsistent backward-reference state (a `BidirectionalReference`
+    /// whose target never learns about it).
+    fn reject_backward_references_elements_in_batch(
+        ops: &[QualifiedGroveDbOp],
+        allow_family: bool,
+    ) -> Result<(), Error> {
+        for op in ops {
+            // The derived write op is internal to the preprocessor; a
+            // caller supplying one could install arbitrary value hashes.
+            if matches!(op.op, GroveOp::ReplaceBackwardReferenceFamilyMember { .. }) {
+                return Err(Error::NotSupported(
+                    "ReplaceBackwardReferenceFamilyMember is derived internally and cannot be \
+                     supplied in a batch"
+                        .to_owned(),
+                ));
+            }
+            let element = match &op.op {
+                GroveOp::InsertWithKnownToNotAlreadyExist { element }
+                | GroveOp::InsertIfNotExists { element, .. }
+                | GroveOp::InsertOrReplace { element }
+                | GroveOp::Replace { element }
+                | GroveOp::Patch { element, .. } => element,
+                _ => continue,
+            };
+            if element.underlying().supports_backward_references() {
+                // Never wrapped: the wrappers' constructors refuse the family
+                // and deserialization rejects the shape, so a hand-built
+                // `NonCounted(family)` must not be written.
+                if element.is_wrapped() {
+                    return Err(Error::InvalidBatchOperation(
+                        "backward-references family elements cannot be wrapped in NonCounted / \
+                         NotSummed / NotCountedOrSummed",
+                    ));
+                }
+                if !allow_family {
+                    return Err(Error::NotSupported(
+                        "backward-references family elements require \
+                         BatchApplyOptions::propagate_backward_references (GROVE_V4+)"
+                            .to_owned(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Applies batch of operations on GroveDB
     pub fn apply_batch_with_element_flags_update(
         &self,
@@ -5837,11 +6479,38 @@ impl GroveDb {
                 .apply_batch
                 .apply_batch_with_element_flags_update
         );
+        let _storage_removal_version_guard =
+            grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(
+                grove_version
+                    .grovedb_versions
+                    .storage_costs
+                    .add_basic_storage_removal_to_sectioned_storage_removal,
+            );
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
 
         if ops.is_empty() {
             return Ok(()).wrap_with_cost(cost);
+        }
+
+        // An ordinary batch must fully propagate. A nonzero
+        // `batch_pause_height` would make `apply_body` pause mid-propagation
+        // and hand back leftover ancestor ops — which this entry point has
+        // no continuation for, so it would commit the paused result and
+        // silently discard them, leaving child state inconsistent with
+        // retained ancestor commitments (issue #889). Only
+        // `apply_partial_batch*` may pause. A pause height of 0 is complete
+        // propagation (level 0 is processed, base root key included, before
+        // the pause check fires) and stays accepted.
+        if batch_apply_options
+            .as_ref()
+            .and_then(|options| options.batch_pause_height)
+            .is_some_and(|pause_height| pause_height > 0)
+        {
+            return Err(Error::InvalidBatchOperation(
+                "a nonzero batch_pause_height is only supported by apply_partial_batch",
+            ))
+            .wrap_with_cost(cost);
         }
 
         // Check batch operation consistency BEFORE preprocessing so that
@@ -5861,6 +6530,56 @@ impl GroveDb {
                 .wrap_with_cost(cost);
             }
         }
+
+        // Backward-references bookkeeping is a per-batch opt-in, and rides
+        // the same activation as the live flagged flow (`GROVE_V4`+, where
+        // `insert_on_transaction` dispatches to v1).
+        let backward_references_enabled = batch_apply_options
+            .as_ref()
+            .map(|options| options.propagate_backward_references)
+            .unwrap_or(false)
+            && grove_version
+                .grovedb_versions
+                .operations
+                .insert
+                .insert_on_transaction
+                >= 1;
+        cost_return_on_error_no_add!(
+            cost,
+            Self::reject_backward_references_elements_in_batch(&ops, backward_references_enabled)
+        );
+        let ops = if backward_references_enabled {
+            let ops = cost_return_on_error!(
+                &mut cost,
+                backward_references::expand_backward_references_ops(
+                    self,
+                    &tx,
+                    ops,
+                    batch_apply_options
+                        .as_ref()
+                        .map(|options| options.validate_insertion_does_not_override)
+                        .unwrap_or_default(),
+                    grove_version
+                )
+            );
+            // The expansion merges derived mutations into the batch under
+            // the M4 conflict rules and errors on everything ambiguous, so
+            // the expanded set should always be consistent; this re-check
+            // is a backstop against expansion bugs.
+            if check_batch_operation_consistency {
+                let consistency_result = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+                if !consistency_result.is_empty() {
+                    return Err(Error::InvalidBatchOperation(
+                        "derived backward-references operations conflict with the batch's own \
+                         operations",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+            }
+            ops
+        } else {
+            ops
+        };
 
         cost_return_on_error!(
             &mut cost,
@@ -5962,7 +6681,7 @@ impl GroveDb {
         // 5. Remove operation from the tree, repeat until there are operations to do;
         // 6. Add root leaves save operation to the batch
         // 7. Apply storage_cost batch
-        let (_leftover, batch_apply_captures) = cost_return_on_error!(
+        let (_leftover, batch_apply_captures, _, _) = cost_return_on_error!(
             &mut cost,
             self.apply_body(
                 ops,
@@ -6246,10 +6965,12 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
-    /// Applies a partial batch of operations on GroveDB
-    /// The batch is not committed
-    /// Clients should set the Batch Apply Options batch pause height
-    /// If it is not set we default to pausing at the root tree
+    /// Apply the initial segment, pass its pending cost to the add-on
+    /// callback, then apply the continuation before one atomic commit.
+    ///
+    /// The initial segment pauses at `batch_pause_height` (default: 1).
+    /// Cross-segment safety checks are always enforced, even when
+    /// `disable_operation_consistency_check` skips per-segment validation.
     pub fn apply_partial_batch_with_element_flags_update(
         &self,
         ops: Vec<QualifiedGroveDbOp>,
@@ -6281,6 +7002,13 @@ impl GroveDb {
                 .apply_batch
                 .apply_partial_batch_with_element_flags_update
         );
+        let _storage_removal_version_guard =
+            grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(
+                grove_version
+                    .grovedb_versions
+                    .storage_costs
+                    .add_basic_storage_removal_to_sectioned_storage_removal,
+            );
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
 
@@ -6305,6 +7033,11 @@ impl GroveDb {
                 .wrap_with_cost(cost);
             }
         }
+
+        cost_return_on_error_no_add!(
+            cost,
+            Self::reject_backward_references_elements_in_batch(&ops, false)
+        );
 
         cost_return_on_error!(
             &mut cost,
@@ -6369,7 +7102,7 @@ impl GroveDb {
             mut merk_delete_paths,
             mut cidx_primary_delete_paths,
             skipped_delete_paths,
-            delete_tree_behaviors,
+            mut delete_tree_behaviors,
         } = cost_return_on_error!(
             &mut cost,
             self.scan_delete_tree_ops(&ops, &storage_batch, tx.as_ref(), grove_version)
@@ -6398,6 +7131,18 @@ impl GroveDb {
             batch_apply_options.batch_pause_height = Some(1);
         }
 
+        // Both segments run against ONE storage batch and ONE live Merk
+        // cache (issue #842). The initial segment's writes are only pending
+        // in the batch, so a continuation that reopened Merks from the
+        // transaction would apply on top of stale trees — re-writing nodes
+        // the initial segment deleted (an indexed secondary's old
+        // `(count ‖ key)` row came back that way) and opening pause-level
+        // Merks at root keys that are still only in the leftover ops. The
+        // cache carries every touched Merk, primaries and secondaries, with
+        // its pending state into the continuation. Nothing reaches the
+        // transaction before the single commit below, so a failing
+        // continuation still leaves it untouched.
+        //
         // With the only one difference (if there is a transaction) do the following:
         // 2. If nothing left to do and we were on a non-leaf subtree or we're done with
         //    one subtree and moved to another then add propagation operation to the
@@ -6408,7 +7153,12 @@ impl GroveDb {
         // 5. Remove operation from the tree, repeat until there are operations to do;
         // 6. Add root leaves save operation to the batch
         // 7. Apply storage_cost batch
-        let (left_over_operations, partial_captures) = cost_return_on_error!(
+        let (
+            left_over_operations,
+            partial_captures,
+            merk_tree_cache,
+            initial_ops_by_qualified_paths,
+        ) = cost_return_on_error!(
             &mut cost,
             self.apply_body(
                 ops,
@@ -6442,11 +7192,13 @@ impl GroveDb {
         // if we paused at the root height, the left over operations would be to replace
         // a lot of leaf nodes in the root tree
 
-        // let's build the write batch
+        // Drain the initial segment's pending writes into the write batch
+        // so their cost can be reported to the caller. The batch object
+        // stays alive (and empty): the cached Merks keep writing into it.
         let (mut write_batch, mut pending_costs) = cost_return_on_error!(
             &mut cost,
             self.db
-                .build_write_batch(storage_batch)
+                .build_write_batch(storage_batch.take_pending())
                 .map_err(|e| e.into())
         );
 
@@ -6466,17 +7218,6 @@ impl GroveDb {
         // caller-provided, so the returned operations could contain duplicates,
         // internal-only ops, or inserts under paths being deleted. Apply the
         // same consistency gate used for the initial batch.
-        //
-        // Limitation: add-on DeleteTree ops bypass the
-        // SubelementsDeletionBehavior preflight (emptiness check, Skip
-        // filtering, cleanup path collection) that runs on the initial
-        // batch.  They go straight into continue_partial_apply_body →
-        // apply_body, where DeleteTree is a simple layered Merk delete
-        // with no emptiness enforcement.  In practice this is safe because
-        // partial-batch callers (Platform) control the callback and only
-        // return root-level propagation ops, not new DeleteTree ops.  If
-        // add-on DeleteTree support is needed in the future, the preflight
-        // must be extended to cover new_operations as well.
         if check_batch_operation_consistency && !new_operations.is_empty() {
             let consistency_result =
                 QualifiedGroveDbOp::verify_consistency_of_operations(&new_operations);
@@ -6516,41 +7257,252 @@ impl GroveDb {
                 .wrap_with_cost(cost);
             }
         }
+        // V4 collisions with pending ancestor updates are composed by the
+        // continuation, not destructive overwrites. Validate them before the
+        // cross-segment and committed-state preflights so those gates exempt
+        // only operations whose pending root state can actually be preserved.
+        let mut merged_ancestor_paths = HashSet::new();
+        if grove_version
+            .grovedb_versions
+            .apply_batch
+            .add_on_op_collision
+            >= 1
+            && let Some(left_over) = left_over_operations.as_ref()
+        {
+            for op in &new_operations {
+                if let Some(key) = op.key.as_ref()
+                    && let Some(pending) = left_over
+                        .get(op.path.len())
+                        .and_then(|level| level.get(&op.path))
+                        .and_then(|path_ops| path_ops.get(key))
+                    && pending.is_pending_ancestor_update()
+                {
+                    cost_return_on_error_no_add!(
+                        cost,
+                        batch_structure::merge_add_on_op_over_pending(pending, op.op.clone())
+                    );
+                    let mut qualified = op.path.to_path();
+                    qualified.push(key.get_key_clone());
+                    merged_ancestor_paths.insert(qualified);
+                }
+            }
+        }
+        let is_merged_ancestor = |op: &QualifiedGroveDbOp| {
+            op.key.as_ref().is_some_and(|key| {
+                let mut qualified = op.path.to_path();
+                qualified.push(key.get_key_clone());
+                merged_ancestor_paths.contains(&qualified)
+            })
+        };
+        let overwrite_preflight_ops: Vec<_> = new_operations
+            .iter()
+            .filter(|op| !is_merged_ancestor(op))
+            .cloned()
+            .collect();
+
+        // Cross-segment safety is mandatory even when callers disable
+        // per-segment consistency checks: the live cache cannot make these
+        // operation combinations coherent. Build from the initial op map
+        // after execution so skipped conditional insertions add no footprint.
+        let initial_segment_footprint = InitialSegmentFootprint::from_ops(
+            &initial_ops_by_qualified_paths,
+            &merk_tree_cache.skipped_insert_paths,
+        );
+        cost_return_on_error_no_add!(
+            cost,
+            initial_segment_footprint.verify_add_on_ops(&new_operations, &merged_ancestor_paths)
+        );
+        // A continuation write under an indexed primary the initial segment
+        // safe-subset-OVERWROTE would land in the very storage prefixes the
+        // post-apply sweep below clears (the old element's primary subtree
+        // and secondary namespaces). The ordinary batch refuses this shape
+        // in one batch for the same reason — see the NotSupported arm of
+        // `reject_indexed_overwrite_with_descendants` — so refuse it here
+        // before the continuation applies. `cidx_overwrite_cleanup_paths`
+        // is exactly the list of primaries the initial segment overwrote.
+        for op in &new_operations {
+            let path = op.path.to_path();
+            if partial_captures
+                .cidx_overwrite_cleanup_paths
+                .iter()
+                .any(|overwritten| path.starts_with(overwritten))
+            {
+                return Err(Error::InvalidBatchOperation(
+                    "add-on operation writes under an indexed tree the initial segment \
+                     overwrote; the old element's storage is swept at commit and would \
+                     clear the new writes",
+                ))
+                .wrap_with_cost(cost);
+            }
+        }
+        // Add-on ops get the same indexed-overwrite preflight as the initial
+        // batch. It reads committed state, so it covers committed
+        // descendants; descendants the initial segment wrote are covered by
+        // the cross-segment gate above.
+        cost_return_on_error!(
+            &mut cost,
+            indexed_tree::reject_indexed_overwrite_with_descendants(
+                self,
+                &overwrite_preflight_ops,
+                tx.as_ref(),
+                grove_version,
+            )
+        );
+
+        // The callback is caller-provided, so add-on ops get the same
+        // backward-references gate the initial ops got — otherwise an op
+        // carrying the family would only fail deep inside execution.
+        cost_return_on_error_no_add!(
+            cost,
+            Self::reject_backward_references_elements_in_batch(&new_operations, false)
+        );
+
+        // Add-on typed appends (CommitmentTreeInsert, MmrTreeAppend,
+        // BulkAppend, DenseTreeInsert, PrivateDocumentStoreInsert) get the
+        // same preprocessing as the initial segment (issue #895): without
+        // it they are keyless, so ordinary batch construction either drops
+        // them silently (V1..V3) or execution refuses them loudly.
+        // Preprocessing reads committed state, which is coherent here
+        // because the cross-segment gate above refused any append whose
+        // target tree the initial segment appended into, created, replaced,
+        // or deleted.
+        let new_operations = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_commitment_tree_ops(
+                new_operations,
+                tx.as_ref(),
+                &storage_batch,
+                grove_version
+            )
+        );
+        let new_operations = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_mmr_tree_ops(
+                new_operations,
+                tx.as_ref(),
+                &storage_batch,
+                grove_version
+            )
+        );
+        let new_operations = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_bulk_append_ops(
+                new_operations,
+                tx.as_ref(),
+                &storage_batch,
+                grove_version
+            )
+        );
+        let new_operations = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_dense_tree_ops(
+                new_operations,
+                tx.as_ref(),
+                &storage_batch,
+                grove_version
+            )
+        );
+        let new_operations = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_private_document_store_ops(
+                new_operations,
+                tx.as_ref(),
+                &storage_batch,
+                grove_version
+            )
+        );
+
+        // Add-on DeleteTree ops get the same SubelementsDeletionBehavior
+        // preflight as the initial segment (issue #709): the emptiness
+        // check behind Error / Skip, Skip filtering, and the cleanup
+        // path / behavior collection the post-apply passes below run on.
+        // The scan reads committed state. The cross-segment gate refuses
+        // deletes of initial-segment writes except for validated ancestor
+        // collisions, whose pending emptiness takes precedence below.
+        // A colliding delete was checked against the pending child root,
+        // which may now be empty even though committed storage is populated.
+        // Bypass only the stale emptiness read; retain capability/type checks
+        // and register the caller's actual cleanup behavior below.
+        let delete_preflight_ops: Vec<_> = new_operations
+            .iter()
+            .cloned()
+            .map(|mut op| {
+                if is_merged_ancestor(&op)
+                    && let GroveOp::DeleteTree(_, behavior) = &mut op.op
+                    && matches!(
+                        behavior,
+                        SubelementsDeletionBehavior::Error | SubelementsDeletionBehavior::Skip
+                    )
+                {
+                    *behavior = SubelementsDeletionBehavior::DontCheckWithNoCleanup;
+                }
+                op
+            })
+            .collect();
+        let DeleteTreePreScan {
+            non_merk_delete_paths: add_on_non_merk_delete_paths,
+            merk_delete_paths: add_on_merk_delete_paths,
+            cidx_primary_delete_paths: add_on_cidx_primary_delete_paths,
+            skipped_delete_paths: add_on_skipped_delete_paths,
+            delete_tree_behaviors: add_on_delete_tree_behaviors,
+        } = cost_return_on_error!(
+            &mut cost,
+            self.scan_delete_tree_ops(
+                &delete_preflight_ops,
+                &storage_batch,
+                tx.as_ref(),
+                grove_version
+            )
+        );
+        non_merk_delete_paths.extend(add_on_non_merk_delete_paths);
+        merk_delete_paths.extend(add_on_merk_delete_paths);
+        cidx_primary_delete_paths.extend(add_on_cidx_primary_delete_paths);
+        delete_tree_behaviors.extend(add_on_delete_tree_behaviors);
+        for op in &new_operations {
+            if is_merged_ancestor(op)
+                && let GroveOp::DeleteTree(_, behavior) = &op.op
+                && let Some(key) = op.key.as_ref()
+            {
+                let mut qualified = op.path.to_path();
+                qualified.push(key.get_key_clone());
+                delete_tree_behaviors.insert(qualified, *behavior);
+            }
+        }
+
+        // Filter out add-on DeleteTree ops skipped by
+        // SubelementsDeletionBehavior::Skip on non-empty trees, exactly
+        // like the initial segment's filtering above.
+        let new_operations = if !add_on_skipped_delete_paths.is_empty() {
+            new_operations
+                .into_iter()
+                .filter(|op| {
+                    if let GroveOp::DeleteTree(..) = &op.op
+                        && let Some(key) = op.key.as_ref()
+                    {
+                        let mut child_path = op.path.to_path();
+                        child_path.push(key.as_slice().to_vec());
+                        return !add_on_skipped_delete_paths.contains(&child_path);
+                    }
+                    true
+                })
+                .collect()
+        } else {
+            new_operations
+        };
 
         // we are trying to finalize
         batch_apply_options.batch_pause_height = None;
-
-        let continue_storage_batch = StorageBatch::new();
 
         let (_leftover_unused, continue_captures) = cost_return_on_error!(
             &mut cost,
             self.continue_partial_apply_body(
                 left_over_operations,
+                initial_ops_by_qualified_paths,
                 new_operations,
                 Some(batch_apply_options),
                 update_element_flags_function,
                 split_removal_bytes_function,
-                |path, new_merk| {
-                    self.open_batch_transactional_merk_at_path(
-                        &continue_storage_batch,
-                        path.into(),
-                        tx.as_ref(),
-                        new_merk,
-                        grove_version,
-                    )
-                },
-                |primary_path: &[Vec<u8>], fresh_element: Option<&Element>| {
-                    let primary_refs: Vec<&[u8]> =
-                        primary_path.iter().map(|v| v.as_slice()).collect();
-                    let cidx_path: SubtreePath<&[u8]> = primary_refs.as_slice().into();
-                    self.open_indexed_secondaries_for_batch(
-                        cidx_path,
-                        fresh_element,
-                        &continue_storage_batch,
-                        tx.as_ref(),
-                        grove_version,
-                    )
-                },
+                merk_tree_cache,
                 grove_version
             )
         );
@@ -6587,7 +7539,7 @@ impl GroveDb {
             cost,
             self.stage_flat_drop_records(
                 &flat_drop_records,
-                &continue_storage_batch,
+                &storage_batch,
                 tx.as_ref(),
                 &mut cost,
             )
@@ -6600,7 +7552,7 @@ impl GroveDb {
                 .db
                 .get_transactional_storage_context(
                     child_subtree_path,
-                    Some(&continue_storage_batch),
+                    Some(&storage_batch),
                     tx.as_ref(),
                 )
                 .unwrap_add_cost(&mut cost);
@@ -6635,11 +7587,7 @@ impl GroveDb {
                 let p: SubtreePath<_> = subtree_path.as_slice().into();
                 let mut storage = self
                     .db
-                    .get_transactional_storage_context(
-                        p,
-                        Some(&continue_storage_batch),
-                        tx.as_ref(),
-                    )
+                    .get_transactional_storage_context(p, Some(&storage_batch), tx.as_ref())
                     .unwrap_add_cost(&mut cost);
                 cost_return_on_error!(
                     &mut cost,
@@ -6675,7 +7623,7 @@ impl GroveDb {
                     .db
                     .get_transactional_storage_context_by_subtree_prefix(
                         secondary_prefix,
-                        Some(&continue_storage_batch),
+                        Some(&storage_batch),
                         tx.as_ref(),
                     )
                     .unwrap_add_cost(&mut cost);
@@ -6710,11 +7658,7 @@ impl GroveDb {
                 let p: SubtreePath<_> = subtree_path.as_slice().into();
                 let mut storage = self
                     .db
-                    .get_transactional_storage_context(
-                        p,
-                        Some(&continue_storage_batch),
-                        tx.as_ref(),
-                    )
+                    .get_transactional_storage_context(p, Some(&storage_batch), tx.as_ref())
                     .unwrap_add_cost(&mut cost);
                 cost_return_on_error!(
                     &mut cost,
@@ -6745,7 +7689,7 @@ impl GroveDb {
                     .db
                     .get_transactional_storage_context_by_subtree_prefix(
                         secondary_prefix,
-                        Some(&continue_storage_batch),
+                        Some(&storage_batch),
                         tx.as_ref(),
                     )
                     .unwrap_add_cost(&mut cost);
@@ -6766,7 +7710,7 @@ impl GroveDb {
         let continued_pending_costs = cost_return_on_error!(
             &mut cost,
             self.db
-                .continue_write_batch(&mut write_batch, continue_storage_batch)
+                .continue_write_batch(&mut write_batch, storage_batch)
                 .map_err(|e| e.into())
         );
 
@@ -7069,6 +8013,7 @@ mod tests {
                     disable_operation_consistency_check: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    propagate_backward_references: false,
                 }),
                 None,
                 grove_version
@@ -7674,6 +8619,7 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    propagate_backward_references: false,
                 }),
                 None,
                 grove_version
@@ -7715,6 +8661,7 @@ mod tests {
                     validate_insertion_does_not_override: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    propagate_backward_references: false,
                 }),
                 None,
                 grove_version
@@ -7748,6 +8695,7 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
+                    propagate_backward_references: false,
                 }),
                 None,
                 grove_version

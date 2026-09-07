@@ -1,20 +1,19 @@
 //! Insert operations
 
-use std::{collections::HashMap, option::Option::None};
+use std::option::Option::None;
 
-use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
-};
-use grovedb_merk::{Merk, MerkOptions};
+use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_merk::MerkOptions;
 use grovedb_path::SubtreePath;
-use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch};
+use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
-use crate::{util::TxRef, Element, Error, GroveDb, Transaction, TransactionArg};
+use crate::{util::TxRef, Element, Error, GroveDb, TransactionArg};
 
 /// Versioned dispatch for `add_element_on_transaction` (the non-batch insert
 /// path). Consensus-critical — see the module docs.
 mod add_element_on_transaction;
+mod insert_on_transaction;
 
 #[derive(Clone)]
 /// Insert options
@@ -25,6 +24,14 @@ pub struct InsertOptions {
     pub validate_insertion_does_not_override_tree: bool,
     /// Base root storage is free
     pub base_root_storage_is_free: bool,
+    /// Propagate updates to elements with backward references. This enables
+    /// bidirectional-reference bookkeeping for this call: overwrites of
+    /// backward-references elements trigger hash propagation along the
+    /// reference chains, or cascade deletion when the new element no longer
+    /// supports backward references. Since the checks require an extra
+    /// fetch on every write, the feature is opt-in per call. Requires
+    /// `GROVE_V4`+; ignored (never set) by shipped v1..v3 flows.
+    pub propagate_backward_references: bool,
 }
 
 impl Default for InsertOptions {
@@ -33,6 +40,7 @@ impl Default for InsertOptions {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: true,
             base_root_storage_is_free: true,
+            propagate_backward_references: false,
         }
     }
 }
@@ -42,7 +50,7 @@ impl InsertOptions {
         self.validate_insertion_does_not_override_tree || self.validate_insertion_does_not_override
     }
 
-    fn as_merk_options(&self) -> MerkOptions {
+    pub(crate) fn as_merk_options(&self) -> MerkOptions {
         MerkOptions {
             base_root_storage_is_free: self.base_root_storage_is_free,
         }
@@ -111,67 +119,6 @@ impl GroveDb {
         );
 
         tx.commit_local().wrap_with_cost(cost)
-    }
-
-    fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
-        &self,
-        path: SubtreePath<'b, B>,
-        key: &[u8],
-        element: Element,
-        options: InsertOptions,
-        transaction: &'db Transaction,
-        batch: &StorageBatch,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        check_grovedb_v0_with_cost!(
-            "insert_on_transaction",
-            grove_version
-                .grovedb_versions
-                .operations
-                .insert
-                .insert_on_transaction
-        );
-
-        let mut cost = OperationCost::default();
-
-        let mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>> =
-            HashMap::default();
-
-        let merk = cost_return_on_error!(
-            &mut cost,
-            self.add_element_on_transaction(
-                path.clone(),
-                key,
-                element,
-                options,
-                transaction,
-                batch,
-                grove_version
-            )
-        );
-        // A generic insert cannot mirror the new child's ordering value into
-        // an indexed primary's secondary index. Reject before propagation, so
-        // the `StorageBatch` is discarded and nothing is committed.
-        cost_return_on_error_no_add!(
-            cost,
-            crate::operations::indexed_tree::reject_generic_write_into_indexed_primary(
-                merk.tree_type,
-                "insert",
-            )
-        );
-        merk_cache.insert(path.clone(), merk);
-        cost_return_on_error!(
-            &mut cost,
-            self.propagate_changes_with_transaction(
-                merk_cache,
-                path,
-                transaction,
-                batch,
-                grove_version
-            )
-        );
-
-        Ok(()).wrap_with_cost(cost)
     }
 
     /// Insert if not exists
@@ -341,9 +288,15 @@ mod tests {
     use grovedb_version::version::GroveVersion;
     use pretty_assertions::assert_eq;
 
+    use grovedb_merk::element::get::ElementFetchFromStorageExtensions;
+    use grovedb_path::SubtreePath;
+
     use crate::{
         operations::insert::InsertOptions,
-        tests::{common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, TEST_LEAF},
+        tests::{
+            common::{make_tree_with_bidi_references, EMPTY_PATH},
+            make_empty_grovedb, make_test_grovedb, TEST_LEAF,
+        },
         Element, Error,
     };
 
@@ -521,6 +474,7 @@ mod tests {
                     validate_insertion_does_not_override: true,
                     validate_insertion_does_not_override_tree: true,
                     base_root_storage_is_free: true,
+                    propagate_backward_references: false,
                 }),
                 None,
                 gv,
@@ -598,6 +552,7 @@ mod tests {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: false,
             base_root_storage_is_free: true,
+            propagate_backward_references: false,
         }
     }
 
@@ -942,8 +897,11 @@ mod tests {
     // partial state behind.
     //
     // The guards are byte-identical in the v0 (`GROVE_V1` / `GROVE_V2`)
-    // and v1 (`GROVE_V3`+) snapshots, so each scenario is parameterized by
-    // grove version and run under both.
+    // and v1 (`GROVE_V3`) snapshots, so each scenario is parameterized by
+    // grove version and run under both. v2 (`GROVE_V4`+) additionally
+    // validates the claimed secondary root keys against the STORED
+    // element (issue #897), so the secondary-mismatch scenarios reject
+    // there with the canonical-authority messages instead.
     // ------------------------------------------------------------------
 
     // Exact rejection messages emitted by the indexed-tree arms of
@@ -990,6 +948,19 @@ mod tests {
     const PCPSIT_AXIS_SECONDARY_MISMATCH: &str =
         "ProvableCountProvableSumIndexedTree direct insertion: provided axis secondary_root_key \
          does not match the existing secondary Merk's root key";
+
+    // v2 (`GROVE_V4`+) rejects the same secondary-mismatch scenarios
+    // earlier, against the STORED element's canonical root keys
+    // (issue #897).
+    const PCIT_SECONDARY_CANONICAL_MISMATCH: &str =
+        "CountIndexedTree direct insertion: provided secondary_root_key does not match the stored \
+         element's canonical secondary root key";
+    const PSIT_SECONDARY_CANONICAL_MISMATCH: &str =
+        "ProvableSumIndexedTree direct insertion: provided secondary_root_key does not match the \
+         stored element's canonical secondary root key";
+    const PCPSIT_AXIS_SECONDARY_CANONICAL_MISMATCH: &str =
+        "ProvableCountProvableSumIndexedTree direct insertion: a provided axis secondary_root_key \
+         does not match the stored element's canonical axis root key";
 
     /// A root key no Merk in these fixtures can have: nothing is ever
     /// stored under it, so `Merk::open_layered_with_root_key` loads an
@@ -1373,11 +1344,19 @@ mod tests {
         assert!(issues.is_empty(), "issues: {issues:?}");
     }
 
-    /// The secondary (index) Merk's root key is validated the same way the
-    /// primary's is. A claimed key that no node lives under opens as an
+    /// The secondary (index) Merk's root key is validated too. Under the
+    /// v0/v1 snapshots a claimed key that no node lives under opens as an
     /// empty secondary, whose root key is `None` — the mismatch is caught
-    /// instead of being committed into the element bytes.
-    fn indexed_secondary_root_key_mismatch_is_rejected(gv: &GroveVersion) {
+    /// instead of being committed into the element bytes. Under v2
+    /// (`GROVE_V4`+) the same claims are rejected earlier, against the
+    /// STORED element's canonical root keys (issue #897) — the expected
+    /// messages are passed in per snapshot.
+    fn indexed_secondary_root_key_mismatch_is_rejected(
+        gv: &GroveVersion,
+        pcit_expected: &str,
+        psit_expected: &str,
+        pcpsit_axis_expected: &str,
+    ) {
         let db = make_test_grovedb(gv);
         let (pcit_primary, _, pcit_count) = populate_pcit(&db, gv, b"cidx");
         let (psit_primary, _, psit_sum) = populate_psit(&db, gv, b"psit");
@@ -1395,7 +1374,7 @@ mod tests {
                 gv,
             )
             .unwrap();
-        assert_invalid_input(result, PCIT_SECONDARY_MISMATCH);
+        assert_invalid_input(result, pcit_expected);
 
         // PSIT — honest primary + sum, bogus secondary.
         let result = db
@@ -1408,7 +1387,7 @@ mod tests {
                 gv,
             )
             .unwrap();
-        assert_invalid_input(result, PSIT_SECONDARY_MISMATCH);
+        assert_invalid_input(result, psit_expected);
 
         // PCPSIT — the axis TAGS still match what is stored (so the
         // schema guard passes), but the count axis carries a bogus
@@ -1431,7 +1410,7 @@ mod tests {
                 gv,
             )
             .unwrap();
-        assert_invalid_input(result, PCPSIT_AXIS_SECONDARY_MISMATCH);
+        assert_invalid_input(result, pcpsit_axis_expected);
 
         let issues = db.verify_grovedb(None, true, true, gv).expect("verify");
         assert!(issues.is_empty(), "issues: {issues:?}");
@@ -1604,21 +1583,52 @@ mod tests {
         indexed_partial_state_is_rejected(&GROVE_V1);
         indexed_primary_root_key_mismatch_is_rejected(&GROVE_V1);
         indexed_variant_mismatch_is_rejected(&GROVE_V1);
-        indexed_secondary_root_key_mismatch_is_rejected(&GROVE_V1);
+        indexed_secondary_root_key_mismatch_is_rejected(
+            &GROVE_V1,
+            PCIT_SECONDARY_MISMATCH,
+            PSIT_SECONDARY_MISMATCH,
+            PCPSIT_AXIS_SECONDARY_MISMATCH,
+        );
         pcpsit_axes_schema_change_is_rejected(&GROVE_V1);
         pcpsit_over_plain_provable_count_sum_tree_has_no_axes_schema(&GROVE_V1);
     }
 
-    /// v1 snapshot (`GROVE_V3`+, latest) — the indexed-tree arms are
-    /// identical to v0's, so the same guards must hold.
+    /// v1 snapshot (`GROVE_V3`) — the indexed-tree arms are identical to
+    /// v0's, so the same guards must hold.
     #[test]
     fn indexed_tree_direct_insert_guards_v1() {
+        use grovedb_version::version::v3::GROVE_V3;
+
+        indexed_partial_state_is_rejected(&GROVE_V3);
+        indexed_primary_root_key_mismatch_is_rejected(&GROVE_V3);
+        indexed_variant_mismatch_is_rejected(&GROVE_V3);
+        indexed_secondary_root_key_mismatch_is_rejected(
+            &GROVE_V3,
+            PCIT_SECONDARY_MISMATCH,
+            PSIT_SECONDARY_MISMATCH,
+            PCPSIT_AXIS_SECONDARY_MISMATCH,
+        );
+        pcpsit_axes_schema_change_is_rejected(&GROVE_V3);
+        pcpsit_over_plain_provable_count_sum_tree_has_no_axes_schema(&GROVE_V3);
+    }
+
+    /// v2 snapshot (`GROVE_V4`+, latest) — same guards, but the claimed
+    /// secondary root keys are validated against the STORED element's
+    /// canonical values (issue #897), so the secondary-mismatch scenarios
+    /// reject with the canonical-authority messages.
+    #[test]
+    fn indexed_tree_direct_insert_guards_v2() {
         let gv = GroveVersion::latest();
 
         indexed_partial_state_is_rejected(gv);
         indexed_primary_root_key_mismatch_is_rejected(gv);
         indexed_variant_mismatch_is_rejected(gv);
-        indexed_secondary_root_key_mismatch_is_rejected(gv);
+        indexed_secondary_root_key_mismatch_is_rejected(
+            gv,
+            PCIT_SECONDARY_CANONICAL_MISMATCH,
+            PSIT_SECONDARY_CANONICAL_MISMATCH,
+            PCPSIT_AXIS_SECONDARY_CANONICAL_MISMATCH,
+        );
         pcpsit_axes_schema_change_is_rejected(gv);
         pcpsit_over_plain_provable_count_sum_tree_has_no_axes_schema(gv);
     }
@@ -3303,6 +3313,7 @@ mod tests {
                     validate_insertion_does_not_override: false,
                     validate_insertion_does_not_override_tree: false,
                     base_root_storage_is_free: true,
+                    propagate_backward_references: false,
                 }),
                 Some(&tx),
                 grove_version,
@@ -3556,5 +3567,90 @@ mod tests {
     #[test]
     fn indexed_conversion_of_plain_tree_rejected_v1() {
         indexed_conversion_of_plain_tree_is_rejected(GroveVersion::latest());
+    }
+
+    #[test]
+    fn update_item_with_backward_references() {
+        let version = GroveVersion::latest();
+
+        let db = make_tree_with_bidi_references(version);
+
+        let transaction = db.start_transaction();
+
+        let get_hash = || {
+            Element::get_value_hash(
+                &db.open_transactional_merk_at_path(
+                    SubtreePath::from(&[TEST_LEAF, b"innertree"]),
+                    &transaction,
+                    None,
+                    version,
+                )
+                .unwrap()
+                .unwrap(),
+                b"ref",
+                true,
+                version,
+            )
+            .unwrap()
+            .unwrap()
+            .unwrap()
+        };
+
+        let hash_before = get_hash();
+
+        db.insert(
+            &[b"deep_leaf".as_ref(), b"deep_node_1", b"deeper_2"],
+            b"key5",
+            Element::new_item_allowing_bidirectional_references(b"certainly new value".to_vec()),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+
+        let hash_after = get_hash();
+
+        assert_ne!(hash_before, hash_after);
+    }
+
+    #[test]
+    fn update_item_with_backward_references_with_no_support() {
+        // Overwriting an item that has backward references with an element
+        // that no longer supports them cascades the reference chain away
+        // (every reference allowed cascade_on_update).
+        let version = GroveVersion::latest();
+
+        let db = make_tree_with_bidi_references(version);
+
+        let transaction = db.start_transaction();
+
+        db.insert(
+            &[b"deep_leaf".as_ref(), b"deep_node_1", b"deeper_2"],
+            b"key5",
+            Element::new_item(b"hello".to_vec()),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(matches!(
+            db.get(
+                &[TEST_LEAF, b"innertree"],
+                b"ref",
+                Some(&transaction),
+                version
+            )
+            .unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ));
     }
 }

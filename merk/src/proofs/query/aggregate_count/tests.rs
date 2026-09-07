@@ -8,7 +8,6 @@
 
 use std::collections::LinkedList;
 
-use grovedb_costs::CostsExt;
 use grovedb_version::version::GroveVersion;
 
 use super::{
@@ -1347,7 +1346,7 @@ fn fuzz_random_trees_and_ranges_round_trip() {
     }
 
     let v = GroveVersion::latest();
-    let mut rng = XorShift(0xDEAD_BEEF_C0FFEE);
+    let mut rng = XorShift(0x00DE_ADBE_EFC0_FFEE);
     let trials = 16;
     for trial in 0..trials {
         let key_count = rng.gen_range(1, 64);

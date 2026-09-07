@@ -10,6 +10,7 @@ use grovedb_costs::{
 };
 use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
 use grovedb_merk::{
+    element::ElementExt,
     proofs::{encode_into, query::QueryItem, Node, Op},
     tree::{combine_hash, value_hash, NULL_HASH},
     Merk, ProofWithoutEncodingResult, TreeFeatureType,
@@ -31,6 +32,15 @@ use crate::{
     reference_path::path_from_reference_path_type,
     Element, Error, GroveDb, PathQuery, Transaction,
 };
+
+/// A non-Merk subtree kind a V1 proof descends into, carrying the element
+/// fields its layer prover needs.
+enum NonMerkLowerLayer {
+    Mmr { mmr_size: u64 },
+    BulkAppend { total_count: u64, chunk_power: u8 },
+    Dense { dense_count: u16, dense_height: u8 },
+    Commitment { total_count: u64, chunk_power: u8 },
+}
 
 impl GroveDb {
     /// Prove one or more path queries.
@@ -1128,6 +1138,21 @@ impl GroveDb {
             };
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
+                    // Merk emits this node kind for backward-references
+                    // elements unconditionally; it is a V1-only wire shape
+                    // and the frozen V0 format must refuse to carry it
+                    // (released V0 verifiers reject the tag). Guard on the
+                    // NODE KIND — the element-typed rejection below cannot
+                    // fire for it because this outer match would otherwise
+                    // skip the node entirely.
+                    Node::KVBackwardsReferencesValueHash(..) => {
+                        return Err(Error::NotSupported(
+                            "backward-references elements are not supported in V0 proofs; they \
+                             require GROVE_V4+, which proves through V1"
+                                .to_owned(),
+                        ))
+                        .wrap_with_cost(cost);
+                    }
                     Node::KV(key, value)
                     | Node::KVValueHash(key, value, ..)
                     | Node::KVCount(key, value, _)
@@ -1171,8 +1196,9 @@ impl GroveDb {
                                     )
                                 );
 
-                                let serialized_referenced_elem =
-                                    referenced_elem.serialize(grove_version);
+                                let serialized_referenced_elem = referenced_elem
+                                    .stripped_of_backward_references()
+                                    .serialize(grove_version);
                                 if serialized_referenced_elem.is_err() {
                                     return Err(Error::CorruptedData(String::from(
                                         "unable to serialize element",
@@ -1380,6 +1406,21 @@ impl GroveDb {
                             // results, we can modify the proof to alter
                             // }
 
+                            // Backward-references elements activate with
+                            // GROVE_V4, which proves through V1; the V0
+                            // prover (locked wire format, grove v1/v2)
+                            // can never legitimately encounter them.
+                            Ok(Element::BidirectionalReference(..))
+                            | Ok(Element::ItemWithBackwardsReferences(..))
+                            | Ok(Element::SumItemWithBackwardsReferences(..))
+                            | Ok(Element::ItemWithSumItemWithBackwardsReferences(..)) => {
+                                return Err(Error::NotSupported(
+                                    "backward-references elements are not supported in V0 \
+                                     proofs; they require GROVE_V4+, which proves through V1"
+                                        .to_owned(),
+                                ))
+                                .wrap_with_cost(cost);
+                            }
                             // Explicit: when done_with_results is true, the above guards fail
                             // and we skip. Listed explicitly so adding a new Element variant
                             // produces a compile error here instead of silently dropping it.
@@ -2212,176 +2253,17 @@ impl GroveDb {
         // hard-error case (the caller asked for count-offset pagination
         // against something that isn't a count tree).
         if path.len() == path_query.path.len() && path_query.has_non_zero_offset() {
-            use grovedb_merk::TreeType as MerkTreeType;
-            let inner_range = cost_return_on_error_no_add!(
-                cost,
-                path_query.validate_count_offset_paginated().cloned()
-            );
-            if !matches!(
-                subtree.tree_type,
-                MerkTreeType::ProvableCountTree
-                    | MerkTreeType::ProvableCountSumTree
-                    | MerkTreeType::ProvableCountProvableSumTree
-            ) {
-                return Err(Error::InvalidQuery(
-                    "count-offset paginated queries are only valid against \
-                     ProvableCountTree / ProvableCountSumTree / ProvableCountProvableSumTree \
-                     merks",
-                ))
-                .wrap_with_cost(cost);
-            }
-            let offset = path_query.query.offset.map(|o| o as u64).unwrap_or(0);
-            // Carry the SizedQuery::limit into the merk-level proof so
-            // the prover stops emitting value nodes once the requested
-            // page is full. After the merk prover returns, decrement
-            // the outer overall_limit accordingly so the upstream
-            // multi-layer accounting (if any) reflects the consumed
-            // slots.
-            let limit_u64 = path_query.query.limit.map(|l| l as u64);
-            let mut prove_result = cost_return_on_error!(
-                &mut cost,
-                subtree
-                    .prove_count_offset_on_range(
-                        &inner_range,
-                        offset,
-                        limit_u64,
-                        query.left_to_right,
-                        grove_version,
-                    )
-                    // Wrap with operational context so a downstream
-                    // proof failure (corrupted merk, invariant
-                    // violation in the prover, etc.) is identifiable
-                    // as a count-offset-specific failure rather than
-                    // an opaque `MerkError`. Mirrors the
-                    // `prove_aggregate_sum_on_range` wrapping a few
-                    // hundred lines up.
-                    .map_err(|e| Error::CorruptedData(format!(
-                        "prove_count_offset_on_range failed: {}",
-                        e
-                    )))
-            );
-            // Dereference reference rows before encoding.
-            //
-            // This short-circuit returns without reaching the main
-            // ref-rewriting loop below, which is why the count-offset flow
-            // used to reject reference entries outright. Running the same
-            // rewrite here closes that gap rather than bypassing it.
-            //
-            // These are ORDINARY user references, so they follow ordinary
-            // terminal-reference semantics — unlike an indexed secondary
-            // row, which binds its immediate primary node and is resolved
-            // by `indexed_axis::reference_resolution`. The two rules are
-            // deliberately separate code paths.
-            for op in prove_result.ops.iter_mut() {
-                let node = match op {
-                    Op::Push(node) | Op::PushInverted(node) => node,
-                    _ => continue,
-                };
-                let Node::KVValueHashFeatureType(key, value, committed_value_hash, feature_type) =
-                    node
-                else {
-                    continue;
-                };
-                let elem = match Element::deserialize(value, grove_version) {
-                    Ok(e) => e.into_underlying(),
-                    Err(_) => continue,
-                };
-                let (Element::Reference(reference_path, ..)
-                | Element::ReferenceWithSumItem(reference_path, ..)) = elem
-                else {
-                    continue;
-                };
-                let absolute_path = match path_from_reference_path_type(
-                    reference_path,
-                    &path.to_vec(),
-                    Some(key.as_slice()),
-                ) {
-                    Ok(p) => p,
-                    Err(e) => return Err(Error::from(e)).wrap_with_cost(cost),
-                };
-                // Resolve stored bytes first, then select the representation
-                // bound by this row. Legacy direct writes may coexist with
-                // stored-terminal commitments in the same paginated tree.
-                let referenced_elem = cost_return_on_error!(
-                    &mut cost,
-                    self.follow_reference_as_stored(
-                        absolute_path.as_slice().into(),
-                        true,
-                        None,
-                        grove_version
-                    )
-                );
-                let reference_element_hash = value_hash(value).unwrap_add_cost(&mut cost);
-                let referenced_elem = cost_return_on_error!(
-                    &mut cost,
-                    Self::reference_terminal_as_committed(
-                        referenced_elem,
-                        &reference_element_hash,
-                        committed_value_hash,
-                        grove_version,
-                    )
-                );
-                let serialized_referenced_elem = match referenced_elem.serialize(grove_version) {
-                    Ok(bytes) => bytes,
-                    Err(_) => {
-                        return Err(Error::CorruptedData(String::from(
-                            "unable to serialize element",
-                        )))
-                        .wrap_with_cost(cost);
-                    }
-                };
-                *node = match feature_type {
-                    TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => {
-                        Node::KVRefValueHashCountSum(
-                            key.to_owned(),
-                            serialized_referenced_elem,
-                            reference_element_hash,
-                            *count,
-                            *sum,
-                        )
-                    }
-                    // `ProvableCountSumTree` is an eligible count-offset
-                    // host but commits only the COUNT into its node hash
-                    // (`binds_sum_into_hash` is true for PCPS alone), so
-                    // its reference rows take the count-only node — the
-                    // same variant `emit_returned_node` picks for its
-                    // directly-valued rows. Without this arm a reference in
-                    // such a tree hard-errored.
-                    TreeFeatureType::ProvableCountedMerkNode(count)
-                    | TreeFeatureType::ProvableCountedSummedMerkNode(count, _) => {
-                        Node::KVRefValueHashCount(
-                            key.to_owned(),
-                            serialized_referenced_elem,
-                            reference_element_hash,
-                            *count,
-                        )
-                    }
-                    other => {
-                        return Err(Error::CorruptedData(format!(
-                            "count-offset proof: reference row {} carries non-count feature type \
-                             {other:?}",
-                            hex::encode(key)
-                        )))
-                        .wrap_with_cost(cost);
-                    }
-                };
-            }
-            let mut serialized = Vec::with_capacity(128);
-            encode_into(prove_result.ops.iter(), &mut serialized);
-            // Apply consumed limit slots to the outer accounting.
-            // (Count-offset queries reject per-instance limits, so
-            // `frame_instance` is always `None` here — charged anyway
-            // for uniformity.)
-            let returned_u16: u16 = prove_result.returned.min(u16::MAX as u64) as u16;
-            limit_state.charge_rows(returned_u16);
-            if let Some(instance) = frame_instance.as_mut() {
-                *instance = instance.saturating_sub(returned_u16);
-            }
-            return Ok(LayerProof {
-                merk_proof: ProofBytes::Merk(serialized),
-                lower_layers: BTreeMap::new(),
-            })
-            .wrap_with_cost(cost);
+            return self
+                .prove_count_offset_layer_v1(
+                    &subtree,
+                    &path,
+                    path_query,
+                    query.left_to_right,
+                    limit_state,
+                    &mut frame_instance,
+                    grove_version,
+                )
+                .add_cost(cost);
         }
 
         // Whether the surrounding query is an aggregate-count carrier:
@@ -2501,8 +2383,41 @@ impl GroveDb {
 
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
+                    // A FILLER bidirectional-reference row (past the limit)
+                    // is still rewritten into its bound KVRefValueHash shape:
+                    // the rewrite is node-hash-neutral, and the strict V1
+                    // verifier rejects raw bidirectional bytes in
+                    // trusted-value results — a truncated window can still
+                    // count such a row as in range.
                     Node::KV(key, value)
                     | Node::KVValueHash(key, value, ..)
+                    | Node::KVCount(key, value, _)
+                    | Node::KVSum(key, value, _)
+                    | Node::KVCountSum(key, value, ..)
+                    | Node::KVValueHashFeatureType(key, value, ..)
+                        if done_with_results
+                            && matches!(
+                                grovedb_element::ElementType::from_serialized_value(value)
+                                    .map(|et| et.base()),
+                                Ok(grovedb_element::ElementType::BidirectionalReference)
+                            ) =>
+                    {
+                        *node = cost_return_on_error!(
+                            &mut cost,
+                            self.rewrite_filler_bidirectional_row_v1(
+                                key,
+                                value,
+                                &path,
+                                count_for_ref,
+                                sum_for_ref,
+                                count_sum_for_ref,
+                                grove_version,
+                            )
+                        );
+                    }
+                    Node::KV(key, value)
+                    | Node::KVValueHash(key, value, ..)
+                    | Node::KVBackwardsReferencesValueHash(key, value, ..)
                     | Node::KVCount(key, value, _)
                     | Node::KVSum(key, value, _)
                     | Node::KVCountSum(key, value, ..)
@@ -2514,6 +2429,40 @@ impl GroveDb {
                         // the proof) keeps its wrapper byte either way.
                         let elem =
                             Element::deserialize(value, grove_version).map(|e| e.into_underlying());
+                        // Normalize a bidirectional reference to its plain
+                        // reference shape: proof-wise both resolve the same
+                        // way. A bidirectional reference's self-hash slot in
+                        // KVRefValueHash* nodes is combine(inner, backrefs)
+                        // (not H(stored bytes)) — capture it here, before
+                        // normalization discards the distinction.
+                        let mut reference_self_hash_override = None;
+                        // A bidirectional edge's declared max_hop bounds
+                        // proof dereferencing exactly like reads (plain
+                        // references keep their historical global budget).
+                        let mut bidi_max_hop = None;
+                        let elem = match elem {
+                            Ok(ref e @ Element::BidirectionalReference(..)) => {
+                                let hashes = cost_return_on_error!(
+                                    &mut cost,
+                                    e.backward_references_hashes(grove_version)
+                                        .map_err(Error::from)
+                                )
+                                .expect("bidirectional references carry hashes");
+                                reference_self_hash_override = Some(hashes.combined);
+                                let Ok(Element::BidirectionalReference(reference, reference_flags)) =
+                                    elem
+                                else {
+                                    unreachable!("checked above");
+                                };
+                                bidi_max_hop = reference.max_hop;
+                                Ok(Element::Reference(
+                                    reference.forward_reference_path,
+                                    reference.max_hop,
+                                    reference_flags,
+                                ))
+                            }
+                            other => other,
+                        };
                         match elem {
                             // `ReferenceWithSumItem` shares this proof path
                             // with `Reference` — both produce a
@@ -2526,88 +2475,34 @@ impl GroveDb {
                             // that bind the unwrapped terminal.
                             Ok(Element::Reference(reference_path, ..))
                             | Ok(Element::ReferenceWithSumItem(reference_path, ..)) => {
-                                let absolute_path = cost_return_on_error_into!(
+                                *node = cost_return_on_error!(
                                     &mut cost,
-                                    path_from_reference_path_type(
+                                    self.rewrite_reference_row_v1(
+                                        key,
+                                        value,
                                         reference_path,
-                                        &path.to_vec(),
-                                        Some(key.as_slice())
-                                    )
-                                    .wrap_with_cost(OperationCost::default())
-                                );
-
-                                let referenced_elem = cost_return_on_error_into!(
-                                    &mut cost,
-                                    self.follow_reference_as_stored(
-                                        absolute_path.as_slice().into(),
-                                        true,
-                                        None,
-                                        grove_version
-                                    )
-                                );
-
-                                let reference_element_hash =
-                                    value_hash(value).unwrap_add_cost(&mut cost);
-                                let committed_value_hash = cost_return_on_error_no_add!(
-                                    cost,
-                                    committed_value_hash.ok_or_else(|| Error::CorruptedData(
-                                        "reference proof node is missing its committed value hash"
-                                            .to_string()
-                                    ))
-                                );
-                                let referenced_elem = cost_return_on_error!(
-                                    &mut cost,
-                                    Self::reference_terminal_as_committed(
-                                        referenced_elem,
-                                        &reference_element_hash,
-                                        &committed_value_hash,
+                                        &path,
+                                        bidi_max_hop,
+                                        reference_self_hash_override,
+                                        committed_value_hash,
+                                        count_for_ref,
+                                        sum_for_ref,
+                                        count_sum_for_ref,
                                         grove_version,
                                     )
                                 );
-
-                                let serialized_referenced_elem =
-                                    referenced_elem.serialize(grove_version);
-                                if serialized_referenced_elem.is_err() {
-                                    return Err(Error::CorruptedData(String::from(
-                                        "unable to serialize element",
-                                    )))
-                                    .wrap_with_cost(cost);
-                                }
-
-                                // Dispatch in priority order — dual-axis
-                                // PCPS first (strictest invariant), then
-                                // single-axis Sum, then single-axis Count,
-                                // then plain ref. See the v1 loop for the
-                                // longer-form comment.
-                                *node = if let Some((count, sum)) = count_sum_for_ref {
-                                    Node::KVRefValueHashCountSum(
-                                        key.to_owned(),
-                                        serialized_referenced_elem.expect("confirmed ok above"),
-                                        reference_element_hash,
-                                        count,
-                                        sum,
-                                    )
-                                } else if let Some(sum) = sum_for_ref {
-                                    Node::KVRefValueHashSum(
-                                        key.to_owned(),
-                                        serialized_referenced_elem.expect("confirmed ok above"),
-                                        reference_element_hash,
-                                        sum,
-                                    )
-                                } else if let Some(count) = count_for_ref {
-                                    Node::KVRefValueHashCount(
-                                        key.to_owned(),
-                                        serialized_referenced_elem.expect("confirmed ok above"),
-                                        reference_element_hash,
-                                        count,
-                                    )
-                                } else {
-                                    Node::KVRefValueHash(
-                                        key.to_owned(),
-                                        serialized_referenced_elem.expect("confirmed ok above"),
-                                        reference_element_hash,
-                                    )
-                                };
+                                limit_state.charge_row_with_instance(&mut frame_instance);
+                                has_a_result_at_level |= true;
+                            }
+                            Ok(Element::ItemWithBackwardsReferences(..))
+                            | Ok(Element::SumItemWithBackwardsReferences(..))
+                            | Ok(Element::ItemWithSumItemWithBackwardsReferences(..))
+                                if !done_with_results =>
+                            {
+                                // Merk already emitted the dedicated
+                                // KVBackwardsReferencesValueHash wire node
+                                // (stripped bytes + referrer-list hash);
+                                // only result bookkeeping remains here.
                                 limit_state.charge_row_with_instance(&mut frame_instance);
                                 has_a_result_at_level |= true;
                             }
@@ -2705,41 +2600,18 @@ impl GroveDb {
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
-
-                                // The non-Merk adapters bypass the recursive
-                                // frame creation, so the lower query's own
-                                // per-instance cap must be min-composed here —
-                                // the verifier derives the identical value.
-                                let mut non_merk_effective = limit_state
-                                    .effective_lower_layer_limit(
-                                        frame_instance,
-                                        cost_return_on_error_no_add!(
-                                            cost,
-                                            path_query
-                                                .query_items_at_path(&lower_path, grove_version)
-                                        )
-                                        .and_then(|lower_query| lower_query.instance_limit),
-                                    );
-                                let non_merk_before = non_merk_effective;
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
-                                    self.generate_mmr_layer_proof(
+                                    self.prove_non_merk_lower_layer_v1(
+                                        NonMerkLowerLayer::Mmr { mmr_size },
                                         &lower_path,
                                         path_query,
-                                        mmr_size,
-                                        &mut non_merk_effective,
+                                        limit_state,
+                                        &mut frame_instance,
                                         transaction,
                                         grove_version,
                                     )
                                 );
-
-                                let non_merk_rows = non_merk_before
-                                    .unwrap_or(0)
-                                    .saturating_sub(non_merk_effective.unwrap_or(0));
-                                limit_state.charge_rows(non_merk_rows);
-                                if let Some(instance) = frame_instance.as_mut() {
-                                    *instance = instance.saturating_sub(non_merk_rows);
-                                }
                                 has_a_result_at_level |= true;
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
@@ -2752,43 +2624,18 @@ impl GroveDb {
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
-
-                                // The non-Merk adapters bypass the recursive
-                                // frame creation, so the lower query's own
-                                // per-instance cap must be min-composed here —
-                                // the verifier derives the identical value.
-                                let mut non_merk_effective = limit_state
-                                    .effective_lower_layer_limit(
-                                        frame_instance,
-                                        cost_return_on_error_no_add!(
-                                            cost,
-                                            path_query
-                                                .query_items_at_path(&lower_path, grove_version)
-                                        )
-                                        .and_then(|lower_query| lower_query.instance_limit),
-                                    );
-                                let non_merk_before = non_merk_effective;
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
-                                    self.generate_bulk_append_layer_proof(
+                                    self.prove_non_merk_lower_layer_v1(
+                                        NonMerkLowerLayer::BulkAppend { total_count, chunk_power },
                                         &lower_path,
                                         path_query,
-                                        [0u8; 32], // unused parameter
-                                        total_count,
-                                        chunk_power,
-                                        &mut non_merk_effective,
+                                        limit_state,
+                                        &mut frame_instance,
                                         transaction,
                                         grove_version,
                                     )
                                 );
-
-                                let non_merk_rows = non_merk_before
-                                    .unwrap_or(0)
-                                    .saturating_sub(non_merk_effective.unwrap_or(0));
-                                limit_state.charge_rows(non_merk_rows);
-                                if let Some(instance) = frame_instance.as_mut() {
-                                    *instance = instance.saturating_sub(non_merk_rows);
-                                }
                                 has_a_result_at_level |= true;
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
@@ -2804,42 +2651,18 @@ impl GroveDb {
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
-
-                                // The non-Merk adapters bypass the recursive
-                                // frame creation, so the lower query's own
-                                // per-instance cap must be min-composed here —
-                                // the verifier derives the identical value.
-                                let mut non_merk_effective = limit_state
-                                    .effective_lower_layer_limit(
-                                        frame_instance,
-                                        cost_return_on_error_no_add!(
-                                            cost,
-                                            path_query
-                                                .query_items_at_path(&lower_path, grove_version)
-                                        )
-                                        .and_then(|lower_query| lower_query.instance_limit),
-                                    );
-                                let non_merk_before = non_merk_effective;
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
-                                    self.generate_dense_tree_layer_proof(
+                                    self.prove_non_merk_lower_layer_v1(
+                                        NonMerkLowerLayer::Dense { dense_count, dense_height },
                                         &lower_path,
                                         path_query,
-                                        dense_count,
-                                        dense_height,
-                                        &mut non_merk_effective,
+                                        limit_state,
+                                        &mut frame_instance,
                                         transaction,
                                         grove_version,
                                     )
                                 );
-
-                                let non_merk_rows = non_merk_before
-                                    .unwrap_or(0)
-                                    .saturating_sub(non_merk_effective.unwrap_or(0));
-                                limit_state.charge_rows(non_merk_rows);
-                                if let Some(instance) = frame_instance.as_mut() {
-                                    *instance = instance.saturating_sub(non_merk_rows);
-                                }
                                 has_a_result_at_level |= true;
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
@@ -2852,42 +2675,18 @@ impl GroveDb {
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
-
-                                // The non-Merk adapters bypass the recursive
-                                // frame creation, so the lower query's own
-                                // per-instance cap must be min-composed here —
-                                // the verifier derives the identical value.
-                                let mut non_merk_effective = limit_state
-                                    .effective_lower_layer_limit(
-                                        frame_instance,
-                                        cost_return_on_error_no_add!(
-                                            cost,
-                                            path_query
-                                                .query_items_at_path(&lower_path, grove_version)
-                                        )
-                                        .and_then(|lower_query| lower_query.instance_limit),
-                                    );
-                                let non_merk_before = non_merk_effective;
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
-                                    self.generate_commitment_tree_layer_proof(
+                                    self.prove_non_merk_lower_layer_v1(
+                                        NonMerkLowerLayer::Commitment { total_count, chunk_power },
                                         &lower_path,
                                         path_query,
-                                        total_count,
-                                        chunk_power,
-                                        &mut non_merk_effective,
+                                        limit_state,
+                                        &mut frame_instance,
                                         transaction,
                                         grove_version,
                                     )
                                 );
-
-                                let non_merk_rows = non_merk_before
-                                    .unwrap_or(0)
-                                    .saturating_sub(non_merk_effective.unwrap_or(0));
-                                limit_state.charge_rows(non_merk_rows);
-                                if let Some(instance) = frame_instance.as_mut() {
-                                    *instance = instance.saturating_sub(non_merk_rows);
-                                }
                                 has_a_result_at_level |= true;
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
@@ -3738,9 +3537,15 @@ impl GroveDb {
                             // Explicit: when done_with_results is true, the above guards fail
                             // and we skip. Listed explicitly so adding a new Element variant
                             // produces a compile error here instead of silently dropping it.
+                            Ok(Element::BidirectionalReference(..)) => {
+                                unreachable!("normalized to Element::Reference above")
+                            }
                             Ok(Element::Item(..))
                             | Ok(Element::SumItem(..))
                             | Ok(Element::ItemWithSumItem(..))
+                            | Ok(Element::ItemWithBackwardsReferences(..))
+                            | Ok(Element::SumItemWithBackwardsReferences(..))
+                            | Ok(Element::ItemWithSumItemWithBackwardsReferences(..))
                             | Ok(Element::Tree(..))
                             | Ok(Element::SumTree(..))
                             | Ok(Element::BigSumTree(..))
@@ -3796,6 +3601,517 @@ impl GroveDb {
             lower_layers,
         })
         .wrap_with_cost(cost)
+    }
+
+    /// Count-offset paginated short-circuit of [`Self::prove_subqueries_v1`].
+    ///
+    /// Kept out of line: the V1 prover recurses once per subtree level and
+    /// every local of every arm of its (very large) body is reserved in the
+    /// recursive frame, so self-contained sections live in their own frames
+    /// (see `proof_generation_succeeds_at_reasonable_depth`).
+    #[inline(never)]
+    fn prove_count_offset_layer_v1<'a, S>(
+        &self,
+        subtree: &'a Merk<S>,
+        path: &[&[u8]],
+        path_query: &PathQuery,
+        left_to_right: bool,
+        limit_state: &mut super::V1LimitState,
+        frame_instance: &mut Option<u16>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<LayerProof, Error>
+    where
+        S: StorageContext<'a> + 'a,
+    {
+        let mut cost = OperationCost::default();
+        use grovedb_merk::TreeType as MerkTreeType;
+        let inner_range = cost_return_on_error_no_add!(
+            cost,
+            path_query.validate_count_offset_paginated().cloned()
+        );
+        if !matches!(
+            subtree.tree_type,
+            MerkTreeType::ProvableCountTree
+                | MerkTreeType::ProvableCountSumTree
+                | MerkTreeType::ProvableCountProvableSumTree
+        ) {
+            return Err(Error::InvalidQuery(
+                "count-offset paginated queries are only valid against \
+                 ProvableCountTree / ProvableCountSumTree / ProvableCountProvableSumTree \
+                 merks",
+            ))
+            .wrap_with_cost(cost);
+        }
+        let offset = path_query.query.offset.map(|o| o as u64).unwrap_or(0);
+        // Carry the SizedQuery::limit into the merk-level proof so
+        // the prover stops emitting value nodes once the requested
+        // page is full. After the merk prover returns, decrement
+        // the outer overall_limit accordingly so the upstream
+        // multi-layer accounting (if any) reflects the consumed
+        // slots.
+        let limit_u64 = path_query.query.limit.map(|l| l as u64);
+        let mut prove_result = cost_return_on_error!(
+            &mut cost,
+            subtree
+                .prove_count_offset_on_range(
+                    &inner_range,
+                    offset,
+                    limit_u64,
+                    left_to_right,
+                    grove_version,
+                )
+                // Wrap with operational context so a downstream
+                // proof failure (corrupted merk, invariant
+                // violation in the prover, etc.) is identifiable
+                // as a count-offset-specific failure rather than
+                // an opaque `MerkError`. Mirrors the
+                // `prove_aggregate_sum_on_range` wrapping a few
+                // hundred lines up.
+                .map_err(|e| Error::CorruptedData(format!(
+                    "prove_count_offset_on_range failed: {}",
+                    e
+                )))
+        );
+        // Dereference reference rows before encoding.
+        //
+        // This short-circuit returns without reaching the main
+        // ref-rewriting loop below, which is why the count-offset flow
+        // used to reject reference entries outright. Running the same
+        // rewrite here closes that gap rather than bypassing it.
+        //
+        // These are ORDINARY user references, so they follow ordinary
+        // terminal-reference semantics — unlike an indexed secondary
+        // row, which binds its immediate primary node and is resolved
+        // by `indexed_axis::reference_resolution`. The two rules are
+        // deliberately separate code paths.
+        for op in prove_result.ops.iter_mut() {
+            let node = match op {
+                Op::Push(node) | Op::PushInverted(node) => node,
+                _ => continue,
+            };
+            let Node::KVValueHashFeatureType(key, value, committed_value_hash, feature_type) = node
+            else {
+                continue;
+            };
+            let elem = match Element::deserialize(value, grove_version) {
+                Ok(e) => e.into_underlying(),
+                Err(_) => continue,
+            };
+            // Normalize a bidirectional reference to its plain-reference
+            // shape — proof-wise both resolve identically, and the
+            // node's `value` bytes (which feed value_hash) are left
+            // untouched. Mirrors the normalization in the general
+            // subquery path below.
+            let mut reference_self_hash_override = None;
+            // A bidirectional edge's declared max_hop bounds proof
+            // dereferencing exactly like reads (plain references keep
+            // their historical global budget).
+            let mut bidi_max_hop = None;
+            let elem = match elem {
+                ref e @ Element::BidirectionalReference(..) => {
+                    let hashes = cost_return_on_error!(
+                        &mut cost,
+                        e.backward_references_hashes(grove_version)
+                            .map_err(Error::from)
+                    )
+                    .expect("bidirectional references carry hashes");
+                    reference_self_hash_override = Some(hashes.combined);
+                    let Element::BidirectionalReference(reference, reference_flags) = elem else {
+                        unreachable!("checked above");
+                    };
+                    bidi_max_hop = reference.max_hop;
+                    Element::Reference(
+                        reference.forward_reference_path,
+                        reference.max_hop,
+                        reference_flags,
+                    )
+                }
+                other => other,
+            };
+            let (Element::Reference(reference_path, ..)
+            | Element::ReferenceWithSumItem(reference_path, ..)) = elem
+            else {
+                continue;
+            };
+            let absolute_path =
+                match path_from_reference_path_type(reference_path, path, Some(key.as_slice())) {
+                    Ok(p) => p,
+                    Err(e) => return Err(Error::from(e)).wrap_with_cost(cost),
+                };
+            // Resolve stored bytes first, then select the representation
+            // bound by this row. Legacy direct writes may coexist with
+            // stored-terminal commitments in the same paginated tree.
+            let referenced_elem = cost_return_on_error!(
+                &mut cost,
+                self.follow_reference_with_max_hop(
+                    absolute_path.as_slice().into(),
+                    bidi_max_hop,
+                    true,
+                    None,
+                    grove_version
+                )
+            );
+            let reference_element_hash = match reference_self_hash_override {
+                Some(hash) => hash,
+                None => value_hash(value).unwrap_add_cost(&mut cost),
+            };
+            let referenced_elem = cost_return_on_error!(
+                &mut cost,
+                Self::reference_terminal_as_committed(
+                    referenced_elem,
+                    &reference_element_hash,
+                    committed_value_hash,
+                    grove_version,
+                )
+            );
+            let serialized_referenced_elem = match referenced_elem
+                .stripped_of_backward_references()
+                .serialize(grove_version)
+            {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    return Err(Error::CorruptedData(String::from(
+                        "unable to serialize element",
+                    )))
+                    .wrap_with_cost(cost);
+                }
+            };
+            *node = match feature_type {
+                TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => {
+                    Node::KVRefValueHashCountSum(
+                        key.to_owned(),
+                        serialized_referenced_elem,
+                        reference_element_hash,
+                        *count,
+                        *sum,
+                    )
+                }
+                // `ProvableCountSumTree` is an eligible count-offset
+                // host but commits only the COUNT into its node hash
+                // (`binds_sum_into_hash` is true for PCPS alone), so
+                // its reference rows take the count-only node — the
+                // same variant `emit_returned_node` picks for its
+                // directly-valued rows. Without this arm a reference in
+                // such a tree hard-errored.
+                TreeFeatureType::ProvableCountedMerkNode(count)
+                | TreeFeatureType::ProvableCountedSummedMerkNode(count, _) => {
+                    Node::KVRefValueHashCount(
+                        key.to_owned(),
+                        serialized_referenced_elem,
+                        reference_element_hash,
+                        *count,
+                    )
+                }
+                other => {
+                    return Err(Error::CorruptedData(format!(
+                        "count-offset proof: reference row {} carries non-count feature type \
+                         {other:?}",
+                        hex::encode(key)
+                    )))
+                    .wrap_with_cost(cost);
+                }
+            };
+        }
+        let mut serialized = Vec::with_capacity(128);
+        encode_into(prove_result.ops.iter(), &mut serialized);
+        // Apply consumed limit slots to the outer accounting.
+        // (Count-offset queries reject per-instance limits, so
+        // `frame_instance` is always `None` here — charged anyway
+        // for uniformity.)
+        let returned_u16: u16 = prove_result.returned.min(u16::MAX as u64) as u16;
+        limit_state.charge_rows(returned_u16);
+        if let Some(instance) = frame_instance.as_mut() {
+            *instance = instance.saturating_sub(returned_u16);
+        }
+        Ok(LayerProof {
+            merk_proof: ProofBytes::Merk(serialized),
+            lower_layers: BTreeMap::new(),
+        })
+        .wrap_with_cost(cost)
+    }
+
+    /// The `KVRefValueHash*` node a dereferenced reference row takes,
+    /// dispatched in priority order — dual-axis PCPS first (strictest
+    /// invariant), then single-axis Sum, then single-axis Count, then the
+    /// plain reference node.
+    fn dereferenced_reference_node(
+        key: &[u8],
+        serialized_referenced_elem: Vec<u8>,
+        reference_element_hash: grovedb_merk::CryptoHash,
+        count_for_ref: Option<u64>,
+        sum_for_ref: Option<i64>,
+        count_sum_for_ref: Option<(u64, i64)>,
+    ) -> Node {
+        if let Some((count, sum)) = count_sum_for_ref {
+            Node::KVRefValueHashCountSum(
+                key.to_owned(),
+                serialized_referenced_elem,
+                reference_element_hash,
+                count,
+                sum,
+            )
+        } else if let Some(sum) = sum_for_ref {
+            Node::KVRefValueHashSum(
+                key.to_owned(),
+                serialized_referenced_elem,
+                reference_element_hash,
+                sum,
+            )
+        } else if let Some(count) = count_for_ref {
+            Node::KVRefValueHashCount(
+                key.to_owned(),
+                serialized_referenced_elem,
+                reference_element_hash,
+                count,
+            )
+        } else {
+            Node::KVRefValueHash(
+                key.to_owned(),
+                serialized_referenced_elem,
+                reference_element_hash,
+            )
+        }
+    }
+
+    /// Rewrite a FILLER bidirectional-reference row (past the limit) of a V1
+    /// layer proof into its bound `KVRefValueHash*` shape: the rewrite is
+    /// node-hash-neutral, and the strict V1 verifier rejects raw
+    /// bidirectional bytes in trusted-value results — a truncated window can
+    /// still count such a row as in range. Out of line for the frame-size
+    /// reason documented on [`Self::prove_count_offset_layer_v1`].
+    #[inline(never)]
+    fn rewrite_filler_bidirectional_row_v1(
+        &self,
+        key: &[u8],
+        value: &[u8],
+        path: &[&[u8]],
+        count_for_ref: Option<u64>,
+        sum_for_ref: Option<i64>,
+        count_sum_for_ref: Option<(u64, i64)>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Node, Error> {
+        let mut cost = OperationCost::default();
+        let elem = cost_return_on_error_into!(
+            &mut cost,
+            Element::deserialize(value, grove_version).wrap_with_cost(OperationCost::default())
+        );
+        let hashes = cost_return_on_error!(
+            &mut cost,
+            elem.backward_references_hashes(grove_version)
+                .map_err(Error::from)
+        )
+        .expect("bidirectional references carry hashes");
+        let Element::BidirectionalReference(reference, _) = elem.into_underlying() else {
+            return Err(Error::CorruptedCodeExecution(
+                "filler bidirectional-reference rewrite reached a non-bidirectional element",
+            ))
+            .wrap_with_cost(cost);
+        };
+        let absolute_path = cost_return_on_error_into!(
+            &mut cost,
+            path_from_reference_path_type(reference.forward_reference_path, path, Some(key))
+                .wrap_with_cost(OperationCost::default())
+        );
+        let referenced_elem = cost_return_on_error_into!(
+            &mut cost,
+            self.follow_reference_with_max_hop(
+                absolute_path.as_slice().into(),
+                reference.max_hop,
+                true,
+                None,
+                grove_version
+            )
+        );
+        let serialized_referenced_elem = cost_return_on_error_into!(
+            &mut cost,
+            referenced_elem
+                .stripped_of_backward_references()
+                .serialize(grove_version)
+                .wrap_with_cost(OperationCost::default())
+        );
+        Ok(Self::dereferenced_reference_node(
+            key,
+            serialized_referenced_elem,
+            hashes.combined,
+            count_for_ref,
+            sum_for_ref,
+            count_sum_for_ref,
+        ))
+        .wrap_with_cost(cost)
+    }
+
+    /// Rewrite a result reference row (`Reference` / `ReferenceWithSumItem`,
+    /// or a bidirectional reference normalized to that shape) of a V1 layer
+    /// proof into its dereferenced `KVRefValueHash*` node.
+    ///
+    /// The target bytes are selected by the node's existing commitment, not
+    /// the current GroveVersion: a V4 reader may encounter V3 direct-written
+    /// references that bind the unwrapped terminal. A bidirectional
+    /// reference's self-hash slot is `combine(inner, backrefs)`, captured by
+    /// the caller before normalization. Out of line for the frame-size
+    /// reason documented on [`Self::prove_count_offset_layer_v1`].
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn rewrite_reference_row_v1(
+        &self,
+        key: &[u8],
+        value: &[u8],
+        reference_path: grovedb_element::reference_path::ReferencePathType,
+        path: &[&[u8]],
+        bidi_max_hop: Option<u8>,
+        reference_self_hash_override: Option<grovedb_merk::CryptoHash>,
+        committed_value_hash: Option<grovedb_merk::CryptoHash>,
+        count_for_ref: Option<u64>,
+        sum_for_ref: Option<i64>,
+        count_sum_for_ref: Option<(u64, i64)>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Node, Error> {
+        let mut cost = OperationCost::default();
+        let absolute_path = cost_return_on_error_into!(
+            &mut cost,
+            path_from_reference_path_type(reference_path, path, Some(key))
+                .wrap_with_cost(OperationCost::default())
+        );
+        let referenced_elem = cost_return_on_error_into!(
+            &mut cost,
+            self.follow_reference_with_max_hop(
+                absolute_path.as_slice().into(),
+                bidi_max_hop,
+                true,
+                None,
+                grove_version
+            )
+        );
+        let reference_element_hash = match reference_self_hash_override {
+            Some(hash) => hash,
+            None => value_hash(value).unwrap_add_cost(&mut cost),
+        };
+        let committed_value_hash = cost_return_on_error_no_add!(
+            cost,
+            committed_value_hash.ok_or_else(|| Error::CorruptedData(
+                "reference proof node is missing its committed value hash".to_string()
+            ))
+        );
+        let referenced_elem = cost_return_on_error!(
+            &mut cost,
+            Self::reference_terminal_as_committed(
+                referenced_elem,
+                &reference_element_hash,
+                &committed_value_hash,
+                grove_version,
+            )
+        );
+        let serialized_referenced_elem = match referenced_elem
+            .stripped_of_backward_references()
+            .serialize(grove_version)
+        {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return Err(Error::CorruptedData(String::from(
+                    "unable to serialize element",
+                )))
+                .wrap_with_cost(cost);
+            }
+        };
+        Ok(Self::dereferenced_reference_node(
+            key,
+            serialized_referenced_elem,
+            reference_element_hash,
+            count_for_ref,
+            sum_for_ref,
+            count_sum_for_ref,
+        ))
+        .wrap_with_cost(cost)
+    }
+
+    /// One non-Merk lower layer of a V1 proof (MMR / bulk-append / dense /
+    /// commitment tree), with the per-instance limit composition and row
+    /// charging the recursive frame used to do inline. Out of line for the
+    /// same frame-size reason as [`Self::prove_count_offset_layer_v1`].
+    #[inline(never)]
+    fn prove_non_merk_lower_layer_v1(
+        &self,
+        layer: NonMerkLowerLayer,
+        lower_path: &[&[u8]],
+        path_query: &PathQuery,
+        limit_state: &mut super::V1LimitState,
+        frame_instance: &mut Option<u16>,
+        transaction: &Transaction,
+        grove_version: &GroveVersion,
+    ) -> CostResult<LayerProof, Error> {
+        let mut cost = OperationCost::default();
+
+        // The non-Merk adapters bypass the recursive frame creation, so the
+        // lower query's own per-instance cap must be min-composed here — the
+        // verifier derives the identical value.
+        let mut non_merk_effective = limit_state.effective_lower_layer_limit(
+            *frame_instance,
+            cost_return_on_error_no_add!(
+                cost,
+                path_query.query_items_at_path(lower_path, grove_version)
+            )
+            .and_then(|lower_query| lower_query.instance_limit),
+        );
+        let non_merk_before = non_merk_effective;
+        let layer_proof = cost_return_on_error!(
+            &mut cost,
+            match layer {
+                NonMerkLowerLayer::Mmr { mmr_size } => self.generate_mmr_layer_proof(
+                    lower_path,
+                    path_query,
+                    mmr_size,
+                    &mut non_merk_effective,
+                    transaction,
+                    grove_version,
+                ),
+                NonMerkLowerLayer::BulkAppend {
+                    total_count,
+                    chunk_power,
+                } => self.generate_bulk_append_layer_proof(
+                    lower_path,
+                    path_query,
+                    [0u8; 32], // unused parameter
+                    total_count,
+                    chunk_power,
+                    &mut non_merk_effective,
+                    transaction,
+                    grove_version,
+                ),
+                NonMerkLowerLayer::Dense {
+                    dense_count,
+                    dense_height,
+                } => self.generate_dense_tree_layer_proof(
+                    lower_path,
+                    path_query,
+                    dense_count,
+                    dense_height,
+                    &mut non_merk_effective,
+                    transaction,
+                    grove_version,
+                ),
+                NonMerkLowerLayer::Commitment {
+                    total_count,
+                    chunk_power,
+                } => self.generate_commitment_tree_layer_proof(
+                    lower_path,
+                    path_query,
+                    total_count,
+                    chunk_power,
+                    &mut non_merk_effective,
+                    transaction,
+                    grove_version,
+                ),
+            }
+        );
+
+        let non_merk_rows = non_merk_before
+            .unwrap_or(0)
+            .saturating_sub(non_merk_effective.unwrap_or(0));
+        limit_state.charge_rows(non_merk_rows);
+        if let Some(instance) = frame_instance.as_mut() {
+            *instance = instance.saturating_sub(non_merk_rows);
+        }
+        Ok(layer_proof).wrap_with_cost(cost)
     }
 
     /// Generate an MMR tree layer proof for a subquery.

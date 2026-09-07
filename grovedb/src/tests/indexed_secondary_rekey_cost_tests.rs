@@ -34,7 +34,7 @@ mod tests {
             reclassify_indexed_mirror_rekey_churn, QualifiedGroveDbOp, SubelementsDeletionBehavior,
         },
         tests::{make_test_grovedb, TEST_LEAF},
-        Element,
+        Element, IndexedAxisEntrySliceExt,
     };
 
     fn total_removed(cost: &OperationCost) -> u64 {
@@ -191,12 +191,10 @@ mod tests {
         // each segment: if either segment's churn were dropped, its old
         // row's removal would survive into the final cost.
         //
-        // Scoped to the COST LANES only: apply_partial_batch has a
-        // pre-existing state bug when both segments touch the same
-        // secondary (the initial segment's row deletion is resurrected by
-        // the continuation's rotation writes — see
-        // https://github.com/dashpay/grovedb/issues/842), so state-level
-        // assertions belong to that fix, not this accounting change.
+        // State-level coverage of two segments sharing one secondary
+        // (issue #842) lives in `partial_batch_coherence_tests`; the final
+        // rows are pinned here too so the cost assertions are known to
+        // describe a correct end state.
         let grove_version = GroveVersion::latest();
 
         let db = setup_pcit_with_group(grove_version, 2);
@@ -246,6 +244,15 @@ mod tests {
             "both segments' re-key churn must be rebilled at the one commit"
         );
         assert!(cost.storage_cost.replaced_bytes > 0);
+        let top = db
+            .indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top-k");
+        assert_eq!(
+            top.key_pairs(),
+            vec![(3, b"q".to_vec()), (3, b"p".to_vec())],
+            "both re-keyed rows, and neither old row"
+        );
     }
 
     // -----------------------------------------------------------------

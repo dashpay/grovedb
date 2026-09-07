@@ -1,4 +1,5 @@
 pub(crate) mod compat;
+pub(crate) mod visitor;
 
 use grovedb_storage::Storage;
 

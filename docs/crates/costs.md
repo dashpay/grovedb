@@ -42,6 +42,82 @@ pub struct StorageCost {
 - `replaced_bytes`: Existing data overwritten
 - `removed_bytes`: Data deleted from storage
 
+#### Removed bytes: folding a basic removal into a sectioned one (issue #683)
+
+`removed_bytes` is a `StorageRemovedBytes`: `NoStorageRemoval`, a plain
+`BasicStorageRemoval(u32)`, or a `SectionedStorageRemoval` map of
+`owner identifier → epoch → bytes` (Drive attributes refunds by owner and
+epoch through it). When a basic removal is combined with a sectioned one the
+basic bytes are folded into the **default owner's** (`[0; 32]`) section
+under `UNKNOWN_EPOCH`. Four operator arms do this: `Basic + Sectioned`,
+`Sectioned + Basic`, `Basic += Sectioned` and `Sectioned += Basic`.
+
+Three of them shipped with a defect: when the default owner already had a
+section they detached its epoch map, folded the basic bytes in, and never
+reinserted it, so the owner's existing epoch attribution AND the incoming
+basic bytes were both lost (only identity-owned sections survived).
+`Sectioned += Basic` always reinserted correctly and is version-independent.
+
+Drive's storage-flags callback returns basic/basic removals for unflagged
+elements and sectioned/sectioned removals for flagged elements (or no removal
+for zero bytes). Its mixed-removal case arises when those results are
+aggregated. Drive separates the default identifier's section into
+`FeeResult.removed_bytes_from_system` before calculating identity refunds;
+identity-owned sections are unaffected by this defect. The GroveDB deletion
+regressions use custom basic/sectioned callbacks to exercise the arithmetic
+directly, so their lost-byte totals do not establish lost identity refunds.
+
+The arithmetic is selected by
+`grovedb_versions.storage_costs.add_basic_storage_removal_to_sectioned_storage_removal`:
+
+| arm | GROVE_V1..V3 (v0, legacy) | GROVE_V4 (v1) |
+|---|---|---|
+| `Basic + Sectioned`, `Sectioned + Basic`, `Basic += Sectioned` | default owner present: its section is dropped (its epochs and the basic bytes vanish); default owner absent: correct | default section preserved, basic bytes added to its `UNKNOWN_EPOCH` entry |
+| `Sectioned += Basic` | correct | correct (unchanged) |
+
+Legacy output is kept byte-exact because removal totals are part of the
+replayed cost record. Because the operator impls cannot carry a
+`GroveVersion` (and `grovedb-costs` has no `grovedb-version` dependency),
+the selected version travels in a thread-local installed by an RAII guard
+(`use_basic_sectioned_removal_addition_version` /
+`with_basic_sectioned_removal_addition_version`) at the version-aware entry
+points: `Merk::apply_unchecked_with_old_value_observer` (which every Merk
+apply funnels through), `GroveDb::delete_with_sectional_storage_function`,
+`delete_if_empty_tree_with_sectional_storage_function`,
+`apply_batch_with_element_flags_update` and
+`apply_partial_batch_with_element_flags_update` (so `delete_up_tree_while_empty_with_sectional_storage`
+is covered too). The storage-batch commit that sums
+`KeyValueStorageCost::combined_removed_bytes` runs inside those scopes.
+
+The unguarded default is `0` (legacy): a caller that never installs a guard
+reproduces shipped output rather than silently upgrading. **Any consumer
+that combines `StorageRemovedBytes` outside a GroveDB call** — for example
+summing per-operation `OperationCost`s or `StorageCost`s across operations —
+runs the legacy arithmetic even under GROVE_V4 unless it installs the guard
+itself around that aggregation.
+
+The guard is `!Send` and `!Sync` so it stays on its originating thread. Keep it
+in a synchronous scope, drop nested guards in reverse creation order, and
+never hold it across an `.await`: even on one thread, other tasks would
+observe its version while the owning task is suspended. The closure helper
+also scopes only synchronous work, not a future returned by the closure.
+For example:
+
+```rust
+let _guard = grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(
+    grove_version
+        .grovedb_versions
+        .storage_costs
+        .add_basic_storage_removal_to_sectioned_storage_removal,
+);
+total_cost += op_cost; // basic-into-default-section folds now use the selected version
+```
+
+The exact per-arm maps for both versions are pinned in
+`costs/tests/coverage_regression.rs` (the `*_basic_sectioned_removal_matrix_*`
+tests) and the GroveDB entry points in
+`grovedb/src/batch/single_deletion_cost_tests.rs`.
+
 ### CostResult
 
 A wrapper type that pairs computation results with their costs:

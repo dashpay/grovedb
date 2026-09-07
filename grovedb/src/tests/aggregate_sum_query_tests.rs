@@ -541,7 +541,7 @@ mod tests {
     #[test]
     fn proof_for_different_tree_yields_different_root() {
         let v = GroveVersion::latest();
-        let (db1, root1) = setup_15_key_provable_sum_tree(v);
+        let (_db1, root1) = setup_15_key_provable_sum_tree(v);
         // Build a *different* db with the same path shape but different
         // values, generate a proof against it, and confirm that proof
         // verifies to root2 ≠ root1.
@@ -1738,7 +1738,7 @@ mod tests {
         };
         let test_leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF lower layer");
         let bytes = match &mut test_leaf_layer.merk_proof {
             ProofBytes::Merk(b) => b,
@@ -2022,10 +2022,10 @@ mod tests {
         };
         let leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF")
             .lower_layers
-            .get_mut(&b"st".to_vec())
+            .get_mut(b"st".as_slice())
             .expect("st");
         leaf_layer.merk_proof = ProofBytes::MMR(vec![0u8; 8]);
 
@@ -2067,9 +2067,9 @@ mod tests {
         };
         let test_leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF");
-        let removed = test_leaf_layer.lower_layers.remove(&b"st".to_vec());
+        let removed = test_leaf_layer.lower_layers.remove(b"st".as_slice());
         assert!(removed.is_some(), "test setup: st layer should exist");
 
         let reencoded = reencode_sum_envelope(decoded);
@@ -2121,7 +2121,7 @@ mod tests {
         };
         let test_leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF");
         // Smuggle an unrelated layer in alongside the legitimate `st`
         // descent. The honest prover never emits this shape, so the
@@ -2175,7 +2175,7 @@ mod tests {
         };
         let test_leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF");
         // Re-key the sole `st` entry under a different name. The
         // count gate (`len == 1`) still passes; the key gate must
@@ -2183,7 +2183,7 @@ mod tests {
         // path key.
         let st_layer = test_leaf_layer
             .lower_layers
-            .remove(&b"st".to_vec())
+            .remove(b"st".as_slice())
             .expect("test setup: st should be present");
         test_leaf_layer
             .lower_layers
@@ -2264,10 +2264,10 @@ mod tests {
         };
         let leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF")
             .lower_layers
-            .get_mut(&b"st".to_vec())
+            .get_mut(b"st".as_slice())
             .expect("st");
         // Attach a dangling sub-layer under the leaf merk. The
         // strict-shape gate at `depth == path_keys.len()` must reject
@@ -2325,10 +2325,10 @@ mod tests {
         };
         let leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF")
             .lower_layers
-            .get_mut(&b"st".to_vec())
+            .get_mut(b"st".as_slice())
             .expect("st");
 
         let mut ops: LinkedList<Op> = LinkedList::new();
@@ -2375,7 +2375,7 @@ mod tests {
         };
         let test_leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF");
         match &mut test_leaf_layer.merk_proof {
             ProofBytes::Merk(b) => {

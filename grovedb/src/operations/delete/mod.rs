@@ -2,18 +2,31 @@
 //!
 //! # Dangling References
 //!
-//! GroveDB does **not** track backward (incoming) references. When an element
-//! is deleted, any existing [`Reference`](crate::Element::Reference) elements
-//! that point to it become *dangling*. Attempting to follow a dangling
-//! reference will return
+//! For ordinary [`Reference`](crate::Element::Reference) elements, GroveDB
+//! does **not** track backward (incoming) references. When an element is
+//! deleted, any existing references that point to it become *dangling*.
+//! Attempting to follow a dangling reference will return
 //! [`Error::CorruptedReferencePathKeyNotFound`](crate::Error::CorruptedReferencePathKeyNotFound)
 //! rather than incorrect data, so the failure mode is safe.
 //!
-//! Callers are responsible for ensuring that all references to an element are
-//! removed before (or atomically with) the deletion of that element.
+//! Callers are responsible for ensuring that all ordinary references to an
+//! element are removed before (or atomically with) the deletion of that
+//! element.
+//!
+//! The exception is the opt-in bidirectional-references machinery
+//! (`GROVE_V4`+): deleting with
+//! [`DeleteOptions::propagate_backward_references`] set cascades any
+//! [`BidirectionalReference`](crate::Element::BidirectionalReference)
+//! chains that point at the deleted element (each affected reference must
+//! allow `cascade_on_update`, otherwise the delete errors instead). See
+//! `adr/bidirectional_references.md`.
 
 #[cfg(feature = "estimated_costs")]
 mod average_case;
+/// Versioned dispatch for `clear_subtree`. Consensus-critical — see the
+/// module docs (issue #893).
+#[cfg(feature = "minimal")]
+mod clear_subtree;
 /// Versioned dispatch for `delete_internal_on_transaction` (the shared
 /// delete path). Consensus-critical — see the module docs.
 #[cfg(feature = "minimal")]
@@ -29,7 +42,7 @@ pub mod flat_drop;
 mod worst_case;
 
 #[cfg(feature = "minimal")]
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
 #[cfg(feature = "minimal")]
 pub use delete_up_tree::DeleteUpTreeOptions;
@@ -37,22 +50,18 @@ pub use delete_up_tree::DeleteUpTreeOptions;
 pub use flat_drop::PendingPrefixDropsReport;
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add,
+    cost_return_on_error,
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::element::{
-    decode::ElementDecodeExtensions, tree_type::ElementTreeTypeExtensions,
-};
+use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 #[cfg(feature = "minimal")]
-use grovedb_merk::{proofs::Query, KVIterator, MaybeTree};
+use grovedb_merk::MaybeTree;
 #[cfg(feature = "minimal")]
-use grovedb_merk::{Error as MerkError, Merk, MerkOptions};
+use grovedb_merk::{Error as MerkError, MerkOptions};
 use grovedb_path::SubtreePath;
 #[cfg(feature = "minimal")]
-use grovedb_storage::{
-    rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch, StorageContext,
-};
+use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 use crate::util::{compat, TxRef};
@@ -98,6 +107,13 @@ pub struct DeleteOptions {
     pub base_root_storage_is_free: bool,
     /// Validate tree at path exists
     pub validate_tree_at_path_exists: bool,
+    /// Propagate updates to elements with backward references. This enables
+    /// bidirectional-reference bookkeeping for this call: deletions of
+    /// backward-references elements cascade along the reference chains
+    /// (each affected reference must allow `cascade_on_update`, otherwise
+    /// the operation errors). Opt-in per call because the checks require an
+    /// extra fetch on every delete. Requires `GROVE_V4`+.
+    pub propagate_backward_references: bool,
 }
 
 #[cfg(feature = "minimal")]
@@ -108,6 +124,7 @@ impl Default for DeleteOptions {
             deleting_non_empty_trees_returns_error: true,
             base_root_storage_is_free: true,
             validate_tree_at_path_exists: false,
+            propagate_backward_references: false,
         }
     }
 }
@@ -127,13 +144,18 @@ impl GroveDb {
     ///
     /// # Dangling references
     ///
-    /// This operation does **not** check for incoming references. If other
+    /// Without [`DeleteOptions::propagate_backward_references`], this
+    /// operation does **not** check for incoming references. If other
     /// elements hold [`Reference`](crate::Element::Reference) paths that point
     /// to the deleted element, those references become dangling. Following a
     /// dangling reference will return
     /// [`Error::CorruptedReferencePathKeyNotFound`](crate::Error::CorruptedReferencePathKeyNotFound),
     /// not incorrect data. Callers must manage reference lifecycle and remove
-    /// or update any references to this element before deleting it.
+    /// or update any ordinary references to this element before deleting it.
+    ///
+    /// With the flag set (`GROVE_V4`+), bidirectional references pointing at
+    /// the deleted element are cascade-deleted instead — see the
+    /// [module-level documentation](self).
     pub fn delete<'b, B, P>(
         &self,
         path: P,
@@ -187,189 +209,6 @@ impl GroveDb {
         tx.commit_local().wrap_with_cost(cost)
     }
 
-    /// Delete all elements in a specified subtree.
-    /// Returns if we successfully cleared the subtree.
-    ///
-    /// # Dangling references
-    ///
-    /// This operation does **not** check for incoming references. Any
-    /// [`Reference`](crate::Element::Reference) elements elsewhere in the
-    /// database that point to elements within the cleared subtree will become
-    /// dangling. See the [module-level documentation](self) for details.
-    pub fn clear_subtree<'b, B, P>(
-        &self,
-        path: P,
-        options: Option<ClearOptions>,
-        transaction: TransactionArg,
-        grove_version: &GroveVersion,
-    ) -> Result<bool, Error>
-    where
-        B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePath<'b, B>>,
-    {
-        self.clear_subtree_with_costs(path, options, transaction, grove_version)
-            .unwrap()
-    }
-
-    /// Delete all elements in a specified subtree and get back costs
-    /// Warning: The costs for this operation are not yet correct, hence we
-    /// should keep this private for now
-    /// Returns if we successfully cleared the subtree
-    fn clear_subtree_with_costs<'b, B, P>(
-        &self,
-        path: P,
-        options: Option<ClearOptions>,
-        transaction: TransactionArg,
-        grove_version: &GroveVersion,
-    ) -> CostResult<bool, Error>
-    where
-        B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePath<'b, B>>,
-    {
-        check_grovedb_v0_with_cost!(
-            "clear_subtree",
-            grove_version
-                .grovedb_versions
-                .operations
-                .delete
-                .clear_subtree
-        );
-
-        let tx = TxRef::new(&self.db, transaction);
-
-        let subtree_path: SubtreePath<B> = path.into();
-        let mut cost = OperationCost::default();
-        let batch = StorageBatch::new();
-
-        let options = options.unwrap_or_default();
-
-        let mut merk_to_clear = cost_return_on_error!(
-            &mut cost,
-            self.open_transactional_merk_at_path(
-                subtree_path.clone(),
-                tx.as_ref(),
-                Some(&batch),
-                grove_version,
-            )
-        );
-
-        // Clearing an indexed primary would empty the primary Merk while
-        // leaving every per-axis secondary Merk fully populated, so the
-        // element's secondary root key / axes digest would still commit to
-        // rows that no longer exist. Reject rather than corrupt; callers
-        // should delete the indexed tree itself (which sweeps all axes) or
-        // remove entries through the dedicated `delete_from_*` APIs.
-        cost_return_on_error_no_add!(
-            cost,
-            crate::operations::indexed_tree::reject_generic_write_into_indexed_primary(
-                merk_to_clear.tree_type,
-                "clear_subtree",
-            )
-        );
-
-        // Non-Merk data trees store data in the data namespace as non-Element
-        // entries.  We cannot iterate them with Element::iterator, so just
-        // clear the storage directly.
-        if merk_to_clear.tree_type.uses_non_merk_data_storage() {
-            let mut storage = self
-                .db
-                .get_transactional_storage_context(subtree_path.clone(), Some(&batch), tx.as_ref())
-                .unwrap_add_cost(&mut cost);
-            cost_return_on_error!(
-                &mut cost,
-                storage.clear().map_err(|e| {
-                    Error::CorruptedData(format!(
-                        "unable to clear non-merk tree data from storage: {e}",
-                    ))
-                })
-            );
-
-            cost_return_on_error!(
-                &mut cost,
-                self.db
-                    .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                    .map_err(Into::into)
-            );
-
-            return tx.commit_local().map(|_| true).wrap_with_cost(cost);
-        }
-
-        if options.check_for_subtrees {
-            let mut all_query = Query::new();
-            all_query.insert_all();
-
-            let mut element_iterator =
-                KVIterator::new(merk_to_clear.storage.raw_iter(), &all_query).unwrap();
-
-            // delete all nested subtrees
-            while let Some((key, element_value)) =
-                element_iterator.next_kv().unwrap_add_cost(&mut cost)
-            {
-                let element = match Element::raw_decode(&element_value, grove_version) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        return Err(Error::CorruptedData(format!(
-                            "unable to decode element while clearing subtree: {e}"
-                        )))
-                        .wrap_with_cost(cost);
-                    }
-                };
-                if element.is_any_tree() {
-                    if options.allow_deleting_subtrees {
-                        cost_return_on_error!(
-                            &mut cost,
-                            self.delete(
-                                subtree_path.clone(),
-                                key.as_slice(),
-                                Some(DeleteOptions {
-                                    allow_deleting_non_empty_trees: true,
-                                    deleting_non_empty_trees_returns_error: false,
-                                    ..Default::default()
-                                }),
-                                Some(tx.as_ref()),
-                                grove_version,
-                            )
-                        );
-                    } else if options.trying_to_clear_with_subtrees_returns_error {
-                        return Err(Error::ClearingTreeWithSubtreesNotAllowed(
-                            "options do not allow to clear this merk tree as it contains subtrees",
-                        ))
-                        .wrap_with_cost(cost);
-                    } else {
-                        return Ok(false).wrap_with_cost(cost);
-                    }
-                }
-            }
-        }
-
-        // delete non subtree values
-        cost_return_on_error!(&mut cost, merk_to_clear.clear().map_err(Error::MerkError));
-
-        // propagate changes
-        let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
-            HashMap::default();
-        merk_cache.insert(subtree_path.clone(), merk_to_clear);
-        cost_return_on_error!(
-            &mut cost,
-            self.propagate_changes_with_transaction(
-                merk_cache,
-                subtree_path.clone(),
-                tx.as_ref(),
-                &batch,
-                grove_version,
-            )
-        );
-
-        cost_return_on_error!(
-            &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
-        );
-
-        tx.commit_local().map(|_| true).wrap_with_cost(cost)
-    }
-
     /// Delete element with sectional storage function.
     ///
     /// # Dangling references
@@ -402,6 +241,13 @@ impl GroveDb {
                 .delete
                 .delete_with_sectional_storage_function
         );
+        let _storage_removal_version_guard =
+            grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(
+                grove_version
+                    .grovedb_versions
+                    .storage_costs
+                    .add_basic_storage_removal_to_sectioned_storage_removal,
+            );
 
         let tx = TxRef::new(&self.db, transaction);
 
@@ -534,6 +380,13 @@ impl GroveDb {
                 .delete
                 .delete_if_empty_tree_with_sectional_storage_function
         );
+        let _storage_removal_version_guard =
+            grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(
+                grove_version
+                    .grovedb_versions
+                    .storage_costs
+                    .add_basic_storage_removal_to_sectioned_storage_removal,
+            );
 
         let options = DeleteOptions {
             allow_deleting_non_empty_trees: false,
@@ -739,11 +592,14 @@ mod tests {
     use grovedb_version::version::{v3::GROVE_V3, GroveVersion};
     use pretty_assertions::assert_eq;
 
+    use grovedb_path::SubtreePath;
+
     use crate::{
         operations::delete::{delete_up_tree::DeleteUpTreeOptions, ClearOptions, DeleteOptions},
         reference_path::ReferencePathType,
         tests::{
-            common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF,
+            common::{make_tree_with_bidi_references, EMPTY_PATH},
+            make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF,
         },
         Element, Error,
     };
@@ -2262,5 +2118,131 @@ mod tests {
             "expected CorruptedReferencePathKeyNotFound, got {:?}",
             err
         );
+    }
+
+    #[test]
+    fn delete_item_with_backward_references() {
+        // Deletion of an item with backward references shall trigger cascade
+        // deletions if the flag is set
+        let version = GroveVersion::latest();
+        let db = make_tree_with_bidi_references(version);
+
+        assert!(db
+            .get(&[TEST_LEAF, b"innertree"], b"ref", None, version)
+            .unwrap()
+            .is_ok());
+
+        db.delete(
+            &[b"deep_leaf".as_ref(), b"deep_node_1", b"deeper_2"],
+            b"key5",
+            Some(DeleteOptions {
+                allow_deleting_non_empty_trees: false,
+                deleting_non_empty_trees_returns_error: true,
+                base_root_storage_is_free: true,
+                validate_tree_at_path_exists: true,
+                propagate_backward_references: true,
+            }),
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(matches!(
+            db.get(&[TEST_LEAF, b"innertree"], b"ref", None, version)
+                .unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn recursive_deletion_with_bidirectional_references() {
+        // The purpose of this test is to check if bidirectional references
+        // chain propagation works properly when a part of it happens to be
+        // under a recursive deletion effect.
+        // The expected result is that references inside test_leaf and
+        // another_test_leaf shall be deleted as well; those that happened
+        // to be inside of deep_leaf are gone with the deleted subtree.
+
+        let version = GroveVersion::latest();
+
+        let db = make_tree_with_bidi_references(version);
+
+        let transaction = db.start_transaction();
+
+        // Perform recursive deletion:
+        db.delete(
+            SubtreePath::empty(),
+            b"deep_leaf",
+            Some(DeleteOptions {
+                allow_deleting_non_empty_trees: true,
+                deleting_non_empty_trees_returns_error: false,
+                base_root_storage_is_free: true,
+                validate_tree_at_path_exists: true,
+                propagate_backward_references: true,
+            }),
+            Some(&transaction),
+            version,
+        )
+        .unwrap()
+        .unwrap();
+
+        // Outside of deletion area:
+        assert!(matches!(
+            db.get(
+                &[TEST_LEAF, b"innertree"],
+                b"ref",
+                Some(&transaction),
+                version
+            )
+            .unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ));
+
+        // Inside:
+        assert!(matches!(
+            db.get(
+                &[b"deep_leaf".as_ref(), b"deep_node_1", b"deeper_1"],
+                b"ref3",
+                Some(&transaction),
+                version
+            )
+            .unwrap(),
+            Err(Error::PathParentLayerNotFound(_))
+        ));
+
+        // Commit and re-check against persisted state: the cascade must
+        // survive the transaction boundary, the whole graph must verify,
+        // and proofs over surviving data must check out against the new
+        // root hash.
+        db.commit_transaction(transaction).unwrap().unwrap();
+
+        assert!(matches!(
+            db.get(&[TEST_LEAF, b"innertree"], b"ref", None, version)
+                .unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ));
+        assert!(db
+            .verify_grovedb(None, true, true, version)
+            .unwrap()
+            .is_empty());
+
+        let mut query = crate::Query::new();
+        query.insert_all();
+        let path_query =
+            crate::PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query);
+        let proof = db
+            .prove_query(&path_query, None, version)
+            .unwrap()
+            .expect("should prove after cascade deletion");
+        let (proved_root, results) = crate::GroveDb::verify_query(&proof, &path_query, version)
+            .expect("proof should verify");
+        assert_eq!(
+            proved_root,
+            db.root_hash(None, version).unwrap().unwrap(),
+            "proved root must match the committed root"
+        );
+        // innertree originally held key1..key3 plus the now-cascaded `ref`.
+        assert_eq!(results.len(), 3);
     }
 }

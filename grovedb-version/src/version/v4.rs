@@ -140,6 +140,19 @@
 //!   apply path is unaffected on every version (preprocessing rewrites
 //!   keyless ops before the batch structure is built).
 //!
+//! - `apply_batch.non_merk_parent_keyed_ops_rejection: 1` — batch execution
+//!   refuses ordinary keyed ops at a level whose parent is a non-Merk data
+//!   tree (`CommitmentTree`, `MmrTree`, `BulkAppendTree`, `DenseTree`,
+//!   `PrivateDocumentStore`), whether the parent already exists or is
+//!   created in the same batch. V1..V3 let such ops run through ordinary
+//!   Merk dispatch: the level's Merk root is committed into the parent
+//!   element's hash while the element keeps its typed metadata, so the
+//!   acknowledged write is unreachable through typed readers and
+//!   `verify_grovedb` reports the subtree corrupted (issue #900). Gated
+//!   because it flips an accepted batch into a refused one. Typed append
+//!   ops are unaffected on every version (preprocessing rewrites them at
+//!   the parent level).
+//!
 //! - `operations.average_case.average_case_commitment_tree_insert: 1` and
 //!   `operations.worst_case.worst_case_commitment_tree_insert: 1` — the
 //!   `CommitmentTreeInsert` estimation arms charge the depth-derived
@@ -150,6 +163,17 @@
 //!   for replay only. Gated because downstream the estimate is the
 //!   admission bound: raising it ungated would make already-committed
 //!   shield transitions re-validate as under-funded and brick sync.
+//!
+//! - `operations.average_case.average_case_backward_references_fan_out: 1`
+//!   and `operations.worst_case.worst_case_backward_references_fan_out: 1`
+//!   — batch estimation charges the backward-references family's derived
+//!   fan-out (registration, chain propagation, cascade deletion), bounded
+//!   by the apply path's budgets (≤32 referrers per item, ≤10-hop chains,
+//!   1 referrer per reference), and models the internal
+//!   `ReplaceBackwardReferenceFamilyMember` op. V1..V3 keep estimating the
+//!   family as plain elements (their apply path rejects it in batches, so
+//!   the legacy figures were never admission-relevant) — preserved for
+//!   replay.
 //!
 //! - `bulk_append_tree_versions.cost.append_storage_accounting: 1` and
 //!   `commitment_tree_versions.cost.frontier_save_storage_accounting: 1` —
@@ -224,8 +248,25 @@
 //!   a tree element, which the batch resolver has always rejected; v1
 //!   accepted it and committed only `H(tree element bytes)`, a hash that does
 //!   not bind the subtree's contents, so the row could not be proved and
-//!   subtree changes never disturbed it. Gated because (i) moves a committed
-//!   root and (ii)/(iii) flip an accepted/rejected outcome.
+//!   subtree changes never disturbed it. (iv) A directly inserted non-empty
+//!   indexed-tree element (PCIT / PSIT / PCPSIT) has its claimed secondary
+//!   root keys validated against the STORED element's canonical values
+//!   (issue #897). v1 opened each secondary Merk with the incoming key and
+//!   compared the returned root key against that same input — circular, so
+//!   any existing node key of the secondary (every row is one) passed and
+//!   committed the hash of a non-root node, authenticating a strict subtree
+//!   of the index as the whole index. Gated because (i) moves a committed
+//!   root and (ii)/(iii)/(iv) flip an accepted/rejected outcome.
+//!
+//! - `storage_costs.add_basic_storage_removal_to_sectioned_storage_removal:
+//!   1` — combining a `BasicStorageRemoval` with a `SectionedStorageRemoval`
+//!   folds the basic bytes into the default identifier's `UNKNOWN_EPOCH`
+//!   entry while PRESERVING the rest of the default section (issue #683).
+//!   V1..V3 keep the shipped arithmetic, which drops the mutated default
+//!   section in three of the four `Add`/`AddAssign` arms, undercounting
+//!   removed bytes — preserved to reproduce historical cost results.
+//!   Identity-owned sections are unaffected; Drive accounts for the default
+//!   section as system removals, separately from identity fee refunds.
 //!
 //! Note that `GroveVersion::latest()` resolves to this version, so anything
 //! defaulting to "latest" — tests, benchmarks, tools — exercises every gate
@@ -256,7 +297,7 @@ use crate::version::{
         GroveDBOperationsInsertVersions, GroveDBOperationsPrivateDocumentStoreVersions,
         GroveDBOperationsProofVersions, GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
-        GroveDBReplicationVersions, GroveDBVersions,
+        GroveDBReplicationVersions, GroveDBStorageCostVersions, GroveDBVersions,
     },
     merk_versions::{
         MerkAverageCaseCostsVersions, MerkBatchVersions, MerkProofVersions, MerkTreeVersions,
@@ -285,6 +326,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             overwrite_indexed_cleanup_inspection: 1,
             keyless_op_cost_dispatch: 1,
             add_on_op_collision: 1,
+            non_merk_parent_keyed_ops_rejection: 1,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,
@@ -308,7 +350,10 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             insert_into_batch_operations: 0,
             insert_if_not_exists: 0,
             insert_if_not_exists_into_batch_operations: 0,
-            insert_if_changed_value: 0,
+            // v1: reads the previous value through the Merk tree (sees
+            // uncommitted MerkCache state) instead of committed storage.
+            insert_if_changed_value: 1,
+            insert_subtree_if_changed: 0,
             insert_if_changed_value_into_batch_operations: 0,
             insert_reference: 0,
             insert_reference_into_batch_operations: 0,
@@ -345,6 +390,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 get: 0,
                 get_caching_optional: 0,
                 follow_reference: 0,
+                ref_path_follow_reference: 0,
                 get_raw: 0,
                 get_raw_caching_optional: 0,
                 get_raw_optional: 0,
@@ -364,8 +410,10 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             },
             insert: GroveDBOperationsInsertVersions {
                 insert: 0,
-                insert_on_transaction: 0,
-                insert_without_transaction: 0,
+                // v1: backward-references router. Calls that neither insert a
+                // BidirectionalReference nor set
+                // propagate_backward_references run the exact v0 body.
+                insert_on_transaction: 1,
                 // v2: a directly inserted Reference binds the value hash of its
                 // terminal's STORED bytes (wrapper included for a NonCounted
                 // terminal), matching what the batch reference resolver has
@@ -381,14 +429,19 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 // element, matching the batch resolver; v1 accepted it and
                 // committed a hash that does not bind the subtree's contents.
                 add_element_on_transaction: 2,
-                add_element_without_transaction: 0,
                 insert_if_not_exists: 0,
                 insert_if_not_exists_return_existing_element: 0,
                 insert_if_changed_value: 0,
             },
             delete: GroveDBOperationsDeleteVersions {
                 delete: 0,
-                clear_subtree: 0,
+                // v1: clearing a non-Merk data tree (MmrTree, BulkAppendTree,
+                // DenseAppendOnlyFixedSizeTree, CommitmentTree,
+                // PrivateDocumentStore) also resets the parent element to its
+                // canonical empty state and propagates, instead of leaving a
+                // stale count/commitment over the cleared payload (issue
+                // #893).
+                clear_subtree: 1,
                 delete_with_sectional_storage_function: 0,
                 delete_if_empty_tree: 0,
                 delete_if_empty_tree_with_sectional_storage_function: 0,
@@ -398,8 +451,9 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 // with the child's tree type (issue #686). v0 (GROVE_V1..V3)
                 // keeps the legacy reopen byte-for-byte for replay
                 // compatibility.
-                delete_internal_on_transaction: 1,
-                delete_internal_without_transaction: 0,
+                // v2: backward-references router on top of v1 — flag-less
+                // calls run the exact v1 body.
+                delete_internal_on_transaction: 2,
                 average_case_delete_operation_for_delete: 0,
                 worst_case_delete_operation_for_delete: 0,
             },
@@ -473,6 +527,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 add_average_case_get_raw_tree_cost: 0,
                 add_average_case_get_cost: 0,
                 average_case_commitment_tree_insert: 1,
+                average_case_backward_references_fan_out: 1,
             },
             worst_case: GroveDBOperationsWorstCaseVersions {
                 add_worst_case_get_merk_at_path: 0,
@@ -488,6 +543,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 add_worst_case_get_raw_cost: 0,
                 add_worst_case_get_cost: 0,
                 worst_case_commitment_tree_insert: 1,
+                worst_case_backward_references_fan_out: 1,
             },
             // PrivateDocumentStore activates in GROVE_V4.
             private_document_store: GroveDBOperationsPrivateDocumentStoreVersions {
@@ -510,6 +566,12 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             should_add_parent_tree_at_path: 0,
             unified_read_mode: 1,
             per_instance_query_limits: 1, // Query::limit served on trusted reads (V4+)
+        },
+        storage_costs: GroveDBStorageCostVersions {
+            // Basic+sectioned removal addition preserves the default section
+            // (issue #683); v1..v3 keep the legacy default-section-dropping
+            // arithmetic for replay compatibility.
+            add_basic_storage_removal_to_sectioned_storage_removal: 1,
         },
         replication: GroveDBReplicationVersions {
             get_subtrees_metadata: 0,

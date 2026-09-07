@@ -147,7 +147,9 @@ fn test_query_merge_single_key() {
     query_one.insert_key(b"a".to_vec());
     let mut query_two = Query::new();
     query_two.insert_key(b"b".to_vec());
-    query_one.merge_with(query_two);
+    query_one
+        .merge_with(query_two)
+        .expect("merge_with should succeed");
     let mut expected_query = Query::new();
     expected_query.insert_key(b"a".to_vec());
     expected_query.insert_key(b"b".to_vec());
@@ -161,7 +163,9 @@ fn test_query_merge_range() {
     query_one.insert_range(b"a".to_vec()..b"c".to_vec());
     let mut query_two = Query::new();
     query_two.insert_key(b"b".to_vec());
-    query_one.merge_with(query_two);
+    query_one
+        .merge_with(query_two)
+        .expect("merge_with should succeed");
     let mut expected_query = Query::new();
     expected_query.insert_range(b"a".to_vec()..b"c".to_vec());
     assert_eq!(query_one, expected_query);
@@ -178,7 +182,9 @@ fn test_query_merge_conditional_query() {
 
     let mut query_two = Query::new();
     query_two.insert_key(b"b".to_vec());
-    query_one.merge_with(query_two);
+    query_one
+        .merge_with(query_two)
+        .expect("merge_with should succeed");
 
     let mut expected_query = Query::new();
     expected_query.insert_key(b"a".to_vec());
@@ -215,7 +221,9 @@ fn test_query_merge_deep_conditional_query() {
     query_two_d.insert_key(b"d".to_vec());
     query_two_c.add_conditional_subquery(QueryItem::Key(b"c".to_vec()), None, Some(query_two_d));
     query_two.add_conditional_subquery(QueryItem::Key(b"a".to_vec()), None, Some(query_two_c));
-    query_one.merge_with(query_two);
+    query_one
+        .merge_with(query_two)
+        .expect("merge_with should succeed");
 
     let mut expected_query = Query::new();
     expected_query.insert_key(b"a".to_vec());

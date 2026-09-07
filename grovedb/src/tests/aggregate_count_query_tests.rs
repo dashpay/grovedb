@@ -464,7 +464,7 @@ mod tests {
         };
         let test_leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF lower layer");
         let bytes = match &mut test_leaf_layer.merk_proof {
             ProofBytes::Merk(b) => b,
@@ -1045,10 +1045,10 @@ mod tests {
         // for an MMR variant.
         let leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF lower layer")
             .lower_layers
-            .get_mut(&b"ct".to_vec())
+            .get_mut(b"ct".as_slice())
             .expect("ct lower layer");
         leaf_layer.merk_proof = ProofBytes::MMR(vec![0u8; 8]);
 
@@ -1091,10 +1091,10 @@ mod tests {
         };
         let test_leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF lower layer");
         // Drop the leaf layer's pointer entry.
-        let removed = test_leaf_layer.lower_layers.remove(&b"ct".to_vec());
+        let removed = test_leaf_layer.lower_layers.remove(b"ct".as_slice());
         assert!(removed.is_some(), "test setup: ct layer should exist");
 
         let reencoded = reencode_envelope(decoded);
@@ -1142,10 +1142,10 @@ mod tests {
         };
         let leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF lower layer")
             .lower_layers
-            .get_mut(&b"ct".to_vec())
+            .get_mut(b"ct".as_slice())
             .expect("ct lower layer");
 
         // Build a malformed (but parseable) merk proof: a single Push(Hash)
@@ -1198,7 +1198,7 @@ mod tests {
         // a 1-byte payload, which fails to decode as a proof op stream.
         let test_leaf_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF lower layer");
         match &mut test_leaf_layer.merk_proof {
             ProofBytes::Merk(b) => {
@@ -2865,14 +2865,14 @@ mod tests {
         // Walk to the carrier layer: TEST_LEAF -> byBrand.
         let carrier_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF layer")
             .lower_layers
-            .get_mut(&b"byBrand".to_vec())
+            .get_mut(b"byBrand".as_slice())
             .expect("byBrand carrier layer");
         // Drop brand_001's lower_layer — its row will still be in the
         // multi-key proof but the descent will fail.
-        let removed = carrier_layer.lower_layers.remove(&b"brand_001".to_vec());
+        let removed = carrier_layer.lower_layers.remove(b"brand_001".as_slice());
         assert!(
             removed.is_some(),
             "test setup: expected brand_001 in carrier lower_layers"
@@ -2928,15 +2928,15 @@ mod tests {
         // descent.
         let brand_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF layer")
             .lower_layers
-            .get_mut(&b"byBrand".to_vec())
+            .get_mut(b"byBrand".as_slice())
             .expect("byBrand layer")
             .lower_layers
-            .get_mut(&b"brand_000".to_vec())
+            .get_mut(b"brand_000".as_slice())
             .expect("brand_000 layer");
-        let removed = brand_layer.lower_layers.remove(&b"color".to_vec());
+        let removed = brand_layer.lower_layers.remove(b"color".as_slice());
         assert!(
             removed.is_some(),
             "test setup: expected color in brand_000 lower_layers"
@@ -2991,16 +2991,16 @@ mod tests {
         // `expect_merk_bytes`.
         let color_layer = root_layer
             .lower_layers
-            .get_mut(&TEST_LEAF.to_vec())
+            .get_mut(TEST_LEAF)
             .expect("TEST_LEAF layer")
             .lower_layers
-            .get_mut(&b"byBrand".to_vec())
+            .get_mut(b"byBrand".as_slice())
             .expect("byBrand layer")
             .lower_layers
-            .get_mut(&b"brand_000".to_vec())
+            .get_mut(b"brand_000".as_slice())
             .expect("brand_000 layer")
             .lower_layers
-            .get_mut(&b"color".to_vec())
+            .get_mut(b"color".as_slice())
             .expect("color layer");
         color_layer.merk_proof = ProofBytes::MMR(vec![]);
         let new_proof = bincode::encode_to_vec(

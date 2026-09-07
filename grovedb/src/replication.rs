@@ -1,3 +1,25 @@
+//! State synchronization: serving and restoring a grove chunk by chunk.
+//!
+//! # Request limits on the serving side
+//!
+//! [`GroveDb::fetch_chunk`] answers requests from peers that are not
+//! trusted, so the shape of a request bounds the work it can cause:
+//!
+//! - at most [`CONST_GROUP_PACKING_SIZE`] global chunk ids per request and
+//!   at most that many local chunk ids per global id; exactly one page
+//!   cursor per append-only subtree;
+//! - every Merk local chunk id is a traversal instruction of `0x00` /
+//!   `0x01` bytes no longer than the addressed subtree is deep (`height -
+//!   1` bytes). The bound is enforced by the Merk chunk producer itself
+//!   ([`ChunkProducer`]), so callers that reach the producer without going
+//!   through the packed transport get the same protection. An over-depth
+//!   id is refused before any recovery or tree work, which keeps the cost
+//!   of a request proportional to the local tree rather than to the
+//!   request (issue #883).
+//!
+//! Every limit is one an honest target never exceeds: the target only asks
+//! for ids the source itself handed it in earlier chunks.
+
 pub(crate) mod indexed_sync;
 pub(crate) mod non_merk_sync;
 mod state_sync_session;
@@ -320,6 +342,10 @@ impl GroveDb {
     ///   at most that many local chunk ids per global id, and exactly one
     ///   page cursor per append-only subtree. Larger requests are refused
     ///   before anything is served, since every id costs a buffered chunk.
+    /// - Each Merk local chunk id is bounded by the addressed subtree's
+    ///   depth (see the module docs); an id longer than the subtree is deep
+    ///   is refused by the chunk producer with a `BadTraversalInstruction`
+    ///   error, surfaced here as `Error::CorruptedData`.
     /// - Non-Merk append-only subtrees (`CommitmentTree`, `MmrTree`,
     ///   `BulkAppendTree`, `DenseAppendOnlyFixedSizeTree`,
     ///   `PrivateDocumentStore`) are served as cursor-based entry pages

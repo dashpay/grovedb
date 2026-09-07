@@ -467,7 +467,7 @@ mod tests {
                     Some(StorageFlags::new_single_epoch(0, Some(owner_id)).to_element_flags()),
                 ),
             ),
-            QualifiedGroveDbOp::insert_only_op(
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                 vec![b"refs".to_vec()],
                 b"ref_key".to_vec(),
                 Element::new_reference_with_hops(
@@ -551,7 +551,7 @@ mod tests {
                         Some(StorageFlags::new_single_epoch(1, Some(owner_id)).to_element_flags()),
                     ),
                 ),
-                QualifiedGroveDbOp::insert_only_op(
+                QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                     vec![b"refs".to_vec()],
                     b"ref_key".to_vec(),
                     Element::new_reference_with_hops(
@@ -650,7 +650,7 @@ mod tests {
                         Some(StorageFlags::new_single_epoch(1, Some(owner_id)).to_element_flags()),
                     ),
                 ),
-                QualifiedGroveDbOp::insert_only_op(
+                QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                     vec![b"refs".to_vec()],
                     b"ref_key".to_vec(),
                     Element::new_reference_with_hops(
@@ -750,7 +750,7 @@ mod tests {
                         Some(StorageFlags::new_single_epoch(2, Some(owner_id)).to_element_flags()),
                     ),
                 ),
-                QualifiedGroveDbOp::insert_only_op(
+                QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                     vec![b"refs".to_vec()],
                     b"ref_key".to_vec(),
                     Element::new_reference_with_hops(
@@ -850,7 +850,7 @@ mod tests {
                         Some(StorageFlags::new_single_epoch(0, Some(owner_id)).to_element_flags()),
                     ),
                 ),
-                QualifiedGroveDbOp::insert_only_op(
+                QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                     vec![b"refs".to_vec()],
                     b"ref_key".to_vec(),
                     Element::new_reference_with_hops(
@@ -953,7 +953,7 @@ mod tests {
                         Some(StorageFlags::new_single_epoch(1, Some(owner_id)).to_element_flags()),
                     ),
                 ),
-                QualifiedGroveDbOp::insert_only_op(
+                QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                     vec![b"refs".to_vec()],
                     b"ref_key".to_vec(),
                     Element::new_reference_with_hops(
@@ -1036,7 +1036,7 @@ mod tests {
                     Some(StorageFlags::new_single_epoch(1, Some(owner_id)).to_element_flags()),
                 ),
             ),
-            QualifiedGroveDbOp::insert_only_op(
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                 vec![b"refs".to_vec()],
                 b"ref_key".to_vec(),
                 Element::new_reference_with_hops(
@@ -1118,7 +1118,7 @@ mod tests {
                     Some(StorageFlags::new_single_epoch(1, Some(owner_id)).to_element_flags()),
                 ),
             ),
-            QualifiedGroveDbOp::insert_only_op(
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                 vec![b"refs".to_vec()],
                 b"ref_key".to_vec(),
                 Element::new_reference_with_hops(
@@ -1196,7 +1196,7 @@ mod tests {
                     Some(StorageFlags::new_single_epoch(0, Some(owner_id)).to_element_flags()),
                 ),
             ),
-            QualifiedGroveDbOp::insert_only_op(
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                 vec![b"refs".to_vec()],
                 b"ref_key".to_vec(),
                 Element::new_reference_with_hops(
@@ -1275,7 +1275,7 @@ mod tests {
                     Some(StorageFlags::new_single_epoch(1, Some(owner_id)).to_element_flags()),
                 ),
             ),
-            QualifiedGroveDbOp::insert_only_op(
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                 vec![b"refs".to_vec()],
                 b"ref_key".to_vec(),
                 Element::new_reference_with_hops(
@@ -1356,7 +1356,7 @@ mod tests {
                         Some(StorageFlags::new_single_epoch(1, Some(owner_id)).to_element_flags()),
                     ),
                 ),
-                QualifiedGroveDbOp::insert_only_op(
+                QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                     vec![b"refs".to_vec()],
                     b"ref_key".to_vec(),
                     Element::new_reference_with_hops(
@@ -1448,7 +1448,7 @@ mod tests {
                         Some(StorageFlags::new_single_epoch(0, Some(owner_id)).to_element_flags()),
                     ),
                 ),
-                QualifiedGroveDbOp::insert_only_op(
+                QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                     vec![b"refs".to_vec()],
                     b"ref_key".to_vec(),
                     Element::new_reference_with_hops(

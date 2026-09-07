@@ -130,6 +130,7 @@ where
     ) -> CostResult<BatchStructure<C, F, SR>, Error> {
         Self::continue_from_ops(
             None,
+            None,
             ops,
             update_element_flags_function,
             split_remove_bytes_function,
@@ -139,8 +140,18 @@ where
     }
 
     /// Create batch structure from a list of ops. Returns CostResult.
+    ///
+    /// `previous_ops_by_qualified_paths` seeds the reference-resolution map
+    /// with an earlier segment's user ops, so a continuation's reference
+    /// ops resolve targets that segment wrote exactly as one combined batch
+    /// would (in-batch, from the op's own element) instead of reading a
+    /// possibly stale committed value. Ops in `ops` override seeded entries
+    /// at the same qualified path. The caller must exclude conditional
+    /// insertions that the earlier segment skipped, so their proposed
+    /// elements cannot shadow the values that actually remain stored.
     pub(super) fn continue_from_ops(
         previous_ops: Option<OpsByLevelPath>,
+        previous_ops_by_qualified_paths: Option<BTreeMap<Vec<Vec<u8>>, GroveOp>>,
         ops: Vec<QualifiedGroveDbOp>,
         update_element_flags_function: F,
         split_remove_bytes_function: SR,
@@ -168,7 +179,8 @@ where
             ops_by_level_paths.iter().map(|(k, _)| k).max().unwrap_or(0);
 
         // qualified paths meaning path + key
-        let mut ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, GroveOp> = BTreeMap::new();
+        let mut ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, GroveOp> =
+            previous_ops_by_qualified_paths.unwrap_or_default();
 
         for (op_index, op) in ops.into_iter().enumerate() {
             let QualifiedGroveDbOp {
@@ -255,12 +267,16 @@ where
                 | GroveOp::InsertIfNotExists { element, .. }
                 | GroveOp::InsertOrReplace { element }
                 | GroveOp::Replace { element }
-                | GroveOp::Patch { element, .. } => {
+                | GroveOp::Patch { element, .. }
+                | GroveOp::ReplaceBackwardReferenceFamilyMember { element, .. } => {
                     if let Some(tree_type) = element.tree_type() {
                         cost_return_on_error!(
                             &mut cost,
                             merk_tree_cache.insert(&op_path, &key, tree_type)
                         );
+                    }
+                    if element.is_indexed_tree() {
+                        merk_tree_cache.remember_indexed_element(&op_path, &key, element);
                     }
                     Ok(())
                 }
@@ -362,7 +378,10 @@ where
 /// refuses such cross-segment duplicates before the continuation is built
 /// (`GroveOp::is_pending_ancestor_update`).
 #[cfg(feature = "minimal")]
-fn merge_add_on_op_over_pending(pending: &GroveOp, add_on: GroveOp) -> Result<GroveOp, Error> {
+pub(super) fn merge_add_on_op_over_pending(
+    pending: &GroveOp,
+    add_on: GroveOp,
+) -> Result<GroveOp, Error> {
     if pending.is_pending_ancestor_update()
         && let GroveOp::InsertIfNotExists {
             error_if_exists, ..

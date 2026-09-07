@@ -428,34 +428,42 @@ where
             }
         }
 
-        let maybe_walker = self
-            .tree
-            .take()
-            .map(|tree| Walker::new(tree, self.source()));
+        grovedb_costs::storage_cost::removal::with_basic_sectioned_removal_addition_version(
+            grove_version
+                .grovedb_versions
+                .storage_costs
+                .add_basic_storage_removal_to_sectioned_storage_removal,
+            || {
+                let maybe_walker = self
+                    .tree
+                    .take()
+                    .map(|tree| Walker::new(tree, self.source()));
 
-        Walker::apply_to(
-            maybe_walker,
-            batch,
-            self.source(),
-            old_specialized_cost,
-            value_defined_cost_fn,
-            get_temp_new_value_with_old_flags,
-            update_tree_value_based_on_costs,
-            section_removal_bytes,
-            old_value_observer,
-            grove_version,
+                Walker::apply_to(
+                    maybe_walker,
+                    batch,
+                    self.source(),
+                    old_specialized_cost,
+                    value_defined_cost_fn,
+                    get_temp_new_value_with_old_flags,
+                    update_tree_value_based_on_costs,
+                    section_removal_bytes,
+                    old_value_observer,
+                    grove_version,
+                )
+                .flat_map_ok(|(maybe_tree, key_updates)| {
+                    // we set the new root node of the merk tree
+                    self.tree.set(maybe_tree);
+                    // commit changes to db
+                    self.commit(
+                        key_updates,
+                        aux,
+                        options,
+                        old_specialized_cost,
+                        grove_version,
+                    )
+                })
+            },
         )
-        .flat_map_ok(|(maybe_tree, key_updates)| {
-            // we set the new root node of the merk tree
-            self.tree.set(maybe_tree);
-            // commit changes to db
-            self.commit(
-                key_updates,
-                aux,
-                options,
-                old_specialized_cost,
-                grove_version,
-            )
-        })
     }
 }

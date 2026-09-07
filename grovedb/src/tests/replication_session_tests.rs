@@ -2864,6 +2864,71 @@ mod tests {
         );
     }
 
+    /// A populated bidirectional-reference graph round-trips through state
+    /// sync: the chunk producer emits a `BidirectionalReference` stored in
+    /// a normal tree as a `KVValueHash` node (via the `KvRefValueHash`
+    /// mapping), which the restorer must accept under the plain-reference
+    /// trust model — its value hash embeds the resolved end-of-chain hash,
+    /// which is not locally derivable. The item variants restore through
+    /// the recompute-checked `KVValueHashFeatureType` path.
+    #[test]
+    fn state_sync_populated_bidirectional_reference_graph_round_trip() {
+        use crate::{
+            bidirectional_references::BidirectionalReference, reference_path::ReferencePathType,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"value",
+                Element::new_item_allowing_bidirectional_references(b"hello".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        for (key, target) in [(b"r1".as_slice(), b"value".as_slice()), (b"r2", b"r1")] {
+            source
+                .insert(
+                    [TEST_LEAF].as_ref(),
+                    key,
+                    Element::BidirectionalReference(
+                        BidirectionalReference {
+                            forward_reference_path: ReferencePathType::SiblingReference(
+                                target.to_vec(),
+                            ),
+                            backward_references: Vec::new(),
+                            cascade_on_update: true,
+                            max_hop: None,
+                        },
+                        None,
+                    ),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .unwrap();
+        }
+
+        let source_root_hash = source.root_hash(None, grove_version).unwrap().unwrap();
+        let dest = sync_source_to_destination(&source, grove_version);
+        assert_eq!(
+            source_root_hash,
+            dest.root_hash(None, grove_version).unwrap().unwrap(),
+            "destination root hash should match source after full sync"
+        );
+        assert!(
+            dest.verify_grovedb(None, true, true, grove_version)
+                .unwrap()
+                .is_empty(),
+            "the restored graph must verify, referrer lists included"
+        );
+    }
+
     // ---------- Indexed-tree state sync ----------
 
     /// Shared assertions for a completed indexed round trip: identical app
@@ -4298,6 +4363,89 @@ mod tests {
                 .expect_err("a second page cursor in one request must be refused"),
             "page cursors",
         );
+    }
+
+    /// Issue #883: a local chunk id is a Merk traversal instruction, and a
+    /// subtree of height `h` has no node deeper than `h - 1` steps. The
+    /// producer used to backtrack an over-depth id one recursion level per
+    /// byte before failing, so a peer could make the source do work (and
+    /// consume stack) proportional to its request rather than to the tree.
+    /// Through the public `fetch_chunk` path such an id is now refused with
+    /// a descriptive error, while the honest root id keeps being served.
+    #[test]
+    fn fetch_chunk_rejects_chunk_id_longer_than_subtree_depth() {
+        let handle = std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(|| {
+                use grovedb_storage::rocksdb_storage::RocksDbStorage;
+
+                use crate::replication::utils::{encode_global_chunk_id, pack_nested_bytes};
+
+                let grove_version = GroveVersion::latest();
+                let source = make_test_grovedb(grove_version);
+                for i in 0..15u8 {
+                    source
+                        .insert(
+                            [TEST_LEAF].as_ref(),
+                            &[i],
+                            Element::new_item(vec![i]),
+                            None,
+                            None,
+                            grove_version,
+                        )
+                        .unwrap()
+                        .expect("insert item");
+                }
+                let tx = source.start_transaction();
+                let (merk, root_key, tree_type, _element) = source
+                    .open_merk_for_replication([TEST_LEAF].as_ref().into(), &tx, grove_version)
+                    .expect("open test leaf for replication");
+                let height = merk.height().expect("non-empty subtree") as usize;
+                drop(merk);
+                drop(tx);
+                let leaf_path: &[&[u8]] = &[TEST_LEAF];
+                let leaf_prefix = RocksDbStorage::build_prefix(leaf_path.into()).unwrap();
+
+                let fetch = |local_id: Vec<u8>| {
+                    let global = encode_global_chunk_id(
+                        leaf_prefix,
+                        root_key.clone(),
+                        tree_type,
+                        vec![local_id],
+                    )
+                    .expect("encode global chunk id");
+                    source.fetch_chunk(
+                        pack_nested_bytes(vec![global]).expect("pack").as_slice(),
+                        None,
+                        CURRENT_STATE_SYNC_VERSION,
+                        grove_version,
+                    )
+                };
+                let assert_refused = |err: crate::Error, what: &str| {
+                    let message = format!("{err}");
+                    assert!(
+                        message.contains("traversal instruction"),
+                        "{what}: expected a traversal-instruction error, got {message}"
+                    );
+                };
+
+                fetch(vec![]).expect("the root chunk id must be served");
+                // the deepest node the subtree has is still a valid request
+                fetch(vec![1u8; height - 1]).expect("an id at the depth bound must be served");
+                assert_refused(
+                    fetch(vec![1u8; height]).expect_err("an id past the leaves must be refused"),
+                    "one past the depth bound",
+                );
+                assert_refused(
+                    fetch(vec![0u8; 1_000_000])
+                        .expect_err("a request-length-driven id must be refused"),
+                    "a million-step id",
+                );
+            })
+            .expect("spawn thread");
+        handle
+            .join()
+            .expect("an over-depth chunk id must not overflow the stack");
     }
 
     /// A header page must carry exactly a header and a root chunk; any

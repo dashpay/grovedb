@@ -14,6 +14,11 @@
 //! `value_hash(serialized)` to `combine_hash(value_hash(serialized), NULL_HASH)`,
 //! which changes the grovedb root and breaks consensus when v11 is replayed.
 //!
+//! KNOWN, DELIBERATELY PRESERVED FLAW (issue #897, fixed in [`super::v2`]):
+//! the indexed-tree arms validate a non-empty element's claimed secondary
+//! root key circularly (opening the secondary WITH the claimed key). Frozen
+//! here for replay; do not tighten.
+//!
 //! v0 therefore differs from [`super::v1`] ONLY in the placement of those three
 //! match arms: here they join the `Op::Put` arm; there they join the layered
 //! arm. Everything else is identical. (The v12-only `ProvableSumTree` /
@@ -268,6 +273,22 @@ impl GroveDb {
             // inserted via `Op::Put` here (NOT the layered-subtree arm above) to
             // preserve the grovedb v4.1.0 / protocol-v11 consensus root — see the
             // module docs.
+            Element::BidirectionalReference(..)
+            | Element::ItemWithBackwardsReferences(..)
+            | Element::SumItemWithBackwardsReferences(..)
+            | Element::ItemWithSumItemWithBackwardsReferences(..) => {
+                // Backward-references elements activate with `GROVE_V4`;
+                // this v0 arm is selected by `GROVE_V1` / `GROVE_V2` where
+                // they must not exist. Fail closed.
+                return Err(Error::NotSupported(
+                    "backward-references elements (BidirectionalReference, \
+                     ItemWithBackwardsReferences, SumItemWithBackwardsReferences, \
+             ItemWithSumItemWithBackwardsReferences) require \
+                     GROVE_V4+"
+                        .to_owned(),
+                ))
+                .wrap_with_cost(cost);
+            }
             Element::Item(..)
             | Element::SumItem(..)
             | Element::ItemWithSumItem(..)

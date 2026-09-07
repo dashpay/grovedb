@@ -28,7 +28,11 @@
 //!   later read failed on. The batch path already refuses it. v2 further
 //!   refuses a reference whose terminal is a tree, as the batch resolver
 //!   always has; v0/v1 accepted it and committed a hash that does not bind
-//!   the subtree's contents. Selected by `GROVE_V4`+.
+//!   the subtree's contents. v2 also validates a non-empty indexed-tree
+//!   element's claimed secondary root keys against the STORED element
+//!   (issue #897); v0/v1 opened each secondary with the incoming key and
+//!   compared the result against that same input, which any existing node
+//!   key of the secondary Merk passes. Selected by `GROVE_V4`+.
 //!
 //! The implementations are otherwise identical. See [v0] / [v1] / [v2].
 //!

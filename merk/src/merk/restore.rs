@@ -188,24 +188,55 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 
         let mut root_traversal_instruction = vec_bytes_as_traversal_instruction(chunk_id)?;
 
-        if root_traversal_instruction.is_empty() {
-            self.merk
-                .set_base_root_key(chunk_tree.key().map(|k| k.to_vec()))
-                .value?;
+        // The parent-link rewrite (and the root-key set) mutate committed
+        // restorer state, so they run only AFTER the chunk write — whose
+        // validations (including the backward-references bytes/hash
+        // recompute) may still reject the chunk. Mutating first would
+        // consume the `parent_keys` entry and leave a valid retry of the
+        // same chunk unable to proceed. Capture what the rewrite needs
+        // before the write consumes the tree.
+        let updated_parent_link = if root_traversal_instruction.is_empty() {
+            None
         } else {
-            // every non root chunk has some associated parent with an placeholder link
-            // here we update the placeholder link to represent the true data
-            self.rewrite_parent_link(
-                chunk_id,
-                &root_traversal_instruction,
-                &chunk_tree,
-                grove_version,
-            )?;
-        }
+            // A chunk whose root is a bare `Hash` node verifies (its
+            // proof-tree hash IS the expected hash) but carries no key to
+            // link the parent to. It is untrusted network input, so refuse
+            // it descriptively.
+            let updated_key = chunk_tree
+                .key()
+                .ok_or(Error::ChunkRestoringError(ChunkError::InvalidChunkProof(
+                    "non-root chunk cannot be a bare hash node",
+                )))?
+                .to_vec();
+            let updated_aggregate = chunk_tree.aggregate_data().map_err(|e| {
+                Error::CorruptedData(format!(
+                    "chunk tree root node must be KVValueHashFeatureType for aggregate data: {e}"
+                ))
+            })?;
+            Some((updated_key, updated_aggregate))
+        };
+        let root_key = chunk_tree.key().map(|k| k.to_vec());
 
         // next up, we need to write the chunk and build the map again
-        let chunk_write_result = self.write_chunk(chunk_tree, &mut root_traversal_instruction);
+        let chunk_write_result =
+            self.write_chunk(chunk_tree, &mut root_traversal_instruction, grove_version);
         if chunk_write_result.is_ok() {
+            match updated_parent_link {
+                None => {
+                    self.merk.set_base_root_key(root_key).value?;
+                }
+                Some((updated_key, updated_aggregate)) => {
+                    // every non root chunk has some associated parent with a
+                    // placeholder link; update it to represent the true data
+                    self.rewrite_parent_link(
+                        chunk_id,
+                        &root_traversal_instruction,
+                        &updated_key,
+                        updated_aggregate,
+                        grove_version,
+                    )?;
+                }
+            }
             // if we were able to successfully write the chunk, we can remove
             // the chunk expected root hash from our chunk id map
             self.chunk_id_to_root_hash.remove(chunk_id);
@@ -346,6 +377,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         &mut self,
         chunk_tree: ProofTree,
         traversal_instruction: &mut Vec<bool>,
+        grove_version: &GroveVersion,
     ) -> Result<Vec<Vec<u8>>, Error> {
         // this contains all the elements we want to write to storage
         let mut batch = self.merk.storage.new_batch();
@@ -374,6 +406,42 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             &mut |proof_node, node_traversal_instruction, parent_key| {
                 match &proof_node.node {
                     Node::KVValueHashFeatureType(key, value, vh, feature_type) => {
+                        // A backward-references ITEM's stored value hash is
+                        // combine(H(stripped), H(referrer list)) — fully
+                        // recomputable from the carried bytes. Recompute and
+                        // compare so a crafted chunk cannot persist a
+                        // bytes/hash pair that never hashes together (a
+                        // bidirectional reference's end-hash component is not
+                        // locally derivable, matching the existing trust
+                        // model for plain references in chunks).
+                        if matches!(
+                            grovedb_element::ElementType::from_serialized_value(value)
+                                .map(|et| et.base()),
+                            Ok(grovedb_element::ElementType::ItemWithBackwardsReferences
+                                | grovedb_element::ElementType::SumItemWithBackwardsReferences
+                                | grovedb_element::ElementType::ItemWithSumItemWithBackwardsReferences)
+                        ) {
+                            use crate::element::ElementExt;
+                            let expected =
+                                grovedb_element::Element::deserialize(value, grove_version)
+                                    .ok()
+                                    .and_then(|element| {
+                                        element
+                                            .backward_references_hashes(grove_version)
+                                            .unwrap()
+                                            .ok()
+                                            .flatten()
+                                    })
+                                    .map(|hashes| hashes.combined);
+                            if expected != Some(*vh) {
+                                return Err(Error::ChunkRestoringError(
+                                    ChunkError::InvalidChunkProof(
+                                        "backward-references element bytes do not hash to the \
+                                         carried value hash",
+                                    ),
+                                ));
+                            }
+                        }
                         // build tree from node value
                         let mut tree = TreeNode::new_with_value_hash(
                             key.clone(),
@@ -415,6 +483,26 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         batch.put(key, &bytes, None, None).map_err(CostsError)
                     }
                     Node::KVValueHash(key, value, vh) => {
+                        // Backward-references ITEM variants must arrive as
+                        // KVValueHashFeatureType (where a recompute check
+                        // binds the bytes to the combined hash); accepting
+                        // them here would let the bytes ride unbound on the
+                        // carried hash. A `BidirectionalReference` is the
+                        // exception: the chunk producer legitimately emits
+                        // it in this shape (`KvRefValueHash` maps here for
+                        // normal trees), and its value hash includes the
+                        // resolved end-of-chain hash, which is not locally
+                        // derivable — so it keeps exactly the trust model
+                        // chunks give plain references.
+                        if grovedb_element::ElementType::from_serialized_value(value)
+                            .map(|et| et.is_backward_references_item())
+                            .unwrap_or(false)
+                        {
+                            return Err(Error::ChunkRestoringError(ChunkError::InvalidChunkProof(
+                                "backward-references items must be carried in \
+                                     KVValueHashFeatureType chunk nodes",
+                            )));
+                        }
                         // Subtrees/references in normal trees: value_hash is
                         // provided (may be a combined hash for subtrees),
                         // feature_type = BasicMerkNode
@@ -539,7 +627,8 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         &mut self,
         chunk_id: &[u8],
         traversal_instruction: &[bool],
-        chunk_tree: &ProofTree,
+        updated_key: &[u8],
+        updated_aggregate: AggregateData,
         grove_version: &GroveVersion,
     ) -> Result<(), Error> {
         let parent_key = self
@@ -563,21 +652,6 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             .last()
             .expect("rewrite is only called when traversal_instruction is not empty");
 
-        // A chunk whose root is a bare `Hash` node verifies (its proof-tree
-        // hash IS the expected hash) but carries no key to link the parent
-        // to. It is untrusted network input, so refuse it descriptively.
-        let updated_key =
-            chunk_tree
-                .key()
-                .ok_or(Error::ChunkRestoringError(ChunkError::InvalidChunkProof(
-                    "non-root chunk cannot be a bare hash node",
-                )))?;
-        let updated_sum = chunk_tree.aggregate_data().map_err(|e| {
-            Error::CorruptedData(format!(
-                "chunk tree root node must be KVValueHashFeatureType for aggregate data: {e}"
-            ))
-        })?;
-
         if let Some(Link::Reference {
             key,
             aggregate_data,
@@ -585,7 +659,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         }) = parent.link_mut(*is_left)
         {
             *key = updated_key.to_vec();
-            *aggregate_data = updated_sum;
+            *aggregate_data = updated_aggregate;
         }
 
         let parent_bytes = parent.encode();

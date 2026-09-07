@@ -25,7 +25,7 @@
 //! update is refused. An add-on that duplicates a still-unexecuted user op
 //! of the initial batch is refused by the entry point's consistency check
 //! (last op wins when that check is disabled, exactly as within one batch).
-//! V3 keeps the legacy overwrite and that outcome is pinned below.
+//! V3 cannot compose collisions, so the shared cross-segment gate refuses them.
 
 #[cfg(test)]
 mod tests {
@@ -861,47 +861,43 @@ mod tests {
         assert_clean(&db, grove_version);
     }
 
-    /// V3 is live: the legacy overwrite is pinned so a replay evaluates as
-    /// it did. The add-on element wins and the child tree's rows are
-    /// orphaned behind a rootless parent element.
+    /// V3 still cannot compose collisions. The shared cross-segment safety
+    /// gate now refuses this shape before its legacy overwrite can orphan rows.
     #[test]
-    fn grove_v3_keeps_legacy_overwrite() {
+    fn grove_v3_collision_is_refused_by_cross_segment_safety() {
         let grove_version = &GROVE_V3;
         let db = seed(grove_version);
+        let root_before = db.root_hash(None, grove_version).unwrap().unwrap();
 
-        db.apply_partial_batch(
-            vec![child_insert()],
-            None,
-            |_cost, _leftover| {
-                Ok(vec![QualifiedGroveDbOp::insert_or_replace_op(
-                    vec![],
-                    TEST_LEAF.to_vec(),
-                    Element::empty_tree_with_flags(Some(NEW_FLAGS.to_vec())),
-                )])
-            },
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("legacy V3 accepts the overwrite");
-
-        let tree = db
-            .get(EMPTY_PATH, TEST_LEAF, None, grove_version)
-            .unwrap()
-            .expect("tree element");
+        let result = db
+            .apply_partial_batch(
+                vec![child_insert()],
+                None,
+                |_cost, _leftover| {
+                    Ok(vec![QualifiedGroveDbOp::insert_or_replace_op(
+                        vec![],
+                        TEST_LEAF.to_vec(),
+                        Element::empty_tree_with_flags(Some(NEW_FLAGS.to_vec())),
+                    )])
+                },
+                None,
+                grove_version,
+            )
+            .unwrap();
         assert!(
-            matches!(tree, Element::Tree(None, _)),
-            "legacy: the parent element lost its root key: {tree:?}"
+            matches!(result, Err(Error::InvalidBatchOperation(_))),
+            "{result:?}"
         );
-        assert!(matches!(
-            db.get([TEST_LEAF].as_ref(), CHILD, None, grove_version)
-                .unwrap(),
-            Err(Error::PathKeyNotFound(_))
-        ));
-        assert!(matches!(
+        assert_eq!(
+            db.root_hash(None, grove_version).unwrap().unwrap(),
+            root_before
+        );
+        assert_eq!(
             db.get([TEST_LEAF].as_ref(), EXISTING, None, grove_version)
+                .unwrap()
                 .unwrap(),
-            Err(Error::PathKeyNotFound(_))
-        ));
+            Element::new_item(EXISTING_VALUE.to_vec())
+        );
+        assert_clean(&db, grove_version);
     }
 }

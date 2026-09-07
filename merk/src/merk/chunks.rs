@@ -15,7 +15,8 @@ use crate::{
                 chunk_height, chunk_index_from_traversal_instruction,
                 chunk_index_from_traversal_instruction_with_recovery,
                 generate_traversal_instruction, generate_traversal_instruction_as_vec_bytes,
-                number_of_chunks, vec_bytes_as_traversal_instruction,
+                max_traversal_instruction_len, number_of_chunks,
+                vec_bytes_as_traversal_instruction,
             },
         },
         Node, Op,
@@ -77,6 +78,22 @@ impl MultiChunk {
 /// A `ChunkProducer` allows the creation of chunk proofs, used for trustlessly
 /// replicating entire Merk trees. Chunks can be generated on the fly in a
 /// random order, or iterated in order for slightly better performance.
+///
+/// # Request limits
+///
+/// A chunk id (`chunk_id: &[u8]`) is a traversal instruction: one `0x00`
+/// (right) or `0x01` (left) byte per step down from the root. The producer
+/// bounds every id it is asked to serve by the local tree's own geometry:
+///
+/// - each byte must be `0x00` or `0x01`;
+/// - the id may not be longer than `height - 1` bytes, the depth of the
+///   deepest leaf (see [`max_traversal_instruction_len`]).
+///
+/// An id that does not meet these conditions is refused with
+/// [`ChunkError::BadTraversalInstruction`] before any tree work, so the
+/// cost of a request is proportional to the tree, never to the request.
+/// This bound is enforced here, on the producer itself, so that every
+/// caller gets it regardless of the transport that delivered the id.
 pub struct ChunkProducer<'db, S> {
     /// Represents the max height of the Merk tree
     height: usize,
@@ -115,13 +132,30 @@ where
         self.chunk_internal(chunk_index, traversal_instructions, grove_version)
     }
 
+    /// Parses a chunk id into a traversal instruction, enforcing the
+    /// producer's request limits (see the type-level docs) first.
+    fn traversal_instruction_from_chunk_id(&self, chunk_id: &[u8]) -> Result<Vec<bool>, Error> {
+        if chunk_id.len() > max_traversal_instruction_len(self.height) {
+            return Err(ChunkingError(ChunkError::BadTraversalInstruction(
+                "chunk id is longer than the tree is deep",
+            )));
+        }
+        vec_bytes_as_traversal_instruction(chunk_id)
+    }
+
     /// Returns the chunk at a given chunk id.
+    ///
+    /// An id that does not point exactly at a chunk boundary is recovered
+    /// to the nearest boundary above it. An id longer than the tree is deep
+    /// (or with bytes other than `0x00`/`0x01`) is refused with
+    /// [`ChunkError::BadTraversalInstruction`] before any work is done; see
+    /// the request limits on [`ChunkProducer`].
     pub fn chunk(
         &mut self,
         chunk_id: &[u8],
         grove_version: &GroveVersion,
     ) -> Result<(Vec<Op>, Option<Vec<u8>>), Error> {
-        let traversal_instructions = vec_bytes_as_traversal_instruction(chunk_id)?;
+        let traversal_instructions = self.traversal_instruction_from_chunk_id(chunk_id)?;
         let chunk_index = chunk_index_from_traversal_instruction_with_recovery(
             traversal_instructions.as_slice(),
             self.height,
@@ -185,6 +219,9 @@ where
     /// Generate multichunk with chunk id
     /// Multichunks accumulate as many chunks as they can until they have all
     /// chunks or hit some optional limit
+    ///
+    /// The id must point exactly at a chunk boundary and is subject to the
+    /// request limits on [`ChunkProducer`].
     pub fn multi_chunk_with_limit(
         &mut self,
         chunk_id: &[u8],
@@ -192,9 +229,11 @@ where
         grove_version: &GroveVersion,
     ) -> Result<MultiChunk, Error> {
         // we want to convert the chunk id to the index
-        let chunk_index = vec_bytes_as_traversal_instruction(chunk_id).and_then(|instruction| {
-            chunk_index_from_traversal_instruction(instruction.as_slice(), self.height)
-        })?;
+        let chunk_index = self
+            .traversal_instruction_from_chunk_id(chunk_id)
+            .and_then(|instruction| {
+                chunk_index_from_traversal_instruction(instruction.as_slice(), self.height)
+            })?;
         self.multi_chunk_with_limit_and_index(chunk_index, limit, grove_version)
     }
 
@@ -478,6 +517,7 @@ mod test {
                 Node::KVHash(_) => counts.kv_hash += 1,
                 Node::KV(..) => counts.kv += 1,
                 Node::KVValueHash(..) => counts.kv_value_hash += 1,
+                Node::KVBackwardsReferencesValueHash(..) => counts.kv_value_hash += 1,
                 Node::KVDigest(..) => counts.kv_digest += 1,
                 Node::KVDigestCount(..) => counts.kv_digest += 1,
                 Node::KVRefValueHash(..) => counts.kv_ref_value_hash += 1,
@@ -1146,5 +1186,100 @@ mod test {
         assert_eq!(chunk_result.chunk.len(), 4);
         assert_eq!(chunk_result.chunk[0], ChunkOp::ChunkId(vec![LEFT, LEFT]));
         assert_eq!(chunk_result.chunk[2], ChunkOp::ChunkId(vec![LEFT, RIGHT]));
+    }
+
+    /// Builds a height-4 Merk (15 sequential keys) for the request-bound
+    /// tests below.
+    fn height_four_merk(grove_version: &GroveVersion) -> TempMerk {
+        let mut merk = TempMerk::new(grove_version);
+        let batch = make_batch_seq(0..15);
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .unwrap()
+            .expect("apply failed");
+        assert_eq!(merk.height(), Some(4));
+        merk
+    }
+
+    /// Issue #883: a chunk id is a traversal instruction, and a tree of
+    /// height `h` has no node deeper than `h - 1` steps. The producer used
+    /// to backtrack such an id one recursion level per byte before failing,
+    /// so a peer could make it do work (and consume stack) proportional to
+    /// the request rather than the tree. Over-depth ids are now refused up
+    /// front with a structured error, on both producer entry points.
+    #[test]
+    fn test_chunk_rejects_chunk_id_longer_than_tree_depth() {
+        let handle = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let grove_version = GroveVersion::latest();
+                let merk = height_four_merk(grove_version);
+                let mut chunk_producer =
+                    ChunkProducer::new(&merk).expect("should create chunk producer");
+
+                let huge_id = vec![0u8; 1_000_000];
+                assert!(matches!(
+                    chunk_producer.chunk(&huge_id, grove_version),
+                    Err(Error::ChunkingError(ChunkError::BadTraversalInstruction(_)))
+                ));
+                assert!(matches!(
+                    chunk_producer.multi_chunk_with_limit(&huge_id, None, grove_version),
+                    Err(Error::ChunkingError(ChunkError::BadTraversalInstruction(_)))
+                ));
+
+                // one step past the deepest leaf is already too long
+                let one_too_long = vec![1u8; 4];
+                assert!(matches!(
+                    chunk_producer.chunk(&one_too_long, grove_version),
+                    Err(Error::ChunkingError(ChunkError::BadTraversalInstruction(_)))
+                ));
+                assert!(matches!(
+                    chunk_producer.multi_chunk_with_limit(&one_too_long, None, grove_version),
+                    Err(Error::ChunkingError(ChunkError::BadTraversalInstruction(_)))
+                ));
+            })
+            .expect("spawn thread");
+        handle
+            .join()
+            .expect("an over-depth chunk id must not overflow the stack");
+    }
+
+    /// Ordinary recovery is preserved: an id that addresses a real node
+    /// which is not a chunk boundary still resolves to the nearest boundary
+    /// chunk index, and the empty id is the root chunk.
+    #[test]
+    fn test_chunk_recovery_for_valid_non_boundary_chunk_ids() {
+        let grove_version = GroveVersion::latest();
+        let merk = height_four_merk(grove_version);
+        let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
+
+        // empty id == root chunk == chunk index 1
+        let (by_index, next_by_index) = chunk_producer
+            .chunk_with_index(1, grove_version)
+            .expect("root chunk by index");
+        let (by_id, next_by_id) = chunk_producer
+            .chunk(&[], grove_version)
+            .expect("root chunk by empty id");
+        assert_eq!(by_id, by_index);
+        assert_eq!(
+            next_by_id,
+            next_by_index.map(|index| {
+                generate_traversal_instruction_as_vec_bytes(4, index).expect("valid index")
+            })
+        );
+
+        // layers are [2, 2]: boundaries at lengths 0 and 2. A length-1 id
+        // backtracks to the root chunk, a length-3 id (the deepest leaf,
+        // exactly the depth bound) backtracks to the length-2 boundary.
+        let (_, next) = chunk_producer
+            .chunk(&[1u8], grove_version)
+            .expect("length-1 id recovers to chunk 1");
+        assert_eq!(next, next_by_index.map(|_| vec![1u8, 1u8]));
+        let (_, next_from_boundary) = chunk_producer
+            .chunk(&[1u8, 1u8], grove_version)
+            .expect("boundary id");
+        let (_, next_from_leaf) = chunk_producer
+            .chunk(&[1u8, 1u8, 1u8], grove_version)
+            .expect("length-3 id recovers to chunk 2");
+        assert_eq!(next_from_leaf, next_from_boundary);
     }
 }

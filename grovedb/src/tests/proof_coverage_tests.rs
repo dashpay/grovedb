@@ -8162,7 +8162,7 @@ mod tests {
         let (v0_root, v0_results) = GroveDb::verify_query_with_options(
             &v0_proof,
             &path_query,
-            verify_opts.clone(),
+            verify_opts,
             grove_version_v0,
         )
         .expect("verify V0");

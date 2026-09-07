@@ -156,6 +156,16 @@ impl Tree {
                 kv_digest_to_kv_hash(key.as_slice(), value_hash)
                     .flat_map(|kv_hash| compute_hash(self, kv_hash))
             }
+            Node::KVBackwardsReferencesValueHash(key, value, backrefs_hash) => {
+                // The node's value hash is combine(H(stripped_value),
+                // backrefs_hash) and we RECOMPUTE it here, so the payload
+                // bytes are bound by the proof (unlike KVValueHash, whose
+                // bytes ride on trust in the carried hash).
+                value_hash(value.as_slice())
+                    .flat_map(|inner| combine_hash(&inner, backrefs_hash))
+                    .flat_map(|vh| kv_digest_to_kv_hash(key.as_slice(), &vh))
+                    .flat_map(|kv_hash| compute_hash(self, kv_hash))
+            }
             Node::KVValueHashFeatureType(key, _, value_hash, feature_type)
             | Node::KVValueHashFeatureTypeWithChildHash(key, _, value_hash, feature_type, _) => {
                 // Note: Same as KVValueHash - cannot verify hash(value) == value_hash
@@ -565,6 +575,7 @@ impl Tree {
         match &self.node {
             Node::KV(key, _)
             | Node::KVValueHash(key, ..)
+            | Node::KVBackwardsReferencesValueHash(key, ..)
             | Node::KVRefValueHash(key, ..)
             | Node::KVValueHashFeatureType(key, ..)
             | Node::KVValueHashFeatureTypeWithChildHash(key, ..)
@@ -850,7 +861,8 @@ where
                 | Node::KVRefValueHashSum(key, ..)
                 | Node::KVCountSum(key, ..)
                 | Node::KVDigestCountSum(key, ..)
-                | Node::KVRefValueHashCountSum(key, ..) = &node
+                | Node::KVRefValueHashCountSum(key, ..)
+                | Node::KVBackwardsReferencesValueHash(key, ..) = &node
                 {
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key
@@ -894,7 +906,8 @@ where
                 | Node::KVRefValueHashSum(key, ..)
                 | Node::KVCountSum(key, ..)
                 | Node::KVDigestCountSum(key, ..)
-                | Node::KVRefValueHashCountSum(key, ..) = &node
+                | Node::KVRefValueHashCountSum(key, ..)
+                | Node::KVBackwardsReferencesValueHash(key, ..) = &node
                 {
                     // keys should always decrease
                     if let Some(last_key) = &maybe_last_key
@@ -1073,6 +1086,53 @@ mod test {
             assert_node(iter.next().unwrap(), i);
         }
         assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn backwards_references_nodes_enforce_key_ordering() {
+        // Regression: `KVBackwardsReferencesValueHash` carries a key and
+        // must participate in the Push/PushInverted ordering checks —
+        // otherwise a malicious proof could push an authenticated parent
+        // before its real left child (attached via ChildInverted) and
+        // make an exact query for the child read as absent while the
+        // reconstructed root still matches.
+        let parent_before_child = vec![
+            Op::Push(Node::KVBackwardsReferencesValueHash(
+                vec![2],
+                vec![2],
+                [0; 32],
+            )),
+            Op::Push(Node::KVBackwardsReferencesValueHash(
+                vec![1],
+                vec![1],
+                [0; 32],
+            )),
+            Op::ChildInverted,
+        ];
+        let result = execute(parent_before_child.into_iter().map(Ok), false, |_| Ok(())).unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidProofError(ref s)) if s.contains("ordering")),
+            "got: {result:?}"
+        );
+
+        let inverted_wrong_order = vec![
+            Op::PushInverted(Node::KVBackwardsReferencesValueHash(
+                vec![1],
+                vec![1],
+                [0; 32],
+            )),
+            Op::PushInverted(Node::KVBackwardsReferencesValueHash(
+                vec![2],
+                vec![2],
+                [0; 32],
+            )),
+            Op::Child,
+        ];
+        let result = execute(inverted_wrong_order.into_iter().map(Ok), false, |_| Ok(())).unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidProofError(ref s)) if s.contains("ordering")),
+            "got: {result:?}"
+        );
     }
 
     #[test]
@@ -1403,9 +1463,7 @@ mod test {
         // Only node types like Hash/KVHash/KVDigest should still error.
         let malicious_ops = vec![Ok(Op::Push(Node::Hash([0u8; 32])))];
 
-        let tree = execute(malicious_ops.into_iter(), false, |_| Ok(()))
-            .unwrap()
-            .unwrap();
+        let tree = execute(malicious_ops, false, |_| Ok(())).unwrap().unwrap();
 
         let result = tree.aggregate_data();
         assert!(
@@ -1418,9 +1476,7 @@ mod test {
     fn aggregate_data_returns_ok_for_kv_node() {
         // KV nodes should return NoAggregateData (not error)
         let ops = vec![Ok(Op::Push(Node::KV(vec![1], vec![1])))];
-        let tree = execute(ops.into_iter(), false, |_| Ok(()))
-            .unwrap()
-            .unwrap();
+        let tree = execute(ops, false, |_| Ok(())).unwrap().unwrap();
         assert_eq!(
             tree.aggregate_data().unwrap(),
             AggregateData::NoAggregateData
@@ -1451,7 +1507,7 @@ mod test {
         }
 
         // collapse: true to avoid deep nesting causing Rust stack overflow on drop
-        let result = execute(ops.into_iter(), true, |_| Ok(())).unwrap();
+        let result = execute(ops, true, |_| Ok(())).unwrap();
         assert!(
             matches!(result, Err(Error::InvalidProofError(ref s)) if s.contains("maximum operation count")),
             "Should reject proof exceeding MAX_PROOF_OPS, got: {:?}",
@@ -1468,7 +1524,7 @@ mod test {
             .map(|_| Ok(Op::Push(Node::Hash([0xBB; 32]))))
             .collect();
 
-        let result = execute(ops.into_iter(), false, |_| Ok(())).unwrap();
+        let result = execute(ops, false, |_| Ok(())).unwrap();
         assert!(
             matches!(result, Err(Error::InvalidProofError(ref s)) if s.contains("maximum stack depth")),
             "Should reject proof exceeding MAX_PROOF_STACK_DEPTH, got: {:?}",
@@ -1491,7 +1547,7 @@ mod test {
             ops.push(Ok(Op::Parent));
         }
 
-        let result = execute(ops.into_iter(), false, |_| Ok(())).unwrap();
+        let result = execute(ops, false, |_| Ok(())).unwrap();
         assert!(
             matches!(result, Err(Error::InvalidProofError(ref s)) if s.contains("maximum height")),
             "Should reject proof exceeding MAX_PROOF_TREE_HEIGHT, got: {:?}",
@@ -1539,7 +1595,7 @@ mod test {
         // Step 3: one more Push to exceed whichever limit is tighter.
         ops.push(Ok(Op::Push(Node::KVHash([0xFF; 32]))));
 
-        let result = execute(ops.into_iter(), true, |_| Ok(())).unwrap();
+        let result = execute(ops, true, |_| Ok(())).unwrap();
         assert!(
             result.is_err(),
             "Adversarial proof should be rejected by one of the three limits"
@@ -1571,7 +1627,7 @@ mod test {
                 ops.push(Ok(Op::Parent));
             }
             assert_eq!(ops.len(), 49_999);
-            let result = execute(ops.into_iter(), true, |_| Ok(())).unwrap();
+            let result = execute(ops, true, |_| Ok(())).unwrap();
             assert!(
                 result.is_ok(),
                 "49,999 ops should succeed (limit is 50,000)"
@@ -1594,7 +1650,7 @@ mod test {
                 ops.push(Ok(Op::Parent));
             }
             assert_eq!(ops.len(), 19_999);
-            let result = execute(ops.into_iter(), true, |_| Ok(())).unwrap();
+            let result = execute(ops, true, |_| Ok(())).unwrap();
             assert!(
                 result.is_ok(),
                 "10,000 stack depth should succeed (limit is 10,000)"
@@ -1627,7 +1683,7 @@ mod test {
             ops.push(Ok(Op::Child));
             let expected_ops = 2 * (2 * (max_height - 2) + 1) + 3;
             assert_eq!(ops.len(), expected_ops);
-            let result = execute(ops.into_iter(), false, |_| Ok(())).unwrap();
+            let result = execute(ops, false, |_| Ok(())).unwrap();
             assert!(result.is_ok(), "Height 92 should succeed (limit is 92)");
         }
     }
