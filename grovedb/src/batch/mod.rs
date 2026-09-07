@@ -1624,6 +1624,13 @@ impl GroveDbOpConsistencyResults {
 /// Cache for Merk trees by their paths.
 struct TreeCacheMerkByPath<S, F, F2> {
     merks: HashMap<Vec<Vec<u8>>, Merk<S>>,
+    /// Empty Merks reserved while scanning tree insertions, with no path
+    /// operations applied yet. A skipped insertion must not carry its
+    /// unused placeholder into a continuation as if it were the stored tree.
+    unused_new_merks: HashSet<Vec<Vec<u8>>>,
+    /// Conditional insertions that emitted no Merk write. Their proposed
+    /// elements must not seed reference resolution in the next segment.
+    skipped_insert_paths: HashSet<Vec<Vec<u8>>>,
     /// Every axis secondary opened for an indexed primary, keyed by the
     /// primary's path, in the element's canonical axis order. A primary's
     /// secondaries are opened once and then reused for the life of the
@@ -2866,6 +2873,7 @@ where
                 cost_return_on_error!(&mut cost, (self.get_merk_fn)(&inserted_path, true));
             merk.tree_type = tree_type;
             e.insert(merk);
+            self.unused_new_merks.insert(inserted_path);
         }
 
         Ok(()).wrap_with_cost(cost)
@@ -2932,6 +2940,7 @@ where
         // todo: fix this
         let p = path.to_path();
         let path = &p;
+        self.unused_new_merks.remove(path);
 
         // This also populates Merk trees cache
         let in_tree_type = {
@@ -2977,6 +2986,21 @@ where
         let mut pending_overwrite_inspections: BTreeMap<Vec<u8>, Element> = BTreeMap::new();
         let mut pending_delete_tree_checks: BTreeMap<Vec<u8>, TreeType> = BTreeMap::new();
 
+        // Derive skipped insertions from the writes actually emitted below,
+        // covering every element variant without another existence read.
+        let mut skipped_insert_keys: HashSet<Vec<u8>> = ops_at_path_by_key
+            .iter()
+            .filter(|(_, op)| {
+                matches!(
+                    op,
+                    GroveOp::InsertIfNotExists {
+                        error_if_exists: false,
+                        ..
+                    }
+                )
+            })
+            .map(|(key, _)| key.get_key_clone())
+            .collect();
         let mut batch_operations: Vec<(Vec<u8>, Op)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {
@@ -4409,6 +4433,16 @@ where
             }
         }
 
+        for (key, _) in &batch_operations {
+            skipped_insert_keys.remove(key);
+        }
+        self.skipped_insert_paths
+            .extend(skipped_insert_keys.into_iter().map(|key| {
+                let mut qualified_path = path.clone();
+                qualified_path.push(key);
+                qualified_path
+            }));
+
         let merk = self.merks.get_mut(path).expect("the Merk is cached");
 
         // V4 gate results collected by the old-value observer while the merk
@@ -5410,6 +5444,8 @@ impl GroveDb {
                 split_removed_bytes_function,
                 TreeCacheMerkByPath {
                     merks: Default::default(),
+                    unused_new_merks: Default::default(),
+                    skipped_insert_paths: Default::default(),
                     secondary_merks: Default::default(),
                     pending_indexed_elements: Default::default(),
                     get_merk_fn,
@@ -5442,7 +5478,7 @@ impl GroveDb {
     fn continue_partial_apply_body<'db, S, F, F2>(
         &self,
         previous_leftover_operations: Option<OpsByLevelPath>,
-        previous_ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, GroveOp>,
+        mut previous_ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, GroveOp>,
         additional_ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
         update_element_flags_function: impl FnMut(
@@ -5458,7 +5494,7 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
-        merk_tree_cache: TreeCacheMerkByPath<S, F, F2>,
+        mut merk_tree_cache: TreeCacheMerkByPath<S, F, F2>,
         grove_version: &GroveVersion,
     ) -> CostResult<(Option<OpsByLevelPath>, BatchApplyCaptures), Error>
     where
@@ -5477,6 +5513,17 @@ impl GroveDb {
                 .apply_batch
                 .continue_partial_apply_body
         );
+        // The first segment's conditional insertions may have been skipped.
+        // Keep their actual stored values authoritative for references and
+        // discard only unused placeholders reserved for the attempted trees.
+        // Merks with applied operations still carry live pending state.
+        for path in merk_tree_cache.skipped_insert_paths.drain() {
+            previous_ops_by_qualified_paths.remove(&path);
+            merk_tree_cache.pending_indexed_elements.remove(&path);
+            if merk_tree_cache.unused_new_merks.remove(&path) {
+                merk_tree_cache.merks.remove(&path);
+            }
+        }
         let mut cost = OperationCost::default();
         let batch_structure = cost_return_on_error!(
             &mut cost,

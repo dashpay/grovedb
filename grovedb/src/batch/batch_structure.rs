@@ -143,7 +143,9 @@ where
     /// ops resolve targets that segment wrote exactly as one combined batch
     /// would (in-batch, from the op's own element) instead of reading a
     /// possibly stale committed value. Ops in `ops` override seeded entries
-    /// at the same qualified path.
+    /// at the same qualified path. The caller must exclude conditional
+    /// insertions that the earlier segment skipped, so their proposed
+    /// elements cannot shadow the values that actually remain stored.
     pub(super) fn continue_from_ops(
         previous_ops: Option<OpsByLevelPath>,
         previous_ops_by_qualified_paths: Option<BTreeMap<Vec<Vec<u8>>, GroveOp>>,

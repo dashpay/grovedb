@@ -1205,4 +1205,156 @@ mod tests {
         );
         assert_verify_clean(&db, grove_version);
     }
+
+    // Skipped conditional inserts must carry neither their proposed value
+    // nor an empty subtree placeholder across the segment boundary.
+    #[test]
+    fn skipped_tree_insertion_preserves_existing_children() {
+        for gv in grovedb_version::version::GROVE_VERSIONS {
+            for proposed_tree in [Element::empty_tree(), Element::empty_sum_tree()] {
+                for pause_height in [0, 1] {
+                    let db = ordinary_subtree(gv);
+                    let sequential = ordinary_subtree(gv);
+                    let first = vec![QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+                        vec![TEST_LEAF.to_vec()],
+                        b"sub".to_vec(),
+                        proposed_tree.clone(),
+                    )];
+                    let second = vec![item_op(vec![TEST_LEAF.to_vec(), b"sub".to_vec()], 20)];
+                    sequential
+                        .apply_batch(first.clone(), None, None, gv)
+                        .unwrap()
+                        .unwrap();
+                    sequential
+                        .apply_batch(second.clone(), None, None, gv)
+                        .unwrap()
+                        .unwrap();
+                    let options = BatchApplyOptions {
+                        batch_pause_height: Some(pause_height),
+                        ..Default::default()
+                    };
+                    apply_partial(&db, first, second, Some(options), gv)
+                        .expect("skipped creation followed by child insertion should succeed");
+                    let mut expected: Vec<u64> = (0..8).collect();
+                    expected.push(20);
+                    assert_eq!(present_keys(&db, &[TEST_LEAF, b"sub"], gv), expected);
+                    assert_eq!(root_hash(&db, gv), root_hash(&sequential, gv));
+                    assert_verify_clean(&db, gv);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn continuation_reference_to_conditional_item_uses_actual_value() {
+        for gv in grovedb_version::version::GROVE_VERSIONS {
+            // The existing key skips the proposed value; the missing key
+            // really inserts it. Both must resolve to the final stored value.
+            for (key, expected_value) in [(0u64, 0), (20, 99)] {
+                for pause_height in [0, 1] {
+                    let db = ordinary_subtree(gv);
+                    let first = vec![QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+                        vec![TEST_LEAF.to_vec(), b"sub".to_vec()],
+                        key.to_be_bytes().to_vec(),
+                        Element::new_item(vec![99]),
+                    )];
+                    let second = vec![reference_op_to(
+                        vec![TEST_LEAF.to_vec()],
+                        b"ref",
+                        vec![
+                            TEST_LEAF.to_vec(),
+                            b"sub".to_vec(),
+                            key.to_be_bytes().to_vec(),
+                        ],
+                    )];
+                    let options = BatchApplyOptions {
+                        batch_pause_height: Some(pause_height),
+                        ..Default::default()
+                    };
+                    apply_partial(&db, first, second, Some(options), gv)
+                        .expect("reference to conditional insertion should succeed");
+                    assert_eq!(
+                        db.get([TEST_LEAF].as_ref(), b"ref", None, gv)
+                            .unwrap()
+                            .unwrap(),
+                        Element::new_item(vec![expected_value])
+                    );
+                    assert_verify_clean(&db, gv);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn continuation_reference_to_skipped_reference_uses_stored_target() {
+        let gv = GroveVersion::latest();
+        let db = ordinary_subtree(gv);
+        let target = |key: u64| {
+            vec![
+                TEST_LEAF.to_vec(),
+                b"sub".to_vec(),
+                key.to_be_bytes().to_vec(),
+            ]
+        };
+        db.insert(
+            [TEST_LEAF, b"sub"].as_ref(),
+            b"existing_ref",
+            Element::new_reference(ReferencePathType::AbsolutePathReference(target(0))),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .unwrap();
+        let first = vec![QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+            vec![TEST_LEAF.to_vec(), b"sub".to_vec()],
+            b"existing_ref".to_vec(),
+            Element::new_reference(ReferencePathType::AbsolutePathReference(target(1))),
+        )];
+        let second = vec![reference_op_to(
+            vec![TEST_LEAF.to_vec()],
+            b"ref",
+            vec![
+                TEST_LEAF.to_vec(),
+                b"sub".to_vec(),
+                b"existing_ref".to_vec(),
+            ],
+        )];
+        apply_partial(&db, first, second, None, gv).unwrap();
+        assert_eq!(
+            db.get([TEST_LEAF].as_ref(), b"ref", None, gv)
+                .unwrap()
+                .unwrap(),
+            Element::new_item(vec![0])
+        );
+        assert_verify_clean(&db, gv);
+    }
+
+    #[test]
+    fn skipped_indexed_tree_insertion_preserves_primary_and_secondary() {
+        let gv = GroveVersion::latest();
+        let db = two_group_pcit(gv);
+        let sequential = two_group_pcit(gv);
+        let first = vec![QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+            vec![TEST_LEAF.to_vec()],
+            b"cidx".to_vec(),
+            Element::empty_provable_count_indexed_tree(),
+        )];
+        let second = vec![bump(b"cidx", b"p", 2)];
+        sequential
+            .apply_batch(first.clone(), None, None, gv)
+            .unwrap()
+            .unwrap();
+        sequential
+            .apply_batch(second.clone(), None, None, gv)
+            .unwrap()
+            .unwrap();
+        apply_partial(&db, first, second, None, gv).unwrap();
+        assert_eq!(
+            top_k(&db, b"cidx", gv),
+            vec![(3, b"p".to_vec()), (2, b"q".to_vec())]
+        );
+        assert_eq!(root_hash(&db, gv), root_hash(&sequential, gv));
+        assert_verify_clean(&db, gv);
+    }
 }
