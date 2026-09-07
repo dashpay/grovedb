@@ -233,8 +233,9 @@
 //!   entry while PRESERVING the rest of the default section (issue #683).
 //!   V1..V3 keep the shipped arithmetic, which drops the mutated default
 //!   section in three of the four `Add`/`AddAssign` arms, undercounting
-//!   removed bytes — preserved because removal totals feed fee refunds and
-//!   historical blocks must replay to identical costs.
+//!   removed bytes — preserved to reproduce historical cost results.
+//!   Identity-owned sections are unaffected; Drive accounts for the default
+//!   section as system removals, separately from identity fee refunds.
 //!
 //! Note that `GroveVersion::latest()` resolves to this version, so anything
 //! defaulting to "latest" — tests, benchmarks, tools — exercises every gate

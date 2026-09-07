@@ -58,6 +58,15 @@ reinserted it, so the owner's existing epoch attribution AND the incoming
 basic bytes were both lost (only identity-owned sections survived).
 `Sectioned += Basic` always reinserted correctly and is version-independent.
 
+Drive's storage-flags callback returns basic/basic removals for unflagged
+elements and sectioned/sectioned removals for flagged elements (or no removal
+for zero bytes). Its mixed-removal case arises when those results are
+aggregated. Drive separates the default identifier's section into
+`FeeResult.removed_bytes_from_system` before calculating identity refunds;
+identity-owned sections are unaffected by this defect. The GroveDB deletion
+regressions use custom basic/sectioned callbacks to exercise the arithmetic
+directly, so their lost-byte totals do not establish lost identity refunds.
+
 The arithmetic is selected by
 `grovedb_versions.storage_costs.add_basic_storage_removal_to_sectioned_storage_removal`:
 
@@ -85,7 +94,14 @@ reproduces shipped output rather than silently upgrading. **Any consumer
 that combines `StorageRemovedBytes` outside a GroveDB call** — for example
 summing per-operation `OperationCost`s or `StorageCost`s across operations —
 runs the legacy arithmetic even under GROVE_V4 unless it installs the guard
-itself around that aggregation:
+itself around that aggregation.
+
+The guard is `!Send` and `!Sync` so it stays on its originating thread. Keep it
+in a synchronous scope, drop nested guards in reverse creation order, and
+never hold it across an `.await`: even on one thread, other tasks would
+observe its version while the owning task is suspended. The closure helper
+also scopes only synchronous work, not a future returned by the closure.
+For example:
 
 ```rust
 let _guard = grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(

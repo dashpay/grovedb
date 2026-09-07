@@ -1084,3 +1084,58 @@ fn removal_addition_version_defaults_to_legacy_and_guard_restores_previous() {
         expected_legacy_loss
     );
 }
+
+#[test]
+fn removal_addition_version_is_isolated_between_threads() {
+    let expected_legacy_loss = sections(&[(AUDIT_IDENTITY, epochs(&[(2, 40)]))]);
+    with_basic_sectioned_removal_addition_version(1, || {
+        std::thread::spawn(|| {
+            let expected_legacy_loss = sections(&[(AUDIT_IDENTITY, epochs(&[(2, 40)]))]);
+            assert_eq!(
+                run_mixed_arms(audit_default_with_unknown).basic_plus_sectioned,
+                expected_legacy_loss
+            );
+            with_basic_sectioned_removal_addition_version(1, || {
+                assert_eq!(
+                    run_mixed_arms(audit_default_with_unknown).basic_plus_sectioned,
+                    corrected_default_with_unknown()
+                );
+            });
+            assert_eq!(
+                run_mixed_arms(audit_default_with_unknown).basic_plus_sectioned,
+                expected_legacy_loss
+            );
+        })
+        .join()
+        .expect("worker should preserve its own removal arithmetic version");
+
+        assert_eq!(
+            run_mixed_arms(audit_default_with_unknown).basic_plus_sectioned,
+            corrected_default_with_unknown()
+        );
+    });
+    assert_eq!(
+        run_mixed_arms(audit_default_with_unknown).basic_plus_sectioned,
+        expected_legacy_loss
+    );
+}
+
+#[test]
+fn removal_addition_version_restores_previous_after_panic() {
+    with_basic_sectioned_removal_addition_version(1, || {
+        let result = std::panic::catch_unwind(|| {
+            with_basic_sectioned_removal_addition_version(0, || {
+                panic!("unwind a nested removal arithmetic scope");
+            });
+        });
+        assert!(result.is_err());
+        assert_eq!(
+            run_mixed_arms(audit_default_with_unknown).basic_plus_sectioned,
+            corrected_default_with_unknown()
+        );
+    });
+    assert_eq!(
+        run_mixed_arms(audit_default_with_unknown).basic_plus_sectioned,
+        sections(&[(AUDIT_IDENTITY, epochs(&[(2, 40)]))])
+    );
+}

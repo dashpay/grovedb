@@ -247,8 +247,8 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
         },
         storage_costs: GroveDBStorageCostVersions {
             // GROVE_V3 shipped to mainnet with the legacy (default-section-
-            // dropping) removal arithmetic; changing it here would break
-            // replay of v3 blocks. The fix activates in GROVE_V4.
+            // dropping) removal arithmetic. Preserve those cost results for
+            // callers replaying v3 operations; the fix activates in GROVE_V4.
             add_basic_storage_removal_to_sectioned_storage_removal: 0,
         },
         replication: GroveDBReplicationVersions {

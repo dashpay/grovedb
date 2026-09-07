@@ -31,6 +31,7 @@ use std::{
     cell::Cell,
     cmp::Ordering,
     collections::BTreeMap,
+    marker::PhantomData,
     ops::{Add, AddAssign},
 };
 
@@ -86,10 +87,35 @@ thread_local! {
     static BASIC_SECTIONED_REMOVAL_ADDITION_VERSION: Cell<u16> = const { Cell::new(0) };
 }
 
-/// Guard that restores the previous storage-removal arithmetic version when
-/// dropped.
+/// Guard that restores the previous storage-removal arithmetic version on the
+/// current thread when dropped.
+///
+/// Keep guards in synchronous scopes and drop nested guards in reverse creation
+/// order. Never hold a guard across an `.await`: other tasks on the same thread
+/// would observe its version while the owning task is suspended.
+///
+/// The guard cannot be moved to another thread:
+///
+/// ```compile_fail,E0277
+/// use grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version;
+///
+/// let guard = use_basic_sectioned_removal_addition_version(1);
+/// std::thread::spawn(move || drop(guard));
+/// ```
+///
+/// Nor can it be shared between threads:
+///
+/// ```compile_fail,E0277
+/// use grovedb_costs::storage_cost::removal::BasicSectionedRemovalAdditionVersionGuard;
+///
+/// fn require_sync<T: Sync>() {}
+/// require_sync::<BasicSectionedRemovalAdditionVersionGuard>();
+/// ```
+#[must_use = "keep the guard alive for the synchronous storage-removal aggregation scope"]
 pub struct BasicSectionedRemovalAdditionVersionGuard {
     previous_version: u16,
+    // Drop restores thread-local state, so the guard must be !Send and !Sync.
+    _not_send_or_sync: PhantomData<*mut ()>,
 }
 
 impl Drop for BasicSectionedRemovalAdditionVersionGuard {
@@ -100,17 +126,23 @@ impl Drop for BasicSectionedRemovalAdditionVersionGuard {
     }
 }
 
-/// Use a storage-removal arithmetic version until the returned guard is
-/// dropped.
+/// Use a storage-removal arithmetic version on the current thread until the
+/// returned guard is dropped. Keep it in a synchronous scope without `.await`,
+/// and drop nested guards in reverse creation order.
 pub fn use_basic_sectioned_removal_addition_version(
     version: u16,
 ) -> BasicSectionedRemovalAdditionVersionGuard {
     let previous_version = BASIC_SECTIONED_REMOVAL_ADDITION_VERSION
         .with(|current_version| current_version.replace(version));
-    BasicSectionedRemovalAdditionVersionGuard { previous_version }
+    BasicSectionedRemovalAdditionVersionGuard {
+        previous_version,
+        _not_send_or_sync: PhantomData,
+    }
 }
 
-/// Run storage-removal arithmetic using a specific version.
+/// Run synchronous storage-removal arithmetic using a specific version on the
+/// current thread. If `f` returns a future, the guard has already been dropped
+/// when that future is polled; perform the arithmetic inside `f` itself.
 pub fn with_basic_sectioned_removal_addition_version<T>(version: u16, f: impl FnOnce() -> T) -> T {
     let _guard = use_basic_sectioned_removal_addition_version(version);
     f()

@@ -22,10 +22,10 @@ mod tests {
     /// `delete_with_sectional_storage_function`, reporting the removed key
     /// bytes as a `BasicStorageRemoval` and the removed value bytes as a
     /// `SectionedStorageRemoval` under the default identifier's
-    /// `UNKNOWN_EPOCH`. That is exactly the shape Drive's sectional removal
-    /// callback produces, and it is what drives the `Basic += Sectioned`
-    /// arm in `StorageRemovedBytes` when Merk folds the key and value
-    /// removals together.
+    /// `UNKNOWN_EPOCH`. This custom callback exercises the mixed-removal
+    /// arithmetic directly. Drive's storage-flags callback instead returns
+    /// basic/basic removals for unflagged elements and sectioned/sectioned
+    /// removals for flagged elements (or no removal for zero bytes).
     ///
     /// Returns `(added_bytes, removed_bytes, removed_key_bytes,
     /// removed_value_bytes)` — the insertion's added bytes, the deletion's
@@ -80,14 +80,14 @@ mod tests {
     }
 
     /// Bytes added by inserting `key1 -> Item("cat", flags "apple")` at the
-    /// root, and therefore the bytes a full-refund deletion must report.
+    /// root, and therefore the bytes a complete deletion must report.
     const BASIC_PLUS_DEFAULT_SECTIONED_ADDED_BYTES: u32 = 155;
 
     #[test]
     fn latest_delete_preserves_basic_plus_default_sectioned_removal_cost() {
         // GROVE_V4+ (issue #683): folding the basic key removal into the
         // sectioned value removal keeps the default section, so the deletion
-        // refunds every byte the insertion added.
+        // accounts for every byte the insertion added.
         let (added_bytes, removed_bytes, removed_key_bytes, removed_value_bytes) =
             insert_then_delete_with_basic_key_and_default_sectioned_value(GroveVersion::latest());
 
@@ -224,7 +224,7 @@ mod tests {
 
     /// Bytes added by inserting `key1 -> Item("cat", flags [3])` and
     /// `key2 -> Item("cat", flags [5])` at the root, and therefore the bytes a
-    /// full-refund batch deletion of both must report.
+    /// complete batch deletion of both must report.
     const TWO_EPOCH_FLAGGED_ITEMS_ADDED_BYTES: u32 = 302;
 
     #[test]
