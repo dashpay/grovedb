@@ -415,3 +415,280 @@ fn merge_add_on_op_over_pending(pending: &GroveOp, add_on: GroveOp) -> Result<Gr
         )),
     }
 }
+
+#[cfg(all(test, feature = "minimal"))]
+mod tests {
+    use grovedb_merk::tree::AggregateData;
+
+    use super::merge_add_on_op_over_pending;
+    use crate::{
+        batch::{insert_op_with_propagated_root, GroveOp, NonMerkTreeMeta, QualifiedGroveDbOp},
+        reference_path::ReferencePathType,
+        Element, Error,
+    };
+
+    const HASH: [u8; 32] = [7; 32];
+    const AXIS_HASH: [u8; 32] = [9; 32];
+
+    fn root_key() -> Option<Vec<u8>> {
+        Some(b"root".to_vec())
+    }
+
+    fn flags() -> Option<Vec<u8>> {
+        Some(vec![1, 2, 3])
+    }
+
+    fn axes() -> Vec<(u8, [u8; 32], Option<Vec<u8>>)> {
+        vec![(0, AXIS_HASH, Some(b"axis_root".to_vec()))]
+    }
+
+    fn pending_merk() -> GroveOp {
+        GroveOp::ReplaceTreeRootKey {
+            hash: HASH,
+            root_key: root_key(),
+            aggregate_data: AggregateData::Sum(5),
+        }
+    }
+
+    fn insert(element: Element) -> GroveOp {
+        GroveOp::InsertOrReplace { element }
+    }
+
+    fn assert_refused(result: Result<GroveOp, Error>) {
+        assert!(
+            matches!(result, Err(Error::InvalidBatchOperation(_))),
+            "expected InvalidBatchOperation, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn indexed_pending_composes_with_add_on_indexed_insert() {
+        for pending in [
+            GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+                primary_hash: HASH,
+                primary_root_key: root_key(),
+                primary_aggregate_data: AggregateData::ProvableCount(3),
+                axes: axes(),
+            },
+            GroveOp::InsertAggregateIndexedTreeRootKeys {
+                element: Element::empty_provable_count_indexed_tree(),
+                primary_hash: HASH,
+                primary_root_key: root_key(),
+                primary_aggregate_data: AggregateData::ProvableCount(3),
+                axes: axes(),
+            },
+        ] {
+            let add_on = insert(Element::empty_provable_count_indexed_tree_with_flags(
+                flags(),
+            ));
+            let merged = merge_add_on_op_over_pending(&pending, add_on).expect("merged");
+            assert_eq!(
+                merged,
+                GroveOp::InsertAggregateIndexedTreeRootKeys {
+                    element: Element::empty_provable_count_indexed_tree_with_flags(flags()),
+                    primary_hash: HASH,
+                    primary_root_key: root_key(),
+                    primary_aggregate_data: AggregateData::ProvableCount(3),
+                    axes: axes(),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn pending_non_merk_root_update_refuses_any_add_on() {
+        let meta = NonMerkTreeMeta::MmrTree { mmr_size: 4 };
+        for pending in [
+            GroveOp::ReplaceNonMerkTreeRoot {
+                hash: HASH,
+                meta: meta.clone(),
+            },
+            GroveOp::InsertNonMerkTree {
+                hash: HASH,
+                root_key: None,
+                flags: None,
+                aggregate_data: AggregateData::NoAggregateData,
+                meta,
+                non_counted: false,
+            },
+        ] {
+            assert_refused(merge_add_on_op_over_pending(
+                &pending,
+                insert(Element::new_mmr_tree(4, flags())),
+            ));
+            assert_refused(merge_add_on_op_over_pending(&pending, GroveOp::Delete));
+        }
+    }
+
+    #[test]
+    fn pending_merk_root_refuses_refresh_and_unpreprocessed_add_ons() {
+        let refresh = QualifiedGroveDbOp::refresh_reference_op(
+            vec![],
+            b"k".to_vec(),
+            ReferencePathType::SiblingReference(b"other".to_vec()),
+            None,
+            None,
+            false,
+            true,
+        )
+        .op;
+        assert_refused(merge_add_on_op_over_pending(&pending_merk(), refresh));
+        assert_refused(merge_add_on_op_over_pending(
+            &pending_merk(),
+            GroveOp::MmrTreeAppend {
+                value: b"leaf".to_vec(),
+            },
+        ));
+    }
+
+    #[test]
+    fn pending_merk_root_and_delete_follow_the_emptiness_rule() {
+        assert_refused(merge_add_on_op_over_pending(
+            &pending_merk(),
+            GroveOp::Delete,
+        ));
+        let emptied = GroveOp::InsertTreeWithRootHash {
+            hash: HASH,
+            root_key: None,
+            aggregate_data: AggregateData::NoAggregateData,
+            flags: None,
+            non_counted: false,
+            not_summed: false,
+            not_counted_or_summed: false,
+        };
+        assert_eq!(
+            merge_add_on_op_over_pending(&emptied, GroveOp::Delete).expect("empty child"),
+            GroveOp::Delete
+        );
+    }
+
+    #[test]
+    fn pending_user_op_is_last_op_wins() {
+        let pending = insert(Element::new_item(b"first".to_vec()));
+        let add_on = insert(Element::new_item(b"second".to_vec()));
+        assert_eq!(
+            merge_add_on_op_over_pending(&pending, add_on.clone()).expect("user op"),
+            add_on
+        );
+    }
+
+    #[test]
+    fn propagated_root_insert_covers_every_tree_shape() {
+        let merk = |element: Element| {
+            insert_op_with_propagated_root(&element, HASH, root_key(), AggregateData::Sum(5), None)
+        };
+
+        // A plain tree drops the aggregate; a wrapped sum-family tree keeps
+        // it and records its wrapper.
+        assert_eq!(
+            merk(Element::empty_tree_with_flags(flags())).expect("tree"),
+            GroveOp::InsertTreeWithRootHash {
+                hash: HASH,
+                root_key: root_key(),
+                flags: flags(),
+                aggregate_data: AggregateData::NoAggregateData,
+                non_counted: false,
+                not_summed: false,
+                not_counted_or_summed: false,
+            }
+        );
+        let not_summed = Element::new_not_summed(Element::empty_sum_tree()).expect("wrap");
+        assert!(matches!(
+            merk(not_summed).expect("not summed sum tree"),
+            GroveOp::InsertTreeWithRootHash {
+                aggregate_data: AggregateData::Sum(5),
+                not_summed: true,
+                non_counted: false,
+                not_counted_or_summed: false,
+                ..
+            }
+        ));
+        let not_counted_or_summed =
+            Element::new_not_counted_or_summed(Element::empty_count_sum_tree()).expect("wrap");
+        assert!(matches!(
+            merk(not_counted_or_summed).expect("wrapped count-sum tree"),
+            GroveOp::InsertTreeWithRootHash {
+                not_counted_or_summed: true,
+                ..
+            }
+        ));
+        for element in [
+            Element::empty_big_sum_tree(),
+            Element::empty_count_tree(),
+            Element::empty_provable_count_tree(),
+            Element::empty_provable_sum_tree(),
+            Element::empty_provable_count_sum_tree(),
+            Element::empty_provable_count_provable_sum_tree(),
+        ] {
+            assert!(matches!(
+                merk(element).expect("merk tree"),
+                GroveOp::InsertTreeWithRootHash {
+                    aggregate_data: AggregateData::Sum(5),
+                    ..
+                }
+            ));
+        }
+
+        // Non-Merk trees carry their own metadata, plus the NonCounted
+        // wrapper when present.
+        let non_merk = |element: Element, meta: NonMerkTreeMeta, non_counted: bool| {
+            assert_eq!(
+                merk(element).expect("non-merk tree"),
+                GroveOp::InsertNonMerkTree {
+                    hash: HASH,
+                    root_key: root_key(),
+                    flags: None,
+                    aggregate_data: AggregateData::Sum(5),
+                    meta,
+                    non_counted,
+                }
+            );
+        };
+        non_merk(
+            Element::empty_commitment_tree(4).expect("ct"),
+            NonMerkTreeMeta::CommitmentTree {
+                total_count: 0,
+                chunk_power: 4,
+            },
+            false,
+        );
+        non_merk(
+            Element::empty_private_document_store(64, 4).expect("pds"),
+            NonMerkTreeMeta::PrivateDocumentStore {
+                total_count: 0,
+                entry_size: 64,
+                chunk_power: 4,
+            },
+            false,
+        );
+        non_merk(
+            Element::new_non_counted(Element::new_mmr_tree(9, None)).expect("wrap"),
+            NonMerkTreeMeta::MmrTree { mmr_size: 9 },
+            true,
+        );
+        non_merk(
+            Element::empty_bulk_append_tree(4).expect("bulk"),
+            NonMerkTreeMeta::BulkAppendTree {
+                total_count: 0,
+                chunk_power: 4,
+            },
+            false,
+        );
+        non_merk(
+            Element::new_dense_tree(3, 5, None),
+            NonMerkTreeMeta::DenseTree {
+                count: 3,
+                height: 5,
+            },
+            false,
+        );
+
+        // An indexed primary without per-axis state (only the estimator
+        // cache lacks it) files empty axes; a non-tree is refused.
+        assert!(matches!(
+            merk(Element::empty_provable_count_indexed_tree()).expect("indexed"),
+            GroveOp::InsertAggregateIndexedTreeRootKeys { axes, .. } if axes.is_empty()
+        ));
+        assert_refused(merk(Element::new_item(b"not a tree".to_vec())));
+    }
+}

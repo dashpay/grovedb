@@ -32,6 +32,7 @@ mod tests {
 
     use crate::{
         batch::{BatchApplyOptions, GroveOp, QualifiedGroveDbOp, SubelementsDeletionBehavior},
+        reference_path::ReferencePathType,
         tests::{common::EMPTY_PATH, make_test_grovedb, TempGroveDb, TEST_LEAF},
         Element, Error,
     };
@@ -433,6 +434,226 @@ mod tests {
                 .unwrap()
                 .expect("child still reachable"),
             Element::new_item(CHILD_VALUE.to_vec())
+        );
+        assert_clean(&db, grove_version);
+    }
+
+    /// Pause two levels up so the leftover carries an indexed primary's
+    /// `ReplaceAggregateIndexedTreeRootKeys`; the add-on replace of that
+    /// primary must inherit both its root state and its per-axis state.
+    #[test]
+    fn add_on_replace_of_modified_indexed_primary_keeps_axes() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let cidx = b"cidx";
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            cidx,
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create PCIT");
+        // Generic direct writes into an indexed primary are refused; the
+        // batch path mirrors the child's derived count into the secondary.
+        db.apply_batch(
+            vec![
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec(), cidx.to_vec()],
+                    b"a".to_vec(),
+                    Element::empty_provable_count_tree(),
+                ),
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec(), cidx.to_vec(), b"a".to_vec()],
+                    b"x1".to_vec(),
+                    Element::new_item(b"v".to_vec()),
+                ),
+            ],
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed child under the PCIT");
+
+        let options = BatchApplyOptions {
+            batch_pause_height: Some(2),
+            ..Default::default()
+        };
+        db.apply_partial_batch(
+            vec![QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), cidx.to_vec(), b"a".to_vec()],
+                b"x2".to_vec(),
+                Element::new_item(b"v".to_vec()),
+            )],
+            Some(options),
+            |_cost, leftover| {
+                let leftover = leftover.as_ref().expect("leftover");
+                let pending = leftover
+                    .get(1)
+                    .and_then(|l| {
+                        l.get(&crate::batch::KeyInfoPath::from_known_owned_path(vec![
+                            TEST_LEAF.to_vec(),
+                        ]))
+                    })
+                    .and_then(|p| p.get(&crate::batch::key_info::KeyInfo::KnownKey(cidx.to_vec())))
+                    .expect("pending indexed propagation");
+                assert!(
+                    matches!(pending, GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. }),
+                    "got {pending:?}"
+                );
+                Ok(vec![QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec()],
+                    cidx.to_vec(),
+                    Element::empty_provable_count_indexed_tree_with_flags(Some(NEW_FLAGS.to_vec())),
+                )])
+            },
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("add-on replace of the indexed primary is merged");
+
+        let primary = db
+            .get([TEST_LEAF].as_ref(), cidx, None, grove_version)
+            .unwrap()
+            .expect("primary");
+        assert_eq!(primary.get_flags(), &Some(NEW_FLAGS.to_vec()));
+        assert_eq!(primary.count_value_or_default(), 2, "{primary:?}");
+        let child = db
+            .get(
+                [TEST_LEAF, cidx.as_slice()].as_ref(),
+                b"a",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("child");
+        assert_eq!(child.count_value_or_default(), 2, "{child:?}");
+        assert_clean(&db, grove_version);
+    }
+
+    /// A pending non-Merk root update carries metadata the add-on element
+    /// cannot reproduce, so the collision is refused rather than composed.
+    /// The MMR sits one level down and the pause is set one level below it
+    /// so its `ReplaceNonMerkTreeRoot` is still queued when the callback
+    /// runs (a root-level non-Merk op executes before the default pause).
+    #[test]
+    fn add_on_replace_over_pending_non_merk_root_update_is_refused() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let mmr = b"mmr";
+        let sub = b"sub";
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            mmr,
+            Element::empty_mmr_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create mmr");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            sub,
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create sibling tree");
+
+        let options = BatchApplyOptions {
+            batch_pause_height: Some(2),
+            ..Default::default()
+        };
+        let result = db
+            .apply_partial_batch(
+                vec![
+                    QualifiedGroveDbOp::mmr_tree_append_op(
+                        vec![TEST_LEAF.to_vec(), mmr.to_vec()],
+                        b"leaf".to_vec(),
+                    ),
+                    QualifiedGroveDbOp::insert_or_replace_op(
+                        vec![TEST_LEAF.to_vec(), sub.to_vec()],
+                        b"x".to_vec(),
+                        Element::new_item(b"v".to_vec()),
+                    ),
+                ],
+                Some(options),
+                |_cost, leftover| {
+                    let leftover = leftover.as_ref().expect("leftover");
+                    let pending = leftover
+                        .get(1)
+                        .and_then(|l| {
+                            l.get(&crate::batch::KeyInfoPath::from_known_owned_path(vec![
+                                TEST_LEAF.to_vec(),
+                            ]))
+                        })
+                        .and_then(|p| {
+                            p.get(&crate::batch::key_info::KeyInfo::KnownKey(mmr.to_vec()))
+                        })
+                        .expect("pending non-Merk root update");
+                    assert!(
+                        matches!(pending, GroveOp::ReplaceNonMerkTreeRoot { .. }),
+                        "got {pending:?}"
+                    );
+                    Ok(vec![QualifiedGroveDbOp::insert_or_replace_op(
+                        vec![TEST_LEAF.to_vec()],
+                        mmr.to_vec(),
+                        Element::empty_mmr_tree_with_flags(Some(NEW_FLAGS.to_vec())),
+                    )])
+                },
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidBatchOperation(_))),
+            "expected InvalidBatchOperation, got {result:?}"
+        );
+        let tree = db
+            .get([TEST_LEAF].as_ref(), mmr, None, grove_version)
+            .unwrap()
+            .expect("mmr element");
+        assert!(
+            matches!(tree, Element::MmrTree(0, None)),
+            "untouched: {tree:?}"
+        );
+        assert_clean(&db, grove_version);
+    }
+
+    #[test]
+    fn add_on_reference_refresh_over_modified_tree_is_refused() {
+        let grove_version = GroveVersion::latest();
+        let db = seed(grove_version);
+
+        let result = db
+            .apply_partial_batch(
+                vec![child_insert()],
+                None,
+                |_cost, _leftover| {
+                    Ok(vec![QualifiedGroveDbOp::refresh_reference_op(
+                        vec![],
+                        TEST_LEAF.to_vec(),
+                        ReferencePathType::SiblingReference(b"elsewhere".to_vec()),
+                        None,
+                        None,
+                        false,
+                        true,
+                    )])
+                },
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidBatchOperation(_))),
+            "expected InvalidBatchOperation, got {result:?}"
         );
         assert_clean(&db, grove_version);
     }
