@@ -563,6 +563,54 @@ mod tests {
     }
 
     #[test]
+    fn every_insert_family_add_on_composes_with_pending_root() {
+        let element = Element::empty_tree_with_flags(flags());
+        for add_on in [
+            GroveOp::InsertWithKnownToNotAlreadyExist {
+                element: element.clone(),
+            },
+            GroveOp::InsertIfNotExists {
+                element: element.clone(),
+                error_if_exists: true,
+            },
+            GroveOp::Replace {
+                element: element.clone(),
+            },
+            GroveOp::Patch {
+                element: element.clone(),
+                change_in_bytes: 0,
+            },
+        ] {
+            assert_eq!(
+                merge_add_on_op_over_pending(&pending_merk(), add_on).expect("composed"),
+                GroveOp::InsertTreeWithRootHash {
+                    hash: HASH,
+                    root_key: root_key(),
+                    flags: flags(),
+                    aggregate_data: AggregateData::NoAggregateData,
+                    non_counted: false,
+                    not_summed: false,
+                    not_counted_or_summed: false,
+                }
+            );
+        }
+    }
+
+    /// The constructors refuse to wrap an indexed primary, so the helper's
+    /// own guard is reached only through a hand-built wrapper.
+    #[test]
+    fn wrapped_indexed_primary_is_refused() {
+        let wrapped = Element::NonCounted(Box::new(Element::empty_provable_count_indexed_tree()));
+        assert_refused(insert_op_with_propagated_root(
+            &wrapped,
+            HASH,
+            root_key(),
+            AggregateData::ProvableCount(1),
+            Some(axes()),
+        ));
+    }
+
+    #[test]
     fn pending_user_op_is_last_op_wins() {
         let pending = insert(Element::new_item(b"first".to_vec()));
         let add_on = insert(Element::new_item(b"second".to_vec()));
