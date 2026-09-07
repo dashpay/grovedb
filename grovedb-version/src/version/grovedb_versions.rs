@@ -176,6 +176,32 @@ pub struct GroveDBApplyBatchVersions {
     /// rewrites keyless ops into keyed ops before the batch structure is
     /// built.
     pub keyless_op_cost_dispatch: FeatureVersion,
+    /// How the partial-batch continuation files an add-on op (returned by
+    /// the `apply_partial_batch*` callback) that lands on a `(path, key)`
+    /// the paused batch still has an op pending for.
+    ///
+    /// - `0` (V1..V3): the add-on op replaces the pending op outright. When
+    ///   the pending op is the root propagation of a child tree the batch
+    ///   already executed (`ReplaceTreeRootKey` / `InsertTreeWithRootHash`),
+    ///   the child's writes are committed but its parent element is
+    ///   rewritten from the add-on's bytes — root key `None`, stale
+    ///   aggregate, stale hash — orphaning the subtree (issue #708).
+    /// - `1` (V4+): a colliding add-on insert is merged with the pending
+    ///   root state the way upward propagation merges an in-batch insert
+    ///   (element bytes from the add-on, root hash / key / aggregate from
+    ///   the batch), provided the tree type is unchanged. Conditional inserts
+    ///   error or retain the pending update unchanged; a colliding delete is
+    ///   accepted only if the child ended
+    ///   the batch empty; a collision with a pending non-Merk root update is
+    ///   refused with `InvalidBatchOperation`. An add-on op that duplicates
+    ///   a still-unexecuted *user* op of the initial batch is refused by
+    ///   the entry point's consistency check (last op wins when that check
+    ///   is disabled, as within a single batch).
+    ///
+    /// Only the continuation is affected: the initial batch structure and
+    /// the estimated-cost structures never carry pending ops, so estimation
+    /// is unchanged on every version.
+    pub add_on_op_collision: FeatureVersion,
     /// Whether batch execution rejects ordinary keyed ops at a level whose
     /// parent is a non-Merk data tree (`CommitmentTree`, `MmrTree`,
     /// `BulkAppendTree`, `DenseAppendOnlyFixedSizeTree`,

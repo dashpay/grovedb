@@ -26,7 +26,9 @@ use crate::{
 /// makes writes into the same subtrees coherent — but neither of those two
 /// shapes has a coherent outcome: the first leaves rows under a deleted
 /// prefix, the second orphans the initial segment's rows behind a fresh
-/// root. Both are refused before the continuation applies.
+/// root. Both are refused before the continuation applies, except for exact
+/// pending-ancestor collisions whose root-preserving merge was validated by
+/// the caller (including deletes whose pending child root is already empty).
 pub(super) struct InitialSegmentFootprint {
     /// Qualified path (path ‖ key) of every element the segment deleted.
     deleted: Vec<Vec<Vec<u8>>>,
@@ -96,7 +98,11 @@ impl InitialSegmentFootprint {
 
     /// Refuse add-on ops that cannot be applied coherently after this
     /// segment (see the type docs).
-    pub(super) fn verify_add_on_ops(&self, add_on_ops: &[QualifiedGroveDbOp]) -> Result<(), Error> {
+    pub(super) fn verify_add_on_ops(
+        &self,
+        add_on_ops: &[QualifiedGroveDbOp],
+        merged_ancestor_paths: &HashSet<Vec<Vec<u8>>>,
+    ) -> Result<(), Error> {
         for op in add_on_ops {
             let path = op.path.to_path();
             if self.deleted.iter().any(|deleted| path.starts_with(deleted)) {
@@ -139,6 +145,13 @@ impl InitialSegmentFootprint {
             if replaces_or_deletes_subtree && let Some(key) = op.key.as_ref() {
                 let mut qualified = path;
                 qualified.push(key.get_key_clone());
+                // These exact targets were validated against their pending
+                // ancestor ops. Their roots are preserved (or already empty
+                // for deletion), so they do not orphan the segment's writes.
+                // The deleted-ancestor check above still applies.
+                if merged_ancestor_paths.contains(&qualified) {
+                    continue;
+                }
                 if self
                     .written_paths
                     .iter()

@@ -325,6 +325,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             delete_tree_cleanup_type_source: 1,
             overwrite_indexed_cleanup_inspection: 1,
             keyless_op_cost_dispatch: 1,
+            add_on_op_collision: 1,
             non_merk_parent_keyed_ops_rejection: 1,
         },
         element: GroveDBElementMethodVersions {

@@ -39,6 +39,7 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
             delete_tree_cleanup_type_source: 0,
             overwrite_indexed_cleanup_inspection: 0,
             keyless_op_cost_dispatch: 0,
+            add_on_op_collision: 0,
             non_merk_parent_keyed_ops_rejection: 0,
         },
         element: GroveDBElementMethodVersions {

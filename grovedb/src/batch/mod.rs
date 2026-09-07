@@ -702,6 +702,28 @@ impl GroveOp {
         }
     }
 
+    /// Whether this op is a pending ancestor update: an internal variant
+    /// that propagation (or non-Merk preprocessing) filed at the parent
+    /// level to carry a child tree's new root hash, root key, aggregate
+    /// and metadata up the grove.
+    ///
+    /// A partial batch pauses with these still queued. An add-on op from
+    /// the callback that lands on the same `(path, key)` must be composed
+    /// with — or refused against — the state such an op carries, never
+    /// filed over it (issue #708); see
+    /// `batch_structure::merge_add_on_op_over_pending`.
+    pub(crate) fn is_pending_ancestor_update(&self) -> bool {
+        matches!(
+            self,
+            GroveOp::ReplaceTreeRootKey { .. }
+                | GroveOp::InsertTreeWithRootHash { .. }
+                | GroveOp::ReplaceNonMerkTreeRoot { .. }
+                | GroveOp::InsertNonMerkTree { .. }
+                | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. }
+                | GroveOp::InsertAggregateIndexedTreeRootKeys { .. }
+        )
+    }
+
     /// Whether an op can move an indexed primary entry's canonical
     /// secondary ROW — a strictly wider question than
     /// [`Self::can_mutate_child_count`].
@@ -4773,6 +4795,145 @@ where
     }
 }
 
+/// Merge a user-facing insert of `element` at a position whose subtree this
+/// batch has already executed with that subtree's propagated root state.
+///
+/// The element bytes (type, flags, wrapper) come from the user op, the root
+/// hash / root key / aggregate from the batch: a Merk tree becomes
+/// `InsertTreeWithRootHash`, a non-Merk tree `InsertNonMerkTree`, an indexed
+/// primary `InsertAggregateIndexedTreeRootKeys` carrying the per-axis state
+/// the mirror just computed. Anything that is not a tree cannot sit above an
+/// executed subtree and is refused.
+///
+/// Used by upward propagation (an in-batch insert of a tree whose children
+/// the same batch wrote) and by the partial-batch continuation, where an
+/// add-on op from the callback lands on a key whose propagation is still
+/// pending (issue #708).
+#[cfg(feature = "minimal")]
+pub(in crate::batch) fn insert_op_with_propagated_root(
+    element: &Element,
+    root_hash: CryptoHash,
+    root_key: Option<Vec<u8>>,
+    aggregate_data: AggregateData,
+    cidx_secondary_state: Option<Vec<(u8, CryptoHash, Option<Vec<u8>>)>>,
+) -> Result<GroveOp, Error> {
+    // Look through wrappers: a wrapped tree still needs to be converted into
+    // the appropriate InsertTreeWithRootHash / InsertNonMerkTree variant.
+    // Capture wrapper status so execution can re-wrap the reconstructed
+    // element — otherwise the wrapper byte would be silently dropped from
+    // storage and the parent's aggregate would include a value it should
+    // not. The three wrappers are mutually exclusive (constructors reject
+    // nesting), so at most one flag is true here.
+    let non_counted = element.is_non_counted();
+    let not_summed = element.is_not_summed();
+    let not_counted_or_summed = element.is_not_counted_or_summed();
+    let element = element.underlying();
+
+    let merk_tree = |flags: &Option<ElementFlags>, aggregate_data: AggregateData| {
+        GroveOp::InsertTreeWithRootHash {
+            hash: root_hash,
+            root_key: root_key.clone(),
+            flags: flags.clone(),
+            aggregate_data,
+            non_counted,
+            not_summed,
+            not_counted_or_summed,
+        }
+    };
+    // Non-Merk trees are never NotSummed / NotCountedOrSummed — they aren't
+    // sum-tree variants.
+    let non_merk_tree =
+        |flags: &Option<ElementFlags>, meta: NonMerkTreeMeta| GroveOp::InsertNonMerkTree {
+            hash: root_hash,
+            root_key: root_key.clone(),
+            flags: flags.clone(),
+            aggregate_data,
+            meta,
+            non_counted,
+        };
+
+    match element {
+        // A plain tree carries no aggregate.
+        Element::Tree(_, flags) => Ok(merk_tree(flags, AggregateData::NoAggregateData)),
+        Element::SumTree(.., flags)
+        | Element::BigSumTree(.., flags)
+        | Element::CountTree(.., flags)
+        | Element::CountSumTree(.., flags)
+        | Element::ProvableCountTree(.., flags)
+        | Element::ProvableCountSumTree(.., flags)
+        | Element::ProvableSumTree(.., flags)
+        | Element::ProvableCountProvableSumTree(.., flags) => Ok(merk_tree(flags, aggregate_data)),
+        Element::CommitmentTree(total_count, chunk_power, flags) => Ok(non_merk_tree(
+            flags,
+            NonMerkTreeMeta::CommitmentTree {
+                total_count: *total_count,
+                chunk_power: *chunk_power,
+            },
+        )),
+        Element::PrivateDocumentStore(total_count, entry_size, chunk_power, flags) => {
+            Ok(non_merk_tree(
+                flags,
+                NonMerkTreeMeta::PrivateDocumentStore {
+                    total_count: *total_count,
+                    entry_size: *entry_size,
+                    chunk_power: *chunk_power,
+                },
+            ))
+        }
+        Element::MmrTree(mmr_size, flags) => Ok(non_merk_tree(
+            flags,
+            NonMerkTreeMeta::MmrTree {
+                mmr_size: *mmr_size,
+            },
+        )),
+        Element::BulkAppendTree(total_count, chunk_power, flags) => Ok(non_merk_tree(
+            flags,
+            NonMerkTreeMeta::BulkAppendTree {
+                total_count: *total_count,
+                chunk_power: *chunk_power,
+            },
+        )),
+        Element::DenseAppendOnlyFixedSizeTree(count, height, flags) => Ok(non_merk_tree(
+            flags,
+            NonMerkTreeMeta::DenseTree {
+                count: *count,
+                height: *height,
+            },
+        )),
+        // A freshly-inserted indexed primary needs BOTH primary and secondary
+        // root state to propagate via the H1-A composition, and there is no
+        // stored element to read — so the op carries the caller's element
+        // itself alongside the level's computed state. The per-axis state
+        // comes from the mirror this level just ran (the fresh secondaries
+        // were opened from the in-batch element).
+        Element::ProvableSumIndexedTree(..)
+        | Element::ProvableCountIndexedTree(..)
+        | Element::ProvableCountProvableSumIndexedTree(..) => {
+            if non_counted || not_summed || not_counted_or_summed {
+                return Err(Error::InvalidBatchOperation(
+                    "indexed-tree elements cannot be wrapped in NonCounted / NotSummed / \
+                     NotCountedOrSummed",
+                ));
+            }
+            // The real TreeCache always reports per-axis state for an
+            // indexed level; only the worst-case ESTIMATOR cache cannot (its
+            // layer information carries no tree type), and estimation never
+            // applies the op — the apply arm's empty-axes check guards the
+            // real path.
+            Ok(GroveOp::InsertAggregateIndexedTreeRootKeys {
+                element: element.clone(),
+                primary_hash: root_hash,
+                primary_root_key: root_key,
+                primary_aggregate_data: aggregate_data,
+                axes: cidx_secondary_state.unwrap_or_default(),
+            })
+        }
+        _ => Err(Error::InvalidBatchOperation(
+            "insertion of element under a non tree",
+        )),
+    }
+}
+
 impl GroveDb {
     /// Method to propagate updated subtree root hashes up to GroveDB root
     /// If the stop level is set in the apply options the remaining operations
@@ -4980,302 +5141,16 @@ impl GroveDb {
                                                 | GroveOp::InsertIfNotExists { element, .. }
                                                 | GroveOp::Replace { element }
                                                 | GroveOp::Patch { element, .. } => {
-                                                    // Look through wrappers: a wrapped tree
-                                                    // still needs to be converted into the
-                                                    // appropriate InsertTreeWithRootHash /
-                                                    // InsertNonMerkTree variant during
-                                                    // upward propagation. Capture wrapper
-                                                    // status so execution can re-wrap the
-                                                    // reconstructed element — otherwise the
-                                                    // wrapper byte would be silently dropped
-                                                    // from storage and the parent's aggregate
-                                                    // would include a value it should not.
-                                                    // The three wrappers are mutually
-                                                    // exclusive (constructors reject
-                                                    // nesting), so at most one flag is true
-                                                    // here.
-                                                    let non_counted = element.is_non_counted();
-                                                    let not_summed = element.is_not_summed();
-                                                    let not_counted_or_summed =
-                                                        element.is_not_counted_or_summed();
-                                                    let element = element.underlying();
-                                                    // Standard Merk trees
-                                                    if let Element::Tree(_, flags) = element {
-                                                        *mutable_occupied_entry =
-                                                            GroveOp::InsertTreeWithRootHash {
-                                                                hash: root_hash,
-                                                                root_key: calculated_root_key,
-                                                                flags: flags.clone(),
-                                                                aggregate_data:
-                                                                    AggregateData::NoAggregateData,
-                                                                non_counted,
-                                                                not_summed,
-                                                                not_counted_or_summed,
-                                                            }
-                                                    } else if let Element::SumTree(.., flags) =
-                                                        element
-                                                    {
-                                                        *mutable_occupied_entry =
-                                                            GroveOp::InsertTreeWithRootHash {
-                                                                hash: root_hash,
-                                                                root_key: calculated_root_key,
-                                                                flags: flags.clone(),
-                                                                aggregate_data,
-                                                                non_counted,
-                                                                not_summed,
-                                                                not_counted_or_summed,
-                                                            }
-                                                    } else if let Element::BigSumTree(.., flags) =
-                                                        element
-                                                    {
-                                                        *mutable_occupied_entry =
-                                                            GroveOp::InsertTreeWithRootHash {
-                                                                hash: root_hash,
-                                                                root_key: calculated_root_key,
-                                                                flags: flags.clone(),
-                                                                aggregate_data,
-                                                                non_counted,
-                                                                not_summed,
-                                                                not_counted_or_summed,
-                                                            }
-                                                    } else if let Element::CountTree(.., flags) =
-                                                        element
-                                                    {
-                                                        *mutable_occupied_entry =
-                                                            GroveOp::InsertTreeWithRootHash {
-                                                                hash: root_hash,
-                                                                root_key: calculated_root_key,
-                                                                flags: flags.clone(),
-                                                                aggregate_data,
-                                                                non_counted,
-                                                                not_summed,
-                                                                not_counted_or_summed,
-                                                            }
-                                                    } else if let Element::CountSumTree(.., flags) =
-                                                        element
-                                                    {
-                                                        *mutable_occupied_entry =
-                                                            GroveOp::InsertTreeWithRootHash {
-                                                                hash: root_hash,
-                                                                root_key: calculated_root_key,
-                                                                flags: flags.clone(),
-                                                                aggregate_data,
-                                                                non_counted,
-                                                                not_summed,
-                                                                not_counted_or_summed,
-                                                            }
-                                                    } else if let Element::ProvableCountTree(
-                                                        ..,
-                                                        flags,
-                                                    ) = element
-                                                    {
-                                                        *mutable_occupied_entry =
-                                                            GroveOp::InsertTreeWithRootHash {
-                                                                hash: root_hash,
-                                                                root_key: calculated_root_key,
-                                                                flags: flags.clone(),
-                                                                aggregate_data,
-                                                                non_counted,
-                                                                not_summed,
-                                                                not_counted_or_summed,
-                                                            }
-                                                    } else if let Element::ProvableCountSumTree(
-                                                        ..,
-                                                        flags,
-                                                    ) = element
-                                                    {
-                                                        *mutable_occupied_entry =
-                                                            GroveOp::InsertTreeWithRootHash {
-                                                                hash: root_hash,
-                                                                root_key: calculated_root_key,
-                                                                flags: flags.clone(),
-                                                                aggregate_data,
-                                                                non_counted,
-                                                                not_summed,
-                                                                not_counted_or_summed,
-                                                            }
-                                                    } else if let Element::ProvableSumTree(
-                                                        ..,
-                                                        flags,
-                                                    ) = element
-                                                    {
-                                                        *mutable_occupied_entry =
-                                                            GroveOp::InsertTreeWithRootHash {
-                                                                hash: root_hash,
-                                                                root_key: calculated_root_key,
-                                                                flags: flags.clone(),
-                                                                aggregate_data,
-                                                                non_counted,
-                                                                not_summed,
-                                                                not_counted_or_summed,
-                                                            }
-                                                    } else if let
-                                                        Element::ProvableCountProvableSumTree(
-                                                            ..,
-                                                            flags,
-                                                        ) = element
-                                                    {
-                                                        *mutable_occupied_entry =
-                                                            GroveOp::InsertTreeWithRootHash {
-                                                                hash: root_hash,
-                                                                root_key: calculated_root_key,
-                                                                flags: flags.clone(),
-                                                                aggregate_data,
-                                                                non_counted,
-                                                                not_summed,
-                                                                not_counted_or_summed,
-                                                            }
-                                                    // Non-Merk trees → InsertNonMerkTree
-                                                    // (none of these can be NotSummed or
-                                                    // NotCountedOrSummed — they aren't
-                                                    // sum-tree variants.)
-                                                    } else if let Element::CommitmentTree(
-                                                        total_count,
-                                                        chunk_power,
-                                                        flags,
-                                                    ) = element
-                                                    {
-                                                        let meta = NonMerkTreeMeta::CommitmentTree {
-                                                            total_count: *total_count,
-                                                            chunk_power: *chunk_power,
-                                                        };
-                                                        *mutable_occupied_entry =
-                                                            GroveOp::InsertNonMerkTree {
-                                                                hash: root_hash,
-                                                                root_key: calculated_root_key,
-                                                                flags: flags.clone(),
-                                                                aggregate_data,
-                                                                meta,
-                                                                non_counted,
-                                                            }
-                                                    } else if let Element::PrivateDocumentStore(
-                                                        total_count,
-                                                        entry_size,
-                                                        chunk_power,
-                                                        flags,
-                                                    ) = element
-                                                    {
-                                                        let meta =
-                                                            NonMerkTreeMeta::PrivateDocumentStore {
-                                                                total_count: *total_count,
-                                                                entry_size: *entry_size,
-                                                                chunk_power: *chunk_power,
-                                                            };
-                                                        *mutable_occupied_entry =
-                                                            GroveOp::InsertNonMerkTree {
-                                                                hash: root_hash,
-                                                                root_key: calculated_root_key,
-                                                                flags: flags.clone(),
-                                                                aggregate_data,
-                                                                meta,
-                                                                non_counted,
-                                                            }
-                                                    } else if let Element::MmrTree(
-                                                        mmr_size,
-                                                        flags,
-                                                    ) = element
-                                                    {
-                                                        let meta = NonMerkTreeMeta::MmrTree {
-                                                            mmr_size: *mmr_size,
-                                                        };
-                                                        *mutable_occupied_entry =
-                                                            GroveOp::InsertNonMerkTree {
-                                                                hash: root_hash,
-                                                                root_key: calculated_root_key,
-                                                                flags: flags.clone(),
-                                                                aggregate_data,
-                                                                meta,
-                                                                non_counted,
-                                                            }
-                                                    } else if let Element::BulkAppendTree(
-                                                        total_count,
-                                                        chunk_power,
-                                                        flags,
-                                                    ) = element
-                                                    {
-                                                        let meta = NonMerkTreeMeta::BulkAppendTree {
-                                                            total_count: *total_count,
-                                                            chunk_power: *chunk_power,
-                                                        };
-                                                        *mutable_occupied_entry =
-                                                            GroveOp::InsertNonMerkTree {
-                                                                hash: root_hash,
-                                                                root_key: calculated_root_key,
-                                                                flags: flags.clone(),
-                                                                aggregate_data,
-                                                                meta,
-                                                                non_counted,
-                                                            }
-                                                    } else if let
-                                                        Element::DenseAppendOnlyFixedSizeTree(
-                                                            count,
-                                                            height,
-                                                            flags,
-                                                        ) = element
-                                                    {
-                                                        *mutable_occupied_entry =
-                                                            GroveOp::InsertNonMerkTree {
-                                                                hash: root_hash,
-                                                                root_key: calculated_root_key,
-                                                                flags: flags.clone(),
-                                                                aggregate_data,
-                                                                meta: NonMerkTreeMeta::DenseTree {
-                                                                    count: *count,
-                                                                    height: *height,
-                                                                },
-                                                                non_counted,
-                                                            }
-                                                    // A freshly-inserted indexed primary
-                                                    // needs BOTH primary and secondary root
-                                                    // state to propagate via the H1-A
-                                                    // composition, and there is no stored
-                                                    // element to read — so the op carries the
-                                                    // caller's element itself alongside the
-                                                    // level's computed state. The per-axis
-                                                    // state comes from the mirror this level
-                                                    // just ran (the fresh secondaries were
-                                                    // opened from the in-batch element).
-                                                    } else if matches!(
-                                                        element,
-                                                        Element::ProvableSumIndexedTree(..)
-                                                            | Element::ProvableCountIndexedTree(..)
-                                                            | Element::ProvableCountProvableSumIndexedTree(..)
-                                                    ) {
-                                                        if non_counted
-                                                            || not_summed
-                                                            || not_counted_or_summed
-                                                        {
-                                                            return Err(Error::InvalidBatchOperation(
-                                                                "indexed-tree elements cannot be \
-                                                                 wrapped in NonCounted / NotSummed \
-                                                                 / NotCountedOrSummed",
-                                                            ))
-                                                            .wrap_with_cost(cost);
-                                                        }
-                                                        // The real TreeCache always reports
-                                                        // per-axis state for an indexed level;
-                                                        // only the worst-case ESTIMATOR cache
-                                                        // cannot (its layer information carries
-                                                        // no tree type), and estimation never
-                                                        // applies the op — the apply arm's
-                                                        // empty-axes check guards the real path.
-                                                        *mutable_occupied_entry =
-                                                            GroveOp::InsertAggregateIndexedTreeRootKeys {
-                                                                element: element.clone(),
-                                                                primary_hash: root_hash,
-                                                                primary_root_key:
-                                                                    calculated_root_key,
-                                                                primary_aggregate_data:
-                                                                    aggregate_data,
-                                                                axes: cidx_secondary_state
-                                                                    .unwrap_or_default(),
-                                                            };
-                                                    } else {
-                                                        return Err(Error::InvalidBatchOperation(
-                                                            "insertion of element under a non tree",
-                                                        ))
-                                                        .wrap_with_cost(cost);
-                                                    }
+                                                    *mutable_occupied_entry = cost_return_on_error_no_add!(
+                                                        cost,
+                                                        insert_op_with_propagated_root(
+                                                            element,
+                                                            root_hash,
+                                                            calculated_root_key,
+                                                            aggregate_data,
+                                                            cidx_secondary_state,
+                                                        )
+                                                    );
                                                 }
                                                 GroveOp::ReplaceBackwardReferenceFamilyMember {
                                                     ..
@@ -7352,7 +7227,79 @@ impl GroveDb {
                 ))
                 .wrap_with_cost(cost);
             }
+
+            // Cross-segment duplicates: an add-on op on a `(path, key)` the
+            // initial batch still has a USER op queued for is the same
+            // duplicate the in-batch check refuses, just split across the
+            // pause. A pending ancestor update (an internal propagation op)
+            // is not a duplicate — the continuation composes the add-on
+            // with the root state it carries (issue #708).
+            if grove_version
+                .grovedb_versions
+                .apply_batch
+                .add_on_op_collision
+                >= 1
+                && let Some(left_over) = left_over_operations.as_ref()
+                && new_operations.iter().any(|op| {
+                    op.key.as_ref().is_some_and(|key| {
+                        left_over
+                            .get(op.path.len())
+                            .and_then(|ops_on_level| ops_on_level.get(&op.path))
+                            .and_then(|ops_on_path| ops_on_path.get(key))
+                            .is_some_and(|pending| !pending.is_pending_ancestor_update())
+                    })
+                })
+            {
+                return Err(Error::InvalidBatchOperation(
+                    "add-on operation duplicates an operation still pending from the initial \
+                     batch",
+                ))
+                .wrap_with_cost(cost);
+            }
         }
+        // V4 collisions with pending ancestor updates are composed by the
+        // continuation, not destructive overwrites. Validate them before the
+        // cross-segment and committed-state preflights so those gates exempt
+        // only operations whose pending root state can actually be preserved.
+        let mut merged_ancestor_paths = HashSet::new();
+        if grove_version
+            .grovedb_versions
+            .apply_batch
+            .add_on_op_collision
+            >= 1
+            && let Some(left_over) = left_over_operations.as_ref()
+        {
+            for op in &new_operations {
+                if let Some(key) = op.key.as_ref()
+                    && let Some(pending) = left_over
+                        .get(op.path.len())
+                        .and_then(|level| level.get(&op.path))
+                        .and_then(|path_ops| path_ops.get(key))
+                    && pending.is_pending_ancestor_update()
+                {
+                    cost_return_on_error_no_add!(
+                        cost,
+                        batch_structure::merge_add_on_op_over_pending(pending, op.op.clone())
+                    );
+                    let mut qualified = op.path.to_path();
+                    qualified.push(key.get_key_clone());
+                    merged_ancestor_paths.insert(qualified);
+                }
+            }
+        }
+        let is_merged_ancestor = |op: &QualifiedGroveDbOp| {
+            op.key.as_ref().is_some_and(|key| {
+                let mut qualified = op.path.to_path();
+                qualified.push(key.get_key_clone());
+                merged_ancestor_paths.contains(&qualified)
+            })
+        };
+        let overwrite_preflight_ops: Vec<_> = new_operations
+            .iter()
+            .filter(|op| !is_merged_ancestor(op))
+            .cloned()
+            .collect();
+
         // Cross-segment safety is mandatory even when callers disable
         // per-segment consistency checks: the live cache cannot make these
         // operation combinations coherent. Build from the initial op map
@@ -7363,7 +7310,7 @@ impl GroveDb {
         );
         cost_return_on_error_no_add!(
             cost,
-            initial_segment_footprint.verify_add_on_ops(&new_operations)
+            initial_segment_footprint.verify_add_on_ops(&new_operations, &merged_ancestor_paths)
         );
         // A continuation write under an indexed primary the initial segment
         // safe-subset-OVERWROTE would land in the very storage prefixes the
@@ -7396,7 +7343,7 @@ impl GroveDb {
             &mut cost,
             indexed_tree::reject_indexed_overwrite_with_descendants(
                 self,
-                &new_operations,
+                &overwrite_preflight_ops,
                 tx.as_ref(),
                 grove_version,
             )
@@ -7469,9 +7416,29 @@ impl GroveDb {
         // preflight as the initial segment (issue #709): the emptiness
         // check behind Error / Skip, Skip filtering, and the cleanup
         // path / behavior collection the post-apply passes below run on.
-        // The scan reads committed state, which is coherent here because
-        // the cross-segment gate refused deletes of anything the initial
-        // segment wrote into, created, or replaced, including empty trees.
+        // The scan reads committed state. The cross-segment gate refuses
+        // deletes of initial-segment writes except for validated ancestor
+        // collisions, whose pending emptiness takes precedence below.
+        // A colliding delete was checked against the pending child root,
+        // which may now be empty even though committed storage is populated.
+        // Bypass only the stale emptiness read; retain capability/type checks
+        // and register the caller's actual cleanup behavior below.
+        let delete_preflight_ops: Vec<_> = new_operations
+            .iter()
+            .cloned()
+            .map(|mut op| {
+                if is_merged_ancestor(&op)
+                    && let GroveOp::DeleteTree(_, behavior) = &mut op.op
+                    && matches!(
+                        behavior,
+                        SubelementsDeletionBehavior::Error | SubelementsDeletionBehavior::Skip
+                    )
+                {
+                    *behavior = SubelementsDeletionBehavior::DontCheckWithNoCleanup;
+                }
+                op
+            })
+            .collect();
         let DeleteTreePreScan {
             non_merk_delete_paths: add_on_non_merk_delete_paths,
             merk_delete_paths: add_on_merk_delete_paths,
@@ -7480,12 +7447,27 @@ impl GroveDb {
             delete_tree_behaviors: add_on_delete_tree_behaviors,
         } = cost_return_on_error!(
             &mut cost,
-            self.scan_delete_tree_ops(&new_operations, &storage_batch, tx.as_ref(), grove_version)
+            self.scan_delete_tree_ops(
+                &delete_preflight_ops,
+                &storage_batch,
+                tx.as_ref(),
+                grove_version
+            )
         );
         non_merk_delete_paths.extend(add_on_non_merk_delete_paths);
         merk_delete_paths.extend(add_on_merk_delete_paths);
         cidx_primary_delete_paths.extend(add_on_cidx_primary_delete_paths);
         delete_tree_behaviors.extend(add_on_delete_tree_behaviors);
+        for op in &new_operations {
+            if is_merged_ancestor(op)
+                && let GroveOp::DeleteTree(_, behavior) = &op.op
+                && let Some(key) = op.key.as_ref()
+            {
+                let mut qualified = op.path.to_path();
+                qualified.push(key.get_key_clone());
+                delete_tree_behaviors.insert(qualified, *behavior);
+            }
+        }
 
         // Filter out add-on DeleteTree ops skipped by
         // SubelementsDeletionBehavior::Skip on non-empty trees, exactly
