@@ -413,7 +413,13 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             },
             delete: GroveDBOperationsDeleteVersions {
                 delete: 0,
-                clear_subtree: 0,
+                // v1: clearing a non-Merk data tree (MmrTree, BulkAppendTree,
+                // DenseAppendOnlyFixedSizeTree, CommitmentTree,
+                // PrivateDocumentStore) also resets the parent element to its
+                // canonical empty state and propagates, instead of leaving a
+                // stale count/commitment over the cleared payload (issue
+                // #893).
+                clear_subtree: 1,
                 delete_with_sectional_storage_function: 0,
                 delete_if_empty_tree: 0,
                 delete_if_empty_tree_with_sectional_storage_function: 0,
