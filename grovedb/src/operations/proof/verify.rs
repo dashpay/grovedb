@@ -2483,6 +2483,11 @@ impl GroveDb {
                         // real tree's child hash is NULL_HASH only if it
                         // really is empty (issue #869).
                         Self::verify_empty_tree_binding(query, key, &element, value_bytes, hash)?;
+                        // There is no lower layer to descend into, but this
+                        // verified empty tree still supplies the parent-info
+                        // result. Do not leave a populated ancestor's metadata
+                        // behind (or None when the target is a root child).
+                        *last_parent_tree_type = element.tree_feature_type();
                         // When the governing query asks for parent-tree
                         // inclusion, the matched parent is still
                         // reported — empty and non-empty parents must

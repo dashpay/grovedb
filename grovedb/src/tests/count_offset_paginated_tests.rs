@@ -88,6 +88,112 @@ mod tests {
         proved.iter().map(|p| p.key.clone()).collect()
     }
 
+    /// An empty target has no lower proof layer to descend into. Parent-info
+    /// verification must still report its zero aggregate, not the last
+    /// populated ancestor's metadata (or no metadata for a root child).
+    fn assert_empty_target_parent_info(nested: bool) {
+        use grovedb_merk::TreeFeatureType;
+
+        let v = GroveVersion::latest();
+        for (target, expected_feature) in [
+            (
+                Element::empty_provable_count_tree(),
+                TreeFeatureType::ProvableCountedMerkNode(0),
+            ),
+            (
+                Element::empty_provable_count_sum_tree(),
+                TreeFeatureType::ProvableCountedSummedMerkNode(0, 0),
+            ),
+            (
+                Element::empty_provable_count_provable_sum_tree(),
+                TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(0, 0),
+            ),
+        ] {
+            let db = make_test_grovedb(v);
+            let parent_path = if nested {
+                db.insert(
+                    &[] as &[&[u8]],
+                    b"outer",
+                    Element::empty_provable_count_tree(),
+                    None,
+                    None,
+                    v,
+                )
+                .unwrap()
+                .expect("insert ancestor");
+                for i in 0..10u8 {
+                    db.insert(
+                        &[b"outer"],
+                        &[b'a' + i],
+                        Element::new_item(vec![i]),
+                        None,
+                        None,
+                        v,
+                    )
+                    .unwrap()
+                    .expect("populate ancestor with a different count");
+                }
+                vec![b"outer".to_vec()]
+            } else {
+                vec![]
+            };
+            db.insert(parent_path.as_slice(), b"empty", target, None, None, v)
+                .unwrap()
+                .expect("insert empty target");
+            let mut path = parent_path;
+            path.push(b"empty".to_vec());
+            let expected_root = db.root_hash(None, v).unwrap().expect("root");
+
+            for offset in [None, Some(0), Some(1), Some(100)] {
+                for ascending in [false, true] {
+                    let mut q = Query::new_with_direction(ascending);
+                    q.insert_range_inclusive(b"a".to_vec()..=b"e".to_vec());
+                    let query = PathQuery::new(path.clone(), SizedQuery::new(q, Some(5), offset));
+                    let proof = db
+                        .prove_query(&query, None, v)
+                        .unwrap()
+                        .expect("prove empty page");
+                    let (root, rows) = GroveDb::verify_query(&proof, &query, v)
+                        .expect("ordinary verification serves the empty page");
+                    assert_eq!(root, expected_root);
+                    assert!(rows.is_empty());
+
+                    for succinct in [false, true] {
+                        let (root, feature, rows) =
+                            GroveDb::verify_query_get_parent_tree_info_with_options(
+                                &proof,
+                                &query,
+                                grovedb_merk::proofs::query::VerifyOptions {
+                                    absence_proofs_for_non_existing_searched_keys: false,
+                                    verify_proof_succinctness: succinct,
+                                    include_empty_trees_in_result: false,
+                                },
+                                v,
+                            )
+                            .expect("empty target still has parent-tree information");
+                        assert_eq!(root, expected_root);
+                        assert_eq!(
+                            feature, expected_feature,
+                            "report the target, not its ancestor: nested={nested}, \
+                             offset={offset:?}, ascending={ascending}, succinct={succinct}"
+                        );
+                        assert!(rows.is_empty());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn empty_target_parent_info_replaces_ancestor_metadata() {
+        assert_empty_target_parent_info(true);
+    }
+
+    #[test]
+    fn empty_target_parent_info_is_available_for_root_children() {
+        assert_empty_target_parent_info(false);
+    }
+
     #[test]
     fn end_to_end_offset_5_limit_3_ascending() {
         let v = GroveVersion::latest();

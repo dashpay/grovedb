@@ -340,7 +340,9 @@ Count-offset paginated queries go through the **same** `prove_query` /
 `verify_query_get_parent_tree_info_with_options` entry points as every
 other path query — there is no dedicated entry point. The query envelope
 (`PathQuery` with a `SizedQuery` carrying a non-zero `offset`) is what
-selects the count-offset dispatch.
+selects the count-offset dispatch. Parent-tree information describes the
+queried tree even when it is empty: its count (and sum, if present) is zero.
+A page past the end of a populated tree still returns that tree's full aggregates.
 
 One verify option is off the table: `absence_proofs_for_non_existing_searched_keys`
 is refused (`NotSupported`) whenever the query carries a non-zero offset.
