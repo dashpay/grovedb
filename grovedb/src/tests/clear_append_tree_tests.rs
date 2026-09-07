@@ -462,3 +462,166 @@ fn clear_under_grove_v3_keeps_stale_parent_element() {
         "v0 must not propagate anything"
     );
 }
+
+// ---------------------------------------------------------------------------
+// v0 ordinary-Merk coverage — the pre-`GROVE_V4` implementation is frozen in
+// its own sub-file, so exercise its plain-Merk branches (identical in
+// behaviour to v1) under `GROVE_V3` explicitly.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn clear_ordinary_tree_under_grove_v3_clears_and_propagates() {
+    let grove_version = &GROVE_V3;
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"tree",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert tree");
+
+    let empty_root = root_hash(&db, grove_version);
+
+    for i in 0u8..5 {
+        db.insert(
+            [b"tree".as_ref()].as_ref(),
+            &[i],
+            Element::new_item(vec![i; 10]),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert item");
+    }
+    assert_ne!(root_hash(&db, grove_version), empty_root);
+
+    let cleared = db
+        .clear_subtree([b"tree".as_ref()].as_ref(), None, None, grove_version)
+        .expect("clear should succeed");
+    assert!(cleared);
+
+    assert!(db
+        .is_empty_tree([b"tree".as_ref()].as_ref(), None, grove_version)
+        .unwrap()
+        .expect("emptiness check"));
+    assert_eq!(
+        root_hash(&db, grove_version),
+        empty_root,
+        "an ordinary-Merk clear must propagate under v0 exactly as before"
+    );
+}
+
+#[test]
+fn clear_ordinary_tree_with_subtrees_under_grove_v3_option_branches() {
+    use crate::operations::delete::ClearOptions;
+
+    let grove_version = &GROVE_V3;
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"tree",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert tree");
+    db.insert(
+        [b"tree".as_ref()].as_ref(),
+        b"inner",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert nested tree");
+
+    // Default options: error out on the nested subtree.
+    let result = db.clear_subtree([b"tree".as_ref()].as_ref(), None, None, grove_version);
+    assert!(
+        matches!(
+            result,
+            Err(crate::Error::ClearingTreeWithSubtreesNotAllowed(_))
+        ),
+        "expected ClearingTreeWithSubtreesNotAllowed, got {result:?}"
+    );
+
+    // Same, but asked to report instead of erroring.
+    let cleared = db
+        .clear_subtree(
+            [b"tree".as_ref()].as_ref(),
+            Some(ClearOptions {
+                check_for_subtrees: true,
+                allow_deleting_subtrees: false,
+                trying_to_clear_with_subtrees_returns_error: false,
+            }),
+            None,
+            grove_version,
+        )
+        .expect("clear should not error");
+    assert!(!cleared, "clear must report false when subtrees remain");
+
+    // Allowed to delete subtrees: clears everything.
+    let cleared = db
+        .clear_subtree(
+            [b"tree".as_ref()].as_ref(),
+            Some(ClearOptions {
+                check_for_subtrees: true,
+                allow_deleting_subtrees: true,
+                trying_to_clear_with_subtrees_returns_error: false,
+            }),
+            None,
+            grove_version,
+        )
+        .expect("clear should succeed");
+    assert!(cleared);
+    assert!(db
+        .is_empty_tree([b"tree".as_ref()].as_ref(), None, grove_version)
+        .unwrap()
+        .expect("emptiness check"));
+}
+
+#[test]
+fn clear_subtree_unknown_version_is_rejected() {
+    use grovedb_version::version::v4::GROVE_V4;
+
+    let db = make_empty_grovedb();
+    db.insert(
+        EMPTY_PATH,
+        b"tree",
+        Element::empty_tree(),
+        None,
+        None,
+        GroveVersion::latest(),
+    )
+    .unwrap()
+    .expect("insert tree");
+
+    let mut unknown = GROVE_V4.clone();
+    unknown.grovedb_versions.operations.delete.clear_subtree = 9;
+
+    let result = db.clear_subtree([b"tree".as_ref()].as_ref(), None, None, &unknown);
+    match result {
+        Err(crate::Error::VersionError(
+            grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                method,
+                known_versions,
+                received,
+            },
+        )) => {
+            assert_eq!(method, "clear_subtree");
+            assert_eq!(known_versions, vec![0, 1]);
+            assert_eq!(received, 9);
+        }
+        other => panic!("expected UnknownVersionMismatch, got {other:?}"),
+    }
+}
