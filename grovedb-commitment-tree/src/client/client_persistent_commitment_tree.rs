@@ -229,31 +229,43 @@ impl ClientPersistentCommitmentTree {
         &mut self,
         f: impl FnOnce(&mut Self) -> Result<T, CommitmentTreeError>,
     ) -> Result<T, CommitmentTreeError> {
-        self.inner
+        let owns_transaction = self
+            .inner
             .store()
-            .with_conn(|conn| conn.execute_batch("SAVEPOINT commitment_tree_client_op"))
+            .with_conn(|conn| {
+                let owns_transaction = conn.is_autocommit();
+                conn.execute_batch("SAVEPOINT commitment_tree_client_op")
+                    .map(|()| owns_transaction)
+            })
             .map_err(|e| CommitmentTreeError::InvalidData(format!("savepoint failed: {e}")))?;
-        match f(self) {
-            Ok(value) => {
-                self.inner
-                    .store()
-                    .with_conn(|conn| {
-                        conn.execute_batch("RELEASE SAVEPOINT commitment_tree_client_op")
-                    })
-                    .map_err(|e| {
-                        CommitmentTreeError::InvalidData(format!("savepoint release failed: {e}"))
-                    })?;
-                Ok(value)
-            }
+        // Releasing the outermost savepoint commits the transaction and can
+        // itself fail (for example, SQLITE_BUSY). Treat that like an error
+        // from the operation, so no pending writes escape cleanup.
+        let result = f(self).and_then(|value| {
+            self.inner
+                .store()
+                .with_conn(|conn| conn.execute_batch("RELEASE SAVEPOINT commitment_tree_client_op"))
+                .map_err(|e| {
+                    CommitmentTreeError::InvalidData(format!("savepoint release failed: {e}"))
+                })?;
+            Ok(value)
+        });
+        match result {
+            Ok(value) => Ok(value),
             Err(e) => {
-                // ROLLBACK TO undoes the writes but keeps the savepoint on
-                // the stack; RELEASE pops it, restoring the caller's
-                // transaction state.
+                // If we own the transaction, end it with ROLLBACK: RELEASE
+                // can remain blocked by a reader even after ROLLBACK TO.
+                // Otherwise undo only our savepoint, preserving the wallet's
+                // transaction and any writes it made before this operation.
                 if let Err(rollback_err) = self.inner.store().with_conn(|conn| {
-                    conn.execute_batch(
-                        "ROLLBACK TO SAVEPOINT commitment_tree_client_op; RELEASE SAVEPOINT \
-                         commitment_tree_client_op",
-                    )
+                    if owns_transaction {
+                        conn.execute_batch("ROLLBACK")
+                    } else {
+                        conn.execute_batch(
+                            "ROLLBACK TO SAVEPOINT commitment_tree_client_op; RELEASE SAVEPOINT \
+                             commitment_tree_client_op",
+                        )
+                    }
                 }) {
                     return Err(CommitmentTreeError::InvalidData(format!(
                         "rollback failed after error ({e}): {rollback_err}"

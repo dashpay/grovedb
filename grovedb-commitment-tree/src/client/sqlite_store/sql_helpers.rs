@@ -35,7 +35,9 @@ fn u64_to_i64(value_name: &str, value: u64) -> Result<i64, SqliteShardStoreError
 }
 
 /// Run `f` inside a SQLite savepoint named `name`, releasing it on success
-/// and rolling back (then releasing) on error.
+/// and rolling back on operation or release errors. A transaction opened
+/// by this helper is fully rolled back; a nested savepoint is rolled back
+/// and released without ending the caller's transaction.
 ///
 /// Savepoints nest — unlike `BEGIN`, which fails inside an open transaction —
 /// so multi-statement helpers wrapped in this compose both with an enclosing
@@ -46,19 +48,27 @@ pub(crate) fn with_savepoint<T>(
     name: &str,
     f: impl FnOnce(&Connection) -> Result<T, SqliteShardStoreError>,
 ) -> Result<T, SqliteShardStoreError> {
+    let owns_transaction = conn.is_autocommit();
     conn.execute_batch(&format!("SAVEPOINT {name}"))?;
-    match f(conn) {
-        Ok(value) => {
-            conn.execute_batch(&format!("RELEASE SAVEPOINT {name}"))?;
-            Ok(value)
-        }
+    // The release is also fallible: an outermost savepoint commits here.
+    let result = f(conn).and_then(|value| {
+        conn.execute_batch(&format!("RELEASE SAVEPOINT {name}"))?;
+        Ok(value)
+    });
+    match result {
+        Ok(value) => Ok(value),
         Err(e) => {
-            // ROLLBACK TO undoes the writes but leaves the savepoint on the
-            // stack; RELEASE pops it so the caller's transaction state is
-            // exactly as before this call.
-            if let Err(rollback_err) = conn.execute_batch(&format!(
-                "ROLLBACK TO SAVEPOINT {name}; RELEASE SAVEPOINT {name}"
-            )) {
+            // RELEASE can still need an exclusive lock after ROLLBACK TO.
+            // End an owned transaction outright, but preserve a caller's
+            // enclosing transaction when this savepoint is nested.
+            let rollback_result = if owns_transaction {
+                conn.execute_batch("ROLLBACK")
+            } else {
+                conn.execute_batch(&format!(
+                    "ROLLBACK TO SAVEPOINT {name}; RELEASE SAVEPOINT {name}"
+                ))
+            };
+            if let Err(rollback_err) = rollback_result {
                 return Err(SqliteShardStoreError::Serialization(format!(
                     "failed to roll back savepoint {name} after error ({e}): {rollback_err}"
                 )));

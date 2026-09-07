@@ -514,4 +514,197 @@ mod tests {
             .expect("direct query");
         assert!(count > 0, "shards should have been written");
     }
+
+    /// Commit failures must undo the leaf, checkpoints, and pruning while
+    /// releasing the transaction even before the blocking reader finishes.
+    #[test]
+    fn test_append_commit_failure_rolls_back_and_allows_retry() {
+        for retention in [Retention::Marked, checkpoint_retention(2)] {
+            let dir = tempfile::tempdir().unwrap();
+            let db_path = dir.path().join("commit_busy.db");
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode=DELETE").unwrap();
+            conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+            let arc = Arc::new(Mutex::new(conn));
+            // Retaining one checkpoint makes the checkpointed append prune
+            // the old checkpoint, which must also be restored on failure.
+            let mut tree =
+                ClientPersistentCommitmentTree::open_on_shared_connection(arc.clone(), 1).unwrap();
+            tree.append(test_leaf(0), checkpoint_retention(1)).unwrap();
+            let before_anchor = tree.anchor().unwrap();
+
+            let reader = Connection::open(&db_path).unwrap();
+            reader.execute_batch("BEGIN").unwrap();
+            let _: i64 = reader
+                .query_row("SELECT COUNT(*) FROM commitment_tree_shards", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            let err = tree
+                .append(test_leaf(1), retention.clone())
+                .expect_err("reader must block commit");
+            assert!(
+                err.to_string().contains("savepoint release failed"),
+                "{err}"
+            );
+            assert!(
+                arc.lock().unwrap().is_autocommit(),
+                "failed append left a transaction open"
+            );
+            assert_eq!(tree.max_leaf_position().unwrap(), Some(Position::from(0)));
+            assert_eq!(tree.anchor().unwrap(), before_anchor);
+            let checkpoints: (u32, u32, u32) = arc.lock().unwrap().query_row(
+                "SELECT MIN(checkpoint_id), MAX(checkpoint_id), COUNT(*) FROM commitment_tree_checkpoints",
+                [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            ).unwrap();
+            assert_eq!(
+                checkpoints,
+                (1, 1, 1),
+                "failed commit changed historical checkpoints"
+            );
+
+            reader.execute_batch("ROLLBACK").unwrap();
+            tree.append(test_leaf(1), retention)
+                .expect("retry after reader releases lock");
+            assert_eq!(tree.max_leaf_position().unwrap(), Some(Position::from(1)));
+            assert!(arc.lock().unwrap().is_autocommit());
+            let after_anchor = tree.anchor().unwrap();
+            drop(tree);
+            drop(arc);
+            let reopened = ClientPersistentCommitmentTree::open_path(&db_path, 1).unwrap();
+            assert_eq!(
+                reopened.max_leaf_position().unwrap(),
+                Some(Position::from(1))
+            );
+            assert_eq!(
+                reopened.anchor().unwrap(),
+                after_anchor,
+                "successful retry was not durable"
+            );
+        }
+    }
+
+    /// A failed checkpoint commit must restore the checkpoint it pruned.
+    #[test]
+    fn test_checkpoint_commit_failure_rolls_back_and_allows_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("checkpoint_busy.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=DELETE").unwrap();
+        conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+        let arc = Arc::new(Mutex::new(conn));
+        let mut tree =
+            ClientPersistentCommitmentTree::open_on_shared_connection(arc.clone(), 1).unwrap();
+        tree.append(test_leaf(0), checkpoint_retention(1)).unwrap();
+        let before_anchor = tree.anchor().unwrap();
+        let reader = Connection::open(&db_path).unwrap();
+        reader.execute_batch("BEGIN").unwrap();
+        let _: i64 = reader
+            .query_row(
+                "SELECT COUNT(*) FROM commitment_tree_checkpoints",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let err = tree
+            .checkpoint(2)
+            .expect_err("reader must block checkpoint commit");
+        assert!(
+            err.to_string().contains("savepoint release failed"),
+            "{err}"
+        );
+        assert!(arc.lock().unwrap().is_autocommit());
+        assert_eq!(tree.anchor().unwrap(), before_anchor);
+        let ids: (u32, u32) = arc
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT MIN(checkpoint_id), MAX(checkpoint_id) FROM commitment_tree_checkpoints",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(ids, (1, 1));
+        reader.execute_batch("ROLLBACK").unwrap();
+        assert!(
+            tree.checkpoint(2).unwrap(),
+            "failed checkpoint must not consume its id"
+        );
+        assert!(arc.lock().unwrap().is_autocommit());
+        drop(tree);
+        drop(arc);
+        let reopened_conn = Connection::open(&db_path).unwrap();
+        let ids: (u32, u32) = reopened_conn
+            .query_row(
+                "SELECT MIN(checkpoint_id), MAX(checkpoint_id) FROM commitment_tree_checkpoints",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            ids,
+            (2, 2),
+            "retry must commit the new checkpoint and prune the old one"
+        );
+    }
+
+    /// Operation cleanup must preserve writes owned by an outer wallet
+    /// transaction and permit a retry within that same transaction.
+    #[test]
+    fn test_append_failure_preserves_wallet_transaction() {
+        let conn = Connection::open_in_memory().unwrap();
+        let arc = Arc::new(Mutex::new(conn));
+        let mut tree =
+            ClientPersistentCommitmentTree::open_on_shared_connection(arc.clone(), 1).unwrap();
+        tree.append(test_leaf(0), checkpoint_retention(1)).unwrap();
+        let before_anchor = tree.anchor().unwrap();
+        arc.lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE wallet_data (value INTEGER);
+             CREATE TRIGGER fail_checkpoint BEFORE INSERT ON commitment_tree_checkpoints
+             BEGIN SELECT RAISE(ABORT, 'injected checkpoint failure'); END;
+             BEGIN;
+             INSERT INTO wallet_data VALUES (42);",
+            )
+            .unwrap();
+        let err = tree
+            .append(test_leaf(1), checkpoint_retention(2))
+            .expect_err("injected failure");
+        assert!(
+            err.to_string().contains("injected checkpoint failure"),
+            "{err}"
+        );
+        assert_eq!(tree.max_leaf_position().unwrap(), Some(Position::from(0)));
+        assert_eq!(tree.anchor().unwrap(), before_anchor);
+        {
+            let guard = arc.lock().unwrap();
+            assert!(
+                !guard.is_autocommit(),
+                "tree cleanup must not end the wallet transaction"
+            );
+            let value: i64 = guard
+                .query_row("SELECT value FROM wallet_data", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(
+                value, 42,
+                "tree cleanup must not roll back the wallet's writes"
+            );
+            guard.execute_batch("DROP TRIGGER fail_checkpoint").unwrap();
+        }
+        tree.append(test_leaf(1), checkpoint_retention(2))
+            .expect("retry in wallet transaction");
+        assert!(!arc.lock().unwrap().is_autocommit());
+        arc.lock()
+            .unwrap()
+            .execute_batch("COMMIT")
+            .expect("wallet still owns final commit");
+        assert_eq!(tree.max_leaf_position().unwrap(), Some(Position::from(1)));
+        let value: i64 = arc
+            .lock()
+            .unwrap()
+            .query_row("SELECT value FROM wallet_data", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(value, 42);
+    }
 }

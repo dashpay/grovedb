@@ -802,4 +802,50 @@ mod tests {
         assert!(loaded.marks_removed().contains(&Position::from(42)));
         assert!(loaded.marks_removed().contains(&Position::from(99)));
     }
+
+    /// The store helper also owns its transaction when called directly,
+    /// outside a ClientPersistentCommitmentTree operation savepoint.
+    #[test]
+    fn test_store_commit_failure_rolls_back_and_allows_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("store_busy.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=DELETE").unwrap();
+        conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+        let arc = Arc::new(Mutex::new(conn));
+        let mut store = SqliteShardStore::new_shared(arc.clone()).unwrap();
+        store.add_checkpoint(1, Checkpoint::tree_empty()).unwrap();
+        let reader = Connection::open(&db_path).unwrap();
+        reader.execute_batch("BEGIN").unwrap();
+        let _: i64 = reader
+            .query_row(
+                "SELECT COUNT(*) FROM commitment_tree_checkpoints",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let err = store
+            .add_checkpoint(2, Checkpoint::tree_empty())
+            .expect_err("reader must block commit");
+        assert!(
+            matches!(err, SqliteShardStoreError::Sqlite(rusqlite::Error::SqliteFailure(ref e, _)) if e.code == rusqlite::ErrorCode::DatabaseBusy),
+            "{err}"
+        );
+        assert!(
+            arc.lock().unwrap().is_autocommit(),
+            "failed helper commit left a transaction open"
+        );
+        assert_eq!(store.checkpoint_count().unwrap(), 1);
+        assert!(store.get_checkpoint(&2).unwrap().is_none());
+        reader.execute_batch("ROLLBACK").unwrap();
+        store
+            .add_checkpoint(2, Checkpoint::tree_empty())
+            .expect("retry after lock clears");
+        assert!(arc.lock().unwrap().is_autocommit());
+        drop(store);
+        drop(arc);
+        let reopened = SqliteShardStore::new(Connection::open(&db_path).unwrap()).unwrap();
+        assert_eq!(reopened.checkpoint_count().unwrap(), 2);
+        assert!(reopened.get_checkpoint(&2).unwrap().is_some());
+    }
 }
