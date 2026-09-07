@@ -519,7 +519,20 @@ fn legacy_pagination_contracts_remain_distinct() {
             .query_raw_keys_optional(&zero, true, true, true, None, version)
             .unwrap()
             .is_err());
-        assert!(GroveDb::verify_query_get_parent_tree_info(&proof, &zero, version).is_err());
+        // Parent-info verification defers to the shared envelope gate
+        // (#707), which treats `Some(0)` as no offset: the proof
+        // verifies and returns the same limited page as the read.
+        let (_, _, parent_info_rows) =
+            GroveDb::verify_query_get_parent_tree_info(&proof, &zero, version)
+                .expect("parent-info verification serves a zero offset");
+        assert_eq!(
+            parent_info_rows,
+            vec![(
+                vec![TEST_LEAF.to_vec()],
+                b"a".to_vec(),
+                Some(Element::new_item(vec![1]))
+            )]
+        );
     }
 }
 

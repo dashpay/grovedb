@@ -1927,4 +1927,205 @@ mod tests {
             "the proof must carry the dereferenced target element"
         );
     }
+
+    // ──────── absence-proof assembly vs. count-offset pagination ────────
+
+    /// Build the fixture every absence+offset test uses: a 15-row
+    /// `ProvableCountTree`, an honest V1 count-offset proof for the
+    /// `offset 2, limit 5` page of `a..=e` (rows `c, d, e`), and the
+    /// query that produced it. The range is narrower than the limit on
+    /// purpose: `terminal_keys` enumerates every key of a one-byte
+    /// range up to the limit, so this is the shape where the
+    /// offset-unaware projection completes instead of overflowing.
+    fn absence_offset_fixture() -> (crate::tests::TempGroveDb, Vec<u8>, PathQuery) {
+        let v = GroveVersion::latest();
+        let (db, _) = make_provable_count_tree_with_n_items(15, v);
+        let mut q = Query::new();
+        q.insert_range_inclusive(b"a".to_vec()..=b"e".to_vec());
+        let path_query = PathQuery::new(
+            vec![b"counts".to_vec()],
+            SizedQuery::new(q, Some(5), Some(2)),
+        );
+        let proof = db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove offset-paginated query");
+        (db, proof, path_query)
+    }
+
+    fn absence_options() -> grovedb_merk::proofs::query::VerifyOptions {
+        grovedb_merk::proofs::query::VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: true,
+            verify_proof_succinctness: false,
+            include_empty_trees_in_result: false,
+        }
+    }
+
+    /// Absence-proof assembly projects the verified rows onto the
+    /// query's expected keys (`terminal_keys`), which enumerates the
+    /// range from its first key and knows nothing about pagination. A
+    /// count-offset proof skips `offset` *existing* rows without
+    /// revealing which keys they were, so the projection would report
+    /// the skipped prefix (`a, b` here — rows that exist) as proven
+    /// absent. The verifier must refuse the combination instead.
+    #[test]
+    fn absence_proofs_reject_offset_paginated_queries_via_verify_query_with_options() {
+        let v = GroveVersion::latest();
+        let (_db, proof, path_query) = absence_offset_fixture();
+        let result = GroveDb::verify_query_with_options(&proof, &path_query, absence_options(), v);
+        assert!(
+            matches!(result, Err(crate::Error::NotSupported(_))),
+            "absence-proof assembly cannot serve an offset-paginated query; got {:?}",
+            result.map(|(_, rows)| rows
+                .into_iter()
+                .map(|(_, key, element)| (
+                    String::from_utf8_lossy(&key).into_owned(),
+                    element.is_some()
+                ))
+                .collect::<Vec<_>>())
+        );
+    }
+
+    /// The parent-tree-info entry point now reaches the shared V1
+    /// count-offset flow (issue #707); it must refuse absence assembly
+    /// on an offset-paginated query exactly like the sibling entry.
+    #[test]
+    fn absence_proofs_reject_offset_paginated_queries_via_parent_tree_info() {
+        let v = GroveVersion::latest();
+        let (_db, proof, path_query) = absence_offset_fixture();
+        let result = GroveDb::verify_query_get_parent_tree_info_with_options(
+            &proof,
+            &path_query,
+            absence_options(),
+            v,
+        );
+        assert!(
+            matches!(result, Err(crate::Error::NotSupported(_))),
+            "parent-tree-info absence assembly cannot serve an offset-paginated query; got {:?}",
+            result.map(|(_, feature_type, rows)| (
+                feature_type,
+                rows.into_iter()
+                    .map(|(_, key, element)| (
+                        String::from_utf8_lossy(&key).into_owned(),
+                        element.is_some()
+                    ))
+                    .collect::<Vec<_>>()
+            ))
+        );
+    }
+
+    /// The decoded-proof methods (`GroveDBProof::verify_with_absence_proof`
+    /// and the subset variant) bypass the public entry points' pre-decode
+    /// gates and go straight to `verify_proof_internal`, so the refusal
+    /// must live there too.
+    #[test]
+    fn absence_proofs_reject_offset_paginated_queries_on_decoded_proofs() {
+        let v = GroveVersion::latest();
+        let (db, _, path_query) = absence_offset_fixture();
+        let decoded = db
+            .prove_query_non_serialized(&path_query, None, v)
+            .unwrap()
+            .expect("prove non-serialized");
+        assert!(
+            matches!(decoded, crate::operations::proof::GroveDBProof::V1(_)),
+            "count-offset proofs are V1 envelopes"
+        );
+        let strict = decoded.verify_with_absence_proof(&path_query, v);
+        assert!(
+            matches!(strict, Err(crate::Error::NotSupported(_))),
+            "GroveDBProof::verify_with_absence_proof must refuse offset pagination; got {:?}",
+            strict.map(|(_, rows)| rows.len())
+        );
+        let subset = decoded.verify_subset_with_absence_proof(&path_query, v);
+        assert!(
+            matches!(subset, Err(crate::Error::NotSupported(_))),
+            "GroveDBProof::verify_subset_with_absence_proof must refuse offset pagination; \
+             got {:?}",
+            subset.map(|(_, rows)| rows.len())
+        );
+    }
+
+    /// Query-shape gates fire before the proof bytes are decoded — an
+    /// empty proof must produce the shape refusal, not a decode error.
+    #[test]
+    fn absence_proofs_with_offset_are_refused_before_proof_decoding() {
+        let v = GroveVersion::latest();
+        let mut q = Query::new();
+        q.insert_range_inclusive(b"a".to_vec()..=b"e".to_vec());
+        let path_query = PathQuery::new(
+            vec![b"counts".to_vec()],
+            SizedQuery::new(q, Some(5), Some(2)),
+        );
+        let result = GroveDb::verify_query_with_options(&[], &path_query, absence_options(), v);
+        assert!(
+            matches!(result, Err(crate::Error::NotSupported(_))),
+            "verify_query_with_options must refuse before decoding; got {:?}",
+            result.map(|(_, rows)| rows.len())
+        );
+        let result = GroveDb::verify_query_get_parent_tree_info_with_options(
+            &[],
+            &path_query,
+            absence_options(),
+            v,
+        );
+        assert!(
+            matches!(result, Err(crate::Error::NotSupported(_))),
+            "verify_query_get_parent_tree_info_with_options must refuse before decoding; got {:?}",
+            result.map(|(_, _, rows)| rows.len())
+        );
+    }
+
+    /// `SizedQuery::offset == Some(0)` is not pagination: the regular
+    /// prover and verifier flows run, and absence assembly keeps
+    /// working — a present key is returned with its element, a missing
+    /// key as `None`.
+    #[test]
+    fn absence_proofs_still_serve_zero_offset_queries() {
+        let v = GroveVersion::latest();
+        let (db, _) = make_provable_count_tree_with_n_items(5, v);
+        let mut q = Query::new();
+        q.insert_key(b"c".to_vec());
+        q.insert_key(b"zz".to_vec());
+        let path_query = PathQuery::new(
+            vec![b"counts".to_vec()],
+            SizedQuery::new(q, Some(2), Some(0)),
+        );
+        let proof = db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove zero-offset query");
+
+        let (root_hash, rows) =
+            GroveDb::verify_query_with_options(&proof, &path_query, absence_options(), v)
+                .expect("zero offset is no offset for absence assembly");
+        assert_eq!(root_hash, db.root_hash(None, v).unwrap().expect("root"));
+        let summary: Vec<(Vec<u8>, bool)> = rows
+            .iter()
+            .map(|(_, key, element)| (key.clone(), element.is_some()))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![(b"c".to_vec(), true), (b"zz".to_vec(), false)],
+            "present key carries its element, missing key is reported absent"
+        );
+
+        let (root_hash, feature_type, rows) =
+            GroveDb::verify_query_get_parent_tree_info_with_options(
+                &proof,
+                &path_query,
+                absence_options(),
+                v,
+            )
+            .expect("parent-tree-info entry treats a zero offset as no offset");
+        assert_eq!(root_hash, db.root_hash(None, v).unwrap().expect("root"));
+        assert!(
+            matches!(
+                feature_type,
+                grovedb_merk::TreeFeatureType::ProvableCountedMerkNode(5)
+            ),
+            "parent should be ProvableCountedMerkNode(5), got {:?}",
+            feature_type
+        );
+        assert_eq!(rows.len(), 2);
+    }
 }

@@ -37,8 +37,9 @@ are boundaries for a later selection/aggregation/pagination redesign:
 | `query_raw` and ordinary element reads | Permit offsets over keys, multiple ranges, and ordinary trees. A nonzero offset in the unified grammar instead requires the count-offset proof shape. Element APIs reject read modes. |
 | Scalar `query_aggregate_*` / `verify_aggregate_*_query` | Require a leaf and return one scalar. Carrier queries need the per-key APIs or the unified dispatch. |
 | Per-key aggregate APIs | Accept leaves as a singleton with an empty key, and carriers as one result per matched outer key. Missing outer keys are omitted; empty aggregate targets return zero. |
-| Absence read/verify APIs | Require an explicit limit and project through `terminal_keys`. Their ordering follows that projection, which can differ from ordinary descending element results. |
-| Optional-key reads and parent-info verification | Reject an explicitly supplied offset, including `Some(0)`. Ordinary selection and proof generation treat `Some(0)` as no offset. Parent-info verification also rejects subqueries. |
+| Absence read/verify APIs | Require an explicit limit and project through `terminal_keys`. Their ordering follows that projection, which can differ from ordinary descending element results. Absence verification rejects a nonzero offset: a count-offset proof does not reveal which rows the offset skipped, so the projection cannot tell a skipped row from an absent key. |
+| Optional-key reads | Reject an explicitly supplied offset, including `Some(0)`. Ordinary selection and proof generation treat `Some(0)` as no offset. |
+| Parent-info verification | Rejects subqueries. Offsets follow the same envelope gate as every other proof verifier (V0 rejects a nonzero offset, V1 serves the count-offset shape, `Some(0)` is no offset). |
 | Subset verification | Allows extra proof data, but does not universally permit adding a smaller result limit to a proof generated without that limit. Selection and pagination are still coupled. |
 | V0 proof generation | Rejects a nonzero offset before inspecting pagination syntax, after aggregate/read-mode validation. |
 | Legacy V0 element verification | Rejects a nonzero offset by envelope before pagination syntax; its error type differs from generation. |

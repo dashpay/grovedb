@@ -111,7 +111,10 @@ impl GroveDb {
         // sees the envelope version and applies V0-rejects /
         // V1-relaxes uniformly across all entry points
         // (verify_query_with_options, verify_query_raw,
-        // verify_query_get_parent_tree_info_with_options).
+        // verify_query_get_parent_tree_info_with_options). Absence
+        // assembly is the one consumer that can never serve an offset,
+        // whatever the envelope — see
+        // `PathQuery::reject_absence_proofs_with_offset`.
 
         // Query-shape gates run BEFORE the proof bytes are decoded: the
         // canonical decoder admits envelopes up to 256 MiB, and a query
@@ -121,6 +124,7 @@ impl GroveDb {
         query.reject_unserved_per_instance_limits(grove_version)?;
         if options.absence_proofs_for_non_existing_searched_keys {
             query.reject_per_instance_limits("absence-proof verification")?;
+            query.reject_absence_proofs_with_offset()?;
         }
 
         let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
@@ -160,10 +164,17 @@ impl GroveDb {
             ))?;
         }
 
+        // No offset gate here: like `verify_query_with_options`, this
+        // entry defers to the envelope-aware gate in
+        // `verify_proof_internal` (V0 rejects, V1 serves the
+        // count-offset shape), so an offset-paginated V1 proof over a
+        // provable count tree verifies here too (issue #707).
+
         // Pre-decode query-shape gate — see `verify_query_with_options`.
         query.reject_unserved_per_instance_limits(grove_version)?;
         if options.absence_proofs_for_non_existing_searched_keys {
             query.reject_per_instance_limits("absence-proof verification")?;
+            query.reject_absence_proofs_with_offset()?;
         }
 
         let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
@@ -242,6 +253,12 @@ impl GroveDb {
         query.reject_unserved_per_instance_limits(grove_version)?;
         if options.absence_proofs_for_non_existing_searched_keys {
             query.reject_per_instance_limits("absence-proof verification")?;
+            // Same fail-closed reasoning for pagination: a count-offset
+            // proof does not reveal which rows the offset skipped, so
+            // the terminal-keys projection would report them as
+            // absent. Envelope-independent, so it runs before the
+            // V0/V1 offset gate below.
+            query.reject_absence_proofs_with_offset()?;
         }
 
         // Offset gate centralized in `apply_count_offset_envelope_gate`:
@@ -393,6 +410,7 @@ impl GroveDb {
         query.reject_unserved_per_instance_limits(grove_version)?;
         if options.absence_proofs_for_non_existing_searched_keys {
             query.reject_per_instance_limits("absence-proof verification")?;
+            query.reject_absence_proofs_with_offset()?;
         }
 
         // Same V0-rejects / V1-relaxes envelope gate as
