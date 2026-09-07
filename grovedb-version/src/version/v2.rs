@@ -8,8 +8,9 @@ use crate::version::{
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
         GroveDBOperationsDeleteVersions, GroveDBOperationsFlatDropVersions,
         GroveDBOperationsGetVersions, GroveDBOperationsIndexedAxisVersions,
-        GroveDBOperationsInsertVersions, GroveDBOperationsPrivateDocumentStoreVersions,
-        GroveDBOperationsProofVersions, GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
+        GroveDBOperationsInsertVersions, GroveDBOperationsNonMerkTreeVersions,
+        GroveDBOperationsPrivateDocumentStoreVersions, GroveDBOperationsProofVersions,
+        GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
         GroveDBReplicationVersions, GroveDBStorageCostVersions, GroveDBVersions,
     },
@@ -233,6 +234,14 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             flat_drop: GroveDBOperationsFlatDropVersions {
                 drop_flat_subtree: 0,
                 batch_delete_tree_drop_flat: 0,
+            },
+            // Released behaviour: a typed append rewrites the parent
+            // element bare, dropping a stored NonCounted wrapper (except
+            // for PrivateDocumentStore, which cannot exist before
+            // GROVE_V4). Preserved for replay; GROVE_V4 restores the
+            // wrapper for every family.
+            non_merk_tree: GroveDBOperationsNonMerkTreeVersions {
+                parent_element_rewrap: 0,
             },
         },
         aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions { merge: 0 },

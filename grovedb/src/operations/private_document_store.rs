@@ -240,19 +240,18 @@ impl GroveDb {
         // Re-wrap when the stored element was NonCounted. Dropping the
         // wrapper here would flip the store's contribution to a CountTree /
         // CountSumTree parent from 0 to 1 on its first append, changing the
-        // parent aggregate and the consensus root hash.
-        let updated_element = if was_non_counted {
-            cost_return_on_error_no_add!(
-                cost,
-                Element::new_non_counted(updated_element).map_err(|e| {
-                    Error::CorruptedData(format!(
-                        "failed to re-wrap private document store in NonCounted: {e}"
-                    ))
-                })
+        // parent aggregate and the consensus root hash. Both versions of
+        // the shared rewrap helper preserve a PrivateDocumentStore's
+        // wrapper (the type cannot exist before GROVE_V4, so its
+        // preservation never altered a released outcome).
+        let updated_element = cost_return_on_error_no_add!(
+            cost,
+            GroveDb::rewrap_non_merk_tree_parent_element(
+                updated_element,
+                was_non_counted,
+                grove_version,
             )
-        } else {
-            updated_element
-        };
+        );
 
         cost_return_on_error_into!(
             &mut cost,

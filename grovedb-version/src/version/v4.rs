@@ -258,6 +258,18 @@
 //!   of the index as the whole index. Gated because (i) moves a committed
 //!   root and (ii)/(iii)/(iv) flip an accepted/rejected outcome.
 //!
+//! - `operations.non_merk_tree.parent_element_rewrap: 1` — a typed append to
+//!   a `NonCounted`-wrapped non-Merk data tree (`CommitmentTree`, `MmrTree`,
+//!   `BulkAppendTree`, `DenseAppendOnlyFixedSizeTree`) restores the wrapper
+//!   when it rewrites the tree's parent-Merk element, on the direct append
+//!   paths and on the batch `ReplaceNonMerkTreeRoot` rebuild alike. V1..V3
+//!   rebuild the element bare, so the first append silently strips the
+//!   wrapper and flips the tree's contribution to a `CountTree` /
+//!   `CountSumTree` parent from 0 to 1 — changing the parent aggregate and
+//!   the root hash — preserved for replay. `PrivateDocumentStore` restored
+//!   its wrapper at every version: the type cannot exist before GROVE_V4,
+//!   so its preservation never altered a released outcome.
+//!
 //! - `storage_costs.add_basic_storage_removal_to_sectioned_storage_removal:
 //!   1` — combining a `BasicStorageRemoval` with a `SectionedStorageRemoval`
 //!   folds the basic bytes into the default identifier's `UNKNOWN_EPOCH`
@@ -294,8 +306,9 @@ use crate::version::{
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
         GroveDBOperationsDeleteVersions, GroveDBOperationsFlatDropVersions,
         GroveDBOperationsGetVersions, GroveDBOperationsIndexedAxisVersions,
-        GroveDBOperationsInsertVersions, GroveDBOperationsPrivateDocumentStoreVersions,
-        GroveDBOperationsProofVersions, GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
+        GroveDBOperationsInsertVersions, GroveDBOperationsNonMerkTreeVersions,
+        GroveDBOperationsPrivateDocumentStoreVersions, GroveDBOperationsProofVersions,
+        GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
         GroveDBReplicationVersions, GroveDBStorageCostVersions, GroveDBVersions,
     },
@@ -556,6 +569,13 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             flat_drop: GroveDBOperationsFlatDropVersions {
                 drop_flat_subtree: 1,
                 batch_delete_tree_drop_flat: 1,
+            },
+            // v1: a typed append restores a stored NonCounted wrapper on
+            // the rewritten parent element for every non-Merk tree family.
+            // V1..V3 keep the released wrapper drop (PrivateDocumentStore
+            // excepted) to preserve committed root hashes.
+            non_merk_tree: GroveDBOperationsNonMerkTreeVersions {
+                parent_element_rewrap: 1,
             },
         },
         aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions { merge: 0 },

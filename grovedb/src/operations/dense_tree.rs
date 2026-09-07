@@ -55,7 +55,9 @@ impl GroveDb {
         );
 
         // Look through NonCounted: a wrapped DenseAppendOnlyFixedSizeTree
-        // is still one.
+        // is still one. Remember it so the element rewrite below can
+        // restore it when the grove version calls for that.
+        let stored_was_non_counted = element.is_non_counted();
         let (existing_count, height, existing_flags) = match element.underlying() {
             Element::DenseAppendOnlyFixedSizeTree(count, h, flags) => (*count, *h, flags.clone()),
             _ => {
@@ -130,6 +132,17 @@ impl GroveDb {
         );
 
         let updated_element = Element::new_dense_tree(new_count, height, existing_flags);
+        // Restore a stored NonCounted wrapper if the grove version calls
+        // for it (consensus-gated — see
+        // `rewrap_non_merk_tree_parent_element`).
+        let updated_element = cost_return_on_error_no_add!(
+            cost,
+            GroveDb::rewrap_non_merk_tree_parent_element(
+                updated_element,
+                stored_was_non_counted,
+                grove_version,
+            )
+        );
 
         cost_return_on_error_into!(
             &mut cost,
