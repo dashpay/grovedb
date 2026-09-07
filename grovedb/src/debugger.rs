@@ -362,6 +362,30 @@ fn query_result_to_grovedbg(
     Ok(result)
 }
 
+/// Print a proof to stdout in the GroveDBG wire encoding
+/// (bincode-over-serde, standard configuration) as a hex string,
+/// framed by marker lines so it can be grepped out of longer logs.
+/// Intended for capturing a proof from a running node and pasting it
+/// into the GroveDBG UI; on conversion or encoding failure the error
+/// goes to stderr instead.
+pub fn dump_proof_grovedbg_stdout(proof: GroveDBProof) {
+    let grovedbg_proof = proof_to_grovedbg(proof).map_err(|e| e.to_string());
+    let encoded = grovedbg_proof.and_then(|p| {
+        bincode::serde::encode_to_vec(p, bincode::config::standard()).map_err(|e| e.to_string())
+    });
+
+    match encoded {
+        Ok(p) => {
+            println!("==========GroveDBG proof dump starts after this line==========");
+            println!("{}", hex::encode(p));
+            println!("==========GroveDBG proof dump ends before this line===========");
+        }
+        Err(e) => {
+            eprintln!("Unable to dump proof to grovedbg: {e}");
+        }
+    }
+}
+
 fn proof_to_grovedbg(proof: GroveDBProof) -> Result<grovedbg_types::Proof, crate::Error> {
     match proof {
         GroveDBProof::V0(p) => Ok(grovedbg_types::Proof {
@@ -812,8 +836,9 @@ fn query_item_to_grovedb(item: QueryItem) -> crate::QueryItem {
 
 /// Convert a [`crate::ReferencePathType`] plus optional element flags
 /// into the corresponding `grovedbg_types::Reference` wire variant.
-/// Shared by both the plain `Element::Reference` and the
-/// `Element::ReferenceWithSumItem` arms of [`element_to_grovedbg`].
+/// Shared by the plain `Element::Reference`, the
+/// `Element::ReferenceWithSumItem`, and the
+/// `Element::BidirectionalReference` arms of [`element_to_grovedbg`].
 fn reference_path_to_grovedbg(
     reference_path: ReferencePathType,
     element_flags: Option<Vec<u8>>,
@@ -870,12 +895,15 @@ fn reference_path_to_grovedbg(
 
 fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
     match element {
-        crate::Element::Item(value, element_flags)
-        | crate::Element::ItemWithBackwardsReferences(value, _, element_flags) => {
-            // grovedbg has no backward-references variants; show the plain
-            // counterpart.
-            grovedbg_types::Element::Item {
+        crate::Element::Item(value, element_flags) => grovedbg_types::Element::Item {
+            value,
+            element_flags,
+        },
+        crate::Element::ItemWithBackwardsReferences(value, backward_references, element_flags) => {
+            grovedbg_types::Element::ItemWithBackwardsReferences {
                 value,
+                max_incoming_references: backward_references.max_incoming,
+                backward_references_count: backward_references.entries.len() as u16,
                 element_flags,
             }
         }
@@ -890,11 +918,11 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             ))
         }
         crate::Element::BidirectionalReference(reference, flags) => {
-            // Shown as its plain-reference shape.
-            grovedbg_types::Element::Reference(reference_path_to_grovedbg(
-                reference.forward_reference_path,
-                flags,
-            ))
+            grovedbg_types::Element::BidirectionalReference {
+                reference: reference_path_to_grovedbg(reference.forward_reference_path, flags),
+                cascade_on_update: reference.cascade_on_update,
+                backward_references_count: reference.backward_references.len() as u16,
+            }
         }
         crate::Element::ReferenceWithSumItem(
             reference_path,
@@ -905,22 +933,37 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             reference: reference_path_to_grovedbg(reference_path, element_flags),
             sum_item_value,
         },
-        crate::Element::SumItem(value, element_flags)
-        | crate::Element::SumItemWithBackwardsReferences(value, _, element_flags) => {
-            grovedbg_types::Element::SumItem {
+        crate::Element::SumItem(value, element_flags) => grovedbg_types::Element::SumItem {
+            value,
+            element_flags,
+        },
+        crate::Element::SumItemWithBackwardsReferences(
+            value,
+            backward_references,
+            element_flags,
+        ) => grovedbg_types::Element::SumItemWithBackwardsReferences {
+            value,
+            max_incoming_references: backward_references.max_incoming,
+            backward_references_count: backward_references.entries.len() as u16,
+            element_flags,
+        },
+        crate::Element::ItemWithSumItem(value, sum_value, element_flags) => {
+            grovedbg_types::Element::ItemWithSumItem {
                 value,
+                sum_item_value: sum_value,
                 element_flags,
             }
         }
-        crate::Element::ItemWithSumItem(value, sum_value, element_flags)
-        | crate::Element::ItemWithSumItemWithBackwardsReferences(
+        crate::Element::ItemWithSumItemWithBackwardsReferences(
             value,
             sum_value,
-            _,
+            backward_references,
             element_flags,
-        ) => grovedbg_types::Element::ItemWithSumItem {
+        ) => grovedbg_types::Element::ItemWithSumItemWithBackwardsReferences {
             value,
             sum_item_value: sum_value,
+            max_incoming_references: backward_references.max_incoming,
+            backward_references_count: backward_references.entries.len() as u16,
             element_flags,
         },
         crate::Element::SumTree(root_key, sum, element_flags) => grovedbg_types::Element::Sumtree {
@@ -1175,6 +1218,122 @@ mod tests {
                         element_flags: None,
                     } if sibling_key == b"sib".to_vec()
                 ));
+            }
+            other => panic!("unexpected debugger conversion: {other:?}"),
+        }
+    }
+
+    /// Backward-references items map to their dedicated wire variants,
+    /// carrying capacity and occupancy instead of collapsing to the
+    /// plain counterparts.
+    #[test]
+    fn element_to_grovedbg_converts_backwards_references_items() {
+        use crate::{bidirectional_references::BackwardReference, BackwardReferences};
+
+        let mut backward_references = BackwardReferences::with_max_incoming(8);
+        backward_references.entries.push(BackwardReference {
+            inverted_reference: ReferencePathType::SiblingReference(b"referrer".to_vec()),
+            cascade_on_update: false,
+        });
+
+        let element = crate::Element::ItemWithBackwardsReferences(
+            b"data".to_vec(),
+            backward_references.clone(),
+            Some(vec![9]),
+        );
+        match element_to_grovedbg(element) {
+            grovedbg_types::Element::ItemWithBackwardsReferences {
+                value,
+                max_incoming_references,
+                backward_references_count,
+                element_flags,
+            } => {
+                assert_eq!(value, b"data");
+                assert_eq!(max_incoming_references, 8);
+                assert_eq!(backward_references_count, 1);
+                assert_eq!(element_flags, Some(vec![9]));
+            }
+            other => panic!("unexpected debugger conversion: {other:?}"),
+        }
+
+        let element =
+            crate::Element::SumItemWithBackwardsReferences(-3, backward_references.clone(), None);
+        match element_to_grovedbg(element) {
+            grovedbg_types::Element::SumItemWithBackwardsReferences {
+                value,
+                max_incoming_references,
+                backward_references_count,
+                element_flags,
+            } => {
+                assert_eq!(value, -3);
+                assert_eq!(max_incoming_references, 8);
+                assert_eq!(backward_references_count, 1);
+                assert_eq!(element_flags, None);
+            }
+            other => panic!("unexpected debugger conversion: {other:?}"),
+        }
+
+        let element = crate::Element::ItemWithSumItemWithBackwardsReferences(
+            b"both".to_vec(),
+            12,
+            backward_references,
+            None,
+        );
+        match element_to_grovedbg(element) {
+            grovedbg_types::Element::ItemWithSumItemWithBackwardsReferences {
+                value,
+                sum_item_value,
+                max_incoming_references,
+                backward_references_count,
+                element_flags,
+            } => {
+                assert_eq!(value, b"both");
+                assert_eq!(sum_item_value, 12);
+                assert_eq!(max_incoming_references, 8);
+                assert_eq!(backward_references_count, 1);
+                assert_eq!(element_flags, None);
+            }
+            other => panic!("unexpected debugger conversion: {other:?}"),
+        }
+    }
+
+    /// A bidirectional reference keeps the plain-reference wire shape
+    /// for its forward path (flags included) and additionally exposes
+    /// the cascade policy and its own referrer count.
+    #[test]
+    fn element_to_grovedbg_converts_bidirectional_reference() {
+        use crate::bidirectional_references::BidirectionalReference;
+
+        let element = crate::Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                    b"leaf".to_vec(),
+                    b"target".to_vec(),
+                ]),
+                cascade_on_update: true,
+                max_hop: Some(3),
+                backward_references: Vec::new(),
+            },
+            Some(vec![4, 5]),
+        );
+        match element_to_grovedbg(element) {
+            grovedbg_types::Element::BidirectionalReference {
+                reference,
+                cascade_on_update,
+                backward_references_count,
+            } => {
+                assert!(cascade_on_update);
+                assert_eq!(backward_references_count, 0);
+                match reference {
+                    grovedbg_types::Reference::AbsolutePathReference {
+                        path,
+                        element_flags,
+                    } => {
+                        assert_eq!(path, vec![b"leaf".to_vec(), b"target".to_vec()]);
+                        assert_eq!(element_flags, Some(vec![4, 5]));
+                    }
+                    other => panic!("unexpected wire reference: {other:?}"),
+                }
             }
             other => panic!("unexpected debugger conversion: {other:?}"),
         }
