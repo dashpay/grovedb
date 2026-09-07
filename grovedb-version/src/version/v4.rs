@@ -238,6 +238,16 @@
 //!   subtree changes never disturbed it. Gated because (i) moves a committed
 //!   root and (ii)/(iii) flip an accepted/rejected outcome.
 //!
+//! - `storage_costs.add_basic_storage_removal_to_sectioned_storage_removal:
+//!   1` — combining a `BasicStorageRemoval` with a `SectionedStorageRemoval`
+//!   folds the basic bytes into the default identifier's `UNKNOWN_EPOCH`
+//!   entry while PRESERVING the rest of the default section (issue #683).
+//!   V1..V3 keep the shipped arithmetic, which drops the mutated default
+//!   section in three of the four `Add`/`AddAssign` arms, undercounting
+//!   removed bytes — preserved to reproduce historical cost results.
+//!   Identity-owned sections are unaffected; Drive accounts for the default
+//!   section as system removals, separately from identity fee refunds.
+//!
 //! Note that `GroveVersion::latest()` resolves to this version, so anything
 //! defaulting to "latest" — tests, benchmarks, tools — exercises every gate
 //! listed above rather than V3 behaviour.
@@ -267,7 +277,7 @@ use crate::version::{
         GroveDBOperationsInsertVersions, GroveDBOperationsPrivateDocumentStoreVersions,
         GroveDBOperationsProofVersions, GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
-        GroveDBReplicationVersions, GroveDBVersions,
+        GroveDBReplicationVersions, GroveDBStorageCostVersions, GroveDBVersions,
     },
     merk_versions::{
         MerkAverageCaseCostsVersions, MerkBatchVersions, MerkProofVersions, MerkTreeVersions,
@@ -528,6 +538,12 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             should_add_parent_tree_at_path: 0,
             unified_read_mode: 1,
             per_instance_query_limits: 1, // Query::limit served on trusted reads (V4+)
+        },
+        storage_costs: GroveDBStorageCostVersions {
+            // Basic+sectioned removal addition preserves the default section
+            // (issue #683); v1..v3 keep the legacy default-section-dropping
+            // arithmetic for replay compatibility.
+            add_basic_storage_removal_to_sectioned_storage_removal: 1,
         },
         replication: GroveDBReplicationVersions {
             get_subtrees_metadata: 0,
