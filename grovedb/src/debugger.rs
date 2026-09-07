@@ -1,4 +1,12 @@
 //! GroveDB debugging support module.
+//!
+//! HTTP responses preserve the pre-backward-references element shapes by
+//! default, including for the bundled GroveDBG v1.2.0 UI. Clients that
+//! understand the dedicated backward-references variants can opt in on
+//! each request with `x-grovedbg-backward-references: true`.
+//! In that format, stored nodes report `Some(count)` while proof elements
+//! report `None`: proofs authenticate the referrer-list hash but omit the
+//! list itself.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -7,7 +15,13 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    routing::post,
+    Json, Router,
+};
 use grovedb_merk::{
     debugger::NodeDbg,
     proofs::{Decoder, Node, Op},
@@ -42,6 +56,113 @@ use crate::{
 const GROVEDBG_ZIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grovedbg.zip"));
 
 const SESSION_TIMEOUT: Duration = Duration::from_secs(60 * 10);
+
+#[derive(Clone, Copy)]
+enum BackwardReferencesFormat {
+    Legacy,
+    Extended,
+}
+
+impl From<&HeaderMap> for BackwardReferencesFormat {
+    fn from(headers: &HeaderMap) -> Self {
+        if headers
+            .get("x-grovedbg-backward-references")
+            .is_some_and(|value| value == "true")
+        {
+            Self::Extended
+        } else {
+            Self::Legacy
+        }
+    }
+}
+
+impl BackwardReferencesFormat {
+    fn element(self, element: grovedbg_types::Element) -> grovedbg_types::Element {
+        use grovedbg_types::Element;
+
+        if matches!(self, Self::Extended) {
+            return element;
+        }
+        // Preserve precisely the mappings used before the dedicated
+        // variants were introduced. Other element families are unchanged.
+        match element {
+            Element::ItemWithBackwardsReferences {
+                value,
+                element_flags,
+                ..
+            } => Element::Item {
+                value,
+                element_flags,
+            },
+            Element::SumItemWithBackwardsReferences {
+                value,
+                element_flags,
+                ..
+            } => Element::SumItem {
+                value,
+                element_flags,
+            },
+            Element::ItemWithSumItemWithBackwardsReferences {
+                value,
+                sum_item_value,
+                element_flags,
+                ..
+            } => Element::ItemWithSumItem {
+                value,
+                sum_item_value,
+                element_flags,
+            },
+            Element::BidirectionalReference { reference, .. } => Element::Reference(reference),
+            element => element,
+        }
+    }
+
+    fn node_update(self, mut node: NodeUpdate) -> NodeUpdate {
+        node.element = self.element(node.element);
+        node
+    }
+
+    fn proof(self, mut proof: grovedbg_types::Proof) -> grovedbg_types::Proof {
+        if matches!(self, Self::Legacy) {
+            proof.root_layer = self.proof_layer(proof.root_layer);
+        }
+        proof
+    }
+
+    fn proof_layer(self, mut layer: grovedbg_types::ProofLayer) -> grovedbg_types::ProofLayer {
+        layer.merk_proof = layer
+            .merk_proof
+            .into_iter()
+            .map(|op| match op {
+                MerkProofOp::Push(node) => MerkProofOp::Push(self.proof_node(node)),
+                MerkProofOp::PushInverted(node) => MerkProofOp::PushInverted(self.proof_node(node)),
+                op => op,
+            })
+            .collect();
+        layer.lower_layers = layer
+            .lower_layers
+            .into_iter()
+            .map(|(key, layer)| (key, self.proof_layer(layer)))
+            .collect();
+        layer
+    }
+
+    fn proof_node(self, node: MerkProofNode) -> MerkProofNode {
+        match node {
+            MerkProofNode::KV(key, element) => MerkProofNode::KV(key, self.element(element)),
+            MerkProofNode::KVValueHash(key, element, hash) => {
+                MerkProofNode::KVValueHash(key, self.element(element), hash)
+            }
+            MerkProofNode::KVValueHashFeatureType(key, element, hash, feature) => {
+                MerkProofNode::KVValueHashFeatureType(key, self.element(element), hash, feature)
+            }
+            MerkProofNode::KVRefValueHash(key, element, hash) => {
+                MerkProofNode::KVRefValueHash(key, self.element(element), hash)
+            }
+            node => node,
+        }
+    }
+}
 
 pub(super) fn start_visualizer<A>(grovedb: Weak<GroveDb>, addr: A)
 where
@@ -187,6 +308,7 @@ impl Session {
     }
 }
 
+#[derive(Debug)]
 enum AppError {
     Closed,
     NoSession,
@@ -228,6 +350,7 @@ async fn drop_session(
 
 async fn fetch_node(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(WithSession {
         session_id,
         request: NodeFetchRequest { path, key },
@@ -248,7 +371,9 @@ async fn fetch_node(
 
     if let Some(node) = node {
         let node_update: NodeUpdate = node_to_update(path, node)?;
-        Ok(Json(Some(node_update)))
+        Ok(Json(Some(
+            BackwardReferencesFormat::from(&headers).node_update(node_update),
+        )))
     } else {
         Ok(None.into())
     }
@@ -256,6 +381,7 @@ async fn fetch_node(
 
 async fn fetch_root_node(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(WithSession {
         session_id,
         request: (),
@@ -277,7 +403,9 @@ async fn fetch_root_node(
 
     if let Some(node) = node {
         let node_update: NodeUpdate = node_to_update(Vec::new(), node)?;
-        Ok(Json(Some(node_update)))
+        Ok(Json(Some(
+            BackwardReferencesFormat::from(&headers).node_update(node_update),
+        )))
     } else {
         Ok(None.into())
     }
@@ -285,6 +413,7 @@ async fn fetch_root_node(
 
 async fn prove_path_query(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(WithSession {
         session_id,
         request: json_path_query,
@@ -297,11 +426,14 @@ async fn prove_path_query(
     let grovedb_proof = db
         .prove_query_non_serialized(&path_query, None, GroveVersion::latest())
         .unwrap()?;
-    Ok(Json(proof_to_grovedbg(grovedb_proof)?))
+    Ok(Json(
+        BackwardReferencesFormat::from(&headers).proof(proof_to_grovedbg(grovedb_proof)?),
+    ))
 }
 
 async fn fetch_with_path_query(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(WithSession {
         session_id,
         request: json_path_query,
@@ -323,7 +455,13 @@ async fn fetch_with_path_query(
         )
         .unwrap()?
         .0;
-    Ok(Json(query_result_to_grovedbg(&db, grovedb_query_result)?))
+    let format = BackwardReferencesFormat::from(&headers);
+    Ok(Json(
+        query_result_to_grovedbg(&db, grovedb_query_result)?
+            .into_iter()
+            .map(|node| format.node_update(node))
+            .collect(),
+    ))
 }
 
 fn query_result_to_grovedbg(
@@ -360,6 +498,32 @@ fn query_result_to_grovedbg(
         }
     }
     Ok(result)
+}
+
+/// Print a proof to stdout in the GroveDBG wire encoding
+/// (bincode-over-serde, standard configuration) as a hex string,
+/// framed by marker lines so it can be grepped out of longer logs.
+/// Uses the current `grovedbg_types::Proof` schema, including the dedicated
+/// backward-references variants with unknown referrer counts. A consumer
+/// must support that schema and bincode-over-serde imports; the bundled
+/// GroveDBG v1.2.0 UI does not support importing these dumps.
+/// On conversion or encoding failure the error goes to stderr instead.
+pub fn dump_proof_grovedbg_stdout(proof: GroveDBProof) {
+    let grovedbg_proof = proof_to_grovedbg(proof).map_err(|e| e.to_string());
+    let encoded = grovedbg_proof.and_then(|p| {
+        bincode::serde::encode_to_vec(p, bincode::config::standard()).map_err(|e| e.to_string())
+    });
+
+    match encoded {
+        Ok(p) => {
+            println!("==========GroveDBG proof dump starts after this line==========");
+            println!("{}", hex::encode(p));
+            println!("==========GroveDBG proof dump ends before this line===========");
+        }
+        Err(e) => {
+            eprintln!("Unable to dump proof to grovedbg: {e}");
+        }
+    }
 }
 
 fn proof_to_grovedbg(proof: GroveDBProof) -> Result<grovedbg_types::Proof, crate::Error> {
@@ -437,7 +601,7 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
         // node with the backrefs hash in the hash slot.
         Node::KVBackwardsReferencesValueHash(key, value, backrefs_hash) => {
             let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
-            MerkProofNode::KVValueHash(key, element_to_grovedbg(element), backrefs_hash)
+            MerkProofNode::KVValueHash(key, proof_element_to_grovedbg(element), backrefs_hash)
         }
         Node::KVDigest(key, hash) => MerkProofNode::KVDigest(key, hash),
         Node::KVDigestCount(key, hash, count) => {
@@ -456,11 +620,11 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
         }
         Node::KV(key, value) => {
             let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
-            MerkProofNode::KV(key, element_to_grovedbg(element))
+            MerkProofNode::KV(key, proof_element_to_grovedbg(element))
         }
         Node::KVValueHash(key, value, hash) => {
             let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
-            MerkProofNode::KVValueHash(key, element_to_grovedbg(element), hash)
+            MerkProofNode::KVValueHash(key, proof_element_to_grovedbg(element), hash)
         }
         Node::KVValueHashFeatureType(key, value, hash, feature_type) => {
             let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
@@ -495,21 +659,21 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
             };
             MerkProofNode::KVValueHashFeatureType(
                 key,
-                element_to_grovedbg(element),
+                proof_element_to_grovedbg(element),
                 hash,
                 node_feature_type,
             )
         }
         Node::KVRefValueHash(key, value, hash) => {
             let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
-            MerkProofNode::KVRefValueHash(key, element_to_grovedbg(element), hash)
+            MerkProofNode::KVRefValueHash(key, proof_element_to_grovedbg(element), hash)
         }
         Node::KVCount(key, value, count) => {
             let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
             let val_hash = value_hash(&value).unwrap();
             MerkProofNode::KVValueHashFeatureType(
                 key,
-                element_to_grovedbg(element),
+                proof_element_to_grovedbg(element),
                 val_hash,
                 grovedbg_types::TreeFeatureType::ProvableCountedMerkNode(count),
             )
@@ -529,7 +693,7 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
             // since grovedbg_types may not have KVRefValueHashCount
             MerkProofNode::KVValueHashFeatureType(
                 key,
-                element_to_grovedbg(element),
+                proof_element_to_grovedbg(element),
                 hash,
                 grovedbg_types::TreeFeatureType::ProvableCountedMerkNode(count),
             )
@@ -567,7 +731,7 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
             };
             MerkProofNode::KVValueHashFeatureType(
                 key,
-                element_to_grovedbg(element),
+                proof_element_to_grovedbg(element),
                 hash,
                 node_feature_type,
             )
@@ -600,7 +764,7 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
             let val_hash = value_hash(&value).unwrap();
             MerkProofNode::KVValueHashFeatureType(
                 key,
-                element_to_grovedbg(element),
+                proof_element_to_grovedbg(element),
                 val_hash,
                 grovedbg_types::TreeFeatureType::ProvableSummedMerkNode(sum),
             )
@@ -618,7 +782,7 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
             let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
             MerkProofNode::KVValueHashFeatureType(
                 key,
-                element_to_grovedbg(element),
+                proof_element_to_grovedbg(element),
                 hash,
                 grovedbg_types::TreeFeatureType::ProvableSummedMerkNode(sum),
             )
@@ -656,7 +820,7 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
             let val_hash = value_hash(&value).unwrap();
             MerkProofNode::KVValueHashFeatureType(
                 key,
-                element_to_grovedbg(element),
+                proof_element_to_grovedbg(element),
                 val_hash,
                 grovedbg_types::TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(
                     count, sum,
@@ -676,7 +840,7 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
             let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
             MerkProofNode::KVValueHashFeatureType(
                 key,
-                element_to_grovedbg(element),
+                proof_element_to_grovedbg(element),
                 hash,
                 grovedbg_types::TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(
                     count, sum,
@@ -812,8 +976,9 @@ fn query_item_to_grovedb(item: QueryItem) -> crate::QueryItem {
 
 /// Convert a [`crate::ReferencePathType`] plus optional element flags
 /// into the corresponding `grovedbg_types::Reference` wire variant.
-/// Shared by both the plain `Element::Reference` and the
-/// `Element::ReferenceWithSumItem` arms of [`element_to_grovedbg`].
+/// Shared by the plain `Element::Reference`, the
+/// `Element::ReferenceWithSumItem`, and the
+/// `Element::BidirectionalReference` arms of [`element_to_grovedbg`].
 fn reference_path_to_grovedbg(
     reference_path: ReferencePathType,
     element_flags: Option<Vec<u8>>,
@@ -868,14 +1033,47 @@ fn reference_path_to_grovedbg(
     }
 }
 
+/// Proofs carry stripped elements; the empty list cannot tell us the
+/// number of referrers registered on the stored node.
+fn proof_element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
+    let mut element = element_to_grovedbg(element);
+    match &mut element {
+        grovedbg_types::Element::ItemWithBackwardsReferences {
+            backward_references_count,
+            ..
+        }
+        | grovedbg_types::Element::SumItemWithBackwardsReferences {
+            backward_references_count,
+            ..
+        }
+        | grovedbg_types::Element::ItemWithSumItemWithBackwardsReferences {
+            backward_references_count,
+            ..
+        }
+        | grovedbg_types::Element::BidirectionalReference {
+            backward_references_count,
+            ..
+        } => {
+            *backward_references_count = None;
+        }
+        _ => {}
+    }
+    element
+}
+
+/// Convert a stored element with its actual referrer count. Proofs must
+/// use `proof_element_to_grovedbg` instead.
 fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
     match element {
-        crate::Element::Item(value, element_flags)
-        | crate::Element::ItemWithBackwardsReferences(value, _, element_flags) => {
-            // grovedbg has no backward-references variants; show the plain
-            // counterpart.
-            grovedbg_types::Element::Item {
+        crate::Element::Item(value, element_flags) => grovedbg_types::Element::Item {
+            value,
+            element_flags,
+        },
+        crate::Element::ItemWithBackwardsReferences(value, backward_references, element_flags) => {
+            grovedbg_types::Element::ItemWithBackwardsReferences {
                 value,
+                max_incoming_references: backward_references.max_incoming,
+                backward_references_count: Some(backward_references.entries.len() as u16),
                 element_flags,
             }
         }
@@ -890,11 +1088,11 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             ))
         }
         crate::Element::BidirectionalReference(reference, flags) => {
-            // Shown as its plain-reference shape.
-            grovedbg_types::Element::Reference(reference_path_to_grovedbg(
-                reference.forward_reference_path,
-                flags,
-            ))
+            grovedbg_types::Element::BidirectionalReference {
+                reference: reference_path_to_grovedbg(reference.forward_reference_path, flags),
+                cascade_on_update: reference.cascade_on_update,
+                backward_references_count: Some(reference.backward_references.len() as u16),
+            }
         }
         crate::Element::ReferenceWithSumItem(
             reference_path,
@@ -905,22 +1103,37 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             reference: reference_path_to_grovedbg(reference_path, element_flags),
             sum_item_value,
         },
-        crate::Element::SumItem(value, element_flags)
-        | crate::Element::SumItemWithBackwardsReferences(value, _, element_flags) => {
-            grovedbg_types::Element::SumItem {
+        crate::Element::SumItem(value, element_flags) => grovedbg_types::Element::SumItem {
+            value,
+            element_flags,
+        },
+        crate::Element::SumItemWithBackwardsReferences(
+            value,
+            backward_references,
+            element_flags,
+        ) => grovedbg_types::Element::SumItemWithBackwardsReferences {
+            value,
+            max_incoming_references: backward_references.max_incoming,
+            backward_references_count: Some(backward_references.entries.len() as u16),
+            element_flags,
+        },
+        crate::Element::ItemWithSumItem(value, sum_value, element_flags) => {
+            grovedbg_types::Element::ItemWithSumItem {
                 value,
+                sum_item_value: sum_value,
                 element_flags,
             }
         }
-        crate::Element::ItemWithSumItem(value, sum_value, element_flags)
-        | crate::Element::ItemWithSumItemWithBackwardsReferences(
+        crate::Element::ItemWithSumItemWithBackwardsReferences(
             value,
             sum_value,
-            _,
+            backward_references,
             element_flags,
-        ) => grovedbg_types::Element::ItemWithSumItem {
+        ) => grovedbg_types::Element::ItemWithSumItemWithBackwardsReferences {
             value,
             sum_item_value: sum_value,
+            max_incoming_references: backward_references.max_incoming,
+            backward_references_count: Some(backward_references.entries.len() as u16),
             element_flags,
         },
         crate::Element::SumTree(root_key, sum, element_flags) => grovedbg_types::Element::Sumtree {
@@ -1177,6 +1390,549 @@ mod tests {
                 ));
             }
             other => panic!("unexpected debugger conversion: {other:?}"),
+        }
+    }
+
+    /// Backward-references items map to their dedicated wire variants,
+    /// carrying capacity and occupancy instead of collapsing to the
+    /// plain counterparts.
+    #[test]
+    fn element_to_grovedbg_converts_backwards_references_items() {
+        use crate::{bidirectional_references::BackwardReference, BackwardReferences};
+
+        let mut backward_references = BackwardReferences::with_max_incoming(8);
+        backward_references.entries.push(BackwardReference {
+            inverted_reference: ReferencePathType::SiblingReference(b"referrer".to_vec()),
+            cascade_on_update: false,
+        });
+
+        let element = crate::Element::ItemWithBackwardsReferences(
+            b"data".to_vec(),
+            backward_references.clone(),
+            Some(vec![9]),
+        );
+        match element_to_grovedbg(element) {
+            grovedbg_types::Element::ItemWithBackwardsReferences {
+                value,
+                max_incoming_references,
+                backward_references_count,
+                element_flags,
+            } => {
+                assert_eq!(value, b"data");
+                assert_eq!(max_incoming_references, 8);
+                assert_eq!(backward_references_count, Some(1));
+                assert_eq!(element_flags, Some(vec![9]));
+            }
+            other => panic!("unexpected debugger conversion: {other:?}"),
+        }
+
+        let element =
+            crate::Element::SumItemWithBackwardsReferences(-3, backward_references.clone(), None);
+        match element_to_grovedbg(element) {
+            grovedbg_types::Element::SumItemWithBackwardsReferences {
+                value,
+                max_incoming_references,
+                backward_references_count,
+                element_flags,
+            } => {
+                assert_eq!(value, -3);
+                assert_eq!(max_incoming_references, 8);
+                assert_eq!(backward_references_count, Some(1));
+                assert_eq!(element_flags, None);
+            }
+            other => panic!("unexpected debugger conversion: {other:?}"),
+        }
+
+        let element = crate::Element::ItemWithSumItemWithBackwardsReferences(
+            b"both".to_vec(),
+            12,
+            backward_references,
+            None,
+        );
+        match element_to_grovedbg(element) {
+            grovedbg_types::Element::ItemWithSumItemWithBackwardsReferences {
+                value,
+                sum_item_value,
+                max_incoming_references,
+                backward_references_count,
+                element_flags,
+            } => {
+                assert_eq!(value, b"both");
+                assert_eq!(sum_item_value, 12);
+                assert_eq!(max_incoming_references, 8);
+                assert_eq!(backward_references_count, Some(1));
+                assert_eq!(element_flags, None);
+            }
+            other => panic!("unexpected debugger conversion: {other:?}"),
+        }
+    }
+
+    /// A bidirectional reference keeps the plain-reference wire shape
+    /// for its forward path (flags included) and additionally exposes
+    /// the cascade policy and its own referrer count.
+    #[test]
+    fn element_to_grovedbg_converts_bidirectional_reference() {
+        use crate::bidirectional_references::BidirectionalReference;
+
+        let element = crate::Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                    b"leaf".to_vec(),
+                    b"target".to_vec(),
+                ]),
+                cascade_on_update: true,
+                max_hop: Some(3),
+                backward_references: Vec::new(),
+            },
+            Some(vec![4, 5]),
+        );
+        match element_to_grovedbg(element) {
+            grovedbg_types::Element::BidirectionalReference {
+                reference,
+                cascade_on_update,
+                backward_references_count,
+            } => {
+                assert!(cascade_on_update);
+                assert_eq!(backward_references_count, Some(0));
+                match reference {
+                    grovedbg_types::Reference::AbsolutePathReference {
+                        path,
+                        element_flags,
+                    } => {
+                        assert_eq!(path, vec![b"leaf".to_vec(), b"target".to_vec()]);
+                        assert_eq!(element_flags, Some(vec![4, 5]));
+                    }
+                    other => panic!("unexpected wire reference: {other:?}"),
+                }
+            }
+            other => panic!("unexpected debugger conversion: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn proof_counts_are_unknown_for_every_backward_references_variant() {
+        use crate::{bidirectional_references::BackwardReference, BackwardReferences};
+        let version = GroveVersion::latest();
+        let count = |element: grovedbg_types::Element| match element {
+            grovedbg_types::Element::ItemWithBackwardsReferences {
+                backward_references_count,
+                ..
+            }
+            | grovedbg_types::Element::SumItemWithBackwardsReferences {
+                backward_references_count,
+                ..
+            }
+            | grovedbg_types::Element::ItemWithSumItemWithBackwardsReferences {
+                backward_references_count,
+                ..
+            }
+            | grovedbg_types::Element::BidirectionalReference {
+                backward_references_count,
+                ..
+            } => backward_references_count,
+            other => panic!("unexpected element: {other:?}"),
+        };
+        for entries in [
+            vec![],
+            vec![BackwardReference {
+                inverted_reference: ReferencePathType::SiblingReference(b"referrer".to_vec()),
+                cascade_on_update: true,
+            }],
+        ] {
+            let expected_count = Some(entries.len() as u16);
+            let refs = BackwardReferences::new(8, entries.clone());
+            let elements = [
+                crate::Element::ItemWithBackwardsReferences(b"data".to_vec(), refs.clone(), None),
+                crate::Element::SumItemWithBackwardsReferences(-3, refs.clone(), None),
+                crate::Element::ItemWithSumItemWithBackwardsReferences(
+                    b"data".to_vec(),
+                    3,
+                    refs,
+                    None,
+                ),
+                crate::Element::BidirectionalReference(
+                    crate::BidirectionalReference {
+                        forward_reference_path: ReferencePathType::SiblingReference(
+                            b"target".to_vec(),
+                        ),
+                        cascade_on_update: true,
+                        max_hop: None,
+                        backward_references: entries,
+                    },
+                    None,
+                ),
+            ];
+            for element in elements {
+                assert_eq!(count(element_to_grovedbg(element.clone())), expected_count);
+                let bytes = element
+                    .stripped_of_backward_references()
+                    .serialize(version)
+                    .unwrap();
+                assert_eq!(
+                    count(proof_element_to_grovedbg(
+                        crate::Element::deserialize(&bytes, version).unwrap()
+                    )),
+                    None
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_format_preserves_previous_element_shapes() {
+        use grovedbg_types::Element;
+        let reference = grovedbg_types::Reference::SiblingReference {
+            sibling_key: b"target".to_vec(),
+            element_flags: Some(vec![7]),
+        };
+        let pairs = [
+            (
+                Element::ItemWithBackwardsReferences {
+                    value: b"data".to_vec(),
+                    max_incoming_references: 8,
+                    backward_references_count: Some(1),
+                    element_flags: Some(vec![1]),
+                },
+                Element::Item {
+                    value: b"data".to_vec(),
+                    element_flags: Some(vec![1]),
+                },
+            ),
+            (
+                Element::SumItemWithBackwardsReferences {
+                    value: -3,
+                    max_incoming_references: 8,
+                    backward_references_count: Some(1),
+                    element_flags: Some(vec![2]),
+                },
+                Element::SumItem {
+                    value: -3,
+                    element_flags: Some(vec![2]),
+                },
+            ),
+            (
+                Element::ItemWithSumItemWithBackwardsReferences {
+                    value: b"both".to_vec(),
+                    sum_item_value: 3,
+                    max_incoming_references: 8,
+                    backward_references_count: Some(1),
+                    element_flags: Some(vec![3]),
+                },
+                Element::ItemWithSumItem {
+                    value: b"both".to_vec(),
+                    sum_item_value: 3,
+                    element_flags: Some(vec![3]),
+                },
+            ),
+            (
+                Element::BidirectionalReference {
+                    reference: reference.clone(),
+                    cascade_on_update: true,
+                    backward_references_count: Some(0),
+                },
+                Element::Reference(reference),
+            ),
+        ];
+        let mut headers = HeaderMap::new();
+        for (extended, legacy) in pairs {
+            // Missing and unrecognized capabilities must keep the old shapes.
+            for value in [None, Some("false"), Some("unsupported")] {
+                headers.remove("x-grovedbg-backward-references");
+                if let Some(value) = value {
+                    headers.insert("x-grovedbg-backward-references", value.parse().unwrap());
+                }
+                assert_eq!(
+                    BackwardReferencesFormat::from(&headers).element(extended.clone()),
+                    legacy
+                );
+            }
+            headers.insert("x-grovedbg-backward-references", "true".parse().unwrap());
+            assert_eq!(
+                BackwardReferencesFormat::from(&headers).element(extended.clone()),
+                extended
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_proof_format_covers_nested_layers_and_element_bearing_nodes() {
+        let make_proof = |element: grovedbg_types::Element| {
+            let nodes = [
+                MerkProofNode::KV(b"a".to_vec(), element.clone()),
+                MerkProofNode::KVValueHash(b"b".to_vec(), element.clone(), [1; 32]),
+                MerkProofNode::KVValueHashFeatureType(
+                    b"c".to_vec(),
+                    element.clone(),
+                    [2; 32],
+                    grovedbg_types::TreeFeatureType::SummedMerkNode(3),
+                ),
+                MerkProofNode::KVRefValueHash(b"d".to_vec(), element, [3; 32]),
+                MerkProofNode::Hash([4; 32]),
+                MerkProofNode::KVHash([5; 32]),
+                MerkProofNode::KVDigest(b"e".to_vec(), [6; 32]),
+            ];
+            grovedbg_types::Proof {
+                root_layer: grovedbg_types::ProofLayer {
+                    merk_proof: nodes
+                        .iter()
+                        .cloned()
+                        .map(MerkProofOp::Push)
+                        .chain([MerkProofOp::Parent, MerkProofOp::Child])
+                        .collect(),
+                    lower_layers: BTreeMap::from([(
+                        b"subtree".to_vec(),
+                        grovedbg_types::ProofLayer {
+                            merk_proof: nodes
+                                .into_iter()
+                                .map(MerkProofOp::PushInverted)
+                                .chain([MerkProofOp::ParentInverted, MerkProofOp::ChildInverted])
+                                .collect(),
+                            lower_layers: BTreeMap::new(),
+                        },
+                    )]),
+                },
+                prove_options: grovedbg_types::ProveOptions {
+                    decrease_limit_on_empty_sub_query_result: true,
+                },
+            }
+        };
+        let extended = make_proof(grovedbg_types::Element::ItemWithBackwardsReferences {
+            value: b"data".to_vec(),
+            max_incoming_references: 8,
+            backward_references_count: None,
+            element_flags: Some(vec![9]),
+        });
+        let legacy = make_proof(grovedbg_types::Element::Item {
+            value: b"data".to_vec(),
+            element_flags: Some(vec![9]),
+        });
+        assert_eq!(
+            BackwardReferencesFormat::Legacy.proof(extended.clone()),
+            legacy
+        );
+        assert_eq!(
+            BackwardReferencesFormat::Extended.proof(extended.clone()),
+            extended
+        );
+    }
+
+    /// Exercise the same session and handlers as the UI, both at the root
+    /// and under a subtree, with a real registered bidirectional reference.
+    #[tokio::test]
+    async fn handlers_negotiate_format_and_proofs_do_not_claim_zero_referrers() {
+        use crate::{operations::insert::InsertOptions, Element};
+        let version = GroveVersion::latest();
+        for path in [vec![], vec![b"leaf".to_vec()]] {
+            let temp = tempdir().unwrap();
+            let db = Arc::new(GroveDb::open(temp.path()).unwrap());
+            if let Some(key) = path.first() {
+                db.insert(
+                    SubtreePath::empty(),
+                    key,
+                    Element::empty_tree(),
+                    None,
+                    None,
+                    version,
+                )
+                .unwrap()
+                .unwrap();
+            }
+            db.insert(
+                path.as_slice(),
+                b"target",
+                Element::new_item_allowing_bidirectional_references(b"payload".to_vec()),
+                None,
+                None,
+                version,
+            )
+            .unwrap()
+            .unwrap();
+            db.insert(
+                path.as_slice(),
+                b"referrer",
+                Element::BidirectionalReference(
+                    crate::BidirectionalReference {
+                        forward_reference_path: ReferencePathType::SiblingReference(
+                            b"target".to_vec(),
+                        ),
+                        cascade_on_update: true,
+                        max_hop: None,
+                        backward_references: vec![],
+                    },
+                    Some(vec![7]),
+                ),
+                Some(InsertOptions {
+                    propagate_backward_references: true,
+                    ..Default::default()
+                }),
+                None,
+                version,
+            )
+            .unwrap()
+            .unwrap();
+            let state = AppState {
+                cancellation_token: CancellationToken::new(),
+                grovedb: Arc::downgrade(&db),
+                sessions: Default::default(),
+            };
+            let session_id = state.new_session().await.unwrap();
+            let query = PathQuery {
+                path: path.clone(),
+                query: SizedQuery {
+                    query: Query {
+                        items: vec![QueryItem::Key(b"target".to_vec())],
+                        default_subquery_branch: SubqueryBranch {
+                            subquery_path: None,
+                            subquery: None,
+                        },
+                        conditional_subquery_branches: vec![],
+                        left_to_right: true,
+                        add_parent_tree_on_subquery: false,
+                    },
+                    limit: None,
+                    offset: None,
+                },
+            };
+            for extended in [false, true] {
+                let mut headers = HeaderMap::new();
+                if extended {
+                    headers.insert("x-grovedbg-backward-references", "true".parse().unwrap());
+                }
+                let node = fetch_node(
+                    State(state.clone()),
+                    headers.clone(),
+                    Json(WithSession {
+                        session_id,
+                        request: NodeFetchRequest {
+                            path: path.clone(),
+                            key: b"target".to_vec(),
+                        },
+                    }),
+                )
+                .await
+                .unwrap()
+                .0
+                .unwrap();
+                let expected = if extended {
+                    grovedbg_types::Element::ItemWithBackwardsReferences {
+                        value: b"payload".to_vec(),
+                        max_incoming_references: crate::DEFAULT_BACKWARD_REFERENCES_CAPACITY,
+                        backward_references_count: Some(1),
+                        element_flags: None,
+                    }
+                } else {
+                    grovedbg_types::Element::Item {
+                        value: b"payload".to_vec(),
+                        element_flags: None,
+                    }
+                };
+                assert_eq!(node.element, expected);
+                let nodes = fetch_with_path_query(
+                    State(state.clone()),
+                    headers.clone(),
+                    Json(WithSession {
+                        session_id,
+                        request: query.clone(),
+                    }),
+                )
+                .await
+                .unwrap()
+                .0;
+                assert_eq!(nodes, vec![node]);
+                let referrer = fetch_node(
+                    State(state.clone()),
+                    headers.clone(),
+                    Json(WithSession {
+                        session_id,
+                        request: NodeFetchRequest {
+                            path: path.clone(),
+                            key: b"referrer".to_vec(),
+                        },
+                    }),
+                )
+                .await
+                .unwrap()
+                .0
+                .unwrap();
+                let reference = grovedbg_types::Reference::SiblingReference {
+                    sibling_key: b"target".to_vec(),
+                    element_flags: Some(vec![7]),
+                };
+                assert_eq!(
+                    referrer.element,
+                    if extended {
+                        grovedbg_types::Element::BidirectionalReference {
+                            reference,
+                            cascade_on_update: true,
+                            backward_references_count: Some(0),
+                        }
+                    } else {
+                        grovedbg_types::Element::Reference(reference)
+                    }
+                );
+
+                if path.is_empty() {
+                    let root = fetch_root_node(
+                        State(state.clone()),
+                        headers.clone(),
+                        Json(WithSession {
+                            session_id,
+                            request: (),
+                        }),
+                    )
+                    .await
+                    .unwrap()
+                    .0
+                    .unwrap();
+                    assert_eq!(root.key, b"target");
+                    assert_eq!(root.element, expected);
+                }
+                let proof = prove_path_query(
+                    State(state.clone()),
+                    headers,
+                    Json(WithSession {
+                        session_id,
+                        request: query.clone(),
+                    }),
+                )
+                .await
+                .unwrap()
+                .0;
+                let layer = path
+                    .iter()
+                    .fold(&proof.root_layer, |layer, key| &layer.lower_layers[key]);
+                let proof_element = layer
+                    .merk_proof
+                    .iter()
+                    .find_map(|op| match op {
+                        MerkProofOp::Push(MerkProofNode::KVValueHash(key, element, _))
+                        | MerkProofOp::PushInverted(MerkProofNode::KVValueHash(key, element, _))
+                            if key == b"target" =>
+                        {
+                            Some(element)
+                        }
+                        _ => None,
+                    })
+                    .expect("target proof node");
+                if extended {
+                    assert!(matches!(
+                        proof_element,
+                        grovedbg_types::Element::ItemWithBackwardsReferences {
+                            backward_references_count: None,
+                            ..
+                        }
+                    ));
+                } else {
+                    assert_eq!(proof_element, &expected);
+                }
+                // This is the codec used by dump_proof_grovedbg_stdout.
+                let bytes =
+                    bincode::serde::encode_to_vec(&proof, bincode::config::standard()).unwrap();
+                let (decoded, consumed): (grovedbg_types::Proof, _) =
+                    bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+                assert_eq!(decoded, proof);
+                assert_eq!(consumed, bytes.len());
+            }
         }
     }
 }

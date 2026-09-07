@@ -206,6 +206,61 @@ pub enum Element {
         reference: Reference,
         sum_item_value: i64,
     },
+    /// An `Item` that supports being targeted by bidirectional
+    /// references. The referrer list itself is not carried over the
+    /// wire; only its declared capacity and, for stored nodes, current
+    /// occupancy are. Proofs omit referrer lists, so their occupancy is
+    /// unknown rather than zero.
+    ItemWithBackwardsReferences {
+        #[serde_as(as = "Base64")]
+        value: Vec<u8>,
+        /// How many referrers the element accepts (part of the
+        /// element's identity and inner hash).
+        max_incoming_references: u16,
+        /// Number of currently registered referrers, or `None` when
+        /// converting a proof whose referrer list was omitted.
+        backward_references_count: Option<u16>,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
+    },
+    /// A `SumItem` that supports being targeted by bidirectional
+    /// references. Carries the same capacity/occupancy summary as
+    /// [`Element::ItemWithBackwardsReferences`].
+    SumItemWithBackwardsReferences {
+        value: i64,
+        max_incoming_references: u16,
+        backward_references_count: Option<u16>,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
+    },
+    /// An `ItemWithSumItem` that supports being targeted by
+    /// bidirectional references. Carries the same capacity/occupancy
+    /// summary as [`Element::ItemWithBackwardsReferences`].
+    ItemWithSumItemWithBackwardsReferences {
+        #[serde_as(as = "Base64")]
+        value: Vec<u8>,
+        sum_item_value: i64,
+        max_incoming_references: u16,
+        backward_references_count: Option<u16>,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
+    },
+    /// A reference that registers itself in its target's
+    /// backward-reference storage so target updates propagate back (or
+    /// cascade-delete the referrer). The `reference` field reuses the
+    /// plain [`Element::Reference`] wire shape (path discriminant plus
+    /// `element_flags`); the extra fields describe the bidirectional
+    /// behavior.
+    BidirectionalReference {
+        reference: Reference,
+        /// Whether overwriting/deleting the target may cascade-delete
+        /// this reference (otherwise such an update errors).
+        cascade_on_update: bool,
+        /// Referrers registered on this reference itself (it can in
+        /// turn be targeted by other bidirectional references). `None`
+        /// means the list was omitted from a proof.
+        backward_references_count: Option<u16>,
+    },
 }
 
 #[serde_as]
@@ -395,5 +450,101 @@ mod tests {
         let json = serde_json::to_string(&element).expect("serialize");
         let back: Element = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, element);
+    }
+
+    /// JSON wire round-trip pins for the backward-references element
+    /// variants. Only capacity/occupancy summaries travel over the
+    /// wire, never the referrer list itself.
+    #[test]
+    fn backwards_references_items_json_round_trip() {
+        let elements = [
+            Element::ItemWithBackwardsReferences {
+                value: b"payload".to_vec(),
+                max_incoming_references: 32,
+                backward_references_count: Some(2),
+                element_flags: Some(vec![7]),
+            },
+            Element::SumItemWithBackwardsReferences {
+                value: -9,
+                max_incoming_references: 1,
+                backward_references_count: Some(0),
+                element_flags: None,
+            },
+            Element::ItemWithSumItemWithBackwardsReferences {
+                value: b"both".to_vec(),
+                sum_item_value: 55,
+                max_incoming_references: 4,
+                backward_references_count: Some(4),
+                element_flags: None,
+            },
+        ];
+        for element in elements {
+            let json = serde_json::to_string(&element).expect("serialize");
+            let back: Element = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, element);
+        }
+    }
+
+    /// JSON wire round-trip pin for `Element::BidirectionalReference`:
+    /// the nested `Reference` keeps the plain-reference shape and the
+    /// bidirectional extras ride alongside it.
+    #[test]
+    fn bidirectional_reference_json_round_trip() {
+        let element = Element::BidirectionalReference {
+            reference: Reference::UpstreamRootHeightReference {
+                n_keep: 2,
+                path_append: vec![b"target".to_vec()],
+                element_flags: Some(vec![1, 2]),
+            },
+            cascade_on_update: true,
+            backward_references_count: Some(1),
+        };
+        let json = serde_json::to_string(&element).expect("serialize");
+        let back: Element = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, element);
+    }
+
+    #[test]
+    fn backward_reference_counts_distinguish_unknown_empty_and_occupied() {
+        for count in [None, Some(0), Some(2)] {
+            let elements = [
+                Element::ItemWithBackwardsReferences {
+                    value: b"payload".to_vec(),
+                    max_incoming_references: 8,
+                    backward_references_count: count,
+                    element_flags: None,
+                },
+                Element::SumItemWithBackwardsReferences {
+                    value: -3,
+                    max_incoming_references: 8,
+                    backward_references_count: count,
+                    element_flags: None,
+                },
+                Element::ItemWithSumItemWithBackwardsReferences {
+                    value: b"payload".to_vec(),
+                    sum_item_value: 3,
+                    max_incoming_references: 8,
+                    backward_references_count: count,
+                    element_flags: None,
+                },
+                Element::BidirectionalReference {
+                    reference: Reference::SiblingReference {
+                        sibling_key: b"target".to_vec(),
+                        element_flags: None,
+                    },
+                    cascade_on_update: true,
+                    backward_references_count: count,
+                },
+            ];
+            for element in elements {
+                let json = serde_json::to_value(&element).expect("serialize");
+                let fields = json.as_object().unwrap().values().next().unwrap();
+                assert_eq!(
+                    fields["backward_references_count"],
+                    serde_json::json!(count)
+                );
+                assert_eq!(serde_json::from_value::<Element>(json).unwrap(), element);
+            }
+        }
     }
 }
