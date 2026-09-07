@@ -24,7 +24,6 @@ use crate::{
         decode_grovedb_proof_canonical,
         indexed_axis::AxisEntries,
         verify::{AxisWalkOutcome, AxisWalkResult},
-        GroveDBProof,
     },
     query::{validated::ValidatedPathQuery, AggregateKind, PathQueryShape},
     query_result_type::PathKeyOptionalElementTrio,
@@ -378,11 +377,8 @@ impl GroveDb {
                 })
             }
             PathQueryShape::SumBudget { .. } => {
-                let decoded = decode_grovedb_proof_canonical(proof)?;
-                validated.check_envelope(&decoded)?;
-                let GroveDBProof::V1(proof_v1) = decoded else {
-                    unreachable!("validated sum-budget envelope");
-                };
+                let proof_v1 =
+                    validated.require_v1_envelope(decode_grovedb_proof_canonical(proof)?)?;
                 let (root_hash, _, outcomes) =
                     Self::verify_proof_v1_with_axis_outcomes(&proof_v1, path_query, grove_version)?;
                 let [outcome]: [AxisWalkOutcome; 1] =
@@ -436,11 +432,7 @@ impl GroveDb {
         ),
         Error,
     > {
-        let decoded = decode_grovedb_proof_canonical(proof)?;
-        validated.check_envelope(&decoded)?;
-        let GroveDBProof::V1(proof_v1) = decoded else {
-            unreachable!("validated axis envelope");
-        };
+        let proof_v1 = validated.require_v1_envelope(decode_grovedb_proof_canonical(proof)?)?;
         Self::verify_proof_v1_with_axis_outcomes(&proof_v1, validated.query(), grove_version)
     }
 

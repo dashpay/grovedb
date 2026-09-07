@@ -50,6 +50,20 @@ pub enum AggregateKind {
     CountAndSum,
 }
 
+impl AggregateKind {
+    /// The user-facing family name interpolated into proof-envelope
+    /// errors (e.g. "`AggregateCountOnRange` proofs require V1 proof
+    /// envelopes"). Generation and verification must reject with the
+    /// same name, so both sides source it from here.
+    pub(crate) fn proof_family_name(&self) -> &'static str {
+        match self {
+            AggregateKind::Count => "AggregateCountOnRange",
+            AggregateKind::Sum => "AggregateSumOnRange",
+            AggregateKind::CountAndSum => "AggregateCountAndSumOnRange",
+        }
+    }
+}
+
 /// The shape of a [`PathQuery`] — what kind of read it describes, as
 /// opposed to *where* (the path) or *which keys* (the items).
 ///

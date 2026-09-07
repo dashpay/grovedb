@@ -2011,6 +2011,23 @@ impl GroveDb {
             .wrap_with_cost(cost);
         }
 
+        // Fail closed if the shape grammar and the terminal-depth
+        // arithmetic above ever diverge: an aggregate item reaching the
+        // ordinary walk would be proven as its inner plain range —
+        // an element proof where an aggregate op stream was requested.
+        // Unreachable for every shape `classify` accepts today.
+        if query.items.iter().any(|item| {
+            item.is_aggregate_count_on_range()
+                || item.is_aggregate_sum_on_range()
+                || item.is_aggregate_count_and_sum_on_range()
+        }) {
+            return Err(Error::CorruptedCodeExecution(
+                "an aggregate query item reached a proof layer outside the validated aggregate \
+                 terminal",
+            ))
+            .wrap_with_cost(cost);
+        }
+
         // Count-offset paginated short-circuit (v1 path). Mirror of the
         // aggregate-count/sum branches. Only fires at the leaf level
         // (path is the full path_query.path) and only when the caller
@@ -2020,16 +2037,14 @@ impl GroveDb {
         // hard-error case (the caller asked for count-offset pagination
         // against something that isn't a count tree).
         if path.len() == path_query.path.len()
-            && matches!(
-                validated.shape(),
-                PathQueryShape::CountOffsetPaginated { .. }
-            )
+            && let PathQueryShape::CountOffsetPaginated { inner } = validated.shape()
         {
             return self
                 .prove_count_offset_layer_v1(
                     &subtree,
                     &path,
                     path_query,
+                    inner,
                     query.left_to_right,
                     limit_state,
                     &mut frame_instance,
@@ -3368,6 +3383,7 @@ impl GroveDb {
         subtree: &'a Merk<S>,
         path: &[&[u8]],
         path_query: &PathQuery,
+        inner_range: &QueryItem,
         left_to_right: bool,
         limit_state: &mut super::V1LimitState,
         frame_instance: &mut Option<u16>,
@@ -3378,10 +3394,6 @@ impl GroveDb {
     {
         let mut cost = OperationCost::default();
         use grovedb_merk::TreeType as MerkTreeType;
-        let inner_range = cost_return_on_error_no_add!(
-            cost,
-            path_query.validate_count_offset_paginated().cloned()
-        );
         if !matches!(
             subtree.tree_type,
             MerkTreeType::ProvableCountTree
@@ -3407,7 +3419,7 @@ impl GroveDb {
             &mut cost,
             subtree
                 .prove_count_offset_on_range(
-                    &inner_range,
+                    inner_range,
                     offset,
                     limit_u64,
                     left_to_right,

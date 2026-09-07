@@ -15,8 +15,13 @@
 use grovedb_version::error::GroveVersionError;
 use grovedb_version::version::GroveVersion;
 
-use super::{AggregateKind, PathQueryShape};
-use crate::{operations::proof::GroveDBProof, Error, PathQuery};
+#[cfg(feature = "minimal")]
+use super::AggregateKind;
+use super::PathQueryShape;
+use crate::{
+    operations::proof::{GroveDBProof, GroveDBProofV1},
+    Error, PathQuery,
+};
 
 /// A query and its validated, allocation-free shape at a particular version.
 /// Aggregate kind and inner range are retained in `shape`, not rediscovered
@@ -45,26 +50,33 @@ impl<'q> ValidatedPathQuery<'q> {
         grove_version: &'q GroveVersion,
     ) -> Result<Self, Error> {
         let validated = Self::new(query, grove_version)?;
-        if matches!(
-            validated.shape,
+        // Exhaustive over the shapes so adding one forces a deliberate
+        // read-side version-policy decision here.
+        match validated.shape {
             PathQueryShape::AxisRead { .. }
-                | PathQueryShape::BranchedAxisRead { .. }
-                | PathQueryShape::SumBudget { .. }
-        ) {
-            match grove_version.grovedb_versions.path_query_methods.unified_read_mode {
-                0 => return Err(Error::NotSupported(
-                    "read-mode (axis / sum-budget) path queries are not served at this grove version"
-                        .to_string(),
-                )),
-                1 => {}
-                received => return Err(Error::VersionError(
-                    GroveVersionError::UnknownVersionMismatch {
-                        method: "run_path_query (unified_read_mode)".to_string(),
-                        known_versions: vec![0, 1],
-                        received,
-                    },
-                )),
+            | PathQueryShape::BranchedAxisRead { .. }
+            | PathQueryShape::SumBudget { .. } => {
+                match grove_version.grovedb_versions.path_query_methods.unified_read_mode {
+                    0 => return Err(Error::NotSupported(
+                        "read-mode (axis / sum-budget) path queries are not served at this grove version"
+                            .to_string(),
+                    )),
+                    1 => {}
+                    received => return Err(Error::VersionError(
+                        GroveVersionError::UnknownVersionMismatch {
+                            method: "run_path_query (unified_read_mode)".to_string(),
+                            known_versions: vec![0, 1],
+                            received,
+                        },
+                    )),
+                }
             }
+            // Served at every version, exactly as their dedicated entry
+            // points serve them.
+            PathQueryShape::KeySelection
+            | PathQueryShape::CountOffsetPaginated { .. }
+            | PathQueryShape::AggregateLeaf { .. }
+            | PathQueryShape::AggregateCarrier { .. } => {}
         }
         Ok(validated)
     }
@@ -99,30 +111,39 @@ impl<'q> ValidatedPathQuery<'q> {
             grove_version,
         };
         if prove_version == 0 {
-            let message = match shape {
-                PathQueryShape::AxisRead { .. } | PathQueryShape::BranchedAxisRead { .. } => Some(
-                    "axis-ordered path queries require V1 proof envelopes; upgrade the grove version producing the proof",
-                ),
-                PathQueryShape::SumBudget { .. } => Some(
-                    "sum-budget path queries require V1 proof envelopes; upgrade the grove version producing the proof",
-                ),
-                _ => match shape.aggregate_kind() {
-                    Some(AggregateKind::Count) => Some("AggregateCountOnRange proofs require V1 proof envelopes; upgrade the grove version producing the proof"),
-                    Some(AggregateKind::Sum) => Some("AggregateSumOnRange proofs require V1 proof envelopes; upgrade the grove version producing the proof"),
-                    Some(AggregateKind::CountAndSum) => Some("AggregateCountAndSumOnRange proofs require V1 proof envelopes; upgrade the grove version producing the proof"),
-                    None => None,
-                },
+            // Exhaustive over the shapes so adding one forces a
+            // deliberate V0-envelope decision here (fail closed).
+            let subject = match shape {
+                PathQueryShape::AxisRead { .. } | PathQueryShape::BranchedAxisRead { .. } => {
+                    Some("axis-ordered path queries".to_string())
+                }
+                PathQueryShape::SumBudget { .. } => Some("sum-budget path queries".to_string()),
+                PathQueryShape::AggregateLeaf { kind, .. }
+                | PathQueryShape::AggregateCarrier { kind, .. } => {
+                    Some(format!("{} proofs", kind.proof_family_name()))
+                }
+                // Key selection is what the V0 envelope serves; the
+                // count-offset shape cannot reach here (the offset gate
+                // above already rejected it for the V0 prover).
+                PathQueryShape::KeySelection | PathQueryShape::CountOffsetPaginated { .. } => None,
             };
-            if let Some(message) = message {
-                return Err(Error::NotSupported(message.to_string()));
+            if let Some(subject) = subject {
+                return Err(Error::NotSupported(format!(
+                    "{subject} require V1 proof envelopes; upgrade the grove version producing \
+                     the proof"
+                )));
             }
         }
         validated.check_proof_capabilities(true)?;
-        if prove_version == 0 {
-            query.reject_per_instance_limits("the V0 prover")?;
-        }
-        if prove_version > 1 {
-            return Err(unknown_prove_version(prove_version));
+        match prove_version {
+            // The V0 prover's frozen limit accounting predates
+            // per-instance caps. Redundant for every shipped version
+            // table (the unserved gate above already fired), kept for
+            // the historical precedence of a hypothetical table that
+            // serves the caps while selecting the V0 prover.
+            0 => query.reject_per_instance_limits("the V0 prover")?,
+            1 => {}
+            received => return Err(unknown_prove_version(received)),
         }
         // limit == 0 is checked by the prover AFTER the count-offset
         // target-tree open. Moving it here would change operation costs.
@@ -140,24 +161,29 @@ impl<'q> ValidatedPathQuery<'q> {
 
     fn check_proof_capabilities(&self, generating: bool) -> Result<(), Error> {
         let versions = &self.grove_version.grovedb_versions.operations.proof;
+        // Exhaustive over the shapes so adding one forces a deliberate
+        // capability-gate decision here (fail closed).
         let message = match self.shape {
-            PathQueryShape::AxisRead { .. } | PathQueryShape::BranchedAxisRead { .. }
-                if versions.axis_descent_in_v1_envelope != 1 =>
-            {
-                Some(if generating {
+            PathQueryShape::AxisRead { .. } | PathQueryShape::BranchedAxisRead { .. } => {
+                (versions.axis_descent_in_v1_envelope != 1).then_some(if generating {
                     "axis-ordered descents in the V1 proof envelope are not emitted at this grove version"
                 } else {
                     "axis-ordered descents in the V1 proof envelope are not accepted at this grove version"
                 })
             }
-            PathQueryShape::SumBudget { .. } if versions.sum_budget_in_v1_envelope != 1 => {
-                Some(if generating {
+            PathQueryShape::SumBudget { .. } => {
+                (versions.sum_budget_in_v1_envelope != 1).then_some(if generating {
                     "sum-budget windows in the V1 proof envelope are not emitted at this grove version"
                 } else {
                     "sum-budget windows in the V1 proof envelope are not accepted at this grove version"
                 })
             }
-            _ => None,
+            // Serving these shapes needs no capability slot beyond the
+            // envelope version itself.
+            PathQueryShape::KeySelection
+            | PathQueryShape::CountOffsetPaginated { .. }
+            | PathQueryShape::AggregateLeaf { .. }
+            | PathQueryShape::AggregateCarrier { .. } => None,
         };
         match message {
             Some(message) => Err(Error::NotSupported(message.to_string())),
@@ -165,36 +191,36 @@ impl<'q> ValidatedPathQuery<'q> {
         }
     }
 
-    /// Called after decoding; actual layer/tree eligibility is still the
-    /// verifier's responsibility. Keep the existing per-family error types.
-    pub(crate) fn check_envelope(&self, proof: &GroveDBProof) -> Result<(), Error> {
-        if matches!(proof, GroveDBProof::V1(_)) {
-            return Ok(());
-        }
+    /// Decode-time envelope gate for the shapes verified through the
+    /// unified axis/sum-budget walkers. Returns the V1 payload so
+    /// "accepted ⇒ V1 envelope" is carried by the type rather than a
+    /// call-site `unreachable!`. The other shapes verify through their
+    /// dedicated walkers, which own their envelope errors — routing
+    /// them here is a dispatch bug and fails closed.
+    pub(crate) fn require_v1_envelope(
+        &self,
+        decoded: GroveDBProof,
+    ) -> Result<GroveDBProofV1, Error> {
         let message = match self.shape {
-            PathQueryShape::KeySelection => return Ok(()),
-            PathQueryShape::CountOffsetPaginated { .. } => {
-                "offsets in path queries are not supported for proofs"
-            }
             PathQueryShape::AxisRead { .. } | PathQueryShape::BranchedAxisRead { .. } => {
                 "axis-ordered path queries require V1 proof envelopes"
             }
             PathQueryShape::SumBudget { .. } => {
                 "sum-budget path queries require V1 proof envelopes"
             }
-            PathQueryShape::AggregateLeaf { kind, .. }
-            | PathQueryShape::AggregateCarrier { kind, .. } => {
-                let name = match kind {
-                    AggregateKind::Count => "AggregateCountOnRange",
-                    AggregateKind::Sum => "AggregateSumOnRange",
-                    AggregateKind::CountAndSum => "AggregateCountAndSumOnRange",
-                };
-                return Err(Error::InvalidProof(self.query.clone(), format!(
-                    "{name} proofs require V1 proof envelopes; V0 envelopes predate this feature and cannot legitimately carry such a proof"
-                )));
+            PathQueryShape::KeySelection
+            | PathQueryShape::CountOffsetPaginated { .. }
+            | PathQueryShape::AggregateLeaf { .. }
+            | PathQueryShape::AggregateCarrier { .. } => {
+                return Err(Error::CorruptedCodeExecution(
+                    "require_v1_envelope called for a shape verified by its dedicated walker",
+                ));
             }
         };
-        Err(Error::NotSupported(message.to_string()))
+        match decoded {
+            GroveDBProof::V1(proof) => Ok(proof),
+            GroveDBProof::V0(_) => Err(Error::NotSupported(message.to_string())),
+        }
     }
 
     pub(crate) fn query(&self) -> &'q PathQuery {
