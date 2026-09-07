@@ -138,6 +138,18 @@ pub struct GroveDBApplyBatchVersions {
     /// an accepted/rejected outcome — a mismatched delete that V1..V3
     /// accept is refused on V4+ when an indexed tree is involved.
     pub delete_tree_cleanup_type_source: FeatureVersion,
+    /// Whether full and partial batch `DeleteTree` cleanup sweeps every
+    /// discovered subtree's indexed secondary namespaces (issue #888).
+    ///
+    /// - `0` (V1..V3): recursively clear primary namespaces only, retaining
+    ///   the separate top-level indexed-secondary pass and its costs.
+    /// - `1` (V4+): also sweep all three secondary axes for every subtree.
+    ///
+    /// Empty secondary sweeps still charge seeks, boundary reads, and
+    /// prefix hashes, including for ordinary trees. These costs must not
+    /// change on released versions. Direct deletion is unaffected: it
+    /// already swept secondaries recursively on every version.
+    pub delete_tree_recursive_secondary_cleanup: FeatureVersion,
     /// Whether a batch overwrite (`InsertOrReplace` / `Replace` / `Patch`,
     /// with tree-override protection off) classifies the element it
     /// displaces to detect an indexed tree being overwritten.

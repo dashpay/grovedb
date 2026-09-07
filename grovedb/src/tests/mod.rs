@@ -97,6 +97,7 @@ mod merge_versioning_tests;
 mod merged_descending_subset_bound_tests;
 mod misc_coverage_tests;
 mod mmr_tree_tests;
+mod nested_indexed_secondary_cleanup_tests;
 mod non_counted_tests;
 mod non_merk_wrapper_preservation_tests;
 mod not_counted_or_summed_tests;

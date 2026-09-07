@@ -215,79 +215,24 @@ impl GroveDb {
                         })
                     );
                 } else {
-                    let subtrees_paths = cost_return_on_error!(
+                    // Shared recursive cleanup (issue #888): clears every
+                    // nested subtree's primary namespace via the
+                    // find_subtrees walk and, for each discovered subtree,
+                    // the per-axis indexed-tree secondary namespaces at
+                    // Blake3(its_prefix ‖ axis_tag) that the path-prefix
+                    // walk cannot see. The helper replicates the exact
+                    // cost sequence of the inline loop it replaced.
+                    cost_return_on_error!(
                         &mut cost,
-                        self.find_subtrees(
+                        self.clear_subtree_storage_recursively(
                             &subtree_merk_path_ref,
-                            Some(transaction),
-                            grove_version
+                            transaction,
+                            batch,
+                            true,
+                            "delete",
+                            grove_version,
                         )
                     );
-                    for subtree_path in subtrees_paths {
-                        let p: SubtreePath<_> = subtree_path.as_slice().into();
-                        let mut storage = self
-                            .db
-                            .get_transactional_storage_context(p.clone(), Some(batch), transaction)
-                            .unwrap_add_cost(&mut cost);
-
-                        cost_return_on_error!(
-                            &mut cost,
-                            storage.clear().map_err(|e| {
-                                Error::CorruptedData(format!(
-                                    "unable to cleanup tree from storage: {e}",
-                                ))
-                            })
-                        );
-
-                        // NESTED INDEXED-TREE SECONDARY CLEANUP.
-                        // find_subtrees enumerates every nested subtree
-                        // under the deletion target, but only the
-                        // primary's storage namespace is reachable via
-                        // the path-prefix walk. Any nested indexed-tree
-                        // primary inside the deleted subtree has its own
-                        // per-axis secondary namespaces at
-                        // Blake3(its_prefix ‖ axis_tag) — one for PCIT
-                        // (count), one for PSIT (sum), up to three for
-                        // PCPSIT — that find_subtrees cannot see; clear
-                        // them all too.
-                        //
-                        // Clearing the secondary prefix is idempotent on
-                        // non-indexed subtrees (their secondary namespace
-                        // is empty), so we sweep all three axis tags
-                        // unconditionally rather than decoding each
-                        // subtree's root element to check the tree type —
-                        // cheaper and removes a class of missed-decoding
-                        // bugs.
-                        let primary_prefix =
-                            RocksDbStorage::build_prefix(p).unwrap_add_cost(&mut cost);
-                        for axis in [
-                            grovedb_element::indexed::IndexAxis::Count,
-                            grovedb_element::indexed::IndexAxis::Sum,
-                            grovedb_element::indexed::IndexAxis::Avg,
-                        ] {
-                            let secondary_prefix =
-                                RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
-                                    .unwrap_add_cost(&mut cost);
-                            let mut secondary_storage = self
-                                .db
-                                .get_transactional_storage_context_by_subtree_prefix(
-                                    secondary_prefix,
-                                    Some(batch),
-                                    transaction,
-                                )
-                                .unwrap_add_cost(&mut cost);
-                            cost_return_on_error!(
-                                &mut cost,
-                                secondary_storage.clear().map_err(|e| {
-                                    Error::CorruptedData(format!(
-                                        "unable to cleanup nested indexed-tree secondary \
-                                         (axis {:?}) in delete: {e}",
-                                        axis
-                                    ))
-                                })
-                            );
-                        }
-                    }
                 }
                 // Fixed behavior (issue #686): reuse the already-open parent
                 // Merk, which carries the parent's true tree type, so delete

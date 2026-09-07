@@ -1620,15 +1620,17 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_plain_overwrites_and_tree_delete_cost_parity_v3_v4() {
-        // A batch touching NO indexed trees must cost byte-for-byte the same
-        // under GROVE_V3 and GROVE_V4. Both V4 gates
+    fn test_batch_plain_overwrites_and_tree_delete_versioned_costs_v3_v4() {
+        // Classifying a batch touching NO indexed trees must cost the same
+        // under GROVE_V3 and GROVE_V4. Both classification gates
         // (`overwrite_indexed_cleanup_inspection` and
         // `delete_tree_cleanup_type_source`) derive the old element from
         // data the apply already loads — the merk walk's own fetch of the
         // node being rewritten or deleted, and the emptiness pre-scan's own
         // read — instead of issuing a dedicated stored-element read, so
-        // their classification work is invisible to tracked cost.
+        // their classification work is invisible to tracked cost. V4's
+        // separate recursive-secondary-cleanup gate adds charged empty
+        // sweeps, which are checked independently below.
         let run = |grove_version: &GroveVersion| {
             let db = make_empty_grovedb();
             let tx = db.start_transaction();
@@ -1679,12 +1681,32 @@ mod tests {
 
         let v3 = run(&grovedb_version::version::v3::GROVE_V3);
         let v4 = run(&grovedb_version::version::v4::GROVE_V4);
+        let mut v4_primary_cleanup = grovedb_version::version::v4::GROVE_V4.clone();
+        v4_primary_cleanup
+            .grovedb_versions
+            .apply_batch
+            .delete_tree_recursive_secondary_cleanup = 0;
+        let v4_primary_cleanup = run(&v4_primary_cleanup);
         v3.value.as_ref().expect("v3 batch should apply");
         v4.value.as_ref().expect("v4 batch should apply");
+        v4_primary_cleanup
+            .value
+            .as_ref()
+            .expect("v4 batch with legacy cleanup should apply");
         assert_eq!(
-            v3.cost, v4.cost,
-            "a batch of plain overwrites plus a plain DeleteTree must \
-             produce an identical CostResult under V3 and V4"
+            v3.cost, v4_primary_cleanup.cost,
+            "V4 classification must not add costs to plain overwrites or deletion"
+        );
+        assert_eq!(
+            v4.cost,
+            v3.cost
+                + OperationCost {
+                    seek_count: 3,
+                    storage_loaded_bytes: 864,
+                    hash_node_calls: 4,
+                    ..Default::default()
+                },
+            "V4 cleanup adds only three empty secondary sweeps and their prefix hashes"
         );
     }
 

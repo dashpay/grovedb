@@ -32,13 +32,14 @@ use grovedb_costs::{
     cost_return_on_error, storage_cost::key_value_cost::KeyValueStorageCost, CostResult, CostsExt,
     OperationCost,
 };
+use grovedb_element::indexed::IndexAxis;
 use grovedb_path::SubtreePath;
-use grovedb_storage::{Storage, StorageContext};
+use grovedb_storage::{rocksdb_storage::RocksDbStorage, Storage, StorageBatch, StorageContext};
 use grovedb_version::version::GroveVersion;
 
 use crate::{
     element::elements_iterator::ElementIteratorExtensions, util::TxRef, Element, Error, GroveDb,
-    TransactionArg,
+    Transaction, TransactionArg,
 };
 
 impl GroveDb {
@@ -192,5 +193,95 @@ impl GroveDb {
             }
         }
         Ok(result).wrap_with_cost(cost)
+    }
+
+    /// Recursively clear storage owned by the subtree at `path`: the
+    /// primary namespace of every nested subtree discovered by
+    /// [`Self::find_subtrees`], plus — when `sweep_secondary_namespaces` is
+    /// enabled, for EVERY discovered subtree — the
+    /// per-axis indexed-tree secondary namespaces at
+    /// `Blake3(subtree_prefix ‖ axis_tag)` (S2-B derivation).
+    ///
+    /// This is the single recursive ownership-cleanup routine (issue #888)
+    /// shared by the direct delete (`delete_internal_on_transaction`
+    /// v0/v1), the batch `DeleteTree` post-apply pass (full and partial),
+    /// the batch cidx safe-subset overwrite pass, and the dedicated
+    /// indexed-tree child overwrite. `find_subtrees` only walks
+    /// path-derived prefixes, so a nested indexed-tree primary's secondary
+    /// namespaces are invisible to it; without the per-descendant sweep
+    /// they would be orphaned, and a later re-creation of the same
+    /// deterministic path (prefixes are path-derived) would resurrect the
+    /// stale secondary rows, breaking primary-secondary agreement.
+    ///
+    /// When enabled, all three axis tags are swept for every discovered
+    /// subtree rather than decoding each subtree's element to check its
+    /// tree type: clearing an empty namespace is a no-op, so the
+    /// redundancy is intentional defense-in-depth (it also removes a class
+    /// of missed-decoding bugs).
+    ///
+    /// Full and partial batch deletion disable the secondary sweep on
+    /// V1..V3 to preserve historical costs, including empty-namespace seeks
+    /// and hashes for ordinary trees. Direct deletion keeps it enabled on
+    /// every version because its legacy loop already included the sweep.
+    ///
+    /// `context` names the calling operation in error messages.
+    pub(crate) fn clear_subtree_storage_recursively<'db, B: AsRef<[u8]>>(
+        &'db self,
+        path: &SubtreePath<B>,
+        transaction: &'db Transaction,
+        batch: &'db StorageBatch,
+        sweep_secondary_namespaces: bool,
+        context: &str,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+
+        let subtrees_paths = cost_return_on_error!(
+            &mut cost,
+            self.find_subtrees(path, Some(transaction), grove_version)
+        );
+        for subtree_path in subtrees_paths {
+            let p: SubtreePath<_> = subtree_path.as_slice().into();
+            let mut storage = self
+                .db
+                .get_transactional_storage_context(p.clone(), Some(batch), transaction)
+                .unwrap_add_cost(&mut cost);
+            cost_return_on_error!(
+                &mut cost,
+                storage.clear().map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "unable to clean up subtree storage in {context}: {e}",
+                    ))
+                })
+            );
+
+            if !sweep_secondary_namespaces {
+                continue;
+            }
+            let primary_prefix = RocksDbStorage::build_prefix(p).unwrap_add_cost(&mut cost);
+            for axis in [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg] {
+                let secondary_prefix =
+                    RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
+                        .unwrap_add_cost(&mut cost);
+                let mut secondary_storage = self
+                    .db
+                    .get_transactional_storage_context_by_subtree_prefix(
+                        secondary_prefix,
+                        Some(batch),
+                        transaction,
+                    )
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    secondary_storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to clean up indexed-tree secondary (axis {axis:?}) in \
+                             {context}: {e}",
+                        ))
+                    })
+                );
+            }
+        }
+        Ok(()).wrap_with_cost(cost)
     }
 }
