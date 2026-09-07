@@ -70,3 +70,70 @@ impl GroveDb {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use grovedb_version::version::{v3::GROVE_V3, GroveVersion};
+
+    use crate::{Element, Error, GroveDb};
+
+    /// v0 (GROVE_V3) restores the wrapper for a PrivateDocumentStore — the
+    /// carve-out that was always safe because the type cannot exist before
+    /// GROVE_V4.
+    #[test]
+    fn v0_restores_wrapper_for_private_document_store_only() {
+        let pds = Element::empty_private_document_store(32, 4).expect("valid config");
+        let rewrapped = GroveDb::rewrap_non_merk_tree_parent_element(pds.clone(), true, &GROVE_V3)
+            .expect("rewrap");
+        assert!(rewrapped.is_non_counted());
+
+        // Every other family keeps the released wrapper drop under v0.
+        let mmr = Element::empty_mmr_tree();
+        let bare =
+            GroveDb::rewrap_non_merk_tree_parent_element(mmr, true, &GROVE_V3).expect("rewrap");
+        assert!(!bare.is_non_counted());
+
+        // An unwrapped stored element passes through on both variants.
+        let untouched =
+            GroveDb::rewrap_non_merk_tree_parent_element(pds, false, &GROVE_V3).expect("rewrap");
+        assert!(!untouched.is_non_counted());
+    }
+
+    /// v1 (GROVE_V4+) restores the wrapper for every family, and surfaces a
+    /// typed error if a non-wrappable element were ever fed through.
+    #[test]
+    fn v1_restores_wrapper_and_surfaces_wrap_errors() {
+        let grove_version = GroveVersion::latest();
+        let mmr = Element::empty_mmr_tree();
+        let rewrapped =
+            GroveDb::rewrap_non_merk_tree_parent_element(mmr.clone(), true, grove_version)
+                .expect("rewrap");
+        assert!(rewrapped.is_non_counted());
+
+        let untouched = GroveDb::rewrap_non_merk_tree_parent_element(mmr, false, grove_version)
+            .expect("rewrap");
+        assert!(!untouched.is_non_counted());
+
+        // The rewrite paths only build bare elements, but a cross-wrapper
+        // input must error rather than nest wrappers.
+        let not_summed = Element::empty_sum_tree()
+            .into_not_summed()
+            .expect("wrap in NotSummed");
+        let result = GroveDb::rewrap_non_merk_tree_parent_element(not_summed, true, grove_version);
+        assert!(matches!(result, Err(Error::ElementError(_))));
+    }
+
+    /// An unknown slot value fails closed with a version-mismatch error.
+    #[test]
+    fn unknown_version_fails_closed() {
+        let mut version = GroveVersion::latest().clone();
+        version
+            .grovedb_versions
+            .operations
+            .non_merk_tree
+            .parent_element_rewrap = 9;
+        let result =
+            GroveDb::rewrap_non_merk_tree_parent_element(Element::empty_mmr_tree(), true, &version);
+        assert!(matches!(result, Err(Error::VersionError(_))));
+    }
+}

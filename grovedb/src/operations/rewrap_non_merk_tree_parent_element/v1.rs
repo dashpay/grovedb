@@ -17,12 +17,10 @@ pub(super) fn rewrap_non_merk_tree_parent_element_v1(
     stored_was_non_counted: bool,
 ) -> Result<Element, Error> {
     if stored_was_non_counted {
-        rebuilt.into_non_counted().map_err(|_| {
-            Error::CorruptedCodeExecution(
-                "into_non_counted called on a wrapped element during non-Merk tree parent \
-                 element rewrap",
-            )
-        })
+        // Infallible for the bare non-Merk tree elements the rewrite paths
+        // build; the typed error is surfaced rather than unwrapped in case
+        // a future change ever feeds a wrapper through.
+        rebuilt.into_non_counted().map_err(Error::from)
     } else {
         Ok(rebuilt)
     }
