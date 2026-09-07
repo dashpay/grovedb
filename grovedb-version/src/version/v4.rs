@@ -235,8 +235,15 @@
 //!   a tree element, which the batch resolver has always rejected; v1
 //!   accepted it and committed only `H(tree element bytes)`, a hash that does
 //!   not bind the subtree's contents, so the row could not be proved and
-//!   subtree changes never disturbed it. Gated because (i) moves a committed
-//!   root and (ii)/(iii) flip an accepted/rejected outcome.
+//!   subtree changes never disturbed it. (iv) A directly inserted non-empty
+//!   indexed-tree element (PCIT / PSIT / PCPSIT) has its claimed secondary
+//!   root keys validated against the STORED element's canonical values
+//!   (issue #897). v1 opened each secondary Merk with the incoming key and
+//!   compared the returned root key against that same input — circular, so
+//!   any existing node key of the secondary (every row is one) passed and
+//!   committed the hash of a non-root node, authenticating a strict subtree
+//!   of the index as the whole index. Gated because (i) moves a committed
+//!   root and (ii)/(iii)/(iv) flip an accepted/rejected outcome.
 //!
 //! - `storage_costs.add_basic_storage_removal_to_sectioned_storage_removal:
 //!   1` — combining a `BasicStorageRemoval` with a `SectionedStorageRemoval`

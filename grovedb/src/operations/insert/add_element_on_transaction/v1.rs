@@ -1,4 +1,5 @@
-//! `add_element_on_transaction` — **v1** (current behaviour, `GROVE_V3`+).
+//! `add_element_on_transaction` — **v1** (`GROVE_V3`; superseded by
+//! [`super::v2`] from `GROVE_V4`).
 //!
 //! `CountSumTree` / `ProvableCountTree` / `ProvableCountSumTree` are inserted as
 //! **layered subtrees** (`Op::PutLayeredReference`), the same way the batch
@@ -11,6 +12,13 @@
 //! ONLY in the match arm for those three element types, where v0 uses the
 //! plain-value `Op::Put` path instead. See the module docs in
 //! [`super`][`mod@super`] for the consensus rationale.
+//!
+//! KNOWN, DELIBERATELY PRESERVED FLAW (issue #897, fixed in [`super::v2`]):
+//! the indexed-tree arms here validate a non-empty element's claimed
+//! secondary root key by opening the secondary Merk WITH that key and
+//! comparing the returned root key against the same input — circular, so any
+//! existing node key of the secondary Merk passes and commits a non-root
+//! node's hash. `GROVE_V3` is live; do not tighten this here.
 
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
