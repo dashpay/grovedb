@@ -500,12 +500,12 @@ fn rejects_byte_mutated_proof() {
     // mismatch by comparing against their trusted root.
     let verified = verify_count_offset_on_range_proof(&bytes, &range, 5, Some(3), true).unwrap();
     let original_root = merk.root_hash().unwrap();
-    match verified {
-        Ok(res) => assert_ne!(
+    // An explicit rejection (Err) is also fine.
+    if let Ok(res) = verified {
+        assert_ne!(
             res.root_hash, original_root,
             "byte mutation must either error or produce a non-matching root hash"
-        ),
-        Err(_) => {} // explicit rejection — also fine
+        );
     }
 }
 
@@ -765,13 +765,13 @@ fn rejects_child_counts_exceeding_parent_aggregate() {
     );
 }
 
-/// Forged proof where a child's recursive structural count disagrees
-/// with the count it claims via its immediate count field. We build
-/// a parent with one leaf child whose recursive sum says aggregate=1
-/// but the parent's `left_aggregate` snapshot says... hmm actually
-/// that one's hard to forge in isolation because the immediate-child
-/// read and the recursive return are computed from the same node.
-/// Skip — the other checks cover the same code path.
+// Forged proof where a child's recursive structural count disagrees
+// with the count it claims via its immediate count field. We build
+// a parent with one leaf child whose recursive sum says aggregate=1
+// but the parent's `left_aggregate` snapshot says... hmm actually
+// that one's hard to forge in isolation because the immediate-child
+// read and the recursive return are computed from the same node.
+// Skip — the other checks cover the same code path.
 
 /// Forged `KVCount` returned-item at an out-of-range key. The
 /// verifier's `classify_self` rejects in the !in_range arm of the

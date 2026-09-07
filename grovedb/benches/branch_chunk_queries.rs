@@ -94,10 +94,10 @@ impl KeyLeafTracker {
 
     /// Mark a key as found - remove it and decrement refcount
     fn key_found(&mut self, key: &[u8]) {
-        if let Some(leaf) = self.key_to_leaf.remove(key) {
-            if let Some(count) = self.leaf_refcount.get_mut(&leaf) {
-                *count = count.saturating_sub(1);
-            }
+        if let Some(leaf) = self.key_to_leaf.remove(key)
+            && let Some(count) = self.leaf_refcount.get_mut(&leaf)
+        {
+            *count = count.saturating_sub(1);
         }
     }
 
@@ -237,11 +237,11 @@ fn get_ancestor_from_tree(
 
     for idx in (min_idx..leaf_idx).rev() {
         let (node_tree, key, hash) = &path[idx];
-        if let Some(count) = get_node_count(node_tree) {
-            if count >= min_privacy_tree_count {
-                let levels_up = (leaf_idx - idx) as u8;
-                return Some((levels_up, count, key.clone(), *hash));
-            }
+        if let Some(count) = get_node_count(node_tree)
+            && count >= min_privacy_tree_count
+        {
+            let levels_up = (leaf_idx - idx) as u8;
+            return Some((levels_up, count, key.clone(), *hash));
         }
     }
 

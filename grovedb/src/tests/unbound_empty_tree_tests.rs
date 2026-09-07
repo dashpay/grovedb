@@ -298,7 +298,7 @@ fn forge_element_bytes(
                     key.clone(),
                     fake_bytes.clone(),
                     *value_hash,
-                    feature_type.clone(),
+                    *feature_type,
                 )
             }
             // Drop the child hash: the merk verifier would otherwise
@@ -311,7 +311,7 @@ fn forge_element_bytes(
                     key.clone(),
                     fake_bytes.clone(),
                     *value_hash,
-                    feature_type.clone(),
+                    *feature_type,
                 )
             }
             _ => continue,

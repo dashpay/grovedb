@@ -127,10 +127,10 @@ mod tests {
         let mut maybe_prev_key: Option<Vec<u8>> = None;
         let mut deduped_batch = Vec::with_capacity(batch.len());
         for entry in batch {
-            if let Some(prev_key) = &maybe_prev_key {
-                if *prev_key == entry.0 {
-                    continue;
-                }
+            if let Some(prev_key) = &maybe_prev_key
+                && *prev_key == entry.0
+            {
+                continue;
             }
 
             maybe_prev_key = Some(entry.0.clone());

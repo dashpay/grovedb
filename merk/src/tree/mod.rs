@@ -1939,7 +1939,7 @@ mod test {
     #[test]
     fn provable_sum_tree_aggregates_and_hashes_sum() {
         use crate::tree::{
-            hash::{node_hash, node_hash_with_sum, NULL_HASH},
+            hash::{node_hash, node_hash_with_sum},
             tree_feature_type::TreeFeatureType::ProvableSummedMerkNode,
         };
         use crate::TreeType;

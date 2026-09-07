@@ -385,7 +385,7 @@ mod tests {
                 b"key1".to_vec(),
                 Element::new_item_with_flags(b"value".to_vec(), Some(vec![0, 1])),
             ),
-            QualifiedGroveDbOp::insert_only_op(
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                 vec![b"tree".to_vec(), b"tree2".to_vec()],
                 b"keyref".to_vec(),
                 Element::new_reference_with_flags(

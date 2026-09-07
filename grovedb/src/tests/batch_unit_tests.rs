@@ -349,7 +349,7 @@ mod tests {
                 "Insert Or Replace",
             ),
             (
-                QualifiedGroveDbOp::insert_only_op(
+                QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                     vec![b"p".to_vec()],
                     b"k".to_vec(),
                     element.clone(),
@@ -662,7 +662,7 @@ mod tests {
     fn test_consistency_insert_only_under_deleted_path() {
         let ops = vec![
             QualifiedGroveDbOp::delete_op(vec![b"root".to_vec()], b"subtree".to_vec()),
-            QualifiedGroveDbOp::insert_only_op(
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                 vec![b"root".to_vec(), b"subtree".to_vec()],
                 b"key".to_vec(),
                 Element::new_item(b"val".to_vec()),
@@ -980,7 +980,7 @@ mod tests {
         let db = make_test_grovedb(grove_version);
 
         let ops = vec![
-            QualifiedGroveDbOp::insert_only_op(
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                 vec![TEST_LEAF.to_vec()],
                 b"only_item".to_vec(),
                 Element::new_item(b"hello".to_vec()),
@@ -1029,7 +1029,7 @@ mod tests {
 
         // Batch: InsertWithKnownToNotAlreadyExist a reference to base_item, then another ref to that
         let ops = vec![
-            QualifiedGroveDbOp::insert_only_op(
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                 vec![TEST_LEAF.to_vec()],
                 b"ref_b".to_vec(),
                 Element::new_reference(ReferencePathType::AbsolutePathReference(vec![

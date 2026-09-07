@@ -467,7 +467,7 @@ mod tests {
     #[should_panic]
     fn cant_borrow_twice() {
         let version = GroveVersion::latest();
-        let db = make_test_grovedb(&version);
+        let db = make_test_grovedb(version);
         let tx = db.start_transaction();
 
         let cache = MerkCache::new(&db, &tx, version);
@@ -496,7 +496,7 @@ mod tests {
     #[should_panic]
     fn cant_borrow_parent_twice() {
         let version = GroveVersion::latest();
-        let db = make_test_grovedb(&version);
+        let db = make_test_grovedb(version);
         let tx = db.start_transaction();
 
         let cache = MerkCache::new(&db, &tx, version);
@@ -516,7 +516,7 @@ mod tests {
     #[test]
     fn can_use_non_overlapping_for_merk() {
         let version = GroveVersion::latest();
-        let db = make_deep_tree(&version);
+        let db = make_deep_tree(version);
         let tx = db.start_transaction();
 
         let cache = MerkCache::new(&db, &tx, version);
@@ -539,7 +539,7 @@ mod tests {
     #[test]
     fn cant_open_merk_with_deleted_parent() {
         let version = GroveVersion::latest();
-        let db = make_deep_tree(&version);
+        let db = make_deep_tree(version);
         let tx = db.start_transaction();
 
         let cache = MerkCache::new(&db, &tx, version);
@@ -557,7 +557,7 @@ mod tests {
     #[test]
     fn subtrees_are_propagated() {
         let version = GroveVersion::latest();
-        let db = make_deep_tree(&version);
+        let db = make_deep_tree(version);
         let tx = db.start_transaction();
 
         let path = SubtreePath::from(&[TEST_LEAF, b"innertree"]);
@@ -567,11 +567,11 @@ mod tests {
             let batch = StorageBatch::new();
 
             let mut merk = db
-                .open_transactional_merk_at_path(path.clone(), &tx, Some(&batch), &version)
+                .open_transactional_merk_at_path(path.clone(), &tx, Some(&batch), version)
                 .unwrap()
                 .unwrap();
 
-            item.insert(&mut merk, b"k1", None, &version)
+            item.insert(&mut merk, b"k1", None, version)
                 .unwrap()
                 .unwrap();
 
@@ -583,7 +583,7 @@ mod tests {
         let mut merk = cache.get_merk(path.derive_owned()).unwrap().unwrap();
 
         merk.for_merk(|m| {
-            item.insert(m, b"k1", None, &version)
+            item.insert(m, b"k1", None, version)
                 .map_err(Error::MerkError)
         })
         .unwrap()
@@ -597,7 +597,7 @@ mod tests {
     #[test]
     fn deleted_subtree_can_be_reinserted() {
         let version = GroveVersion::latest();
-        let db = make_deep_tree(&version);
+        let db = make_deep_tree(version);
         let tx = db.start_transaction();
         let cache = MerkCache::<[u8; 0]>::new(&db, &tx, version);
 
@@ -670,7 +670,7 @@ mod tests {
     #[test]
     fn open_subtree_checks_on_parent() {
         let version = GroveVersion::latest();
-        let db = make_deep_tree(&version);
+        let db = make_deep_tree(version);
         let tx = db.start_transaction();
 
         let cache = MerkCache::<[u8; 0]>::new(&db, &tx, version);

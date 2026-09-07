@@ -194,15 +194,14 @@ fn forged_count_changes_reconstructed_root_hash_or_fails() {
          pick a different fixture range if this fails"
     );
     let bytes = encode_proof(&ops);
-    match verify_aggregate_count_and_sum_on_range_proof(&bytes, &inner_range).unwrap() {
-        Ok((forged_root, _c, _s)) => {
-            assert_ne!(
-                forged_root, honest_root,
-                "tampered HashWithCountAndSum count must change reconstructed root hash"
-            );
-        }
-        // Internal arithmetic mismatch is also a valid rejection.
-        Err(_) => {}
+    // An internal arithmetic mismatch (Err) is also a valid rejection.
+    if let Ok((forged_root, _c, _s)) =
+        verify_aggregate_count_and_sum_on_range_proof(&bytes, &inner_range).unwrap()
+    {
+        assert_ne!(
+            forged_root, honest_root,
+            "tampered HashWithCountAndSum count must change reconstructed root hash"
+        );
     }
 }
 
@@ -234,14 +233,13 @@ fn forged_sum_changes_reconstructed_root_hash_or_fails() {
         "test fixture must produce at least one HashWithCountAndSum op for this range"
     );
     let bytes = encode_proof(&ops);
-    match verify_aggregate_count_and_sum_on_range_proof(&bytes, &inner_range).unwrap() {
-        Ok((forged_root, _c, _s)) => {
-            assert_ne!(
-                forged_root, honest_root,
-                "tampered HashWithCountAndSum sum must change reconstructed root hash"
-            );
-        }
-        Err(_) => {}
+    if let Ok((forged_root, _c, _s)) =
+        verify_aggregate_count_and_sum_on_range_proof(&bytes, &inner_range).unwrap()
+    {
+        assert_ne!(
+            forged_root, honest_root,
+            "tampered HashWithCountAndSum sum must change reconstructed root hash"
+        );
     }
 }
 
@@ -273,14 +271,13 @@ fn forged_kvdigest_count_changes_root_or_fails() {
         "test fixture must produce at least one KVDigestCountSum op for this range"
     );
     let bytes = encode_proof(&ops);
-    match verify_aggregate_count_and_sum_on_range_proof(&bytes, &inner_range).unwrap() {
-        Ok((forged_root, _c, _s)) => {
-            assert_ne!(
-                forged_root, honest_root,
-                "tampered KVDigestCountSum count must change reconstructed root hash"
-            );
-        }
-        Err(_) => {}
+    if let Ok((forged_root, _c, _s)) =
+        verify_aggregate_count_and_sum_on_range_proof(&bytes, &inner_range).unwrap()
+    {
+        assert_ne!(
+            forged_root, honest_root,
+            "tampered KVDigestCountSum count must change reconstructed root hash"
+        );
     }
 }
 
@@ -311,14 +308,13 @@ fn forged_kvdigest_sum_changes_root_or_fails() {
         "test fixture must produce at least one KVDigestCountSum op for this range"
     );
     let bytes = encode_proof(&ops);
-    match verify_aggregate_count_and_sum_on_range_proof(&bytes, &inner_range).unwrap() {
-        Ok((forged_root, _c, _s)) => {
-            assert_ne!(
-                forged_root, honest_root,
-                "tampered KVDigestCountSum sum must change reconstructed root hash"
-            );
-        }
-        Err(_) => {}
+    if let Ok((forged_root, _c, _s)) =
+        verify_aggregate_count_and_sum_on_range_proof(&bytes, &inner_range).unwrap()
+    {
+        assert_ne!(
+            forged_root, honest_root,
+            "tampered KVDigestCountSum sum must change reconstructed root hash"
+        );
     }
 }
 

@@ -1136,7 +1136,7 @@ mod tests {
         use bincode::{decode_from_slice, encode_to_vec};
         use grovedb_merk::{
             proofs::{encode_into, Decoder, Node, Op},
-            tree::{kv_digest_to_kv_hash as _, value_hash, TreeFeatureType},
+            tree::{value_hash, TreeFeatureType},
         };
 
         use crate::operations::proof::{GroveDBProof, GroveDBProofV1, ProofBytes};

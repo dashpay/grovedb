@@ -362,8 +362,6 @@ mod tests {
 
     /// Helper: build a bincode-encoded V0 proof with `depth` levels of nesting.
     fn build_nested_v0_proof_bytes(depth: usize) -> Vec<u8> {
-        use bincode::Encode;
-
         // Build innermost layer first, then wrap it
         let mut layer = MerkOnlyLayerProof {
             merk_proof: vec![],
@@ -388,8 +386,6 @@ mod tests {
 
     /// Helper: build a bincode-encoded V1 proof with `depth` levels of nesting.
     fn build_nested_v1_proof_bytes(depth: usize) -> Vec<u8> {
-        use bincode::Encode;
-
         let mut layer = LayerProof {
             merk_proof: ProofBytes::Merk(vec![]),
             lower_layers: BTreeMap::new(),
@@ -492,8 +488,6 @@ mod tests {
     /// Helper: build a V0 proof where the root layer has `num_children`
     /// direct children (flat, not nested).
     fn build_wide_v0_proof_bytes(num_children: usize) -> Vec<u8> {
-        use bincode::Encode;
-
         let mut lower_layers = BTreeMap::new();
         for i in 0..num_children {
             lower_layers.insert(
@@ -520,8 +514,6 @@ mod tests {
     /// Helper: build a V1 proof where the root layer has `num_children`
     /// direct children (flat, not nested).
     fn build_wide_v1_proof_bytes(num_children: usize) -> Vec<u8> {
-        use bincode::Encode;
-
         let mut lower_layers = BTreeMap::new();
         for i in 0..num_children {
             lower_layers.insert(

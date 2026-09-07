@@ -557,7 +557,7 @@ mod tests {
         let tampered = rebuild_with_target_ops(proof_v1, b"ct", &ops);
 
         let result = GroveDb::verify_trunk_chunk_proof(&tampered, &trunk_query(), grove_version);
-        let msg = format!("{:?}", result.err().expect("forged bound row rejected"));
+        let msg = format!("{:?}", result.expect_err("forged bound row rejected"));
         assert!(msg.contains("value/child hash mismatch"), "{msg}");
     }
 
@@ -832,8 +832,7 @@ mod tests {
         let err = db
             .prove_trunk_chunk(&trunk_query(), grove_version)
             .unwrap()
-            .err()
-            .expect("trunk over a host with an indexed row is refused");
+            .expect_err("trunk over a host with an indexed row is refused");
         assert!(
             matches!(&err, Error::NotSupported(msg) if msg.contains("indexed tree")),
             "unexpected error: {err:?}"
@@ -843,8 +842,7 @@ mod tests {
         let err = db
             .prove_branch_chunk(&branch_query, grove_version)
             .unwrap()
-            .err()
-            .expect("branch rooted at an indexed row is refused");
+            .expect_err("branch rooted at an indexed row is refused");
         assert!(
             matches!(&err, Error::NotSupported(msg) if msg.contains("indexed tree")),
             "unexpected error: {err:?}"
@@ -872,8 +870,7 @@ mod tests {
         let msg = format!(
             "{:?}",
             GroveDb::check_chunk_proof_row(&node, &key, &indexed_bytes, &indexed, grove_version)
-                .err()
-                .expect("indexed row rejected")
+                .expect_err("indexed row rejected")
         );
         assert!(msg.contains("indexed tree"), "{msg}");
 
@@ -884,8 +881,7 @@ mod tests {
         let msg = format!(
             "{:?}",
             GroveDb::check_chunk_proof_row(&node, &key, &tree_bytes, &tree, grove_version)
-                .err()
-                .expect("tree in KV rejected")
+                .expect_err("tree in KV rejected")
         );
         assert!(msg.contains("must carry its child hash"), "{msg}");
 
@@ -904,8 +900,7 @@ mod tests {
         let msg = format!(
             "{:?}",
             GroveDb::check_chunk_proof_row(&node, &key, &item_bytes, &item, grove_version)
-                .err()
-                .expect("item in child-hash node rejected")
+                .expect_err("item in child-hash node rejected")
         );
         assert!(msg.contains("neither a tree nor a reference"), "{msg}");
 
@@ -959,8 +954,7 @@ mod tests {
         let msg = format!(
             "{:?}",
             GroveDb::check_chunk_proof_row(&node, &key, &item_bytes, &item, grove_version)
-                .err()
-                .expect("v0 rejects an item mismatch")
+                .expect_err("v0 rejects an item mismatch")
         );
         assert!(msg.contains("value hash mismatch"), "{msg}");
         // ... and accepted when the hash matches.
@@ -992,8 +986,7 @@ mod tests {
         let msg = format!(
             "{:?}",
             GroveDb::check_chunk_proof_row(&node, &key, &tree_bytes, &tree, grove_version)
-                .err()
-                .expect("v0 rejects a wrong child hash")
+                .expect_err("v0 rejects a wrong child hash")
         );
         assert!(msg.contains("value/child hash mismatch"), "{msg}");
 
@@ -1002,8 +995,7 @@ mod tests {
         let msg = format!(
             "{:?}",
             GroveDb::check_chunk_proof_row(&node, &key, &item_bytes, &item, grove_version)
-                .err()
-                .expect("v0 rejects KVRefValueHash")
+                .expect_err("v0 rejects KVRefValueHash")
         );
         assert!(msg.contains("unexpected KVRefValueHash"), "{msg}");
 
@@ -1025,8 +1017,7 @@ mod tests {
         let msg = format!(
             "{:?}",
             GroveDb::check_chunk_proof_row(&node, &key, &item_bytes, &item, grove_version)
-                .err()
-                .expect("v1 rejects KVRefValueHash family")
+                .expect_err("v1 rejects KVRefValueHash family")
         );
         assert!(msg.contains("unexpected KVRefValueHash"), "{msg}");
 
@@ -1034,8 +1025,7 @@ mod tests {
         let msg = format!(
             "{:?}",
             GroveDb::check_chunk_proof_row(&node, &key, &item_bytes, &item, grove_version)
-                .err()
-                .expect("v1 rejects an item mismatch")
+                .expect_err("v1 rejects an item mismatch")
         );
         assert!(msg.contains("value hash mismatch"), "{msg}");
 
@@ -1180,8 +1170,7 @@ mod tests {
         let msg = format!(
             "{:?}",
             GroveDb::verify_trunk_chunk_proof(&proof, &trunk_query(), GroveVersion::latest())
-                .err()
-                .expect("V0 envelope with unbound tree rows is rejected under GROVE_V4")
+                .expect_err("V0 envelope with unbound tree rows is rejected under GROVE_V4")
         );
         assert!(msg.contains("must carry its child hash"), "{msg}");
     }

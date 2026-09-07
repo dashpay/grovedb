@@ -373,11 +373,13 @@ mod tests {
         let db = make_test_grovedb(grove_version);
 
         // InsertWithKnownToNotAlreadyExist should succeed when key does not exist
-        let ops = vec![QualifiedGroveDbOp::insert_only_op(
-            vec![TEST_LEAF.to_vec()],
-            b"insert_only_key".to_vec(),
-            Element::new_item(b"val".to_vec()),
-        )];
+        let ops = vec![
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+                vec![TEST_LEAF.to_vec()],
+                b"insert_only_key".to_vec(),
+                Element::new_item(b"val".to_vec()),
+            ),
+        ];
 
         db.apply_operations_without_batching(ops, None, None, grove_version)
             .unwrap()
@@ -970,12 +972,12 @@ mod tests {
         let db = make_test_grovedb(grove_version);
 
         let ops = vec![
-            QualifiedGroveDbOp::insert_only_op(
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                 vec![TEST_LEAF.to_vec()],
                 b"only1".to_vec(),
                 Element::new_item(b"val1".to_vec()),
             ),
-            QualifiedGroveDbOp::insert_only_op(
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                 vec![TEST_LEAF.to_vec()],
                 b"only2".to_vec(),
                 Element::new_item(b"val2".to_vec()),
@@ -1923,13 +1925,17 @@ mod tests {
         // InsertWithKnownToNotAlreadyExist for tree and items. The tree insert triggers the
         // occupied-entry propagation path for InsertWithKnownToNotAlreadyExist variant.
         let ops = vec![
-            QualifiedGroveDbOp::insert_only_op(vec![], b"new_tree".to_vec(), Element::empty_tree()),
-            QualifiedGroveDbOp::insert_only_op(
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+                vec![],
+                b"new_tree".to_vec(),
+                Element::empty_tree(),
+            ),
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                 vec![b"new_tree".to_vec()],
                 b"item1".to_vec(),
                 Element::new_item(b"v1".to_vec()),
             ),
-            QualifiedGroveDbOp::insert_only_op(
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
                 vec![b"new_tree".to_vec()],
                 b"item2".to_vec(),
                 Element::new_item(b"v2".to_vec()),
@@ -2669,10 +2675,11 @@ mod tests {
             None,
             |_cost, old_flags, new_flags| {
                 // Merge: copy the second byte from old flags
-                if let Some(old) = old_flags {
-                    if old.len() >= 2 && new_flags.len() >= 2 {
-                        new_flags[1] = old[1].wrapping_add(1);
-                    }
+                if let Some(old) = old_flags
+                    && old.len() >= 2
+                    && new_flags.len() >= 2
+                {
+                    new_flags[1] = old[1].wrapping_add(1);
                 }
                 Ok(true) // indicate flags changed
             },

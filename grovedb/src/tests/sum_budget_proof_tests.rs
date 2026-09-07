@@ -1022,12 +1022,11 @@ mod tests {
                                 _,
                                 child_hash,
                             )) = op
+                                && row_key == key
                             {
-                                if row_key == key {
-                                    assert_ne!(*child_hash, wrong_hash);
-                                    *child_hash = wrong_hash;
-                                    hit = true;
-                                }
+                                assert_ne!(*child_hash, wrong_hash);
+                                *child_hash = wrong_hash;
+                                hit = true;
                             }
                         }
                         assert!(hit, "the reference row must carry a bound witness");

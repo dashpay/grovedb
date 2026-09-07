@@ -1796,7 +1796,7 @@ impl<'a> SinglePathSubquery<'a> {
 #[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
-    use grovedb_merk::proofs::query::AggregateFold;
+
     use std::{borrow::Cow, ops::RangeFull};
 
     use bincode::{config::standard, decode_from_slice, encode_to_vec};

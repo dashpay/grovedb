@@ -373,10 +373,10 @@ mod tests {
         let b = [2u8; 32];
         let c = [3u8; 32];
 
-        let left_nested = combine_hash(&combine_hash(&a, &b).value().to_owned(), &c)
+        let left_nested = combine_hash(combine_hash(&a, &b).value(), &c)
             .value()
             .to_owned();
-        let right_nested = combine_hash(&a, &combine_hash(&b, &c).value().to_owned())
+        let right_nested = combine_hash(&a, combine_hash(&b, &c).value())
             .value()
             .to_owned();
         let flat = combine_hash_three(&a, &b, &c).value().to_owned();
@@ -613,7 +613,6 @@ pub fn node_hash_with_count_and_sum(
 #[cfg(test)]
 #[cfg(feature = "minimal")]
 mod node_hash_with_sum_tests {
-    use grovedb_costs::CostsExt;
 
     use super::{
         node_hash, node_hash_with_count, node_hash_with_count_and_sum, node_hash_with_sum,
