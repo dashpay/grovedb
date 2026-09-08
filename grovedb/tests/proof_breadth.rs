@@ -165,7 +165,9 @@ fn v1_depth_limit_is_unchanged_in_all_decode_modes() {
 
 #[cfg(feature = "minimal")]
 mod generation {
-    use grovedb::{Element, GroveDb, PathQuery, Query, SizedQuery};
+    use grovedb::{
+        operations::proof::MAX_PROOF_CHILDREN, Element, GroveDb, PathQuery, Query, SizedQuery,
+    };
     use grovedb_version::version::{v3::GROVE_V3, GroveVersion};
 
     use super::*;
@@ -286,5 +288,63 @@ mod generation {
     #[test]
     fn terminal_count_results_do_not_consume_child_layers() {
         check_composite_count_proof(false, 200);
+    }
+
+    /// One parent tree with `width` non-empty child subtrees, built in a
+    /// single batch. Empty children are proven inline by their parent row
+    /// and emit no child layer, so each child carries one item.
+    fn wide_parent(db: &GroveDb, width: usize) -> Vec<Vec<u8>> {
+        use grovedb::batch::QualifiedGroveDbOp;
+
+        let parent = vec![b"wide".to_vec()];
+        insert(db, &[], b"wide", Element::empty_tree());
+        let ops = (0..width)
+            .flat_map(|key| {
+                let key = (key as u32).to_be_bytes().to_vec();
+                let mut child = parent.clone();
+                child.push(key.clone());
+                [
+                    QualifiedGroveDbOp::insert_or_replace_op(
+                        parent.clone(),
+                        key,
+                        Element::empty_tree(),
+                    ),
+                    QualifiedGroveDbOp::insert_or_replace_op(
+                        child,
+                        b"doc".to_vec(),
+                        Element::new_item(vec![1]),
+                    ),
+                ]
+            })
+            .collect();
+        db.apply_batch(ops, None, None, GroveVersion::latest())
+            .unwrap()
+            .unwrap();
+        parent
+    }
+
+    #[test]
+    fn generation_refuses_a_layer_wider_than_the_child_cap_under_v4_only() {
+        let version = GroveVersion::latest();
+        let directory = tempfile::TempDir::new().unwrap();
+        let db = GroveDb::open(directory.path()).unwrap();
+        let parent = wide_parent(&db, MAX_PROOF_CHILDREN + 1);
+        let mut query = Query::new_range_full();
+        query.set_subquery(Query::new_range_full());
+        let query = PathQuery::new(parent, SizedQuery::new(query, None, None));
+
+        // V4 refuses to emit a layer its own decoder would reject.
+        let error = db
+            .prove_query(&query, None, version)
+            .unwrap()
+            .expect_err("V4 generation must refuse an over-wide layer");
+        assert!(error.to_string().contains("child layer limit"), "{error}");
+
+        // GROVE_V3 keeps the shipped producer/consumer mismatch: the proof
+        // is generated, and the V3 verifier rejects it at the historical cap.
+        let bytes = db.prove_query(&query, None, &GROVE_V3).unwrap().unwrap();
+        let error = GroveDb::verify_query(&bytes, &query, &GROVE_V3)
+            .expect_err("the V3 decoder keeps its 128-child cap");
+        assert!(error.to_string().contains("too many children"), "{error}");
     }
 }
