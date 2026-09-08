@@ -2,9 +2,9 @@
 
 **Hierarchical Authenticated Data Structure Database**
 
-A high-performance, cryptographically verifiable database that organizes data as a "grove" — a forest of Merkle AVL trees (Merk). Enables efficient queries on any indexed field while maintaining cryptographic proofs throughout the hierarchy.
+A cryptographically verifiable database that organizes data as a "grove" of nested Merkle AVL trees (Merk). GroveDB combines key-value storage, secondary indexes, aggregate queries, and append-only structures under a single authenticated root hash. Clients can verify query results without holding the database.
 
-**[Read the GroveDB Book](https://dashpay.github.io/grovedb/index.html)** — comprehensive documentation covering architecture, element types, proofs, queries, and more. Available in 16 languages.
+**[Read the GroveDB Book](https://dashpay.github.io/grovedb/index.html)** — documentation covering architecture, element types, proofs, queries, and more, with translations into 16 languages.
 
 | Branch | Tests | Coverage |
 |--------|-------|----------|
@@ -27,51 +27,150 @@ A high-performance, cryptographically verifiable database that organizes data as
 
 ## Key Features
 
-- **Hierarchical tree-of-trees** — organize data in nested Merk trees with a single root hash authenticating everything
-- **Efficient secondary indexes** — pre-computed index trees give O(log n) queries on any field
-- **Cryptographic proofs** — membership, non-membership, and range proofs with minimal size
-- **7 reference types** — cross-tree linking without data duplication
-- **Built-in aggregations** — sum trees, count trees, big sum trees, and combined variants
-- **Batch operations** — atomic updates across multiple trees
-- **Append-only structures** — MMR trees, bulk append trees, commitment trees (Sinsemilla/Halo 2)
-- **Cross-platform** — x86, ARM, WebAssembly
+- **Hierarchical storage** — nest trees and authenticate their contents through one root hash
+- **Secondary indexes and references** — index application fields through cross-tree references, with opt-in bidirectional references for update and deletion propagation
+- **Unified queries** — express key selections, ranges, nested subqueries, per-instance limits, count-offset pagination, and sum-budget reads through `PathQuery`
+- **Aggregates and ordered indexes** — count and sum trees, provable aggregate variants, and indexed trees supporting top-k, rank, and bounded queries ordered by count, sum, or average
+- **Cryptographic proofs** — prove membership, absence, ranges, and supported aggregate and indexed queries; verify results against a trusted root hash
+- **Transactions and batches** — apply atomic updates across the grove with explicit tracking of storage, seek, and hashing costs
+- **Append-only structures** — Merkle mountain ranges, dense and bulk append trees, Sinsemilla commitment trees, and fixed-size opaque entries in `PrivateDocumentStore`
+- **Client verification** — build proof verifiers separately from native RocksDB storage, including for WebAssembly clients
 
 ## Quick Start
+
+Add both crates to your application's `Cargo.toml`:
 
 ```toml
 [dependencies]
 grovedb = "6.0"
+grovedb-version = "6.0"
 ```
+
+Save the following as `src/main.rs` and run `cargo run`. It creates a tree,
+stores and reads an item, then generates and verifies a proof. Use a fresh
+`my_db` directory.
 
 ```rust
-use grovedb::{GroveDb, Element};
+use grovedb::{Element, GroveDb, PathQuery, Query};
 use grovedb_version::version::GroveVersion;
 
-let db = GroveDb::open("./my_db")?;
-let v = GroveVersion::latest();
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let db = GroveDb::open("./my_db")?;
+    let version = GroveVersion::latest();
+    let root_path: &[&[u8]] = &[];
+    let users_path: &[&[u8]] = &[b"users"];
 
-// Create trees
-db.insert(&[], b"users", Element::new_tree(None), None, None, v)?;
-db.insert(&[b"users"], b"alice", Element::new_tree(None), None, None, v)?;
+    db.insert(
+        root_path,
+        b"users",
+        Element::empty_tree(),
+        None,
+        None,
+        version,
+    )
+    .value?;
 
-// Insert data
-db.insert(&[b"users", b"alice"], b"age", Element::new_item(b"30"), None, None, v)?;
+    db.insert(
+        users_path,
+        b"alice",
+        Element::new_item(b"Alice".to_vec()),
+        None,
+        None,
+        version,
+    )
+    .value?;
 
-// Query
-let age = db.get(&[b"users", b"alice"], b"age", None, v)?;
+    let alice = db.get(users_path, b"alice", None, version).value?;
+    assert_eq!(alice, Element::new_item(b"Alice".to_vec()));
 
-// Generate and verify proofs
-let path_query = PathQuery::new_unsized(vec![b"users".to_vec()], Query::new_range_full());
-let proof = db.prove_query(&path_query, None, None, v)?;
-let (root_hash, results) = GroveDb::verify_query(&proof, &path_query, v)?;
+    let path_query = PathQuery::new_unsized(
+        vec![b"users".to_vec()],
+        Query::new_single_key(b"alice".to_vec()),
+    );
+
+    // This example trusts its local database. Remote clients obtain this
+    // root independently, for example from an authenticated Platform block.
+    let trusted_root = db.root_hash(None, version).value?;
+    let proof = db.prove_query(&path_query, None, version).value?;
+    let (root_hash, results) = GroveDb::verify_query(&proof, &path_query, version)?;
+
+    assert_eq!(root_hash, trusted_root);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].2.as_ref(), Some(&alice));
+    Ok(())
+}
 ```
 
+Database operations return a `CostContext` containing a result in `.value` and
+measured work in `.cost`. The example uses `.value?` to propagate errors; an
+application that accounts for execution costs can also accumulate `.cost`.
+
+Use `GroveDb::run_path_query` and `GroveDb::verify_path_query` for the unified
+read and verification interfaces across query shapes. See the
+[query guide](https://dashpay.github.io/grovedb/unified-path-query.html) and
+[per-instance limits](https://dashpay.github.io/grovedb/per-instance-limits.html).
+
+## Client Verification
+
+Applications that only verify proofs can disable the default storage features:
+
+```toml
+[dependencies]
+grovedb = { version = "6.0", default-features = false, features = ["verify"] }
+grovedb-version = "6.0"
+```
+
+Verification checks a proof against the requested query and returns its root
+hash. Compare that hash with an independently trusted root before accepting the
+results. This build supports verification without opening a RocksDB database.
+
+## Upgrading to 6.0
+
+GroveDB 6.0 includes public API changes since 5.0.1. Query merges are now fallible,
+and query and operation-option structs have additional fields. Update callers
+that construct these structs directly or match exhaustively on public enums.
+
+GroveDB uses **`grovedb-bincode` 2.1.0**, maintained in this repository. Applications
+that serialize or deserialize GroveDB types directly must use the fork's traits:
+
+```toml
+[dependencies]
+bincode = { package = "grovedb-bincode", version = "=2.1.0" }
+```
+
+The default `derive` feature selects the matching `grovedb-bincode-derive` crate.
+The fork has distinct Rust trait identities from upstream bincode. Its ordinary
+encoding and decoding retain upstream 2.0.1 behavior; its new `DecodeUntrusted`
+and `BorrowDecodeUntrusted` APIs provide opt-in allocation safeguards for external
+input. See the [bincode integration guide](grovedb-bincode/GROVEDB.md) for direct
+decoding, Serde opt-in, and configuration details. GroveDB's proof verification
+entry points already use untrusted decoding.
+
+V1 proofs now allow up to 65,535 immediate child layers, independently of the
+128-level recursion limit. Older verifier binaries still reject layers wider
+than 128 children, so update client verifiers alongside applications that serve
+wide proofs. Decoding budgets still apply.
+
+Package versions and runtime compatibility versions are separate. GroveDB 6.0
+includes `GROVE_V4`; select the `GroveVersion` required by your application's
+protocol. `GroveVersion::latest()` is convenient for new applications, while
+consensus and replay code should select the required version explicitly.
+
 ## Building
+
+Native database builds require a recent stable Rust toolchain, a C++ toolchain,
+and libclang for RocksDB bindings.
 
 ```bash
 cargo build --release
 cargo test
 cargo bench
+```
+
+To build just the proof-verification library:
+
+```bash
+cargo build -p grovedb --no-default-features --features verify
 ```
 
 ## Contributing
@@ -86,11 +185,16 @@ pre-commit install --hook-type pre-push  # clippy on push
 
 ## Architecture
 
-GroveDB is built in three layers:
+GroveDB is organized around three layers:
 
-1. **GroveDB Core** — orchestrates multiple Merk trees, elements, references, queries, proofs, and batch operations
+1. **GroveDB Core** — coordinates the tree hierarchy, indexed and append-only structures, references, queries, proofs, and batch operations
 2. **Merk** — self-balancing Merkle AVL tree with proof generation, cost tracking, and lazy loading
 3. **Storage** — RocksDB abstraction with prefixed storage, transactions, and batching
+
+Supporting workspace crates provide query types, elements, runtime version
+selection, cost accounting, specialized trees, and the bincode fork. GroveDB
+supports concurrent readers alongside a single writer; applications must
+serialize write transactions.
 
 For deep dives into each layer, see the [GroveDB Book](https://dashpay.github.io/grovedb/index.html).
 
@@ -102,7 +206,7 @@ Built by [Dash Core Group](https://dashplatform.readme.io/docs/introduction-what
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE.md](LICENSE.md).
 
 ## Links
 
