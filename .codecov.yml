@@ -16,6 +16,9 @@ flag_management:
     carryforward: true
 
 ignore:
+  # Imported upstream code is tested separately and excluded from our coverage.
+  - "grovedb-bincode/**"
+  - "grovedb-bincode-derive/**"
   - "**/test_utils.rs"
   - "**/test_utils/**"
   - "**/tests.rs"

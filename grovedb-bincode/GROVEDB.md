@@ -53,7 +53,7 @@ packages that depend on them. Their versions are independent of GroveDB's versio
 
 ## Validation
 
-The original release tests run as workspace tests. The additional
+The original release tests are retained. The additional
 `upstream_compatibility` test compares both implementations directly, using
 upstream 2.0.1 only as a development dependency. It checks identical bytes and
 cross-decoding with both byte orders and both integer encodings.
@@ -61,3 +61,9 @@ cross-decoding with both byte orders and both integer encodings.
 ```sh
 cargo test -p grovedb-bincode -p grovedb-bincode-derive --all-features
 ```
+
+CI runs these tests, Clippy, formatting, and no-std feature checks in a separate
+`Bincode` job only when files in `grovedb-bincode/` or `grovedb-bincode-derive/`
+change. The regular workspace CI jobs exclude both packages as direct targets,
+and both packages are excluded from coverage reports and Codecov. GroveDB's
+tests still compile and exercise the fork as a dependency.
