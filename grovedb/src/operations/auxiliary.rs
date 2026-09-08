@@ -35,7 +35,7 @@ use grovedb_costs::{
 use grovedb_element::indexed::IndexAxis;
 use grovedb_path::SubtreePath;
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, Storage, StorageBatch, StorageContext};
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{check_grovedb_v0_or_v1_with_cost, version::GroveVersion};
 
 use crate::{
     element::elements_iterator::ElementIteratorExtensions, util::TxRef, Element, Error, GroveDb,
@@ -131,9 +131,13 @@ impl GroveDb {
     }
 
     // TODO: dumb traversal should not be tolerated
-    /// Finds keys which are trees for a given subtree recursively.
-    /// One element means a key of a `merk`, n > 1 elements mean relative path
-    /// for a deeply nested subtree.
+    /// Finds subtree namespaces recursively, including the starting Merk
+    /// namespace at `path`. Returned paths are absolute.
+    ///
+    /// On V4+, non-Merk descendants are included for cleanup but are not
+    /// traversed: their data records are not Merk nodes and they cannot
+    /// contain child subtrees. V1..V3 retain the historical traversal and
+    /// its costs and errors for replay compatibility.
     ///
     /// # Storage batch visibility
     ///
@@ -155,6 +159,12 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<Vec<Vec<u8>>>, Error> {
+        let discovery_version = grove_version
+            .grovedb_versions
+            .operations
+            .non_merk_tree
+            .subtree_discovery;
+        check_grovedb_v0_or_v1_with_cost!("find_subtrees", discovery_version);
         let mut cost = OperationCost::default();
 
         // TODO: remove conversion to vec;
@@ -187,7 +197,13 @@ impl GroveDb {
                 if value.is_any_tree() {
                     let mut sub_path = q.clone();
                     sub_path.push(key.to_vec());
-                    queue.push(sub_path.clone());
+                    // Only Merk namespaces can contain more subtrees. Use
+                    // the element already decoded from the parent to classify
+                    // storage, including through element wrappers, without
+                    // adding a read or dropping the namespace from cleanup.
+                    if discovery_version == 0 || !value.uses_non_merk_data_storage() {
+                        queue.push(sub_path.clone());
+                    }
                     result.push(sub_path);
                 }
             }

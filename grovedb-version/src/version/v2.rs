@@ -242,6 +242,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             // GROVE_V4). Preserved for replay; GROVE_V4 restores the
             // wrapper for every family.
             non_merk_tree: GroveDBOperationsNonMerkTreeVersions {
+                subtree_discovery: 0,
                 parent_element_rewrap: 0,
             },
         },

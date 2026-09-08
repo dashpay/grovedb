@@ -265,6 +265,11 @@
 //!   of the index as the whole index. Gated because (i) moves a committed
 //!   root and (ii)/(iii)/(iv) flip an accepted/rejected outcome.
 //!
+//! - `operations.non_merk_tree.subtree_discovery: 1` — recursive discovery
+//!   includes non-Merk descendants for cleanup without traversing their data
+//!   as Merk nodes (issue #890). V1..V3 preserve the historical traversal,
+//!   including its costs for empty namespaces and failures for populated ones.
+//!
 //! - `operations.non_merk_tree.parent_element_rewrap: 1` — a typed append to
 //!   a `NonCounted`-wrapped non-Merk data tree (`CommitmentTree`, `MmrTree`,
 //!   `BulkAppendTree`, `DenseAppendOnlyFixedSizeTree`) restores the wrapper
@@ -583,6 +588,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             // V1..V3 keep the released wrapper drop (PrivateDocumentStore
             // excepted) to preserve committed root hashes.
             non_merk_tree: GroveDBOperationsNonMerkTreeVersions {
+                subtree_discovery: 1,
                 parent_element_rewrap: 1,
             },
         },
