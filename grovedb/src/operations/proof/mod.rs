@@ -1103,6 +1103,7 @@ fn decode_merk_proof(proof: &[u8]) -> Result<String, fmt::Error> {
             }
             Err(e) => {
                 result.push_str(&format!("\n    {}: Error decoding op: {}", i, e));
+                break;
             }
         }
     }
