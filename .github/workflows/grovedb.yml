@@ -21,6 +21,7 @@ jobs:
     outputs:
       any-code: ${{ steps.filter.outputs.any-code }}
       needs-tests: ${{ steps.decide.outputs.needs-tests }}
+      bincode: ${{ steps.filter.outputs.bincode }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,6 +37,9 @@ jobs:
             build-files:
               - '**/Cargo.toml'
               - 'Cargo.lock'
+            bincode:
+              - 'grovedb-bincode/**'
+              - 'grovedb-bincode-derive/**'
       - name: Check if Rust changes are doc-comment-only
         id: doc-check
         if: >-
@@ -86,9 +90,13 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@cargo-nextest
       - name: Run tests (shard ${{ matrix.partition }}/3)
+        # --exclude removes the imported crates from both tests and coverage.
+        # Their own checks run in the bincode job only when their files change.
         run: >
           cargo llvm-cov nextest
           --workspace
+          --exclude grovedb-bincode
+          --exclude grovedb-bincode-derive
           --all-features
           --partition count:${{ matrix.partition }}/3
           --lcov --output-path lcov.info
@@ -129,7 +137,10 @@ jobs:
         env:
           SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: sccache
-        run: cargo clippy --workspace --all-features -- -D warnings
+        run: >
+          cargo clippy --workspace
+          --exclude grovedb-bincode --exclude grovedb-bincode-derive
+          --all-features --no-deps -- -D warnings
       # Benches and other non-lib targets are not built by the clippy or test
       # steps, so a rename can leave a registered bench target uncompilable
       # without any job noticing. Type-check every target (no -D warnings
@@ -138,7 +149,10 @@ jobs:
         env:
           SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: sccache
-        run: cargo check --workspace --all-features --all-targets
+        run: >
+          cargo check --workspace
+          --exclude grovedb-bincode --exclude grovedb-bincode-derive
+          --all-features --all-targets
       - name: Check verify feature
         env:
           SCCACHE_GHA_ENABLED: "true"
@@ -155,7 +169,45 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - run: cargo fmt --all --check
+      - name: Check workspace formatting
+        # cargo fmt has no --exclude; select workspace packages explicitly.
+        run: |
+          package_names=$(cargo metadata --no-deps --format-version 1 | jq -r '
+            .packages[].name
+            | select(. != "grovedb-bincode" and . != "grovedb-bincode-derive")
+          ')
+          packages=()
+          while IFS= read -r package; do
+            packages+=(-p "$package")
+          done <<< "$package_names"
+          cargo fmt "${packages[@]}" --check
+
+  bincode:
+    name: Bincode
+    needs: detect-changes
+    if: needs.detect-changes.outputs.bincode == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
+      - name: Run upstream and compatibility tests
+        run: cargo test -p grovedb-bincode -p grovedb-bincode-derive --all-features
+      - name: Run clippy on all targets
+        run: >
+          cargo clippy -p grovedb-bincode -p grovedb-bincode-derive
+          --all-features --all-targets --no-deps -- -D warnings
+      - name: Check formatting
+        run: cargo fmt -p grovedb-bincode -p grovedb-bincode-derive --check
+      - name: Check no-std feature combinations
+        run: |
+          cargo check -p grovedb-bincode --no-default-features
+          cargo check -p grovedb-bincode --no-default-features --features alloc,derive
+          cargo check -p grovedb-bincode --no-default-features --features alloc,serde
 
   security:
     name: Security Audit
