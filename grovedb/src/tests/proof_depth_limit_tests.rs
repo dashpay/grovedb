@@ -557,7 +557,8 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let path_query = make_simple_path_query();
 
-        let proof_bytes = build_wide_v1_proof_bytes(MAX_PROOF_DEPTH + 1);
+        let proof_bytes =
+            build_wide_v1_proof_bytes(crate::operations::proof::MAX_PROOF_CHILDREN + 1);
 
         let result = GroveDb::verify_query(&proof_bytes, &path_query, grove_version);
         let err = result.expect_err("should reject proof with too many children per layer");
@@ -647,7 +648,8 @@ mod tests {
 
     #[test]
     fn borrow_decode_rejects_v1_proof_with_too_many_children() {
-        let proof_bytes = build_wide_v1_proof_bytes(MAX_PROOF_DEPTH + 1);
+        let proof_bytes =
+            build_wide_v1_proof_bytes(crate::operations::proof::MAX_PROOF_CHILDREN + 1);
         assert_borrow_decode_err(&proof_bytes, "too many children");
     }
 

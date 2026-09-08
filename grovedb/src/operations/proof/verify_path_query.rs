@@ -377,8 +377,8 @@ impl GroveDb {
                 })
             }
             PathQueryShape::SumBudget { .. } => {
-                let proof_v1 =
-                    validated.require_v1_envelope(decode_grovedb_proof_canonical(proof)?)?;
+                let proof_v1 = validated
+                    .require_v1_envelope(decode_grovedb_proof_canonical(proof, grove_version)?)?;
                 let (root_hash, _, outcomes) =
                     Self::verify_proof_v1_with_axis_outcomes(&proof_v1, path_query, grove_version)?;
                 let [outcome]: [AxisWalkOutcome; 1] =
@@ -432,7 +432,8 @@ impl GroveDb {
         ),
         Error,
     > {
-        let proof_v1 = validated.require_v1_envelope(decode_grovedb_proof_canonical(proof)?)?;
+        let proof_v1 =
+            validated.require_v1_envelope(decode_grovedb_proof_canonical(proof, grove_version)?)?;
         Self::verify_proof_v1_with_axis_outcomes(&proof_v1, validated.query(), grove_version)
     }
 

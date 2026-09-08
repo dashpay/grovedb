@@ -166,6 +166,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 verify_single_path: 0,
             },
             proof: GroveDBOperationsProofVersions {
+                v1_proof_resource_limits: 0,
                 prove_query: 0,
                 prove_query_many: 0,
                 prove_query_non_serialized: 0,
