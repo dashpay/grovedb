@@ -12,6 +12,11 @@ concurrency:
   group: release-crates
   cancel-in-progress: false
 
+# Publishing uses the crates.io token, not GITHUB_TOKEN; the job only reads
+# the checkout.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -28,9 +33,14 @@ jobs:
 
       - name: Check that the release tag matches the workspace version
         if: github.event_name == 'release'
+        # The tag reaches the shell through the environment, never through
+        # template expansion into the script, so a crafted tag cannot inject
+        # commands into the release job.
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
-          tag="${{ github.event.release.tag_name }}"
+          tag="$RELEASE_TAG"
           version="$(cargo metadata --format-version 1 --no-deps \
             | jq -r '.packages[] | select(.name == "grovedb") | .version')"
           if [ "$tag" != "v$version" ]; then
