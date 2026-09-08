@@ -6,6 +6,15 @@ on:
     types:
       - published
 
+# Publishing is not re-entrant: two runs racing on the same versions would
+# both try to upload. Queue instead.
+concurrency:
+  group: release-crates
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   publish:
     name: Publish to crates.io
@@ -17,18 +26,98 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Login to crates.io
-        run: cargo login ${{ secrets.CARGO_GROVE_TOKEN }}
+      - name: Check that the release tag matches the workspace version
+        if: github.event_name == 'release'
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.release.tag_name }}"
+          version="$(cargo metadata --format-version 1 --no-deps \
+            | jq -r '.packages[] | select(.name == "grovedb") | .version')"
+          if [ "$tag" != "v$version" ]; then
+            echo "::error::release tag $tag does not match the grovedb crate version $version"
+            exit 1
+          fi
+          echo "release $tag matches grovedb $version"
 
       - name: Publish crates
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_GROVE_TOKEN }}
         run: |
-          # Publish all workspace crates
-          cargo publish -p grovedb-version
-          cargo publish -p grovedb-costs
-          cargo publish -p grovedb-visualize
-          cargo publish -p grovedb-path
-          cargo publish -p grovedb-storage
-          cargo publish -p grovedb-epoch-based-storage-flags
-          cargo publish -p grovedbg-types
-          cargo publish -p grovedb-merk
-          cargo publish -p grovedb
+          set -euo pipefail
+
+          # Every crate is listed after the workspace crates it depends on
+          # (see `cargo metadata`). cargo waits for each upload to reach the
+          # index before the next publish resolves it, so no sleeps are needed.
+          #
+          # A version that is already on crates.io is skipped, which makes a
+          # re-run after a partial failure pick up where the last run stopped.
+          crates=(
+            grovedb-costs
+            grovedb-path
+            grovedb-visualize
+            grovedb-version
+            grovedbg-types
+            grovedb-bincode-derive
+            grovedb-bincode
+            grovedb-storage
+            grovedb-epoch-based-storage-flags
+            grovedb-query
+            grovedb-element
+            grovedb-merkle-mountain-range
+            grovedb-dense-fixed-sized-merkle-tree
+            grovedb-bulk-append-tree
+            grovedb-private-document-store
+            grovedb-merk
+            # grovedb-commitment-tree depends on the dashpay orchard fork by
+            # git tag with no version, which crates.io rejects, and grovedb
+            # depends on grovedb-commitment-tree. Both stay last so everything
+            # else publishes; they succeed once orchard is a registry crate.
+            grovedb-commitment-tree
+            grovedb
+          )
+
+          metadata="$(cargo metadata --format-version 1 --no-deps)"
+          published=()
+          skipped=()
+
+          for i in "${!crates[@]}"; do
+            crate="${crates[$i]}"
+            version="$(jq -r --arg name "$crate" \
+              '.packages[] | select(.name == $name) | .version' <<<"$metadata")"
+            if [ -z "$version" ]; then
+              echo "::error::$crate is not a workspace member"
+              exit 1
+            fi
+
+            http_status="$(curl -sS -o /dev/null -w '%{http_code}' \
+              -A 'grovedb release workflow (https://github.com/dashpay/grovedb)' \
+              "https://crates.io/api/v1/crates/$crate/$version")"
+            case "$http_status" in
+              200)
+                echo "skip $crate $version: already on crates.io"
+                skipped+=("$crate@$version")
+                continue
+                ;;
+              404) ;;
+              *)
+                echo "::error::crates.io returned HTTP $http_status for $crate $version"
+                exit 1
+                ;;
+            esac
+
+            echo "::group::publish $crate $version"
+            if ! cargo publish -p "$crate"; then
+              echo "::endgroup::"
+              remaining=("${crates[@]:$((i + 1))}")
+              echo "::error::publishing $crate $version failed"
+              echo "published this run: ${published[*]:-none}"
+              echo "already on crates.io: ${skipped[*]:-none}"
+              echo "not attempted: ${remaining[*]:-none}"
+              exit 1
+            fi
+            echo "::endgroup::"
+            published+=("$crate@$version")
+          done
+
+          echo "published this run: ${published[*]:-none}"
+          echo "already on crates.io: ${skipped[*]:-none}"
