@@ -73,6 +73,7 @@
 
 mod de_borrowed;
 mod de_owned;
+mod de_policy;
 mod ser;
 mod untrusted;
 pub use untrusted::{DeserializeSeedUntrusted, DeserializeUntrusted};
@@ -205,7 +206,10 @@ where
     T: serde::de::DeserializeOwned,
 {
     fn decode<D: crate::de::Decoder>(decoder: &mut D) -> Result<Self, crate::error::DecodeError> {
-        let serde_decoder = de_owned::SerdeDecoder { de: decoder };
+        let serde_decoder = de_owned::SerdeDecoder {
+            de: decoder,
+            policy: de_policy::Ordinary,
+        };
         T::deserialize(serde_decoder).map(Compat)
     }
 }
@@ -216,7 +220,10 @@ where
     fn borrow_decode<D: crate::de::BorrowDecoder<'de>>(
         decoder: &mut D,
     ) -> Result<Self, crate::error::DecodeError> {
-        let serde_decoder = de_owned::SerdeDecoder { de: decoder };
+        let serde_decoder = de_owned::SerdeDecoder {
+            de: decoder,
+            policy: de_policy::Ordinary,
+        };
         T::deserialize(serde_decoder).map(Compat)
     }
 }
@@ -270,6 +277,7 @@ where
         decoder: &mut D,
     ) -> Result<Self, crate::error::DecodeError> {
         let serde_decoder = de_borrowed::SerdeDecoder {
+            policy: de_policy::Ordinary,
             de: decoder,
             pd: core::marker::PhantomData,
         };

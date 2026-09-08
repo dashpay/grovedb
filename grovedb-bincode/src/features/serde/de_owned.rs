@@ -1,3 +1,4 @@
+use super::de_policy::{Ordinary, Policy, Untrusted};
 use super::DeserializeUntrusted;
 use super::{de_borrowed::borrow_decode_from_slice, DecodeError as SerdeDecodeError};
 use crate::de::UntrustedDecoder;
@@ -21,7 +22,10 @@ impl<DE: Decoder> OwnedSerdeDecoder<DE> {
     pub fn as_deserializer<'a>(
         &'a mut self,
     ) -> impl for<'de> serde::Deserializer<'de, Error = DecodeError> + 'a {
-        SerdeDecoder { de: &mut self.de }
+        SerdeDecoder {
+            de: &mut self.de,
+            policy: Ordinary,
+        }
     }
 }
 
@@ -154,11 +158,12 @@ pub fn decode_from_reader_untrusted<D: for<'de> DeserializeUntrusted<'de>, R: Re
     decoder.decode()
 }
 
-pub(super) struct SerdeDecoder<'a, DE: Decoder> {
+pub(super) struct SerdeDecoder<'a, DE: Decoder, P: Policy<DE>> {
     pub(super) de: &'a mut DE,
+    pub(super) policy: P,
 }
 
-impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
+impl<'de, DE: Decoder, P: Policy<DE>> Deserializer<'de> for SerdeDecoder<'_, DE, P> {
     type Error = DecodeError;
 
     fn deserialize_any<V>(self, _: V) -> Result<V::Value, Self::Error>
@@ -271,11 +276,11 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
     }
 
     #[cfg(feature = "alloc")]
-    fn deserialize_str<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: serde::de::Visitor<'de>,
     {
-        visitor.visit_string(Decode::decode(&mut self.de)?)
+        visitor.visit_string(P::decode(self.de)?)
     }
 
     #[cfg(not(feature = "alloc"))]
@@ -287,11 +292,11 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
     }
 
     #[cfg(feature = "alloc")]
-    fn deserialize_string<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: serde::de::Visitor<'de>,
     {
-        visitor.visit_string(Decode::decode(&mut self.de)?)
+        visitor.visit_string(P::decode(self.de)?)
     }
 
     #[cfg(not(feature = "alloc"))]
@@ -303,11 +308,11 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
     }
 
     #[cfg(feature = "alloc")]
-    fn deserialize_bytes<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: serde::de::Visitor<'de>,
     {
-        visitor.visit_byte_buf(Decode::decode(&mut self.de)?)
+        visitor.visit_byte_buf(P::decode(self.de)?)
     }
 
     #[cfg(not(feature = "alloc"))]
@@ -319,11 +324,11 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
     }
 
     #[cfg(feature = "alloc")]
-    fn deserialize_byte_buf<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: serde::de::Visitor<'de>,
     {
-        visitor.visit_byte_buf(Decode::decode(&mut self.de)?)
+        visitor.visit_byte_buf(P::decode(self.de)?)
     }
     #[cfg(not(feature = "alloc"))]
     fn deserialize_byte_buf<V>(self, _: V) -> Result<V::Value, Self::Error>
@@ -386,12 +391,14 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
     where
         V: serde::de::Visitor<'de>,
     {
-        struct Access<'a, 'b, DE: Decoder> {
-            deserializer: &'a mut SerdeDecoder<'b, DE>,
+        struct Access<'a, 'b, DE: Decoder, P: Policy<DE>> {
+            deserializer: &'a mut SerdeDecoder<'b, DE, P>,
             len: usize,
         }
 
-        impl<'de, 'a, 'b: 'a, DE: Decoder + 'b> SeqAccess<'de> for Access<'a, 'b, DE> {
+        impl<'de, 'a, 'b: 'a, DE: Decoder + 'b, P: Policy<DE> + 'b> SeqAccess<'de>
+            for Access<'a, 'b, DE, P>
+        {
             type Error = DecodeError;
 
             fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, DecodeError>
@@ -404,6 +411,7 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
                         seed,
                         SerdeDecoder {
                             de: self.deserializer.de,
+                            policy: self.deserializer.policy,
                         },
                     )?;
                     Ok(Some(value))
@@ -413,12 +421,7 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
             }
 
             fn size_hint(&self) -> Option<usize> {
-                // Only the explicit untrusted path withholds allocation hints.
-                if DE::IS_UNTRUSTED {
-                    None
-                } else {
-                    Some(self.len)
-                }
+                P::size_hint(self.len)
             }
         }
 
@@ -444,12 +447,14 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
     where
         V: serde::de::Visitor<'de>,
     {
-        struct Access<'a, 'b, DE: Decoder> {
-            deserializer: &'a mut SerdeDecoder<'b, DE>,
+        struct Access<'a, 'b, DE: Decoder, P: Policy<DE>> {
+            deserializer: &'a mut SerdeDecoder<'b, DE, P>,
             len: usize,
         }
 
-        impl<'de, 'a, 'b: 'a, DE: Decoder + 'b> MapAccess<'de> for Access<'a, 'b, DE> {
+        impl<'de, 'a, 'b: 'a, DE: Decoder + 'b, P: Policy<DE> + 'b> MapAccess<'de>
+            for Access<'a, 'b, DE, P>
+        {
             type Error = DecodeError;
 
             fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, DecodeError>
@@ -462,6 +467,7 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
                         seed,
                         SerdeDecoder {
                             de: self.deserializer.de,
+                            policy: self.deserializer.policy,
                         },
                     )?;
                     Ok(Some(key))
@@ -478,18 +484,14 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
                     seed,
                     SerdeDecoder {
                         de: self.deserializer.de,
+                        policy: self.deserializer.policy,
                     },
                 )?;
                 Ok(value)
             }
 
             fn size_hint(&self) -> Option<usize> {
-                // Only the explicit untrusted path withholds allocation hints.
-                if DE::IS_UNTRUSTED {
-                    None
-                } else {
-                    Some(self.len)
-                }
+                P::size_hint(self.len)
             }
         }
 
@@ -544,7 +546,7 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
     }
 }
 
-impl<'de, DE: Decoder> EnumAccess<'de> for SerdeDecoder<'_, DE> {
+impl<'de, DE: Decoder, P: Policy<DE>> EnumAccess<'de> for SerdeDecoder<'_, DE, P> {
     type Error = DecodeError;
     type Variant = Self;
 
@@ -558,7 +560,7 @@ impl<'de, DE: Decoder> EnumAccess<'de> for SerdeDecoder<'_, DE> {
     }
 }
 
-impl<'de, DE: Decoder> VariantAccess<'de> for SerdeDecoder<'_, DE> {
+impl<'de, DE: Decoder, P: Policy<DE>> VariantAccess<'de> for SerdeDecoder<'_, DE, P> {
     type Error = DecodeError;
 
     fn unit_variant(self) -> Result<(), Self::Error> {
@@ -605,6 +607,9 @@ pub struct OwnedUntrustedSerdeDecoder<DE: UntrustedDecoder> {
 impl<DE: UntrustedDecoder> OwnedUntrustedSerdeDecoder<DE> {
     /// Decode a value whose complete Serde graph explicitly opts in.
     pub fn decode<T: for<'de> DeserializeUntrusted<'de>>(&mut self) -> Result<T, DecodeError> {
-        T::deserialize(self.inner.as_deserializer())
+        T::deserialize(SerdeDecoder {
+            de: &mut self.inner.de,
+            policy: Untrusted,
+        })
     }
 }

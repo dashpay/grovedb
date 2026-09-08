@@ -78,8 +78,12 @@ client types can derive `BorrowDecodeUntrusted`. Generated fields and generic
 containers recursively require and call the new traits; there is no blanket
 implementation for arbitrary ordinary decoders.
 
-The mode propagates through nested values, mutable decoder references, and
-`with_context`. New trait methods accept only a sealed `UntrustedDecoder`, so
+Allocation safeguards live in the untrusted collection implementations. Ordinary
+`Decode` and `BorrowDecode` retain upstream allocation behavior even when explicitly
+called on a decoder constructed with `new_untrusted`. Manual implementations must
+call the untrusted traits for nested fields; there is no decoder-wide mode switch.
+The sealed decoder capability survives mutable references and `with_context`.
+New trait methods accept only an `UntrustedDecoder`, so
 passing an ordinary decoder is a compile-time error. Existing decode-context,
 custom-bound, and renamed-crate derive attributes are supported. Custom native
 implementations must explicitly implement the new traits and retain their own
@@ -94,15 +98,16 @@ custom seeds implement `DeserializeSeedUntrusted<'de>`. This explicitly opts in
 the entire Serde graph, which Serde's own dispatch cannot check recursively.
 Library container implementations require their contents to opt in. `Compat`,
 `BorrowCompat`, and derived `#[bincode(with_serde)]` fields require the same opt-in
-and inherit the enclosing native decoder's mode.
+and select the private untrusted Serde adapter policy. Ordinary compatibility
+wrappers select the ordinary policy, independently of decoder capability.
 
-In untrusted mode, native collection decoders do not reserve vector or
+Untrusted native collection implementations do not reserve vector or
 hash-collection storage from an unverified length header. Byte vectors allocate after a reader
 can show the bytes, or after bounded chunks have been read. Other vectors and
 hash collections grow after a complete value or key/value pair has decoded.
 Fallible reservations return `DecodeError::LimitExceeded`. Types implemented
 through these vectors (including strings, boxed slices, and vector deques)
-inherit the checks. Both Serde adapters omit sequence/map size hints in this mode
+inherit the checks. Both untrusted Serde adapters omit sequence/map size hints
 so visitors cannot mistake a length declaration for a verified allocation size.
 
 Encoding is unchanged. Successfully decoded values and consumed-byte counts
@@ -116,6 +121,9 @@ This is not a universal memory or CPU budget: zero-wire types remain valid,
 `with_no_limit()` still disables the configured limit, and custom decoders or
 Serde visitors control their own allocations. GroveDB's Element wrapper rules
 remain in `grovedb-element`, where nested wrappers are rejected before descent.
+GroveDB's custom parsers share wire schemas and domain validation while explicitly
+selecting ordinary or untrusted field decoding and recursion. Query collection
+allocation is also selected by the trait implementation.
 GroveDB's Element, backward-reference, and proof decoding boundaries explicitly
 select the untrusted APIs. Downstream callers decoding GroveDB types directly
 must also select these APIs when handling untrusted bytes.

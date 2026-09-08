@@ -3,10 +3,12 @@
 use super::{BorrowDecoder, Decoder};
 use crate::error::DecodeError;
 
-/// A sealed decoder that always enables the untrusted collection policy.
+/// A sealed decoder accepted by the explicit untrusted decoding traits.
 ///
 /// Construct one with [`super::DecoderImpl::new_untrusted`]. Context changes and
-/// mutable references preserve this property.
+/// mutable references preserve this capability. Collection safeguards belong to
+/// [`DecodeUntrusted`] / [`BorrowDecodeUntrusted`] implementations; invoking
+/// ordinary [`super::Decode`] explicitly retains ordinary behavior.
 pub trait UntrustedDecoder: Decoder {}
 
 /// An untrusted decoder that can also borrow from its input.
@@ -55,7 +57,7 @@ impl<'de, D: BorrowDecoder<'de> + UntrustedDecoder + ?Sized> BorrowUntrustedDeco
 /// struct Ordinary<'a>(&'a str);
 /// let _ = bincode::borrow_decode_from_slice_untrusted::<Ordinary<'_>, _>(&[0], bincode::config::standard());
 /// ```
-/// Untrusted methods require a decoder with the policy enabled:
+/// Untrusted methods require the explicit decoder capability:
 /// ```compile_fail
 /// use bincode::DecodeUntrusted;
 /// let reader = bincode::de::read::SliceReader::new(&[1]);
@@ -63,7 +65,7 @@ impl<'de, D: BorrowDecoder<'de> + UntrustedDecoder + ?Sized> BorrowUntrustedDeco
 /// let _ = u8::decode_untrusted(&mut decoder);
 /// ```
 pub trait DecodeUntrusted<Context>: Sized {
-    /// Decode using the enforced untrusted policy.
+    /// Decode with explicit untrusted field dispatch and resource handling.
     fn decode_untrusted<D: UntrustedDecoder<Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError>;
@@ -74,7 +76,7 @@ pub trait DecodeUntrusted<Context>: Sized {
 /// Use `#[derive(BorrowDecodeUntrusted)]` for borrowed types. Deriving
 /// [`DecodeUntrusted`] already generates this implementation for owned types.
 pub trait BorrowDecodeUntrusted<'de, Context>: Sized {
-    /// Borrow-decode using the enforced untrusted policy.
+    /// Borrow-decode with explicit untrusted field dispatch and resource handling.
     fn borrow_decode_untrusted<D: BorrowUntrustedDecoder<'de, Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError>;

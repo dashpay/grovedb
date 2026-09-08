@@ -22,44 +22,47 @@ pub struct SubqueryBranch {
     pub subquery: Option<Box<Query>>,
 }
 
-impl SubqueryBranch {
-    pub(crate) fn decode_with_depth<D: Decoder>(
-        decoder: &mut D,
-        depth: usize,
-    ) -> Result<Self, DecodeError> {
-        let subquery_path = Option::<Path>::decode(decoder)?;
-        let has_subquery = u8::decode(decoder)?;
-        let subquery = if has_subquery == 1 {
-            Some(Box::new(Query::decode_with_depth(decoder, depth + 1)?))
-        } else {
-            None
-        };
-        Ok(SubqueryBranch {
-            subquery_path,
-            subquery,
-        })
-    }
+// One wire schema and validation sequence; trait and recursion dispatch are
+// selected explicitly for each owned/borrowed decoding API.
+macro_rules! subquery_branch_decoder {
+    ($decode:ident, $depth_decode:ident, [$($generics:tt)*]) => {
 
-    pub(crate) fn borrow_decode_with_depth<'de, D: BorrowDecoder<'de>>(
-        decoder: &mut D,
-        depth: usize,
-    ) -> Result<Self, DecodeError> {
-        let subquery_path = Option::<Path>::borrow_decode(decoder)?;
-        let has_subquery = u8::borrow_decode(decoder)?;
-        let subquery = if has_subquery == 1 {
-            Some(Box::new(Query::borrow_decode_with_depth(
-                decoder,
-                depth + 1,
-            )?))
-        } else {
-            None
-        };
-        Ok(SubqueryBranch {
-            subquery_path,
-            subquery,
-        })
-    }
+        impl SubqueryBranch {
+            pub(crate) fn $depth_decode<$($generics)*>(
+                decoder: &mut D,
+                depth: usize,
+            ) -> Result<Self, DecodeError> {
+                let subquery_path = Option::<Path>::$decode(decoder)?;
+                let has_subquery = u8::$decode(decoder)?;
+                let subquery = if has_subquery == 1 {
+                    Some(Box::new(Query::$depth_decode(decoder, depth + 1)?))
+                } else {
+                    None
+                };
+                Ok(SubqueryBranch {
+                    subquery_path,
+                    subquery,
+                })
+            }
+        }
+    };
 }
+subquery_branch_decoder!(decode, decode_with_depth, [D: bincode::de::Decoder]);
+subquery_branch_decoder!(
+    borrow_decode,
+    borrow_decode_with_depth,
+    ['de, D: bincode::de::BorrowDecoder<'de>]
+);
+subquery_branch_decoder!(
+    decode_untrusted,
+    decode_untrusted_with_depth,
+    [D: bincode::de::UntrustedDecoder]
+);
+subquery_branch_decoder!(
+    borrow_decode_untrusted,
+    borrow_decode_untrusted_with_depth,
+    ['de, D: bincode::de::BorrowUntrustedDecoder<'de>]
+);
 
 impl<Context> Decode<Context> for SubqueryBranch {
     fn decode<D: Decoder<Context = Context>>(decoder: &mut D) -> Result<Self, DecodeError> {
@@ -80,7 +83,7 @@ impl<Context> DecodeUntrusted<Context> for SubqueryBranch {
     fn decode_untrusted<D: bincode::de::UntrustedDecoder<Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
-        Self::decode_with_depth(decoder, 0)
+        Self::decode_untrusted_with_depth(decoder, 0)
     }
 }
 
@@ -88,7 +91,7 @@ impl<'de, Context> BorrowDecodeUntrusted<'de, Context> for SubqueryBranch {
     fn borrow_decode_untrusted<D: bincode::de::BorrowUntrustedDecoder<'de, Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
-        Self::borrow_decode_with_depth(decoder, 0)
+        Self::borrow_decode_untrusted_with_depth(decoder, 0)
     }
 }
 

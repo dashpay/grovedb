@@ -59,6 +59,7 @@ mod proof_status;
 /// Proof primitives: Op, Node, encoding, and TreeFeatureType.
 pub mod proofs;
 
+mod decode_collections;
 mod query;
 
 mod subquery_branch;

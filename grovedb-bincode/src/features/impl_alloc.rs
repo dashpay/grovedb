@@ -256,77 +256,32 @@ where
     }
 }
 
-/// Allocate byte storage only after the reader has demonstrated its contents.
-/// Slice readers retain a single-allocation fast path; other readers use a
-/// bounded stack buffer so a length header alone cannot request heap storage.
-fn decode_byte_vec<D: Decoder>(decoder: &mut D, len: usize) -> Result<Vec<u8>, DecodeError> {
-    let mut vec = Vec::new();
-    if decoder.reader().peek_read(len).is_some() {
-        vec.try_reserve_exact(len)
-            .map_err(|_| DecodeError::LimitExceeded)?;
-        vec.resize(len, 0);
-        decoder.reader().read(&mut vec)?;
-    } else {
-        let mut remaining = len;
-        let mut chunk = [0u8; 1024];
-        while remaining != 0 {
-            let count = remaining.min(chunk.len());
-            decoder.reader().read(&mut chunk[..count])?;
-            vec.try_reserve(count)
-                .map_err(|_| DecodeError::LimitExceeded)?;
-            vec.extend_from_slice(&chunk[..count]);
-            remaining -= count;
-        }
-    }
-    Ok(vec)
-}
-
-pub(crate) fn decode_vec<T, D: Decoder>(
-    decoder: &mut D,
-    mut decode: impl FnMut(&mut D) -> Result<T, DecodeError>,
-) -> Result<Vec<T>, DecodeError> {
-    let len = crate::de::decode_slice_len(decoder)?;
-
-    if unty::type_equal::<T, u8>() {
-        decoder.claim_container_read::<T>(len)?;
-        let vec = if D::IS_UNTRUSTED {
-            decode_byte_vec(decoder, len)?
-        } else {
-            // Preserve upstream's single read and eager allocation.
-            let mut vec = alloc::vec![0u8; len];
-            decoder.reader().read(&mut vec)?;
-            vec
-        };
-        // Safety: Vec<T> is Vec<u8>
-        Ok(unsafe { core::mem::transmute::<Vec<u8>, Vec<T>>(vec) })
-    } else {
-        decoder.claim_container_read::<T>(len)?;
-
-        let mut vec = if D::IS_UNTRUSTED {
-            Vec::new()
-        } else {
-            Vec::with_capacity(len)
-        };
-        for _ in 0..len {
-            // See the documentation on `unclaim_bytes_read` as to why we're doing this here
-            decoder.unclaim_bytes_read(core::mem::size_of::<T>());
-
-            let value = decode(decoder)?;
-            if D::IS_UNTRUSTED {
-                vec.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
-            }
-            vec.push(value);
-        }
-        Ok(vec)
-    }
-}
-
 impl<Context, T> Decode<Context> for Vec<T>
 where
     T: Decode<Context>,
 {
     fn decode<D: Decoder<Context = Context>>(decoder: &mut D) -> Result<Self, DecodeError> {
-        decode_vec(decoder, T::decode)
+        let len = crate::de::decode_slice_len(decoder)?;
+
+        if unty::type_equal::<T, u8>() {
+            decoder.claim_container_read::<T>(len)?;
+            // optimize for reading u8 vecs
+            let mut vec = alloc::vec![0u8; len];
+            decoder.reader().read(&mut vec)?;
+            // Safety: Vec<T> is Vec<u8>
+            Ok(unsafe { core::mem::transmute::<Vec<u8>, Vec<T>>(vec) })
+        } else {
+            decoder.claim_container_read::<T>(len)?;
+
+            let mut vec = Vec::with_capacity(len);
+            for _ in 0..len {
+                // See the documentation on `unclaim_bytes_read` as to why we're doing this here
+                decoder.unclaim_bytes_read(core::mem::size_of::<T>());
+
+                vec.push(T::decode(decoder)?);
+            }
+            Ok(vec)
+        }
     }
 }
 
@@ -337,7 +292,27 @@ where
     fn borrow_decode<D: BorrowDecoder<'de, Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
-        decode_vec(decoder, T::borrow_decode)
+        let len = crate::de::decode_slice_len(decoder)?;
+
+        if unty::type_equal::<T, u8>() {
+            decoder.claim_container_read::<T>(len)?;
+            // optimize for reading u8 vecs
+            let mut vec = alloc::vec![0u8; len];
+            decoder.reader().read(&mut vec)?;
+            // Safety: Vec<T> is Vec<u8>
+            Ok(unsafe { core::mem::transmute::<Vec<u8>, Vec<T>>(vec) })
+        } else {
+            decoder.claim_container_read::<T>(len)?;
+
+            let mut vec = Vec::with_capacity(len);
+            for _ in 0..len {
+                // See the documentation on `unclaim_bytes_read` as to why we're doing this here
+                decoder.unclaim_bytes_read(core::mem::size_of::<T>());
+
+                vec.push(T::borrow_decode(decoder)?);
+            }
+            Ok(vec)
+        }
     }
 }
 

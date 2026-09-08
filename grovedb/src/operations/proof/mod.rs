@@ -82,7 +82,7 @@ pub(super) fn decode_grovedb_proof_canonical(proof: &[u8]) -> Result<GroveDBProo
 use bincode::{
     de::{BorrowDecoder, Decoder as BincodeDecoder},
     error::DecodeError,
-    BorrowDecode, Decode, DecodeUntrusted, Encode,
+    BorrowDecode, BorrowDecodeUntrusted, Decode, DecodeUntrusted, Encode,
 };
 use grovedb_bulk_append_tree::BulkAppendTreeProof;
 use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
@@ -578,59 +578,84 @@ pub struct LayerProof {
     pub lower_layers: BTreeMap<Key, LayerProof>,
 }
 
-impl LayerProof {
-    fn decode_with_depth<D: BincodeDecoder>(
-        decoder: &mut D,
-        depth: usize,
-    ) -> Result<Self, DecodeError> {
-        if depth > MAX_PROOF_DEPTH {
-            return Err(DecodeError::Other(
-                "proof layer nesting depth exceeded maximum",
-            ));
-        }
-        let merk_proof = ProofBytes::decode(decoder)?;
-        let len = u64::decode(decoder)? as usize;
-        if len > MAX_PROOF_DEPTH {
-            return Err(DecodeError::Other("proof layer has too many children"));
-        }
-        let mut lower_layers = BTreeMap::new();
-        for _ in 0..len {
-            let key = Key::decode(decoder)?;
-            let value = Self::decode_with_depth(decoder, depth + 1)?;
-            lower_layers.insert(key, value);
-        }
-        Ok(LayerProof {
-            merk_proof,
-            lower_layers,
-        })
-    }
+// The wire schema and depth/child limits are shared. Field decoding and
+// length conversion are selected explicitly by each trait implementation.
+macro_rules! layer_proof_decoder {
+    ($proof:ident, $bytes:ty, $decode:ident, $recurse:ident, [$($generics:tt)*], $length:expr) => {
 
-    fn borrow_decode_with_depth<'de, D: BorrowDecoder<'de>>(
-        decoder: &mut D,
-        depth: usize,
-    ) -> Result<Self, DecodeError> {
-        if depth > MAX_PROOF_DEPTH {
-            return Err(DecodeError::Other(
-                "proof layer nesting depth exceeded maximum",
-            ));
+        impl $proof {
+            fn $recurse<$($generics)*>(
+                decoder: &mut D,
+                depth: usize,
+            ) -> Result<Self, DecodeError> {
+                if depth > MAX_PROOF_DEPTH {
+                    return Err(DecodeError::Other(
+                        "proof layer nesting depth exceeded maximum",
+                    ));
+                }
+                let merk_proof = <$bytes>::$decode(decoder)?;
+                let len = ($length)(u64::$decode(decoder)?)?;
+                if len > MAX_PROOF_DEPTH {
+                    return Err(DecodeError::Other("proof layer has too many children"));
+                }
+                let mut lower_layers = BTreeMap::new();
+                for _ in 0..len {
+                    let key = Key::$decode(decoder)?;
+                    let value = Self::$recurse(decoder, depth + 1)?;
+                    lower_layers.insert(key, value);
+                }
+                Ok(Self {
+                    merk_proof,
+                    lower_layers,
+                })
+            }
         }
-        let merk_proof = ProofBytes::borrow_decode(decoder)?;
-        let len = u64::borrow_decode(decoder)? as usize;
-        if len > MAX_PROOF_DEPTH {
-            return Err(DecodeError::Other("proof layer has too many children"));
-        }
-        let mut lower_layers = BTreeMap::new();
-        for _ in 0..len {
-            let key = Key::borrow_decode(decoder)?;
-            let value = Self::borrow_decode_with_depth(decoder, depth + 1)?;
-            lower_layers.insert(key, value);
-        }
-        Ok(LayerProof {
-            merk_proof,
-            lower_layers,
-        })
-    }
+    };
 }
+layer_proof_decoder!(
+    LayerProof,
+    ProofBytes,
+    decode,
+    decode_with_depth,
+    [D: BincodeDecoder],
+    |len| Ok::<usize, DecodeError>(len as usize)
+);
+layer_proof_decoder!(
+    LayerProof,
+    ProofBytes,
+    borrow_decode,
+    borrow_decode_with_depth,
+    ['de, D: BorrowDecoder<'de>],
+    |len| Ok::<usize, DecodeError>(len as usize)
+);
+layer_proof_decoder!(
+    LayerProof,
+    ProofBytes,
+    decode_untrusted,
+    decode_untrusted_with_depth,
+    [D: bincode::de::UntrustedDecoder],
+    |len| usize::try_from(len).map_err(|_| DecodeError::LimitExceeded)
+);
+layer_proof_decoder!(
+    LayerProof,
+    ProofBytes,
+    borrow_decode_untrusted,
+    borrow_decode_untrusted_with_depth,
+    ['de, D: bincode::de::BorrowUntrustedDecoder<'de>],
+    |len| usize::try_from(len).map_err(|_| DecodeError::LimitExceeded)
+);
+
+// Preserve the existing V0 compatibility entry point with explicit untrusted
+// field dispatch. Historical V0 generation, verification, and ordinary decoding
+// remain untouched.
+layer_proof_decoder!(
+    MerkOnlyLayerProof,
+    Vec<u8>,
+    decode_untrusted,
+    decode_untrusted_with_depth,
+    [D: bincode::de::UntrustedDecoder],
+    |len| usize::try_from(len).map_err(|_| DecodeError::LimitExceeded)
+);
 
 impl<Context> Decode<Context> for LayerProof {
     fn decode<D: BincodeDecoder<Context = Context>>(decoder: &mut D) -> Result<Self, DecodeError> {
@@ -1380,24 +1405,29 @@ pub(crate) mod prove_test_hooks {
     }
 }
 
-// Explicit compatibility adapter: preserve the existing validated parser and
-// its depth checks while the sealed decoder enforces untrusted allocation.
 impl<C> DecodeUntrusted<C> for LayerProof {
     fn decode_untrusted<D: bincode::de::UntrustedDecoder<Context = C>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
-        Self::decode_with_depth(decoder, 0)
+        Self::decode_untrusted_with_depth(decoder, 0)
     }
 }
-bincode::impl_borrow_decode_untrusted!(LayerProof);
+impl<'de, C> BorrowDecodeUntrusted<'de, C> for LayerProof {
+    fn borrow_decode_untrusted<D: bincode::de::BorrowUntrustedDecoder<'de, Context = C>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        Self::borrow_decode_untrusted_with_depth(decoder, 0)
+    }
+}
 
-// Explicit compatibility adapter: preserve the existing validated parser and
-// its depth checks while the sealed decoder enforces untrusted allocation.
 impl<C> DecodeUntrusted<C> for GroveDBProofV0 {
     fn decode_untrusted<D: bincode::de::UntrustedDecoder<Context = C>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
-        Decode::decode(decoder)
+        Ok(Self {
+            root_layer: MerkOnlyLayerProof::decode_untrusted_with_depth(decoder, 0)?,
+            prove_options: ProveOptions::decode_untrusted(decoder)?,
+        })
     }
 }
 bincode::impl_borrow_decode_untrusted!(GroveDBProofV0);

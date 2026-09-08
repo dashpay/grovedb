@@ -9,9 +9,10 @@ use crate::{config::Config, error::DecodeError, utils::Sealed};
 /// This struct should rarely be used.
 /// In most cases, prefer any of the `decode` functions.
 ///
-/// The default mode preserves upstream decoding behavior. Use [`Self::new_untrusted`]
-/// to enable collection safeguards. The mode is a type parameter, so ordinary
-/// decoding does not perform a runtime policy check.
+/// Use [`Self::new_untrusted`] to construct a decoder accepted by the explicit
+/// untrusted traits. Allocation behavior belongs to the trait being called:
+/// `Decode` retains ordinary behavior even on this decoder; call
+/// [`super::DecodeUntrusted::decode_untrusted`] for collection safeguards.
 ///
 /// The ByteOrder that is chosen will impact the endianness that
 /// is used to read integers out of the reader.
@@ -43,9 +44,10 @@ impl<R: Reader, C: Config, Context> DecoderImpl<R, C, Context> {
         }
     }
 
-    /// Construct a decoder with the [untrusted collection safeguards](crate#untrusted-input).
+    /// Construct a decoder accepted by [`super::DecodeUntrusted`].
     ///
-    /// The policy is preserved by [`Decoder::with_context`] and nested decoding.
+    /// Call the untrusted traits to use their [collection safeguards](crate#untrusted-input).
+    /// The capability is preserved by [`Decoder::with_context`] and mutable references.
     pub fn new_untrusted(
         reader: R,
         config: C,
@@ -80,8 +82,6 @@ impl<'de, R: BorrowReader<'de>, C: Config, Context, const UNTRUSTED: bool> Borro
 impl<R: Reader, C: Config, Context, const UNTRUSTED: bool> Decoder
     for DecoderImpl<R, C, Context, UNTRUSTED>
 {
-    const IS_UNTRUSTED: bool = UNTRUSTED;
-
     type R = R;
 
     type C = C;
@@ -138,8 +138,6 @@ impl<C, D: Decoder + ?Sized> Sealed for WithContext<'_, D, C> {}
 impl<C, D: UntrustedDecoder + ?Sized> UntrustedDecoder for WithContext<'_, D, C> {}
 
 impl<Context, D: Decoder + ?Sized> Decoder for WithContext<'_, D, Context> {
-    const IS_UNTRUSTED: bool = D::IS_UNTRUSTED;
-
     type R = D::R;
 
     type C = D::C;

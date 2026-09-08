@@ -43,8 +43,10 @@
 //! require the independent [`DecodeUntrusted`]/[`BorrowDecodeUntrusted`] traits.
 //! Derive only `DecodeUntrusted` for client types that should not support ordinary
 //! decoding, or derive both traits when both APIs are intended. Nested values
-//! dispatch through the corresponding untrusted trait and inherit the enforced
-//! policy. Both paths retain the same configuration and wire format.
+//! dispatch through the corresponding untrusted trait. These implementations own
+//! guarded allocation; ordinary `Decode` is independent of the decoder capability.
+//! Manual implementations must also call the untrusted traits for nested values.
+//! Both paths retain the same configuration and wire format.
 //!
 //! ```
 //! #[derive(bincode::DecodeUntrusted)]
@@ -60,7 +62,7 @@
 //! `serde::DeserializeUntrusted` for their entire deserialization graph. Serde
 //! constructors expose constrained `decode`/`decode_seed` methods in this mode.
 //!
-//! In untrusted mode, native vectors and hash collections allocate storage after
+//! Untrusted native vector and hash collection implementations allocate storage after
 //! entries decode. Byte vectors first verify the available payload, or read bounded
 //! chunks when the reader cannot expose it. Failed reservations in these containers
 //! return [`error::DecodeError::LimitExceeded`]. Serde adapters omit collection size

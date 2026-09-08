@@ -477,34 +477,6 @@ where
     }
 }
 
-pub(crate) fn decode_hash_map<K: Eq + Hash, V, S: std::hash::BuildHasher + Default, D: Decoder>(
-    decoder: &mut D,
-    mut key: impl FnMut(&mut D) -> Result<K, DecodeError>,
-    mut value: impl FnMut(&mut D) -> Result<V, DecodeError>,
-) -> Result<HashMap<K, V, S>, DecodeError> {
-    let len = crate::de::decode_slice_len(decoder)?;
-    decoder.claim_container_read::<(K, V)>(len)?;
-
-    let hash_builder: S = Default::default();
-    let mut map = if D::IS_UNTRUSTED {
-        HashMap::with_hasher(hash_builder)
-    } else {
-        HashMap::with_capacity_and_hasher(len, hash_builder)
-    };
-    for _ in 0..len {
-        // See the documentation on `unclaim_bytes_read` as to why we're doing this here
-        decoder.unclaim_bytes_read(core::mem::size_of::<(K, V)>());
-
-        let k = key(decoder)?;
-        let v = value(decoder)?;
-        if D::IS_UNTRUSTED {
-            map.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
-        }
-        map.insert(k, v);
-    }
-    Ok(map)
-}
-
 impl<Context, K, V, S> Decode<Context> for HashMap<K, V, S>
 where
     K: Decode<Context> + Eq + std::hash::Hash,
@@ -512,7 +484,20 @@ where
     S: std::hash::BuildHasher + Default,
 {
     fn decode<D: Decoder<Context = Context>>(decoder: &mut D) -> Result<Self, DecodeError> {
-        decode_hash_map(decoder, K::decode, V::decode)
+        let len = crate::de::decode_slice_len(decoder)?;
+        decoder.claim_container_read::<(K, V)>(len)?;
+
+        let hash_builder: S = Default::default();
+        let mut map = HashMap::with_capacity_and_hasher(len, hash_builder);
+        for _ in 0..len {
+            // See the documentation on `unclaim_bytes_read` as to why we're doing this here
+            decoder.unclaim_bytes_read(core::mem::size_of::<(K, V)>());
+
+            let k = K::decode(decoder)?;
+            let v = V::decode(decoder)?;
+            map.insert(k, v);
+        }
+        Ok(map)
     }
 }
 impl<'de, K, V, S, Context> BorrowDecode<'de, Context> for HashMap<K, V, S>
@@ -524,34 +509,21 @@ where
     fn borrow_decode<D: BorrowDecoder<'de, Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
-        decode_hash_map(decoder, K::borrow_decode, V::borrow_decode)
-    }
-}
+        let len = crate::de::decode_slice_len(decoder)?;
+        decoder.claim_container_read::<(K, V)>(len)?;
 
-pub(crate) fn decode_hash_set<T: Eq + Hash, S: std::hash::BuildHasher + Default, D: Decoder>(
-    decoder: &mut D,
-    mut decode: impl FnMut(&mut D) -> Result<T, DecodeError>,
-) -> Result<HashSet<T, S>, DecodeError> {
-    let len = crate::de::decode_slice_len(decoder)?;
-    decoder.claim_container_read::<T>(len)?;
+        let hash_builder: S = Default::default();
+        let mut map = HashMap::with_capacity_and_hasher(len, hash_builder);
+        for _ in 0..len {
+            // See the documentation on `unclaim_bytes_read` as to why we're doing this here
+            decoder.unclaim_bytes_read(core::mem::size_of::<(K, V)>());
 
-    let hash_builder: S = Default::default();
-    let mut map: HashSet<T, S> = if D::IS_UNTRUSTED {
-        HashSet::with_hasher(hash_builder)
-    } else {
-        HashSet::with_capacity_and_hasher(len, hash_builder)
-    };
-    for _ in 0..len {
-        // See the documentation on `unclaim_bytes_read` as to why we're doing this here
-        decoder.unclaim_bytes_read(core::mem::size_of::<T>());
-
-        let key = decode(decoder)?;
-        if D::IS_UNTRUSTED {
-            map.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
+            let k = K::borrow_decode(decoder)?;
+            let v = V::borrow_decode(decoder)?;
+            map.insert(k, v);
         }
-        map.insert(key);
+        Ok(map)
     }
-    Ok(map)
 }
 
 impl<Context, T, S> Decode<Context> for HashSet<T, S>
@@ -560,7 +532,19 @@ where
     S: std::hash::BuildHasher + Default,
 {
     fn decode<D: Decoder<Context = Context>>(decoder: &mut D) -> Result<Self, DecodeError> {
-        decode_hash_set(decoder, T::decode)
+        let len = crate::de::decode_slice_len(decoder)?;
+        decoder.claim_container_read::<T>(len)?;
+
+        let hash_builder: S = Default::default();
+        let mut map: HashSet<T, S> = HashSet::with_capacity_and_hasher(len, hash_builder);
+        for _ in 0..len {
+            // See the documentation on `unclaim_bytes_read` as to why we're doing this here
+            decoder.unclaim_bytes_read(core::mem::size_of::<T>());
+
+            let key = T::decode(decoder)?;
+            map.insert(key);
+        }
+        Ok(map)
     }
 }
 
@@ -572,7 +556,18 @@ where
     fn borrow_decode<D: BorrowDecoder<'de, Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
-        decode_hash_set(decoder, T::borrow_decode)
+        let len = crate::de::decode_slice_len(decoder)?;
+        decoder.claim_container_read::<T>(len)?;
+
+        let mut map = HashSet::with_capacity_and_hasher(len, S::default());
+        for _ in 0..len {
+            // See the documentation on `unclaim_bytes_read` as to why we're doing this here
+            decoder.unclaim_bytes_read(core::mem::size_of::<T>());
+
+            let key = T::borrow_decode(decoder)?;
+            map.insert(key);
+        }
+        Ok(map)
     }
 }
 

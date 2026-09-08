@@ -76,6 +76,46 @@ fn ordinary_byte_vectors_keep_upstream_reads_errors_and_consumption() {
 }
 
 #[test]
+fn ordinary_trait_reads_do_not_depend_on_decoder_capability() {
+    use bincode::{Decode, DecodeUntrusted};
+    let config = bincode::config::standard();
+    let bytes = bincode::encode_to_vec(4097u64, config).unwrap();
+    let mut ordinary_reader = TracedReader {
+        remaining: &bytes,
+        ..Default::default()
+    };
+    let ordinary = Vec::<u8>::decode(&mut bincode::de::DecoderImpl::new_untrusted(
+        &mut ordinary_reader,
+        config,
+        (),
+    ));
+    let mut upstream = TracedReader {
+        remaining: &bytes,
+        ..Default::default()
+    };
+    let expected = bincode_upstream::decode_from_reader::<Vec<u8>, _, _>(
+        &mut upstream,
+        bincode_upstream::config::standard(),
+    );
+    assert_eq!(format!("{ordinary:?}"), format!("{expected:?}"));
+    assert_eq!(ordinary_reader.reads, upstream.reads);
+    assert_eq!(ordinary_reader.remaining, upstream.remaining);
+
+    let mut guarded_reader = TracedReader {
+        remaining: &bytes,
+        ..Default::default()
+    };
+    let guarded = Vec::<u8>::decode_untrusted(&mut bincode::de::DecoderImpl::new_untrusted(
+        &mut guarded_reader,
+        config,
+        (),
+    ));
+    assert!(guarded.is_err());
+    assert_eq!(ordinary_reader.reads.last(), Some(&4097));
+    assert_eq!(guarded_reader.reads.last(), Some(&1024));
+}
+
+#[test]
 fn ordinary_collection_capacity_matches_upstream() {
     let config = bincode::config::standard();
     let original = bincode_upstream::config::standard();
@@ -202,6 +242,25 @@ mod serde_hints {
         let untrusted: Hints<MAP> =
             bincode::serde::decode_from_std_read_untrusted(&mut &*bytes, config).unwrap();
         assert_eq!(untrusted.0, [None, None, None]);
+    }
+
+    #[test]
+    fn serde_compatibility_policy_is_selected_by_the_trait() {
+        use bincode::{Decode, DecodeUntrusted};
+        let config = bincode::config::standard();
+        let bytes = [2, 7, 8];
+        let make_decoder = || {
+            bincode::de::DecoderImpl::new_untrusted(
+                bincode::de::read::SliceReader::new(&bytes),
+                config,
+                (),
+            )
+        };
+        let ordinary = bincode::serde::Compat::<Hints<false>>::decode(&mut make_decoder()).unwrap();
+        assert_eq!(ordinary.0 .0, [Some(2), Some(1), Some(0)]);
+        let guarded =
+            bincode::serde::Compat::<Hints<false>>::decode_untrusted(&mut make_decoder()).unwrap();
+        assert_eq!(guarded.0 .0, [None, None, None]);
     }
 
     #[test]

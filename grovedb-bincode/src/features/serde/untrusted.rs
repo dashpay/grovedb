@@ -51,7 +51,11 @@ impl<C, T: for<'de> DeserializeUntrusted<'de>> DecodeUntrusted<C> for Compat<T> 
     fn decode_untrusted<D: UntrustedDecoder<Context = C>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
-        T::deserialize(de_owned::SerdeDecoder { de: decoder }).map(Compat)
+        T::deserialize(de_owned::SerdeDecoder {
+            de: decoder,
+            policy: super::de_policy::Untrusted,
+        })
+        .map(Compat)
     }
 }
 impl<'de, C, T: for<'a> DeserializeUntrusted<'a>> BorrowDecodeUntrusted<'de, C> for Compat<T> {
@@ -66,6 +70,7 @@ impl<'de, C, T: DeserializeUntrusted<'de>> BorrowDecodeUntrusted<'de, C> for Bor
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
         T::deserialize(de_borrowed::SerdeDecoder {
+            policy: super::de_policy::Untrusted,
             de: decoder,
             pd: core::marker::PhantomData,
         })

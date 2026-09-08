@@ -329,3 +329,36 @@ fn custom_validation_and_recursive_limits_remain_enforced() {
     }
     round_trip(&valid_depth, bincode::config::standard());
 }
+
+#[test]
+fn nested_manual_fields_use_guarded_collection_decoding() {
+    fn check<T: DecodeUntrusted<()> + for<'de> BorrowDecodeUntrusted<'de, ()>>(prefix: &[u8]) {
+        let config = bincode::config::standard();
+        for len in [65_536u64, u64::MAX] {
+            let mut bytes = prefix.to_vec();
+            bytes.extend(bincode::encode_to_vec(len, config).unwrap());
+            let (result, allocated) = observe(false, || {
+                bincode::decode_from_slice_untrusted::<T, _>(&bytes, config)
+            });
+            assert!(result.is_err());
+            assert!(allocated < 4096, "unbacked nested allocation: {allocated}");
+            let (result, allocated) = observe(false, || {
+                bincode::borrow_decode_from_slice_untrusted::<T, _>(&bytes, config)
+            });
+            assert!(result.is_err());
+            assert!(allocated < 4096, "unbacked nested allocation: {allocated}");
+            let (result, allocated) = observe(false, || {
+                bincode::decode_from_std_read_untrusted::<T, _, _>(&mut bytes.as_slice(), config)
+            });
+            assert!(result.is_err());
+            assert!(allocated < 4096, "unbacked nested allocation: {allocated}");
+        }
+    }
+    check::<QueryItem>(&[0]); // Key bytes
+    check::<QueryItem>(&[10, 0]); // Key inside an aggregate wrapper
+    check::<Query>(&[1, 1, 0]); // Key inside a version-1 query
+    check::<SubqueryBranch>(&[1, 1]); // First segment of a present path
+    check::<AxisTraversal>(&[2]); // RankOfKey bytes
+    check::<AxisQuery>(&[IndexAxis::Sum.tag(), 2]);
+    check::<ReadMode>(&[0, IndexAxis::Sum.tag(), 2]);
+}

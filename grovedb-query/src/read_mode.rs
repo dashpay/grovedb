@@ -24,7 +24,7 @@
 use std::fmt;
 
 use bincode::{
-    de::{BorrowDecoder, Decoder},
+    de::{BorrowDecoder, Decoder, UntrustedDecoder},
     enc::Encoder,
     error::{DecodeError, EncodeError},
     BorrowDecode, Decode, DecodeUntrusted, Encode,
@@ -83,14 +83,23 @@ impl Encode for SumBudgetRead {
     }
 }
 
-impl<Context> Decode<Context> for SumBudgetRead {
-    fn decode<D: Decoder<Context = Context>>(decoder: &mut D) -> Result<Self, DecodeError> {
-        Ok(Self {
-            sum_limit: u64::decode(decoder)?,
-            match_limit: Option::<u16>::decode(decoder)?,
-        })
-    }
+// Share the fixed wire tags and validation, with explicit field-trait dispatch.
+macro_rules! sum_budget_read_decoder {
+    ($trait:ident, $decode:ident, $decoder:ident) => {
+        impl<Context> $trait<Context> for SumBudgetRead {
+            fn $decode<D: $decoder<Context = Context>>(
+                decoder: &mut D,
+            ) -> Result<Self, DecodeError> {
+                Ok(Self {
+                    sum_limit: u64::$decode(decoder)?,
+                    match_limit: Option::<u16>::$decode(decoder)?,
+                })
+            }
+        }
+    };
 }
+sum_budget_read_decoder!(Decode, decode, Decoder);
+sum_budget_read_decoder!(DecodeUntrusted, decode_untrusted, UntrustedDecoder);
 
 impl<'de, Context> BorrowDecode<'de, Context> for SumBudgetRead {
     fn borrow_decode<D: BorrowDecoder<'de, Context = Context>>(
@@ -100,14 +109,6 @@ impl<'de, Context> BorrowDecode<'de, Context> for SumBudgetRead {
     }
 }
 
-// Explicit opt-in retains this concrete type's manual wire format and validation.
-impl<Context> DecodeUntrusted<Context> for SumBudgetRead {
-    fn decode_untrusted<D: bincode::de::UntrustedDecoder<Context = Context>>(
-        decoder: &mut D,
-    ) -> Result<Self, DecodeError> {
-        Self::decode(decoder)
-    }
-}
 bincode::impl_borrow_decode_untrusted!(SumBudgetRead);
 
 impl fmt::Display for SumBudgetRead {
@@ -162,15 +163,24 @@ impl Encode for ReadMode {
     }
 }
 
-impl<Context> Decode<Context> for ReadMode {
-    fn decode<D: Decoder<Context = Context>>(decoder: &mut D) -> Result<Self, DecodeError> {
-        match u8::decode(decoder)? {
-            0 => Ok(ReadMode::Axis(AxisQuery::decode(decoder)?)),
-            1 => Ok(ReadMode::SumBudget(SumBudgetRead::decode(decoder)?)),
-            _ => Err(DecodeError::Other("unknown read mode tag")),
+// Share the fixed wire tags and validation, with explicit field-trait dispatch.
+macro_rules! read_mode_decoder {
+    ($trait:ident, $decode:ident, $decoder:ident) => {
+        impl<Context> $trait<Context> for ReadMode {
+            fn $decode<D: $decoder<Context = Context>>(
+                decoder: &mut D,
+            ) -> Result<Self, DecodeError> {
+                match u8::$decode(decoder)? {
+                    0 => Ok(ReadMode::Axis(AxisQuery::$decode(decoder)?)),
+                    1 => Ok(ReadMode::SumBudget(SumBudgetRead::$decode(decoder)?)),
+                    _ => Err(DecodeError::Other("unknown read mode tag")),
+                }
+            }
         }
-    }
+    };
 }
+read_mode_decoder!(Decode, decode, Decoder);
+read_mode_decoder!(DecodeUntrusted, decode_untrusted, UntrustedDecoder);
 
 impl<'de, Context> BorrowDecode<'de, Context> for ReadMode {
     fn borrow_decode<D: BorrowDecoder<'de, Context = Context>>(
@@ -180,14 +190,6 @@ impl<'de, Context> BorrowDecode<'de, Context> for ReadMode {
     }
 }
 
-// Explicit opt-in retains this concrete type's manual wire format and validation.
-impl<Context> DecodeUntrusted<Context> for ReadMode {
-    fn decode_untrusted<D: bincode::de::UntrustedDecoder<Context = Context>>(
-        decoder: &mut D,
-    ) -> Result<Self, DecodeError> {
-        Self::decode(decoder)
-    }
-}
 bincode::impl_borrow_decode_untrusted!(ReadMode);
 
 impl fmt::Display for ReadMode {

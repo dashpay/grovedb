@@ -159,6 +159,27 @@ fn ordinary_decoding_retains_upstream_eager_allocation() {
             });
             assert!(result.is_err());
             assert_eq!(allocated, largest);
+            // Decoder capability must not silently change an ordinary trait call.
+            let (result, allocated) = observe(false, || {
+                let mut decoder = bincode::de::DecoderImpl::new_untrusted(
+                    bincode::de::read::SliceReader::new(&bytes),
+                    local,
+                    (),
+                );
+                <$ty as bincode::Decode<()>>::decode(&mut decoder)
+            });
+            assert!(result.is_err());
+            assert_eq!(allocated, largest);
+            let (result, allocated) = observe(false, || {
+                let mut decoder = bincode::de::DecoderImpl::new_untrusted(
+                    bincode::de::read::SliceReader::new(&bytes),
+                    local,
+                    (),
+                );
+                <$ty as bincode::BorrowDecode<'_, ()>>::borrow_decode(&mut decoder)
+            });
+            assert!(result.is_err());
+            assert_eq!(allocated, largest);
         }};
     }
     compare!(Vec<u8>);
@@ -229,6 +250,11 @@ fn check_declared_lengths<C: Config + Copy>(config: C) {
         reject_all_routes::<HashMap<u8, u8>, _>(&bytes, config);
         reject_all_routes::<HashSet<u8>, _>(&bytes, config);
         reject_all_routes::<String, _>(&bytes, config);
+        reject_all_routes::<Box<str>, _>(&bytes, config);
+        reject_all_routes::<std::rc::Rc<str>, _>(&bytes, config);
+        reject_all_routes::<std::sync::Arc<str>, _>(&bytes, config);
+        reject_all_routes::<std::ffi::CString, _>(&bytes, config);
+        reject_all_routes::<std::path::PathBuf, _>(&bytes, config);
         reject_all_routes::<Box<[u8]>, _>(&bytes, config);
         reject_all_routes::<VecDeque<u8>, _>(&bytes, config);
         reject_all_routes::<BinaryHeap<u8>, _>(&bytes, config);
