@@ -1,6 +1,6 @@
 use super::{
     read::{BorrowReader, Reader},
-    BorrowDecoder, Decoder,
+    BorrowDecoder, Decoder, UntrustedDecoder,
 };
 use crate::{config::Config, error::DecodeError, utils::Sealed};
 
@@ -8,6 +8,11 @@ use crate::{config::Config, error::DecodeError, utils::Sealed};
 ///
 /// This struct should rarely be used.
 /// In most cases, prefer any of the `decode` functions.
+///
+/// Use [`Self::new_untrusted`] to construct a decoder accepted by the explicit
+/// untrusted traits. Allocation behavior belongs to the trait being called:
+/// `Decode` retains ordinary behavior even on this decoder; call
+/// [`super::DecodeUntrusted::decode_untrusted`] for collection safeguards.
 ///
 /// The ByteOrder that is chosen will impact the endianness that
 /// is used to read integers out of the reader.
@@ -21,7 +26,7 @@ use crate::{config::Config, error::DecodeError, utils::Sealed};
 /// // this u32 can be any Decode
 /// let value = u32::decode(&mut decoder).unwrap();
 /// ```
-pub struct DecoderImpl<R, C: Config, Context> {
+pub struct DecoderImpl<R, C: Config, Context, const UNTRUSTED: bool = false> {
     reader: R,
     config: C,
     bytes_read: usize,
@@ -38,12 +43,34 @@ impl<R: Reader, C: Config, Context> DecoderImpl<R, C, Context> {
             context,
         }
     }
+
+    /// Construct a decoder accepted by [`super::DecodeUntrusted`].
+    ///
+    /// Call the untrusted traits to use their [collection safeguards](crate#untrusted-input).
+    /// The capability is preserved by [`Decoder::with_context`] and mutable references.
+    pub fn new_untrusted(
+        reader: R,
+        config: C,
+        context: Context,
+    ) -> DecoderImpl<R, C, Context, true> {
+        DecoderImpl {
+            reader,
+            config,
+            bytes_read: 0,
+            context,
+        }
+    }
 }
 
-impl<R, C: Config, Context> Sealed for DecoderImpl<R, C, Context> {}
+impl<R, C: Config, Context, const UNTRUSTED: bool> Sealed
+    for DecoderImpl<R, C, Context, UNTRUSTED>
+{
+}
 
-impl<'de, R: BorrowReader<'de>, C: Config, Context> BorrowDecoder<'de>
-    for DecoderImpl<R, C, Context>
+impl<R: Reader, C: Config, Context> UntrustedDecoder for DecoderImpl<R, C, Context, true> {}
+
+impl<'de, R: BorrowReader<'de>, C: Config, Context, const UNTRUSTED: bool> BorrowDecoder<'de>
+    for DecoderImpl<R, C, Context, UNTRUSTED>
 {
     type BR = R;
 
@@ -52,7 +79,9 @@ impl<'de, R: BorrowReader<'de>, C: Config, Context> BorrowDecoder<'de>
     }
 }
 
-impl<R: Reader, C: Config, Context> Decoder for DecoderImpl<R, C, Context> {
+impl<R: Reader, C: Config, Context, const UNTRUSTED: bool> Decoder
+    for DecoderImpl<R, C, Context, UNTRUSTED>
+{
     type R = R;
 
     type C = C;
@@ -105,6 +134,8 @@ pub struct WithContext<'a, D: ?Sized, C> {
 }
 
 impl<C, D: Decoder + ?Sized> Sealed for WithContext<'_, D, C> {}
+
+impl<C, D: UntrustedDecoder + ?Sized> UntrustedDecoder for WithContext<'_, D, C> {}
 
 impl<Context, D: Decoder + ?Sized> Decoder for WithContext<'_, D, Context> {
     type R = D::R;

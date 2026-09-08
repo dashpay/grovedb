@@ -16,7 +16,7 @@ use std::{
     fmt,
 };
 
-use bincode::{Decode, Encode};
+use bincode::{Decode, DecodeUntrusted, Encode};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grove_branch_query_result::GroveBranchQueryResult;
 #[cfg(any(feature = "minimal", feature = "verify"))]
@@ -43,7 +43,7 @@ use crate::query_result_type::PathKey;
 
 use crate::Error;
 
-#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode, DecodeUntrusted)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// Path query
 ///
@@ -69,7 +69,7 @@ impl fmt::Display for PathQuery {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode, DecodeUntrusted)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// Holds a query to apply to a tree and an optional limit/offset value.
 /// Limit and offset values affect the size of the result set.

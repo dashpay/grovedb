@@ -4,7 +4,7 @@
 //! returning a proof structure that can be verified against the root hash.
 //! This is useful for splitting large tree proofs into manageable chunks.
 
-use bincode::{Decode, Encode};
+use bincode::{Decode, DecodeUntrusted, Encode};
 
 /// Path trunk chunk query
 ///
@@ -15,7 +15,7 @@ use bincode::{Decode, Encode};
 /// The tree at the specified path must support count operations (CountTree,
 /// CountSumTree, or ProvableCountTree).
 #[cfg(any(feature = "minimal", feature = "verify"))]
-#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode, DecodeUntrusted)]
 pub struct PathTrunkChunkQuery {
     /// Path to the tree to query
     pub path: Vec<Vec<u8>>,

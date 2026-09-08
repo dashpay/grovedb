@@ -36,6 +36,46 @@
 //!
 //! **Note:** If you're using `serde`, use `bincode::serde::...` instead of `bincode::...`
 //!
+//! # Untrusted input
+//!
+//! The `*_untrusted` decoding functions opt into collection allocation safeguards.
+//! Ordinary decoding functions retain upstream 2.0.1 behavior. Untrusted functions
+//! require the independent [`DecodeUntrusted`]/[`BorrowDecodeUntrusted`] traits.
+//! Derive only `DecodeUntrusted` for client types that should not support ordinary
+//! decoding, or derive both traits when both APIs are intended. Nested values
+//! dispatch through the corresponding untrusted trait. These implementations own
+//! guarded allocation; ordinary `Decode` is independent of the decoder capability.
+//! Manual implementations must also call the untrusted traits for nested values.
+//! Both paths retain the same configuration and wire format.
+//!
+//! ```
+//! #[derive(bincode::DecodeUntrusted)]
+//! struct Message { value: u8 }
+//! let (message, consumed): (Message, _) = bincode::decode_from_slice_untrusted(
+//!     &[42], bincode::config::standard(),
+//! ).unwrap();
+//! assert_eq!(message.value, 42);
+//! assert_eq!(consumed, 1);
+//! ```
+//!
+//! With Serde, custom implementations explicitly implement
+//! `serde::DeserializeUntrusted` for their entire deserialization graph. Serde
+//! constructors expose constrained `decode`/`decode_seed` methods in this mode.
+//!
+//! Untrusted native vector and hash collection implementations allocate storage after
+//! entries decode. Byte vectors first verify the available payload, or read bounded
+//! chunks when the reader cannot expose it. Failed reservations in these containers
+//! return [`error::DecodeError::LimitExceeded`]. Serde adapters omit collection size
+//! hints that could otherwise cause visitors to allocate from an unchecked length.
+//!
+//! These safeguards are not a general memory, recursion, or CPU budget. Custom
+//! decoders and Serde visitors remain responsible for their own resource use;
+//! types that consume no bytes can still decode from arbitrarily large counts.
+//! Existing configured limits retain their meaning, including `with_no_limit()`.
+//! Failed untrusted byte-vector reads may consume earlier chunks and report a
+//! missing-byte estimate for the failing chunk. Successful values and consumed
+//! lengths are unchanged; hash collection iteration order is unspecified.
+//!
 //! # Example
 //!
 //! ```rust
@@ -102,7 +142,7 @@ pub mod de;
 pub mod enc;
 pub mod error;
 
-pub use de::{BorrowDecode, Decode};
+pub use de::{BorrowDecode, BorrowDecodeUntrusted, Decode, DecodeUntrusted};
 pub use enc::Encode;
 
 use config::Config;
@@ -216,6 +256,70 @@ pub fn decode_from_reader<D: de::Decode<()>, R: Reader, C: Config>(
 ) -> Result<D, error::DecodeError> {
     let mut decoder = de::DecoderImpl::<_, C, ()>::new(reader, config, ());
     D::decode(&mut decoder)
+}
+
+/// Decode from a slice with the [untrusted collection safeguards](crate#untrusted-input).
+/// Returns the decoded value and the number of bytes consumed.
+pub fn decode_from_slice_untrusted<D: de::DecodeUntrusted<()>, C: Config>(
+    src: &[u8],
+    config: C,
+) -> Result<(D, usize), error::DecodeError> {
+    decode_from_slice_untrusted_with_context(src, config, ())
+}
+
+/// Decode from a slice with a context and the [untrusted collection safeguards](crate#untrusted-input).
+/// Returns the decoded value and the number of bytes consumed.
+pub fn decode_from_slice_untrusted_with_context<
+    Context,
+    D: de::DecodeUntrusted<Context>,
+    C: Config,
+>(
+    src: &[u8],
+    config: C,
+    context: Context,
+) -> Result<(D, usize), error::DecodeError> {
+    let reader = de::read::SliceReader::new(src);
+    let mut decoder = de::DecoderImpl::new_untrusted(reader, config, context);
+    let result = D::decode_untrusted(&mut decoder)?;
+    let bytes_read = src.len() - decoder.reader().slice.len();
+    Ok((result, bytes_read))
+}
+
+/// Borrow-decode from a slice with the [untrusted collection safeguards](crate#untrusted-input).
+/// Returns the decoded value and the number of bytes consumed.
+pub fn borrow_decode_from_slice_untrusted<'a, D: de::BorrowDecodeUntrusted<'a, ()>, C: Config>(
+    src: &'a [u8],
+    config: C,
+) -> Result<(D, usize), error::DecodeError> {
+    borrow_decode_from_slice_untrusted_with_context(src, config, ())
+}
+
+/// Borrow-decode with a context and the [untrusted collection safeguards](crate#untrusted-input).
+/// Returns the decoded value and the number of bytes consumed.
+pub fn borrow_decode_from_slice_untrusted_with_context<
+    'a,
+    Context,
+    D: de::BorrowDecodeUntrusted<'a, Context>,
+    C: Config,
+>(
+    src: &'a [u8],
+    config: C,
+    context: Context,
+) -> Result<(D, usize), error::DecodeError> {
+    let reader = de::read::SliceReader::new(src);
+    let mut decoder = de::DecoderImpl::new_untrusted(reader, config, context);
+    let result = D::borrow_decode_untrusted(&mut decoder)?;
+    let bytes_read = src.len() - decoder.reader().slice.len();
+    Ok((result, bytes_read))
+}
+
+/// Decode from a custom reader with the [untrusted collection safeguards](crate#untrusted-input).
+pub fn decode_from_reader_untrusted<D: de::DecodeUntrusted<()>, R: Reader, C: Config>(
+    reader: R,
+    config: C,
+) -> Result<D, error::DecodeError> {
+    let mut decoder = de::DecoderImpl::new_untrusted(reader, config, ());
+    D::decode_untrusted(&mut decoder)
 }
 
 // TODO: Currently our doctests fail when trying to include the specs because the specs depend on `derive` and `alloc`.

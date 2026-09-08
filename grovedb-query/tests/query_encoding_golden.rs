@@ -19,6 +19,13 @@ fn decode(bytes: &[u8]) -> Query {
     let (query, consumed): (Query, usize) =
         bincode::decode_from_slice(bytes, config::standard()).expect("query must decode");
     assert_eq!(consumed, bytes.len(), "no trailing bytes");
+    let (untrusted, used): (Query, _) =
+        bincode::decode_from_slice_untrusted(bytes, config::standard()).unwrap();
+    let (borrowed, borrowed_used): (Query, _) =
+        bincode::borrow_decode_from_slice_untrusted(bytes, config::standard()).unwrap();
+    assert_eq!(untrusted, query);
+    assert_eq!(borrowed, query);
+    assert_eq!((used, borrowed_used), (consumed, consumed));
     query
 }
 

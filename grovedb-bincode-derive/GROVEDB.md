@@ -2,8 +2,17 @@
 
 This package imports the derive macros from the published `bincode_derive`
 **2.0.1** release as `grovedb-bincode-derive`. It accompanies
-`grovedb-bincode` **2.0.1**. Macro behavior and the default generated
-`::bincode` paths are unchanged.
+`grovedb-bincode`. Version **2.0.2** adds `DecodeUntrusted` and
+`BorrowDecodeUntrusted`. Ordinary derives and default generated `::bincode` paths
+retain their upstream behavior.
+
+`#[derive(DecodeUntrusted)]` emits only the untrusted owned and borrowed traits.
+Its fields must support the corresponding untrusted trait, and generated methods
+accept only decoders with the untrusted policy enabled. Borrowing client types
+can derive `BorrowDecodeUntrusted`. Derive ordinary `Decode` separately when both
+APIs are needed. Existing context, custom-bound, renamed-crate, and Serde-field
+attributes are supported; Serde fields require an explicit
+`bincode::serde::DeserializeUntrusted` implementation for their Serde graph.
 
 Use the runtime package's default `derive` feature, or alias this package as
 `bincode_derive` when depending on the macros directly. The runtime dependency

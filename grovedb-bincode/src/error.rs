@@ -77,7 +77,8 @@ pub enum DecodeError {
         additional: usize,
     },
 
-    /// The given configuration limit was exceeded
+    /// The given configuration limit was exceeded, or collection storage
+    /// could not be reserved while decoding in untrusted mode.
     LimitExceeded,
 
     /// Invalid type was found. The decoder tried to read type `expected`, but found type `found` instead.

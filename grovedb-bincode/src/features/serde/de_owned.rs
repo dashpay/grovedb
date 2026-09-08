@@ -1,4 +1,7 @@
+use super::de_policy::{Ordinary, Policy, Untrusted};
+use super::DeserializeUntrusted;
 use super::{de_borrowed::borrow_decode_from_slice, DecodeError as SerdeDecodeError};
+use crate::de::UntrustedDecoder;
 use crate::{
     config::Config,
     de::{read::Reader, Decode, Decoder, DecoderImpl},
@@ -19,12 +22,27 @@ impl<DE: Decoder> OwnedSerdeDecoder<DE> {
     pub fn as_deserializer<'a>(
         &'a mut self,
     ) -> impl for<'de> serde::Deserializer<'de, Error = DecodeError> + 'a {
-        SerdeDecoder { de: &mut self.de }
+        SerdeDecoder {
+            de: &mut self.de,
+            policy: Ordinary,
+        }
     }
 }
 
 #[cfg(feature = "std")]
 impl<'r, C: Config, R: std::io::Read> OwnedSerdeDecoder<DecoderImpl<IoReader<&'r mut R>, C, ()>> {
+    /// Create a standard-reader decoder with the [untrusted collection safeguards](crate#untrusted-input).
+    pub fn from_std_read_untrusted(
+        src: &'r mut R,
+        config: C,
+    ) -> OwnedUntrustedSerdeDecoder<DecoderImpl<IoReader<&'r mut R>, C, (), true>> {
+        OwnedUntrustedSerdeDecoder {
+            inner: OwnedSerdeDecoder {
+                de: DecoderImpl::new_untrusted(IoReader::new(src), config, ()),
+            },
+        }
+    }
+
     /// Creates the decoder from an `std::io::Read` implementor.
     pub fn from_std_read(
         src: &'r mut R,
@@ -40,6 +58,18 @@ impl<'r, C: Config, R: std::io::Read> OwnedSerdeDecoder<DecoderImpl<IoReader<&'r
 }
 
 impl<C: Config, R: Reader> OwnedSerdeDecoder<DecoderImpl<R, C, ()>> {
+    /// Create a custom-reader decoder with the [untrusted collection safeguards](crate#untrusted-input).
+    pub fn from_reader_untrusted(
+        reader: R,
+        config: C,
+    ) -> OwnedUntrustedSerdeDecoder<DecoderImpl<R, C, (), true>> {
+        OwnedUntrustedSerdeDecoder {
+            inner: OwnedSerdeDecoder {
+                de: DecoderImpl::new_untrusted(reader, config, ()),
+            },
+        }
+    }
+
     /// Creates the decoder from a [`Reader`] implementor.
     pub fn from_reader(reader: R, config: C) -> OwnedSerdeDecoder<DecoderImpl<R, C, ()>>
     where
@@ -95,11 +125,45 @@ pub fn decode_from_reader<D: DeserializeOwned, R: Reader, C: Config>(
     D::deserialize(serde_decoder.as_deserializer())
 }
 
-pub(super) struct SerdeDecoder<'a, DE: Decoder> {
-    pub(super) de: &'a mut DE,
+/// Decode from a slice with the [untrusted collection safeguards](crate#untrusted-input).
+/// Returns the decoded value and the number of bytes consumed.
+pub fn decode_from_slice_untrusted<D: for<'de> DeserializeUntrusted<'de>, C: Config>(
+    slice: &[u8],
+    config: C,
+) -> Result<(D, usize), DecodeError> {
+    super::de_borrowed::borrow_decode_from_slice_untrusted(slice, config)
 }
 
-impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
+/// Decode from a standard reader with the [untrusted collection safeguards](crate#untrusted-input).
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub fn decode_from_std_read_untrusted<
+    D: for<'de> DeserializeUntrusted<'de>,
+    C: Config,
+    R: std::io::Read,
+>(
+    src: &mut R,
+    config: C,
+) -> Result<D, DecodeError> {
+    let mut decoder = OwnedSerdeDecoder::from_std_read_untrusted(src, config);
+    decoder.decode()
+}
+
+/// Decode from a custom reader with the [untrusted collection safeguards](crate#untrusted-input).
+pub fn decode_from_reader_untrusted<D: for<'de> DeserializeUntrusted<'de>, R: Reader, C: Config>(
+    reader: R,
+    config: C,
+) -> Result<D, DecodeError> {
+    let mut decoder = OwnedSerdeDecoder::from_reader_untrusted(reader, config);
+    decoder.decode()
+}
+
+pub(super) struct SerdeDecoder<'a, DE: Decoder, P: Policy<DE>> {
+    pub(super) de: &'a mut DE,
+    pub(super) policy: P,
+}
+
+impl<'de, DE: Decoder, P: Policy<DE>> Deserializer<'de> for SerdeDecoder<'_, DE, P> {
     type Error = DecodeError;
 
     fn deserialize_any<V>(self, _: V) -> Result<V::Value, Self::Error>
@@ -212,11 +276,11 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
     }
 
     #[cfg(feature = "alloc")]
-    fn deserialize_str<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: serde::de::Visitor<'de>,
     {
-        visitor.visit_string(Decode::decode(&mut self.de)?)
+        visitor.visit_string(P::decode(self.de)?)
     }
 
     #[cfg(not(feature = "alloc"))]
@@ -228,11 +292,11 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
     }
 
     #[cfg(feature = "alloc")]
-    fn deserialize_string<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: serde::de::Visitor<'de>,
     {
-        visitor.visit_string(Decode::decode(&mut self.de)?)
+        visitor.visit_string(P::decode(self.de)?)
     }
 
     #[cfg(not(feature = "alloc"))]
@@ -244,11 +308,11 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
     }
 
     #[cfg(feature = "alloc")]
-    fn deserialize_bytes<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: serde::de::Visitor<'de>,
     {
-        visitor.visit_byte_buf(Decode::decode(&mut self.de)?)
+        visitor.visit_byte_buf(P::decode(self.de)?)
     }
 
     #[cfg(not(feature = "alloc"))]
@@ -260,11 +324,11 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
     }
 
     #[cfg(feature = "alloc")]
-    fn deserialize_byte_buf<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: serde::de::Visitor<'de>,
     {
-        visitor.visit_byte_buf(Decode::decode(&mut self.de)?)
+        visitor.visit_byte_buf(P::decode(self.de)?)
     }
     #[cfg(not(feature = "alloc"))]
     fn deserialize_byte_buf<V>(self, _: V) -> Result<V::Value, Self::Error>
@@ -327,12 +391,14 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
     where
         V: serde::de::Visitor<'de>,
     {
-        struct Access<'a, 'b, DE: Decoder> {
-            deserializer: &'a mut SerdeDecoder<'b, DE>,
+        struct Access<'a, 'b, DE: Decoder, P: Policy<DE>> {
+            deserializer: &'a mut SerdeDecoder<'b, DE, P>,
             len: usize,
         }
 
-        impl<'de, 'a, 'b: 'a, DE: Decoder + 'b> SeqAccess<'de> for Access<'a, 'b, DE> {
+        impl<'de, 'a, 'b: 'a, DE: Decoder + 'b, P: Policy<DE> + 'b> SeqAccess<'de>
+            for Access<'a, 'b, DE, P>
+        {
             type Error = DecodeError;
 
             fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, DecodeError>
@@ -345,6 +411,7 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
                         seed,
                         SerdeDecoder {
                             de: self.deserializer.de,
+                            policy: self.deserializer.policy,
                         },
                     )?;
                     Ok(Some(value))
@@ -354,7 +421,7 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
             }
 
             fn size_hint(&self) -> Option<usize> {
-                Some(self.len)
+                P::size_hint(self.len)
             }
         }
 
@@ -380,12 +447,14 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
     where
         V: serde::de::Visitor<'de>,
     {
-        struct Access<'a, 'b, DE: Decoder> {
-            deserializer: &'a mut SerdeDecoder<'b, DE>,
+        struct Access<'a, 'b, DE: Decoder, P: Policy<DE>> {
+            deserializer: &'a mut SerdeDecoder<'b, DE, P>,
             len: usize,
         }
 
-        impl<'de, 'a, 'b: 'a, DE: Decoder + 'b> MapAccess<'de> for Access<'a, 'b, DE> {
+        impl<'de, 'a, 'b: 'a, DE: Decoder + 'b, P: Policy<DE> + 'b> MapAccess<'de>
+            for Access<'a, 'b, DE, P>
+        {
             type Error = DecodeError;
 
             fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, DecodeError>
@@ -398,6 +467,7 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
                         seed,
                         SerdeDecoder {
                             de: self.deserializer.de,
+                            policy: self.deserializer.policy,
                         },
                     )?;
                     Ok(Some(key))
@@ -414,13 +484,14 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
                     seed,
                     SerdeDecoder {
                         de: self.deserializer.de,
+                        policy: self.deserializer.policy,
                     },
                 )?;
                 Ok(value)
             }
 
             fn size_hint(&self) -> Option<usize> {
-                Some(self.len)
+                P::size_hint(self.len)
             }
         }
 
@@ -475,7 +546,7 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
     }
 }
 
-impl<'de, DE: Decoder> EnumAccess<'de> for SerdeDecoder<'_, DE> {
+impl<'de, DE: Decoder, P: Policy<DE>> EnumAccess<'de> for SerdeDecoder<'_, DE, P> {
     type Error = DecodeError;
     type Variant = Self;
 
@@ -489,7 +560,7 @@ impl<'de, DE: Decoder> EnumAccess<'de> for SerdeDecoder<'_, DE> {
     }
 }
 
-impl<'de, DE: Decoder> VariantAccess<'de> for SerdeDecoder<'_, DE> {
+impl<'de, DE: Decoder, P: Policy<DE>> VariantAccess<'de> for SerdeDecoder<'_, DE, P> {
     type Error = DecodeError;
 
     fn unit_variant(self) -> Result<(), Self::Error> {
@@ -519,5 +590,26 @@ impl<'de, DE: Decoder> VariantAccess<'de> for SerdeDecoder<'_, DE> {
         V: Visitor<'de>,
     {
         Deserializer::deserialize_tuple(self, fields.len(), visitor)
+    }
+}
+
+/// An untrusted Serde decoder exposing only explicitly opted-in values.
+///
+/// Unlike the ordinary decoder this does not expose an unrestricted Serde deserializer.
+/// ```compile_fail
+/// let reader = bincode::de::read::SliceReader::new(&[1]);
+/// let mut decoder = bincode::serde::OwnedSerdeDecoder::from_reader_untrusted(reader, bincode::config::standard());
+/// let _ = decoder.as_deserializer();
+/// ```
+pub struct OwnedUntrustedSerdeDecoder<DE: UntrustedDecoder> {
+    inner: OwnedSerdeDecoder<DE>,
+}
+impl<DE: UntrustedDecoder> OwnedUntrustedSerdeDecoder<DE> {
+    /// Decode a value whose complete Serde graph explicitly opts in.
+    pub fn decode<T: for<'de> DeserializeUntrusted<'de>>(&mut self) -> Result<T, DecodeError> {
+        T::deserialize(SerdeDecoder {
+            de: &mut self.inner.de,
+            policy: Untrusted,
+        })
     }
 }

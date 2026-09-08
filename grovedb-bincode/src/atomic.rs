@@ -224,3 +224,114 @@ impl<Context> Decode<Context> for AtomicIsize {
 }
 #[cfg(target_has_atomic = "ptr")]
 impl_borrow_decode!(AtomicIsize);
+
+#[cfg(target_has_atomic = "8")]
+impl<C> crate::DecodeUntrusted<C> for AtomicBool {
+    fn decode_untrusted<D: crate::de::UntrustedDecoder<Context = C>>(
+        d: &mut D,
+    ) -> Result<Self, crate::error::DecodeError> {
+        <Self as crate::Decode<C>>::decode(d)
+    }
+}
+#[cfg(target_has_atomic = "8")]
+crate::impl_borrow_decode_untrusted!(AtomicBool);
+#[cfg(target_has_atomic = "8")]
+impl<C> crate::DecodeUntrusted<C> for AtomicU8 {
+    fn decode_untrusted<D: crate::de::UntrustedDecoder<Context = C>>(
+        d: &mut D,
+    ) -> Result<Self, crate::error::DecodeError> {
+        <Self as crate::Decode<C>>::decode(d)
+    }
+}
+#[cfg(target_has_atomic = "8")]
+crate::impl_borrow_decode_untrusted!(AtomicU8);
+#[cfg(target_has_atomic = "16")]
+impl<C> crate::DecodeUntrusted<C> for AtomicU16 {
+    fn decode_untrusted<D: crate::de::UntrustedDecoder<Context = C>>(
+        d: &mut D,
+    ) -> Result<Self, crate::error::DecodeError> {
+        <Self as crate::Decode<C>>::decode(d)
+    }
+}
+#[cfg(target_has_atomic = "16")]
+crate::impl_borrow_decode_untrusted!(AtomicU16);
+#[cfg(target_has_atomic = "32")]
+impl<C> crate::DecodeUntrusted<C> for AtomicU32 {
+    fn decode_untrusted<D: crate::de::UntrustedDecoder<Context = C>>(
+        d: &mut D,
+    ) -> Result<Self, crate::error::DecodeError> {
+        <Self as crate::Decode<C>>::decode(d)
+    }
+}
+#[cfg(target_has_atomic = "32")]
+crate::impl_borrow_decode_untrusted!(AtomicU32);
+#[cfg(target_has_atomic = "64")]
+impl<C> crate::DecodeUntrusted<C> for AtomicU64 {
+    fn decode_untrusted<D: crate::de::UntrustedDecoder<Context = C>>(
+        d: &mut D,
+    ) -> Result<Self, crate::error::DecodeError> {
+        <Self as crate::Decode<C>>::decode(d)
+    }
+}
+#[cfg(target_has_atomic = "64")]
+crate::impl_borrow_decode_untrusted!(AtomicU64);
+#[cfg(target_has_atomic = "ptr")]
+impl<C> crate::DecodeUntrusted<C> for AtomicUsize {
+    fn decode_untrusted<D: crate::de::UntrustedDecoder<Context = C>>(
+        d: &mut D,
+    ) -> Result<Self, crate::error::DecodeError> {
+        <Self as crate::Decode<C>>::decode(d)
+    }
+}
+#[cfg(target_has_atomic = "ptr")]
+crate::impl_borrow_decode_untrusted!(AtomicUsize);
+#[cfg(target_has_atomic = "8")]
+impl<C> crate::DecodeUntrusted<C> for AtomicI8 {
+    fn decode_untrusted<D: crate::de::UntrustedDecoder<Context = C>>(
+        d: &mut D,
+    ) -> Result<Self, crate::error::DecodeError> {
+        <Self as crate::Decode<C>>::decode(d)
+    }
+}
+#[cfg(target_has_atomic = "8")]
+crate::impl_borrow_decode_untrusted!(AtomicI8);
+#[cfg(target_has_atomic = "16")]
+impl<C> crate::DecodeUntrusted<C> for AtomicI16 {
+    fn decode_untrusted<D: crate::de::UntrustedDecoder<Context = C>>(
+        d: &mut D,
+    ) -> Result<Self, crate::error::DecodeError> {
+        <Self as crate::Decode<C>>::decode(d)
+    }
+}
+#[cfg(target_has_atomic = "16")]
+crate::impl_borrow_decode_untrusted!(AtomicI16);
+#[cfg(target_has_atomic = "32")]
+impl<C> crate::DecodeUntrusted<C> for AtomicI32 {
+    fn decode_untrusted<D: crate::de::UntrustedDecoder<Context = C>>(
+        d: &mut D,
+    ) -> Result<Self, crate::error::DecodeError> {
+        <Self as crate::Decode<C>>::decode(d)
+    }
+}
+#[cfg(target_has_atomic = "32")]
+crate::impl_borrow_decode_untrusted!(AtomicI32);
+#[cfg(target_has_atomic = "64")]
+impl<C> crate::DecodeUntrusted<C> for AtomicI64 {
+    fn decode_untrusted<D: crate::de::UntrustedDecoder<Context = C>>(
+        d: &mut D,
+    ) -> Result<Self, crate::error::DecodeError> {
+        <Self as crate::Decode<C>>::decode(d)
+    }
+}
+#[cfg(target_has_atomic = "64")]
+crate::impl_borrow_decode_untrusted!(AtomicI64);
+#[cfg(target_has_atomic = "ptr")]
+impl<C> crate::DecodeUntrusted<C> for AtomicIsize {
+    fn decode_untrusted<D: crate::de::UntrustedDecoder<Context = C>>(
+        d: &mut D,
+    ) -> Result<Self, crate::error::DecodeError> {
+        <Self as crate::Decode<C>>::decode(d)
+    }
+}
+#[cfg(target_has_atomic = "ptr")]
+crate::impl_borrow_decode_untrusted!(AtomicIsize);

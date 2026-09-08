@@ -1,6 +1,6 @@
 [package]
 name = "grovedb-bincode"
-version = "2.0.1"
+version = "2.0.2"
 authors = [
     "Ty Overby <ty@pre-alpha.com>",
     "Zoey Riordan <zoey@dos.cafe>",
@@ -9,7 +9,7 @@ authors = [
 rust-version = "1.85.0"
 edition = "2021"
 license = "MIT"
-description = "GroveDB's vendored bincode 2.0.1 binary serialization implementation"
+description = "GroveDB's maintained fork of bincode binary serialization"
 repository = "https://github.com/dashpay/grovedb"
 documentation = "https://docs.rs/grovedb-bincode"
 readme = "GROVEDB.md"
@@ -27,7 +27,7 @@ alloc = ["serde?/alloc"]
 derive = ["bincode_derive"]
 
 [dependencies]
-bincode_derive = { package = "grovedb-bincode-derive", path = "../grovedb-bincode-derive", version = "=2.0.1", optional = true }
+bincode_derive = { package = "grovedb-bincode-derive", path = "../grovedb-bincode-derive", version = "=2.0.2", optional = true }
 serde = { version = "1.0", default-features = false, optional = true }
 unty = "0.0.4"
 
@@ -42,7 +42,7 @@ uuid = { version = "1.1", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 glam = { version = "0.25", features = ["serde"] }
 bincode_1 = { version = "1.3", package = "bincode" }
-bincode_upstream = { version = "=2.0.1", package = "bincode" }
+bincode_upstream = { version = "=2.0.1", package = "bincode", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 bumpalo = { version = "3.16.0", features = ["collections"] }
 
@@ -62,7 +62,7 @@ harness = false
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
-# Keep the 2.0.1 source and compile-only upstream test fixtures unchanged.
+# Allow existing upstream warnings and compile-only test fixtures.
 [lints.rust]
 deprecated = "allow"
 mismatched_lifetime_syntaxes = "allow"

@@ -1,5 +1,10 @@
 //! Support for serde integration. Enable this with the `serde` feature.
 //!
+//! Use the `*_untrusted` functions or decoder constructors to opt into
+//! [collection allocation safeguards](crate#untrusted-input). Ordinary functions
+//! retain upstream size hints and allocation behavior. [`Compat`], [`BorrowCompat`],
+//! and `#[bincode(with_serde)]` inherit the enclosing native decoder's policy.
+//!
 //! To encode/decode type that implement serde's trait, you can use:
 //! - [borrow_decode_from_slice]
 //! - [decode_from_slice]
@@ -68,7 +73,10 @@
 
 mod de_borrowed;
 mod de_owned;
+mod de_policy;
 mod ser;
+mod untrusted;
+pub use untrusted::{DeserializeSeedUntrusted, DeserializeUntrusted};
 
 pub use self::de_borrowed::*;
 pub use self::de_owned::*;
@@ -198,7 +206,10 @@ where
     T: serde::de::DeserializeOwned,
 {
     fn decode<D: crate::de::Decoder>(decoder: &mut D) -> Result<Self, crate::error::DecodeError> {
-        let serde_decoder = de_owned::SerdeDecoder { de: decoder };
+        let serde_decoder = de_owned::SerdeDecoder {
+            de: decoder,
+            policy: de_policy::Ordinary,
+        };
         T::deserialize(serde_decoder).map(Compat)
     }
 }
@@ -209,7 +220,10 @@ where
     fn borrow_decode<D: crate::de::BorrowDecoder<'de>>(
         decoder: &mut D,
     ) -> Result<Self, crate::error::DecodeError> {
-        let serde_decoder = de_owned::SerdeDecoder { de: decoder };
+        let serde_decoder = de_owned::SerdeDecoder {
+            de: decoder,
+            policy: de_policy::Ordinary,
+        };
         T::deserialize(serde_decoder).map(Compat)
     }
 }
@@ -263,6 +277,7 @@ where
         decoder: &mut D,
     ) -> Result<Self, crate::error::DecodeError> {
         let serde_decoder = de_borrowed::SerdeDecoder {
+            policy: de_policy::Ordinary,
             de: decoder,
             pd: core::marker::PhantomData,
         };

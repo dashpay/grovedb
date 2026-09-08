@@ -10,7 +10,10 @@ use std::{
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
-use bincode::{enc::write::Writer, error::DecodeError, BorrowDecode, Decode, Encode};
+use bincode::{
+    enc::write::Writer, error::DecodeError, BorrowDecode, BorrowDecodeUntrusted, Decode,
+    DecodeUntrusted, Encode,
+};
 #[cfg(feature = "blockchain")]
 use grovedb_costs::{CostContext, CostsExt, OperationCost};
 #[cfg(feature = "blockchain")]
@@ -529,135 +532,155 @@ impl Encode for QueryItem {
 /// non-aggregate inner range). We keep a small safety margin.
 pub(crate) const MAX_QUERY_ITEM_DECODE_DEPTH: usize = 4;
 
+// One wire schema and validation sequence; trait and recursion dispatch are
+// selected explicitly for each owned/borrowed decoding API.
+macro_rules! query_item_decoder {
+    ($decode:ident, $depth_decode:ident, [$($generics:tt)*]) => {
+
+        impl QueryItem {
+            pub(crate) fn $depth_decode<$($generics)*>(
+                decoder: &mut D,
+                depth: usize,
+            ) -> Result<Self, DecodeError> {
+                if depth > MAX_QUERY_ITEM_DECODE_DEPTH {
+                    return Err(DecodeError::Other(
+                        "QueryItem nesting depth exceeded maximum during deserialization",
+                    ));
+                }
+                let variant_id = u8::$decode(decoder)?;
+
+                match variant_id {
+                    0 => {
+                        let key = Vec::<u8>::$decode(decoder)?;
+                        Ok(QueryItem::Key(key))
+                    }
+                    1 => {
+                        let start = Vec::<u8>::$decode(decoder)?;
+                        let end = Vec::<u8>::$decode(decoder)?;
+                        Ok(QueryItem::Range(start..end))
+                    }
+                    2 => {
+                        let start = Vec::<u8>::$decode(decoder)?;
+                        let end = Vec::<u8>::$decode(decoder)?;
+                        Ok(QueryItem::RangeInclusive(start..=end))
+                    }
+                    3 => Ok(QueryItem::RangeFull(RangeFull)),
+                    4 => {
+                        let start = Vec::<u8>::$decode(decoder)?;
+                        Ok(QueryItem::RangeFrom(start..))
+                    }
+                    5 => {
+                        let end = Vec::<u8>::$decode(decoder)?;
+                        Ok(QueryItem::RangeTo(..end))
+                    }
+                    6 => {
+                        let end = Vec::<u8>::$decode(decoder)?;
+                        Ok(QueryItem::RangeToInclusive(..=end))
+                    }
+                    7 => {
+                        let start = Vec::<u8>::$decode(decoder)?;
+                        Ok(QueryItem::RangeAfter(start..))
+                    }
+                    8 => {
+                        let start = Vec::<u8>::$decode(decoder)?;
+                        let end = Vec::<u8>::$decode(decoder)?;
+                        Ok(QueryItem::RangeAfterTo(start..end))
+                    }
+                    9 => {
+                        let start = Vec::<u8>::$decode(decoder)?;
+                        let end = Vec::<u8>::$decode(decoder)?;
+                        Ok(QueryItem::RangeAfterToInclusive(start..=end))
+                    }
+                    10 => {
+                        let inner = QueryItem::$depth_decode(decoder, depth + 1)?;
+                        // Defense-in-depth: nested AggregateCountOnRange is invalid
+                        // by validation rules, so we also reject it at decode time.
+                        // The depth guard above remains the primary stack-overflow
+                        // mitigation for malicious deeper nesting. Also reject
+                        // `AggregateSumOnRange` and `AggregateCountAndSumOnRange`
+                        // to keep the three aggregate variants orthogonal.
+                        if matches!(
+                            inner,
+                            QueryItem::AggregateCountOnRange(_)
+                                | QueryItem::AggregateSumOnRange(_)
+                                | QueryItem::AggregateCountAndSumOnRange(_)
+                        ) {
+                            return Err(DecodeError::Other(
+                                "AggregateCountOnRange must not wrap another aggregate variant",
+                            ));
+                        }
+                        Ok(QueryItem::AggregateCountOnRange(Box::new(inner)))
+                    }
+                    11 => {
+                        let inner = QueryItem::$depth_decode(decoder, depth + 1)?;
+                        // Same defense-in-depth as variant 10. `AggregateSumOnRange`
+                        // may not wrap another aggregate variant (whether sum,
+                        // count, or count+sum) — keeps the three orthogonal and
+                        // the depth guard primary mitigation against
+                        // stack-exhaustion.
+                        if matches!(
+                            inner,
+                            QueryItem::AggregateSumOnRange(_)
+                                | QueryItem::AggregateCountOnRange(_)
+                                | QueryItem::AggregateCountAndSumOnRange(_)
+                        ) {
+                            return Err(DecodeError::Other(
+                                "AggregateSumOnRange must not wrap another aggregate variant",
+                            ));
+                        }
+                        Ok(QueryItem::AggregateSumOnRange(Box::new(inner)))
+                    }
+                    12 => {
+                        let inner = QueryItem::$depth_decode(decoder, depth + 1)?;
+                        // Same defense-in-depth as variants 10 and 11.
+                        // `AggregateCountAndSumOnRange` may not wrap any
+                        // aggregate variant (including itself) — keeps the three
+                        // orthogonal and the depth guard primary mitigation
+                        // against stack-exhaustion.
+                        if matches!(
+                            inner,
+                            QueryItem::AggregateCountAndSumOnRange(_)
+                                | QueryItem::AggregateCountOnRange(_)
+                                | QueryItem::AggregateSumOnRange(_)
+                        ) {
+                            return Err(DecodeError::Other(
+                                "AggregateCountAndSumOnRange must not wrap another aggregate variant",
+                            ));
+                        }
+                        Ok(QueryItem::AggregateCountAndSumOnRange(Box::new(inner)))
+                    }
+                    _ => Err(DecodeError::UnexpectedVariant {
+                        type_name: "QueryItem",
+                        allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 12 },
+                        found: variant_id as u32,
+                    }),
+                }
+            }
+        }
+    };
+}
+query_item_decoder!(decode, decode_with_depth, [D: bincode::de::Decoder]);
+query_item_decoder!(
+    borrow_decode,
+    borrow_decode_with_depth,
+    ['de, D: bincode::de::BorrowDecoder<'de>]
+);
+query_item_decoder!(
+    decode_untrusted,
+    decode_untrusted_with_depth,
+    [D: bincode::de::UntrustedDecoder]
+);
+query_item_decoder!(
+    borrow_decode_untrusted,
+    borrow_decode_untrusted_with_depth,
+    ['de, D: bincode::de::BorrowUntrustedDecoder<'de>]
+);
+
 impl<Context> Decode<Context> for QueryItem {
     fn decode<D: bincode::de::Decoder<Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
         Self::decode_with_depth(decoder, 0)
-    }
-}
-
-impl QueryItem {
-    /// Recursive bincode decode with an explicit depth counter. Used to bound
-    /// nested `AggregateCountOnRange` payloads (which would otherwise allow
-    /// stack exhaustion via repeated variant-10 bytes).
-    pub(crate) fn decode_with_depth<D: bincode::de::Decoder>(
-        decoder: &mut D,
-        depth: usize,
-    ) -> Result<Self, DecodeError> {
-        if depth > MAX_QUERY_ITEM_DECODE_DEPTH {
-            return Err(DecodeError::Other(
-                "QueryItem nesting depth exceeded maximum during deserialization",
-            ));
-        }
-        let variant_id = u8::decode(decoder)?;
-
-        match variant_id {
-            0 => {
-                let key = Vec::<u8>::decode(decoder)?;
-                Ok(QueryItem::Key(key))
-            }
-            1 => {
-                let start = Vec::<u8>::decode(decoder)?;
-                let end = Vec::<u8>::decode(decoder)?;
-                Ok(QueryItem::Range(start..end))
-            }
-            2 => {
-                let start = Vec::<u8>::decode(decoder)?;
-                let end = Vec::<u8>::decode(decoder)?;
-                Ok(QueryItem::RangeInclusive(start..=end))
-            }
-            3 => Ok(QueryItem::RangeFull(RangeFull)),
-            4 => {
-                let start = Vec::<u8>::decode(decoder)?;
-                Ok(QueryItem::RangeFrom(start..))
-            }
-            5 => {
-                let end = Vec::<u8>::decode(decoder)?;
-                Ok(QueryItem::RangeTo(..end))
-            }
-            6 => {
-                let end = Vec::<u8>::decode(decoder)?;
-                Ok(QueryItem::RangeToInclusive(..=end))
-            }
-            7 => {
-                let start = Vec::<u8>::decode(decoder)?;
-                Ok(QueryItem::RangeAfter(start..))
-            }
-            8 => {
-                let start = Vec::<u8>::decode(decoder)?;
-                let end = Vec::<u8>::decode(decoder)?;
-                Ok(QueryItem::RangeAfterTo(start..end))
-            }
-            9 => {
-                let start = Vec::<u8>::decode(decoder)?;
-                let end = Vec::<u8>::decode(decoder)?;
-                Ok(QueryItem::RangeAfterToInclusive(start..=end))
-            }
-            10 => {
-                let inner = QueryItem::decode_with_depth(decoder, depth + 1)?;
-                // Defense-in-depth: nested AggregateCountOnRange is invalid
-                // by validation rules, so we also reject it at decode time.
-                // The depth guard above remains the primary stack-overflow
-                // mitigation for malicious deeper nesting. Also reject
-                // `AggregateSumOnRange` and `AggregateCountAndSumOnRange`
-                // to keep the three aggregate variants orthogonal.
-                if matches!(
-                    inner,
-                    QueryItem::AggregateCountOnRange(_)
-                        | QueryItem::AggregateSumOnRange(_)
-                        | QueryItem::AggregateCountAndSumOnRange(_)
-                ) {
-                    return Err(DecodeError::Other(
-                        "AggregateCountOnRange must not wrap another aggregate variant",
-                    ));
-                }
-                Ok(QueryItem::AggregateCountOnRange(Box::new(inner)))
-            }
-            11 => {
-                let inner = QueryItem::decode_with_depth(decoder, depth + 1)?;
-                // Same defense-in-depth as variant 10. `AggregateSumOnRange`
-                // may not wrap another aggregate variant (whether sum,
-                // count, or count+sum) — keeps the three orthogonal and
-                // the depth guard primary mitigation against
-                // stack-exhaustion.
-                if matches!(
-                    inner,
-                    QueryItem::AggregateSumOnRange(_)
-                        | QueryItem::AggregateCountOnRange(_)
-                        | QueryItem::AggregateCountAndSumOnRange(_)
-                ) {
-                    return Err(DecodeError::Other(
-                        "AggregateSumOnRange must not wrap another aggregate variant",
-                    ));
-                }
-                Ok(QueryItem::AggregateSumOnRange(Box::new(inner)))
-            }
-            12 => {
-                let inner = QueryItem::decode_with_depth(decoder, depth + 1)?;
-                // Same defense-in-depth as variants 10 and 11.
-                // `AggregateCountAndSumOnRange` may not wrap any
-                // aggregate variant (including itself) — keeps the three
-                // orthogonal and the depth guard primary mitigation
-                // against stack-exhaustion.
-                if matches!(
-                    inner,
-                    QueryItem::AggregateCountAndSumOnRange(_)
-                        | QueryItem::AggregateCountOnRange(_)
-                        | QueryItem::AggregateSumOnRange(_)
-                ) {
-                    return Err(DecodeError::Other(
-                        "AggregateCountAndSumOnRange must not wrap another aggregate variant",
-                    ));
-                }
-                Ok(QueryItem::AggregateCountAndSumOnRange(Box::new(inner)))
-            }
-            _ => Err(DecodeError::UnexpectedVariant {
-                type_name: "QueryItem",
-                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 12 },
-                found: variant_id as u32,
-            }),
-        }
     }
 }
 
@@ -669,112 +692,20 @@ impl<'de, Context> BorrowDecode<'de, Context> for QueryItem {
     }
 }
 
-impl QueryItem {
-    /// Recursive bincode borrow-decode with an explicit depth counter.
-    /// Mirrors [`Self::decode_with_depth`] for the borrowed-decoder path; same
-    /// `MAX_QUERY_ITEM_DECODE_DEPTH` and same nested-`AggregateCountOnRange`
-    /// rejection apply.
-    pub(crate) fn borrow_decode_with_depth<'de, D: bincode::de::BorrowDecoder<'de>>(
+// Explicit opt-in retains this concrete type's manual wire format and validation.
+impl<Context> DecodeUntrusted<Context> for QueryItem {
+    fn decode_untrusted<D: bincode::de::UntrustedDecoder<Context = Context>>(
         decoder: &mut D,
-        depth: usize,
     ) -> Result<Self, DecodeError> {
-        if depth > MAX_QUERY_ITEM_DECODE_DEPTH {
-            return Err(DecodeError::Other(
-                "QueryItem nesting depth exceeded maximum during deserialization",
-            ));
-        }
-        let variant_id = u8::decode(decoder)?;
+        Self::decode_untrusted_with_depth(decoder, 0)
+    }
+}
 
-        match variant_id {
-            0 => {
-                let key = Vec::<u8>::borrow_decode(decoder)?;
-                Ok(QueryItem::Key(key))
-            }
-            1 => {
-                let start = Vec::<u8>::borrow_decode(decoder)?;
-                let end = Vec::<u8>::borrow_decode(decoder)?;
-                Ok(QueryItem::Range(start..end))
-            }
-            2 => {
-                let start = Vec::<u8>::borrow_decode(decoder)?;
-                let end = Vec::<u8>::borrow_decode(decoder)?;
-                Ok(QueryItem::RangeInclusive(start..=end))
-            }
-            3 => Ok(QueryItem::RangeFull(RangeFull)),
-            4 => {
-                let start = Vec::<u8>::borrow_decode(decoder)?;
-                Ok(QueryItem::RangeFrom(start..))
-            }
-            5 => {
-                let end = Vec::<u8>::borrow_decode(decoder)?;
-                Ok(QueryItem::RangeTo(..end))
-            }
-            6 => {
-                let end = Vec::<u8>::borrow_decode(decoder)?;
-                Ok(QueryItem::RangeToInclusive(..=end))
-            }
-            7 => {
-                let start = Vec::<u8>::borrow_decode(decoder)?;
-                Ok(QueryItem::RangeAfter(start..))
-            }
-            8 => {
-                let start = Vec::<u8>::borrow_decode(decoder)?;
-                let end = Vec::<u8>::borrow_decode(decoder)?;
-                Ok(QueryItem::RangeAfterTo(start..end))
-            }
-            9 => {
-                let start = Vec::<u8>::borrow_decode(decoder)?;
-                let end = Vec::<u8>::borrow_decode(decoder)?;
-                Ok(QueryItem::RangeAfterToInclusive(start..=end))
-            }
-            10 => {
-                let inner = QueryItem::borrow_decode_with_depth(decoder, depth + 1)?;
-                if matches!(
-                    inner,
-                    QueryItem::AggregateCountOnRange(_)
-                        | QueryItem::AggregateSumOnRange(_)
-                        | QueryItem::AggregateCountAndSumOnRange(_)
-                ) {
-                    return Err(DecodeError::Other(
-                        "AggregateCountOnRange must not wrap another aggregate variant",
-                    ));
-                }
-                Ok(QueryItem::AggregateCountOnRange(Box::new(inner)))
-            }
-            11 => {
-                let inner = QueryItem::borrow_decode_with_depth(decoder, depth + 1)?;
-                if matches!(
-                    inner,
-                    QueryItem::AggregateSumOnRange(_)
-                        | QueryItem::AggregateCountOnRange(_)
-                        | QueryItem::AggregateCountAndSumOnRange(_)
-                ) {
-                    return Err(DecodeError::Other(
-                        "AggregateSumOnRange must not wrap another aggregate variant",
-                    ));
-                }
-                Ok(QueryItem::AggregateSumOnRange(Box::new(inner)))
-            }
-            12 => {
-                let inner = QueryItem::borrow_decode_with_depth(decoder, depth + 1)?;
-                if matches!(
-                    inner,
-                    QueryItem::AggregateCountAndSumOnRange(_)
-                        | QueryItem::AggregateCountOnRange(_)
-                        | QueryItem::AggregateSumOnRange(_)
-                ) {
-                    return Err(DecodeError::Other(
-                        "AggregateCountAndSumOnRange must not wrap another aggregate variant",
-                    ));
-                }
-                Ok(QueryItem::AggregateCountAndSumOnRange(Box::new(inner)))
-            }
-            _ => Err(DecodeError::UnexpectedVariant {
-                type_name: "QueryItem",
-                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 12 },
-                found: variant_id as u32,
-            }),
-        }
+impl<'de, Context> BorrowDecodeUntrusted<'de, Context> for QueryItem {
+    fn borrow_decode_untrusted<D: bincode::de::BorrowUntrustedDecoder<'de, Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        Self::borrow_decode_untrusted_with_depth(decoder, 0)
     }
 }
 

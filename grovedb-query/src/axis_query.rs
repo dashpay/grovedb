@@ -20,10 +20,10 @@
 use std::fmt;
 
 use bincode::{
-    de::{BorrowDecoder, Decoder},
+    de::{BorrowDecoder, Decoder, UntrustedDecoder},
     enc::Encoder,
     error::{DecodeError, EncodeError},
-    BorrowDecode, Decode, Encode,
+    BorrowDecode, Decode, DecodeUntrusted, Encode,
 };
 
 use crate::error::Error;
@@ -300,37 +300,46 @@ impl Encode for AxisTraversal {
     }
 }
 
-impl<Context> Decode<Context> for AxisTraversal {
-    fn decode<D: Decoder<Context = Context>>(decoder: &mut D) -> Result<Self, DecodeError> {
-        match u8::decode(decoder)? {
-            0 => Ok(AxisTraversal::RankedPage {
-                k: u16::decode(decoder)?,
-                offset: u64::decode(decoder)?,
-            }),
-            1 => Ok(AxisTraversal::Bounded {
-                lo: i128::decode(decoder)?,
-                hi: i128::decode(decoder)?,
-                limit: u16::decode(decoder)?,
-            }),
-            2 => {
-                let key = Vec::<u8>::decode(decoder)?;
-                if key.len() > MAX_RANK_OF_KEY_LEN {
-                    return Err(DecodeError::Other(
-                        "rank-of-key key exceeds the maximum key length",
-                    ));
+// Share the fixed wire tags and validation, with explicit field-trait dispatch.
+macro_rules! axis_traversal_decoder {
+    ($trait:ident, $decode:ident, $decoder:ident) => {
+        impl<Context> $trait<Context> for AxisTraversal {
+            fn $decode<D: $decoder<Context = Context>>(
+                decoder: &mut D,
+            ) -> Result<Self, DecodeError> {
+                match u8::$decode(decoder)? {
+                    0 => Ok(AxisTraversal::RankedPage {
+                        k: u16::$decode(decoder)?,
+                        offset: u64::$decode(decoder)?,
+                    }),
+                    1 => Ok(AxisTraversal::Bounded {
+                        lo: i128::$decode(decoder)?,
+                        hi: i128::$decode(decoder)?,
+                        limit: u16::$decode(decoder)?,
+                    }),
+                    2 => {
+                        let key = Vec::<u8>::$decode(decoder)?;
+                        if key.len() > MAX_RANK_OF_KEY_LEN {
+                            return Err(DecodeError::Other(
+                                "rank-of-key key exceeds the maximum key length",
+                            ));
+                        }
+                        Ok(AxisTraversal::RankOfKey { key })
+                    }
+                    3 => Ok(AxisTraversal::AggregateOverValueRange {
+                        lo: i128::$decode(decoder)?,
+                        hi: i128::$decode(decoder)?,
+                        fold: AggregateFold::try_from_tag(u8::$decode(decoder)?)
+                            .map_err(|_| DecodeError::Other("unknown aggregate fold tag"))?,
+                    }),
+                    _ => Err(DecodeError::Other("unknown axis traversal tag")),
                 }
-                Ok(AxisTraversal::RankOfKey { key })
             }
-            3 => Ok(AxisTraversal::AggregateOverValueRange {
-                lo: i128::decode(decoder)?,
-                hi: i128::decode(decoder)?,
-                fold: AggregateFold::try_from_tag(u8::decode(decoder)?)
-                    .map_err(|_| DecodeError::Other("unknown aggregate fold tag"))?,
-            }),
-            _ => Err(DecodeError::Other("unknown axis traversal tag")),
         }
-    }
+    };
 }
+axis_traversal_decoder!(Decode, decode, Decoder);
+axis_traversal_decoder!(DecodeUntrusted, decode_untrusted, UntrustedDecoder);
 
 impl<'de, Context> BorrowDecode<'de, Context> for AxisTraversal {
     fn borrow_decode<D: BorrowDecoder<'de, Context = Context>>(
@@ -339,6 +348,8 @@ impl<'de, Context> BorrowDecode<'de, Context> for AxisTraversal {
         Self::decode(decoder)
     }
 }
+
+bincode::impl_borrow_decode_untrusted!(AxisTraversal);
 
 /// What an entry-listing axis read ([`AxisTraversal::RankedPage`],
 /// [`AxisTraversal::Bounded`]) returns for each entry.
@@ -431,23 +442,32 @@ impl Encode for AxisQuery {
     }
 }
 
-impl<Context> Decode<Context> for AxisQuery {
-    fn decode<D: Decoder<Context = Context>>(decoder: &mut D) -> Result<Self, DecodeError> {
-        let tag = u8::decode(decoder)?;
-        let axis = IndexAxis::try_from_tag(tag)
-            .map_err(|_| DecodeError::Other("unknown index axis tag"))?;
-        let traversal = AxisTraversal::decode(decoder)?;
-        let descending = bool::decode(decoder)?;
-        let projection = AxisProjection::try_from_tag(u8::decode(decoder)?)
-            .map_err(|_| DecodeError::Other("unknown axis projection tag"))?;
-        Ok(Self {
-            axis,
-            traversal,
-            descending,
-            projection,
-        })
-    }
+// Share the fixed wire tags and validation, with explicit field-trait dispatch.
+macro_rules! axis_query_decoder {
+    ($trait:ident, $decode:ident, $decoder:ident) => {
+        impl<Context> $trait<Context> for AxisQuery {
+            fn $decode<D: $decoder<Context = Context>>(
+                decoder: &mut D,
+            ) -> Result<Self, DecodeError> {
+                let tag = u8::$decode(decoder)?;
+                let axis = IndexAxis::try_from_tag(tag)
+                    .map_err(|_| DecodeError::Other("unknown index axis tag"))?;
+                let traversal = AxisTraversal::$decode(decoder)?;
+                let descending = bool::$decode(decoder)?;
+                let projection = AxisProjection::try_from_tag(u8::$decode(decoder)?)
+                    .map_err(|_| DecodeError::Other("unknown axis projection tag"))?;
+                Ok(Self {
+                    axis,
+                    traversal,
+                    descending,
+                    projection,
+                })
+            }
+        }
+    };
 }
+axis_query_decoder!(Decode, decode, Decoder);
+axis_query_decoder!(DecodeUntrusted, decode_untrusted, UntrustedDecoder);
 
 impl<'de, Context> BorrowDecode<'de, Context> for AxisQuery {
     fn borrow_decode<D: BorrowDecoder<'de, Context = Context>>(
@@ -456,6 +476,8 @@ impl<'de, Context> BorrowDecode<'de, Context> for AxisQuery {
         Self::decode(decoder)
     }
 }
+
+bincode::impl_borrow_decode_untrusted!(AxisQuery);
 
 impl AxisQuery {
     /// A page of `k` entries on `axis`, starting at rank `offset`.

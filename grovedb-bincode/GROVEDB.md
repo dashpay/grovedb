@@ -1,10 +1,11 @@
 # GroveDB bincode
 
-This workspace package imports the published `bincode` **2.0.1** release as
+This workspace package started from the published `bincode` **2.0.1** release as
 `grovedb-bincode`, together with `bincode_derive` **2.0.1** as
-`grovedb-bincode-derive`. The import preserves the upstream encoder, decoder,
+`grovedb-bincode-derive`. The initial import preserved the upstream encoder, decoder,
 derive macros, wire format, features, tests, benchmarks, specification, and MIT
-license. It introduces no decoding hardening or new resource limits.
+license. Runtime version **2.0.2** adds explicit untrusted decoding APIs below;
+the derive package is also **2.0.2** with explicit untrusted derives.
 
 The original documentation remains in [readme.md](readme.md) and [docs](docs/).
 The original copyright and license remain in [LICENSE.md](LICENSE.md).
@@ -34,14 +35,14 @@ paths continue to work:
 
 ```toml
 [dependencies]
-bincode = { package = "grovedb-bincode", version = "=2.0.1" }
+bincode = { package = "grovedb-bincode", version = "=2.0.2" }
 ```
 
 The default `derive` feature uses the matching local derive package. Code that
 depends on the macros separately can use:
 
 ```toml
-bincode_derive = { package = "grovedb-bincode-derive", version = "=2.0.1" }
+bincode_derive = { package = "grovedb-bincode-derive", version = "=2.0.2" }
 ```
 
 Although the bytes are unchanged, these are new Cargo packages with distinct
@@ -50,6 +51,82 @@ Rust trait identities. An application using upstream `bincode::Encode` or
 alias does not make implementations interchangeable with upstream bincode.
 Publish the derive package, then the runtime package, before publishing GroveDB
 packages that depend on them. Their versions are independent of GroveDB's version.
+
+## Opt-in untrusted decoding in 2.0.2
+
+Ordinary `decode_*` / `borrow_decode_*` functions and decoder constructors retain
+upstream 2.0.1 behavior, including eager allocation, Serde size hints, and reader
+errors. Use the new APIs when input is untrusted:
+
+```rust
+#[derive(bincode::Encode, bincode::DecodeUntrusted)]
+struct ClientMessage { payload: Vec<u8> }
+
+let config = bincode::config::standard().with_limit::<1048576>();
+let (value, consumed): (ClientMessage, usize) =
+    bincode::decode_from_slice_untrusted(&[3, 1, 2, 3], config)?;
+```
+
+The native API includes `decode_from_slice_untrusted`,
+`borrow_decode_from_slice_untrusted`, `decode_from_reader_untrusted`, and
+`decode_from_std_read_untrusted`. Slice and standard-reader functions also have
+`_with_context` variants. Advanced callers can use `DecoderImpl::new_untrusted`.
+The functions require independent `DecodeUntrusted` / `BorrowDecodeUntrusted`
+traits. Deriving `DecodeUntrusted` implements both new traits, without implementing
+ordinary `Decode`. Derive both when a type should support both APIs. Borrowed
+client types can derive `BorrowDecodeUntrusted`. Generated fields and generic
+containers recursively require and call the new traits; there is no blanket
+implementation for arbitrary ordinary decoders.
+
+Allocation safeguards live in the untrusted collection implementations. Ordinary
+`Decode` and `BorrowDecode` retain upstream allocation behavior even when explicitly
+called on a decoder constructed with `new_untrusted`. Manual implementations must
+call the untrusted traits for nested fields; there is no decoder-wide mode switch.
+The sealed decoder capability survives mutable references and `with_context`.
+New trait methods accept only an `UntrustedDecoder`, so
+passing an ordinary decoder is a compile-time error. Existing decode-context,
+custom-bound, and renamed-crate derive attributes are supported. Custom native
+implementations must explicitly implement the new traits and retain their own
+domain checks and resource constraints.
+
+The Serde module provides matching untrusted slice/reader functions,
+`seed_decode_from_slice_untrusted`, and untrusted constructors on
+`OwnedSerdeDecoder` / `BorrowedSerdeDecoder`. These constructors return dedicated
+untrusted decoder types with constrained `decode` / `decode_seed` methods, not a
+raw Serde deserializer. Custom Serde types implement `DeserializeUntrusted<'de>`;
+custom seeds implement `DeserializeSeedUntrusted<'de>`. This explicitly opts in
+the entire Serde graph, which Serde's own dispatch cannot check recursively.
+Library container implementations require their contents to opt in. `Compat`,
+`BorrowCompat`, and derived `#[bincode(with_serde)]` fields require the same opt-in
+and select the private untrusted Serde adapter policy. Ordinary compatibility
+wrappers select the ordinary policy, independently of decoder capability.
+
+Untrusted native collection implementations do not reserve vector or
+hash-collection storage from an unverified length header. Byte vectors allocate after a reader
+can show the bytes, or after bounded chunks have been read. Other vectors and
+hash collections grow after a complete value or key/value pair has decoded.
+Fallible reservations return `DecodeError::LimitExceeded`. Types implemented
+through these vectors (including strings, boxed slices, and vector deques)
+inherit the checks. Both untrusted Serde adapters omit sequence/map size hints
+so visitors cannot mistake a length declaration for a verified allocation size.
+
+Encoding is unchanged. Successfully decoded values and consumed-byte counts
+remain compatible with upstream 2.0.1, including noncanonical integer encodings
+and configured limit accounting. Hash collection iteration order is unspecified
+and may differ after untrusted decoding. On malformed input, an untrusted chunked
+reader may consume earlier chunks before returning an error, and its missing-byte estimate may
+describe only the failing chunk.
+
+This is not a universal memory or CPU budget: zero-wire types remain valid,
+`with_no_limit()` still disables the configured limit, and custom decoders or
+Serde visitors control their own allocations. GroveDB's Element wrapper rules
+remain in `grovedb-element`, where nested wrappers are rejected before descent.
+GroveDB's custom parsers share wire schemas and domain validation while explicitly
+selecting ordinary or untrusted field decoding and recursion. Query collection
+allocation is also selected by the trait implementation.
+GroveDB's Element, backward-reference, and proof decoding boundaries explicitly
+select the untrusted APIs. Downstream callers decoding GroveDB types directly
+must also select these APIs when handling untrusted bytes.
 
 ## Validation
 

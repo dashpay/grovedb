@@ -5,7 +5,7 @@
 //! variant order and integer widths must never change once a version
 //! carrying them activates; new shapes get new envelope types.
 
-use bincode::{Decode, Encode};
+use bincode::{Decode, DecodeUntrusted, Encode};
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::tree::CryptoHash;
 
@@ -31,7 +31,7 @@ use crate::IndexedAxisEntry;
 ///   The carried list is the *canonical* axes list of the ancestor
 ///   (sorted by tag ascending, 1..=3 entries) with each tag mapped to
 ///   the secondary's root hash at proof time.
-#[derive(Encode, Decode, Debug, Clone)]
+#[derive(Encode, Decode, Debug, Clone, DecodeUntrusted)]
 pub enum AncestorAttestation {
     /// Regular tree ancestor.
     NotIndexed,
@@ -49,7 +49,7 @@ pub enum AncestorAttestation {
 /// This is what makes a resolved indexed row shape-complete: the element
 /// bytes alone determine the commitment only for item-like values, and
 /// every other shape folds in something the bytes do not carry.
-#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
+#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq, DecodeUntrusted)]
 pub enum IndexedTargetCommitment {
     /// Item-like value, committed as `H(value)`.
     Simple,
@@ -85,7 +85,7 @@ pub enum IndexedTargetCommitment {
 
 /// One node of a resolved target chain: its serialized element bytes and
 /// the shape rule that turns them into a commitment.
-#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
+#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq, DecodeUntrusted)]
 pub struct IndexedTargetNode {
     /// The node's serialized element bytes.
     pub value: Vec<u8>,
@@ -119,7 +119,7 @@ impl IndexedTargetNode {
 /// same reference through an ordinary proof. It is what lets a top-k
 /// result carry `k` values for a per-row cost of the value plus a hash,
 /// instead of `k` inclusion proofs.
-#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
+#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq, DecodeUntrusted)]
 pub struct IndexedTargetChain {
     /// One entry when the primary entry is directly valued; two — head
     /// then terminal — when it is a reference. Intermediate hops are not
@@ -130,7 +130,7 @@ pub struct IndexedTargetChain {
 
 /// Wire-format envelope for a range / top-k / arbitrary-query proof
 /// over an indexed-tree's per-axis secondary index.
-#[derive(Encode, Decode, Debug)]
+#[derive(Encode, Decode, Debug, DecodeUntrusted)]
 pub struct IndexedAxisRangeProof {
     /// Echoed [`IndexAxis::tag`] of the queried axis. The verifier
     /// authenticates this against the caller's `expected_axis`.
@@ -185,7 +185,7 @@ pub struct IndexedAxisRangeProof {
 /// `Merk::prove_count_offset_on_range`: the skipped prefix is attested
 /// by counted subtree commitments (`HashWithCountAndSum`), giving
 /// `O(log n + k)` proof size regardless of `offset`.
-#[derive(Encode, Decode, Debug)]
+#[derive(Encode, Decode, Debug, DecodeUntrusted)]
 pub struct IndexedAxisPaginatedProof {
     /// Echoed [`IndexAxis::tag`] of the queried axis. The verifier
     /// authenticates this against the caller's `expected_axis`.
@@ -218,7 +218,7 @@ pub struct IndexedAxisPaginatedProof {
 /// sum axis: signed sum) over a value-range against the per-axis
 /// secondary. The avg axis has no aggregate variant — averaging
 /// averages is not closed-form.
-#[derive(Encode, Decode, Debug)]
+#[derive(Encode, Decode, Debug, DecodeUntrusted)]
 pub struct IndexedAxisAggregateProof {
     /// Echoed [`IndexAxis::tag`] of the queried axis. The verifier
     /// authenticates this against the caller's `expected_axis`. Must

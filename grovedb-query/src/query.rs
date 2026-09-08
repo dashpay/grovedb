@@ -1,9 +1,10 @@
+use crate::decode_collections::{Ordinary, Untrusted};
 use std::{fmt, ops::RangeFull};
 
 use bincode::{
     enc::write::Writer,
     error::{DecodeError, EncodeError},
-    BorrowDecode, Decode, Encode,
+    BorrowDecode, BorrowDecodeUntrusted, Decode, DecodeUntrusted, Encode,
 };
 use indexmap::IndexMap;
 
@@ -191,183 +192,118 @@ const MAX_CONDITIONAL_BRANCHES: usize = 1024;
 /// mutual recursion. Matches `MAX_TERMINAL_KEYS_DEPTH`.
 const MAX_SUBQUERY_DECODE_DEPTH: usize = 64;
 
-impl Query {
-    pub(crate) fn decode_with_depth<D: bincode::de::Decoder>(
-        decoder: &mut D,
-        depth: usize,
-    ) -> Result<Self, DecodeError> {
-        if depth > MAX_SUBQUERY_DECODE_DEPTH {
-            return Err(DecodeError::Other(
-                "subquery nesting depth exceeded maximum during deserialization",
-            ));
-        }
-        let version = u8::decode(decoder)?;
-        if version != 1 && version != 2 && version != 3 {
-            return Err(DecodeError::Other("unsupported Query encoding version"));
-        }
-        // Version 3 carries a flags byte right after the version. The
-        // instance-limit flag must be set (a node without one encodes
-        // as version 1 or 2 — the encoding is canonical), and unknown
-        // flag bits fail closed.
-        let flags = if version == 3 {
-            let flags = u8::decode(decoder)?;
-            if flags & !QUERY_V3_KNOWN_FLAGS != 0 {
-                return Err(DecodeError::Other("unknown Query version 3 flags"));
+// One wire schema and validation sequence; trait and recursion dispatch are
+// selected explicitly for each owned/borrowed decoding API.
+macro_rules! query_decoder {
+    ($decode:ident, $depth_decode:ident, [$($generics:tt)*], $collections:ident) => {
+
+        impl Query {
+            pub(crate) fn $depth_decode<$($generics)*>(
+                decoder: &mut D,
+                depth: usize,
+            ) -> Result<Self, DecodeError> {
+                if depth > MAX_SUBQUERY_DECODE_DEPTH {
+                    return Err(DecodeError::Other(
+                        "subquery nesting depth exceeded maximum during deserialization",
+                    ));
+                }
+                let version = u8::$decode(decoder)?;
+                if version != 1 && version != 2 && version != 3 {
+                    return Err(DecodeError::Other("unsupported Query encoding version"));
+                }
+                // Version 3 carries a flags byte right after the version. The
+                // instance-limit flag must be set (a node without one encodes
+                // as version 1 or 2 — the encoding is canonical), and unknown
+                // flag bits fail closed.
+                let flags = if version == 3 {
+                    let flags = u8::$decode(decoder)?;
+                    if flags & !QUERY_V3_KNOWN_FLAGS != 0 {
+                        return Err(DecodeError::Other("unknown Query version 3 flags"));
+                    }
+                    if flags & QUERY_V3_FLAG_INSTANCE_LIMIT == 0 {
+                        return Err(DecodeError::Other(
+                            "non-canonical Query version 3 encoding: no per-instance limit",
+                        ));
+                    }
+                    flags
+                } else {
+                    0
+                };
+                let items_len = $collections::length(
+                    u64::$decode(decoder)?,
+                    MAX_QUERY_ITEMS,
+                    "query items length exceeds maximum",
+                )?;
+                let items = $collections::items(decoder, items_len, QueryItem::$decode)?;
+
+                let default_subquery_branch = SubqueryBranch::$depth_decode(decoder, depth)?;
+
+                let conditional_subquery_branches = if u8::$decode(decoder)? == 1 {
+                    let len = $collections::length(
+                        u64::$decode(decoder)?,
+                        MAX_CONDITIONAL_BRANCHES,
+                        "conditional subquery branches length exceeds maximum",
+                    )?;
+                    let map = $collections::branches(decoder, len, |decoder| {
+                        let key = QueryItem::$decode(decoder)?;
+                        let value = SubqueryBranch::$depth_decode(decoder, depth)?;
+                        Ok((key, value))
+                    })?;
+                    Some(map)
+                } else {
+                    None
+                };
+
+                let left_to_right = bool::$decode(decoder)?;
+                let add_parent_tree_on_subquery = bool::$decode(decoder)?;
+
+                // Version 2 always carries a read mode; version 3 carries one
+                // when its flags byte says so; version 1 never does.
+                let read_mode = if version == 2 || flags & QUERY_V3_FLAG_READ_MODE != 0 {
+                    Some(Box::new(ReadMode::$decode(decoder)?))
+                } else {
+                    None
+                };
+
+                // Version 3 always carries the per-instance limit last.
+                let limit = if version == 3 {
+                    Some(u16::$decode(decoder)?)
+                } else {
+                    None
+                };
+
+                Ok(Query {
+                    items,
+                    default_subquery_branch,
+                    conditional_subquery_branches,
+                    left_to_right,
+                    add_parent_tree_on_subquery,
+                    read_mode,
+                    limit,
+                })
             }
-            if flags & QUERY_V3_FLAG_INSTANCE_LIMIT == 0 {
-                return Err(DecodeError::Other(
-                    "non-canonical Query version 3 encoding: no per-instance limit",
-                ));
-            }
-            flags
-        } else {
-            0
-        };
-        let items_len = u64::decode(decoder)? as usize;
-        if items_len > MAX_QUERY_ITEMS {
-            return Err(DecodeError::Other("query items length exceeds maximum"));
         }
-        let mut items = Vec::with_capacity(items_len);
-        for _ in 0..items_len {
-            items.push(QueryItem::decode(decoder)?);
-        }
-
-        let default_subquery_branch = SubqueryBranch::decode_with_depth(decoder, depth)?;
-
-        let conditional_subquery_branches = if u8::decode(decoder)? == 1 {
-            let len = u64::decode(decoder)? as usize;
-            if len > MAX_CONDITIONAL_BRANCHES {
-                return Err(DecodeError::Other(
-                    "conditional subquery branches length exceeds maximum",
-                ));
-            }
-            let mut map = IndexMap::with_capacity(len);
-            for _ in 0..len {
-                let key = QueryItem::decode(decoder)?;
-                let value = SubqueryBranch::decode_with_depth(decoder, depth)?;
-                map.insert(key, value);
-            }
-            Some(map)
-        } else {
-            None
-        };
-
-        let left_to_right = bool::decode(decoder)?;
-        let add_parent_tree_on_subquery = bool::decode(decoder)?;
-
-        // Version 2 always carries a read mode; version 3 carries one
-        // when its flags byte says so; version 1 never does.
-        let read_mode = if version == 2 || flags & QUERY_V3_FLAG_READ_MODE != 0 {
-            Some(Box::new(ReadMode::decode(decoder)?))
-        } else {
-            None
-        };
-
-        // Version 3 always carries the per-instance limit last.
-        let limit = if version == 3 {
-            Some(u16::decode(decoder)?)
-        } else {
-            None
-        };
-
-        Ok(Query {
-            items,
-            default_subquery_branch,
-            conditional_subquery_branches,
-            left_to_right,
-            add_parent_tree_on_subquery,
-            read_mode,
-            limit,
-        })
-    }
-
-    pub(crate) fn borrow_decode_with_depth<'de, D: bincode::de::BorrowDecoder<'de>>(
-        decoder: &mut D,
-        depth: usize,
-    ) -> Result<Self, DecodeError> {
-        if depth > MAX_SUBQUERY_DECODE_DEPTH {
-            return Err(DecodeError::Other(
-                "subquery nesting depth exceeded maximum during deserialization",
-            ));
-        }
-        let version = u8::borrow_decode(decoder)?;
-        if version != 1 && version != 2 && version != 3 {
-            return Err(DecodeError::Other("unsupported Query encoding version"));
-        }
-        // See `decode_with_depth`: version 3 = flags byte, canonical,
-        // unknown bits fail closed.
-        let flags = if version == 3 {
-            let flags = u8::borrow_decode(decoder)?;
-            if flags & !QUERY_V3_KNOWN_FLAGS != 0 {
-                return Err(DecodeError::Other("unknown Query version 3 flags"));
-            }
-            if flags & QUERY_V3_FLAG_INSTANCE_LIMIT == 0 {
-                return Err(DecodeError::Other(
-                    "non-canonical Query version 3 encoding: no per-instance limit",
-                ));
-            }
-            flags
-        } else {
-            0
-        };
-        let items_len = u64::borrow_decode(decoder)? as usize;
-        if items_len > MAX_QUERY_ITEMS {
-            return Err(DecodeError::Other("query items length exceeds maximum"));
-        }
-        let mut items = Vec::with_capacity(items_len);
-        for _ in 0..items_len {
-            items.push(QueryItem::borrow_decode(decoder)?);
-        }
-
-        let default_subquery_branch = SubqueryBranch::borrow_decode_with_depth(decoder, depth)?;
-
-        let conditional_subquery_branches = if u8::borrow_decode(decoder)? == 1 {
-            let len = u64::borrow_decode(decoder)? as usize;
-            if len > MAX_CONDITIONAL_BRANCHES {
-                return Err(DecodeError::Other(
-                    "conditional subquery branches length exceeds maximum",
-                ));
-            }
-            let mut map = IndexMap::with_capacity(len);
-            for _ in 0..len {
-                let key = QueryItem::borrow_decode(decoder)?;
-                let value = SubqueryBranch::borrow_decode_with_depth(decoder, depth)?;
-                map.insert(key, value);
-            }
-            Some(map)
-        } else {
-            None
-        };
-
-        let left_to_right = bool::borrow_decode(decoder)?;
-        let add_parent_tree_on_subquery = bool::borrow_decode(decoder)?;
-
-        // Version 2 always carries a read mode; version 3 carries one
-        // when its flags byte says so; version 1 never does.
-        let read_mode = if version == 2 || flags & QUERY_V3_FLAG_READ_MODE != 0 {
-            Some(Box::new(ReadMode::borrow_decode(decoder)?))
-        } else {
-            None
-        };
-
-        // Version 3 always carries the per-instance limit last.
-        let limit = if version == 3 {
-            Some(u16::borrow_decode(decoder)?)
-        } else {
-            None
-        };
-
-        Ok(Query {
-            items,
-            default_subquery_branch,
-            conditional_subquery_branches,
-            left_to_right,
-            add_parent_tree_on_subquery,
-            read_mode,
-            limit,
-        })
-    }
+    };
 }
+query_decoder!(decode, decode_with_depth, [D: bincode::de::Decoder], Ordinary);
+query_decoder!(
+    borrow_decode,
+    borrow_decode_with_depth,
+    ['de, D: bincode::de::BorrowDecoder<'de>],
+    Ordinary
+);
+query_decoder!(
+    decode_untrusted,
+    decode_untrusted_with_depth,
+    [D: bincode::de::UntrustedDecoder],
+    Untrusted
+);
+query_decoder!(
+    borrow_decode_untrusted,
+    borrow_decode_untrusted_with_depth,
+    ['de, D: bincode::de::BorrowUntrustedDecoder<'de>],
+    Untrusted
+);
 
 impl<Context> Decode<Context> for Query {
     fn decode<D: bincode::de::Decoder<Context = Context>>(
@@ -382,6 +318,23 @@ impl<'de, Context> BorrowDecode<'de, Context> for Query {
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
         Self::borrow_decode_with_depth(decoder, 0)
+    }
+}
+
+// Explicit opt-in retains this concrete type's manual wire format and validation.
+impl<Context> DecodeUntrusted<Context> for Query {
+    fn decode_untrusted<D: bincode::de::UntrustedDecoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        Self::decode_untrusted_with_depth(decoder, 0)
+    }
+}
+
+impl<'de, Context> BorrowDecodeUntrusted<'de, Context> for Query {
+    fn borrow_decode_untrusted<D: bincode::de::BorrowUntrustedDecoder<'de, Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        Self::borrow_decode_untrusted_with_depth(decoder, 0)
     }
 }
 

@@ -1,13 +1,13 @@
 use crate::operations::proof::util::hex_to_ascii;
 use crate::Error;
-use bincode::{Decode, Encode};
+use bincode::{Decode, DecodeUntrusted, Encode};
 use grovedb_merk::proofs::query::AggregateSumQuery;
 use grovedb_merk::proofs::query::QueryItem;
 use grovedb_version::check_grovedb_v0;
 use grovedb_version::version::GroveVersion;
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode, DecodeUntrusted)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// Path query
 ///

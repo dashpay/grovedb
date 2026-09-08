@@ -1,3 +1,4 @@
+use crate::DecodeUntrusted;
 use crate::{
     config::Config,
     de::{read::Reader, BorrowDecode, BorrowDecoder, Decode, Decoder, DecoderImpl},
@@ -51,11 +52,41 @@ pub fn decode_from_std_read_with_context<
     D::decode(&mut decoder)
 }
 
-pub(crate) struct IoReader<R> {
+/// Decode from a standard reader with the [untrusted collection safeguards](crate#untrusted-input).
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub fn decode_from_std_read_untrusted<D: DecodeUntrusted<()>, C: Config, R: std::io::Read>(
+    src: &mut R,
+    config: C,
+) -> Result<D, DecodeError> {
+    decode_from_std_read_untrusted_with_context(src, config, ())
+}
+
+/// Decode from a standard reader with a context and the [untrusted collection safeguards](crate#untrusted-input).
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub fn decode_from_std_read_untrusted_with_context<
+    Context,
+    D: DecodeUntrusted<Context>,
+    C: Config,
+    R: std::io::Read,
+>(
+    src: &mut R,
+    config: C,
+    context: Context,
+) -> Result<D, DecodeError> {
+    let reader = IoReader::new(src);
+    let mut decoder = DecoderImpl::new_untrusted(reader, config, context);
+    D::decode_untrusted(&mut decoder)
+}
+
+/// Adapts a standard reader for bincode's [`Reader`] trait.
+///
+/// This is also the reader type returned by the owned Serde decoder constructors.
+pub struct IoReader<R> {
     reader: R,
 }
 
 impl<R> IoReader<R> {
+    /// Wrap a standard reader.
     pub const fn new(reader: R) -> Self {
         Self { reader }
     }

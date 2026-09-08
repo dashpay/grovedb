@@ -5,7 +5,7 @@ mod visualize;
 
 use std::{fmt, iter};
 
-use bincode::{Decode, Encode};
+use bincode::{Decode, DecodeUntrusted, Encode};
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
 use integer_encoding::VarInt;
 
@@ -14,7 +14,7 @@ use crate::error::ElementError;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(not(feature = "visualize"), derive(Debug))]
 /// Reference path variants
-#[derive(Hash, Eq, PartialEq, Encode, Decode, Clone)]
+#[derive(Hash, Eq, PartialEq, Encode, Decode, Clone, DecodeUntrusted)]
 pub enum ReferencePathType {
     /// Holds the absolute path to the element the reference points to
     AbsolutePathReference(Vec<Vec<u8>>),

@@ -10,7 +10,7 @@ use std::{
     mem,
 };
 
-use bincode::{Decode, Encode};
+use bincode::{Decode, DecodeUntrusted, Encode};
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_version::version::GroveVersion;
 
@@ -349,7 +349,7 @@ pub type VerifiedLeaves = Vec<(u64, Vec<u8>)>;
 ///
 /// Contains the MMR size, the proved leaf values with their indices,
 /// and the sibling/peak hashes needed for verification.
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode, DecodeUntrusted)]
 pub struct MmrTreeProof {
     mmr_size: u64,
     leaves: Vec<(u64, Vec<u8>)>,
@@ -631,7 +631,7 @@ impl MmrTreeProof {
         let config = bincode::config::standard()
             .with_big_endian()
             .with_limit::<{ 100 * 1024 * 1024 }>();
-        let (proof, consumed): (Self, usize) = bincode::decode_from_slice(bytes, config)
+        let (proof, consumed): (Self, usize) = bincode::decode_from_slice_untrusted(bytes, config)
             .map_err(|e| Error::InvalidData(format!("failed to decode MmrTreeProof: {}", e)))?;
         if consumed != bytes.len() {
             return Err(Error::InvalidData(format!(
