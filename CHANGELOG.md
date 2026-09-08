@@ -52,6 +52,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Updated proof verification logic to handle parent tree inclusion
 
 ### Changed
+- Bumped the GroveDB workspace crates and their internal dependency requirements
+  to **6.0.0** for the public API changes since 5.0.1. This package version is
+  independent of the existing `GroveVersion` runtime compatibility versions.
+- Bumped `grovedb-bincode` and `grovedb-bincode-derive` together to **2.1.0**.
+  Their new opt-in untrusted decoding traits, derives, and entry points are
+  backward-compatible API additions to the fork's upstream 2.0.1 baseline.
 - Updated delete function to include grove_version parameter (#377)
 - Adjusted batch size type for better performance (#377)
 - Renamed `prove_internal` to `prove_query_non_serialized` for clarity (#373)

@@ -40,7 +40,7 @@ A high-performance, cryptographically verifiable database that organizes data as
 
 ```toml
 [dependencies]
-grovedb = "3.0"
+grovedb = "6.0"
 ```
 
 ```rust
