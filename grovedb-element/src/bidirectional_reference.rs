@@ -68,7 +68,7 @@ pub type CascadeOnUpdate = bool;
 /// A referrer is identified by its `inverted_reference` (which is derived
 /// from the referrer's position, so it is unique per referrer); there are
 /// no slot indices.
-#[derive(Clone, Debug, Encode, Decode, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Encode, Decode, PartialEq, Eq, Hash, bincode::DecodeUntrusted)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BackwardReference {
     /// Path leading back to the referring `BidirectionalReference`.
@@ -94,7 +94,7 @@ pub struct BackwardReference {
 ///
 /// The type dereferences to its entries so the list can be read and
 /// maintained like the plain `Vec` it replaced.
-#[derive(Clone, Debug, Encode, Decode, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Encode, Decode, PartialEq, Eq, Hash, bincode::DecodeUntrusted)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BackwardReferences {
     /// How many referrers this element accepts (at most
@@ -163,7 +163,7 @@ impl std::ops::DerefMut for BackwardReferences {
 }
 
 /// Payload of [`crate::Element::BidirectionalReference`].
-#[derive(Clone, Debug, Encode, Decode, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Encode, Decode, PartialEq, Eq, Hash, bincode::DecodeUntrusted)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BidirectionalReference {
     /// Where this reference points to, like a regular reference.

@@ -1,7 +1,10 @@
 //! Untrusted decoding must not allocate collection storage from length headers alone.
 #![cfg(feature = "std")]
 
-use bincode::{config::Config, error::DecodeError, BorrowDecode, Decode};
+use bincode::{
+    config::Config, error::DecodeError, BorrowDecodeUntrusted as BorrowDecode,
+    DecodeUntrusted as Decode,
+};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -167,19 +170,21 @@ fn ordinary_decoding_retains_upstream_eager_allocation() {
 struct WithChangedContext<T>(T);
 
 impl<C, T: Decode<u8>> Decode<C> for WithChangedContext<T> {
-    fn decode<D: bincode::de::Decoder<Context = C>>(decoder: &mut D) -> Result<Self, DecodeError> {
+    fn decode_untrusted<D: bincode::de::UntrustedDecoder<Context = C>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
         let mut nested = decoder.with_context(42u8);
         // Serde adapters and user decoders can introduce multiple mutable references.
-        T::decode(&mut &mut nested).map(Self)
+        T::decode_untrusted(&mut &mut nested).map(Self)
     }
 }
 
 impl<'de, C, T: BorrowDecode<'de, u8>> BorrowDecode<'de, C> for WithChangedContext<T> {
-    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = C>>(
+    fn borrow_decode_untrusted<D: bincode::de::BorrowUntrustedDecoder<'de, Context = C>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
         let mut nested = decoder.with_context(42u8);
-        T::borrow_decode(&mut &mut nested).map(Self)
+        T::borrow_decode_untrusted(&mut &mut nested).map(Self)
     }
 }
 
@@ -344,6 +349,7 @@ mod serde_tests {
     }
 
     struct Sequence;
+    impl<'de> bincode::serde::DeserializeUntrusted<'de> for Sequence {}
     impl<'de> serde::Deserialize<'de> for Sequence {
         fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
             de.deserialize_seq(HintVisitor).map(|()| Self)
@@ -351,13 +357,14 @@ mod serde_tests {
     }
 
     struct Map;
+    impl<'de> bincode::serde::DeserializeUntrusted<'de> for Map {}
     impl<'de> serde::Deserialize<'de> for Map {
         fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
             de.deserialize_map(HintVisitor).map(|()| Self)
         }
     }
 
-    fn reject_serde_routes<T: serde::de::DeserializeOwned>(bytes: &[u8]) {
+    fn reject_serde_routes<T: for<'de> bincode::serde::DeserializeUntrusted<'de>>(bytes: &[u8]) {
         let config = bincode::config::standard();
         bounded_error(|| bincode::serde::decode_from_slice_untrusted::<T, _>(bytes, config));
         bounded_error(|| bincode::serde::borrow_decode_from_slice_untrusted::<T, _>(bytes, config));
@@ -381,20 +388,20 @@ mod serde_tests {
             let mut decoder = bincode::serde::BorrowedSerdeDecoder::from_slice_untrusted(
                 bytes, config, "context",
             );
-            T::deserialize(decoder.as_deserializer())
+            decoder.decode::<T>()
         });
         bounded_error(|| {
             let mut decoder = bincode::serde::OwnedSerdeDecoder::from_reader_untrusted(
                 bincode::de::read::SliceReader::new(bytes),
                 config,
             );
-            T::deserialize(decoder.as_deserializer())
+            decoder.decode::<T>()
         });
         bounded_error(|| {
             let mut src = bytes;
             let mut decoder =
                 bincode::serde::OwnedSerdeDecoder::from_std_read_untrusted(&mut src, config);
-            T::deserialize(decoder.as_deserializer())
+            decoder.decode::<T>()
         });
         bounded_error(|| {
             bincode::decode_from_slice_untrusted::<bincode::serde::Compat<T>, _>(bytes, config)
@@ -420,7 +427,7 @@ mod serde_tests {
     #[cfg(feature = "derive")]
     #[test]
     fn derived_mixed_native_and_serde_fields_inherit_untrusted_mode() {
-        #[derive(bincode::Decode)]
+        #[derive(bincode::DecodeUntrusted)]
         struct Mixed {
             prefix: u8,
             #[bincode(with_serde)]

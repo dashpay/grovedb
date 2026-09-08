@@ -39,9 +39,26 @@
 //! # Untrusted input
 //!
 //! The `*_untrusted` decoding functions opt into collection allocation safeguards.
-//! Ordinary decoding functions retain upstream 2.0.1 behavior. Both paths use the
-//! same [`Decode`]/[`BorrowDecode`] implementations, derives, configuration, and
-//! wire format; nested values inherit the selected policy.
+//! Ordinary decoding functions retain upstream 2.0.1 behavior. Untrusted functions
+//! require the independent [`DecodeUntrusted`]/[`BorrowDecodeUntrusted`] traits.
+//! Derive only `DecodeUntrusted` for client types that should not support ordinary
+//! decoding, or derive both traits when both APIs are intended. Nested values
+//! dispatch through the corresponding untrusted trait and inherit the enforced
+//! policy. Both paths retain the same configuration and wire format.
+//!
+//! ```
+//! #[derive(bincode::DecodeUntrusted)]
+//! struct Message { value: u8 }
+//! let (message, consumed): (Message, _) = bincode::decode_from_slice_untrusted(
+//!     &[42], bincode::config::standard(),
+//! ).unwrap();
+//! assert_eq!(message.value, 42);
+//! assert_eq!(consumed, 1);
+//! ```
+//!
+//! With Serde, custom implementations explicitly implement
+//! `serde::DeserializeUntrusted` for their entire deserialization graph. Serde
+//! constructors expose constrained `decode`/`decode_seed` methods in this mode.
 //!
 //! In untrusted mode, native vectors and hash collections allocate storage after
 //! entries decode. Byte vectors first verify the available payload, or read bounded
@@ -123,7 +140,7 @@ pub mod de;
 pub mod enc;
 pub mod error;
 
-pub use de::{BorrowDecode, Decode};
+pub use de::{BorrowDecode, BorrowDecodeUntrusted, Decode, DecodeUntrusted};
 pub use enc::Encode;
 
 use config::Config;
@@ -241,7 +258,7 @@ pub fn decode_from_reader<D: de::Decode<()>, R: Reader, C: Config>(
 
 /// Decode from a slice with the [untrusted collection safeguards](crate#untrusted-input).
 /// Returns the decoded value and the number of bytes consumed.
-pub fn decode_from_slice_untrusted<D: de::Decode<()>, C: Config>(
+pub fn decode_from_slice_untrusted<D: de::DecodeUntrusted<()>, C: Config>(
     src: &[u8],
     config: C,
 ) -> Result<(D, usize), error::DecodeError> {
@@ -250,21 +267,25 @@ pub fn decode_from_slice_untrusted<D: de::Decode<()>, C: Config>(
 
 /// Decode from a slice with a context and the [untrusted collection safeguards](crate#untrusted-input).
 /// Returns the decoded value and the number of bytes consumed.
-pub fn decode_from_slice_untrusted_with_context<Context, D: de::Decode<Context>, C: Config>(
+pub fn decode_from_slice_untrusted_with_context<
+    Context,
+    D: de::DecodeUntrusted<Context>,
+    C: Config,
+>(
     src: &[u8],
     config: C,
     context: Context,
 ) -> Result<(D, usize), error::DecodeError> {
     let reader = de::read::SliceReader::new(src);
     let mut decoder = de::DecoderImpl::new_untrusted(reader, config, context);
-    let result = D::decode(&mut decoder)?;
+    let result = D::decode_untrusted(&mut decoder)?;
     let bytes_read = src.len() - decoder.reader().slice.len();
     Ok((result, bytes_read))
 }
 
 /// Borrow-decode from a slice with the [untrusted collection safeguards](crate#untrusted-input).
 /// Returns the decoded value and the number of bytes consumed.
-pub fn borrow_decode_from_slice_untrusted<'a, D: de::BorrowDecode<'a, ()>, C: Config>(
+pub fn borrow_decode_from_slice_untrusted<'a, D: de::BorrowDecodeUntrusted<'a, ()>, C: Config>(
     src: &'a [u8],
     config: C,
 ) -> Result<(D, usize), error::DecodeError> {
@@ -276,7 +297,7 @@ pub fn borrow_decode_from_slice_untrusted<'a, D: de::BorrowDecode<'a, ()>, C: Co
 pub fn borrow_decode_from_slice_untrusted_with_context<
     'a,
     Context,
-    D: de::BorrowDecode<'a, Context>,
+    D: de::BorrowDecodeUntrusted<'a, Context>,
     C: Config,
 >(
     src: &'a [u8],
@@ -285,18 +306,18 @@ pub fn borrow_decode_from_slice_untrusted_with_context<
 ) -> Result<(D, usize), error::DecodeError> {
     let reader = de::read::SliceReader::new(src);
     let mut decoder = de::DecoderImpl::new_untrusted(reader, config, context);
-    let result = D::borrow_decode(&mut decoder)?;
+    let result = D::borrow_decode_untrusted(&mut decoder)?;
     let bytes_read = src.len() - decoder.reader().slice.len();
     Ok((result, bytes_read))
 }
 
 /// Decode from a custom reader with the [untrusted collection safeguards](crate#untrusted-input).
-pub fn decode_from_reader_untrusted<D: de::Decode<()>, R: Reader, C: Config>(
+pub fn decode_from_reader_untrusted<D: de::DecodeUntrusted<()>, R: Reader, C: Config>(
     reader: R,
     config: C,
 ) -> Result<D, error::DecodeError> {
     let mut decoder = de::DecoderImpl::new_untrusted(reader, config, ());
-    D::decode(&mut decoder)
+    D::decode_untrusted(&mut decoder)
 }
 
 // TODO: Currently our doctests fail when trying to include the specs because the specs depend on `derive` and `alloc`.

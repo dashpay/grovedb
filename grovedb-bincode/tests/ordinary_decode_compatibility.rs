@@ -105,6 +105,7 @@ mod serde_hints {
 
     #[derive(Debug, PartialEq)]
     struct Hints<const MAP: bool>(Vec<Option<usize>>);
+    impl<'de, const MAP: bool> bincode::serde::DeserializeUntrusted<'de> for Hints<MAP> {}
 
     impl<'de, const MAP: bool> Deserialize<'de> for Hints<MAP> {
         fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {

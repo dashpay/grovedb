@@ -40,15 +40,16 @@ fn derive_encode_inner(input: TokenStream) -> Result<TokenStream> {
 
 #[proc_macro_derive(Decode, attributes(bincode))]
 pub fn derive_decode(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    derive_decode_inner(input).unwrap_or_else(|e| e.into_token_stream())
+    derive_decode_inner(input, false).unwrap_or_else(|e| e.into_token_stream())
 }
 
-fn derive_decode_inner(input: TokenStream) -> Result<TokenStream> {
+fn derive_decode_inner(input: TokenStream, untrusted: bool) -> Result<TokenStream> {
     let parse = Parse::new(input)?;
     let (mut generator, attributes, body) = parse.into_generator();
-    let attributes = attributes
+    let mut attributes = attributes
         .get_attribute::<ContainerAttributes>()?
         .unwrap_or_default();
+    attributes.untrusted = untrusted;
 
     match body {
         Body::Struct(body) => {
@@ -67,21 +68,29 @@ fn derive_decode_inner(input: TokenStream) -> Result<TokenStream> {
         }
     }
 
-    generator.export_to_file("bincode", "Decode");
+    generator.export_to_file(
+        "bincode",
+        if untrusted {
+            "DecodeUntrusted"
+        } else {
+            "Decode"
+        },
+    );
     generator.finish()
 }
 
 #[proc_macro_derive(BorrowDecode, attributes(bincode))]
 pub fn derive_borrow_decode(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    derive_borrow_decode_inner(input).unwrap_or_else(|e| e.into_token_stream())
+    derive_borrow_decode_inner(input, false).unwrap_or_else(|e| e.into_token_stream())
 }
 
-fn derive_borrow_decode_inner(input: TokenStream) -> Result<TokenStream> {
+fn derive_borrow_decode_inner(input: TokenStream, untrusted: bool) -> Result<TokenStream> {
     let parse = Parse::new(input)?;
     let (mut generator, attributes, body) = parse.into_generator();
-    let attributes = attributes
+    let mut attributes = attributes
         .get_attribute::<ContainerAttributes>()?
         .unwrap_or_default();
+    attributes.untrusted = untrusted;
 
     match body {
         Body::Struct(body) => {
@@ -100,6 +109,22 @@ fn derive_borrow_decode_inner(input: TokenStream) -> Result<TokenStream> {
         }
     }
 
-    generator.export_to_file("bincode", "BorrowDecode");
+    generator.export_to_file(
+        "bincode",
+        if untrusted {
+            "BorrowDecodeUntrusted"
+        } else {
+            "BorrowDecode"
+        },
+    );
     generator.finish()
+}
+
+#[proc_macro_derive(DecodeUntrusted, attributes(bincode))]
+pub fn derive_decode_untrusted(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    derive_decode_inner(input, true).unwrap_or_else(|e| e.into_token_stream())
+}
+#[proc_macro_derive(BorrowDecodeUntrusted, attributes(bincode))]
+pub fn derive_borrow_decode_untrusted(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    derive_borrow_decode_inner(input, true).unwrap_or_else(|e| e.into_token_stream())
 }

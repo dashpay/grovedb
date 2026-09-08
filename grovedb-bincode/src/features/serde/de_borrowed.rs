@@ -1,4 +1,6 @@
 use super::DecodeError as SerdeDecodeError;
+use super::{DeserializeSeedUntrusted, DeserializeUntrusted};
+use crate::de::BorrowUntrustedDecoder;
 use crate::{
     config::Config,
     de::{read::SliceReader, BorrowDecode, BorrowDecoder, Decode, DecoderImpl},
@@ -31,10 +33,12 @@ impl<'de, C: Config, Context> BorrowedSerdeDecoder<'de, DecoderImpl<SliceReader<
         slice: &'de [u8],
         config: C,
         context: Context,
-    ) -> BorrowedSerdeDecoder<'de, DecoderImpl<SliceReader<'de>, C, Context, true>> {
-        BorrowedSerdeDecoder {
-            de: DecoderImpl::new_untrusted(SliceReader::new(slice), config, context),
-            pd: PhantomData,
+    ) -> BorrowedUntrustedSerdeDecoder<'de, DecoderImpl<SliceReader<'de>, C, Context, true>> {
+        BorrowedUntrustedSerdeDecoder {
+            inner: BorrowedSerdeDecoder {
+                de: DecoderImpl::new_untrusted(SliceReader::new(slice), config, context),
+                pd: PhantomData,
+            },
         }
     }
 
@@ -93,26 +97,26 @@ where
 
 /// Borrow-deserialize from a slice with the [untrusted collection safeguards](crate#untrusted-input).
 /// Returns the decoded value and the number of bytes consumed.
-pub fn borrow_decode_from_slice_untrusted<'de, D: Deserialize<'de>, C: Config>(
+pub fn borrow_decode_from_slice_untrusted<'de, D: DeserializeUntrusted<'de>, C: Config>(
     slice: &'de [u8],
     config: C,
 ) -> Result<(D, usize), DecodeError> {
     let mut decoder = BorrowedSerdeDecoder::from_slice_untrusted(slice, config, ());
-    let result = D::deserialize(decoder.as_deserializer())?;
-    let bytes_read = slice.len() - decoder.de.borrow_reader().slice.len();
+    let result = decoder.decode()?;
+    let bytes_read = slice.len() - decoder.inner.de.borrow_reader().slice.len();
     Ok((result, bytes_read))
 }
 
 /// Deserialize using a seed with the [untrusted collection safeguards](crate#untrusted-input).
 /// Returns the decoded value and the number of bytes consumed.
-pub fn seed_decode_from_slice_untrusted<'de, D: DeserializeSeed<'de>, C: Config>(
+pub fn seed_decode_from_slice_untrusted<'de, D: DeserializeSeedUntrusted<'de>, C: Config>(
     seed: D,
     slice: &'de [u8],
     config: C,
 ) -> Result<(D::Value, usize), DecodeError> {
     let mut decoder = BorrowedSerdeDecoder::from_slice_untrusted(slice, config, ());
-    let result = seed.deserialize(decoder.as_deserializer())?;
-    let bytes_read = slice.len() - decoder.de.borrow_reader().slice.len();
+    let result = decoder.decode_seed(seed)?;
+    let bytes_read = slice.len() - decoder.inner.de.borrow_reader().slice.len();
     Ok((result, bytes_read))
 }
 
@@ -539,5 +543,23 @@ impl<'de, DE: BorrowDecoder<'de>> VariantAccess<'de> for SerdeDecoder<'_, 'de, D
         V: Visitor<'de>,
     {
         Deserializer::deserialize_tuple(self, fields.len(), visitor)
+    }
+}
+
+/// A borrowed Serde decoder exposing only explicitly opted-in values and seeds.
+pub struct BorrowedUntrustedSerdeDecoder<'de, DE: BorrowUntrustedDecoder<'de>> {
+    inner: BorrowedSerdeDecoder<'de, DE>,
+}
+impl<'de, DE: BorrowUntrustedDecoder<'de>> BorrowedUntrustedSerdeDecoder<'de, DE> {
+    /// Decode a value whose complete Serde graph explicitly opts in.
+    pub fn decode<T: DeserializeUntrusted<'de>>(&mut self) -> Result<T, DecodeError> {
+        T::deserialize(self.inner.as_deserializer())
+    }
+    /// Decode with an explicitly opted-in seed.
+    pub fn decode_seed<T: DeserializeSeedUntrusted<'de>>(
+        &mut self,
+        seed: T,
+    ) -> Result<T::Value, DecodeError> {
+        seed.deserialize(self.inner.as_deserializer())
     }
 }

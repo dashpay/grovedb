@@ -1,6 +1,6 @@
 [package]
 name = "grovedb-bincode-derive"
-version = "2.0.1"
+version = "2.0.2"
 authors = [
     "Zoey Riordan <zoey@dos.cafe>",
     "Victor Koenders <bincode@trangar.com>",
@@ -8,7 +8,7 @@ authors = [
 edition = "2021"
 rust-version = "1.85.0"
 license = "MIT"
-description = "Derive macros for GroveDB's vendored bincode 2.0.1"
+description = "Encoding and explicit untrusted decoding derives for GroveDB's bincode fork"
 repository = "https://github.com/dashpay/grovedb"
 documentation = "https://docs.rs/grovedb-bincode-derive"
 readme = "GROVEDB.md"
@@ -22,7 +22,7 @@ proc-macro = true
 [dependencies]
 virtue = "0.0.18"
 
-# Keep the 2.0.1 source unchanged on newer Rust toolchains.
+# Retain allowances for warnings in the imported upstream generator.
 [lints.rust]
 mismatched_lifetime_syntaxes = "allow"
 

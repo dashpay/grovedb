@@ -2,6 +2,7 @@ use virtue::prelude::*;
 use virtue::utils::{parse_tagged_attribute, ParsedAttribute};
 
 pub struct ContainerAttributes {
+    pub untrusted: bool,
     pub crate_name: String,
     pub bounds: Option<(String, Literal)>,
     pub decode_bounds: Option<(String, Literal)>,
@@ -13,6 +14,7 @@ pub struct ContainerAttributes {
 impl Default for ContainerAttributes {
     fn default() -> Self {
         Self {
+            untrusted: false,
             crate_name: "::bincode".to_string(),
             bounds: None,
             decode_bounds: None,

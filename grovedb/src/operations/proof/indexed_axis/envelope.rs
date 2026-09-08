@@ -49,7 +49,7 @@ pub enum AncestorAttestation {
 /// This is what makes a resolved indexed row shape-complete: the element
 /// bytes alone determine the commitment only for item-like values, and
 /// every other shape folds in something the bytes do not carry.
-#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
+#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq, bincode::DecodeUntrusted)]
 pub enum IndexedTargetCommitment {
     /// Item-like value, committed as `H(value)`.
     Simple,
@@ -85,7 +85,7 @@ pub enum IndexedTargetCommitment {
 
 /// One node of a resolved target chain: its serialized element bytes and
 /// the shape rule that turns them into a commitment.
-#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
+#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq, bincode::DecodeUntrusted)]
 pub struct IndexedTargetNode {
     /// The node's serialized element bytes.
     pub value: Vec<u8>,
@@ -119,7 +119,7 @@ impl IndexedTargetNode {
 /// same reference through an ordinary proof. It is what lets a top-k
 /// result carry `k` values for a per-row cost of the value plus a hash,
 /// instead of `k` inclusion proofs.
-#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
+#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq, bincode::DecodeUntrusted)]
 pub struct IndexedTargetChain {
     /// One entry when the primary entry is directly valued; two — head
     /// then terminal — when it is a reference. Intermediate hops are not

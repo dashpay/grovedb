@@ -4,6 +4,12 @@ mod decoder;
 mod impl_core;
 mod impl_tuples;
 mod impls;
+mod untrusted;
+mod untrusted_impls;
+
+pub use untrusted::{
+    BorrowDecodeUntrusted, BorrowUntrustedDecoder, DecodeUntrusted, UntrustedDecoder,
+};
 
 use self::{
     decoder::WithContext,
@@ -303,6 +309,8 @@ where
         T::context(self)
     }
 }
+
+impl<T: UntrustedDecoder> UntrustedDecoder for &mut T {}
 
 impl<'de, T> BorrowDecoder<'de> for &mut T
 where

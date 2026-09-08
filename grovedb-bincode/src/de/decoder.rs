@@ -1,6 +1,6 @@
 use super::{
     read::{BorrowReader, Reader},
-    BorrowDecoder, Decoder,
+    BorrowDecoder, Decoder, UntrustedDecoder,
 };
 use crate::{config::Config, error::DecodeError, utils::Sealed};
 
@@ -64,6 +64,8 @@ impl<R, C: Config, Context, const UNTRUSTED: bool> Sealed
     for DecoderImpl<R, C, Context, UNTRUSTED>
 {
 }
+
+impl<R: Reader, C: Config, Context> UntrustedDecoder for DecoderImpl<R, C, Context, true> {}
 
 impl<'de, R: BorrowReader<'de>, C: Config, Context, const UNTRUSTED: bool> BorrowDecoder<'de>
     for DecoderImpl<R, C, Context, UNTRUSTED>
@@ -132,6 +134,8 @@ pub struct WithContext<'a, D: ?Sized, C> {
 }
 
 impl<C, D: Decoder + ?Sized> Sealed for WithContext<'_, D, C> {}
+
+impl<C, D: UntrustedDecoder + ?Sized> UntrustedDecoder for WithContext<'_, D, C> {}
 
 impl<Context, D: Decoder + ?Sized> Decoder for WithContext<'_, D, Context> {
     const IS_UNTRUSTED: bool = D::IS_UNTRUSTED;

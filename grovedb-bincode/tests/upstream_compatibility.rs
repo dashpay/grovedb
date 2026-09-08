@@ -6,7 +6,7 @@ use std::{
     fmt::Debug,
 };
 
-#[derive(Debug, PartialEq, bincode::Encode, bincode::Decode)]
+#[derive(Debug, PartialEq, bincode::Encode, bincode::Decode, bincode::DecodeUntrusted)]
 enum LocalRecord {
     Empty,
     Fields {
@@ -122,6 +122,8 @@ where
         + PartialEq
         + bincode::Encode
         + bincode::Decode<()>
+        + bincode::DecodeUntrusted<()>
+        + for<'de> bincode::BorrowDecodeUntrusted<'de, ()>
         + for<'de> bincode::BorrowDecode<'de, ()>
         + bincode_upstream::Encode
         + bincode_upstream::Decode<()>,

@@ -74,6 +74,8 @@
 mod de_borrowed;
 mod de_owned;
 mod ser;
+mod untrusted;
+pub use untrusted::{DeserializeSeedUntrusted, DeserializeUntrusted};
 
 pub use self::de_borrowed::*;
 pub use self::de_owned::*;

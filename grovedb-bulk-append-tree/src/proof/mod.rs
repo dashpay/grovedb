@@ -219,7 +219,7 @@ fn in_ranges(pos: u64, ranges: &[(u64, u64)]) -> bool {
 /// Verification recomputes `state_root = blake3("bulk_state" || mmr_root ||
 /// dense_tree_root)` from the two sub-proofs and checks it against the
 /// expected root.
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode, bincode::DecodeUntrusted)]
 pub struct BulkAppendTreeProof {
     /// Sub-proof for the chunk MMR (completed epochs).
     /// When no chunks exist, this is an empty proof with `mmr_size = 0`.

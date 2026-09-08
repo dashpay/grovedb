@@ -1,4 +1,6 @@
+use super::DeserializeUntrusted;
 use super::{de_borrowed::borrow_decode_from_slice, DecodeError as SerdeDecodeError};
+use crate::de::UntrustedDecoder;
 use crate::{
     config::Config,
     de::{read::Reader, Decode, Decoder, DecoderImpl},
@@ -29,9 +31,11 @@ impl<'r, C: Config, R: std::io::Read> OwnedSerdeDecoder<DecoderImpl<IoReader<&'r
     pub fn from_std_read_untrusted(
         src: &'r mut R,
         config: C,
-    ) -> OwnedSerdeDecoder<DecoderImpl<IoReader<&'r mut R>, C, (), true>> {
-        OwnedSerdeDecoder {
-            de: DecoderImpl::new_untrusted(IoReader::new(src), config, ()),
+    ) -> OwnedUntrustedSerdeDecoder<DecoderImpl<IoReader<&'r mut R>, C, (), true>> {
+        OwnedUntrustedSerdeDecoder {
+            inner: OwnedSerdeDecoder {
+                de: DecoderImpl::new_untrusted(IoReader::new(src), config, ()),
+            },
         }
     }
 
@@ -54,9 +58,11 @@ impl<C: Config, R: Reader> OwnedSerdeDecoder<DecoderImpl<R, C, ()>> {
     pub fn from_reader_untrusted(
         reader: R,
         config: C,
-    ) -> OwnedSerdeDecoder<DecoderImpl<R, C, (), true>> {
-        OwnedSerdeDecoder {
-            de: DecoderImpl::new_untrusted(reader, config, ()),
+    ) -> OwnedUntrustedSerdeDecoder<DecoderImpl<R, C, (), true>> {
+        OwnedUntrustedSerdeDecoder {
+            inner: OwnedSerdeDecoder {
+                de: DecoderImpl::new_untrusted(reader, config, ()),
+            },
         }
     }
 
@@ -117,7 +123,7 @@ pub fn decode_from_reader<D: DeserializeOwned, R: Reader, C: Config>(
 
 /// Decode from a slice with the [untrusted collection safeguards](crate#untrusted-input).
 /// Returns the decoded value and the number of bytes consumed.
-pub fn decode_from_slice_untrusted<D: DeserializeOwned, C: Config>(
+pub fn decode_from_slice_untrusted<D: for<'de> DeserializeUntrusted<'de>, C: Config>(
     slice: &[u8],
     config: C,
 ) -> Result<(D, usize), DecodeError> {
@@ -127,21 +133,25 @@ pub fn decode_from_slice_untrusted<D: DeserializeOwned, C: Config>(
 /// Decode from a standard reader with the [untrusted collection safeguards](crate#untrusted-input).
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
-pub fn decode_from_std_read_untrusted<D: DeserializeOwned, C: Config, R: std::io::Read>(
+pub fn decode_from_std_read_untrusted<
+    D: for<'de> DeserializeUntrusted<'de>,
+    C: Config,
+    R: std::io::Read,
+>(
     src: &mut R,
     config: C,
 ) -> Result<D, DecodeError> {
     let mut decoder = OwnedSerdeDecoder::from_std_read_untrusted(src, config);
-    D::deserialize(decoder.as_deserializer())
+    decoder.decode()
 }
 
 /// Decode from a custom reader with the [untrusted collection safeguards](crate#untrusted-input).
-pub fn decode_from_reader_untrusted<D: DeserializeOwned, R: Reader, C: Config>(
+pub fn decode_from_reader_untrusted<D: for<'de> DeserializeUntrusted<'de>, R: Reader, C: Config>(
     reader: R,
     config: C,
 ) -> Result<D, DecodeError> {
     let mut decoder = OwnedSerdeDecoder::from_reader_untrusted(reader, config);
-    D::deserialize(decoder.as_deserializer())
+    decoder.decode()
 }
 
 pub(super) struct SerdeDecoder<'a, DE: Decoder> {
@@ -578,5 +588,23 @@ impl<'de, DE: Decoder> VariantAccess<'de> for SerdeDecoder<'_, DE> {
         V: Visitor<'de>,
     {
         Deserializer::deserialize_tuple(self, fields.len(), visitor)
+    }
+}
+
+/// An untrusted Serde decoder exposing only explicitly opted-in values.
+///
+/// Unlike the ordinary decoder this does not expose an unrestricted Serde deserializer.
+/// ```compile_fail
+/// let reader = bincode::de::read::SliceReader::new(&[1]);
+/// let mut decoder = bincode::serde::OwnedSerdeDecoder::from_reader_untrusted(reader, bincode::config::standard());
+/// let _ = decoder.as_deserializer();
+/// ```
+pub struct OwnedUntrustedSerdeDecoder<DE: UntrustedDecoder> {
+    inner: OwnedSerdeDecoder<DE>,
+}
+impl<DE: UntrustedDecoder> OwnedUntrustedSerdeDecoder<DE> {
+    /// Decode a value whose complete Serde graph explicitly opts in.
+    pub fn decode<T: for<'de> DeserializeUntrusted<'de>>(&mut self) -> Result<T, DecodeError> {
+        T::deserialize(self.inner.as_deserializer())
     }
 }

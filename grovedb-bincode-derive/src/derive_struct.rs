@@ -63,6 +63,21 @@ impl DeriveStruct {
     }
 
     pub fn generate_decode(self, generator: &mut Generator) -> Result<()> {
+        let decode_trait = if self.attributes.untrusted {
+            "DecodeUntrusted"
+        } else {
+            "Decode"
+        };
+        let decode_method = if self.attributes.untrusted {
+            "decode_untrusted"
+        } else {
+            "decode"
+        };
+        let decoder_trait = if self.attributes.untrusted {
+            "UntrustedDecoder"
+        } else {
+            "Decoder"
+        };
         // Remember to keep this mostly in sync with generate_borrow_decode
         let crate_name = &self.attributes.crate_name;
         let decode_context = if let Some((decode_context, _)) = &self.attributes.decode_context {
@@ -71,7 +86,7 @@ impl DeriveStruct {
             "__Context"
         };
 
-        let mut impl_for = generator.impl_for(format!("{}::Decode", crate_name));
+        let mut impl_for = generator.impl_for(format!("{}::{decode_trait}", crate_name));
         if self.attributes.decode_context.is_none() {
             impl_for = impl_for.with_impl_generics(["__Context"]);
         }
@@ -84,13 +99,13 @@ impl DeriveStruct {
                     where_constraints.push_parsed_constraint(bounds).map_err(|e| e.with_span(lit.span()))?;
                 } else {
                     for g in generics.iter_generics() {
-                        where_constraints.push_constraint(g, format!("{}::Decode<{}>", crate_name, decode_context)).unwrap();
+                        where_constraints.push_constraint(g, format!("{}::{decode_trait}<{}>", crate_name, decode_context)).unwrap();
                     }
                 }
                 Ok(())
             })?
-            .generate_fn("decode")
-            .with_generic_deps("__D", [format!("{}::de::Decoder<Context = {}>", crate_name, decode_context)])
+            .generate_fn(decode_method)
+            .with_generic_deps("__D", [format!("{}::de::{decoder_trait}<Context = {}>", crate_name, decode_context)])
             .with_arg("decoder", "&mut __D")
             .with_return_type(format!("core::result::Result<Self, {}::error::DecodeError>", crate_name))
             .body(|fn_body| {
@@ -101,8 +116,8 @@ impl DeriveStruct {
                     ok_group.group(Delimiter::Brace, |struct_body| {
                         // Fields
                         // {
-                        //      a: bincode::Decode::decode(decoder)?,
-                        //      b: bincode::Decode::decode(decoder)?,
+                        //      a: bincode::{decode_trait}::{decode_method}(decoder)?,
+                        //      b: bincode::{decode_trait}::{decode_method}(decoder)?,
                         //      ...
                         // }
                         if let Some(fields) = self.fields.as_ref() {
@@ -111,7 +126,7 @@ impl DeriveStruct {
                                 if attributes.with_serde {
                                     struct_body
                                         .push_parsed(format!(
-                                            "{1}: (<{0}::serde::Compat<_> as {0}::Decode::<{2}>>::decode(decoder)?).0,",
+                                            "{1}: (<{0}::serde::Compat<_> as {0}::{decode_trait}::<{2}>>::{decode_method}(decoder)?).0,",
                                             crate_name,
                                             field,
                                             decode_context,
@@ -119,7 +134,7 @@ impl DeriveStruct {
                                 } else {
                                     struct_body
                                         .push_parsed(format!(
-                                            "{1}: {0}::Decode::decode(decoder)?,",
+                                            "{1}: {0}::{decode_trait}::{decode_method}(decoder)?,",
                                             crate_name,
                                             field
                                         ))?;
@@ -137,6 +152,21 @@ impl DeriveStruct {
     }
 
     pub fn generate_borrow_decode(self, generator: &mut Generator) -> Result<()> {
+        let borrow_trait = if self.attributes.untrusted {
+            "BorrowDecodeUntrusted"
+        } else {
+            "BorrowDecode"
+        };
+        let borrow_method = if self.attributes.untrusted {
+            "borrow_decode_untrusted"
+        } else {
+            "borrow_decode"
+        };
+        let borrow_decoder_trait = if self.attributes.untrusted {
+            "BorrowUntrustedDecoder"
+        } else {
+            "BorrowDecoder"
+        };
         // Remember to keep this mostly in sync with generate_decode
         let crate_name = self.attributes.crate_name;
 
@@ -147,7 +177,7 @@ impl DeriveStruct {
         };
 
         let mut impl_for = generator
-            .impl_for_with_lifetimes(format!("{}::BorrowDecode", crate_name), ["__de"])
+            .impl_for_with_lifetimes(format!("{}::{borrow_trait}", crate_name), ["__de"])
             .with_trait_generics([decode_context]);
         if self.attributes.decode_context.is_none() {
             impl_for = impl_for.with_impl_generics(["__Context"]);
@@ -160,7 +190,7 @@ impl DeriveStruct {
                     where_constraints.push_parsed_constraint(bounds).map_err(|e| e.with_span(lit.span()))?;
                 } else {
                     for g in generics.iter_generics() {
-                        where_constraints.push_constraint(g, format!("{}::de::BorrowDecode<'__de, {}>", crate_name, decode_context)).unwrap();
+                        where_constraints.push_constraint(g, format!("{}::de::{borrow_trait}<'__de, {}>", crate_name, decode_context)).unwrap();
                     }
                     for lt in generics.iter_lifetimes() {
                         where_constraints.push_parsed_constraint(format!("'__de: '{}", lt.ident))?;
@@ -168,8 +198,8 @@ impl DeriveStruct {
                 }
                 Ok(())
             })?
-            .generate_fn("borrow_decode")
-            .with_generic_deps("__D", [format!("{}::de::BorrowDecoder<'__de, Context = {}>", crate_name, decode_context)])
+            .generate_fn(borrow_method)
+            .with_generic_deps("__D", [format!("{}::de::{borrow_decoder_trait}<'__de, Context = {}>", crate_name, decode_context)])
             .with_arg("decoder", "&mut __D")
             .with_return_type(format!("core::result::Result<Self, {}::error::DecodeError>", crate_name))
             .body(|fn_body| {
@@ -184,7 +214,7 @@ impl DeriveStruct {
                                 if attributes.with_serde {
                                     struct_body
                                         .push_parsed(format!(
-                                            "{1}: (<{0}::serde::BorrowCompat<_> as {0}::BorrowDecode::<'_, {2}>>::borrow_decode(decoder)?).0,",
+                                            "{1}: (<{0}::serde::BorrowCompat<_> as {0}::{borrow_trait}::<'_, {2}>>::{borrow_method}(decoder)?).0,",
                                             crate_name,
                                             field,
                                             decode_context,
@@ -192,7 +222,7 @@ impl DeriveStruct {
                                 } else {
                                     struct_body
                                         .push_parsed(format!(
-                                            "{1}: {0}::BorrowDecode::<'_, {2}>::borrow_decode(decoder)?,",
+                                            "{1}: {0}::{borrow_trait}::<'_, {2}>::{borrow_method}(decoder)?,",
                                             crate_name,
                                             field,
                                             decode_context,

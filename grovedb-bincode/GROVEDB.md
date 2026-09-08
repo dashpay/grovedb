@@ -5,7 +5,7 @@ This workspace package started from the published `bincode` **2.0.1** release as
 `grovedb-bincode-derive`. The initial import preserved the upstream encoder, decoder,
 derive macros, wire format, features, tests, benchmarks, specification, and MIT
 license. Runtime version **2.0.2** adds explicit untrusted decoding APIs below;
-the derive package remains at **2.0.1**.
+the derive package is also **2.0.2** with explicit untrusted derives.
 
 The original documentation remains in [readme.md](readme.md) and [docs](docs/).
 The original copyright and license remain in [LICENSE.md](LICENSE.md).
@@ -42,7 +42,7 @@ The default `derive` feature uses the matching local derive package. Code that
 depends on the macros separately can use:
 
 ```toml
-bincode_derive = { package = "grovedb-bincode-derive", version = "=2.0.1" }
+bincode_derive = { package = "grovedb-bincode-derive", version = "=2.0.2" }
 ```
 
 Although the bytes are unchanged, these are new Cargo packages with distinct
@@ -59,8 +59,11 @@ upstream 2.0.1 behavior, including eager allocation, Serde size hints, and reade
 errors. Use the new APIs when input is untrusted:
 
 ```rust
+#[derive(bincode::Encode, bincode::DecodeUntrusted)]
+struct ClientMessage { payload: Vec<u8> }
+
 let config = bincode::config::standard().with_limit::<1048576>();
-let (value, consumed): (Vec<u8>, usize) =
+let (value, consumed): (ClientMessage, usize) =
     bincode::decode_from_slice_untrusted(&[3, 1, 2, 3], config)?;
 ```
 
@@ -68,15 +71,32 @@ The native API includes `decode_from_slice_untrusted`,
 `borrow_decode_from_slice_untrusted`, `decode_from_reader_untrusted`, and
 `decode_from_std_read_untrusted`. Slice and standard-reader functions also have
 `_with_context` variants. Advanced callers can use `DecoderImpl::new_untrusted`.
+The functions require independent `DecodeUntrusted` / `BorrowDecodeUntrusted`
+traits. Deriving `DecodeUntrusted` implements both new traits, without implementing
+ordinary `Decode`. Derive both when a type should support both APIs. Borrowed
+client types can derive `BorrowDecodeUntrusted`. Generated fields and generic
+containers recursively require and call the new traits; there is no blanket
+implementation for arbitrary ordinary decoders.
+
 The mode propagates through nested values, mutable decoder references, and
-`with_context`, using the same `Decode` / `BorrowDecode` traits and derives.
+`with_context`. New trait methods accept only a sealed `UntrustedDecoder`, so
+passing an ordinary decoder is a compile-time error. Existing decode-context,
+custom-bound, and renamed-crate derive attributes are supported. Custom native
+implementations must explicitly implement the new traits and retain their own
+domain checks and resource constraints.
 
 The Serde module provides matching untrusted slice/reader functions,
 `seed_decode_from_slice_untrusted`, and untrusted constructors on
-`OwnedSerdeDecoder` / `BorrowedSerdeDecoder`. `Compat`, `BorrowCompat`, and derived
-`#[bincode(with_serde)]` fields inherit the enclosing native decoder's mode.
+`OwnedSerdeDecoder` / `BorrowedSerdeDecoder`. These constructors return dedicated
+untrusted decoder types with constrained `decode` / `decode_seed` methods, not a
+raw Serde deserializer. Custom Serde types implement `DeserializeUntrusted<'de>`;
+custom seeds implement `DeserializeSeedUntrusted<'de>`. This explicitly opts in
+the entire Serde graph, which Serde's own dispatch cannot check recursively.
+Library container implementations require their contents to opt in. `Compat`,
+`BorrowCompat`, and derived `#[bincode(with_serde)]` fields require the same opt-in
+and inherit the enclosing native decoder's mode.
 
-In untrusted mode, native `Decode` and `BorrowDecode` do not reserve vector or
+In untrusted mode, native collection decoders do not reserve vector or
 hash-collection storage from an unverified length header. Byte vectors allocate after a reader
 can show the bytes, or after bounded chunks have been read. Other vectors and
 hash collections grow after a complete value or key/value pair has decoded.

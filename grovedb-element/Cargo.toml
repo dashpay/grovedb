@@ -28,7 +28,7 @@ verify = []
 constructor = []
 # Forwarded to grovedb-query so the re-exported `IndexAxis` (defined
 # there) carries its serde impls whenever this crate's serde is on.
-serde = ["dep:serde", "grovedb-query/serde"]
+serde = ["dep:serde", "grovedb-query/serde", "bincode/serde"]
 visualize = ["dep:grovedb-visualize"]
 
 [dev-dependencies]
