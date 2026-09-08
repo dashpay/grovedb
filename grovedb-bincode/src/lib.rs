@@ -36,6 +36,27 @@
 //!
 //! **Note:** If you're using `serde`, use `bincode::serde::...` instead of `bincode::...`
 //!
+//! # Untrusted input
+//!
+//! The `*_untrusted` decoding functions opt into collection allocation safeguards.
+//! Ordinary decoding functions retain upstream 2.0.1 behavior. Both paths use the
+//! same [`Decode`]/[`BorrowDecode`] implementations, derives, configuration, and
+//! wire format; nested values inherit the selected policy.
+//!
+//! In untrusted mode, native vectors and hash collections allocate storage after
+//! entries decode. Byte vectors first verify the available payload, or read bounded
+//! chunks when the reader cannot expose it. Failed reservations in these containers
+//! return [`error::DecodeError::LimitExceeded`]. Serde adapters omit collection size
+//! hints that could otherwise cause visitors to allocate from an unchecked length.
+//!
+//! These safeguards are not a general memory, recursion, or CPU budget. Custom
+//! decoders and Serde visitors remain responsible for their own resource use;
+//! types that consume no bytes can still decode from arbitrarily large counts.
+//! Existing configured limits retain their meaning, including `with_no_limit()`.
+//! Failed untrusted byte-vector reads may consume earlier chunks and report a
+//! missing-byte estimate for the failing chunk. Successful values and consumed
+//! lengths are unchanged; hash collection iteration order is unspecified.
+//!
 //! # Example
 //!
 //! ```rust
@@ -215,6 +236,66 @@ pub fn decode_from_reader<D: de::Decode<()>, R: Reader, C: Config>(
     config: C,
 ) -> Result<D, error::DecodeError> {
     let mut decoder = de::DecoderImpl::<_, C, ()>::new(reader, config, ());
+    D::decode(&mut decoder)
+}
+
+/// Decode from a slice with the [untrusted collection safeguards](crate#untrusted-input).
+/// Returns the decoded value and the number of bytes consumed.
+pub fn decode_from_slice_untrusted<D: de::Decode<()>, C: Config>(
+    src: &[u8],
+    config: C,
+) -> Result<(D, usize), error::DecodeError> {
+    decode_from_slice_untrusted_with_context(src, config, ())
+}
+
+/// Decode from a slice with a context and the [untrusted collection safeguards](crate#untrusted-input).
+/// Returns the decoded value and the number of bytes consumed.
+pub fn decode_from_slice_untrusted_with_context<Context, D: de::Decode<Context>, C: Config>(
+    src: &[u8],
+    config: C,
+    context: Context,
+) -> Result<(D, usize), error::DecodeError> {
+    let reader = de::read::SliceReader::new(src);
+    let mut decoder = de::DecoderImpl::new_untrusted(reader, config, context);
+    let result = D::decode(&mut decoder)?;
+    let bytes_read = src.len() - decoder.reader().slice.len();
+    Ok((result, bytes_read))
+}
+
+/// Borrow-decode from a slice with the [untrusted collection safeguards](crate#untrusted-input).
+/// Returns the decoded value and the number of bytes consumed.
+pub fn borrow_decode_from_slice_untrusted<'a, D: de::BorrowDecode<'a, ()>, C: Config>(
+    src: &'a [u8],
+    config: C,
+) -> Result<(D, usize), error::DecodeError> {
+    borrow_decode_from_slice_untrusted_with_context(src, config, ())
+}
+
+/// Borrow-decode with a context and the [untrusted collection safeguards](crate#untrusted-input).
+/// Returns the decoded value and the number of bytes consumed.
+pub fn borrow_decode_from_slice_untrusted_with_context<
+    'a,
+    Context,
+    D: de::BorrowDecode<'a, Context>,
+    C: Config,
+>(
+    src: &'a [u8],
+    config: C,
+    context: Context,
+) -> Result<(D, usize), error::DecodeError> {
+    let reader = de::read::SliceReader::new(src);
+    let mut decoder = de::DecoderImpl::new_untrusted(reader, config, context);
+    let result = D::borrow_decode(&mut decoder)?;
+    let bytes_read = src.len() - decoder.reader().slice.len();
+    Ok((result, bytes_read))
+}
+
+/// Decode from a custom reader with the [untrusted collection safeguards](crate#untrusted-input).
+pub fn decode_from_reader_untrusted<D: de::Decode<()>, R: Reader, C: Config>(
+    reader: R,
+    config: C,
+) -> Result<D, error::DecodeError> {
+    let mut decoder = de::DecoderImpl::new_untrusted(reader, config, ());
     D::decode(&mut decoder)
 }
 

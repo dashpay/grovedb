@@ -122,15 +122,15 @@ impl Element {
     ///
     /// The manual bincode decoder validates wrapper nesting from decoded
     /// discriminants before descending. Collection allocation safeguards are
-    /// provided by the shared grovedb-bincode decoders.
+    /// provided by the explicit grovedb-bincode untrusted decoder.
     pub fn deserialize(bytes: &[u8], grove_version: &GroveVersion) -> Result<Self, ElementError> {
         check_grovedb_v0!(
             "Element::deserialize",
             grove_version.grovedb_versions.element.deserialize
         );
         let config = config::standard().with_big_endian().with_no_limit();
-        let (elem, consumed): (Element, usize) = bincode::decode_from_slice(bytes, config)
-            .map_err(|e| {
+        let (elem, consumed): (Element, usize) =
+            bincode::decode_from_slice_untrusted(bytes, config).map_err(|e| {
                 ElementError::CorruptedData(format!("unable to deserialize element {}", e))
             })?;
         if consumed != bytes.len() {
@@ -574,12 +574,12 @@ mod tests {
     }
 
     #[test]
-    fn unlimited_public_decoders_do_not_reserve_an_unbacked_length() {
+    fn unlimited_untrusted_decoders_do_not_reserve_an_unbacked_length() {
         let bytes = [vec![0, 253], u64::MAX.to_be_bytes().to_vec()].concat();
         let config = config::standard().with_big_endian().with_no_limit();
 
-        assert!(bincode::decode_from_slice::<Element, _>(&bytes, config).is_err());
-        assert!(bincode::borrow_decode_from_slice::<Element, _>(&bytes, config).is_err());
+        assert!(bincode::decode_from_slice_untrusted::<Element, _>(&bytes, config).is_err());
+        assert!(bincode::borrow_decode_from_slice_untrusted::<Element, _>(&bytes, config).is_err());
     }
 
     /// `NonCounted` may not wrap the backward-references family — enforced

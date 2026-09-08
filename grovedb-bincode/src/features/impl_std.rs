@@ -51,11 +51,41 @@ pub fn decode_from_std_read_with_context<
     D::decode(&mut decoder)
 }
 
-pub(crate) struct IoReader<R> {
+/// Decode from a standard reader with the [untrusted collection safeguards](crate#untrusted-input).
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub fn decode_from_std_read_untrusted<D: Decode<()>, C: Config, R: std::io::Read>(
+    src: &mut R,
+    config: C,
+) -> Result<D, DecodeError> {
+    decode_from_std_read_untrusted_with_context(src, config, ())
+}
+
+/// Decode from a standard reader with a context and the [untrusted collection safeguards](crate#untrusted-input).
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub fn decode_from_std_read_untrusted_with_context<
+    Context,
+    D: Decode<Context>,
+    C: Config,
+    R: std::io::Read,
+>(
+    src: &mut R,
+    config: C,
+    context: Context,
+) -> Result<D, DecodeError> {
+    let reader = IoReader::new(src);
+    let mut decoder = DecoderImpl::new_untrusted(reader, config, context);
+    D::decode(&mut decoder)
+}
+
+/// Adapts a standard reader for bincode's [`Reader`] trait.
+///
+/// This is also the reader type returned by the owned Serde decoder constructors.
+pub struct IoReader<R> {
     reader: R,
 }
 
 impl<R> IoReader<R> {
+    /// Wrap a standard reader.
     pub const fn new(reader: R) -> Self {
         Self { reader }
     }
@@ -457,14 +487,20 @@ where
         decoder.claim_container_read::<(K, V)>(len)?;
 
         let hash_builder: S = Default::default();
-        let mut map = HashMap::with_hasher(hash_builder);
+        let mut map = if D::IS_UNTRUSTED {
+            HashMap::with_hasher(hash_builder)
+        } else {
+            HashMap::with_capacity_and_hasher(len, hash_builder)
+        };
         for _ in 0..len {
             // See the documentation on `unclaim_bytes_read` as to why we're doing this here
             decoder.unclaim_bytes_read(core::mem::size_of::<(K, V)>());
 
             let k = K::decode(decoder)?;
             let v = V::decode(decoder)?;
-            map.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
+            if D::IS_UNTRUSTED {
+                map.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
+            }
             map.insert(k, v);
         }
         Ok(map)
@@ -483,14 +519,20 @@ where
         decoder.claim_container_read::<(K, V)>(len)?;
 
         let hash_builder: S = Default::default();
-        let mut map = HashMap::with_hasher(hash_builder);
+        let mut map = if D::IS_UNTRUSTED {
+            HashMap::with_hasher(hash_builder)
+        } else {
+            HashMap::with_capacity_and_hasher(len, hash_builder)
+        };
         for _ in 0..len {
             // See the documentation on `unclaim_bytes_read` as to why we're doing this here
             decoder.unclaim_bytes_read(core::mem::size_of::<(K, V)>());
 
             let k = K::borrow_decode(decoder)?;
             let v = V::borrow_decode(decoder)?;
-            map.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
+            if D::IS_UNTRUSTED {
+                map.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
+            }
             map.insert(k, v);
         }
         Ok(map)
@@ -507,13 +549,19 @@ where
         decoder.claim_container_read::<T>(len)?;
 
         let hash_builder: S = Default::default();
-        let mut map: HashSet<T, S> = HashSet::with_hasher(hash_builder);
+        let mut map: HashSet<T, S> = if D::IS_UNTRUSTED {
+            HashSet::with_hasher(hash_builder)
+        } else {
+            HashSet::with_capacity_and_hasher(len, hash_builder)
+        };
         for _ in 0..len {
             // See the documentation on `unclaim_bytes_read` as to why we're doing this here
             decoder.unclaim_bytes_read(core::mem::size_of::<T>());
 
             let key = T::decode(decoder)?;
-            map.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
+            if D::IS_UNTRUSTED {
+                map.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
+            }
             map.insert(key);
         }
         Ok(map)
@@ -531,13 +579,19 @@ where
         let len = crate::de::decode_slice_len(decoder)?;
         decoder.claim_container_read::<T>(len)?;
 
-        let mut map = HashSet::with_hasher(S::default());
+        let mut map = if D::IS_UNTRUSTED {
+            HashSet::with_hasher(S::default())
+        } else {
+            HashSet::with_capacity_and_hasher(len, S::default())
+        };
         for _ in 0..len {
             // See the documentation on `unclaim_bytes_read` as to why we're doing this here
             decoder.unclaim_bytes_read(core::mem::size_of::<T>());
 
             let key = T::borrow_decode(decoder)?;
-            map.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
+            if D::IS_UNTRUSTED {
+                map.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
+            }
             map.insert(key);
         }
         Ok(map)

@@ -25,6 +25,16 @@ impl<DE: Decoder> OwnedSerdeDecoder<DE> {
 
 #[cfg(feature = "std")]
 impl<'r, C: Config, R: std::io::Read> OwnedSerdeDecoder<DecoderImpl<IoReader<&'r mut R>, C, ()>> {
+    /// Create a standard-reader decoder with the [untrusted collection safeguards](crate#untrusted-input).
+    pub fn from_std_read_untrusted(
+        src: &'r mut R,
+        config: C,
+    ) -> OwnedSerdeDecoder<DecoderImpl<IoReader<&'r mut R>, C, (), true>> {
+        OwnedSerdeDecoder {
+            de: DecoderImpl::new_untrusted(IoReader::new(src), config, ()),
+        }
+    }
+
     /// Creates the decoder from an `std::io::Read` implementor.
     pub fn from_std_read(
         src: &'r mut R,
@@ -40,6 +50,16 @@ impl<'r, C: Config, R: std::io::Read> OwnedSerdeDecoder<DecoderImpl<IoReader<&'r
 }
 
 impl<C: Config, R: Reader> OwnedSerdeDecoder<DecoderImpl<R, C, ()>> {
+    /// Create a custom-reader decoder with the [untrusted collection safeguards](crate#untrusted-input).
+    pub fn from_reader_untrusted(
+        reader: R,
+        config: C,
+    ) -> OwnedSerdeDecoder<DecoderImpl<R, C, (), true>> {
+        OwnedSerdeDecoder {
+            de: DecoderImpl::new_untrusted(reader, config, ()),
+        }
+    }
+
     /// Creates the decoder from a [`Reader`] implementor.
     pub fn from_reader(reader: R, config: C) -> OwnedSerdeDecoder<DecoderImpl<R, C, ()>>
     where
@@ -93,6 +113,35 @@ pub fn decode_from_reader<D: DeserializeOwned, R: Reader, C: Config>(
 ) -> Result<D, DecodeError> {
     let mut serde_decoder = OwnedSerdeDecoder::<DecoderImpl<R, C, ()>>::from_reader(reader, config);
     D::deserialize(serde_decoder.as_deserializer())
+}
+
+/// Decode from a slice with the [untrusted collection safeguards](crate#untrusted-input).
+/// Returns the decoded value and the number of bytes consumed.
+pub fn decode_from_slice_untrusted<D: DeserializeOwned, C: Config>(
+    slice: &[u8],
+    config: C,
+) -> Result<(D, usize), DecodeError> {
+    super::de_borrowed::borrow_decode_from_slice_untrusted(slice, config)
+}
+
+/// Decode from a standard reader with the [untrusted collection safeguards](crate#untrusted-input).
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub fn decode_from_std_read_untrusted<D: DeserializeOwned, C: Config, R: std::io::Read>(
+    src: &mut R,
+    config: C,
+) -> Result<D, DecodeError> {
+    let mut decoder = OwnedSerdeDecoder::from_std_read_untrusted(src, config);
+    D::deserialize(decoder.as_deserializer())
+}
+
+/// Decode from a custom reader with the [untrusted collection safeguards](crate#untrusted-input).
+pub fn decode_from_reader_untrusted<D: DeserializeOwned, R: Reader, C: Config>(
+    reader: R,
+    config: C,
+) -> Result<D, DecodeError> {
+    let mut decoder = OwnedSerdeDecoder::from_reader_untrusted(reader, config);
+    D::deserialize(decoder.as_deserializer())
 }
 
 pub(super) struct SerdeDecoder<'a, DE: Decoder> {
@@ -354,9 +403,12 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
             }
 
             fn size_hint(&self) -> Option<usize> {
-                // Sequence lengths can come from untrusted input. A visitor
-                // must decode entries before using them to grow its storage.
-                None
+                // Only the explicit untrusted path withholds allocation hints.
+                if DE::IS_UNTRUSTED {
+                    None
+                } else {
+                    Some(self.len)
+                }
             }
         }
 
@@ -422,8 +474,12 @@ impl<'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'_, DE> {
             }
 
             fn size_hint(&self) -> Option<usize> {
-                // Do not let an unverified length drive visitor allocations.
-                None
+                // Only the explicit untrusted path withholds allocation hints.
+                if DE::IS_UNTRUSTED {
+                    None
+                } else {
+                    Some(self.len)
+                }
             }
         }
 

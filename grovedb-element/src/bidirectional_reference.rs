@@ -203,7 +203,7 @@ pub fn deserialize_backward_references(
     let config = bincode::config::standard()
         .with_big_endian()
         .with_no_limit();
-    bincode::decode_from_slice(bytes, config)
+    bincode::decode_from_slice_untrusted(bytes, config)
         .map_err(|e| {
             crate::error::ElementError::CorruptedData(format!(
                 "unable to deserialize backward references: {e}"

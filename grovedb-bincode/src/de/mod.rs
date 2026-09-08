@@ -147,6 +147,12 @@ macro_rules! impl_borrow_decode_with_context {
 
 /// Any source that can decode basic types. This type is most notably implemented for [Decoder].
 pub trait Decoder: Sealed {
+    /// Whether the [untrusted collection safeguards](crate#untrusted-input) are enabled.
+    ///
+    /// Custom decoders should preserve this policy when delegating nested values.
+    /// It does not impose a general allocation, recursion, or CPU budget.
+    const IS_UNTRUSTED: bool;
+
     /// The concrete [Reader] type
     type R: Reader;
 
@@ -267,6 +273,8 @@ impl<T> Decoder for &mut T
 where
     T: Decoder,
 {
+    const IS_UNTRUSTED: bool = T::IS_UNTRUSTED;
+
     type R = T::R;
 
     type C = T::C;

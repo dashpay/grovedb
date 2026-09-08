@@ -1,5 +1,10 @@
 //! Support for serde integration. Enable this with the `serde` feature.
 //!
+//! Use the `*_untrusted` functions or decoder constructors to opt into
+//! [collection allocation safeguards](crate#untrusted-input). Ordinary functions
+//! retain upstream size hints and allocation behavior. [`Compat`], [`BorrowCompat`],
+//! and `#[bincode(with_serde)]` inherit the enclosing native decoder's policy.
+//!
 //! To encode/decode type that implement serde's trait, you can use:
 //! - [borrow_decode_from_slice]
 //! - [decode_from_slice]

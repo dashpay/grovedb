@@ -1,4 +1,4 @@
-//! Collection lengths must not allocate storage before contents are decoded.
+//! Untrusted decoding must not allocate collection storage from length headers alone.
 #![cfg(feature = "std")]
 
 use bincode::{config::Config, error::DecodeError, BorrowDecode, Decode};
@@ -105,24 +105,106 @@ where
     T: Decode<()> + for<'de> BorrowDecode<'de, ()>,
     C: Config + Copy,
 {
-    bounded_error(|| bincode::decode_from_slice::<T, _>(bytes, config));
-    bounded_error(|| bincode::borrow_decode_from_slice::<T, _>(bytes, config));
+    bounded_error(|| bincode::decode_from_slice_untrusted::<T, _>(bytes, config));
+    bounded_error(|| bincode::borrow_decode_from_slice_untrusted::<T, _>(bytes, config));
+    bounded_error(|| {
+        bincode::decode_from_slice_untrusted_with_context::<_, T, _>(bytes, config, ())
+    });
+    bounded_error(|| {
+        bincode::borrow_decode_from_slice_untrusted_with_context::<_, T, _>(bytes, config, ())
+    });
+    bounded_error(|| {
+        bincode::decode_from_reader_untrusted::<T, _, _>(
+            bincode::de::read::SliceReader::new(bytes),
+            config,
+        )
+    });
     // std::io::Read has no peek_read, so this also tests incremental reads.
-    bounded_error(|| bincode::decode_from_std_read::<T, _, _>(&mut &*bytes, config));
+    bounded_error(|| bincode::decode_from_std_read_untrusted::<T, _, _>(&mut &*bytes, config));
+    bounded_error(|| {
+        bincode::decode_from_std_read_untrusted_with_context::<_, T, _, _>(&mut &*bytes, config, ())
+    });
 }
 
 #[test]
-fn upstream_length_only_allocation_is_observable() {
+fn ordinary_decoding_retains_upstream_eager_allocation() {
     let config = bincode_upstream::config::standard();
     let bytes = bincode_upstream::encode_to_vec(65_536u64, config).unwrap();
-    let (result, largest) = observe(false, || {
-        bincode_upstream::decode_from_slice::<Vec<u8>, _>(&bytes, config)
-    });
-    assert!(result.is_err());
-    assert!(
-        largest >= 65_536,
-        "control must demonstrate eager allocation"
-    );
+    macro_rules! compare {
+        ($ty:ty) => {{
+            let (expected, largest) = observe(false, || {
+                bincode_upstream::decode_from_slice::<$ty, _>(&bytes, config)
+            });
+            assert!(expected.is_err());
+            assert!(
+                largest >= 65_536,
+                "control must demonstrate eager allocation"
+            );
+            let local = bincode::config::standard();
+            let (result, allocated) = observe(false, || {
+                bincode::decode_from_slice::<$ty, _>(&bytes, local)
+            });
+            assert_eq!(format!("{result:?}"), format!("{expected:?}"));
+            assert_eq!(allocated, largest);
+            let (result, allocated) = observe(false, || {
+                bincode::borrow_decode_from_slice::<$ty, _>(&bytes, local)
+            });
+            assert_eq!(format!("{result:?}"), format!("{expected:?}"));
+            assert_eq!(allocated, largest);
+            let (result, allocated) = observe(false, || {
+                bincode::decode_from_std_read::<$ty, _, _>(&mut bytes.as_slice(), local)
+            });
+            assert!(result.is_err());
+            assert_eq!(allocated, largest);
+        }};
+    }
+    compare!(Vec<u8>);
+    compare!(Vec<u16>);
+    compare!(HashMap<u8, u8>);
+    compare!(HashSet<u8>);
+}
+
+struct WithChangedContext<T>(T);
+
+impl<C, T: Decode<u8>> Decode<C> for WithChangedContext<T> {
+    fn decode<D: bincode::de::Decoder<Context = C>>(decoder: &mut D) -> Result<Self, DecodeError> {
+        let mut nested = decoder.with_context(42u8);
+        // Serde adapters and user decoders can introduce multiple mutable references.
+        T::decode(&mut &mut nested).map(Self)
+    }
+}
+
+impl<'de, C, T: BorrowDecode<'de, u8>> BorrowDecode<'de, C> for WithChangedContext<T> {
+    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = C>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        let mut nested = decoder.with_context(42u8);
+        T::borrow_decode(&mut &mut nested).map(Self)
+    }
+}
+
+#[test]
+fn context_changes_preserve_the_untrusted_policy() {
+    let config = bincode::config::standard();
+    let bytes = bincode::encode_to_vec(u64::MAX, config).unwrap();
+    reject_all_routes::<WithChangedContext<Vec<Vec<u8>>>, _>(&bytes, config);
+
+    let value = vec![vec![1u8, 2, 3]];
+    let bytes = bincode::encode_to_vec(&value, config).unwrap();
+    let (decoded, consumed): (WithChangedContext<Vec<Vec<u8>>>, _) =
+        bincode::decode_from_slice_untrusted_with_context(&bytes, config, "application context")
+            .unwrap();
+    assert_eq!(decoded.0, value);
+    assert_eq!(consumed, bytes.len());
+    let (decoded, consumed): (WithChangedContext<Vec<&[u8]>>, _) =
+        bincode::borrow_decode_from_slice_untrusted_with_context(
+            &bytes,
+            config,
+            "application context",
+        )
+        .unwrap();
+    assert_eq!(decoded.0, value);
+    assert_eq!(consumed, bytes.len());
 }
 
 #[test]
@@ -171,14 +253,16 @@ fn partial_payloads_only_allocate_for_decoded_contents() {
 fn allocation_failure_is_a_decode_error() {
     fn check<T: Decode<()> + for<'de> BorrowDecode<'de, ()>>(bytes: &[u8]) {
         let config = bincode::config::standard();
-        let (owned, _) = observe(true, || bincode::decode_from_slice::<T, _>(bytes, config));
+        let (owned, _) = observe(true, || {
+            bincode::decode_from_slice_untrusted::<T, _>(bytes, config)
+        });
         assert!(matches!(owned, Err(DecodeError::LimitExceeded)));
         let (borrowed, _) = observe(true, || {
-            bincode::borrow_decode_from_slice::<T, _>(bytes, config)
+            bincode::borrow_decode_from_slice_untrusted::<T, _>(bytes, config)
         });
         assert!(matches!(borrowed, Err(DecodeError::LimitExceeded)));
         let (streamed, _) = observe(true, || {
-            bincode::decode_from_std_read::<T, _, _>(&mut &*bytes, config)
+            bincode::decode_from_std_read_untrusted::<T, _, _>(&mut &*bytes, config)
         });
         assert!(matches!(streamed, Err(DecodeError::LimitExceeded)));
     }
@@ -201,11 +285,17 @@ fn malformed_collection_corpus_stays_bounded() {
             // cannot create valid zero-wire collections with huge counts.
             let (_, largest) = observe(false, || {
                 let config = bincode::config::standard();
-                let _ = bincode::decode_from_slice::<Vec<Vec<u8>>, _>(bytes, config);
-                let _ = bincode::borrow_decode_from_slice::<HashMap<u8, Vec<u8>>, _>(bytes, config);
-                let _ = bincode::decode_from_std_read::<Vec<u8>, _, _>(&mut &*bytes, config);
-                let _ = bincode::decode_from_slice::<Vec<u8>, _>(bytes, bincode::config::legacy());
-                let _ = bincode::decode_from_slice::<Vec<u16>, _>(
+                let _ = bincode::decode_from_slice_untrusted::<Vec<Vec<u8>>, _>(bytes, config);
+                let _ = bincode::borrow_decode_from_slice_untrusted::<HashMap<u8, Vec<u8>>, _>(
+                    bytes, config,
+                );
+                let _ =
+                    bincode::decode_from_std_read_untrusted::<Vec<u8>, _, _>(&mut &*bytes, config);
+                let _ = bincode::decode_from_slice_untrusted::<Vec<u8>, _>(
+                    bytes,
+                    bincode::config::legacy(),
+                );
+                let _ = bincode::decode_from_slice_untrusted::<Vec<u16>, _>(
                     bytes,
                     bincode::config::standard().with_big_endian(),
                 );
@@ -269,13 +359,82 @@ mod serde_tests {
 
     fn reject_serde_routes<T: serde::de::DeserializeOwned>(bytes: &[u8]) {
         let config = bincode::config::standard();
-        bounded_error(|| bincode::serde::decode_from_slice::<T, _>(bytes, config));
-        bounded_error(|| bincode::serde::borrow_decode_from_slice::<T, _>(bytes, config));
-        bounded_error(|| bincode::serde::decode_from_std_read::<T, _, _>(&mut &*bytes, config));
-        bounded_error(|| bincode::decode_from_slice::<bincode::serde::Compat<T>, _>(bytes, config));
+        bounded_error(|| bincode::serde::decode_from_slice_untrusted::<T, _>(bytes, config));
+        bounded_error(|| bincode::serde::borrow_decode_from_slice_untrusted::<T, _>(bytes, config));
         bounded_error(|| {
-            bincode::borrow_decode_from_slice::<bincode::serde::BorrowCompat<T>, _>(bytes, config)
+            bincode::serde::decode_from_std_read_untrusted::<T, _, _>(&mut &*bytes, config)
         });
+        bounded_error(|| {
+            bincode::serde::decode_from_reader_untrusted::<T, _, _>(
+                bincode::de::read::SliceReader::new(bytes),
+                config,
+            )
+        });
+        bounded_error(|| {
+            bincode::serde::seed_decode_from_slice_untrusted(
+                std::marker::PhantomData::<T>,
+                bytes,
+                config,
+            )
+        });
+        bounded_error(|| {
+            let mut decoder = bincode::serde::BorrowedSerdeDecoder::from_slice_untrusted(
+                bytes, config, "context",
+            );
+            T::deserialize(decoder.as_deserializer())
+        });
+        bounded_error(|| {
+            let mut decoder = bincode::serde::OwnedSerdeDecoder::from_reader_untrusted(
+                bincode::de::read::SliceReader::new(bytes),
+                config,
+            );
+            T::deserialize(decoder.as_deserializer())
+        });
+        bounded_error(|| {
+            let mut src = bytes;
+            let mut decoder =
+                bincode::serde::OwnedSerdeDecoder::from_std_read_untrusted(&mut src, config);
+            T::deserialize(decoder.as_deserializer())
+        });
+        bounded_error(|| {
+            bincode::decode_from_slice_untrusted::<bincode::serde::Compat<T>, _>(bytes, config)
+        });
+        bounded_error(|| {
+            bincode::borrow_decode_from_slice_untrusted::<bincode::serde::BorrowCompat<T>, _>(
+                bytes, config,
+            )
+        });
+        bounded_error(|| {
+            bincode::decode_from_slice_untrusted::<WithChangedContext<bincode::serde::Compat<T>>, _>(
+                bytes, config,
+            )
+        });
+        bounded_error(|| {
+            bincode::borrow_decode_from_slice_untrusted::<
+                WithChangedContext<bincode::serde::BorrowCompat<T>>,
+                _,
+            >(bytes, config)
+        });
+    }
+
+    #[cfg(feature = "derive")]
+    #[test]
+    fn derived_mixed_native_and_serde_fields_inherit_untrusted_mode() {
+        #[derive(bincode::Decode)]
+        struct Mixed {
+            prefix: u8,
+            #[bincode(with_serde)]
+            values: Vec<Vec<u8>>,
+        }
+        let config = bincode::config::standard();
+        let mut bytes = vec![42];
+        bytes.extend(bincode::encode_to_vec(u64::MAX, config).unwrap());
+        reject_all_routes::<Mixed, _>(&bytes, config);
+        let (decoded, consumed): (Mixed, _) =
+            bincode::decode_from_slice_untrusted(&[42, 1, 1, 7], config).unwrap();
+        assert_eq!(decoded.prefix, 42);
+        assert_eq!(decoded.values, [vec![7]]);
+        assert_eq!(consumed, 4);
     }
 
     #[test]

@@ -111,7 +111,7 @@ impl Visualize for GroveDb {
 pub fn visualize_merk_stdout<'db, S: StorageContext<'db>>(merk: &Merk<S>) {
     visualize_stdout(&VisualizeableMerk::new(merk, |bytes: &[u8]| {
         let config = config::standard().with_big_endian().with_no_limit();
-        bincode::decode_from_slice::<Element, Configuration<BigEndian>>(bytes, config)
+        bincode::decode_from_slice_untrusted::<Element, Configuration<BigEndian>>(bytes, config)
             .expect("unable to deserialize Element")
             .0
     }));

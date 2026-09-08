@@ -290,19 +290,32 @@ where
 
         if unty::type_equal::<T, u8>() {
             decoder.claim_container_read::<T>(len)?;
-            let vec = decode_byte_vec(decoder, len)?;
+            let vec = if D::IS_UNTRUSTED {
+                decode_byte_vec(decoder, len)?
+            } else {
+                // Preserve upstream's single read and eager allocation.
+                let mut vec = alloc::vec![0u8; len];
+                decoder.reader().read(&mut vec)?;
+                vec
+            };
             // Safety: Vec<T> is Vec<u8>
             Ok(unsafe { core::mem::transmute::<Vec<u8>, Vec<T>>(vec) })
         } else {
             decoder.claim_container_read::<T>(len)?;
 
-            let mut vec = Vec::new();
+            let mut vec = if D::IS_UNTRUSTED {
+                Vec::new()
+            } else {
+                Vec::with_capacity(len)
+            };
             for _ in 0..len {
                 // See the documentation on `unclaim_bytes_read` as to why we're doing this here
                 decoder.unclaim_bytes_read(core::mem::size_of::<T>());
 
                 let value = T::decode(decoder)?;
-                vec.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
+                if D::IS_UNTRUSTED {
+                    vec.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
+                }
                 vec.push(value);
             }
             Ok(vec)
@@ -321,19 +334,32 @@ where
 
         if unty::type_equal::<T, u8>() {
             decoder.claim_container_read::<T>(len)?;
-            let vec = decode_byte_vec(decoder, len)?;
+            let vec = if D::IS_UNTRUSTED {
+                decode_byte_vec(decoder, len)?
+            } else {
+                // Preserve upstream's single read and eager allocation.
+                let mut vec = alloc::vec![0u8; len];
+                decoder.reader().read(&mut vec)?;
+                vec
+            };
             // Safety: Vec<T> is Vec<u8>
             Ok(unsafe { core::mem::transmute::<Vec<u8>, Vec<T>>(vec) })
         } else {
             decoder.claim_container_read::<T>(len)?;
 
-            let mut vec = Vec::new();
+            let mut vec = if D::IS_UNTRUSTED {
+                Vec::new()
+            } else {
+                Vec::with_capacity(len)
+            };
             for _ in 0..len {
                 // See the documentation on `unclaim_bytes_read` as to why we're doing this here
                 decoder.unclaim_bytes_read(core::mem::size_of::<T>());
 
                 let value = T::borrow_decode(decoder)?;
-                vec.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
+                if D::IS_UNTRUSTED {
+                    vec.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
+                }
                 vec.push(value);
             }
             Ok(vec)

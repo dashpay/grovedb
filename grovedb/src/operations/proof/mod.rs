@@ -68,7 +68,7 @@ pub(super) fn decode_grovedb_proof_canonical(proof: &[u8]) -> Result<GroveDBProo
     let config = bincode::config::standard()
         .with_big_endian()
         .with_limit::<{ 256 * 1024 * 1024 }>();
-    let (decoded, consumed) = bincode::decode_from_slice(proof, config)
+    let (decoded, consumed) = bincode::decode_from_slice_untrusted(proof, config)
         .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?;
     if consumed != proof.len() {
         return Err(Error::CorruptedData(format!(
@@ -478,8 +478,8 @@ impl SumBudgetWindowProof {
         let config = bincode::config::standard()
             .with_big_endian()
             .with_limit::<{ 16 * 1024 * 1024 }>();
-        let (decoded, consumed): (Self, usize) = bincode::decode_from_slice(bytes, config)
-            .map_err(|e| {
+        let (decoded, consumed): (Self, usize) =
+            bincode::decode_from_slice_untrusted(bytes, config).map_err(|e| {
                 Error::CorruptedData(format!("unable to decode sum-budget window: {e}"))
             })?;
         if consumed != bytes.len() {
@@ -553,8 +553,9 @@ impl AxisDescentProof {
         let config = bincode::config::standard()
             .with_big_endian()
             .with_limit::<{ 16 * 1024 * 1024 }>();
-        let (decoded, consumed): (Self, usize) = bincode::decode_from_slice(bytes, config)
-            .map_err(|e| Error::CorruptedData(format!("unable to decode axis descent: {e}")))?;
+        let (decoded, consumed): (Self, usize) =
+            bincode::decode_from_slice_untrusted(bytes, config)
+                .map_err(|e| Error::CorruptedData(format!("unable to decode axis descent: {e}")))?;
         if consumed != bytes.len() {
             return Err(Error::CorruptedData(format!(
                 "axis descent payload has {} trailing bytes",

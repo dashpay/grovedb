@@ -26,6 +26,18 @@ impl<'de, DE: BorrowDecoder<'de>> BorrowedSerdeDecoder<'de, DE> {
 }
 
 impl<'de, C: Config, Context> BorrowedSerdeDecoder<'de, DecoderImpl<SliceReader<'de>, C, Context>> {
+    /// Create a slice decoder with the [untrusted collection safeguards](crate#untrusted-input).
+    pub fn from_slice_untrusted(
+        slice: &'de [u8],
+        config: C,
+        context: Context,
+    ) -> BorrowedSerdeDecoder<'de, DecoderImpl<SliceReader<'de>, C, Context, true>> {
+        BorrowedSerdeDecoder {
+            de: DecoderImpl::new_untrusted(SliceReader::new(slice), config, context),
+            pd: PhantomData,
+        }
+    }
+
     /// Creates the decoder from a borrowed slice.
     pub fn from_slice(
         slice: &'de [u8],
@@ -76,6 +88,31 @@ where
         BorrowedSerdeDecoder::<DecoderImpl<SliceReader<'de>, C, ()>>::from_slice(slice, config, ());
     let result = seed.deserialize(serde_decoder.as_deserializer())?;
     let bytes_read = slice.len() - serde_decoder.de.borrow_reader().slice.len();
+    Ok((result, bytes_read))
+}
+
+/// Borrow-deserialize from a slice with the [untrusted collection safeguards](crate#untrusted-input).
+/// Returns the decoded value and the number of bytes consumed.
+pub fn borrow_decode_from_slice_untrusted<'de, D: Deserialize<'de>, C: Config>(
+    slice: &'de [u8],
+    config: C,
+) -> Result<(D, usize), DecodeError> {
+    let mut decoder = BorrowedSerdeDecoder::from_slice_untrusted(slice, config, ());
+    let result = D::deserialize(decoder.as_deserializer())?;
+    let bytes_read = slice.len() - decoder.de.borrow_reader().slice.len();
+    Ok((result, bytes_read))
+}
+
+/// Deserialize using a seed with the [untrusted collection safeguards](crate#untrusted-input).
+/// Returns the decoded value and the number of bytes consumed.
+pub fn seed_decode_from_slice_untrusted<'de, D: DeserializeSeed<'de>, C: Config>(
+    seed: D,
+    slice: &'de [u8],
+    config: C,
+) -> Result<(D::Value, usize), DecodeError> {
+    let mut decoder = BorrowedSerdeDecoder::from_slice_untrusted(slice, config, ());
+    let result = seed.deserialize(decoder.as_deserializer())?;
+    let bytes_read = slice.len() - decoder.de.borrow_reader().slice.len();
     Ok((result, bytes_read))
 }
 
@@ -325,9 +362,12 @@ impl<'de, DE: BorrowDecoder<'de>> Deserializer<'de> for SerdeDecoder<'_, 'de, DE
             }
 
             fn size_hint(&self) -> Option<usize> {
-                // Sequence lengths can come from untrusted input. A visitor
-                // must decode entries before using them to grow its storage.
-                None
+                // Only the explicit untrusted path withholds allocation hints.
+                if DE::IS_UNTRUSTED {
+                    None
+                } else {
+                    Some(self.len)
+                }
             }
         }
 
@@ -395,8 +435,12 @@ impl<'de, DE: BorrowDecoder<'de>> Deserializer<'de> for SerdeDecoder<'_, 'de, DE
             }
 
             fn size_hint(&self) -> Option<usize> {
-                // Do not let an unverified length drive visitor allocations.
-                None
+                // Only the explicit untrusted path withholds allocation hints.
+                if DE::IS_UNTRUSTED {
+                    None
+                } else {
+                    Some(self.len)
+                }
             }
         }
 

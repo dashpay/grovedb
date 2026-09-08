@@ -4,7 +4,7 @@ This workspace package started from the published `bincode` **2.0.1** release as
 `grovedb-bincode`, together with `bincode_derive` **2.0.1** as
 `grovedb-bincode-derive`. The initial import preserved the upstream encoder, decoder,
 derive macros, wire format, features, tests, benchmarks, specification, and MIT
-license. Runtime version **2.0.2** adds the collection allocation safeguards below;
+license. Runtime version **2.0.2** adds explicit untrusted decoding APIs below;
 the derive package remains at **2.0.1**.
 
 The original documentation remains in [readme.md](readme.md) and [docs](docs/).
@@ -52,28 +52,53 @@ alias does not make implementations interchangeable with upstream bincode.
 Publish the derive package, then the runtime package, before publishing GroveDB
 packages that depend on them. Their versions are independent of GroveDB's version.
 
-## Collection allocation safeguards in 2.0.2
+## Opt-in untrusted decoding in 2.0.2
 
-Native `Decode` and `BorrowDecode` no longer reserve vector or hash-collection
-storage from an unverified length header. Byte vectors allocate after a reader
+Ordinary `decode_*` / `borrow_decode_*` functions and decoder constructors retain
+upstream 2.0.1 behavior, including eager allocation, Serde size hints, and reader
+errors. Use the new APIs when input is untrusted:
+
+```rust
+let config = bincode::config::standard().with_limit::<1048576>();
+let (value, consumed): (Vec<u8>, usize) =
+    bincode::decode_from_slice_untrusted(&[3, 1, 2, 3], config)?;
+```
+
+The native API includes `decode_from_slice_untrusted`,
+`borrow_decode_from_slice_untrusted`, `decode_from_reader_untrusted`, and
+`decode_from_std_read_untrusted`. Slice and standard-reader functions also have
+`_with_context` variants. Advanced callers can use `DecoderImpl::new_untrusted`.
+The mode propagates through nested values, mutable decoder references, and
+`with_context`, using the same `Decode` / `BorrowDecode` traits and derives.
+
+The Serde module provides matching untrusted slice/reader functions,
+`seed_decode_from_slice_untrusted`, and untrusted constructors on
+`OwnedSerdeDecoder` / `BorrowedSerdeDecoder`. `Compat`, `BorrowCompat`, and derived
+`#[bincode(with_serde)]` fields inherit the enclosing native decoder's mode.
+
+In untrusted mode, native `Decode` and `BorrowDecode` do not reserve vector or
+hash-collection storage from an unverified length header. Byte vectors allocate after a reader
 can show the bytes, or after bounded chunks have been read. Other vectors and
 hash collections grow after a complete value or key/value pair has decoded.
 Fallible reservations return `DecodeError::LimitExceeded`. Types implemented
 through these vectors (including strings, boxed slices, and vector deques)
-inherit the checks. Both Serde adapters omit sequence/map size hints so visitors
-cannot mistake a length declaration for a verified allocation size.
+inherit the checks. Both Serde adapters omit sequence/map size hints in this mode
+so visitors cannot mistake a length declaration for a verified allocation size.
 
 Encoding is unchanged. Successfully decoded values and consumed-byte counts
 remain compatible with upstream 2.0.1, including noncanonical integer encodings
 and configured limit accounting. Hash collection iteration order is unspecified
-and may differ after decoding. On malformed input, a chunked reader may consume
-earlier chunks before returning an error, and its missing-byte estimate may
+and may differ after untrusted decoding. On malformed input, an untrusted chunked
+reader may consume earlier chunks before returning an error, and its missing-byte estimate may
 describe only the failing chunk.
 
 This is not a universal memory or CPU budget: zero-wire types remain valid,
 `with_no_limit()` still disables the configured limit, and custom decoders or
 Serde visitors control their own allocations. GroveDB's Element wrapper rules
 remain in `grovedb-element`, where nested wrappers are rejected before descent.
+GroveDB's Element, backward-reference, and proof decoding boundaries explicitly
+select the untrusted APIs. Downstream callers decoding GroveDB types directly
+must also select these APIs when handling untrusted bytes.
 
 ## Validation
 

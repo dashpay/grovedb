@@ -1,6 +1,7 @@
 //! Validate Element wrapper discriminants before descending into their payloads.
 //!
-//! Collection decoding is delegated to grovedb-bincode's shared safeguards.
+//! Collection decoding inherits the caller's grovedb-bincode mode.
+//! Public GroveDB deserialization boundaries select the untrusted safeguards.
 
 use bincode::{
     de::Decoder,

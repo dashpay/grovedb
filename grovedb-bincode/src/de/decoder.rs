@@ -9,6 +9,10 @@ use crate::{config::Config, error::DecodeError, utils::Sealed};
 /// This struct should rarely be used.
 /// In most cases, prefer any of the `decode` functions.
 ///
+/// The default mode preserves upstream decoding behavior. Use [`Self::new_untrusted`]
+/// to enable collection safeguards. The mode is a type parameter, so ordinary
+/// decoding does not perform a runtime policy check.
+///
 /// The ByteOrder that is chosen will impact the endianness that
 /// is used to read integers out of the reader.
 ///
@@ -21,7 +25,7 @@ use crate::{config::Config, error::DecodeError, utils::Sealed};
 /// // this u32 can be any Decode
 /// let value = u32::decode(&mut decoder).unwrap();
 /// ```
-pub struct DecoderImpl<R, C: Config, Context> {
+pub struct DecoderImpl<R, C: Config, Context, const UNTRUSTED: bool = false> {
     reader: R,
     config: C,
     bytes_read: usize,
@@ -38,12 +42,31 @@ impl<R: Reader, C: Config, Context> DecoderImpl<R, C, Context> {
             context,
         }
     }
+
+    /// Construct a decoder with the [untrusted collection safeguards](crate#untrusted-input).
+    ///
+    /// The policy is preserved by [`Decoder::with_context`] and nested decoding.
+    pub fn new_untrusted(
+        reader: R,
+        config: C,
+        context: Context,
+    ) -> DecoderImpl<R, C, Context, true> {
+        DecoderImpl {
+            reader,
+            config,
+            bytes_read: 0,
+            context,
+        }
+    }
 }
 
-impl<R, C: Config, Context> Sealed for DecoderImpl<R, C, Context> {}
+impl<R, C: Config, Context, const UNTRUSTED: bool> Sealed
+    for DecoderImpl<R, C, Context, UNTRUSTED>
+{
+}
 
-impl<'de, R: BorrowReader<'de>, C: Config, Context> BorrowDecoder<'de>
-    for DecoderImpl<R, C, Context>
+impl<'de, R: BorrowReader<'de>, C: Config, Context, const UNTRUSTED: bool> BorrowDecoder<'de>
+    for DecoderImpl<R, C, Context, UNTRUSTED>
 {
     type BR = R;
 
@@ -52,7 +75,11 @@ impl<'de, R: BorrowReader<'de>, C: Config, Context> BorrowDecoder<'de>
     }
 }
 
-impl<R: Reader, C: Config, Context> Decoder for DecoderImpl<R, C, Context> {
+impl<R: Reader, C: Config, Context, const UNTRUSTED: bool> Decoder
+    for DecoderImpl<R, C, Context, UNTRUSTED>
+{
+    const IS_UNTRUSTED: bool = UNTRUSTED;
+
     type R = R;
 
     type C = C;
@@ -107,6 +134,8 @@ pub struct WithContext<'a, D: ?Sized, C> {
 impl<C, D: Decoder + ?Sized> Sealed for WithContext<'_, D, C> {}
 
 impl<Context, D: Decoder + ?Sized> Decoder for WithContext<'_, D, Context> {
+    const IS_UNTRUSTED: bool = D::IS_UNTRUSTED;
+
     type R = D::R;
 
     type C = D::C;

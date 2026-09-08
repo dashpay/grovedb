@@ -92,6 +92,11 @@ fn compare<C: bincode::config::Config, U: bincode_upstream::config::Config>(loca
         assert_eq!(decoded_upstream, upstream_record);
         assert_eq!(consumed, local_bytes.len());
 
+        let (untrusted, consumed): (LocalRecord, _) =
+            bincode::decode_from_slice_untrusted(&upstream_bytes, local).unwrap();
+        assert_eq!(untrusted, local_record);
+        assert_eq!(consumed, upstream_bytes.len());
+
         let streamed: LocalRecord =
             bincode::decode_from_std_read(&mut upstream_bytes.as_slice(), local).unwrap();
         assert_eq!(streamed, local_record);
@@ -129,21 +134,36 @@ where
     assert_eq!(bincode::encode_to_vec(value, local).unwrap(), expected);
     let original = bincode_upstream::decode_from_slice::<T, _>(&expected, upstream);
     let owned = bincode::decode_from_slice::<T, _>(&expected, local);
+    let untrusted_owned = bincode::decode_from_slice_untrusted::<T, _>(&expected, local);
+    let untrusted_borrowed = bincode::borrow_decode_from_slice_untrusted::<T, _>(&expected, local);
+    let untrusted_streamed =
+        bincode::decode_from_std_read_untrusted::<T, _, _>(&mut expected.as_slice(), local);
     let borrowed = bincode::borrow_decode_from_slice::<T, _>(&expected, local);
     let streamed = bincode::decode_from_std_read::<T, _, _>(&mut expected.as_slice(), local);
     match original {
         Ok((decoded, consumed)) => {
             assert_eq!(&decoded, value);
             assert_eq!(consumed, expected.len());
-            assert_eq!(owned.unwrap(), (decoded, consumed));
+            for result in [owned, untrusted_owned, untrusted_borrowed] {
+                let (decoded, consumed) = result.unwrap();
+                assert_eq!(&decoded, value);
+                assert_eq!(consumed, expected.len());
+            }
+            assert_eq!(&untrusted_streamed.unwrap(), value);
             let (decoded, consumed) = borrowed.unwrap();
             assert_eq!(&decoded, value);
             assert_eq!(consumed, expected.len());
             assert_eq!(&streamed.unwrap(), value);
         }
         Err(bincode_upstream::error::DecodeError::LimitExceeded) => {
+            for result in [owned, untrusted_owned, untrusted_borrowed] {
+                assert!(matches!(
+                    result,
+                    Err(bincode::error::DecodeError::LimitExceeded)
+                ));
+            }
             assert!(matches!(
-                owned,
+                untrusted_streamed,
                 Err(bincode::error::DecodeError::LimitExceeded)
             ));
             assert!(matches!(
@@ -223,6 +243,10 @@ fn borrowed_values_and_duplicate_map_keys_remain_compatible() {
         bincode::borrow_decode_from_slice(&bytes, config).unwrap();
     assert_eq!(decoded, values);
     assert_eq!(consumed, bytes.len());
+    let (decoded, consumed): (Vec<&str>, _) =
+        bincode::borrow_decode_from_slice_untrusted(&bytes, config).unwrap();
+    assert_eq!(decoded, values);
+    assert_eq!(consumed, bytes.len());
 
     // A sequence of pairs has the same representation as a map, and can
     // express repeated keys. Preserve last-value-wins decoding.
@@ -231,6 +255,13 @@ fn borrowed_values_and_duplicate_map_keys_remain_compatible() {
     let (expected, _): (HashMap<u8, u8>, _) =
         bincode_upstream::decode_from_slice(&bytes, original).unwrap();
     assert_eq!(expected[&1], 5);
+    let (decoded, consumed): (HashMap<u8, u8>, _) =
+        bincode::decode_from_slice_untrusted(&bytes, config).unwrap();
+    assert_eq!(decoded, expected);
+    assert_eq!(consumed, bytes.len());
+    let (decoded, _): (HashMap<u8, u8>, _) =
+        bincode::borrow_decode_from_slice_untrusted(&bytes, config).unwrap();
+    assert_eq!(decoded, expected);
     let (decoded, consumed): (HashMap<u8, u8>, _) =
         bincode::decode_from_slice(&bytes, config).unwrap();
     assert_eq!(decoded, expected);
