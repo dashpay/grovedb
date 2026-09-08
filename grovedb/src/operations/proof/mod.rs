@@ -51,6 +51,14 @@ use std::{collections::BTreeMap, fmt};
 /// fitting comfortably within typical stack sizes.
 pub const MAX_PROOF_DEPTH: usize = 128;
 
+/// Maximum immediate child layers in a V1 proof.
+///
+/// Breadth is independent of recursion depth. This accommodates merged
+/// limited queries while keeping unlimited queries subject to a finite cap.
+/// Configured bincode limits also account for every retained child-map entry;
+/// they are an accounting budget, not an exact allocator/RSS limit.
+pub const MAX_PROOF_CHILDREN: usize = u16::MAX as usize;
+
 /// Decode a serialized [`GroveDBProof`] envelope using the same bincode
 /// configuration the prover writes out.
 ///
@@ -568,8 +576,9 @@ impl AxisDescentProof {
 
 /// A single layer of a v1 GroveDB proof supporting multiple tree types.
 ///
-/// Uses a custom `Decode` implementation that enforces [`MAX_PROOF_DEPTH`]
-/// during deserialization to prevent stack overflow from deeply nested proofs.
+/// Decoding enforces [`MAX_PROOF_DEPTH`] and [`MAX_PROOF_CHILDREN`], and
+/// charges retained child-map entries against the configured decoding limit.
+/// These limits are the same for every [`GroveVersion`].
 #[derive(Encode, Clone)]
 pub struct LayerProof {
     /// Proof bytes for this layer (may be any supported tree type).
@@ -578,10 +587,11 @@ pub struct LayerProof {
     pub lower_layers: BTreeMap<Key, LayerProof>,
 }
 
-// The wire schema and depth/child limits are shared. Field decoding and
-// length conversion are selected explicitly by each trait implementation.
+// The wire schema and recursion limit are shared. Field decoding, breadth,
+// and retained-entry accounting are selected by each trait/envelope path.
 macro_rules! layer_proof_decoder {
-    ($proof:ident, $bytes:ty, $decode:ident, $recurse:ident, [$($generics:tt)*], $length:expr) => {
+    ($proof:ident, $bytes:ty, $decode:ident, $recurse:ident, [$($generics:tt)*], $length:expr,
+     $max_children:expr, $charge_children:expr) => {
 
         impl $proof {
             fn $recurse<$($generics)*>(
@@ -595,8 +605,13 @@ macro_rules! layer_proof_decoder {
                 }
                 let merk_proof = <$bytes>::$decode(decoder)?;
                 let len = ($length)(u64::$decode(decoder)?)?;
-                if len > MAX_PROOF_DEPTH {
+                if len > $max_children {
                     return Err(DecodeError::Other("proof layer has too many children"));
+                }
+                if $charge_children {
+                    // Keep this charge after each child has decoded: the map
+                    // retains its entries. Charge duplicate encoded keys too.
+                    decoder.claim_container_read::<(Key, Self)>(len)?;
                 }
                 let mut lower_layers = BTreeMap::new();
                 for _ in 0..len {
@@ -618,7 +633,9 @@ layer_proof_decoder!(
     decode,
     decode_with_depth,
     [D: BincodeDecoder],
-    |len| Ok::<usize, DecodeError>(len as usize)
+    |len| usize::try_from(len).map_err(|_| DecodeError::LimitExceeded),
+    MAX_PROOF_CHILDREN,
+    true
 );
 layer_proof_decoder!(
     LayerProof,
@@ -626,7 +643,9 @@ layer_proof_decoder!(
     borrow_decode,
     borrow_decode_with_depth,
     ['de, D: BorrowDecoder<'de>],
-    |len| Ok::<usize, DecodeError>(len as usize)
+    |len| usize::try_from(len).map_err(|_| DecodeError::LimitExceeded),
+    MAX_PROOF_CHILDREN,
+    true
 );
 layer_proof_decoder!(
     LayerProof,
@@ -634,7 +653,9 @@ layer_proof_decoder!(
     decode_untrusted,
     decode_untrusted_with_depth,
     [D: bincode::de::UntrustedDecoder],
-    |len| usize::try_from(len).map_err(|_| DecodeError::LimitExceeded)
+    |len| usize::try_from(len).map_err(|_| DecodeError::LimitExceeded),
+    MAX_PROOF_CHILDREN,
+    true
 );
 layer_proof_decoder!(
     LayerProof,
@@ -642,7 +663,9 @@ layer_proof_decoder!(
     borrow_decode_untrusted,
     borrow_decode_untrusted_with_depth,
     ['de, D: bincode::de::BorrowUntrustedDecoder<'de>],
-    |len| usize::try_from(len).map_err(|_| DecodeError::LimitExceeded)
+    |len| usize::try_from(len).map_err(|_| DecodeError::LimitExceeded),
+    MAX_PROOF_CHILDREN,
+    true
 );
 
 // Preserve the existing V0 compatibility entry point with explicit untrusted
@@ -654,7 +677,9 @@ layer_proof_decoder!(
     decode_untrusted,
     decode_untrusted_with_depth,
     [D: bincode::de::UntrustedDecoder],
-    |len| usize::try_from(len).map_err(|_| DecodeError::LimitExceeded)
+    |len| usize::try_from(len).map_err(|_| DecodeError::LimitExceeded),
+    MAX_PROOF_DEPTH,
+    false
 );
 
 impl<Context> Decode<Context> for LayerProof {
@@ -1432,3 +1457,64 @@ impl<C> DecodeUntrusted<C> for GroveDBProofV0 {
     }
 }
 bincode::impl_borrow_decode_untrusted!(GroveDBProofV0);
+
+#[cfg(test)]
+mod proof_resource_limit_tests {
+    use super::*;
+
+    fn wide_proof(width: usize) -> Vec<u8> {
+        let root_layer = LayerProof {
+            merk_proof: ProofBytes::Merk(vec![]),
+            lower_layers: (0..width)
+                .map(|key| {
+                    (
+                        (key as u32).to_be_bytes().to_vec(),
+                        LayerProof {
+                            merk_proof: ProofBytes::Merk(vec![]),
+                            lower_layers: BTreeMap::new(),
+                        },
+                    )
+                })
+                .collect(),
+        };
+        bincode::encode_to_vec(
+            GroveDBProof::V1(GroveDBProofV1 { root_layer }),
+            bincode::config::standard().with_big_endian(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn canonical_decode_caps_breadth_independently_of_depth() {
+        assert!(decode_grovedb_proof_canonical(&wide_proof(MAX_PROOF_DEPTH + 1)).is_ok());
+        assert!(decode_grovedb_proof_canonical(&wide_proof(MAX_PROOF_CHILDREN)).is_ok());
+        let error = decode_grovedb_proof_canonical(&wide_proof(MAX_PROOF_CHILDREN + 1))
+            .err()
+            .expect("breadth cap");
+        assert!(error.to_string().contains("too many children"));
+    }
+
+    #[test]
+    fn canonical_decode_rejects_trailing_bytes() {
+        let mut bytes = wide_proof(1);
+        bytes.push(0);
+        let error = decode_grovedb_proof_canonical(&bytes)
+            .err()
+            .expect("trailing bytes rejected");
+        assert!(error.to_string().contains("trailing bytes"));
+    }
+
+    #[test]
+    fn retained_entry_accounting_charges_the_decoding_budget() {
+        let bytes = wide_proof(MAX_PROOF_DEPTH);
+        let config = bincode::config::standard().with_big_endian();
+        assert!(bincode::decode_from_slice_untrusted::<GroveDBProof, _>(&bytes, config).is_ok());
+        let error = bincode::decode_from_slice_untrusted::<GroveDBProof, _>(
+            &bytes,
+            config.with_limit::<8192>(),
+        )
+        .err()
+        .expect("retained entries exceed this small budget");
+        assert!(matches!(error, DecodeError::LimitExceeded));
+    }
+}

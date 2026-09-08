@@ -3364,6 +3364,13 @@ impl GroveDb {
         let mut serialized_merk_proof = Vec::with_capacity(1024);
         encode_into(merk_proof.proof.iter(), &mut serialized_merk_proof);
 
+        if lower_layers.len() > super::MAX_PROOF_CHILDREN {
+            return Err(Error::InvalidInput(
+                "proof generation exceeded maximum child layer limit",
+            ))
+            .wrap_with_cost(cost);
+        }
+
         Ok(LayerProof {
             merk_proof: ProofBytes::Merk(serialized_merk_proof),
             lower_layers,
