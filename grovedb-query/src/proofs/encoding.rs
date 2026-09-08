@@ -2002,10 +2002,14 @@ pub fn encode_into<'a, T: Iterator<Item = &'a Op>>(ops: T, output: &mut Vec<u8>)
     }
 }
 
-/// Decoder iterates over proof bytes, yielding Op values
+/// Decoder iterates over proof bytes, yielding Op values.
+///
+/// A decoding error is yielded once, then iteration terminates. The invalid
+/// bytes remain unconsumed and are included in [`Self::remaining_bytes`].
 pub struct Decoder<'a> {
     offset: usize,
     bytes: &'a [u8],
+    failed: bool,
 }
 
 impl<'a> Decoder<'a> {
@@ -2014,6 +2018,7 @@ impl<'a> Decoder<'a> {
         Decoder {
             offset: 0,
             bytes: proof_bytes,
+            failed: false,
         }
     }
 
@@ -2027,18 +2032,20 @@ impl Iterator for Decoder<'_> {
     type Item = Result<Op, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.offset >= self.bytes.len() {
+        if self.failed || self.offset >= self.bytes.len() {
             return None;
         }
 
-        Some((|| {
-            let bytes = &self.bytes[self.offset..];
-            let op = Op::decode(bytes)?;
-            self.offset += op.encoding_length();
-            Ok(op)
-        })())
+        let result = Op::decode(&self.bytes[self.offset..]);
+        match &result {
+            Ok(op) => self.offset += op.encoding_length(),
+            Err(_) => self.failed = true,
+        }
+        Some(result)
     }
 }
+
+impl std::iter::FusedIterator for Decoder<'_> {}
 
 #[cfg(test)]
 mod test {
@@ -2590,10 +2597,7 @@ mod test {
     #[test]
     fn decode_multiple_child() {
         let bytes = [0x11, 0x11, 0x11, 0x10];
-        let decoder = Decoder {
-            bytes: &bytes,
-            offset: 0,
-        };
+        let decoder = Decoder::new(&bytes);
 
         let mut vecop = vec![];
         for op in decoder {
@@ -2798,6 +2802,53 @@ mod test {
         let decoder = Decoder::new(&encoded);
         let decoded_ops: Result<Vec<Op>, _> = decoder.collect();
         assert_eq!(decoded_ops.expect("decode failed"), ops);
+    }
+
+    #[test]
+    fn decoder_stops_after_first_error_without_consuming_invalid_bytes() {
+        for invalid in [
+            vec![0xFF, 0x10], // Unknown opcode followed by a valid Parent.
+            vec![0x01, 0x02], // Truncated Hash payload.
+        ] {
+            for prefix in [vec![], vec![Op::Parent, Op::ChildInverted]] {
+                let mut encoded = vec![];
+                super::encode_into(prefix.iter(), &mut encoded);
+                encoded.extend_from_slice(&invalid);
+                let mut decoder = Decoder::new(&encoded);
+
+                for op in &prefix {
+                    assert_eq!(decoder.next().unwrap().unwrap(), *op);
+                }
+                assert_eq!(decoder.remaining_bytes(), invalid.len());
+                assert_eq!(
+                    decoder.next().unwrap().unwrap_err().to_string(),
+                    Op::decode(&invalid).unwrap_err().to_string()
+                );
+                // Keep this probe bounded: the unfixed decoder repeats the
+                // error forever, so collecting it would hang the test.
+                for _ in 0..3 {
+                    assert!(decoder.next().is_none());
+                    assert_eq!(decoder.remaining_bytes(), invalid.len());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn decoder_stays_exhausted_after_valid_input() {
+        for ops in [vec![], vec![Op::Parent, Op::Child, Op::ParentInverted]] {
+            let mut encoded = vec![];
+            super::encode_into(ops.iter(), &mut encoded);
+            let mut decoder = Decoder::new(&encoded);
+            assert_eq!(
+                decoder.by_ref().collect::<Result<Vec<_>, _>>().unwrap(),
+                ops
+            );
+            for _ in 0..3 {
+                assert!(decoder.next().is_none());
+                assert_eq!(decoder.remaining_bytes(), 0);
+            }
+        }
     }
 
     #[test]
