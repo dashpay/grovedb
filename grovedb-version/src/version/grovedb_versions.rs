@@ -358,10 +358,11 @@ pub struct GroveDBOperationsGetVersions {
 
 #[derive(Clone, Debug, Default)]
 pub struct GroveDBOperationsProofVersions {
-    /// V1 proof resource policy: 0 preserves the shipped 128-child decoder
-    /// and accounting; 1 separates breadth from depth and charges retained
-    /// child-map entries. Generation enforces the new breadth cap at version 1.
-    pub v1_proof_resource_limits: FeatureVersion,
+    /// Resource policy for V1 proof envelopes: 0 preserves the shipped
+    /// 128-child decoder and accounting; 1 separates breadth from depth and
+    /// charges retained child-map entries. Generation enforces the new
+    /// breadth cap at version 1. V0 envelopes are unaffected.
+    pub proof_resource_limits: FeatureVersion,
     pub prove_query: FeatureVersion,
     pub prove_query_many: FeatureVersion,
     pub prove_query_non_serialized: FeatureVersion,

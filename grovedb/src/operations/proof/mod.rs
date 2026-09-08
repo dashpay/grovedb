@@ -64,8 +64,8 @@ fn uses_current_proof_limits(grove_version: &GroveVersion) -> Result<bool, Error
         .grovedb_versions
         .operations
         .proof
-        .v1_proof_resource_limits;
-    grovedb_version::check_grovedb_v0_or_v1!("v1_proof_resource_limits", version);
+        .proof_resource_limits;
+    grovedb_version::check_grovedb_v0_or_v1!("proof_resource_limits", version);
     Ok(version == 1)
 }
 
