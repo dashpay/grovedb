@@ -5,6 +5,7 @@
 #[cfg(feature = "constructor")]
 mod constructor;
 
+mod decode;
 pub(crate) mod helpers;
 mod serialize;
 
@@ -1037,13 +1038,10 @@ mod serde_impl {
     //!
     //! A private shadow enum (`ElementShadow`) mirrors `Element` verbatim
     //! with `#[serde(rename = "Element")]` so the wire format is identical.
-    //! The derived `Deserialize` on the shadow handles the recursive
-    //! descent; we then convert to `Element` and call
-    //! [`Element::check_recursive_wrapper_invariants`].
-    //!
-    //! Each `Box<ElementShadow>` field deserializes through the shadow's
-    //! own `Deserialize` impl, so validation fires at every level of the
-    //! tree as the conversion unwinds.
+    //! Its wrapper payload is a type parameter. The outer shadow accepts an
+    //! unwrapped element; the inner shadow rejects any wrapper before reading
+    //! its payload. This bounds recursion independently of the Serde format.
+    //! Conversion and the existing semantic checks preserve valid values.
 
     use serde::de::Error as _;
 
@@ -1052,7 +1050,7 @@ mod serde_impl {
 
     #[derive(serde::Deserialize)]
     #[serde(rename = "Element")]
-    enum ElementShadow {
+    enum ElementShadow<W> {
         Item(Vec<u8>, Option<ElementFlags>),
         Reference(ReferencePathType, MaxReferenceHop, Option<ElementFlags>),
         Tree(Option<Vec<u8>>, Option<ElementFlags>),
@@ -1068,10 +1066,10 @@ mod serde_impl {
         MmrTree(u64, Option<ElementFlags>),
         BulkAppendTree(u64, u8, Option<ElementFlags>),
         DenseAppendOnlyFixedSizeTree(u16, u8, Option<ElementFlags>),
-        NonCounted(Box<ElementShadow>),
-        NotSummed(Box<ElementShadow>),
+        NonCounted(W),
+        NotSummed(W),
         ProvableSumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
-        NotCountedOrSummed(Box<ElementShadow>),
+        NotCountedOrSummed(W),
         ReferenceWithSumItem(
             ReferencePathType,
             MaxReferenceHop,
@@ -1121,8 +1119,39 @@ mod serde_impl {
         ),
     }
 
-    impl From<ElementShadow> for Element {
-        fn from(s: ElementShadow) -> Self {
+    // An uninhabited wrapper payload makes a second wrapper impossible to
+    // construct, and returns an error before the deserializer can recurse.
+    enum NoWrapper {}
+
+    impl<'de> serde::Deserialize<'de> for NoWrapper {
+        fn deserialize<D: serde::Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
+            Err(D::Error::custom("nested Element wrappers are not allowed"))
+        }
+    }
+
+    impl From<NoWrapper> for Element {
+        fn from(value: NoWrapper) -> Self {
+            match value {}
+        }
+    }
+
+    struct UnwrappedElement(Element);
+
+    impl<'de> serde::Deserialize<'de> for UnwrappedElement {
+        fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            ElementShadow::<NoWrapper>::deserialize(deserializer)
+                .map(|shadow| Self(Element::from(shadow)))
+        }
+    }
+
+    impl From<UnwrappedElement> for Element {
+        fn from(value: UnwrappedElement) -> Self {
+            value.0
+        }
+    }
+
+    impl<W: Into<Element>> From<ElementShadow<W>> for Element {
+        fn from(s: ElementShadow<W>) -> Self {
             match s {
                 ElementShadow::Item(v, f) => Element::Item(v, f),
                 ElementShadow::Reference(p, h, f) => Element::Reference(p, h, f),
@@ -1143,15 +1172,11 @@ mod serde_impl {
                 ElementShadow::DenseAppendOnlyFixedSizeTree(c, h, f) => {
                     Element::DenseAppendOnlyFixedSizeTree(c, h, f)
                 }
-                ElementShadow::NonCounted(inner) => {
-                    Element::NonCounted(Box::new(Element::from(*inner)))
-                }
-                ElementShadow::NotSummed(inner) => {
-                    Element::NotSummed(Box::new(Element::from(*inner)))
-                }
+                ElementShadow::NonCounted(inner) => Element::NonCounted(Box::new(inner.into())),
+                ElementShadow::NotSummed(inner) => Element::NotSummed(Box::new(inner.into())),
                 ElementShadow::ProvableSumTree(k, s, f) => Element::ProvableSumTree(k, s, f),
                 ElementShadow::NotCountedOrSummed(inner) => {
-                    Element::NotCountedOrSummed(Box::new(Element::from(*inner)))
+                    Element::NotCountedOrSummed(Box::new(inner.into()))
                 }
                 ElementShadow::ReferenceWithSumItem(p, h, s, f) => {
                     Element::ReferenceWithSumItem(p, h, s, f)
@@ -1192,11 +1217,10 @@ mod serde_impl {
         where
             D: serde::Deserializer<'de>,
         {
-            let shadow = ElementShadow::deserialize(deserializer)?;
+            let shadow = ElementShadow::<UnwrappedElement>::deserialize(deserializer)?;
             let element = Element::from(shadow);
-            // Validate immediate wrapper invariants. Inner elements were
-            // built by recursive `From<ElementShadow>` calls, so the check
-            // at each level catches a violation at any depth.
+            // Nesting was rejected before descent; retain semantic wrapper
+            // validation (for example NotSummed requires a sum-bearing tree).
             Self::check_recursive_wrapper_invariants(&element).map_err(D::Error::custom)?;
             // A PrivateDocumentStore's committed config must be valid at
             // every ingress — including this external-tooling codec.
@@ -1212,10 +1236,8 @@ mod serde_impl {
 
     impl Element {
         /// Walk the element tree and run `validate_wrapper_invariants` at
-        /// every level. Used by the manual `serde::Deserialize`; bincode
-        /// goes through `Element::deserialize` which already validates the
-        /// outer wrapper plus a leading-byte pre-check that rejects
-        /// nesting before recursion.
+        /// every level. Both Serde and native bincode decoding reject nested
+        /// wrapper discriminants before descending into their payloads.
         pub(super) fn check_recursive_wrapper_invariants(
             element: &Element,
         ) -> Result<(), crate::error::ElementError> {
@@ -1474,11 +1496,8 @@ mod serde_impl {
         }
 
         /// Deeply-nested wrapper payloads must be rejected (recursion bound).
-        /// This pairs with the bincode pre-check; for serde we rely on the
-        /// recursive `From<ElementShadow>` calls hitting validation at each
-        /// level. With the immediate-level check at every step, the top-level
-        /// `NonCounted(NonCounted(...))` rejects without recursing through
-        /// the rest.
+        /// The inner shadow refuses a second wrapper before reading its
+        /// payload, independently of serde_json's own recursion limit.
         #[test]
         fn serde_rejects_deeply_nested_wrapper_chain() {
             // Build NonCounted(NonCounted(NonCounted(...(Item)))).

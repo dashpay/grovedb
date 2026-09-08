@@ -325,7 +325,9 @@ impl<'de, DE: BorrowDecoder<'de>> Deserializer<'de> for SerdeDecoder<'_, 'de, DE
             }
 
             fn size_hint(&self) -> Option<usize> {
-                Some(self.len)
+                // Sequence lengths can come from untrusted input. A visitor
+                // must decode entries before using them to grow its storage.
+                None
             }
         }
 
@@ -393,7 +395,8 @@ impl<'de, DE: BorrowDecoder<'de>> Deserializer<'de> for SerdeDecoder<'_, 'de, DE
             }
 
             fn size_hint(&self) -> Option<usize> {
-                Some(self.len)
+                // Do not let an unverified length drive visitor allocations.
+                None
             }
         }
 

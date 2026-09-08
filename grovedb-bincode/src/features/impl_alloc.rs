@@ -256,6 +256,31 @@ where
     }
 }
 
+/// Allocate byte storage only after the reader has demonstrated its contents.
+/// Slice readers retain a single-allocation fast path; other readers use a
+/// bounded stack buffer so a length header alone cannot request heap storage.
+fn decode_byte_vec<D: Decoder>(decoder: &mut D, len: usize) -> Result<Vec<u8>, DecodeError> {
+    let mut vec = Vec::new();
+    if decoder.reader().peek_read(len).is_some() {
+        vec.try_reserve_exact(len)
+            .map_err(|_| DecodeError::LimitExceeded)?;
+        vec.resize(len, 0);
+        decoder.reader().read(&mut vec)?;
+    } else {
+        let mut remaining = len;
+        let mut chunk = [0u8; 1024];
+        while remaining != 0 {
+            let count = remaining.min(chunk.len());
+            decoder.reader().read(&mut chunk[..count])?;
+            vec.try_reserve(count)
+                .map_err(|_| DecodeError::LimitExceeded)?;
+            vec.extend_from_slice(&chunk[..count]);
+            remaining -= count;
+        }
+    }
+    Ok(vec)
+}
+
 impl<Context, T> Decode<Context> for Vec<T>
 where
     T: Decode<Context>,
@@ -265,20 +290,20 @@ where
 
         if unty::type_equal::<T, u8>() {
             decoder.claim_container_read::<T>(len)?;
-            // optimize for reading u8 vecs
-            let mut vec = alloc::vec![0u8; len];
-            decoder.reader().read(&mut vec)?;
+            let vec = decode_byte_vec(decoder, len)?;
             // Safety: Vec<T> is Vec<u8>
             Ok(unsafe { core::mem::transmute::<Vec<u8>, Vec<T>>(vec) })
         } else {
             decoder.claim_container_read::<T>(len)?;
 
-            let mut vec = Vec::with_capacity(len);
+            let mut vec = Vec::new();
             for _ in 0..len {
                 // See the documentation on `unclaim_bytes_read` as to why we're doing this here
                 decoder.unclaim_bytes_read(core::mem::size_of::<T>());
 
-                vec.push(T::decode(decoder)?);
+                let value = T::decode(decoder)?;
+                vec.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
+                vec.push(value);
             }
             Ok(vec)
         }
@@ -296,20 +321,20 @@ where
 
         if unty::type_equal::<T, u8>() {
             decoder.claim_container_read::<T>(len)?;
-            // optimize for reading u8 vecs
-            let mut vec = alloc::vec![0u8; len];
-            decoder.reader().read(&mut vec)?;
+            let vec = decode_byte_vec(decoder, len)?;
             // Safety: Vec<T> is Vec<u8>
             Ok(unsafe { core::mem::transmute::<Vec<u8>, Vec<T>>(vec) })
         } else {
             decoder.claim_container_read::<T>(len)?;
 
-            let mut vec = Vec::with_capacity(len);
+            let mut vec = Vec::new();
             for _ in 0..len {
                 // See the documentation on `unclaim_bytes_read` as to why we're doing this here
                 decoder.unclaim_bytes_read(core::mem::size_of::<T>());
 
-                vec.push(T::borrow_decode(decoder)?);
+                let value = T::borrow_decode(decoder)?;
+                vec.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
+                vec.push(value);
             }
             Ok(vec)
         }

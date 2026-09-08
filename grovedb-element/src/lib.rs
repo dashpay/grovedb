@@ -1,5 +1,4 @@
 mod bidirectional_reference;
-mod bounded_decode;
 mod element;
 mod element_type;
 

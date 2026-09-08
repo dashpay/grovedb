@@ -1,10 +1,11 @@
 # GroveDB bincode
 
-This workspace package imports the published `bincode` **2.0.1** release as
+This workspace package started from the published `bincode` **2.0.1** release as
 `grovedb-bincode`, together with `bincode_derive` **2.0.1** as
-`grovedb-bincode-derive`. The import preserves the upstream encoder, decoder,
+`grovedb-bincode-derive`. The initial import preserved the upstream encoder, decoder,
 derive macros, wire format, features, tests, benchmarks, specification, and MIT
-license. It introduces no decoding hardening or new resource limits.
+license. Runtime version **2.0.2** adds the collection allocation safeguards below;
+the derive package remains at **2.0.1**.
 
 The original documentation remains in [readme.md](readme.md) and [docs](docs/).
 The original copyright and license remain in [LICENSE.md](LICENSE.md).
@@ -34,7 +35,7 @@ paths continue to work:
 
 ```toml
 [dependencies]
-bincode = { package = "grovedb-bincode", version = "=2.0.1" }
+bincode = { package = "grovedb-bincode", version = "=2.0.2" }
 ```
 
 The default `derive` feature uses the matching local derive package. Code that
@@ -50,6 +51,29 @@ Rust trait identities. An application using upstream `bincode::Encode` or
 alias does not make implementations interchangeable with upstream bincode.
 Publish the derive package, then the runtime package, before publishing GroveDB
 packages that depend on them. Their versions are independent of GroveDB's version.
+
+## Collection allocation safeguards in 2.0.2
+
+Native `Decode` and `BorrowDecode` no longer reserve vector or hash-collection
+storage from an unverified length header. Byte vectors allocate after a reader
+can show the bytes, or after bounded chunks have been read. Other vectors and
+hash collections grow after a complete value or key/value pair has decoded.
+Fallible reservations return `DecodeError::LimitExceeded`. Types implemented
+through these vectors (including strings, boxed slices, and vector deques)
+inherit the checks. Both Serde adapters omit sequence/map size hints so visitors
+cannot mistake a length declaration for a verified allocation size.
+
+Encoding is unchanged. Successfully decoded values and consumed-byte counts
+remain compatible with upstream 2.0.1, including noncanonical integer encodings
+and configured limit accounting. Hash collection iteration order is unspecified
+and may differ after decoding. On malformed input, a chunked reader may consume
+earlier chunks before returning an error, and its missing-byte estimate may
+describe only the failing chunk.
+
+This is not a universal memory or CPU budget: zero-wire types remain valid,
+`with_no_limit()` still disables the configured limit, and custom decoders or
+Serde visitors control their own allocations. GroveDB's Element wrapper rules
+remain in `grovedb-element`, where nested wrappers are rejected before descent.
 
 ## Validation
 

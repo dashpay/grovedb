@@ -121,8 +121,8 @@ impl Element {
     /// Deserializes given bytes and sets as self.
     ///
     /// The manual bincode decoder validates wrapper nesting from decoded
-    /// discriminants before descending and grows collections only after their
-    /// encoded contents have been read.
+    /// discriminants before descending. Collection allocation safeguards are
+    /// provided by the shared grovedb-bincode decoders.
     pub fn deserialize(bytes: &[u8], grove_version: &GroveVersion) -> Result<Self, ElementError> {
         check_grovedb_v0!(
             "Element::deserialize",
@@ -508,6 +508,48 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "serde")]
+    fn serde_rejects_wrapper_nesting_before_reading_inner_payload() {
+        // Two decoded wrapper tags must suffice to reject the input: no
+        // inner payload is supplied, so a late guard returns EOF instead.
+        let config = config::standard().with_big_endian();
+        // Serde's historical shadow enum has its own variant ordering.
+        for outer in [15, 16, 18] {
+            for inner in [15, 16, 18] {
+                let bytes = [251, 0, outer, 252, 0, 0, 0, inner];
+                let errors = [
+                    bincode::serde::decode_from_slice::<Element, _>(&bytes, config).unwrap_err(),
+                    bincode::serde::borrow_decode_from_slice::<Element, _>(&bytes, config)
+                        .unwrap_err(),
+                    bincode::serde::decode_from_std_read::<Element, _, _>(
+                        &mut bytes.as_slice(),
+                        config,
+                    )
+                    .unwrap_err(),
+                ];
+                for error in errors {
+                    assert!(
+                        error.to_string().contains("nested Element wrappers"),
+                        "{error}"
+                    );
+                }
+            }
+        }
+        let mut bytes = vec![15; 100_000];
+        bytes.extend([0, 0, 0]);
+        let result = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || bincode::serde::decode_from_slice::<Element, _>(&bytes, config))
+            .unwrap()
+            .join()
+            .expect("Serde decoder must not overflow its stack");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("nested Element wrappers"));
+    }
+
+    #[test]
     fn every_vec_bearing_variant_rejects_an_unbacked_length_without_panicking() {
         for element in every_element_variant() {
             let name = element.type_str();
@@ -516,8 +558,8 @@ mod tests {
                 .expect("serialize test element");
 
             // Every Element variant has a trailing flags Option<Vec<u8>>.
-            // Replace its empty vector length with bincode's u64 marker and
-            // the largest possible declaration, without supplying contents.
+            // Replace its empty vector length with bincode's u32 marker and
+            // u32::MAX, without supplying contents.
             assert_eq!(bytes.pop(), Some(0));
             assert_eq!(bytes[bytes.len() - 1], 1);
             bytes.push(252);
@@ -585,6 +627,14 @@ mod tests {
                 let decoded =
                     Element::deserialize(&bytes, grove_version).expect("deserialize valid element");
                 assert_eq!(decoded, element);
+                #[cfg(feature = "serde")]
+                {
+                    // The tooling Serde representation is name-based. Keep
+                    // every variant and field intact through its shadow enum.
+                    let json = serde_json::to_string(&element).unwrap();
+                    let decoded: Element = serde_json::from_str(&json).unwrap();
+                    assert_eq!(decoded, element);
+                }
             }
         }
     }

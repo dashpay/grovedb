@@ -457,13 +457,14 @@ where
         decoder.claim_container_read::<(K, V)>(len)?;
 
         let hash_builder: S = Default::default();
-        let mut map = HashMap::with_capacity_and_hasher(len, hash_builder);
+        let mut map = HashMap::with_hasher(hash_builder);
         for _ in 0..len {
             // See the documentation on `unclaim_bytes_read` as to why we're doing this here
             decoder.unclaim_bytes_read(core::mem::size_of::<(K, V)>());
 
             let k = K::decode(decoder)?;
             let v = V::decode(decoder)?;
+            map.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
             map.insert(k, v);
         }
         Ok(map)
@@ -482,13 +483,14 @@ where
         decoder.claim_container_read::<(K, V)>(len)?;
 
         let hash_builder: S = Default::default();
-        let mut map = HashMap::with_capacity_and_hasher(len, hash_builder);
+        let mut map = HashMap::with_hasher(hash_builder);
         for _ in 0..len {
             // See the documentation on `unclaim_bytes_read` as to why we're doing this here
             decoder.unclaim_bytes_read(core::mem::size_of::<(K, V)>());
 
             let k = K::borrow_decode(decoder)?;
             let v = V::borrow_decode(decoder)?;
+            map.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
             map.insert(k, v);
         }
         Ok(map)
@@ -505,12 +507,13 @@ where
         decoder.claim_container_read::<T>(len)?;
 
         let hash_builder: S = Default::default();
-        let mut map: HashSet<T, S> = HashSet::with_capacity_and_hasher(len, hash_builder);
+        let mut map: HashSet<T, S> = HashSet::with_hasher(hash_builder);
         for _ in 0..len {
             // See the documentation on `unclaim_bytes_read` as to why we're doing this here
             decoder.unclaim_bytes_read(core::mem::size_of::<T>());
 
             let key = T::decode(decoder)?;
+            map.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
             map.insert(key);
         }
         Ok(map)
@@ -528,12 +531,13 @@ where
         let len = crate::de::decode_slice_len(decoder)?;
         decoder.claim_container_read::<T>(len)?;
 
-        let mut map = HashSet::with_capacity_and_hasher(len, S::default());
+        let mut map = HashSet::with_hasher(S::default());
         for _ in 0..len {
             // See the documentation on `unclaim_bytes_read` as to why we're doing this here
             decoder.unclaim_bytes_read(core::mem::size_of::<T>());
 
             let key = T::borrow_decode(decoder)?;
+            map.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
             map.insert(key);
         }
         Ok(map)

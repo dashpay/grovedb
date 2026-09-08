@@ -1,7 +1,10 @@
 //! Verify that the package move preserves the published 2.0.1 wire format.
 #![cfg(all(feature = "std", feature = "derive"))]
 
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    fmt::Debug,
+};
 
 #[derive(Debug, PartialEq, bincode::Encode, bincode::Decode)]
 enum LocalRecord {
@@ -106,6 +109,135 @@ fn compare<C: bincode::config::Config, U: bincode_upstream::config::Config>(loca
         bincode_upstream::borrow_decode_from_slice(&local_bytes, upstream).unwrap();
     assert_eq!(decoded, borrowed);
     assert_eq!(consumed, local_bytes.len());
+}
+
+fn compare_collection<T, C, U>(value: &T, local: C, upstream: U)
+where
+    T: Debug
+        + PartialEq
+        + bincode::Encode
+        + bincode::Decode<()>
+        + for<'de> bincode::BorrowDecode<'de, ()>
+        + bincode_upstream::Encode
+        + bincode_upstream::Decode<()>,
+    C: bincode::config::Config + Copy,
+    U: bincode_upstream::config::Config + Copy,
+{
+    // Encode the same value to avoid relying on HashMap/Set iteration order
+    // across separately constructed maps. Their wire format is unordered.
+    let expected = bincode_upstream::encode_to_vec(value, upstream).unwrap();
+    assert_eq!(bincode::encode_to_vec(value, local).unwrap(), expected);
+    let original = bincode_upstream::decode_from_slice::<T, _>(&expected, upstream);
+    let owned = bincode::decode_from_slice::<T, _>(&expected, local);
+    let borrowed = bincode::borrow_decode_from_slice::<T, _>(&expected, local);
+    let streamed = bincode::decode_from_std_read::<T, _, _>(&mut expected.as_slice(), local);
+    match original {
+        Ok((decoded, consumed)) => {
+            assert_eq!(&decoded, value);
+            assert_eq!(consumed, expected.len());
+            assert_eq!(owned.unwrap(), (decoded, consumed));
+            let (decoded, consumed) = borrowed.unwrap();
+            assert_eq!(&decoded, value);
+            assert_eq!(consumed, expected.len());
+            assert_eq!(&streamed.unwrap(), value);
+        }
+        Err(bincode_upstream::error::DecodeError::LimitExceeded) => {
+            assert!(matches!(
+                owned,
+                Err(bincode::error::DecodeError::LimitExceeded)
+            ));
+            assert!(matches!(
+                borrowed,
+                Err(bincode::error::DecodeError::LimitExceeded)
+            ));
+            assert!(matches!(
+                streamed,
+                Err(bincode::error::DecodeError::LimitExceeded)
+            ));
+        }
+        Err(error) => panic!("valid control failed: {error}"),
+    }
+}
+
+fn compare_collections<C, U>(local: C, upstream: U)
+where
+    C: bincode::config::Config + Copy,
+    U: bincode_upstream::config::Config + Copy,
+{
+    for len in [0, 1, 250, 251, 1023, 1024, 1025, 4097, 65_536] {
+        compare_collection(&vec![42u8; len], local, upstream);
+    }
+    compare_collection(&vec![(); 1025], local, upstream);
+    compare_collection(&vec![Box::new(()); 1025], local, upstream);
+    compare_collection(&vec![Vec::<u8>::new(); 1025], local, upstream);
+    compare_collection(&vec![vec![1u8, 2, 3]; 1025], local, upstream);
+    compare_collection(&(0..1025u16).collect::<HashSet<_>>(), local, upstream);
+    compare_collection(
+        &(0..1025u16)
+            .map(|i| (i, vec![i as u8; 3]))
+            .collect::<HashMap<_, _>>(),
+        local,
+        upstream,
+    );
+}
+
+#[test]
+fn collection_growth_preserves_values_and_configured_limits() {
+    compare_collections(
+        bincode::config::standard(),
+        bincode_upstream::config::standard(),
+    );
+    compare_collections(
+        bincode::config::standard().with_big_endian(),
+        bincode_upstream::config::standard().with_big_endian(),
+    );
+    compare_collections(
+        bincode::config::legacy(),
+        bincode_upstream::config::legacy(),
+    );
+    compare_collections(
+        bincode::config::legacy().with_big_endian(),
+        bincode_upstream::config::legacy().with_big_endian(),
+    );
+    compare_collections(
+        bincode::config::standard().with_limit::<1024>(),
+        bincode_upstream::config::standard().with_limit::<1024>(),
+    );
+    compare_collections(
+        bincode::config::legacy()
+            .with_big_endian()
+            .with_limit::<1024>(),
+        bincode_upstream::config::legacy()
+            .with_big_endian()
+            .with_limit::<1024>(),
+    );
+}
+
+#[test]
+fn borrowed_values_and_duplicate_map_keys_remain_compatible() {
+    let config = bincode::config::standard();
+    let original = bincode_upstream::config::standard();
+    let values = vec!["", "GroveDB", "borrowed data"];
+    let bytes = bincode_upstream::encode_to_vec(&values, original).unwrap();
+    let (decoded, consumed): (Vec<&str>, _) =
+        bincode::borrow_decode_from_slice(&bytes, config).unwrap();
+    assert_eq!(decoded, values);
+    assert_eq!(consumed, bytes.len());
+
+    // A sequence of pairs has the same representation as a map, and can
+    // express repeated keys. Preserve last-value-wins decoding.
+    let entries = vec![(1u8, 2u8), (1, 3), (2, 4), (1, 5)];
+    let bytes = bincode_upstream::encode_to_vec(&entries, original).unwrap();
+    let (expected, _): (HashMap<u8, u8>, _) =
+        bincode_upstream::decode_from_slice(&bytes, original).unwrap();
+    assert_eq!(expected[&1], 5);
+    let (decoded, consumed): (HashMap<u8, u8>, _) =
+        bincode::decode_from_slice(&bytes, config).unwrap();
+    assert_eq!(decoded, expected);
+    assert_eq!(consumed, bytes.len());
+    let (decoded, _): (HashMap<u8, u8>, _) =
+        bincode::borrow_decode_from_slice(&bytes, config).unwrap();
+    assert_eq!(decoded, expected);
 }
 
 #[test]

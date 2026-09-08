@@ -1,6 +1,6 @@
 [package]
 name = "grovedb-bincode"
-version = "2.0.1"
+version = "2.0.2"
 authors = [
     "Ty Overby <ty@pre-alpha.com>",
     "Zoey Riordan <zoey@dos.cafe>",
@@ -9,7 +9,7 @@ authors = [
 rust-version = "1.85.0"
 edition = "2021"
 license = "MIT"
-description = "GroveDB's vendored bincode 2.0.1 binary serialization implementation"
+description = "GroveDB's maintained fork of bincode binary serialization"
 repository = "https://github.com/dashpay/grovedb"
 documentation = "https://docs.rs/grovedb-bincode"
 readme = "GROVEDB.md"
@@ -62,7 +62,7 @@ harness = false
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
-# Keep the 2.0.1 source and compile-only upstream test fixtures unchanged.
+# Allow existing upstream warnings and compile-only test fixtures.
 [lints.rust]
 deprecated = "allow"
 mismatched_lifetime_syntaxes = "allow"

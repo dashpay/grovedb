@@ -2,7 +2,7 @@
 
 This package imports the derive macros from the published `bincode_derive`
 **2.0.1** release as `grovedb-bincode-derive`. It accompanies
-`grovedb-bincode` **2.0.1**. Macro behavior and the default generated
+`grovedb-bincode`. Macro behavior and the default generated
 `::bincode` paths are unchanged.
 
 Use the runtime package's default `derive` feature, or alias this package as
