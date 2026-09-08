@@ -1632,6 +1632,57 @@ mod tests {
     }
 
     #[test]
+    fn no_proof_missing_multibyte_index_prefix_returns_path_error() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"brand",
+            Element::empty_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert index root");
+
+        // A compound [brand, color] index count query may select a brand
+        // with no stored subtree. Its UTF-8 value must remain safe to print
+        // when the missing color subtree produces a parent-path diagnostic.
+        for brand in ["é".repeat(17).into_bytes(), vec![0xff; 34], vec![b'x'; 34]] {
+            let path = vec![
+                TEST_LEAF.to_vec(),
+                b"brand".to_vec(),
+                brand,
+                b"color".to_vec(),
+            ];
+            let path_query = PathQuery::new_aggregate_count_on_range(
+                path.clone(),
+                QueryItem::RangeAfter(b"blue".to_vec()..),
+            );
+            let err = db
+                .grove_db
+                .query_aggregate_count(&path_query, None, v)
+                .unwrap()
+                .expect_err("a missing index branch must return an error");
+            assert!(matches!(err, crate::Error::InvalidParentLayerPath(_)));
+
+            let err = db
+                .grove_db
+                .get_raw(path.as_slice().into(), b"key", None, v)
+                .unwrap()
+                .expect_err("a missing lookup parent must return an error");
+            assert!(matches!(err, crate::Error::PathParentLayerNotFound(_)));
+            assert!(db
+                .grove_db
+                .get_raw_optional(path.as_slice().into(), b"key", None, v)
+                .unwrap()
+                .expect("a missing optional lookup remains absent")
+                .is_none());
+        }
+    }
+
+    #[test]
     fn no_proof_uses_provided_transaction() {
         // Exercise the TransactionArg = Some(&tx) path of query_aggregate_count
         // and verify the transactional read actually observes uncommitted

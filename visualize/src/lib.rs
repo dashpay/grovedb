@@ -146,11 +146,9 @@ impl Visualize for [u8] {
         let str_repr = String::from_utf8(self.to_vec());
         drawer.write(format!("[hex: {hex_repr}").as_bytes())?;
         if let Ok(str_repr) = str_repr {
-            let str_part = if str_repr.len() > STR_LEN {
-                &str_repr[..=STR_LEN]
-            } else {
-                &str_repr
-            };
+            // Preserve the historical 33-byte preview, ending before any
+            // character that would cross its byte boundary.
+            let str_part = &str_repr[..str_repr.floor_char_boundary(STR_LEN + 1)];
             drawer.write(format!(", str: {str_part}").as_bytes())?;
         }
         drawer.write(b"]")?;
@@ -356,6 +354,36 @@ mod tests {
     fn bytes_visualize_non_utf8_omits_string_part() {
         let got = visualized(&[0xff, 0xfe, 0xfd][..]);
         assert_eq!(got, "[hex: fffefd]");
+    }
+
+    #[test]
+    fn bytes_visualize_preserves_complete_utf8_characters_at_preview_boundary() {
+        let cases = [
+            ("é".repeat(16), "é".repeat(16)),
+            ("x".repeat(33), "x".repeat(33)),
+            ("é".repeat(17), "é".repeat(16)),
+            (format!("{}é", "a".repeat(32)), "a".repeat(32)),
+            (format!("{}界", "a".repeat(31)), "a".repeat(31)),
+            (format!("{}🦀", "a".repeat(30)), "a".repeat(30)),
+            (format!("{}x", "界".repeat(11)), "界".repeat(11)),
+        ];
+        for (input, preview) in cases {
+            assert_eq!(
+                visualized(input.as_bytes()),
+                format!("[hex: {}, str: {preview}]", to_hex(input.as_bytes()))
+            );
+        }
+    }
+
+    #[test]
+    fn debug_wrappers_handle_multibyte_path_segments() {
+        let bytes = "é".repeat(17).into_bytes();
+        let expected = format!("[hex: {}, str: {}]", to_hex(&bytes), "é".repeat(16));
+        assert_eq!(format!("{:?}", DebugBytes(bytes.clone())), expected);
+        assert_eq!(
+            format!("{:?}", DebugByteVectors(vec![bytes, vec![0xff; 34]])),
+            format!("[ {expected}, [hex: ffffffff..ffffffff],  ]")
+        );
     }
 
     #[test]
