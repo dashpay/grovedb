@@ -96,6 +96,15 @@ impl SubqueryBranch {
     /// descendants passed that check.
     fn merge_unchecked(&self, other: &Self) -> Self {
         match (&self.subquery_path, &other.subquery_path) {
+            (Some(path), None) | (None, Some(path)) if path.is_empty() => {
+                // Neither path advances a level, so merge the bodies directly.
+                // Retain Some([]): without a body it is an invalid terminal
+                // path, whereas None would select the parent element.
+                SubqueryBranch {
+                    subquery_path: Some(path.clone()),
+                    subquery: self.merge_subquery(other.subquery.clone()),
+                }
+            }
             (None, None) => {
                 // they both just have subqueries without paths
                 let subquery = self.merge_subquery(other.subquery.clone());
@@ -388,6 +397,14 @@ impl Query {
             &self.default_subquery_branch.subquery_path,
             &other_default_subquery_branch.subquery_path,
         ) {
+            (Some(path), None) | (None, Some(path)) if path.is_empty() => {
+                // Keep the same zero-segment path semantics as branch merging,
+                // including the invalid terminal form when no body exists.
+                self.default_subquery_branch.subquery_path = Some(path.clone());
+                self.merge_default_subquerys_branch_subquery(
+                    other_default_subquery_branch.subquery,
+                );
+            }
             (None, None) => {
                 // they both just have subqueries without paths
                 self.merge_default_subquerys_branch_subquery(
