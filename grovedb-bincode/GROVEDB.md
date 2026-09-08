@@ -4,8 +4,8 @@ This workspace package started from the published `bincode` **2.0.1** release as
 `grovedb-bincode`, together with `bincode_derive` **2.0.1** as
 `grovedb-bincode-derive`. The initial import preserved the upstream encoder, decoder,
 derive macros, wire format, features, tests, benchmarks, specification, and MIT
-license. Runtime version **2.0.2** adds explicit untrusted decoding APIs below;
-the derive package is also **2.0.2** with explicit untrusted derives.
+license. Runtime version **2.1.0** adds explicit untrusted decoding APIs below;
+the derive package is also **2.1.0** with explicit untrusted derives.
 
 The original documentation remains in [readme.md](readme.md) and [docs](docs/).
 The original copyright and license remain in [LICENSE.md](LICENSE.md).
@@ -35,14 +35,14 @@ paths continue to work:
 
 ```toml
 [dependencies]
-bincode = { package = "grovedb-bincode", version = "=2.0.2" }
+bincode = { package = "grovedb-bincode", version = "=2.1.0" }
 ```
 
 The default `derive` feature uses the matching local derive package. Code that
 depends on the macros separately can use:
 
 ```toml
-bincode_derive = { package = "grovedb-bincode-derive", version = "=2.0.2" }
+bincode_derive = { package = "grovedb-bincode-derive", version = "=2.1.0" }
 ```
 
 Although the bytes are unchanged, these are new Cargo packages with distinct
@@ -52,7 +52,7 @@ alias does not make implementations interchangeable with upstream bincode.
 Publish the derive package, then the runtime package, before publishing GroveDB
 packages that depend on them. Their versions are independent of GroveDB's version.
 
-## Opt-in untrusted decoding in 2.0.2
+## Opt-in untrusted decoding in 2.1.0
 
 Ordinary `decode_*` / `borrow_decode_*` functions and decoder constructors retain
 upstream 2.0.1 behavior, including eager allocation, Serde size hints, and reader

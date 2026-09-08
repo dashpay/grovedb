@@ -2,7 +2,7 @@
 
 This package imports the derive macros from the published `bincode_derive`
 **2.0.1** release as `grovedb-bincode-derive`. It accompanies
-`grovedb-bincode`. Version **2.0.2** adds `DecodeUntrusted` and
+`grovedb-bincode`. Version **2.1.0** adds `DecodeUntrusted` and
 `BorrowDecodeUntrusted`. Ordinary derives and default generated `::bincode` paths
 retain their upstream behavior.
 

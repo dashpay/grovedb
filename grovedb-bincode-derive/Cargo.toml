@@ -1,6 +1,6 @@
 [package]
 name = "grovedb-bincode-derive"
-version = "2.0.2"
+version = "2.1.0"
 authors = [
     "Zoey Riordan <zoey@dos.cafe>",
     "Victor Koenders <bincode@trangar.com>",
