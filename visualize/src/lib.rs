@@ -148,11 +148,7 @@ impl Visualize for [u8] {
         if let Ok(str_repr) = str_repr {
             // Preserve the historical 33-byte preview, ending before any
             // character that would cross its byte boundary.
-            let mut end = str_repr.len().min(STR_LEN + 1);
-            while !str_repr.is_char_boundary(end) {
-                end -= 1;
-            }
-            let str_part = &str_repr[..end];
+            let str_part = &str_repr[..str_repr.floor_char_boundary(STR_LEN + 1)];
             drawer.write(format!(", str: {str_part}").as_bytes())?;
         }
         drawer.write(b"]")?;
