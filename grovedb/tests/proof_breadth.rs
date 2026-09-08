@@ -265,16 +265,15 @@ mod generation {
             .unwrap()
             .unwrap();
         assert_all_decoders_round_trip(&bytes);
-        if compound && count as usize > MAX_PROOF_DEPTH {
-            let error = GroveDb::verify_query(&bytes, &merged, &GROVE_V3)
-                .expect_err("historical verification keeps its 128-child limit");
-            assert!(error.to_string().contains("too many children"));
-        }
-        let (root, results) = GroveDb::verify_query(&bytes, &merged, version).unwrap();
-        assert_eq!(root, db.root_hash(None, version).unwrap().unwrap());
-        assert_eq!(results.len(), count as usize);
-        for (_, _, result) in results {
-            assert_eq!(result.unwrap().count_value_or_default(), 1);
+        // The breadth cap is not versioned: a verifier pinned to an older
+        // GroveVersion accepts the same wide proof.
+        for verify_version in [&GROVE_V3, version] {
+            let (root, results) = GroveDb::verify_query(&bytes, &merged, verify_version).unwrap();
+            assert_eq!(root, db.root_hash(None, version).unwrap().unwrap());
+            assert_eq!(results.len(), count as usize);
+            for (_, _, result) in results {
+                assert_eq!(result.unwrap().count_value_or_default(), 1);
+            }
         }
     }
 
@@ -324,7 +323,7 @@ mod generation {
     }
 
     #[test]
-    fn generation_refuses_a_layer_wider_than_the_child_cap_under_v4_only() {
+    fn generation_refuses_a_layer_wider_than_the_child_cap() {
         let version = GroveVersion::latest();
         let directory = tempfile::TempDir::new().unwrap();
         let db = GroveDb::open(directory.path()).unwrap();
@@ -333,18 +332,14 @@ mod generation {
         query.set_subquery(Query::new_range_full());
         let query = PathQuery::new(parent, SizedQuery::new(query, None, None));
 
-        // V4 refuses to emit a layer its own decoder would reject.
-        let error = db
-            .prove_query(&query, None, version)
-            .unwrap()
-            .expect_err("V4 generation must refuse an over-wide layer");
-        assert!(error.to_string().contains("child layer limit"), "{error}");
-
-        // GROVE_V3 keeps the shipped producer/consumer mismatch: the proof
-        // is generated, and the V3 verifier rejects it at the historical cap.
-        let bytes = db.prove_query(&query, None, &GROVE_V3).unwrap().unwrap();
-        let error = GroveDb::verify_query(&bytes, &query, &GROVE_V3)
-            .expect_err("the V3 decoder keeps its 128-child cap");
-        assert!(error.to_string().contains("too many children"), "{error}");
+        // The prover refuses to emit a layer no decoder could accept. The
+        // refusal is not versioned either.
+        for prove_version in [&GROVE_V3, version] {
+            let error = db
+                .prove_query(&query, None, prove_version)
+                .unwrap()
+                .expect_err("generation must refuse an over-wide layer");
+            assert!(error.to_string().contains("child layer limit"), "{error}");
+        }
     }
 }

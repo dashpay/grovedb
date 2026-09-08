@@ -3364,9 +3364,7 @@ impl GroveDb {
         let mut serialized_merk_proof = Vec::with_capacity(1024);
         encode_into(merk_proof.proof.iter(), &mut serialized_merk_proof);
 
-        if cost_return_on_error_no_add!(cost, super::uses_current_proof_limits(grove_version))
-            && lower_layers.len() > super::MAX_PROOF_CHILDREN
-        {
+        if lower_layers.len() > super::MAX_PROOF_CHILDREN {
             return Err(Error::InvalidInput(
                 "proof generation exceeded maximum child layer limit",
             ))

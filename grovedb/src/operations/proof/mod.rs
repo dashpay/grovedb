@@ -51,50 +51,13 @@ use std::{collections::BTreeMap, fmt};
 /// fitting comfortably within typical stack sizes.
 pub const MAX_PROOF_DEPTH: usize = 128;
 
-/// Maximum immediate child layers in a current V1 proof.
+/// Maximum immediate child layers in a V1 proof.
 ///
 /// Breadth is independent of recursion depth. This accommodates merged
 /// limited queries while keeping unlimited queries subject to a finite cap.
 /// Configured bincode limits also account for every retained child-map entry;
 /// they are an accounting budget, not an exact allocator/RSS limit.
 pub const MAX_PROOF_CHILDREN: usize = u16::MAX as usize;
-
-fn uses_current_proof_limits(grove_version: &GroveVersion) -> Result<bool, Error> {
-    let version = grove_version
-        .grovedb_versions
-        .operations
-        .proof
-        .proof_resource_limits;
-    grovedb_version::check_grovedb_v0_or_v1!("proof_resource_limits", version);
-    Ok(version == 1)
-}
-
-// Canonical verification selects its limits from GroveVersion. Direct bincode
-// decoding uses the current V1 contract; historical V0 decoding stays frozen.
-struct VersionedProof(GroveDBProof);
-
-impl DecodeUntrusted<bool> for VersionedProof {
-    fn decode_untrusted<D: bincode::de::UntrustedDecoder<Context = bool>>(
-        decoder: &mut D,
-    ) -> Result<Self, DecodeError> {
-        if *decoder.context() {
-            return GroveDBProof::decode_untrusted(decoder).map(Self);
-        }
-        match u32::decode_untrusted(decoder)? {
-            0 => GroveDBProofV0::decode_untrusted(decoder)
-                .map(GroveDBProof::V0)
-                .map(Self),
-            1 => Ok(Self(GroveDBProof::V1(GroveDBProofV1 {
-                root_layer: LayerProof::decode_untrusted_with_legacy_depth(decoder, 0)?,
-            }))),
-            found => Err(DecodeError::UnexpectedVariant {
-                type_name: "GroveDBProof",
-                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 1 },
-                found,
-            }),
-        }
-    }
-}
 
 /// Decode a serialized [`GroveDBProof`] envelope using the same bincode
 /// configuration the prover writes out.
@@ -109,19 +72,12 @@ impl DecodeUntrusted<bool> for VersionedProof {
 ///
 /// Shared by the aggregate-count and aggregate-sum verifier entry
 /// points so the canonical-decode contract has exactly one definition.
-pub(super) fn decode_grovedb_proof_canonical(
-    proof: &[u8],
-    grove_version: &GroveVersion,
-) -> Result<GroveDBProof, Error> {
+pub(super) fn decode_grovedb_proof_canonical(proof: &[u8]) -> Result<GroveDBProof, Error> {
     let config = bincode::config::standard()
         .with_big_endian()
         .with_limit::<{ 256 * 1024 * 1024 }>();
-    let (VersionedProof(decoded), consumed) = bincode::decode_from_slice_untrusted_with_context(
-        proof,
-        config,
-        uses_current_proof_limits(grove_version)?,
-    )
-    .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?;
+    let (decoded, consumed) = bincode::decode_from_slice_untrusted(proof, config)
+        .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?;
     if consumed != proof.len() {
         return Err(Error::CorruptedData(format!(
             "proof has {} trailing bytes after the encoded envelope",
@@ -620,11 +576,9 @@ impl AxisDescentProof {
 
 /// A single layer of a v1 GroveDB proof supporting multiple tree types.
 ///
-/// Direct bincode decoding enforces [`MAX_PROOF_DEPTH`] and
-/// [`MAX_PROOF_CHILDREN`], and charges retained child-map entries against the
-/// configured decoding limit. Canonical [`GroveDb`] verification selects the
-/// resource policy from its [`GroveVersion`] argument, preserving the shipped
-/// policy for GROVE_V1 through GROVE_V3.
+/// Decoding enforces [`MAX_PROOF_DEPTH`] and [`MAX_PROOF_CHILDREN`], and
+/// charges retained child-map entries against the configured decoding limit.
+/// These limits are the same for every [`GroveVersion`].
 #[derive(Encode, Clone)]
 pub struct LayerProof {
     /// Proof bytes for this layer (may be any supported tree type).
@@ -634,7 +588,7 @@ pub struct LayerProof {
 }
 
 // The wire schema and recursion limit are shared. Field decoding, breadth,
-// and retained-entry accounting are selected by each trait/version path.
+// and retained-entry accounting are selected by each trait/envelope path.
 macro_rules! layer_proof_decoder {
     ($proof:ident, $bytes:ty, $decode:ident, $recurse:ident, [$($generics:tt)*], $length:expr,
      $max_children:expr, $charge_children:expr) => {
@@ -712,19 +666,6 @@ layer_proof_decoder!(
     |len| usize::try_from(len).map_err(|_| DecodeError::LimitExceeded),
     MAX_PROOF_CHILDREN,
     true
-);
-
-// V1 envelopes verified against GROVE_V1..V3 retain their shipped limits and
-// accounting, even though direct bincode callers use the current contract.
-layer_proof_decoder!(
-    LayerProof,
-    ProofBytes,
-    decode_untrusted,
-    decode_untrusted_with_legacy_depth,
-    [D: bincode::de::UntrustedDecoder],
-    |len| usize::try_from(len).map_err(|_| DecodeError::LimitExceeded),
-    MAX_PROOF_DEPTH,
-    false
 );
 
 // Preserve the existing V0 compatibility entry point with explicit untrusted
@@ -1519,7 +1460,6 @@ bincode::impl_borrow_decode_untrusted!(GroveDBProofV0);
 #[cfg(test)]
 mod proof_resource_limit_tests {
     use super::*;
-    use grovedb_version::version::{v3::GROVE_V3, v4::GROVE_V4};
 
     fn wide_proof(width: usize) -> Vec<u8> {
         let root_layer = LayerProof {
@@ -1544,56 +1484,36 @@ mod proof_resource_limit_tests {
     }
 
     #[test]
-    fn canonical_breadth_policy_is_versioned_and_rejects_trailing_bytes() {
-        let bytes = wide_proof(MAX_PROOF_DEPTH + 1);
-        let error = decode_grovedb_proof_canonical(&bytes, &GROVE_V3)
+    fn canonical_decode_caps_breadth_independently_of_depth() {
+        assert!(decode_grovedb_proof_canonical(&wide_proof(MAX_PROOF_DEPTH + 1)).is_ok());
+        assert!(decode_grovedb_proof_canonical(&wide_proof(MAX_PROOF_CHILDREN)).is_ok());
+        let error = decode_grovedb_proof_canonical(&wide_proof(MAX_PROOF_CHILDREN + 1))
             .err()
-            .expect("legacy breadth rejection");
+            .expect("breadth cap");
         assert!(error.to_string().contains("too many children"));
-        assert!(decode_grovedb_proof_canonical(&bytes, &GROVE_V4).is_ok());
-        let mut bytes = wide_proof(1);
-        bytes.push(0);
-        for version in [&GROVE_V3, &GROVE_V4] {
-            let error = decode_grovedb_proof_canonical(&bytes, version)
-                .err()
-                .expect("trailing bytes rejected");
-            assert!(error.to_string().contains("trailing bytes"));
-        }
     }
 
     #[test]
-    fn retained_entry_accounting_preserves_legacy_acceptance() {
+    fn canonical_decode_rejects_trailing_bytes() {
+        let mut bytes = wide_proof(1);
+        bytes.push(0);
+        let error = decode_grovedb_proof_canonical(&bytes)
+            .err()
+            .expect("trailing bytes rejected");
+        assert!(error.to_string().contains("trailing bytes"));
+    }
+
+    #[test]
+    fn retained_entry_accounting_charges_the_decoding_budget() {
         let bytes = wide_proof(MAX_PROOF_DEPTH);
-        let config = bincode::config::standard()
-            .with_big_endian()
-            .with_limit::<8192>();
-        assert!(
-            bincode::decode_from_slice_untrusted_with_context::<_, VersionedProof, _>(
-                &bytes, config, false,
-            )
-            .is_ok()
-        );
-        let error = bincode::decode_from_slice_untrusted_with_context::<_, VersionedProof, _>(
-            &bytes, config, true,
+        let config = bincode::config::standard().with_big_endian();
+        assert!(bincode::decode_from_slice_untrusted::<GroveDBProof, _>(&bytes, config).is_ok());
+        let error = bincode::decode_from_slice_untrusted::<GroveDBProof, _>(
+            &bytes,
+            config.with_limit::<8192>(),
         )
         .err()
         .expect("retained entries exceed this small budget");
         assert!(matches!(error, DecodeError::LimitExceeded));
-    }
-
-    #[test]
-    fn legacy_envelope_errors_match_the_shipped_decoder() {
-        let config = bincode::config::standard().with_big_endian();
-        for bytes in [vec![], vec![2], vec![1, 0], vec![0]] {
-            let original = bincode::decode_from_slice_untrusted::<GroveDBProof, _>(&bytes, config)
-                .err()
-                .unwrap();
-            let legacy = bincode::decode_from_slice_untrusted_with_context::<_, VersionedProof, _>(
-                &bytes, config, false,
-            )
-            .err()
-            .unwrap();
-            assert_eq!(legacy.to_string(), original.to_string());
-        }
     }
 }

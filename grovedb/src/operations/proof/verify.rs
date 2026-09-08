@@ -127,7 +127,7 @@ impl GroveDb {
             query.reject_absence_proofs_with_offset()?;
         }
 
-        let grovedb_proof = super::decode_grovedb_proof_canonical(proof, grove_version)?;
+        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         let (root_hash, _, result) =
             Self::verify_proof_internal(&grovedb_proof, query, options, grove_version)?;
@@ -177,7 +177,7 @@ impl GroveDb {
             query.reject_absence_proofs_with_offset()?;
         }
 
-        let grovedb_proof = super::decode_grovedb_proof_canonical(proof, grove_version)?;
+        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         let (root_hash, tree_feature_type, result) =
             Self::verify_proof_internal(&grovedb_proof, query, options, grove_version)?;
@@ -208,7 +208,7 @@ impl GroveDb {
         // Pre-decode query-shape gate — see `verify_query_with_options`.
         query.reject_unserved_per_instance_limits(grove_version)?;
 
-        let grovedb_proof = super::decode_grovedb_proof_canonical(proof, grove_version)?;
+        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         let (root_hash, _, result) = Self::verify_proof_raw_internal(
             &grovedb_proof,
@@ -4059,7 +4059,7 @@ impl GroveDb {
         query: &PathTrunkChunkQuery,
         grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, GroveTrunkQueryResult), Error> {
-        let grovedb_proof = super::decode_grovedb_proof_canonical(proof, grove_version)?;
+        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         match grovedb_proof {
             GroveDBProof::V0(proof_v0) => {

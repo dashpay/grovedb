@@ -510,9 +510,6 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 verify_single_path: 0,
             },
             proof: GroveDBOperationsProofVersions {
-                // V4 admits up to 65,535 child layers and charges retained map
-                // entries. V1..V3 keep the shipped decoder and generation policy.
-                proof_resource_limits: 1,
                 prove_query: 0,
                 prove_query_many: 0,
                 prove_query_non_serialized: 1, // v1 supports MmrTree/BulkAppendTree proof generation
