@@ -28,6 +28,8 @@
 
 //! Auxiliary operations
 
+mod find_subtrees;
+
 use grovedb_costs::{
     cost_return_on_error, storage_cost::key_value_cost::KeyValueStorageCost, CostResult, CostsExt,
     OperationCost,
@@ -35,12 +37,9 @@ use grovedb_costs::{
 use grovedb_element::indexed::IndexAxis;
 use grovedb_path::SubtreePath;
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, Storage, StorageBatch, StorageContext};
-use grovedb_version::{check_grovedb_v0_or_v1_with_cost, version::GroveVersion};
+use grovedb_version::version::GroveVersion;
 
-use crate::{
-    element::elements_iterator::ElementIteratorExtensions, util::TxRef, Element, Error, GroveDb,
-    Transaction, TransactionArg,
-};
+use crate::{util::TxRef, Error, GroveDb, Transaction, TransactionArg};
 
 impl GroveDb {
     /// Put op for aux storage
@@ -128,87 +127,6 @@ impl GroveDb {
             .get_aux(key.as_ref())
             .map_err(|e| e.into())
             .add_cost(cost)
-    }
-
-    // TODO: dumb traversal should not be tolerated
-    /// Finds subtree namespaces recursively, including the starting Merk
-    /// namespace at `path`. Returned paths are absolute.
-    ///
-    /// On V4+, non-Merk descendants are included for cleanup but are not
-    /// traversed: their data records are not Merk nodes and they cannot
-    /// contain child subtrees. V1..V3 retain the historical traversal and
-    /// its costs and errors for replay compatibility.
-    ///
-    /// # Storage batch visibility
-    ///
-    /// This method reads directly from the transaction (passing `None` for
-    /// the storage batch parameter), so it only sees data that has been
-    /// **committed** to the transaction. Any writes staged in a pending
-    /// `StorageBatch` (e.g., from `apply_body` during batch processing)
-    /// are invisible.
-    ///
-    /// In practice this is safe because the batch consistency check
-    /// ([`crate::batch::QualifiedGroveDbOp::verify_consistency_of_operations`])
-    /// rejects batches that insert subtrees under paths being deleted.
-    /// The stale-state window only matters if the consistency check is
-    /// bypassed via
-    /// [`BatchApplyOptions::disable_operation_consistency_check`](crate::batch::BatchApplyOptions::disable_operation_consistency_check).
-    pub fn find_subtrees<B: AsRef<[u8]>>(
-        &self,
-        path: &SubtreePath<B>,
-        transaction: TransactionArg,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Vec<Vec<Vec<u8>>>, Error> {
-        let discovery_version = grove_version
-            .grovedb_versions
-            .operations
-            .non_merk_tree
-            .subtree_discovery;
-        check_grovedb_v0_or_v1_with_cost!("find_subtrees", discovery_version);
-        let mut cost = OperationCost::default();
-
-        // TODO: remove conversion to vec;
-        // However, it's not easy for a reason:
-        // new keys to enqueue are taken from raw iterator which returns Vec<u8>;
-        // changing that to slice is hard as cursor should be moved for next iteration
-        // which requires exclusive (&mut) reference, also there is no guarantee that
-        // slice which points into storage internals will remain valid if raw
-        // iterator got altered so why that reference should be exclusive;
-        //
-        // Update: there are pinned views into RocksDB to return slices of data, perhaps
-        // there is something for iterators
-
-        let mut queue: Vec<Vec<Vec<u8>>> = vec![path.to_vec()];
-        let mut result: Vec<Vec<Vec<u8>>> = queue.clone();
-
-        let tx = TxRef::new(&self.db, transaction);
-
-        while let Some(q) = queue.pop() {
-            let subtree_path: SubtreePath<Vec<u8>> = q.as_slice().into();
-            // Get the correct subtree with q_ref as path
-            let storage = self
-                .db
-                .get_transactional_storage_context(subtree_path, None, tx.as_ref())
-                .unwrap_add_cost(&mut cost);
-            let mut raw_iter = Element::iterator(storage.raw_iter()).unwrap_add_cost(&mut cost);
-            while let Some((key, value)) =
-                cost_return_on_error!(&mut cost, raw_iter.next_element(grove_version))
-            {
-                if value.is_any_tree() {
-                    let mut sub_path = q.clone();
-                    sub_path.push(key.to_vec());
-                    // Only Merk namespaces can contain more subtrees. Use
-                    // the element already decoded from the parent to classify
-                    // storage, including through element wrappers, without
-                    // adding a read or dropping the namespace from cleanup.
-                    if discovery_version == 0 || !value.uses_non_merk_data_storage() {
-                        queue.push(sub_path.clone());
-                    }
-                    result.push(sub_path);
-                }
-            }
-        }
-        Ok(result).wrap_with_cost(cost)
     }
 
     /// Recursively clear storage owned by the subtree at `path`: the
