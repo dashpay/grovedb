@@ -9,7 +9,7 @@
 
 use std::collections::BTreeSet;
 
-use bincode::{Decode, Encode};
+use bincode::{Decode, DecodeUntrusted, Encode};
 #[cfg(feature = "storage")]
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_query::{Query, QueryItem};
@@ -176,7 +176,7 @@ macro_rules! cost_return_on_error {
 /// such as the parent `Element` in Merk — when calling the verification
 /// methods.
 // codecov:ignore — derive macro expansion, not testable production logic
-#[derive(Debug, Clone, Encode, Decode, bincode::DecodeUntrusted)]
+#[derive(Debug, Clone, Encode, Decode, DecodeUntrusted)]
 pub struct DenseTreeProof {
     /// The proved (position, value) pairs.
     pub entries: Vec<(u16, Vec<u8>)>,

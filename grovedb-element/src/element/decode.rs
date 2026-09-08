@@ -6,7 +6,7 @@
 use bincode::{
     de::Decoder,
     error::{AllowedEnumVariants, DecodeError},
-    Decode,
+    Decode, DecodeUntrusted,
 };
 
 use crate::{
@@ -230,7 +230,7 @@ bincode::impl_borrow_decode!(Element);
 
 // Both entry points retain the same wrapper/domain validation. All fields are
 // concrete library-controlled types; nested collection reads retain this mode.
-impl<C> bincode::DecodeUntrusted<C> for Element {
+impl<C> DecodeUntrusted<C> for Element {
     fn decode_untrusted<D: bincode::de::UntrustedDecoder<Context = C>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {

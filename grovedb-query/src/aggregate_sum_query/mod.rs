@@ -2,13 +2,13 @@ mod insert;
 mod merge;
 
 use crate::{Key, QueryItem};
-use bincode::{Decode, Encode};
+use bincode::{Decode, DecodeUntrusted, Encode};
 use std::fmt;
 use std::ops::RangeFull;
 
 /// `AggregateSumQuery` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all the requested values
-#[derive(Debug, Default, Clone, PartialEq, Encode, Decode)]
+#[derive(Debug, Default, Clone, PartialEq, Encode, Decode, DecodeUntrusted)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AggregateSumQuery {
     /// Items

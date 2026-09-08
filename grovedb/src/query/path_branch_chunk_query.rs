@@ -4,7 +4,7 @@
 //! then returns the subtree rooted at that key up to a specified depth.
 //! This is useful for retrieving subsequent chunks after a trunk query.
 
-use bincode::{Decode, Encode};
+use bincode::{Decode, DecodeUntrusted, Encode};
 
 /// Path branch chunk query
 ///
@@ -15,7 +15,7 @@ use bincode::{Decode, Encode};
 /// After performing a trunk query, use the terminal node keys from the
 /// `TrunkQueryResult` as the `key` parameter to retrieve deeper branches.
 #[cfg(any(feature = "minimal", feature = "verify"))]
-#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode, DecodeUntrusted)]
 pub struct PathBranchChunkQuery {
     /// Path to the tree to query
     pub path: Vec<Vec<u8>>,

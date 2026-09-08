@@ -10,7 +10,7 @@
 
 use std::collections::BTreeSet;
 
-use bincode::{Decode, Encode};
+use bincode::{Decode, DecodeUntrusted, Encode};
 use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
 use grovedb_merkle_mountain_range::MmrTreeProof;
 #[cfg(feature = "storage")]
@@ -219,7 +219,7 @@ fn in_ranges(pos: u64, ranges: &[(u64, u64)]) -> bool {
 /// Verification recomputes `state_root = blake3("bulk_state" || mmr_root ||
 /// dense_tree_root)` from the two sub-proofs and checks it against the
 /// expected root.
-#[derive(Debug, Clone, Encode, Decode, bincode::DecodeUntrusted)]
+#[derive(Debug, Clone, Encode, Decode, DecodeUntrusted)]
 pub struct BulkAppendTreeProof {
     /// Sub-proof for the chunk MMR (completed epochs).
     /// When no chunks exist, this is an empty proof with `mmr_size = 0`.

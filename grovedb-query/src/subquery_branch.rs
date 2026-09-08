@@ -3,7 +3,7 @@ use std::fmt;
 use bincode::{
     de::{BorrowDecoder, Decoder},
     error::DecodeError,
-    BorrowDecode, Decode, Encode,
+    BorrowDecode, BorrowDecodeUntrusted, Decode, DecodeUntrusted, Encode,
 };
 
 use crate::{hex_to_ascii, Path, Query};
@@ -69,6 +69,23 @@ impl<Context> Decode<Context> for SubqueryBranch {
 
 impl<'de, Context> BorrowDecode<'de, Context> for SubqueryBranch {
     fn borrow_decode<D: BorrowDecoder<'de, Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        Self::borrow_decode_with_depth(decoder, 0)
+    }
+}
+
+// Explicit opt-in retains this concrete type's manual wire format and validation.
+impl<Context> DecodeUntrusted<Context> for SubqueryBranch {
+    fn decode_untrusted<D: bincode::de::UntrustedDecoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        Self::decode_with_depth(decoder, 0)
+    }
+}
+
+impl<'de, Context> BorrowDecodeUntrusted<'de, Context> for SubqueryBranch {
+    fn borrow_decode_untrusted<D: bincode::de::BorrowUntrustedDecoder<'de, Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
         Self::borrow_decode_with_depth(decoder, 0)

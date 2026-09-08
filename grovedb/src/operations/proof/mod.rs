@@ -82,7 +82,7 @@ pub(super) fn decode_grovedb_proof_canonical(proof: &[u8]) -> Result<GroveDBProo
 use bincode::{
     de::{BorrowDecoder, Decoder as BincodeDecoder},
     error::DecodeError,
-    BorrowDecode, Decode, Encode,
+    BorrowDecode, Decode, DecodeUntrusted, Encode,
 };
 use grovedb_bulk_append_tree::BulkAppendTreeProof;
 use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
@@ -117,7 +117,7 @@ use crate::{
 ///
 /// [`GroveDBProofV1`] does **not** embed `ProveOptions`. The verifier uses
 /// [`ProveOptions::default()`] instead, closing this attack vector.
-#[derive(Debug, Clone, Copy, Encode, Decode)]
+#[derive(Debug, Clone, Copy, Encode, Decode, DecodeUntrusted)]
 pub struct ProveOptions {
     /// This tells the proof system to decrease the available limit of the query
     /// by 1 in the case of empty subtrees. Generally this should be set to
@@ -364,7 +364,7 @@ impl<'de, Context> BorrowDecode<'de, Context> for MerkOnlyLayerProof {
 }
 
 /// Encoded proof bytes for different tree backing store types.
-#[derive(Encode, Decode, Clone, bincode::DecodeUntrusted)]
+#[derive(Encode, Decode, Clone, DecodeUntrusted)]
 pub enum ProofBytes {
     /// Merk (Merkle AVL) tree proof bytes.
     Merk(Vec<u8>),
@@ -450,7 +450,7 @@ pub enum ProofBytes {
 /// the executed result set, and a lying `exhausted` either fails the
 /// merk execution (a limited proof executed without a limit demands
 /// data it does not carry) or contradicts the replayed stop condition.
-#[derive(Debug, Clone, PartialEq, Encode, Decode, bincode::DecodeUntrusted)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode, DecodeUntrusted)]
 pub struct SumBudgetWindowProof {
     /// Whether the walk ended because the query's ranges were exhausted
     /// (`true`) rather than because a stop condition fired (`false`).
@@ -513,7 +513,7 @@ impl SumBudgetWindowProof {
 ///   walk, whose counted commitments then attest it (a wrong claim
 ///   fails verification), and the single yielded entry must be the
 ///   queried key.
-#[derive(Debug, Clone, PartialEq, Encode, Decode, bincode::DecodeUntrusted)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode, DecodeUntrusted)]
 pub struct AxisDescentProof {
     /// Tag byte of the queried axis; must equal the query's axis.
     pub axis_tag: u8,
@@ -647,7 +647,7 @@ impl<'de, Context> BorrowDecode<'de, Context> for LayerProof {
 }
 
 /// A versioned GroveDB proof that can be verified against a path query.
-#[derive(Encode, Decode, bincode::DecodeUntrusted)]
+#[derive(Encode, Decode, DecodeUntrusted)]
 pub enum GroveDBProof {
     /// Legacy proof format using only merk proofs.
     V0(GroveDBProofV0),
@@ -907,7 +907,7 @@ pub struct GroveDBProofV0 {
 /// The verifier uses [`ProveOptions::default()`] instead of trusting
 /// prover-supplied options, which closes the result-truncation attack
 /// vector described in the [`ProveOptions`] security note.
-#[derive(Encode, Decode, bincode::DecodeUntrusted)]
+#[derive(Encode, Decode, DecodeUntrusted)]
 pub struct GroveDBProofV1 {
     /// The root layer proof for the top-level tree.
     pub root_layer: LayerProof,
@@ -1382,7 +1382,7 @@ pub(crate) mod prove_test_hooks {
 
 // Explicit compatibility adapter: preserve the existing validated parser and
 // its depth checks while the sealed decoder enforces untrusted allocation.
-impl<C> bincode::DecodeUntrusted<C> for LayerProof {
+impl<C> DecodeUntrusted<C> for LayerProof {
     fn decode_untrusted<D: bincode::de::UntrustedDecoder<Context = C>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
@@ -1393,7 +1393,7 @@ bincode::impl_borrow_decode_untrusted!(LayerProof);
 
 // Explicit compatibility adapter: preserve the existing validated parser and
 // its depth checks while the sealed decoder enforces untrusted allocation.
-impl<C> bincode::DecodeUntrusted<C> for GroveDBProofV0 {
+impl<C> DecodeUntrusted<C> for GroveDBProofV0 {
     fn decode_untrusted<D: bincode::de::UntrustedDecoder<Context = C>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {

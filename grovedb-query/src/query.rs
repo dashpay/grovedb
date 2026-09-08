@@ -3,7 +3,7 @@ use std::{fmt, ops::RangeFull};
 use bincode::{
     enc::write::Writer,
     error::{DecodeError, EncodeError},
-    BorrowDecode, Decode, Encode,
+    BorrowDecode, BorrowDecodeUntrusted, Decode, DecodeUntrusted, Encode,
 };
 use indexmap::IndexMap;
 
@@ -223,28 +223,63 @@ impl Query {
         } else {
             0
         };
-        let items_len = u64::decode(decoder)? as usize;
+        let items_len = u64::decode(decoder)?;
+        let items_len = if D::IS_UNTRUSTED {
+            usize::try_from(items_len).map_err(|_| DecodeError::LimitExceeded)?
+        } else {
+            items_len as usize
+        };
         if items_len > MAX_QUERY_ITEMS {
             return Err(DecodeError::Other("query items length exceeds maximum"));
         }
-        let mut items = Vec::with_capacity(items_len);
+        let mut items = if D::IS_UNTRUSTED {
+            decoder.claim_container_read::<QueryItem>(items_len)?;
+            Vec::new()
+        } else {
+            Vec::with_capacity(items_len)
+        };
         for _ in 0..items_len {
-            items.push(QueryItem::decode(decoder)?);
+            if D::IS_UNTRUSTED {
+                decoder.unclaim_bytes_read(std::mem::size_of::<QueryItem>());
+            }
+            let item = QueryItem::decode(decoder)?;
+            if D::IS_UNTRUSTED {
+                items
+                    .try_reserve(1)
+                    .map_err(|_| DecodeError::LimitExceeded)?;
+            }
+            items.push(item);
         }
 
         let default_subquery_branch = SubqueryBranch::decode_with_depth(decoder, depth)?;
 
         let conditional_subquery_branches = if u8::decode(decoder)? == 1 {
-            let len = u64::decode(decoder)? as usize;
+            let len = u64::decode(decoder)?;
+            let len = if D::IS_UNTRUSTED {
+                usize::try_from(len).map_err(|_| DecodeError::LimitExceeded)?
+            } else {
+                len as usize
+            };
             if len > MAX_CONDITIONAL_BRANCHES {
                 return Err(DecodeError::Other(
                     "conditional subquery branches length exceeds maximum",
                 ));
             }
-            let mut map = IndexMap::with_capacity(len);
+            let mut map = if D::IS_UNTRUSTED {
+                decoder.claim_container_read::<(QueryItem, SubqueryBranch)>(len)?;
+                IndexMap::new()
+            } else {
+                IndexMap::with_capacity(len)
+            };
             for _ in 0..len {
+                if D::IS_UNTRUSTED {
+                    decoder.unclaim_bytes_read(std::mem::size_of::<(QueryItem, SubqueryBranch)>());
+                }
                 let key = QueryItem::decode(decoder)?;
                 let value = SubqueryBranch::decode_with_depth(decoder, depth)?;
+                if D::IS_UNTRUSTED {
+                    map.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
+                }
                 map.insert(key, value);
             }
             Some(map)
@@ -310,28 +345,63 @@ impl Query {
         } else {
             0
         };
-        let items_len = u64::borrow_decode(decoder)? as usize;
+        let items_len = u64::borrow_decode(decoder)?;
+        let items_len = if D::IS_UNTRUSTED {
+            usize::try_from(items_len).map_err(|_| DecodeError::LimitExceeded)?
+        } else {
+            items_len as usize
+        };
         if items_len > MAX_QUERY_ITEMS {
             return Err(DecodeError::Other("query items length exceeds maximum"));
         }
-        let mut items = Vec::with_capacity(items_len);
+        let mut items = if D::IS_UNTRUSTED {
+            decoder.claim_container_read::<QueryItem>(items_len)?;
+            Vec::new()
+        } else {
+            Vec::with_capacity(items_len)
+        };
         for _ in 0..items_len {
-            items.push(QueryItem::borrow_decode(decoder)?);
+            if D::IS_UNTRUSTED {
+                decoder.unclaim_bytes_read(std::mem::size_of::<QueryItem>());
+            }
+            let item = QueryItem::borrow_decode(decoder)?;
+            if D::IS_UNTRUSTED {
+                items
+                    .try_reserve(1)
+                    .map_err(|_| DecodeError::LimitExceeded)?;
+            }
+            items.push(item);
         }
 
         let default_subquery_branch = SubqueryBranch::borrow_decode_with_depth(decoder, depth)?;
 
         let conditional_subquery_branches = if u8::borrow_decode(decoder)? == 1 {
-            let len = u64::borrow_decode(decoder)? as usize;
+            let len = u64::borrow_decode(decoder)?;
+            let len = if D::IS_UNTRUSTED {
+                usize::try_from(len).map_err(|_| DecodeError::LimitExceeded)?
+            } else {
+                len as usize
+            };
             if len > MAX_CONDITIONAL_BRANCHES {
                 return Err(DecodeError::Other(
                     "conditional subquery branches length exceeds maximum",
                 ));
             }
-            let mut map = IndexMap::with_capacity(len);
+            let mut map = if D::IS_UNTRUSTED {
+                decoder.claim_container_read::<(QueryItem, SubqueryBranch)>(len)?;
+                IndexMap::new()
+            } else {
+                IndexMap::with_capacity(len)
+            };
             for _ in 0..len {
+                if D::IS_UNTRUSTED {
+                    decoder.unclaim_bytes_read(std::mem::size_of::<(QueryItem, SubqueryBranch)>());
+                }
                 let key = QueryItem::borrow_decode(decoder)?;
                 let value = SubqueryBranch::borrow_decode_with_depth(decoder, depth)?;
+                if D::IS_UNTRUSTED {
+                    map.try_reserve(1).map_err(|_| DecodeError::LimitExceeded)?;
+                }
                 map.insert(key, value);
             }
             Some(map)
@@ -379,6 +449,23 @@ impl<Context> Decode<Context> for Query {
 
 impl<'de, Context> BorrowDecode<'de, Context> for Query {
     fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        Self::borrow_decode_with_depth(decoder, 0)
+    }
+}
+
+// Explicit opt-in retains this concrete type's manual wire format and validation.
+impl<Context> DecodeUntrusted<Context> for Query {
+    fn decode_untrusted<D: bincode::de::UntrustedDecoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        Self::decode_with_depth(decoder, 0)
+    }
+}
+
+impl<'de, Context> BorrowDecodeUntrusted<'de, Context> for Query {
+    fn borrow_decode_untrusted<D: bincode::de::BorrowUntrustedDecoder<'de, Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
         Self::borrow_decode_with_depth(decoder, 0)

@@ -10,7 +10,10 @@ use std::{
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
-use bincode::{enc::write::Writer, error::DecodeError, BorrowDecode, Decode, Encode};
+use bincode::{
+    enc::write::Writer, error::DecodeError, BorrowDecode, BorrowDecodeUntrusted, Decode,
+    DecodeUntrusted, Encode,
+};
 #[cfg(feature = "blockchain")]
 use grovedb_costs::{CostContext, CostsExt, OperationCost};
 #[cfg(feature = "blockchain")]
@@ -663,6 +666,23 @@ impl QueryItem {
 
 impl<'de, Context> BorrowDecode<'de, Context> for QueryItem {
     fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        Self::borrow_decode_with_depth(decoder, 0)
+    }
+}
+
+// Explicit opt-in retains this concrete type's manual wire format and validation.
+impl<Context> DecodeUntrusted<Context> for QueryItem {
+    fn decode_untrusted<D: bincode::de::UntrustedDecoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        Self::decode_with_depth(decoder, 0)
+    }
+}
+
+impl<'de, Context> BorrowDecodeUntrusted<'de, Context> for QueryItem {
+    fn borrow_decode_untrusted<D: bincode::de::BorrowUntrustedDecoder<'de, Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
         Self::borrow_decode_with_depth(decoder, 0)

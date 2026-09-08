@@ -27,7 +27,7 @@ use bincode::{
     de::{BorrowDecoder, Decoder},
     enc::Encoder,
     error::{DecodeError, EncodeError},
-    BorrowDecode, Decode, Encode,
+    BorrowDecode, Decode, DecodeUntrusted, Encode,
 };
 
 use crate::{axis_query::AxisQuery, error::Error, query::Query};
@@ -100,6 +100,16 @@ impl<'de, Context> BorrowDecode<'de, Context> for SumBudgetRead {
     }
 }
 
+// Explicit opt-in retains this concrete type's manual wire format and validation.
+impl<Context> DecodeUntrusted<Context> for SumBudgetRead {
+    fn decode_untrusted<D: bincode::de::UntrustedDecoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        Self::decode(decoder)
+    }
+}
+bincode::impl_borrow_decode_untrusted!(SumBudgetRead);
+
 impl fmt::Display for SumBudgetRead {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -169,6 +179,16 @@ impl<'de, Context> BorrowDecode<'de, Context> for ReadMode {
         Self::decode(decoder)
     }
 }
+
+// Explicit opt-in retains this concrete type's manual wire format and validation.
+impl<Context> DecodeUntrusted<Context> for ReadMode {
+    fn decode_untrusted<D: bincode::de::UntrustedDecoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        Self::decode(decoder)
+    }
+}
+bincode::impl_borrow_decode_untrusted!(ReadMode);
 
 impl fmt::Display for ReadMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

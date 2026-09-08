@@ -23,7 +23,7 @@ use bincode::{
     de::{BorrowDecoder, Decoder},
     enc::Encoder,
     error::{DecodeError, EncodeError},
-    BorrowDecode, Decode, Encode,
+    BorrowDecode, Decode, DecodeUntrusted, Encode,
 };
 
 use crate::error::Error;
@@ -340,6 +340,16 @@ impl<'de, Context> BorrowDecode<'de, Context> for AxisTraversal {
     }
 }
 
+// Explicit opt-in retains this concrete type's manual wire format and validation.
+impl<Context> DecodeUntrusted<Context> for AxisTraversal {
+    fn decode_untrusted<D: bincode::de::UntrustedDecoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        Self::decode(decoder)
+    }
+}
+bincode::impl_borrow_decode_untrusted!(AxisTraversal);
+
 /// What an entry-listing axis read ([`AxisTraversal::RankedPage`],
 /// [`AxisTraversal::Bounded`]) returns for each entry.
 ///
@@ -456,6 +466,16 @@ impl<'de, Context> BorrowDecode<'de, Context> for AxisQuery {
         Self::decode(decoder)
     }
 }
+
+// Explicit opt-in retains this concrete type's manual wire format and validation.
+impl<Context> DecodeUntrusted<Context> for AxisQuery {
+    fn decode_untrusted<D: bincode::de::UntrustedDecoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        Self::decode(decoder)
+    }
+}
+bincode::impl_borrow_decode_untrusted!(AxisQuery);
 
 impl AxisQuery {
     /// A page of `k` entries on `axis`, starting at rank `offset`.

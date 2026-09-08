@@ -3,6 +3,14 @@
 //! This crate provides the core query types (Query, QueryItem, SubqueryBranch)
 //! used throughout GroveDB for specifying which keys and ranges to include in
 //! proofs and query results.
+//!
+//! Native bincode query types support `DecodeUntrusted` and
+//! `BorrowDecodeUntrusted`. Select `bincode::decode_from_slice_untrusted` (or its
+//! borrowed/reader equivalents) when accepting client query bytes. These paths
+//! retain the query wire versions, custom tags, and nesting limits. Manual
+//! query collections grow after entries decode and count against the configured
+//! bincode container limit; allocation failures return `DecodeError::LimitExceeded`.
+//! Ordinary `Decode` and the encoded bytes retain their existing behavior.
 
 #![deny(missing_docs)]
 
