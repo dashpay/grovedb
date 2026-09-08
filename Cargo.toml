@@ -28,8 +28,9 @@ thiserror = "2.0"
 hex = "0.4.3"
 integer-encoding = "4.1.0"
 blake3 = "1.8"
-bincode = { package = "grovedb-bincode", version = "=2.1.0", path = "grovedb-bincode" }
-bincode_derive = { package = "grovedb-bincode-derive", version = "=2.1.0", path = "grovedb-bincode-derive" }
+# Share codec traits with SDKs using the published crates, including Git consumers.
+bincode = { package = "grovedb-bincode", version = "=2.1.0" }
+bincode_derive = { package = "grovedb-bincode-derive", version = "=2.1.0" }
 indexmap = "2.13.0"
 serde = { version = "1.0", features = ["derive"] }
 byteorder = "1.5.0"
