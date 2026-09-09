@@ -2978,3 +2978,139 @@ fn typed_delete_sort_tags_are_pinned() {
     assert!(GroveOp::DeleteWithCascade > GroveOp::Delete);
     assert!(GroveOp::DeleteWithNoBackwardsReferenceCheck > GroveOp::DeleteWithCascade);
 }
+
+#[test]
+fn typed_delete_debug_labels() {
+    let cascade =
+        QualifiedGroveDbOp::delete_with_cascade_op(vec![TEST_LEAF.to_vec()], b"value".to_vec());
+    let no_check = QualifiedGroveDbOp::delete_with_no_backwards_reference_check_op(
+        vec![TEST_LEAF.to_vec()],
+        b"value".to_vec(),
+    );
+    assert!(format!("{cascade:?}").contains("Delete With Cascade"));
+    assert!(format!("{no_check:?}").contains("Delete With No Backwards Reference Check"));
+}
+
+#[test]
+fn flagged_batch_fresh_subtree_scan_covers_replace_and_known_new_tree_writes() {
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    db.insert(
+        &[TEST_LEAF],
+        b"old_tree",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    // A tree written as known-new is fresh (its content exists only in the
+    // overlay); a tree re-written with `Replace` over a stored tree is not.
+    // Both carry a family item written in the same flagged batch.
+    db.apply_batch(
+        vec![
+            QualifiedGroveDbOp::insert_only_op(
+                vec![TEST_LEAF.to_vec()],
+                b"new_tree".to_vec(),
+                Element::empty_tree(),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"new_tree".to_vec()],
+                b"f".to_vec(),
+                Element::new_item_allowing_bidirectional_references(b"fresh".to_vec()),
+            ),
+            QualifiedGroveDbOp::replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"old_tree".to_vec(),
+                Element::empty_tree(),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"old_tree".to_vec()],
+                b"g".to_vec(),
+                Element::new_item_allowing_bidirectional_references(b"stored".to_vec()),
+            ),
+        ],
+        batch_flag_on(),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    for (tree, key) in [
+        (b"new_tree".as_slice(), b"f".as_slice()),
+        (b"old_tree", b"g"),
+    ] {
+        db.get(&[TEST_LEAF, tree], key, None, grove_version)
+            .unwrap()
+            .unwrap();
+    }
+    assert!(db
+        .verify_grovedb(None, true, true, grove_version)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn typed_cascade_delete_alongside_a_refresh_in_unflagged_batch() {
+    let grove_version = GroveVersion::latest();
+    let (db, _) = twin_dbs_with_chain(grove_version);
+    db.insert(
+        &[TEST_LEAF],
+        b"other",
+        Element::new_item(b"plain".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF],
+        b"pref",
+        Element::new_reference(ReferencePathType::SiblingReference(b"other".to_vec())),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    // Per-op mode: the refresh is an ordinary unflagged write next to the
+    // cascade.
+    db.apply_batch(
+        vec![
+            QualifiedGroveDbOp::delete_with_cascade_op(vec![TEST_LEAF.to_vec()], b"value".to_vec()),
+            QualifiedGroveDbOp::refresh_reference_op(
+                vec![TEST_LEAF.to_vec()],
+                b"pref".to_vec(),
+                ReferencePathType::SiblingReference(b"other".to_vec()),
+                None,
+                None,
+                false,
+                true,
+            ),
+        ],
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    for key in [b"value".as_slice(), b"r1", b"r2"] {
+        assert_absent(&db, key, grove_version);
+    }
+    assert_eq!(
+        db.get(&[TEST_LEAF], b"pref", None, grove_version)
+            .unwrap()
+            .unwrap(),
+        Element::new_item(b"plain".to_vec())
+    );
+    assert!(db
+        .verify_grovedb(None, true, true, grove_version)
+        .unwrap()
+        .is_empty());
+}

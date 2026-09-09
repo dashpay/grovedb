@@ -708,17 +708,18 @@ fn typed_delete_fan_out_follows_the_op_not_the_flag() {
             b"value".to_vec(),
         )]
     };
+    let leaf = || KeyInfoPath::from_known_owned_path(vec![TEST_LEAF.to_vec()]);
     let cascade = || {
-        vec![QualifiedGroveDbOp::delete_with_cascade_op(
-            vec![TEST_LEAF.to_vec()],
-            b"value".to_vec(),
+        vec![QualifiedGroveDbOp::delete_with_cascade_estimated_op(
+            leaf(),
+            KeyInfo::KnownKey(b"value".to_vec()),
         )]
     };
     let no_check = || {
         vec![
-            QualifiedGroveDbOp::delete_with_no_backwards_reference_check_op(
-                vec![TEST_LEAF.to_vec()],
-                b"value".to_vec(),
+            QualifiedGroveDbOp::delete_with_no_backwards_reference_check_estimated_op(
+                leaf(),
+                KeyInfo::KnownKey(b"value".to_vec()),
             ),
         ]
     };
