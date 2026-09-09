@@ -2887,6 +2887,13 @@ fn typed_deletes_through_apply_operations_without_batching_match_live() {
                     vec![TEST_LEAF.to_vec()],
                     b"value".to_vec(),
                 ),
+                // A plain write alongside, so the batch options are also
+                // forwarded as insert options on this path.
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"extra".to_vec(),
+                    Element::new_item(b"x".to_vec()),
+                ),
             ],
             batch_flag_on(),
             None,
@@ -2898,7 +2905,19 @@ fn typed_deletes_through_apply_operations_without_batching_match_live() {
         .delete(&[TEST_LEAF], b"value", None, None, grove_version)
         .unwrap()
         .unwrap();
+    live_db
+        .insert(
+            &[TEST_LEAF],
+            b"extra",
+            Element::new_item(b"x".to_vec()),
+            flag_on(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
     assert_present(&batch_db, b"r1", grove_version);
+    assert_present(&batch_db, b"extra", grove_version);
     assert_eq!(
         batch_db.root_hash(None, grove_version).unwrap().unwrap(),
         live_db.root_hash(None, grove_version).unwrap().unwrap()
