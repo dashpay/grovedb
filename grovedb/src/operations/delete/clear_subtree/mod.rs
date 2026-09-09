@@ -31,7 +31,8 @@
 //!   through ancestors with the indexed-aware walk, refreshing the entry's
 //!   canonical secondary row when the parent is an indexed primary.
 //!
-//! The implementations are otherwise identical. See [v0] / [v1].
+//! v1 also refuses clears containing backward-reference participants under
+//! the default Maintain policy. See [v0] / [v1].
 //!
 //! [v0]: self::v0
 //! [v1]: self::v1
@@ -50,15 +51,12 @@ impl GroveDb {
     /// Delete all elements in a specified subtree.
     /// Returns if we successfully cleared the subtree.
     ///
-    /// # Dangling references
-    ///
-    /// This operation does **not** check for incoming references (it has no
-    /// backward-references propagation option). Any
-    /// [`Reference`](crate::Element::Reference) or
-    /// [`BidirectionalReference`](crate::Element::BidirectionalReference)
-    /// elements elsewhere in the database that point to elements within the
-    /// cleared subtree will become dangling. See the
-    /// [module-level documentation](super) for details.
+    /// On V4, the default `Maintain` policy scans for backward-reference
+    /// participants and refuses the clear before mutation if any are found.
+    /// Delete those participants through the normal delete API first, or
+    /// explicitly choose `ClearOptions::backward_references_policy = Skip`.
+    /// Ordinary `Reference` elements have no registrations and remain the
+    /// caller's responsibility. V1–V3 retain their historical behavior.
     pub fn clear_subtree<'b, B, P>(
         &self,
         path: P,

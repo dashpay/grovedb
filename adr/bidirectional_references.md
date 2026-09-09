@@ -53,7 +53,7 @@ Moreover, these types are incompatible, which will be discussed in the "Rules" s
 On `GROVE_V4`, ordinary inserts, replacements, deletes, and full batches
 maintain backward references automatically. Callers do not need to predict
 whether a plain operation will displace a participant. `InsertOptions`,
-`DeleteOptions`, and `BatchApplyOptions` expose `backward_references_policy`,
+`DeleteOptions`, `ClearOptions`, and `BatchApplyOptions` expose `backward_references_policy`,
 whose default is `BackwardReferencesPolicy::Maintain`.
 
 `BackwardReferencesPolicy::Skip` deliberately disables maintenance for an
@@ -89,10 +89,33 @@ Current limitations:
   specialized/indexed descendants. Remove those descendants first.
 - Live participant maintenance below an indexed primary requires a full
   batch; the reference cache refuses that propagation before commit.
-- Recursive subtree inspection adds reads, including when `DropFlat` is used
-  with maintenance enabled. Choose `Skip` explicitly to bypass that work.
-- `clear_subtree` does not maintain backward references. Use `delete` for
-  cascade-aware removal.
+- Recursive delete and subtree replacement inspect descendants under `Maintain`.
+  Those scans add reads and are charged in the V4 default cost tests.
+- Flat drop retains its O(1) contract. Standalone `drop_flat_subtree` requires
+  an explicit policy argument; it and batch `DropFlat` reject `Maintain`
+  before scanning. Use `Skip` to acknowledge stale or dangling registrations,
+  or use recursive delete when maintenance is required.
+- `clear_subtree` defaults to `Maintain`: it scans and refuses a subtree
+  containing participants before making any mutation, including with a caller
+  transaction. Delete the participants through the normal API first. Explicit
+  `ClearOptions::backward_references_policy = Skip` permits a raw clear.
+
+Ordinary full batches keep their original operation set when neither stored
+nor incoming values participate in references. Preparation retains the Merks
+for execution, but does not apply the reference planner's conflict rules,
+conditional-operation rewriting, or duplicate-position rejection. Reference
+batches still require unambiguous positions even if ordinary consistency
+checking is disabled.
+
+Partial batches deliberately do not support reference planning across the
+continuation callback. They reject new family payloads before each segment;
+the old-value observer rejects displaced participants while applying a segment.
+Subtree inspections run after the staged applies and before commit against the
+transaction's original subtree contents. Cross-segment conflict checks prevent
+those committed-state inspections from overlooking changes staged by the first
+segment. A refusal discards the storage batch and preserves the caller's
+transaction. These scans have real costs, pinned alongside the full-batch costs;
+this API does not promise a no-scan recursive removal.
 
 ## Rules
 

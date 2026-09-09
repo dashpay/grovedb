@@ -118,9 +118,15 @@ mod tests {
         let prefix = prefix_of(&[TEST_LEAF, b"flat"]);
         assert!(data_namespace_key_count(&db, prefix) > 0);
 
-        db.drop_flat_subtree([TEST_LEAF].as_ref(), b"flat", None, grove_version)
-            .unwrap()
-            .expect("drop");
+        db.drop_flat_subtree(
+            [TEST_LEAF].as_ref(),
+            b"flat",
+            crate::BackwardReferencesPolicy::Skip,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("drop");
 
         // The element is provably gone and the grove is consistent.
         assert!(matches!(
@@ -143,9 +149,15 @@ mod tests {
         let cost_of_drop = |entries: u32| -> OperationCost {
             let db = make_test_grovedb(grove_version);
             seed_flat_tree(&db, b"flat", entries, grove_version);
-            db.drop_flat_subtree([TEST_LEAF].as_ref(), b"flat", None, grove_version)
-                .cost_as_result()
-                .expect("drop")
+            db.drop_flat_subtree(
+                [TEST_LEAF].as_ref(),
+                b"flat",
+                crate::BackwardReferencesPolicy::Skip,
+                None,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("drop")
         };
 
         let small = cost_of_drop(5);
@@ -154,6 +166,32 @@ mod tests {
             small, large,
             "drop cost must not depend on the subtree's contents"
         );
+    }
+
+    #[test]
+    fn batch_flat_drop_cost_is_independent_of_contents_with_explicit_skip() {
+        let version = GroveVersion::latest();
+        let cost_of_drop = |entries: u32| {
+            let db = make_test_grovedb(version);
+            seed_flat_tree(&db, b"flat", entries, version);
+            db.apply_batch(
+                vec![QualifiedGroveDbOp::delete_tree_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"flat".to_vec(),
+                    TreeType::NormalTree,
+                    SubelementsDeletionBehavior::DropFlat,
+                )],
+                Some(crate::batch::BatchApplyOptions {
+                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                    ..Default::default()
+                }),
+                None,
+                version,
+            )
+            .cost_as_result()
+            .expect("explicit flat drop")
+        };
+        assert_eq!(cost_of_drop(5), cost_of_drop(500));
     }
 
     #[test]
@@ -172,8 +210,14 @@ mod tests {
         .expect("insert item");
 
         assert!(matches!(
-            db.drop_flat_subtree([TEST_LEAF].as_ref(), b"item", None, grove_version)
-                .unwrap(),
+            db.drop_flat_subtree(
+                [TEST_LEAF].as_ref(),
+                b"item",
+                crate::BackwardReferencesPolicy::Skip,
+                None,
+                grove_version
+            )
+            .unwrap(),
             Err(Error::InvalidInput(_))
         ));
     }
@@ -185,8 +229,14 @@ mod tests {
         seed_flat_tree(&db, b"flat", 3, grove_version);
 
         assert!(matches!(
-            db.drop_flat_subtree([TEST_LEAF].as_ref(), b"flat", None, &GROVE_V3)
-                .unwrap(),
+            db.drop_flat_subtree(
+                [TEST_LEAF].as_ref(),
+                b"flat",
+                crate::BackwardReferencesPolicy::Skip,
+                None,
+                &GROVE_V3
+            )
+            .unwrap(),
             Err(Error::VersionError(_))
         ));
         // Nothing happened.
@@ -206,9 +256,15 @@ mod tests {
         let prefix = prefix_of(&[TEST_LEAF, b"flat"]);
 
         let tx = db.start_transaction();
-        db.drop_flat_subtree([TEST_LEAF].as_ref(), b"flat", Some(&tx), grove_version)
-            .unwrap()
-            .expect("drop in tx");
+        db.drop_flat_subtree(
+            [TEST_LEAF].as_ref(),
+            b"flat",
+            crate::BackwardReferencesPolicy::Skip,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("drop in tx");
 
         // Uncommitted: the record is invisible to the drain, so a flush
         // reclaims nothing and the data is untouched.
@@ -247,9 +303,15 @@ mod tests {
         let prefix = prefix_of(&[TEST_LEAF, b"flat"]);
 
         let tx = db.start_transaction();
-        db.drop_flat_subtree([TEST_LEAF].as_ref(), b"flat", Some(&tx), grove_version)
-            .unwrap()
-            .expect("drop in tx");
+        db.drop_flat_subtree(
+            [TEST_LEAF].as_ref(),
+            b"flat",
+            crate::BackwardReferencesPolicy::Skip,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("drop in tx");
         db.rollback_transaction(&tx).expect("rollback");
         drop(tx);
 
@@ -276,9 +338,15 @@ mod tests {
         // Commit the drop through a caller transaction so no auto-drain
         // runs and the record persists.
         let tx = db.start_transaction();
-        db.drop_flat_subtree([TEST_LEAF].as_ref(), b"flat", Some(&tx), grove_version)
-            .unwrap()
-            .expect("drop in tx");
+        db.drop_flat_subtree(
+            [TEST_LEAF].as_ref(),
+            b"flat",
+            crate::BackwardReferencesPolicy::Skip,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("drop in tx");
         db.commit_transaction(tx).unwrap().expect("commit");
 
         // Simulate a crash after the tombstones were written but before
@@ -303,9 +371,15 @@ mod tests {
         let prefix = prefix_of(&[TEST_LEAF, b"flat"]);
 
         let tx = db.start_transaction();
-        db.drop_flat_subtree([TEST_LEAF].as_ref(), b"flat", Some(&tx), grove_version)
-            .unwrap()
-            .expect("drop in tx");
+        db.drop_flat_subtree(
+            [TEST_LEAF].as_ref(),
+            b"flat",
+            crate::BackwardReferencesPolicy::Skip,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("drop in tx");
         db.commit_transaction(tx).unwrap().expect("commit");
 
         // Contract violation: re-create the dropped path before flushing.
@@ -405,9 +479,15 @@ mod tests {
         // The count axis secondary is populated.
         assert!(data_namespace_key_count(&db, secondary_prefixes[0]) > 0);
 
-        db.drop_flat_subtree([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
-            .unwrap()
-            .expect("drop PCIT");
+        db.drop_flat_subtree(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            crate::BackwardReferencesPolicy::Skip,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("drop PCIT");
 
         assert_grove_verifies(&db, grove_version);
         assert_eq!(data_namespace_key_count(&db, primary_prefix), 0);
@@ -470,6 +550,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF, b"sums"].as_ref(),
             b"flat_sums",
+            crate::BackwardReferencesPolicy::Skip,
             None,
             grove_version,
         )
@@ -507,9 +588,17 @@ mod tests {
                 SubelementsDeletionBehavior::DropFlat,
             ),
         ];
-        db.apply_batch(ops, None, None, grove_version)
-            .unwrap()
-            .expect("apply batch");
+        db.apply_batch(
+            ops,
+            Some(crate::batch::BatchApplyOptions {
+                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                ..Default::default()
+            }),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("apply batch");
 
         assert!(matches!(
             db.get_raw([TEST_LEAF].as_ref().into(), b"flat", None, grove_version)
@@ -542,9 +631,17 @@ mod tests {
             TreeType::NormalTree,
             SubelementsDeletionBehavior::DropFlat,
         )];
-        db.apply_batch(ops, None, Some(&tx), grove_version)
-            .unwrap()
-            .expect("apply batch in tx");
+        db.apply_batch(
+            ops,
+            Some(crate::batch::BatchApplyOptions {
+                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                ..Default::default()
+            }),
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("apply batch in tx");
         db.commit_transaction(tx).unwrap().expect("commit");
 
         assert!(data_namespace_key_count(&db, prefix) > 0);
@@ -568,7 +665,16 @@ mod tests {
             SubelementsDeletionBehavior::DropFlat,
         )];
         assert!(matches!(
-            db.apply_batch(ops, None, None, &GROVE_V3).unwrap(),
+            db.apply_batch(
+                ops,
+                Some(crate::batch::BatchApplyOptions {
+                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                    ..Default::default()
+                }),
+                None,
+                &GROVE_V3
+            )
+            .unwrap(),
             Err(Error::VersionError(_))
         ));
         assert!(db
@@ -613,9 +719,17 @@ mod tests {
             TreeType::ProvableCountIndexedTree,
             SubelementsDeletionBehavior::DropFlat,
         )];
-        db.apply_batch(ops, None, None, grove_version)
-            .unwrap()
-            .expect("apply batch");
+        db.apply_batch(
+            ops,
+            Some(crate::batch::BatchApplyOptions {
+                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                ..Default::default()
+            }),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("apply batch");
 
         assert_grove_verifies(&db, grove_version);
         assert_eq!(data_namespace_key_count(&db, primary_prefix), 0);
@@ -635,9 +749,17 @@ mod tests {
             TreeType::NormalTree,
             SubelementsDeletionBehavior::DropFlat,
         )];
-        db.apply_operations_without_batching(ops, None, None, grove_version)
-            .unwrap()
-            .expect("apply without batching");
+        db.apply_operations_without_batching(
+            ops,
+            Some(crate::batch::BatchApplyOptions {
+                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                ..Default::default()
+            }),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("apply without batching");
 
         assert!(matches!(
             db.get_raw([TEST_LEAF].as_ref().into(), b"flat", None, grove_version)
@@ -677,9 +799,15 @@ mod tests {
         assert_eq!(hash, db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 1);
 
-        db.drop_flat_subtree([TEST_LEAF].as_ref(), b"flat", None, grove_version)
-            .unwrap()
-            .expect("drop");
+        db.drop_flat_subtree(
+            [TEST_LEAF].as_ref(),
+            b"flat",
+            crate::BackwardReferencesPolicy::Skip,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("drop");
 
         // The dropped element's absence is provable against the new root
         // hash: an empty result set whose proof verifies.
@@ -727,9 +855,15 @@ mod tests {
             Element::new_item(b"value_bytes_0000".to_vec())
         );
 
-        db.drop_flat_subtree([TEST_LEAF].as_ref(), b"flat", None, grove_version)
-            .unwrap()
-            .expect("drop");
+        db.drop_flat_subtree(
+            [TEST_LEAF].as_ref(),
+            b"flat",
+            crate::BackwardReferencesPolicy::Skip,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("drop");
 
         // The reference now dangles: following it returns the typed
         // corrupted-reference error (the target's parent layer is gone),
@@ -808,7 +942,10 @@ mod tests {
         let average = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(average_paths),
             ops.clone(),
-            None,
+            Some(crate::batch::BatchApplyOptions {
+                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                ..Default::default()
+            }),
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
@@ -827,7 +964,10 @@ mod tests {
         let worst = GroveDb::estimated_case_operations_for_batch(
             WorstCaseCostsType(worst_paths),
             ops.clone(),
-            None,
+            Some(crate::batch::BatchApplyOptions {
+                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                ..Default::default()
+            }),
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
@@ -838,7 +978,15 @@ mod tests {
         .expect("worst case estimate");
 
         let actual = db
-            .apply_batch(ops, None, None, grove_version)
+            .apply_batch(
+                ops,
+                Some(crate::batch::BatchApplyOptions {
+                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                    ..Default::default()
+                }),
+                None,
+                grove_version,
+            )
             .cost_as_result()
             .expect("apply batch");
 

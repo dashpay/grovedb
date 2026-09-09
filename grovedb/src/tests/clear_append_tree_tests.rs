@@ -560,6 +560,7 @@ fn clear_ordinary_tree_with_subtrees_under_grove_v3_option_branches() {
         .clear_subtree(
             [b"tree".as_ref()].as_ref(),
             Some(ClearOptions {
+                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
                 check_for_subtrees: true,
                 allow_deleting_subtrees: false,
                 trying_to_clear_with_subtrees_returns_error: false,
@@ -575,6 +576,7 @@ fn clear_ordinary_tree_with_subtrees_under_grove_v3_option_branches() {
         .clear_subtree(
             [b"tree".as_ref()].as_ref(),
             Some(ClearOptions {
+                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
                 check_for_subtrees: true,
                 allow_deleting_subtrees: true,
                 trying_to_clear_with_subtrees_returns_error: false,

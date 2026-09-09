@@ -82,6 +82,10 @@ pub struct ClearOptions {
     /// If we check for subtrees, and we don't allow deleting and there are
     /// some, should we error?
     pub trying_to_clear_with_subtrees_returns_error: bool,
+    /// On V4, Maintain scans for participants and refuses the clear before
+    /// mutation if any are found. Delete those participants through the normal
+    /// delete API first. Skip explicitly permits dangling registrations.
+    pub backward_references_policy: crate::BackwardReferencesPolicy,
 }
 
 #[cfg(feature = "minimal")]
@@ -91,6 +95,7 @@ impl Default for ClearOptions {
             check_for_subtrees: true,
             allow_deleting_subtrees: false,
             trying_to_clear_with_subtrees_returns_error: true,
+            backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
         }
     }
 }
@@ -1972,6 +1977,7 @@ mod tests {
             .clear_subtree(
                 [TEST_LEAF, b"key1"].as_ref(),
                 Some(ClearOptions {
+                    backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
                     check_for_subtrees: true,
                     allow_deleting_subtrees: false,
                     trying_to_clear_with_subtrees_returns_error: false,
@@ -1986,6 +1992,7 @@ mod tests {
             .clear_subtree(
                 [TEST_LEAF, b"key1"].as_ref(),
                 Some(ClearOptions {
+                    backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
                     check_for_subtrees: true,
                     allow_deleting_subtrees: true,
                     trying_to_clear_with_subtrees_returns_error: false,

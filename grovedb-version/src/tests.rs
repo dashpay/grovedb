@@ -551,8 +551,8 @@ fn delete_internal_on_transaction_is_legacy_until_v4() {
     // Reusing the already-open parent Merk for non-empty child tree deletes
     // (issue #686) activates at GROVE_V4; v1-v3 are live in production and
     // must keep the legacy reopen labeled with the child's tree type.
-    // GROVE_V4 selects v2: the backward-references router, whose flag-less
-    // calls run the exact v1 (parent-reuse) body.
+    // GROVE_V4 selects v2: automatic backward-reference maintenance. Explicit
+    // Skip calls run the v1 parent-reuse body.
     for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3] {
         assert_eq!(
             v.grovedb_versions

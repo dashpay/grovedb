@@ -261,3 +261,14 @@ bypassing maintenance. This can leave stale hashes or dangling references.
 Partial batches refuse participant mutations; use a full batch for reference
 maintenance. Recursive removal of a subtree containing participants is
 supported by live `delete`; see the bidirectional references ADR for scope.
+
+Under `Maintain`, ordinary batches retain their executor semantics when no old
+or new value participates in backward references. Reference planner conflict
+rules apply only to batches that touch participants. Recursive subtree deletion
+and replacement inspect descendants and incur additional read costs.
+
+`SubelementsDeletionBehavior::DropFlat` requires explicit
+`BatchApplyOptions::backward_references_policy = BackwardReferencesPolicy::Skip`.
+`Maintain` refuses flat drop before scanning, preserving its O(1) contract.
+Partial batches refuse participant mutations in either segment; their subtree
+inspection occurs before commit and can also incur recursive read costs.

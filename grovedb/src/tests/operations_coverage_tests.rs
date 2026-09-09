@@ -554,6 +554,7 @@ mod tests {
             .clear_subtree(
                 [TEST_LEAF, b"to_clear"].as_ref(),
                 Some(ClearOptions {
+                    backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
                     check_for_subtrees: true,
                     allow_deleting_subtrees: false,
                     trying_to_clear_with_subtrees_returns_error: true,
@@ -2601,6 +2602,7 @@ mod tests {
         let result = db.clear_subtree(
             [TEST_LEAF, b"parent"].as_ref(),
             Some(ClearOptions {
+                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
                 check_for_subtrees: true,
                 allow_deleting_subtrees: false,
                 trying_to_clear_with_subtrees_returns_error: true,
@@ -2650,6 +2652,7 @@ mod tests {
             .clear_subtree(
                 [TEST_LEAF, b"parent2"].as_ref(),
                 Some(ClearOptions {
+                    backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
                     check_for_subtrees: true,
                     allow_deleting_subtrees: false,
                     trying_to_clear_with_subtrees_returns_error: false,
@@ -2709,6 +2712,7 @@ mod tests {
             .clear_subtree(
                 [TEST_LEAF, b"parent3"].as_ref(),
                 Some(ClearOptions {
+                    backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
                     check_for_subtrees: true,
                     allow_deleting_subtrees: true,
                     trying_to_clear_with_subtrees_returns_error: true,

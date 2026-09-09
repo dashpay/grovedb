@@ -41,7 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capacity, the ceiling for writes that cannot see the element they
   displace, ≤10-hop chains, 1 referrer per reference) while pre-V4
   estimation stays byte-stable for replay. See
-  `adr/bidirectional_references.md`.
+  `adr/bidirectional_references.md`. `clear_subtree` now exposes the same policy:
+  default Maintain refuses participant-containing subtrees before mutation.
+  `drop_flat_subtree` adds a required policy argument, and both it and batch
+  `DropFlat` require explicit Skip to preserve O(1) cost. Recursive deletions
+  under Maintain include participant-scan costs in the V4 cost pins. Ordinary
+  batches that touch no participants retain their original executor semantics.
 - **BREAKING**: Added `add_parent_tree_on_subquery` feature to PathQuery (#379)
   - New field in `Query` struct: `add_parent_tree_on_subquery: bool`
   - When set to `true`, parent tree elements (like CountTree or SumTree) are included in query results when performing subqueries

@@ -20,7 +20,9 @@ pub(crate) use handling::*;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum BackwardReferencesPolicy {
     /// Register references, propagate changed values, and cascade deletions
-    /// with each referrer's consent before committing the mutation.
+    /// with each referrer's consent before committing the mutation. APIs that
+    /// cannot plan that maintenance refuse participant mutations: partial
+    /// batches and clear_subtree. Flat drop always requires explicit Skip.
     #[default]
     Maintain,
     /// Skip maintenance of displaced values. Live bidirectional-reference

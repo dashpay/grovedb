@@ -552,3 +552,309 @@ fn live_participant_below_indexed_primary_refuses_before_commit_and_batch_works(
         .unwrap()
         .is_empty());
 }
+
+#[test]
+fn clear_subtree_refuses_incoming_and_outgoing_edges_before_mutating_the_transaction() {
+    use crate::operations::delete::ClearOptions;
+    let version = GroveVersion::latest();
+    for incoming in [false, true] {
+        for nested in [false, true] {
+            let db = make_test_grovedb(version);
+            let mut inside = vec![TEST_LEAF];
+            if nested {
+                db.insert(
+                    inside.as_slice(),
+                    b"inner",
+                    Element::empty_tree(),
+                    None,
+                    None,
+                    version,
+                )
+                .unwrap()
+                .unwrap();
+                inside.push(b"inner");
+            }
+            let root: Vec<&[u8]> = vec![];
+            let (target_path, edge_path) = if incoming {
+                (&inside, &root)
+            } else {
+                (&root, &inside)
+            };
+            db.insert(
+                target_path.as_slice(),
+                b"target",
+                Element::new_item_allowing_bidirectional_references(vec![1]),
+                None,
+                None,
+                version,
+            )
+            .unwrap()
+            .unwrap();
+            let mut target = target_path
+                .iter()
+                .map(|part| part.to_vec())
+                .collect::<Vec<_>>();
+            target.push(b"target".to_vec());
+            db.insert(
+                edge_path.as_slice(),
+                b"edge",
+                Element::BidirectionalReference(
+                    BidirectionalReference {
+                        forward_reference_path: ReferencePathType::AbsolutePathReference(target),
+                        backward_references: Vec::new(),
+                        cascade_on_update: true,
+                        max_hop: None,
+                    },
+                    None,
+                ),
+                None,
+                None,
+                version,
+            )
+            .unwrap()
+            .unwrap();
+            let tx = db.start_transaction();
+            let before = db.root_hash(Some(&tx), version).unwrap().unwrap();
+            let result = db.clear_subtree(
+                &[TEST_LEAF],
+                Some(ClearOptions {
+                    // Even a false no-subtrees assertion cannot bypass maintenance.
+                    check_for_subtrees: !nested,
+                    allow_deleting_subtrees: true,
+                    ..Default::default()
+                }),
+                Some(&tx),
+                version,
+            );
+            assert!(matches!(result, Err(Error::NotSupported(_))));
+            assert_eq!(db.root_hash(Some(&tx), version).unwrap().unwrap(), before);
+            assert!(db
+                .verify_grovedb(Some(&tx), true, true, version)
+                .unwrap()
+                .is_empty());
+            db.clear_subtree(
+                &[TEST_LEAF],
+                Some(ClearOptions {
+                    allow_deleting_subtrees: true,
+                    backward_references_policy: BackwardReferencesPolicy::Skip,
+                    ..Default::default()
+                }),
+                Some(&tx),
+                version,
+            )
+            .unwrap();
+            if incoming {
+                assert!(db
+                    .get(root.as_slice(), b"edge", Some(&tx), version)
+                    .unwrap()
+                    .is_err());
+            } else {
+                // Public get_raw strips the registered referrers; inspect the
+                // stored element to verify the explicit Skip contract.
+                let merk = db
+                    .open_transactional_merk_at_path(
+                        SubtreePath::from(root.as_slice()),
+                        &tx,
+                        None,
+                        version,
+                    )
+                    .unwrap()
+                    .unwrap();
+                let target = Element::get(&merk, b"target", true, version)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    target.backward_references().unwrap().len(),
+                    1,
+                    "Skip leaves the registration deliberately stale"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn flat_drop_requires_explicit_skip_in_live_full_and_both_partial_segments() {
+    use crate::batch::SubelementsDeletionBehavior;
+    use grovedb_merk::TreeType;
+    let version = GroveVersion::latest();
+    for route in 0..4 {
+        let db = chain(true);
+        let tx = db.start_transaction();
+        let before = db.root_hash(Some(&tx), version).unwrap().unwrap();
+        let drop_op = QualifiedGroveDbOp::delete_tree_op(
+            vec![],
+            TEST_LEAF.to_vec(),
+            TreeType::NormalTree,
+            SubelementsDeletionBehavior::DropFlat,
+        );
+        let result = match route {
+            0 => db.drop_flat_subtree(
+                &[] as &[&[u8]],
+                TEST_LEAF,
+                BackwardReferencesPolicy::Maintain,
+                Some(&tx),
+                version,
+            ),
+            1 => db.apply_batch(vec![drop_op], None, Some(&tx), version),
+            2 => db.apply_partial_batch(
+                vec![drop_op],
+                None,
+                |_, _| panic!("initial drop must be refused before continuation"),
+                Some(&tx),
+                version,
+            ),
+            _ => db.apply_partial_batch(
+                vec![QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![],
+                    b"unrelated".to_vec(),
+                    Element::new_item(vec![9]),
+                )],
+                None,
+                |_, _| Ok(vec![drop_op.clone()]),
+                Some(&tx),
+                version,
+            ),
+        };
+        assert!(matches!(result.value, Err(Error::NotSupported(_))));
+        if route < 3 {
+            assert_eq!(
+                result.cost,
+                Default::default(),
+                "reject before reading any subtree"
+            );
+        }
+        assert_eq!(db.root_hash(Some(&tx), version).unwrap().unwrap(), before);
+        assert!(db
+            .verify_grovedb(Some(&tx), true, true, version)
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn ordinary_batch_conditionals_and_duplicate_positions_keep_executor_semantics() {
+    let version = GroveVersion::latest();
+    for scenario in 0..4 {
+        let mut roots = Vec::new();
+        for policy in [
+            BackwardReferencesPolicy::Maintain,
+            BackwardReferencesPolicy::Skip,
+        ] {
+            let db = make_test_grovedb(version);
+            db.insert(
+                &[TEST_LEAF],
+                b"value",
+                Element::new_item(vec![1]),
+                None,
+                None,
+                version,
+            )
+            .unwrap()
+            .unwrap();
+            let path = vec![TEST_LEAF.to_vec()];
+            let replacement = Element::new_item(vec![2]);
+            let ops = match scenario {
+                0 => vec![QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+                    path,
+                    b"value".to_vec(),
+                    replacement,
+                )],
+                1 => vec![
+                    QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+                        path,
+                        b"value".to_vec(),
+                        replacement,
+                    ),
+                ],
+                2 => vec![
+                    QualifiedGroveDbOp::insert_or_replace_op(
+                        path.clone(),
+                        b"value".to_vec(),
+                        replacement,
+                    ),
+                    QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+                        path,
+                        b"value".to_vec(),
+                        Element::new_item(vec![3]),
+                    ),
+                ],
+                _ => vec![
+                    QualifiedGroveDbOp::insert_or_replace_op(
+                        path.clone(),
+                        b"value".to_vec(),
+                        replacement,
+                    ),
+                    QualifiedGroveDbOp::insert_or_replace_op(
+                        path,
+                        b"value".to_vec(),
+                        Element::new_item(vec![3]),
+                    ),
+                ],
+            };
+            db.apply_batch(
+                ops,
+                Some(BatchApplyOptions {
+                    disable_operation_consistency_check: true,
+                    backward_references_policy: policy,
+                    ..Default::default()
+                }),
+                None,
+                version,
+            )
+            .unwrap()
+            .unwrap();
+            roots.push(db.root_hash(None, version).unwrap().unwrap());
+        }
+        assert_eq!(
+            roots[0], roots[1],
+            "ordinary scenario {scenario} must not acquire reference planner semantics"
+        );
+    }
+}
+
+#[test]
+fn partial_subtree_refusal_is_atomic_in_the_continuation_and_caller_transaction() {
+    use crate::batch::SubelementsDeletionBehavior;
+    use grovedb_merk::TreeType;
+    let version = GroveVersion::latest();
+    for continuation in [false, true] {
+        let db = chain(true);
+        let tx = db.start_transaction();
+        let before = db.root_hash(Some(&tx), version).unwrap().unwrap();
+        let mutation = QualifiedGroveDbOp::delete_tree_op(
+            vec![],
+            TEST_LEAF.to_vec(),
+            TreeType::NormalTree,
+            SubelementsDeletionBehavior::DeleteChildren,
+        );
+        let initial = if continuation {
+            vec![QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"unrelated".to_vec(),
+                Element::new_item(vec![1]),
+            )]
+        } else {
+            vec![mutation.clone()]
+        };
+        let result = db.apply_partial_batch(
+            initial,
+            None,
+            |_, _| {
+                Ok(if continuation {
+                    vec![mutation.clone()]
+                } else {
+                    vec![]
+                })
+            },
+            Some(&tx),
+            version,
+        );
+        assert!(matches!(result.unwrap(), Err(Error::NotSupported(_))));
+        assert_eq!(db.root_hash(Some(&tx), version).unwrap().unwrap(), before);
+        assert!(db
+            .verify_grovedb(Some(&tx), true, true, version)
+            .unwrap()
+            .is_empty());
+    }
+}

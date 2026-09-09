@@ -127,7 +127,7 @@ pub fn insert<B: AsRef<[u8]>>(
 #### Delete Operations
 - **delete**: Standard deletion
 - **delete_up_tree**: Remove empty parents recursively
-- **clear_subtree**: Efficient bulk deletion
+- **clear_subtree**: Bulk deletion; V4 Maintain scans and refuses backward-reference participants. Explicit Skip permits raw clearing.
 
 #### Query System
 

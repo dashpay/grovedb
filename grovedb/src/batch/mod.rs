@@ -184,6 +184,8 @@ pub enum SubelementsDeletionBehavior {
     /// GroveDB owns the transaction, at the caller's next
     /// `flush_pending_prefix_drops` otherwise.
     ///
+    /// Requires explicit `BatchApplyOptions::backward_references_policy = Skip`;
+    /// Maintain refuses this operation before scanning.
     /// The caller declares the subtree contains **no child subtrees**; a
     /// false declaration leaks the children's storage (unreachable,
     /// invisible to hashes/proofs/sync) but never corrupts state. The
@@ -5662,6 +5664,10 @@ impl GroveDb {
                             self.drop_flat_subtree(
                                 path_slices.as_slice(),
                                 key.as_slice(),
+                                options
+                                    .as_ref()
+                                    .map(|o| o.backward_references_policy)
+                                    .unwrap_or_default(),
                                 transaction,
                                 grove_version
                             )
@@ -6439,6 +6445,33 @@ impl GroveDb {
         Ok(scan).wrap_with_cost(cost)
     }
 
+    /// Flat drop must never acquire a descendant scan from the default policy.
+    fn reject_flat_drop_with_maintenance(
+        ops: &[QualifiedGroveDbOp],
+        policy: crate::BackwardReferencesPolicy,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        if grove_version
+            .grovedb_versions
+            .operations
+            .insert
+            .insert_on_transaction
+            >= 1
+            && policy.maintains()
+            && ops.iter().any(|op| {
+                matches!(
+                    op.op,
+                    GroveOp::DeleteTree(_, SubelementsDeletionBehavior::DropFlat)
+                )
+            })
+        {
+            return Err(Error::NotSupported(
+                "flat drop requires explicit BackwardReferencesPolicy::Skip; use recursive delete for maintenance".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Family payloads require full-batch planning on V4 (the default policy).
     /// Explicit Skip and partial batches reject them because those paths
     /// cannot register their edges or plan cross-subtree reference mutations.
@@ -6566,31 +6599,6 @@ impl GroveDb {
             }
         }
 
-        let ops = if !check_batch_operation_consistency
-            && grove_version
-                .grovedb_versions
-                .operations
-                .insert
-                .insert_on_transaction
-                >= 1
-        {
-            let mut seen = HashSet::new();
-            let mut retained: Vec<_> = ops
-                .into_iter()
-                .rev()
-                .filter(|op| {
-                    op.key
-                        .as_ref()
-                        .map(|key| seen.insert((op.path.to_path(), key.get_key_clone())))
-                        .unwrap_or(true)
-                })
-                .collect();
-            retained.reverse();
-            retained
-        } else {
-            ops
-        };
-
         // V4 maintains backward references by default. The prepared Merks
         // carry observations into execution without fetching the nodes twice.
         let backward_references_enabled = batch_apply_options
@@ -6606,6 +6614,17 @@ impl GroveDb {
         cost_return_on_error_no_add!(
             cost,
             Self::reject_backward_references_elements_in_batch(&ops, backward_references_enabled)
+        );
+        cost_return_on_error_no_add!(
+            cost,
+            Self::reject_flat_drop_with_maintenance(
+                &ops,
+                batch_apply_options
+                    .as_ref()
+                    .map(|options| options.backward_references_policy)
+                    .unwrap_or_default(),
+                grove_version
+            )
         );
         let storage_batch = StorageBatch::new();
         let (ops, prepared_merks) = if backward_references_enabled {
@@ -7065,6 +7084,17 @@ impl GroveDb {
             cost,
             Self::reject_backward_references_elements_in_batch(&ops, false)
         );
+        cost_return_on_error_no_add!(
+            cost,
+            Self::reject_flat_drop_with_maintenance(
+                &ops,
+                batch_apply_options
+                    .as_ref()
+                    .map(|options| options.backward_references_policy)
+                    .unwrap_or_default(),
+                grove_version
+            )
+        );
 
         cost_return_on_error!(
             &mut cost,
@@ -7383,6 +7413,14 @@ impl GroveDb {
         cost_return_on_error_no_add!(
             cost,
             Self::reject_backward_references_elements_in_batch(&new_operations, false)
+        );
+        cost_return_on_error_no_add!(
+            cost,
+            Self::reject_flat_drop_with_maintenance(
+                &new_operations,
+                batch_apply_options.backward_references_policy,
+                grove_version
+            )
         );
 
         // Add-on typed appends (CommitmentTreeInsert, MmrTreeAppend,

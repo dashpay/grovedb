@@ -631,26 +631,6 @@ pub(super) fn expand_backward_references_ops<'db>(
         ops: Vec::new(),
     };
 
-    for (index, op) in ops.iter().enumerate() {
-        if let Some(position) = Expansion::op_position(op) {
-            // Consistency checking has already rejected duplicate
-            // positions; a stray duplicate would silently lose an op here,
-            // so refuse it outright.
-            if expansion
-                .user_index_by_position
-                .insert(position.clone(), index)
-                .is_some()
-            {
-                return Err(Error::InvalidBatchOperation(
-                    "batch operations fail consistency checks",
-                ))
-                .wrap_with_cost(cost);
-            }
-            if matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..)) {
-                expansion.user_deleted_positions.insert(position);
-            }
-        }
-    }
     expansion.ops = ops.into_iter().map(Some).collect();
 
     // Fresh-subtree pre-scan: a tree written where committed storage holds
@@ -693,6 +673,103 @@ pub(super) fn expand_backward_references_ops<'db>(
         }
     }
 
+    // Observe first, without applying reference-specific conflict or conditional
+    // write rules. Ordinary batches keep the executor's original operation set,
+    // including its behavior when consistency checking is disabled.
+    let mut needs_reference_planning = false;
+    let user_deleted_positions: HashSet<_> = expansion
+        .ops
+        .iter()
+        .flatten()
+        .filter(|op| matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..)))
+        .filter_map(Expansion::op_position)
+        .collect();
+    for op in expansion.ops.iter().flatten() {
+        let Some((path, key)) = Expansion::op_position(op) else {
+            continue;
+        };
+        let new_element = match &op.op {
+            GroveOp::InsertOrReplace { element }
+            | GroveOp::Replace { element }
+            | GroveOp::Patch { element, .. }
+            | GroveOp::InsertIfNotExists { element, .. }
+            | GroveOp::InsertWithKnownToNotAlreadyExist { element } => Some(element),
+            GroveOp::Delete | GroveOp::DeleteTree(..) | GroveOp::RefreshReference { .. } => None,
+            _ => continue,
+        };
+        let previous = cost_return_on_error!(&mut cost, expansion.store.element_at(&path, &key));
+        needs_reference_planning |= new_element.is_some_and(Element::supports_backward_references)
+            || previous
+                .as_ref()
+                .is_some_and(Element::supports_backward_references);
+        let removes_subtree = !matches!(
+            op.op,
+            GroveOp::InsertIfNotExists { .. }
+                | GroveOp::RefreshReference { .. }
+                | GroveOp::DeleteTree(
+                    _,
+                    super::SubelementsDeletionBehavior::Skip
+                        | super::SubelementsDeletionBehavior::Error
+                )
+        );
+        if removes_subtree
+            && previous.as_ref().is_some_and(|old| {
+                old.is_any_tree()
+                    && !old.uses_non_merk_data_storage()
+                    && old
+                        .root_key_and_tree_type()
+                        .is_some_and(|(root, _)| root.is_some())
+            })
+        {
+            let mut qualified = path;
+            qualified.push(key);
+            let participants = cost_return_on_error!(
+                &mut cost,
+                db.backward_reference_participants(&qualified, tx, grove_version)
+            );
+            if matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..)) {
+                if participants.iter().any(|(path, key, _)| {
+                    !user_deleted_positions.contains(&(path.clone(), key.clone()))
+                }) {
+                    return Err(Error::NotSupported(
+                        "a batch subtree deletion must explicitly delete its backward-reference participants; use live delete for recursive maintenance".to_owned(),
+                    )).wrap_with_cost(cost);
+                }
+            } else if !participants.is_empty() {
+                return Err(Error::NotSupported(
+                    "delete a subtree containing backward-reference participants before replacing it".to_owned(),
+                )).wrap_with_cost(cost);
+            }
+        }
+    }
+    if !needs_reference_planning {
+        return Ok((
+            expansion.ops.into_iter().flatten().collect(),
+            expansion.store.merks.into_inner(),
+        ))
+        .wrap_with_cost(cost);
+    }
+
+    for (index, op) in expansion.ops.iter().flatten().enumerate() {
+        if let Some(position) = Expansion::op_position(op) {
+            // Consistency checking has already rejected duplicate
+            // positions; a stray duplicate would silently lose an op here,
+            // so refuse it outright.
+            if expansion
+                .user_index_by_position
+                .insert(position.clone(), index)
+                .is_some()
+            {
+                return Err(Error::InvalidBatchOperation(
+                    "batch operations fail consistency checks",
+                ))
+                .wrap_with_cost(cost);
+            }
+            if matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..)) {
+                expansion.user_deleted_positions.insert(position);
+            }
+        }
+    }
     // Pass 1: every non-reference op in user order. Each op's effect is
     // staged into the overlay; item-family and bidi-position bookkeeping is
     // planned against DB-plus-overlay. `BidirectionalReference` ops are
@@ -827,24 +904,6 @@ pub(super) fn expand_backward_references_ops<'db>(
                         continue;
                     }
 
-                    if previous.is_any_tree()
-                        && !previous.uses_non_merk_data_storage()
-                        && previous
-                            .root_key_and_tree_type()
-                            .is_some_and(|(root, _)| root.is_some())
-                    {
-                        let mut qualified = path.clone();
-                        qualified.push(key.clone());
-                        if !cost_return_on_error!(
-                            &mut cost,
-                            db.backward_reference_participants(&qualified, tx, grove_version,)
-                        )
-                        .is_empty()
-                        {
-                            return Err(Error::NotSupported("delete a subtree containing backward-reference participants before replacing it".to_owned())).wrap_with_cost(cost);
-                        }
-                    }
-
                     let previous_needs_bookkeeping =
                         matches!(previous, Element::BidirectionalReference(..))
                             || previous
@@ -893,39 +952,6 @@ pub(super) fn expand_backward_references_ops<'db>(
             GroveOp::Delete | GroveOp::DeleteTree(..) => {
                 let previous =
                     cost_return_on_error!(&mut cost, expansion.store.element_at(&path, &key));
-                // Whole-subtree cleanup cannot silently omit descendant bookkeeping.
-                // Ordinary subtrees retain their existing deletion behavior; callers
-                // remove participating descendants explicitly (or use live delete).
-                if previous
-                    .as_ref()
-                    .is_some_and(|p| p.is_any_tree() && !p.uses_non_merk_data_storage())
-                    && !matches!(
-                        op_kind,
-                        GroveOp::DeleteTree(
-                            _,
-                            super::SubelementsDeletionBehavior::Skip
-                                | super::SubelementsDeletionBehavior::Error
-                        )
-                    )
-                {
-                    let mut qualified = path.clone();
-                    qualified.push(key.clone());
-                    if !expansion.store.under_fresh_subtree(&qualified) {
-                        let participants = cost_return_on_error!(
-                            &mut cost,
-                            db.backward_reference_participants(&qualified, tx, grove_version)
-                        );
-                        if participants.iter().any(|(path, key, _)| {
-                            !expansion
-                                .user_deleted_positions
-                                .contains(&(path.clone(), key.clone()))
-                        }) {
-                            return Err(Error::NotSupported(
-                                "a batch subtree deletion must explicitly delete its backward-reference participants; use live delete for recursive maintenance".to_owned(),
-                            )).wrap_with_cost(cost);
-                        }
-                    }
-                }
                 expansion.store.stage(position, None);
                 let Some(previous) = previous else { continue };
                 let needs_bookkeeping = matches!(previous, Element::BidirectionalReference(..))

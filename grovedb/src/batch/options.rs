@@ -82,6 +82,9 @@ pub struct BatchApplyOptions {
     /// `Skip` deliberately permits stale/dangling references and rejects
     /// family payloads. Partial batches reject participant mutations while
     /// maintenance is enabled; use a full batch for reference planning.
+    /// Recursive removals inspect descendants under Maintain, including in
+    /// partial batches before commit. DropFlat requires explicit Skip so it
+    /// preserves its O(1) contract without a hidden descendant scan.
     pub backward_references_policy: crate::BackwardReferencesPolicy,
 }
 
