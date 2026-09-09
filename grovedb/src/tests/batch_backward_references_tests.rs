@@ -1,11 +1,12 @@
 //! Batch support for the backward-references family (batching M2–M4): the
 //! master invariant is that a batch under
-//! `BatchApplyOptions::propagate_backward_references` produces the exact
+//! `BatchApplyOptions::propagate_backward_references_when_unsure` produces the exact
 //! root hash the live flagged flow produces for the same logical
 //! operations — including `BidirectionalReference` ops, in-batch targets
 //! and chains, retargets, identical-edge no-ops, and the M4 conflict
 //! rules.
 
+use grovedb_path::SubtreePath;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -19,14 +20,14 @@ use crate::{
 
 fn flag_on() -> Option<InsertOptions> {
     Some(InsertOptions {
-        propagate_backward_references: true,
+        propagate_backward_references_when_unsure: true,
         ..Default::default()
     })
 }
 
 fn batch_flag_on() -> Option<BatchApplyOptions> {
     Some(BatchApplyOptions {
-        propagate_backward_references: true,
+        propagate_backward_references_when_unsure: true,
         ..Default::default()
     })
 }
@@ -254,7 +255,7 @@ fn batch_delete_cascades_like_live() {
             &[TEST_LEAF],
             b"value",
             Some(DeleteOptions {
-                propagate_backward_references: true,
+                propagate_backward_references_when_unsure: true,
                 ..Default::default()
             }),
             None,
@@ -802,7 +803,7 @@ fn batch_bidi_delete_matches_live() {
             &[TEST_LEAF],
             b"r1",
             Some(DeleteOptions {
-                propagate_backward_references: true,
+                propagate_backward_references_when_unsure: true,
                 ..Default::default()
             }),
             None,
@@ -2431,4 +2432,466 @@ fn batch_enforces_declared_capacity() {
         .verify_grovedb(None, true, true, grove_version)
         .unwrap()
         .is_empty());
+}
+
+// ─── Typed deletes: DeleteWithCascade / DeleteWithNoBackwardsReferenceCheck ─
+//
+// Plain `Delete` follows the batch's `propagate_backward_references_when_unsure`;
+// the two typed variants pin the check on or off for one op, whatever the
+// flag says.
+
+fn live_flagged_delete() -> Option<DeleteOptions> {
+    Some(DeleteOptions {
+        propagate_backward_references_when_unsure: true,
+        ..Default::default()
+    })
+}
+
+fn assert_absent(db: &TempGroveDb, key: &[u8], grove_version: &GroveVersion) {
+    assert!(
+        matches!(
+            db.get(&[TEST_LEAF], key, None, grove_version).unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ),
+        "{} should be gone",
+        String::from_utf8_lossy(key)
+    );
+}
+
+/// Raw read: a dangling bidirectional reference is still PRESENT (that is
+/// the state these tests assert), even though following it fails.
+fn assert_present(db: &TempGroveDb, key: &[u8], grove_version: &GroveVersion) {
+    db.get_raw(
+        SubtreePath::from([TEST_LEAF].as_ref()),
+        key,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap_or_else(|e| panic!("{} should still exist: {e}", String::from_utf8_lossy(key)));
+}
+
+#[test]
+fn typed_cascade_delete_in_unflagged_batch_matches_live_flagged_delete() {
+    let grove_version = GroveVersion::latest();
+    let (batch_db, live_db) = twin_dbs_with_chain(grove_version);
+
+    batch_db
+        .apply_batch(
+            vec![QualifiedGroveDbOp::delete_with_cascade_op(
+                vec![TEST_LEAF.to_vec()],
+                b"value".to_vec(),
+            )],
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+    live_db
+        .delete(
+            &[TEST_LEAF],
+            b"value",
+            live_flagged_delete(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+    for db in [&batch_db, &live_db] {
+        for key in [b"value".as_slice(), b"r1", b"r2"] {
+            assert_absent(db, key, grove_version);
+        }
+    }
+    roots_match(&batch_db, &live_db, grove_version);
+}
+
+#[test]
+fn typed_cascade_delete_of_a_reference_deregisters_like_live() {
+    let grove_version = GroveVersion::latest();
+    let (batch_db, live_db) = twin_dbs_with_chain(grove_version);
+
+    // Deleting `r1` (a bidirectional reference) cascades its own referrer
+    // `r2` away and removes its registration from `value`.
+    batch_db
+        .apply_batch(
+            vec![QualifiedGroveDbOp::delete_with_cascade_op(
+                vec![TEST_LEAF.to_vec()],
+                b"r1".to_vec(),
+            )],
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+    live_db
+        .delete(
+            &[TEST_LEAF],
+            b"r1",
+            live_flagged_delete(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+    for db in [&batch_db, &live_db] {
+        assert_absent(db, b"r1", grove_version);
+        assert_absent(db, b"r2", grove_version);
+        assert_present(db, b"value", grove_version);
+    }
+    // `roots_match` also runs `verify_grovedb`, which would report a stale
+    // registration left on `value`.
+    roots_match(&batch_db, &live_db, grove_version);
+}
+
+#[test]
+fn typed_cascade_delete_requires_consent() {
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    db.insert(
+        &[TEST_LEAF],
+        b"value",
+        Element::new_item_allowing_bidirectional_references(b"hello".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF],
+        b"r1",
+        sibling_bidi(b"value", false),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+
+    assert!(matches!(
+        db.apply_batch(
+            vec![QualifiedGroveDbOp::delete_with_cascade_op(
+                vec![TEST_LEAF.to_vec()],
+                b"value".to_vec(),
+            )],
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap(),
+        Err(Error::BidirectionalReferenceRule(_))
+    ));
+    // Nothing was written.
+    assert_present(&db, b"value", grove_version);
+    assert_present(&db, b"r1", grove_version);
+}
+
+#[test]
+fn typed_no_check_delete_in_flagged_batch_matches_live_unflagged_delete() {
+    let grove_version = GroveVersion::latest();
+    let (batch_db, live_db) = twin_dbs_with_chain(grove_version);
+
+    let batch_cost = batch_db
+        .apply_batch(
+            vec![
+                QualifiedGroveDbOp::delete_with_no_backwards_reference_check_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"value".to_vec(),
+                ),
+            ],
+            batch_flag_on(),
+            None,
+            grove_version,
+        )
+        .cost_as_result()
+        .unwrap();
+    live_db
+        .delete(&[TEST_LEAF], b"value", None, None, grove_version)
+        .unwrap()
+        .unwrap();
+
+    // No cascade on either side: the chain dangles, as the caller asked.
+    for db in [&batch_db, &live_db] {
+        assert_absent(db, b"value", grove_version);
+        assert_present(db, b"r1", grove_version);
+        assert_present(db, b"r2", grove_version);
+    }
+    assert_eq!(
+        batch_db.root_hash(None, grove_version).unwrap().unwrap(),
+        live_db.root_hash(None, grove_version).unwrap().unwrap()
+    );
+
+    // The op is not read for bookkeeping even though the batch flag is on:
+    // it costs exactly what a plain delete costs in an unflagged batch.
+    let (plain_db, _) = twin_dbs_with_chain(grove_version);
+    let plain_cost = plain_db
+        .apply_batch(
+            vec![QualifiedGroveDbOp::delete_op(
+                vec![TEST_LEAF.to_vec()],
+                b"value".to_vec(),
+            )],
+            None,
+            None,
+            grove_version,
+        )
+        .cost_as_result()
+        .unwrap();
+    assert_eq!(batch_cost, plain_cost);
+}
+
+#[test]
+fn typed_cascade_delete_leaves_the_other_ops_unflagged() {
+    let grove_version = GroveVersion::latest();
+    // Two registered chains: `r2 -> r1 -> value` and `s1 -> other`.
+    let build = || {
+        let (db, _) = twin_dbs_with_chain(grove_version);
+        db.insert(
+            &[TEST_LEAF],
+            b"other",
+            Element::new_item_allowing_bidirectional_references(b"world".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        db.insert(
+            &[TEST_LEAF],
+            b"s1",
+            sibling_bidi(b"other", true),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        db
+    };
+    let batch_db = build();
+    let live_db = build();
+
+    // Unflagged batch: the cascade op cascades, the plain delete does not.
+    batch_db
+        .apply_batch(
+            vec![
+                QualifiedGroveDbOp::delete_with_cascade_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"value".to_vec(),
+                ),
+                QualifiedGroveDbOp::delete_op(vec![TEST_LEAF.to_vec()], b"other".to_vec()),
+            ],
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+    live_db
+        .delete(
+            &[TEST_LEAF],
+            b"value",
+            live_flagged_delete(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+    live_db
+        .delete(&[TEST_LEAF], b"other", None, None, grove_version)
+        .unwrap()
+        .unwrap();
+
+    for db in [&batch_db, &live_db] {
+        for key in [b"value".as_slice(), b"r1", b"r2", b"other"] {
+            assert_absent(db, key, grove_version);
+        }
+        // The plain delete left its referrer dangling.
+        assert_present(db, b"s1", grove_version);
+    }
+    assert_eq!(
+        batch_db.root_hash(None, grove_version).unwrap().unwrap(),
+        live_db.root_hash(None, grove_version).unwrap().unwrap()
+    );
+}
+
+#[test]
+fn typed_cascade_delete_hitting_a_user_op_fails_closed() {
+    let grove_version = GroveVersion::latest();
+    let (db, _) = twin_dbs_with_chain(grove_version);
+
+    // The cascade from `value` must delete `r1`, which another op deletes.
+    assert!(matches!(
+        db.apply_batch(
+            vec![
+                QualifiedGroveDbOp::delete_with_cascade_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"value".to_vec(),
+                ),
+                QualifiedGroveDbOp::delete_op(vec![TEST_LEAF.to_vec()], b"r1".to_vec()),
+            ],
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap(),
+        Err(Error::InvalidBatchOperation(_))
+    ));
+    // ... or overwrites.
+    assert!(matches!(
+        db.apply_batch(
+            vec![
+                QualifiedGroveDbOp::delete_with_cascade_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"value".to_vec(),
+                ),
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"r1".to_vec(),
+                    Element::new_item(b"plain".to_vec()),
+                ),
+            ],
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap(),
+        Err(Error::InvalidBatchOperation(_))
+    ));
+    // Nothing was written.
+    for key in [b"value".as_slice(), b"r1", b"r2"] {
+        assert_present(&db, key, grove_version);
+    }
+}
+
+#[test]
+fn typed_deletes_through_apply_operations_without_batching_match_live() {
+    let grove_version = GroveVersion::latest();
+    let (batch_db, live_db) = twin_dbs_with_chain(grove_version);
+
+    batch_db
+        .apply_operations_without_batching(
+            vec![QualifiedGroveDbOp::delete_with_cascade_op(
+                vec![TEST_LEAF.to_vec()],
+                b"value".to_vec(),
+            )],
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+    live_db
+        .delete(
+            &[TEST_LEAF],
+            b"value",
+            live_flagged_delete(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+    roots_match(&batch_db, &live_db, grove_version);
+
+    let (batch_db, live_db) = twin_dbs_with_chain(grove_version);
+    batch_db
+        .apply_operations_without_batching(
+            vec![
+                QualifiedGroveDbOp::delete_with_no_backwards_reference_check_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"value".to_vec(),
+                ),
+            ],
+            batch_flag_on(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+    live_db
+        .delete(&[TEST_LEAF], b"value", None, None, grove_version)
+        .unwrap()
+        .unwrap();
+    assert_present(&batch_db, b"r1", grove_version);
+    assert_eq!(
+        batch_db.root_hash(None, grove_version).unwrap().unwrap(),
+        live_db.root_hash(None, grove_version).unwrap().unwrap()
+    );
+}
+
+#[test]
+fn typed_deletes_are_refused_pre_v4_and_in_partial_batches() {
+    let grove_version = GroveVersion::latest();
+    let v3 = &grovedb_version::version::v3::GROVE_V3;
+    let (db, _) = twin_dbs_with_chain(grove_version);
+
+    let typed_ops = || {
+        [
+            QualifiedGroveDbOp::delete_with_cascade_op(vec![TEST_LEAF.to_vec()], b"value".to_vec()),
+            QualifiedGroveDbOp::delete_with_no_backwards_reference_check_op(
+                vec![TEST_LEAF.to_vec()],
+                b"value".to_vec(),
+            ),
+        ]
+    };
+
+    for op in typed_ops() {
+        // Pre-V4 the live delete ignores the flag: fail closed instead of
+        // silently degrading, with or without the batch flag.
+        for options in [None, batch_flag_on()] {
+            assert!(matches!(
+                db.apply_batch(vec![op.clone()], options.clone(), None, v3)
+                    .unwrap(),
+                Err(Error::NotSupported(_))
+            ));
+            assert!(matches!(
+                db.apply_operations_without_batching(vec![op.clone()], options, None, v3)
+                    .unwrap(),
+                Err(Error::NotSupported(_))
+            ));
+        }
+        // Partial batches have no expansion support.
+        assert!(matches!(
+            db.apply_partial_batch(
+                vec![op.clone()],
+                None,
+                |_cost, _leftover| Ok(vec![]),
+                None,
+                grove_version,
+            )
+            .unwrap(),
+            Err(Error::NotSupported(_))
+        ));
+        // ... including their add-on ops.
+        assert!(matches!(
+            db.apply_partial_batch(
+                vec![QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"fresh".to_vec(),
+                    Element::new_item(b"x".to_vec()),
+                )],
+                None,
+                |_cost, _leftover| Ok(vec![op.clone()]),
+                None,
+                grove_version,
+            )
+            .unwrap(),
+            Err(Error::NotSupported(_))
+        ));
+    }
+    for key in [b"value".as_slice(), b"r1", b"r2"] {
+        assert_present(&db, key, grove_version);
+    }
+}
+
+#[test]
+fn typed_delete_sort_tags_are_pinned() {
+    use crate::batch::GroveOp;
+    assert_eq!(GroveOp::DeleteWithCascade.to_u8(), 21);
+    assert_eq!(GroveOp::DeleteWithNoBackwardsReferenceCheck.to_u8(), 22);
+    assert!(GroveOp::DeleteWithCascade > GroveOp::Delete);
+    assert!(GroveOp::DeleteWithNoBackwardsReferenceCheck > GroveOp::DeleteWithCascade);
 }

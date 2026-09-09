@@ -13,6 +13,8 @@ pub enum GroveOp {
     Patch { element: Element, change_in_bytes: i32 },
     RefreshReference { reference_path_type, max_reference_hop, flags, trust_refresh_reference },
     Delete,
+    DeleteWithCascade,                    // Read + cascade bidirectional references, whatever the batch flag says (GROVE_V4+)
+    DeleteWithNoBackwardsReferenceCheck,  // Never read for backward references, whatever the batch flag says (GROVE_V4+)
     DeleteTree(TreeType, SubelementsDeletionBehavior),  // Per-op deletion policy
 
     // Non-Merk tree append operations (user-facing):
@@ -39,6 +41,17 @@ pub enum NonMerkTreeMeta {
     DenseTree { count: u16, height: u8 },
 }
 ```
+
+**Typed deletes.** A plain `Delete` is read for backward-references
+bookkeeping only when the batch sets
+`BatchApplyOptions::propagate_backward_references_when_unsure`. The two
+typed variants pin that decision for one op: `DeleteWithCascade` always
+reads the element and cascades away every bidirectional reference registered
+on it (each must allow `cascade_on_update`, and a deleted reference is
+de-registered from its target), while `DeleteWithNoBackwardsReferenceCheck`
+never reads it and leaves registered references dangling. Both require
+`GROVE_V4`+ and a full (non-partial) batch. See
+`adr/bidirectional_references.md`.
 
 **SubelementsDeletionBehavior** controls how a `DeleteTree` handles non-empty subtrees:
 

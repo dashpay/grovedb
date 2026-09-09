@@ -1,5 +1,5 @@
 //! Estimated-cost coverage for backward-references batch ops (batching
-//! M5): under `BatchApplyOptions::propagate_backward_references`, the
+//! M5): under `BatchApplyOptions::propagate_backward_references_when_unsure`, the
 //! GROVE_V4 estimators charge the derived fan-out (registration, chain
 //! propagation, cascade deletion) so `worst-case estimate >= actual` holds
 //! for flagged family batches, while pre-V4 estimation stays byte-stable
@@ -33,7 +33,7 @@ use crate::{
 
 fn batch_flag_on() -> Option<BatchApplyOptions> {
     Some(BatchApplyOptions {
-        propagate_backward_references: true,
+        propagate_backward_references_when_unsure: true,
         ..Default::default()
     })
 }
@@ -673,5 +673,90 @@ fn declared_capacity_tightens_the_worst_case_estimate() {
         tight_average.seek_count <= default_average.seek_count
             && tight_average.hash_node_calls < default_average.hash_node_calls,
         "{tight_average:?} vs {default_average:?}"
+    );
+}
+
+// ─── Typed deletes ───────────────────────────────────────────────────────
+
+#[test]
+fn worst_case_estimate_covers_typed_cascade_delete_without_the_flag() {
+    let grove_version = GroveVersion::latest();
+    let db = db_with_chain(grove_version);
+
+    let ops = vec![QualifiedGroveDbOp::delete_with_cascade_op(
+        vec![TEST_LEAF.to_vec()],
+        b"value".to_vec(),
+    )];
+    let estimate = worst_case_estimate(ops.clone(), None, grove_version);
+    let actual = db
+        .apply_batch(ops, None, None, grove_version)
+        .cost_as_result()
+        .expect("apply succeeds");
+
+    assert!(
+        estimate.worse_or_eq_than(&actual),
+        "worst-case estimate {estimate:?} must cover the actual cascade {actual:?}"
+    );
+}
+
+#[test]
+fn typed_delete_fan_out_follows_the_op_not_the_flag() {
+    let grove_version = GroveVersion::latest();
+    let plain = || {
+        vec![QualifiedGroveDbOp::delete_op(
+            vec![TEST_LEAF.to_vec()],
+            b"value".to_vec(),
+        )]
+    };
+    let cascade = || {
+        vec![QualifiedGroveDbOp::delete_with_cascade_op(
+            vec![TEST_LEAF.to_vec()],
+            b"value".to_vec(),
+        )]
+    };
+    let no_check = || {
+        vec![
+            QualifiedGroveDbOp::delete_with_no_backwards_reference_check_op(
+                vec![TEST_LEAF.to_vec()],
+                b"value".to_vec(),
+            ),
+        ]
+    };
+
+    // A cascade delete charges the fan-out with the flag off — exactly what
+    // a plain delete charges with the flag on.
+    assert_eq!(
+        worst_case_estimate(cascade(), None, grove_version),
+        worst_case_estimate(plain(), batch_flag_on(), grove_version)
+    );
+    assert_eq!(
+        average_case_estimate(cascade(), None, grove_version),
+        average_case_estimate(plain(), batch_flag_on(), grove_version)
+    );
+    assert!(
+        worst_case_estimate(cascade(), None, grove_version).seek_count
+            > worst_case_estimate(plain(), None, grove_version).seek_count
+    );
+
+    // A no-check delete charges nothing derived with the flag on — exactly
+    // what a plain delete charges with the flag off.
+    assert_eq!(
+        worst_case_estimate(no_check(), batch_flag_on(), grove_version),
+        worst_case_estimate(plain(), None, grove_version)
+    );
+    assert_eq!(
+        average_case_estimate(no_check(), batch_flag_on(), grove_version),
+        average_case_estimate(plain(), None, grove_version)
+    );
+
+    // Pre-V4 the fan-out model is inactive for every op alike.
+    let v3 = &grovedb_version::version::v3::GROVE_V3;
+    assert_eq!(
+        worst_case_estimate(cascade(), None, v3),
+        worst_case_estimate(plain(), None, v3)
+    );
+    assert_eq!(
+        average_case_estimate(cascade(), batch_flag_on(), v3),
+        average_case_estimate(plain(), None, v3)
     );
 }

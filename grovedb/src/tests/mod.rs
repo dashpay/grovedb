@@ -4974,7 +4974,7 @@ mod general_tests {
                 None,
             ),
             Some(InsertOptions {
-                propagate_backward_references: true,
+                propagate_backward_references_when_unsure: true,
                 ..Default::default()
             }),
             Some(&transaction),
@@ -4996,7 +4996,7 @@ mod general_tests {
                 None,
             ),
             Some(InsertOptions {
-                propagate_backward_references: true,
+                propagate_backward_references_when_unsure: true,
                 ..Default::default()
             }),
             Some(&transaction),
@@ -5018,7 +5018,7 @@ mod general_tests {
                 None,
             ),
             Some(InsertOptions {
-                propagate_backward_references: true,
+                propagate_backward_references_when_unsure: true,
                 ..Default::default()
             }),
             Some(&transaction),
@@ -5038,7 +5038,7 @@ mod general_tests {
             b"value",
             Element::new_item_allowing_bidirectional_references(b"not hello >:(".to_vec()),
             Some(InsertOptions {
-                propagate_backward_references: true,
+                propagate_backward_references_when_unsure: true,
                 ..Default::default()
             }),
             Some(&transaction),

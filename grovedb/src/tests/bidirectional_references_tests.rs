@@ -17,7 +17,7 @@ use crate::{
 
 fn flag_on() -> Option<InsertOptions> {
     Some(InsertOptions {
-        propagate_backward_references: true,
+        propagate_backward_references_when_unsure: true,
         ..Default::default()
     })
 }
@@ -363,7 +363,7 @@ fn cascade_requires_opt_in() {
             &[TEST_LEAF],
             b"value",
             Some(DeleteOptions {
-                propagate_backward_references: true,
+                propagate_backward_references_when_unsure: true,
                 ..Default::default()
             }),
             None,
@@ -521,7 +521,7 @@ fn override_checks_apply_under_the_flag() {
             b"value",
             Element::new_item_allowing_bidirectional_references(b"nope".to_vec()),
             Some(InsertOptions {
-                propagate_backward_references: true,
+                propagate_backward_references_when_unsure: true,
                 validate_insertion_does_not_override: true,
                 ..Default::default()
             }),
@@ -578,7 +578,7 @@ fn delete_with_flag_handles_trees() {
         &[TEST_LEAF],
         b"empty",
         Some(DeleteOptions {
-            propagate_backward_references: true,
+            propagate_backward_references_when_unsure: true,
             ..Default::default()
         }),
         None,
@@ -614,7 +614,7 @@ fn delete_with_flag_handles_trees() {
             &[TEST_LEAF],
             b"full",
             Some(DeleteOptions {
-                propagate_backward_references: true,
+                propagate_backward_references_when_unsure: true,
                 allow_deleting_non_empty_trees: false,
                 deleting_non_empty_trees_returns_error: true,
                 ..Default::default()
@@ -629,7 +629,7 @@ fn delete_with_flag_handles_trees() {
         &[TEST_LEAF],
         b"full",
         Some(DeleteOptions {
-            propagate_backward_references: true,
+            propagate_backward_references_when_unsure: true,
             allow_deleting_non_empty_trees: false,
             deleting_non_empty_trees_returns_error: false,
             ..Default::default()
@@ -660,7 +660,7 @@ fn delete_with_flag_handles_trees() {
             &[TEST_LEAF],
             b"mmr",
             Some(DeleteOptions {
-                propagate_backward_references: true,
+                propagate_backward_references_when_unsure: true,
                 ..Default::default()
             }),
             None,
@@ -1197,7 +1197,7 @@ fn delete_with_flag_rejects_rows_of_indexed_primaries() {
             &[TEST_LEAF, b"pcit"],
             b"row",
             Some(DeleteOptions {
-                propagate_backward_references: true,
+                propagate_backward_references_when_unsure: true,
                 ..Default::default()
             }),
             None,
@@ -1678,7 +1678,7 @@ fn flagged_inserts_enforce_tree_shape_guards() {
     let opts = Some(InsertOptions {
         validate_insertion_does_not_override: false,
         validate_insertion_does_not_override_tree: true,
-        propagate_backward_references: true,
+        propagate_backward_references_when_unsure: true,
         ..Default::default()
     });
     assert!(matches!(
@@ -3186,7 +3186,7 @@ fn flagged_delete_rejects_specialized_descendants() {
     let options = DeleteOptions {
         allow_deleting_non_empty_trees: true,
         deleting_non_empty_trees_returns_error: false,
-        propagate_backward_references: true,
+        propagate_backward_references_when_unsure: true,
         ..Default::default()
     };
     assert!(matches!(
@@ -3567,7 +3567,7 @@ fn bidi_insert_rejects_undersized_max_hop() {
                 ),
             )],
             Some(crate::batch::BatchApplyOptions {
-                propagate_backward_references: true,
+                propagate_backward_references_when_unsure: true,
                 ..Default::default()
             }),
             None,
@@ -3861,7 +3861,7 @@ fn retarget_rejects_upstream_max_hop_violation() {
                 sibling_bidi(b"d", true),
             )],
             Some(crate::batch::BatchApplyOptions {
-                propagate_backward_references: true,
+                propagate_backward_references_when_unsure: true,
                 ..Default::default()
             }),
             None,
@@ -3902,7 +3902,7 @@ fn cascade_removes_the_physical_referrer_record() {
         &[TEST_LEAF],
         b"value",
         Some(DeleteOptions {
-            propagate_backward_references: true,
+            propagate_backward_references_when_unsure: true,
             ..Default::default()
         }),
         None,
@@ -4020,7 +4020,7 @@ fn cascade_forwards_the_sectioned_removal_callback() {
         SubtreePath::from(&[TEST_LEAF]),
         b"value",
         Some(DeleteOptions {
-            propagate_backward_references: true,
+            propagate_backward_references_when_unsure: true,
             ..Default::default()
         }),
         None,
@@ -4080,7 +4080,7 @@ fn stale_nonconsenting_registration_does_not_block_target_deletion() {
         &[TEST_LEAF],
         b"value",
         Some(DeleteOptions {
-            propagate_backward_references: true,
+            propagate_backward_references_when_unsure: true,
             ..Default::default()
         }),
         None,

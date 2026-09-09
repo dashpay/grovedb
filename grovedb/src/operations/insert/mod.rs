@@ -31,7 +31,7 @@ pub struct InsertOptions {
     /// supports backward references. Since the checks require an extra
     /// fetch on every write, the feature is opt-in per call. Requires
     /// `GROVE_V4`+; ignored (never set) by shipped v1..v3 flows.
-    pub propagate_backward_references: bool,
+    pub propagate_backward_references_when_unsure: bool,
 }
 
 impl Default for InsertOptions {
@@ -40,7 +40,7 @@ impl Default for InsertOptions {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: true,
             base_root_storage_is_free: true,
-            propagate_backward_references: false,
+            propagate_backward_references_when_unsure: false,
         }
     }
 }
@@ -474,7 +474,7 @@ mod tests {
                     validate_insertion_does_not_override: true,
                     validate_insertion_does_not_override_tree: true,
                     base_root_storage_is_free: true,
-                    propagate_backward_references: false,
+                    propagate_backward_references_when_unsure: false,
                 }),
                 None,
                 gv,
@@ -552,7 +552,7 @@ mod tests {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: false,
             base_root_storage_is_free: true,
-            propagate_backward_references: false,
+            propagate_backward_references_when_unsure: false,
         }
     }
 
@@ -3313,7 +3313,7 @@ mod tests {
                     validate_insertion_does_not_override: false,
                     validate_insertion_does_not_override_tree: false,
                     base_root_storage_is_free: true,
-                    propagate_backward_references: false,
+                    propagate_backward_references_when_unsure: false,
                 }),
                 Some(&tx),
                 grove_version,
@@ -3603,7 +3603,7 @@ mod tests {
             b"key5",
             Element::new_item_allowing_bidirectional_references(b"certainly new value".to_vec()),
             Some(InsertOptions {
-                propagate_backward_references: true,
+                propagate_backward_references_when_unsure: true,
                 ..Default::default()
             }),
             None,
@@ -3633,7 +3633,7 @@ mod tests {
             b"key5",
             Element::new_item(b"hello".to_vec()),
             Some(InsertOptions {
-                propagate_backward_references: true,
+                propagate_backward_references_when_unsure: true,
                 ..Default::default()
             }),
             None,

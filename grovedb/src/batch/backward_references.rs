@@ -1,6 +1,6 @@
 //! The backward-references batch preprocessor (batching milestones M2–M4).
 //!
-//! When [`super::BatchApplyOptions::propagate_backward_references`] is set,
+//! When [`super::BatchApplyOptions::propagate_backward_references_when_unsure`] is set,
 //! user operations touching the backward-references family — the three ITEM
 //! variants and `BidirectionalReference` itself — expand into the derived
 //! operations the live flagged flow would perform. The decisions come from
@@ -27,6 +27,19 @@
 //!
 //! Planners read through [`OverlayChainStore`]: staged pending state first,
 //! the transaction's pre-batch DB state otherwise.
+//!
+//! # Per-op mode
+//!
+//! `GroveOp::DeleteWithCascade` forces the bookkeeping for one delete, and
+//! `GroveOp::DeleteWithNoBackwardsReferenceCheck` forbids it, whatever the
+//! batch flag says. An unflagged batch carrying a cascading delete runs
+//! this pass in per-op mode: only the cascading deletes are read and
+//! planned; every other op stays an ordinary unflagged op (no read, no
+//! bookkeeping) and only its certain effect is staged, so the cascade
+//! resolves against the batch's outcome. A no-check delete in a flagged
+//! batch is likewise not read: its position is staged as gone and whatever
+//! was registered on it dangles, exactly as an unflagged live delete would
+//! leave it.
 //!
 //! Derived writes carry their final node value hash (the two-layer
 //! combine), computed here exactly as the live applier computes it, and
@@ -600,10 +613,18 @@ impl<'db, 'g> Expansion<'db, 'g> {
 
 /// Expand `ops` with the derived operations the backward-references rules
 /// require, per the module documentation.
+///
+/// `flag_on` is the batch's `propagate_backward_references_when_unsure`.
+/// With it set every op gets the bookkeeping; without it the pass runs in
+/// per-op mode for the `DeleteWithCascade` ops the batch carries — the
+/// other ops are not read (they pay nothing extra) and only their certain
+/// effects are staged into the overlay, so a cascade resolves against the
+/// batch's outcome.
 pub(super) fn expand_backward_references_ops(
     db: &GroveDb,
     tx: &TxRef<'_, '_>,
     ops: Vec<QualifiedGroveDbOp>,
+    flag_on: bool,
     validate_insertion_does_not_override: bool,
     grove_version: &GroveVersion,
 ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
@@ -633,7 +654,13 @@ pub(super) fn expand_backward_references_ops(
                 ))
                 .wrap_with_cost(cost);
             }
-            if matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..)) {
+            if matches!(
+                op.op,
+                GroveOp::Delete
+                    | GroveOp::DeleteWithCascade
+                    | GroveOp::DeleteWithNoBackwardsReferenceCheck
+                    | GroveOp::DeleteTree(..)
+            ) {
                 expansion.user_deleted_positions.insert(position);
             }
         }
@@ -646,37 +673,44 @@ pub(super) fn expand_backward_references_ops(
     // first, so a nested new tree sees its parent already marked — because
     // the batch is unordered: an op under such a subtree may appear before
     // the op creating it, and its previous-state read must not touch
-    // committed storage (the parent does not exist there).
-    let mut tree_write_positions: Vec<Position> = expansion
-        .ops
-        .iter()
-        .flatten()
-        .filter_map(|op| match &op.op {
-            GroveOp::InsertOrReplace { element }
-            | GroveOp::Replace { element }
-            | GroveOp::Patch { element, .. }
-            | GroveOp::InsertIfNotExists { element, .. }
-            | GroveOp::InsertWithKnownToNotAlreadyExist { element }
-                if element.is_any_tree() =>
-            {
-                Expansion::op_position(op)
+    // committed storage (the parent does not exist there). Flagged batches
+    // only: the scan reads every tree-writing op's previous state, which
+    // an unflagged batch must not pay for. (In per-op mode a
+    // `DeleteWithCascade` under a subtree the same batch creates has
+    // nothing to delete; its previous-state read fails the batch, which is
+    // the fail-closed outcome.)
+    if flag_on {
+        let mut tree_write_positions: Vec<Position> = expansion
+            .ops
+            .iter()
+            .flatten()
+            .filter_map(|op| match &op.op {
+                GroveOp::InsertOrReplace { element }
+                | GroveOp::Replace { element }
+                | GroveOp::Patch { element, .. }
+                | GroveOp::InsertIfNotExists { element, .. }
+                | GroveOp::InsertWithKnownToNotAlreadyExist { element }
+                    if element.is_any_tree() =>
+                {
+                    Expansion::op_position(op)
+                }
+                _ => None,
+            })
+            .collect();
+        tree_write_positions.sort_by_key(|(path, _)| path.len());
+        for (path, key) in tree_write_positions {
+            let previous_is_tree = if expansion.store.under_fresh_subtree(&path) {
+                false
+            } else {
+                cost_return_on_error!(&mut cost, expansion.store.element_at(&path, &key))
+                    .map(|p| p.is_any_tree())
+                    .unwrap_or(false)
+            };
+            if !previous_is_tree {
+                let mut qualified = path;
+                qualified.push(key);
+                expansion.store.stage_fresh_subtree(qualified);
             }
-            _ => None,
-        })
-        .collect();
-    tree_write_positions.sort_by_key(|(path, _)| path.len());
-    for (path, key) in tree_write_positions {
-        let previous_is_tree = if expansion.store.under_fresh_subtree(&path) {
-            false
-        } else {
-            cost_return_on_error!(&mut cost, expansion.store.element_at(&path, &key))
-                .map(|p| p.is_any_tree())
-                .unwrap_or(false)
-        };
-        if !previous_is_tree {
-            let mut qualified = path;
-            qualified.push(key);
-            expansion.store.stage_fresh_subtree(qualified);
         }
     }
 
@@ -702,6 +736,18 @@ pub(super) fn expand_backward_references_ops(
             | GroveOp::Patch { element, .. }
             | GroveOp::InsertIfNotExists { element, .. }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element } => {
+                if !flag_on {
+                    // Per-op mode: writes carry no bookkeeping (family
+                    // payloads were rejected upstream) and are not read.
+                    // Stage the ones that certainly land so a cascade
+                    // resolving a referrer here sees the batch's outcome;
+                    // a conditional insert may write nothing, and its
+                    // stored state stays authoritative.
+                    if !matches!(op_kind, GroveOp::InsertIfNotExists { .. }) {
+                        expansion.store.stage(position, Some(element.clone()));
+                    }
+                    continue;
+                }
                 if let Element::BidirectionalReference(reference, _) = element {
                     // A conditional insert whose gate will SKIP it must not
                     // advertise a pending edge: `InsertIfNotExists` over an
@@ -852,7 +898,24 @@ pub(super) fn expand_backward_references_ops(
                     expansion.store.stage(position, Some(element));
                 }
             }
-            GroveOp::Delete | GroveOp::DeleteTree(..) => {
+            GroveOp::Delete
+            | GroveOp::DeleteWithCascade
+            | GroveOp::DeleteWithNoBackwardsReferenceCheck
+            | GroveOp::DeleteTree(..) => {
+                let check = match op_kind {
+                    GroveOp::DeleteWithCascade => true,
+                    GroveOp::DeleteWithNoBackwardsReferenceCheck => false,
+                    _ => flag_on,
+                };
+                if !check {
+                    // No read, no bookkeeping: the position simply goes
+                    // away. Staged so a cascade resolving a referrer here
+                    // sees it gone (and skips it as dangling); whatever was
+                    // registered on the deleted element is left dangling —
+                    // the batch, or this op, opted out of the check.
+                    expansion.store.stage(position, None);
+                    continue;
+                }
                 let previous =
                     cost_return_on_error!(&mut cost, expansion.store.element_at(&path, &key));
                 // Deleting a NON-EMPTY subtree is refused under the flag:
@@ -871,10 +934,10 @@ pub(super) fn expand_backward_references_ops(
                     );
                     if non_empty {
                         return Err(Error::NotSupported(
-                            "deleting a non-empty subtree in a batch with \
-                             propagate_backward_references is not supported; delete it through \
-                             the live flagged flow (which cascades descendants) or empty it \
-                             first"
+                            "deleting a non-empty subtree with backward-references bookkeeping \
+                             (a batch with propagate_backward_references_when_unsure, or a \
+                             DeleteWithCascade) is not supported; delete it through the live \
+                             flagged flow (which cascades descendants) or empty it first"
                                 .to_owned(),
                         ))
                         .wrap_with_cost(cost);
@@ -904,6 +967,12 @@ pub(super) fn expand_backward_references_ops(
                 flags,
                 ..
             } => {
+                if !flag_on {
+                    // Per-op mode: a refresh is an ordinary unflagged write
+                    // (not read, not staged — the rebuilt shape needs the
+                    // stored one).
+                    continue;
+                }
                 let previous =
                     cost_return_on_error!(&mut cost, expansion.store.element_at(&path, &key));
                 if matches!(previous, Some(Element::BidirectionalReference(..))) {

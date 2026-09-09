@@ -34,7 +34,7 @@
 //! everything else is identical. See [v0] / [v1].
 //!
 //! * **[v2]** — `GROVE_V4`+ with backward-references support. A router:
-//!   calls without `DeleteOptions::propagate_backward_references` run the
+//!   calls without `DeleteOptions::propagate_backward_references_when_unsure` run the
 //!   exact v1 body (identical root hashes and costs); calls with the flag
 //!   run a `MerkCache`-based flow that cascades backward-reference chains.
 //!

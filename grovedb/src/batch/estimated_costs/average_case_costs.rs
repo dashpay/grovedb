@@ -64,7 +64,7 @@ impl GroveOp {
         // not carry. Ignored by every other op type.
         append_tree_chunk_power: Option<u8>,
         // Whether the batch opts into backward-references bookkeeping
-        // (`BatchApplyOptions::propagate_backward_references`): family ops
+        // (`BatchApplyOptions::propagate_backward_references_when_unsure`): family ops
         // and deletes then charge the derived fan-out on GROVE_V4+.
         backward_references_enabled: bool,
         propagate: bool,
@@ -144,9 +144,10 @@ impl GroveOp {
         // The flagged apply path probes a deleted tree's child subtree for
         // emptiness (a merk open and its root read) before admitting the
         // deletion — charged whenever the fan-out is active.
-        let flagged_delete_probe = || {
+        let fan_out_active = backward_references_enabled && fan_out_version != 0;
+        let delete_probe = |active: bool| {
             let mut probe = OperationCost::default();
-            if backward_references_enabled && fan_out_version != 0 {
+            if active {
                 let key_width = GroveDb::average_case_layer_key_size(
                     &layer_element_estimates.estimated_layer_sizes,
                 );
@@ -347,7 +348,7 @@ impl GroveOp {
                 ),
                 backward_references_fan_out(None),
             )
-            .add_cost(flagged_delete_probe()),
+            .add_cost(delete_probe(fan_out_active)),
             GroveOp::DeleteTree(tree_type, _) => with_fan_out(
                 GroveDb::average_case_merk_delete_tree(
                     key,
@@ -358,7 +359,30 @@ impl GroveOp {
                 ),
                 backward_references_fan_out(None),
             )
-            .add_cost(flagged_delete_probe()),
+            .add_cost(delete_probe(fan_out_active)),
+            // Forces the bookkeeping whatever the batch flag says: the
+            // displaced-state fan-out and the probe are charged whenever the
+            // version models them.
+            GroveOp::DeleteWithCascade => with_fan_out(
+                GroveDb::average_case_merk_delete_element(
+                    key,
+                    layer_element_estimates,
+                    propagate,
+                    grove_version,
+                ),
+                (fan_out_version != 0).then(super::BackwardReferencesFanOut::average_item),
+            )
+            .add_cost(delete_probe(fan_out_version != 0)),
+            // Opts out of the bookkeeping whatever the batch flag says: the
+            // plain delete model, nothing derived.
+            GroveOp::DeleteWithNoBackwardsReferenceCheck => {
+                GroveDb::average_case_merk_delete_element(
+                    key,
+                    layer_element_estimates,
+                    propagate,
+                    grove_version,
+                )
+            }
             GroveOp::CommitmentTreeInsert { payload, .. } => {
                 Self::average_case_commitment_tree_insert(
                     payload,
@@ -1135,7 +1159,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                     &key,
                     layer_element_estimates,
                     append_tree_chunk_power,
-                    batch_apply_options.propagate_backward_references,
+                    batch_apply_options.propagate_backward_references_when_unsure,
                     false,
                     grove_version
                 )

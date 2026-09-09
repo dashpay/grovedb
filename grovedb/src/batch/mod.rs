@@ -300,8 +300,8 @@ impl NonMerkTreeMeta {
 ///
 /// User-facing variants: `InsertWithKnownToNotAlreadyExist`, `InsertIfNotExists`,
 /// `InsertOrReplace`, `Replace`, `Patch`, `RefreshReference`, `Delete`,
-/// `DeleteTree`, `CommitmentTreeInsert`, `MmrTreeAppend`, `BulkAppend`,
-/// `DenseTreeInsert`.
+/// `DeleteWithCascade`, `DeleteWithNoBackwardsReferenceCheck`, `DeleteTree`,
+/// `CommitmentTreeInsert`, `MmrTreeAppend`, `BulkAppend`, `DenseTreeInsert`.
 ///
 /// Internal variants (`ReplaceTreeRootKey`, `InsertTreeWithRootHash`,
 /// `ReplaceNonMerkTreeRoot`, `InsertNonMerkTree`) are marked
@@ -566,8 +566,26 @@ pub enum GroveOp {
         /// untrusted cross-check against on-disk.
         non_counted: bool,
     },
-    /// Delete
+    /// Delete. Whether the deleted element is first read for
+    /// backward-references bookkeeping follows the batch's
+    /// `BatchApplyOptions::propagate_backward_references_when_unsure`; the
+    /// two typed variants below pin that decision per op.
     Delete,
+    /// Delete an element and cascade away every bidirectional reference
+    /// registered on it, whatever the batch's
+    /// `propagate_backward_references_when_unsure` setting (`GROVE_V4`+).
+    /// The element is read before the deletion; each referrer chain is
+    /// deleted (every affected reference must allow `cascade_on_update`,
+    /// otherwise the batch errors) and a deleted `BidirectionalReference`
+    /// is de-registered from its target. Exactly what `Delete` does in a
+    /// batch with the flag set.
+    DeleteWithCascade,
+    /// Delete an element without reading it for backward-references
+    /// bookkeeping, whatever the batch's
+    /// `propagate_backward_references_when_unsure` setting (`GROVE_V4`+).
+    /// Bidirectional references registered on it are left dangling.
+    /// Exactly what `Delete` does in a batch without the flag.
+    DeleteWithNoBackwardsReferenceCheck,
     /// Delete tree
     DeleteTree(TreeType, SubelementsDeletionBehavior),
     /// Insert a note commitment + payload into a CommitmentTree
@@ -635,6 +653,8 @@ impl GroveOp {
             GroveOp::InsertAggregateIndexedTreeRootKeys { .. } => 18,
             GroveOp::PrivateDocumentStoreInsert { .. } => 19,
             GroveOp::ReplaceBackwardReferenceFamilyMember { .. } => 20,
+            GroveOp::DeleteWithCascade => 21,
+            GroveOp::DeleteWithNoBackwardsReferenceCheck => 22,
         }
     }
 
@@ -671,6 +691,8 @@ impl GroveOp {
             | GroveOp::Replace { .. }
             | GroveOp::Patch { .. }
             | GroveOp::Delete
+            | GroveOp::DeleteWithCascade
+            | GroveOp::DeleteWithNoBackwardsReferenceCheck
             | GroveOp::DeleteTree(..)
             | GroveOp::RefreshReference { .. } => true,
 
@@ -750,6 +772,8 @@ impl GroveOp {
             | GroveOp::Replace { .. }
             | GroveOp::Patch { .. }
             | GroveOp::Delete
+            | GroveOp::DeleteWithCascade
+            | GroveOp::DeleteWithNoBackwardsReferenceCheck
             | GroveOp::DeleteTree(..)
             | GroveOp::RefreshReference { .. }
             | GroveOp::ReplaceTreeRootKey { .. }
@@ -1048,6 +1072,10 @@ impl fmt::Debug for QualifiedGroveDbOp {
                 hex::encode(node_value_hash)
             ),
             GroveOp::Delete => "Delete".to_string(),
+            GroveOp::DeleteWithCascade => "Delete With Cascade".to_string(),
+            GroveOp::DeleteWithNoBackwardsReferenceCheck => {
+                "Delete With No Backwards Reference Check".to_string()
+            }
             GroveOp::DeleteTree(tree_type, check) => {
                 format!("Delete Tree {} ({:?})", tree_type, check)
             }
@@ -1395,6 +1423,49 @@ impl QualifiedGroveDbOp {
         }
     }
 
+    /// A delete op that cascades away the bidirectional references registered
+    /// on the deleted element, whatever the batch flag says (`GROVE_V4`+).
+    pub fn delete_with_cascade_op(path: Vec<Vec<u8>>, key: Vec<u8>) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: Some(KnownKey(key)),
+            op: GroveOp::DeleteWithCascade,
+        }
+    }
+
+    /// A delete op that skips the backward-references check, whatever the
+    /// batch flag says (`GROVE_V4`+).
+    pub fn delete_with_no_backwards_reference_check_op(path: Vec<Vec<u8>>, key: Vec<u8>) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: Some(KnownKey(key)),
+            op: GroveOp::DeleteWithNoBackwardsReferenceCheck,
+        }
+    }
+
+    /// A delete-with-cascade op for estimation
+    pub fn delete_with_cascade_estimated_op(path: KeyInfoPath, key: KeyInfo) -> Self {
+        Self {
+            path,
+            key: Some(key),
+            op: GroveOp::DeleteWithCascade,
+        }
+    }
+
+    /// A delete-with-no-backwards-reference-check op for estimation
+    pub fn delete_with_no_backwards_reference_check_estimated_op(
+        path: KeyInfoPath,
+        key: KeyInfo,
+    ) -> Self {
+        Self {
+            path,
+            key: Some(key),
+            op: GroveOp::DeleteWithNoBackwardsReferenceCheck,
+        }
+    }
+
     /// A commitment tree insert op. `path` includes the tree key as its last
     /// segment (e.g. `vec![b"pool".to_vec()]` for a tree at key `b"pool"` in
     /// the root subtree).
@@ -1566,7 +1637,13 @@ impl QualifiedGroveDbOp {
         // Build a map of deleted_qualified_path -> indices of delete ops
         let mut deleted_path_to_op_indices: HashMap<KeyInfoPath, Vec<usize>> = HashMap::new();
         for (idx, op) in ops.iter().enumerate() {
-            if matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..)) {
+            if matches!(
+                op.op,
+                GroveOp::Delete
+                    | GroveOp::DeleteWithCascade
+                    | GroveOp::DeleteWithNoBackwardsReferenceCheck
+                    | GroveOp::DeleteTree(..)
+            ) {
                 let Some(ref key) = op.key else {
                     continue;
                 };
@@ -2845,7 +2922,10 @@ where
                         grove_version,
                     )
                 }
-                GroveOp::Delete | GroveOp::DeleteTree(..) => Err(Error::InvalidBatchOperation(
+                GroveOp::Delete
+                | GroveOp::DeleteWithCascade
+                | GroveOp::DeleteWithNoBackwardsReferenceCheck
+                | GroveOp::DeleteTree(..) => Err(Error::InvalidBatchOperation(
                     "references can not point to something currently being deleted",
                 ))
                 .wrap_with_cost(cost),
@@ -4112,7 +4192,9 @@ where
                         )
                     );
                 }
-                GroveOp::Delete => {
+                GroveOp::Delete
+                | GroveOp::DeleteWithCascade
+                | GroveOp::DeleteWithNoBackwardsReferenceCheck => {
                     cost_return_on_error_into!(
                         &mut cost,
                         Element::delete_into_batch_operations(
@@ -5160,7 +5242,10 @@ impl GroveDb {
                                                     ))
                                                     .wrap_with_cost(cost);
                                                 }
-                                                GroveOp::Delete | GroveOp::DeleteTree(..) => {
+                                                GroveOp::Delete
+                                                | GroveOp::DeleteWithCascade
+                                                | GroveOp::DeleteWithNoBackwardsReferenceCheck
+                                                | GroveOp::DeleteTree(..) => {
                                                     if calculated_root_key.is_some() {
                                                         return Err(Error::InvalidBatchOperation(
                                                             "modification of tree when it will be \
@@ -5572,7 +5657,9 @@ impl GroveDb {
                         );
                     }
                 }
-                GroveOp::Delete => {
+                GroveOp::Delete
+                | GroveOp::DeleteWithCascade
+                | GroveOp::DeleteWithNoBackwardsReferenceCheck => {
                     let path_slices: Vec<&[u8]> =
                         op.path.iterator().map(|p| p.as_slice()).collect();
                     let key = cost_return_on_error_no_add!(
@@ -5581,12 +5668,47 @@ impl GroveDb {
                             .as_ref()
                             .ok_or(Error::InvalidBatchOperation("delete op is missing a key"))
                     );
+                    // The typed variants pin the backward-references check on
+                    // or off for this op; plain `Delete` follows the batch's
+                    // `propagate_backward_references_when_unsure`. Pre-V4 the
+                    // live delete ignores the flag, so the typed ops fail
+                    // closed there instead of silently degrading.
+                    let mut delete_options = options.clone().map(|o| o.as_delete_options());
+                    match &op.op {
+                        GroveOp::DeleteWithCascade
+                        | GroveOp::DeleteWithNoBackwardsReferenceCheck
+                            if grove_version
+                                .grovedb_versions
+                                .operations
+                                .insert
+                                .insert_on_transaction
+                                < 1 =>
+                        {
+                            return Err(Error::NotSupported(
+                                "DeleteWithCascade and DeleteWithNoBackwardsReferenceCheck \
+                                 require GROVE_V4+"
+                                    .to_owned(),
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        GroveOp::DeleteWithCascade => {
+                            delete_options
+                                .get_or_insert_with(DeleteOptions::default)
+                                .propagate_backward_references_when_unsure = true;
+                        }
+                        GroveOp::DeleteWithNoBackwardsReferenceCheck => {
+                            if let Some(delete_options) = delete_options.as_mut() {
+                                delete_options.propagate_backward_references_when_unsure = false;
+                            }
+                        }
+                        _ => {}
+                    }
                     cost_return_on_error!(
                         &mut cost,
                         self.delete(
                             path_slices.as_slice(),
                             key.as_slice(),
-                            options.clone().map(|o| o.as_delete_options()),
+                            delete_options,
                             transaction,
                             grove_version
                         )
@@ -5642,9 +5764,9 @@ impl GroveDb {
                         validate_tree_at_path_exists: false,
                         // Same decision as `as_delete_options`: the batch's
                         // opt-in extends to its deletes.
-                        propagate_backward_references: options
+                        propagate_backward_references_when_unsure: options
                             .as_ref()
-                            .is_some_and(|o| o.propagate_backward_references),
+                            .is_some_and(|o| o.propagate_backward_references_when_unsure),
                     };
                     cost_return_on_error!(
                         &mut cost,
@@ -6151,7 +6273,9 @@ impl GroveDb {
                                 let batch_deleted_keys = ops
                                     .iter()
                                     .filter_map(|other_op| match &other_op.op {
-                                        GroveOp::Delete => {
+                                        GroveOp::Delete
+                                        | GroveOp::DeleteWithCascade
+                                        | GroveOp::DeleteWithNoBackwardsReferenceCheck => {
                                             if other_op.path.to_path() == child_path {
                                                 Some(other_op.key.as_ref()?.as_slice().to_vec())
                                             } else {
@@ -6300,7 +6424,9 @@ impl GroveDb {
                             let batch_deleted_keys = ops
                                 .iter()
                                 .filter_map(|other_op| match &other_op.op {
-                                    GroveOp::Delete => {
+                                    GroveOp::Delete
+                                    | GroveOp::DeleteWithCascade
+                                    | GroveOp::DeleteWithNoBackwardsReferenceCheck => {
                                         if other_op.path.to_path() == child_path {
                                             Some(other_op.key.as_ref()?.as_slice().to_vec())
                                         } else {
@@ -6391,18 +6517,37 @@ impl GroveDb {
 
     /// Backward-references family elements are only valid in batches that
     /// opt into the bookkeeping via
-    /// `BatchApplyOptions::propagate_backward_references` (GROVE_V4+),
+    /// `BatchApplyOptions::propagate_backward_references_when_unsure` (GROVE_V4+),
     /// where the preprocessor expands them into the derived operations the
     /// live flagged flow performs. Everywhere else (`allow_family` false:
     /// unflagged batches, partial batches, partial-batch add-on ops) they
     /// fail closed — the pipeline would otherwise silently produce
     /// inconsistent backward-reference state (a `BidirectionalReference`
     /// whose target never learns about it).
+    ///
+    /// The typed deletes (`DeleteWithCascade` /
+    /// `DeleteWithNoBackwardsReferenceCheck`) are valid only where
+    /// `allow_typed_deletes` is set: full batches on GROVE_V4+. Partial
+    /// batches have no expansion support, and pre-V4 the live delete ignores
+    /// the flag, so both would silently degrade to a plain delete.
     fn reject_backward_references_elements_in_batch(
         ops: &[QualifiedGroveDbOp],
         allow_family: bool,
+        allow_typed_deletes: bool,
     ) -> Result<(), Error> {
         for op in ops {
+            if !allow_typed_deletes
+                && matches!(
+                    op.op,
+                    GroveOp::DeleteWithCascade | GroveOp::DeleteWithNoBackwardsReferenceCheck
+                )
+            {
+                return Err(Error::NotSupported(
+                    "DeleteWithCascade and DeleteWithNoBackwardsReferenceCheck require GROVE_V4+ \
+                     and are not supported in partial batches"
+                        .to_owned(),
+                ));
+            }
             // The derived write op is internal to the preprocessor; a
             // caller supplying one could install arbitrary value hashes.
             if matches!(op.op, GroveOp::ReplaceBackwardReferenceFamilyMember { .. }) {
@@ -6433,7 +6578,7 @@ impl GroveDb {
                 if !allow_family {
                     return Err(Error::NotSupported(
                         "backward-references family elements require \
-                         BatchApplyOptions::propagate_backward_references (GROVE_V4+)"
+                         BatchApplyOptions::propagate_backward_references_when_unsure (GROVE_V4+)"
                             .to_owned(),
                     ));
                 }
@@ -6522,30 +6667,45 @@ impl GroveDb {
             }
         }
 
-        // Backward-references bookkeeping is a per-batch opt-in, and rides
-        // the same activation as the live flagged flow (`GROVE_V4`+, where
-        // `insert_on_transaction` dispatches to v1).
+        // Backward-references bookkeeping rides the same activation as the
+        // live flagged flow (`GROVE_V4`+, where `insert_on_transaction`
+        // dispatches to v1). Plain ops opt in per batch through
+        // `propagate_backward_references_when_unsure`; the typed deletes
+        // (`DeleteWithCascade` / `DeleteWithNoBackwardsReferenceCheck`) pin
+        // the check on or off for themselves, whatever the flag says.
+        let backward_references_supported = grove_version
+            .grovedb_versions
+            .operations
+            .insert
+            .insert_on_transaction
+            >= 1;
         let backward_references_enabled = batch_apply_options
             .as_ref()
-            .map(|options| options.propagate_backward_references)
+            .map(|options| options.propagate_backward_references_when_unsure)
             .unwrap_or(false)
-            && grove_version
-                .grovedb_versions
-                .operations
-                .insert
-                .insert_on_transaction
-                >= 1;
+            && backward_references_supported;
         cost_return_on_error_no_add!(
             cost,
-            Self::reject_backward_references_elements_in_batch(&ops, backward_references_enabled)
+            Self::reject_backward_references_elements_in_batch(
+                &ops,
+                backward_references_enabled,
+                backward_references_supported,
+            )
         );
-        let ops = if backward_references_enabled {
+        // A `DeleteWithCascade` needs the expansion even in an unflagged
+        // batch; the preprocessor then runs in per-op mode, touching nothing
+        // but the cascading deletes.
+        let has_cascade_deletes = ops
+            .iter()
+            .any(|op| matches!(op.op, GroveOp::DeleteWithCascade));
+        let ops = if backward_references_enabled || has_cascade_deletes {
             let ops = cost_return_on_error!(
                 &mut cost,
                 backward_references::expand_backward_references_ops(
                     self,
                     &tx,
                     ops,
+                    backward_references_enabled,
                     batch_apply_options
                         .as_ref()
                         .map(|options| options.validate_insertion_does_not_override)
@@ -6987,7 +7147,7 @@ impl GroveDb {
 
         cost_return_on_error_no_add!(
             cost,
-            Self::reject_backward_references_elements_in_batch(&ops, false)
+            Self::reject_backward_references_elements_in_batch(&ops, false, false)
         );
 
         cost_return_on_error!(
@@ -7305,7 +7465,7 @@ impl GroveDb {
         // carrying the family would only fail deep inside execution.
         cost_return_on_error_no_add!(
             cost,
-            Self::reject_backward_references_elements_in_batch(&new_operations, false)
+            Self::reject_backward_references_elements_in_batch(&new_operations, false, false)
         );
 
         // Add-on typed appends (CommitmentTreeInsert, MmrTreeAppend,
@@ -7921,7 +8081,7 @@ mod tests {
                     disable_operation_consistency_check: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
-                    propagate_backward_references: false,
+                    propagate_backward_references_when_unsure: false,
                 }),
                 None,
                 grove_version
@@ -8527,7 +8687,7 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
-                    propagate_backward_references: false,
+                    propagate_backward_references_when_unsure: false,
                 }),
                 None,
                 grove_version
@@ -8569,7 +8729,7 @@ mod tests {
                     validate_insertion_does_not_override: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
-                    propagate_backward_references: false,
+                    propagate_backward_references_when_unsure: false,
                 }),
                 None,
                 grove_version
@@ -8603,7 +8763,7 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
-                    propagate_backward_references: false,
+                    propagate_backward_references_when_unsure: false,
                 }),
                 None,
                 grove_version

@@ -53,7 +53,7 @@ impl GroveOp {
         in_parent_tree_type: TreeType,
         worst_case_layer_element_estimates: &WorstCaseLayerInformation,
         // Whether the batch opts into backward-references bookkeeping
-        // (`BatchApplyOptions::propagate_backward_references`): family ops
+        // (`BatchApplyOptions::propagate_backward_references_when_unsure`): family ops
         // and deletes then charge the derived fan-out on GROVE_V4+.
         backward_references_enabled: bool,
         propagate: bool,
@@ -132,9 +132,10 @@ impl GroveOp {
         // The flagged apply path probes a deleted tree's child subtree for
         // emptiness (a merk open and its root read) before admitting the
         // deletion — charged whenever the fan-out is active.
-        let flagged_delete_probe = || {
+        let fan_out_active = backward_references_enabled && fan_out_version != 0;
+        let delete_probe = |active: bool| {
             let mut probe = OperationCost::default();
-            if backward_references_enabled && fan_out_version != 0 {
+            if active {
                 for _ in 0..2 {
                     let _ = add_worst_case_get_merk_node(
                         &mut probe,
@@ -315,7 +316,7 @@ impl GroveOp {
                 ),
                 backward_references_fan_out(None),
             )
-            .add_cost(flagged_delete_probe()),
+            .add_cost(delete_probe(fan_out_active)),
             GroveOp::DeleteTree(tree_type, _) => with_fan_out(
                 GroveDb::worst_case_merk_delete_tree(
                     key,
@@ -326,7 +327,30 @@ impl GroveOp {
                 ),
                 backward_references_fan_out(None),
             )
-            .add_cost(flagged_delete_probe()),
+            .add_cost(delete_probe(fan_out_active)),
+            // Forces the bookkeeping whatever the batch flag says: the
+            // displaced-state fan-out and the probe are charged whenever the
+            // version models them.
+            GroveOp::DeleteWithCascade => with_fan_out(
+                GroveDb::worst_case_merk_delete_element(
+                    key,
+                    worst_case_layer_element_estimates,
+                    propagate,
+                    grove_version,
+                ),
+                (fan_out_version != 0).then(super::BackwardReferencesFanOut::worst_item),
+            )
+            .add_cost(delete_probe(fan_out_version != 0)),
+            // Opts out of the bookkeeping whatever the batch flag says: the
+            // plain delete model, nothing derived.
+            GroveOp::DeleteWithNoBackwardsReferenceCheck => {
+                GroveDb::worst_case_merk_delete_element(
+                    key,
+                    worst_case_layer_element_estimates,
+                    propagate,
+                    grove_version,
+                )
+            }
             GroveOp::CommitmentTreeInsert { payload, .. } => {
                 Self::worst_case_commitment_tree_insert(
                     payload,
@@ -889,7 +913,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
                     &key,
                     TreeType::NormalTree,
                     worst_case_layer_element_estimates,
-                    batch_apply_options.propagate_backward_references,
+                    batch_apply_options.propagate_backward_references_when_unsure,
                     false,
                     grove_version
                 )

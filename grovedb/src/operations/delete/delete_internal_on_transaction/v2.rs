@@ -1,7 +1,7 @@
 //! `delete_internal_on_transaction` — **v2** (`GROVE_V4`+).
 //!
 //! A behaviour-preserving router. A call without
-//! [`DeleteOptions::propagate_backward_references`] runs the exact v1 body
+//! [`DeleteOptions::propagate_backward_references_when_unsure`] runs the exact v1 body
 //! (`GROVE_V4`'s parent-reuse delete, issue #686) — identical root hashes
 //! and costs. A call WITH the flag runs the `MerkCache`-based flow below,
 //! which fetches the deleted element, cascades backward-reference chains
@@ -60,7 +60,7 @@ impl GroveDb {
         batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
-        if options.propagate_backward_references {
+        if options.propagate_backward_references_when_unsure {
             self.delete_with_backward_references(
                 path,
                 key,
@@ -123,7 +123,7 @@ impl GroveDb {
             cost,
             crate::operations::indexed_tree::reject_generic_write_into_indexed_primary(
                 subtree_to_delete_from_type,
-                "delete with propagate_backward_references",
+                "delete with propagate_backward_references_when_unsure",
             )
         );
 
@@ -147,7 +147,7 @@ impl GroveDb {
             {
                 return Err(Error::NotSupported(
                     "specialized data trees and indexed trees cannot be deleted with \
-                     propagate_backward_references set; delete them without the flag"
+                     propagate_backward_references_when_unsure set; delete them without the flag"
                         .to_owned(),
                 ))
                 .wrap_with_cost(cost);
@@ -185,7 +185,7 @@ impl GroveDb {
                     transaction,
                     DeletionVisitor::new(
                         &cache,
-                        options.propagate_backward_references,
+                        options.propagate_backward_references_when_unsure,
                         true,
                         sectioned_removal,
                     ),
@@ -298,7 +298,7 @@ impl GroveDb {
 /// we're good as long as we do nothing outside of the cache, then finalize
 /// it, and only then merge with the final deletion batches.
 struct DeletionVisitor<'c, 'db, 'b, 's, B: AsRef<[u8]>> {
-    propagate_backward_references: bool,
+    propagate_backward_references_when_unsure: bool,
     allow_deleting_subtrees: bool,
     cache: &'c MerkCache<'db, 'b, B>,
     /// The caller's removal-accounting policy, applied to every referrer a
@@ -309,12 +309,12 @@ struct DeletionVisitor<'c, 'db, 'b, 's, B: AsRef<[u8]>> {
 impl<'c, 'db, 'b, 's, B: AsRef<[u8]>> DeletionVisitor<'c, 'db, 'b, 's, B> {
     fn new(
         cache: &'c MerkCache<'db, 'b, B>,
-        propagate_backward_references: bool,
+        propagate_backward_references_when_unsure: bool,
         allow_deleting_subtrees: bool,
         sectioned_removal: bidirectional_references::SectionedRemovalFn<'s>,
     ) -> Self {
         Self {
-            propagate_backward_references,
+            propagate_backward_references_when_unsure,
             allow_deleting_subtrees,
             cache,
             sectioned_removal,
@@ -360,7 +360,7 @@ impl<'b, B: AsRef<[u8]>> Visit<'b, B> for DeletionVisitor<'_, '_, 'b, '_, B> {
             {
                 return Err(Error::NotSupported(
                     "a descendant specialized data tree or indexed tree blocks deletion with \
-                     propagate_backward_references set; delete it without the flag first"
+                     propagate_backward_references_when_unsure set; delete it without the flag first"
                         .to_owned(),
                 ))
                 .wrap_with_cost(cost);
@@ -370,7 +370,7 @@ impl<'b, B: AsRef<[u8]>> Visit<'b, B> for DeletionVisitor<'_, '_, 'b, '_, B> {
 
         // Step 2: perform backward references' deletion on top of cached
         // data:
-        if self.propagate_backward_references
+        if self.propagate_backward_references_when_unsure
             && matches!(
                 element,
                 Element::ItemWithBackwardsReferences(..)

@@ -280,9 +280,11 @@ where
                     }
                     Ok(())
                 }
-                GroveOp::RefreshReference { .. } | GroveOp::Delete | GroveOp::DeleteTree(..) => {
-                    Ok(())
-                }
+                GroveOp::RefreshReference { .. }
+                | GroveOp::Delete
+                | GroveOp::DeleteWithCascade
+                | GroveOp::DeleteWithNoBackwardsReferenceCheck
+                | GroveOp::DeleteTree(..) => Ok(()),
                 GroveOp::CommitmentTreeInsert { .. }
                 | GroveOp::MmrTreeAppend { .. }
                 | GroveOp::BulkAppend { .. }
@@ -463,7 +465,10 @@ pub(super) fn merge_add_on_op_over_pending(
                 axes,
             )
         }
-        GroveOp::Delete | GroveOp::DeleteTree(..) => {
+        GroveOp::Delete
+        | GroveOp::DeleteWithCascade
+        | GroveOp::DeleteWithNoBackwardsReferenceCheck
+        | GroveOp::DeleteTree(..) => {
             if root_key.is_some() {
                 Err(Error::InvalidBatchOperation(
                     "modification of tree when it will be deleted",

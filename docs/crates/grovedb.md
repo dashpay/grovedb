@@ -196,6 +196,8 @@ pub enum GroveDbOp {
     InsertOrReplace { element: Element },
     Replace { element: Element },
     Delete,
+    DeleteWithCascade,                    // GROVE_V4+: read + cascade bidirectional references, whatever the batch flag says
+    DeleteWithNoBackwardsReferenceCheck,  // GROVE_V4+: never read for backward references
     DeleteTree,
     DeleteUpTree { stop_path_height: Option<u16> },
     TransientInsertTreeWithRootHash { hash: [u8; 32], .. },

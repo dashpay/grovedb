@@ -51,10 +51,13 @@ chain origin. When such behavior is required, a different type of element should
 Moreover, these types are incompatible, which will be discussed in the "Rules" section.
 
 Additionally, a new flag was added to `InsertOptions` and `DeleteOptions`
-called `propagate_backward_references` (`ClearOptions` support is deferred —
+called `propagate_backward_references_when_unsure` (`ClearOptions` support is deferred —
 see the limitations below). Since propagation incurs a cost, starting with the
 checks required to determine whether it should be performed, bidirectional references are
-optional and must be explicitly enabled.
+optional and must be explicitly enabled. The name says what the flag buys: when the
+caller does not know whether the element it displaces carries backward references,
+GroveDB reads it and finds out. A caller that does know can say so per batch op
+instead — see the typed deletes under Batching below.
 
 Even when a user inserts something unrelated to the bidirectional references feature,
 a check must still be performed to determine whether the insertion overwrites an item
@@ -78,7 +81,7 @@ Current limitations (fail closed, lift as needed):
 - The four variants may not be wrapped in the aggregation wrappers
   (`NonCounted` / `NotSummed` / `NotCountedOrSummed`).
 - `apply_batch` supports the family when the batch opts in via
-  `BatchApplyOptions::propagate_backward_references` (see the batching
+  `BatchApplyOptions::propagate_backward_references_when_unsure` (see the batching
   section under Implementation); batches without the flag — and partial
   batches, which have no expansion support — reject ops carrying the
   family. A flagged batch also refuses to delete a NON-EMPTY subtree:
@@ -93,7 +96,7 @@ Current limitations (fail closed, lift as needed):
   propagations and cascades skip it and lazily clear its slot — but
   `verify_grovedb` reports the affected references until the chain is
   rewritten through flagged operations.
-- `clear_subtree` has no `propagate_backward_references` option yet; use
+- `clear_subtree` has no `propagate_backward_references_when_unsure` option yet; use
   `delete` with the flag for cascade-aware removal.
 - Under the flag, insert supports items, references, and empty plain-Merk
   trees; delete supports plain Merk subtrees. The specialized data trees
@@ -106,7 +109,7 @@ Current limitations (fail closed, lift as needed):
 
 Next, we’ll go over the rules and limitations for using bidirectional references.
 
-Note that for the rules to apply, the `propagate_backward_references` flag needs to be
+Note that for the rules to apply, the `propagate_backward_references_when_unsure` flag needs to be
 set.
 
 An 'Element with backward references' refers to `ItemWithBackwardsReferences`,
@@ -165,7 +168,7 @@ preventing the operation from completing successfully.
 ### Batching
 
 `apply_batch` supports the whole family when the batch sets
-`BatchApplyOptions::propagate_backward_references` (GROVE_V4+, riding the
+`BatchApplyOptions::propagate_backward_references_when_unsure` (GROVE_V4+, riding the
 same activation as the live flagged flow). A preprocessing pass
 (`batch::backward_references`) expands the user's operations into the
 derived operations the live flow would perform, planned by the SAME
@@ -193,6 +196,21 @@ Conflicts fail closed with specified errors: a reference inserted in the
 same batch that deletes its target; a cascade deleting a position another
 op touches; a propagation rewrite hitting a user delete; and
 `RefreshReference` on a position holding a bidirectional reference.
+
+Two typed deletes pin the decision per op, whatever the batch flag says
+(GROVE_V4+, full batches only): `GroveOp::DeleteWithCascade` reads the
+element and runs exactly the flagged delete's bookkeeping (cascade of every
+referrer chain, consent required, de-registration of a deleted reference),
+and `GroveOp::DeleteWithNoBackwardsReferenceCheck` deletes without the read,
+leaving whatever was registered on the element dangling — exactly the
+unflagged delete. Plain `Delete` keeps following the flag. An unflagged
+batch carrying a cascading delete runs the expansion in per-op mode: only
+the cascading deletes are read and planned, the other ops stay ordinary
+unflagged ops (no read, no bookkeeping) and only their certain effects are
+staged into the overlay, so the cascade resolves against the batch's
+outcome and the M4 conflict rules apply unchanged. Partial batches and
+pre-V4 versions refuse both typed ops with `NotSupported` rather than
+silently degrading them to a plain delete.
 
 Estimated costs (average and worst case) model the derived fan-out on
 GROVE_V4+ under the batch flag, bounded by the budgets above (a written

@@ -537,7 +537,7 @@ pub struct GroveDBOperationsAverageCaseVersions {
     ///   family in batches, so historical admission decisions replay
     ///   byte-identically.
     /// - `1` (V4+): family-carrying ops and (under
-    ///   `BatchApplyOptions::propagate_backward_references`) deletes charge
+    ///   `BatchApplyOptions::propagate_backward_references_when_unsure`) deletes charge
     ///   the derived registration / propagation / cascade fan-out, bounded
     ///   by the apply path's budgets (≤32 referrers per item, ≤10-hop
     ///   chains, 1 referrer per reference), and the derived op itself gets

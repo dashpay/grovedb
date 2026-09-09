@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   updating a referenced element propagates the new hash along every chain,
   and deleting/overwriting it cascades the chains away (each affected
   reference must opt in via `cascade_on_update`). Opt-in per call through
-  the new `propagate_backward_references` flag on `InsertOptions` /
+  the new `propagate_backward_references_when_unsure` flag on `InsertOptions` /
   `DeleteOptions`. The referrer list is stored on the element itself under a
   two-layer hash (`combine(inner, backrefs)`), so registering a referrer
   never re-hashes what existing referrers committed to; public reads return
@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verifier recomputes. Requires `GROVE_V4`; earlier versions, V0 proofs, and
   `Provable*` aggregate parents reject the new variants (fail closed).
   `apply_batch` supports the whole family when the batch opts in via
-  `BatchApplyOptions::propagate_backward_references`: a preprocessing pass
+  `BatchApplyOptions::propagate_backward_references_when_unsure`: a preprocessing pass
   expands the batch into the derived registration/propagation/cascade
   operations the live flagged flow performs (shared semantic core, so batch
   and non-batch execution produce byte-identical root hashes), including
@@ -44,6 +44,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   displace, ≤10-hop chains, 1 referrer per reference) while pre-V4
   estimation stays byte-stable for replay. See
   `adr/bidirectional_references.md`.
+- Per-op backward-references deletes for batches: `GroveOp::DeleteWithCascade`
+  reads the deleted element and cascades away every bidirectional reference
+  registered on it (each affected reference must allow `cascade_on_update`; a
+  deleted `BidirectionalReference` is de-registered from its target), and
+  `GroveOp::DeleteWithNoBackwardsReferenceCheck` deletes without the read,
+  leaving any registered references dangling — each whatever the batch's
+  `propagate_backward_references_when_unsure` says, which plain `Delete` keeps
+  following. An unflagged batch carrying a cascading delete runs the
+  backward-references expansion in per-op mode: the other ops are not read
+  and pay nothing extra. Constructors `delete_with_cascade_op` /
+  `delete_with_no_backwards_reference_check_op` (plus `_estimated_op`
+  twins); sort tags 21 / 22; the estimators charge the fan-out per op rather
+  than per flag. `GROVE_V4`+ full batches only: pre-V4 and partial batches
+  refuse both with `NotSupported`.
 - **BREAKING**: Added `add_parent_tree_on_subquery` feature to PathQuery (#379)
   - New field in `Query` struct: `add_parent_tree_on_subquery: bool`
   - When set to `true`, parent tree elements (like CountTree or SumTree) are included in query results when performing subqueries
@@ -52,6 +66,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Updated proof verification logic to handle parent tree inclusion
 
 ### Changed
+- **BREAKING**: renamed the `propagate_backward_references` field of
+  `InsertOptions`, `DeleteOptions` and `BatchApplyOptions` to
+  `propagate_backward_references_when_unsure`. The name says what the flag
+  buys: when the caller does not know whether the element it displaces
+  carries backward references, GroveDB reads it and finds out (and
+  propagates or cascades accordingly). Callers that do know say so per op
+  through the typed batch deletes above. Semantics are unchanged.
 - Bumped the GroveDB workspace crates and their internal dependency requirements
   to **6.0.0** for the public API changes since 5.0.1. This package version is
   independent of the existing `GroveVersion` runtime compatibility versions.

@@ -15,7 +15,7 @@
 //!
 //! The exception is the opt-in bidirectional-references machinery
 //! (`GROVE_V4`+): deleting with
-//! [`DeleteOptions::propagate_backward_references`] set cascades any
+//! [`DeleteOptions::propagate_backward_references_when_unsure`] set cascades any
 //! [`BidirectionalReference`](crate::Element::BidirectionalReference)
 //! chains that point at the deleted element (each affected reference must
 //! allow `cascade_on_update`, otherwise the delete errors instead). See
@@ -113,7 +113,7 @@ pub struct DeleteOptions {
     /// (each affected reference must allow `cascade_on_update`, otherwise
     /// the operation errors). Opt-in per call because the checks require an
     /// extra fetch on every delete. Requires `GROVE_V4`+.
-    pub propagate_backward_references: bool,
+    pub propagate_backward_references_when_unsure: bool,
 }
 
 #[cfg(feature = "minimal")]
@@ -124,7 +124,7 @@ impl Default for DeleteOptions {
             deleting_non_empty_trees_returns_error: true,
             base_root_storage_is_free: true,
             validate_tree_at_path_exists: false,
-            propagate_backward_references: false,
+            propagate_backward_references_when_unsure: false,
         }
     }
 }
@@ -144,7 +144,7 @@ impl GroveDb {
     ///
     /// # Dangling references
     ///
-    /// Without [`DeleteOptions::propagate_backward_references`], this
+    /// Without [`DeleteOptions::propagate_backward_references_when_unsure`], this
     /// operation does **not** check for incoming references. If other
     /// elements hold [`Reference`](crate::Element::Reference) paths that point
     /// to the deleted element, those references become dangling. Following a
@@ -513,7 +513,10 @@ impl GroveDb {
                     let batch_deleted_keys = current_batch_operations
                         .iter()
                         .filter_map(|op| match op.op {
-                            GroveOp::Delete | GroveOp::DeleteTree(..) => {
+                            GroveOp::Delete
+                            | GroveOp::DeleteWithCascade
+                            | GroveOp::DeleteWithNoBackwardsReferenceCheck
+                            | GroveOp::DeleteTree(..) => {
                                 if op.path.eq_path_vec(&subtree_merk_path_vec) {
                                     Some(op.key.as_ref()?.as_slice())
                                 } else {
@@ -542,7 +545,10 @@ impl GroveDb {
                 // If there is any current batch operation that is inserting something in this
                 // tree then it is not empty either
                 is_empty &= !current_batch_operations.iter().any(|op| match op.op {
-                    GroveOp::Delete | GroveOp::DeleteTree(..) => false,
+                    GroveOp::Delete
+                    | GroveOp::DeleteWithCascade
+                    | GroveOp::DeleteWithNoBackwardsReferenceCheck
+                    | GroveOp::DeleteTree(..) => false,
                     _ => op.path.eq_path_vec(&subtree_merk_path_vec),
                 });
 
@@ -2140,7 +2146,7 @@ mod tests {
                 deleting_non_empty_trees_returns_error: true,
                 base_root_storage_is_free: true,
                 validate_tree_at_path_exists: true,
-                propagate_backward_references: true,
+                propagate_backward_references_when_unsure: true,
             }),
             None,
             version,
@@ -2179,7 +2185,7 @@ mod tests {
                 deleting_non_empty_trees_returns_error: false,
                 base_root_storage_is_free: true,
                 validate_tree_at_path_exists: true,
-                propagate_backward_references: true,
+                propagate_backward_references_when_unsure: true,
             }),
             Some(&transaction),
             version,

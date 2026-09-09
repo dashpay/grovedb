@@ -433,7 +433,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 insert: 0,
                 // v1: backward-references router. Calls that neither insert a
                 // BidirectionalReference nor set
-                // propagate_backward_references run the exact v0 body.
+                // propagate_backward_references_when_unsure run the exact v0 body.
                 insert_on_transaction: 1,
                 // v2: a directly inserted Reference binds the value hash of its
                 // terminal's STORED bytes (wrapper included for a NonCounted

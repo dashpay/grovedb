@@ -1762,7 +1762,7 @@ mod tests {
                     Some(vec![7]),
                 ),
                 Some(InsertOptions {
-                    propagate_backward_references: true,
+                    propagate_backward_references_when_unsure: true,
                     ..Default::default()
                 }),
                 None,

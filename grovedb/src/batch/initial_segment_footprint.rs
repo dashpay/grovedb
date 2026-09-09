@@ -62,7 +62,13 @@ impl InitialSegmentFootprint {
             }
             let mut path = qualified.clone();
             path.pop();
-            if matches!(op, GroveOp::Delete | GroveOp::DeleteTree(..)) {
+            if matches!(
+                op,
+                GroveOp::Delete
+                    | GroveOp::DeleteWithCascade
+                    | GroveOp::DeleteWithNoBackwardsReferenceCheck
+                    | GroveOp::DeleteTree(..)
+            ) {
                 deleted.push(qualified.clone());
             }
             // Typed appends were rewritten into ReplaceNonMerkTreeRoot by
@@ -135,6 +141,8 @@ impl InitialSegmentFootprint {
             let replaces_or_deletes_subtree = matches!(
                 op.op,
                 GroveOp::Delete
+                    | GroveOp::DeleteWithCascade
+                    | GroveOp::DeleteWithNoBackwardsReferenceCheck
                     | GroveOp::DeleteTree(..)
                     | GroveOp::InsertOrReplace { .. }
                     | GroveOp::InsertWithKnownToNotAlreadyExist { .. }

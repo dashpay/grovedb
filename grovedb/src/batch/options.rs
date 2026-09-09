@@ -77,14 +77,19 @@ pub struct BatchApplyOptions {
     /// At what height do we want to pause applying batch operations
     /// Most of the time this should be not set
     pub batch_pause_height: Option<u8>,
-    /// Opt into backward-references bookkeeping for this batch: ops
-    /// carrying the backward-references family (`BidirectionalReference`
-    /// and the three backward-references item variants) become valid, and
-    /// the batch expands into the derived registration / propagation /
+    /// Opt into backward-references bookkeeping for this batch's plain ops:
+    /// every write and delete that does not say otherwise is first read to
+    /// see whether it displaces an element carrying backward references,
+    /// and the batch expands into the derived registration / propagation /
     /// cascade operations the live flagged flow would perform — including
-    /// references whose targets are created in the same batch. See
+    /// references whose targets are created in the same batch. Ops carrying
+    /// the backward-references family (`BidirectionalReference` and the
+    /// three backward-references item variants) are valid only with the
+    /// flag set. The typed deletes (`GroveOp::DeleteWithCascade` /
+    /// `GroveOp::DeleteWithNoBackwardsReferenceCheck`) pin the decision for
+    /// themselves and ignore this flag. `GROVE_V4`+; see
     /// `batch::backward_references` for the expansion and conflict rules.
-    pub propagate_backward_references: bool,
+    pub propagate_backward_references_when_unsure: bool,
 }
 
 #[cfg(feature = "minimal")]
@@ -96,7 +101,7 @@ impl Default for BatchApplyOptions {
             disable_operation_consistency_check: false,
             base_root_storage_is_free: true,
             batch_pause_height: None,
-            propagate_backward_references: false,
+            propagate_backward_references_when_unsure: false,
         }
     }
 }
@@ -110,7 +115,8 @@ impl BatchApplyOptions {
             validate_insertion_does_not_override_tree: self
                 .validate_insertion_does_not_override_tree,
             base_root_storage_is_free: self.base_root_storage_is_free,
-            propagate_backward_references: self.propagate_backward_references,
+            propagate_backward_references_when_unsure: self
+                .propagate_backward_references_when_unsure,
         }
     }
 
@@ -125,7 +131,8 @@ impl BatchApplyOptions {
             // into backward-references bookkeeping keeps its deletes
             // flagged too, so registered targets cascade instead of
             // silently dangling.
-            propagate_backward_references: self.propagate_backward_references,
+            propagate_backward_references_when_unsure: self
+                .propagate_backward_references_when_unsure,
         }
     }
 

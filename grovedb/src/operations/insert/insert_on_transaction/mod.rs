@@ -10,7 +10,7 @@
 //!   activates with `GROVE_V4`.
 //! * **[v1]** — `GROVE_V4`+. Behaviour-preserving router: calls that neither
 //!   insert a `BidirectionalReference` nor set
-//!   `InsertOptions::propagate_backward_references` run the exact v0 body
+//!   `InsertOptions::propagate_backward_references_when_unsure` run the exact v0 body
 //!   (same root hashes, same costs). The remainder run through the
 //!   `MerkCache`-based flow in [v1], which performs backward-reference
 //!   bookkeeping and propagation (see `adr/bidirectional_references.md`).

@@ -86,6 +86,8 @@ fn validate_indexed_child_ops(
             // Ops that carry no caller-supplied element, or whose element is
             // internally derived rather than caller-claimed.
             GroveOp::Delete
+            | GroveOp::DeleteWithCascade
+            | GroveOp::DeleteWithNoBackwardsReferenceCheck
             | GroveOp::DeleteTree(..)
             | GroveOp::ReplaceBackwardReferenceFamilyMember { .. }
             | GroveOp::ReplaceTreeRootKey { .. }
