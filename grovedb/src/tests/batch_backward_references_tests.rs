@@ -2547,6 +2547,89 @@ fn typed_cascade_delete_of_a_reference_deregisters_like_live() {
     roots_match(&batch_db, &live_db, grove_version);
 }
 
+fn assert_typed_cascade_then_plain_overwrite_matches_live(options: Option<BatchApplyOptions>) {
+    let grove_version = GroveVersion::latest();
+    let replacement = Element::new_item(b"replacement".to_vec());
+    for write in [
+        QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"value".to_vec(),
+            replacement.clone(),
+        ),
+        QualifiedGroveDbOp::replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"value".to_vec(),
+            replacement.clone(),
+        ),
+    ] {
+        let (batch_db, live_db) = twin_dbs_with_chain(grove_version);
+        // Deleting r1 queues registration cleanup on value. The later
+        // unflagged overwrite must supersede that derived rewrite.
+        let ops = vec![
+            QualifiedGroveDbOp::delete_with_cascade_op(vec![TEST_LEAF.to_vec()], b"r1".to_vec()),
+            write,
+        ];
+        assert!(QualifiedGroveDbOp::verify_consistency_of_operations(&ops).is_empty());
+        batch_db
+            .apply_batch(ops, options.clone(), None, grove_version)
+            .unwrap()
+            .expect("distinct user positions with a later overwrite are valid");
+
+        live_db
+            .delete(
+                &[TEST_LEAF],
+                b"r1",
+                live_flagged_delete(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        live_db
+            .insert(
+                &[TEST_LEAF],
+                b"value",
+                replacement.clone(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            batch_db
+                .get_raw(
+                    SubtreePath::from([TEST_LEAF].as_ref()),
+                    b"value",
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .unwrap(),
+            replacement,
+            "the user overwrite must supersede the cascade's registration cleanup",
+        );
+        for key in [b"r1".as_slice(), b"r2"] {
+            assert_absent(&batch_db, key, grove_version);
+        }
+        roots_match(&batch_db, &live_db, grove_version);
+    }
+}
+
+#[test]
+fn typed_cascade_then_plain_overwrite_matches_live() {
+    assert_typed_cascade_then_plain_overwrite_matches_live(None);
+}
+
+#[test]
+fn typed_cascade_then_plain_overwrite_with_prevalidated_input_matches_live() {
+    assert_typed_cascade_then_plain_overwrite_matches_live(Some(BatchApplyOptions {
+        disable_operation_consistency_check: true,
+        ..Default::default()
+    }));
+}
+
 #[test]
 fn typed_cascade_delete_requires_consent() {
     let grove_version = GroveVersion::latest();

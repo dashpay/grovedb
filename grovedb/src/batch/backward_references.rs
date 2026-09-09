@@ -744,6 +744,11 @@ pub(super) fn expand_backward_references_ops(
                     // a conditional insert may write nothing, and its
                     // stored state stays authoritative.
                     if !matches!(op_kind, GroveOp::InsertIfNotExists { .. }) {
+                        // A later write supersedes registration cleanup
+                        // queued by an earlier cascade. Otherwise that
+                        // derived op would collide with this write or
+                        // silently replace its payload during execution.
+                        expansion.derived.remove(&position);
                         expansion.store.stage(position, Some(element.clone()));
                     }
                     continue;
