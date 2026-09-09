@@ -8,18 +8,14 @@
 //!   backward-references element family (`BidirectionalReference`,
 //!   `ItemWithBackwardsReferences`, `SumItemWithBackwardsReferences`), which
 //!   activates with `GROVE_V4`.
-//! * **[v1]** — `GROVE_V4`+. Behaviour-preserving router: calls that neither
-//!   insert a `BidirectionalReference` nor set
-//!   `InsertOptions::propagate_backward_references` run the exact v0 body
-//!   (same root hashes, same costs). The remainder run through the
-//!   `MerkCache`-based flow in [v1], which performs backward-reference
-//!   bookkeeping and propagation (see `adr/bidirectional_references.md`).
-//!
-//! [v0]: self::v0
-//! [v1]: self::v1
+//! * **v1** — the earlier opt-in implementation, retained separately.
+//! * **v2** — V4 automatic maintenance. Observes old values before mutation,
+//!   retaining the fetched nodes for execution. Ordinary values retain indexed
+//!   propagation; participants use the reference cache and shared planners.
 
 mod v0;
 mod v1;
+mod v2;
 
 use grovedb_costs::CostResult;
 use grovedb_path::SubtreePath;
@@ -63,6 +59,18 @@ impl GroveDb {
             }
             1 => {
                 v1::insert_on_transaction(
+                    self,
+                    path,
+                    key,
+                    element,
+                    options,
+                    transaction,
+                    batch,
+                    grove_version,
+                )
+            }
+            2 => {
+                v2::insert_on_transaction(
                     self,
                     path,
                     key,

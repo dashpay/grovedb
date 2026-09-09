@@ -43,6 +43,7 @@
 mod v0;
 mod v1;
 mod v2;
+mod v3;
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_merk::Merk;

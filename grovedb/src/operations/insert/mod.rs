@@ -24,14 +24,11 @@ pub struct InsertOptions {
     pub validate_insertion_does_not_override_tree: bool,
     /// Base root storage is free
     pub base_root_storage_is_free: bool,
-    /// Propagate updates to elements with backward references. This enables
-    /// bidirectional-reference bookkeeping for this call: overwrites of
-    /// backward-references elements trigger hash propagation along the
-    /// reference chains, or cascade deletion when the new element no longer
-    /// supports backward references. Since the checks require an extra
-    /// fetch on every write, the feature is opt-in per call. Requires
-    /// `GROVE_V4`+; ignored (never set) by shipped v1..v3 flows.
-    pub propagate_backward_references: bool,
+    /// Maintain backward references by default on V4. The stored value is
+    /// observed in the same Merk used by the write. `Skip` explicitly permits
+    /// stale reference hashes and dangling registrations. A newly inserted
+    /// bidirectional reference always registers its edge.
+    pub backward_references_policy: crate::BackwardReferencesPolicy,
 }
 
 impl Default for InsertOptions {
@@ -40,7 +37,7 @@ impl Default for InsertOptions {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: true,
             base_root_storage_is_free: true,
-            propagate_backward_references: false,
+            backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
         }
     }
 }
@@ -474,7 +471,7 @@ mod tests {
                     validate_insertion_does_not_override: true,
                     validate_insertion_does_not_override_tree: true,
                     base_root_storage_is_free: true,
-                    propagate_backward_references: false,
+                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
                 }),
                 None,
                 gv,
@@ -552,7 +549,7 @@ mod tests {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: false,
             base_root_storage_is_free: true,
-            propagate_backward_references: false,
+            backward_references_policy: crate::BackwardReferencesPolicy::Skip,
         }
     }
 
@@ -3153,13 +3150,13 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 9, // todo: verify this
+                seek_count: 8, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
                     replaced_bytes: 409, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 487, // todo verify this
+                storage_loaded_bytes: 416, // todo verify this
                 hash_node_calls: 11,
                 sinsemilla_hash_calls: 0,
             }
@@ -3313,7 +3310,7 @@ mod tests {
                     validate_insertion_does_not_override: false,
                     validate_insertion_does_not_override_tree: false,
                     base_root_storage_is_free: true,
-                    propagate_backward_references: false,
+                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
                 }),
                 Some(&tx),
                 grove_version,
@@ -3603,7 +3600,7 @@ mod tests {
             b"key5",
             Element::new_item_allowing_bidirectional_references(b"certainly new value".to_vec()),
             Some(InsertOptions {
-                propagate_backward_references: true,
+                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             None,
@@ -3633,7 +3630,7 @@ mod tests {
             b"key5",
             Element::new_item(b"hello".to_vec()),
             Some(InsertOptions {
-                propagate_backward_references: true,
+                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             None,

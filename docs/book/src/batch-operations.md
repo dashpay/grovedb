@@ -246,3 +246,18 @@ The `ReplaceNonMerkTreeRoot` op carries the new root hash and a `NonMerkTreeMeta
 so the element can be fully reconstructed after processing.
 
 ---
+
+
+## Automatic backward-reference maintenance (V4)
+
+Full batches maintain backward references by default, including when a plain
+replacement or delete displaces a registered element. Preparation observes
+old values and retains their Merk nodes for execution and storage accounting.
+The existing consent and batch-conflict rules still apply.
+
+Set `BatchApplyOptions { backward_references_policy:
+BackwardReferencesPolicy::Skip, ..Default::default() }` only when deliberately
+bypassing maintenance. This can leave stale hashes or dangling references.
+Partial batches refuse participant mutations; use a full batch for reference
+maintenance. Recursive removal of a subtree containing participants is
+supported by live `delete`; see the bidirectional references ADR for scope.

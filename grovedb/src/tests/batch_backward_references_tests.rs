@@ -1,6 +1,6 @@
 //! Batch support for the backward-references family (batching M2–M4): the
 //! master invariant is that a batch under
-//! `BatchApplyOptions::propagate_backward_references` produces the exact
+//! `BatchApplyOptions::backward_references_policy` produces the exact
 //! root hash the live flagged flow produces for the same logical
 //! operations — including `BidirectionalReference` ops, in-batch targets
 //! and chains, retargets, identical-edge no-ops, and the M4 conflict
@@ -19,14 +19,14 @@ use crate::{
 
 fn flag_on() -> Option<InsertOptions> {
     Some(InsertOptions {
-        propagate_backward_references: true,
+        backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
         ..Default::default()
     })
 }
 
 fn batch_flag_on() -> Option<BatchApplyOptions> {
     Some(BatchApplyOptions {
-        propagate_backward_references: true,
+        backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
         ..Default::default()
     })
 }
@@ -254,7 +254,7 @@ fn batch_delete_cascades_like_live() {
             &[TEST_LEAF],
             b"value",
             Some(DeleteOptions {
-                propagate_backward_references: true,
+                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             None,
@@ -395,7 +395,7 @@ fn batch_rejections_hold() {
     let grove_version = GroveVersion::latest();
     let (db, _other) = twin_dbs_with_chain(grove_version);
 
-    // Family item ops without the flag: rejected.
+    // Family item ops with maintenance explicitly skipped: rejected.
     assert!(matches!(
         db.apply_batch(
             vec![QualifiedGroveDbOp::insert_or_replace_op(
@@ -403,7 +403,10 @@ fn batch_rejections_hold() {
                 b"fresh".to_vec(),
                 Element::new_item_allowing_bidirectional_references(b"x".to_vec()),
             )],
-            None,
+            Some(crate::batch::BatchApplyOptions {
+                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                ..Default::default()
+            }),
             None,
             grove_version,
         )
@@ -411,7 +414,7 @@ fn batch_rejections_hold() {
         Err(Error::NotSupported(_))
     ));
 
-    // BidirectionalReference element ops without the flag: rejected.
+    // BidirectionalReference element ops with maintenance explicitly skipped: rejected.
     assert!(matches!(
         db.apply_batch(
             vec![QualifiedGroveDbOp::insert_or_replace_op(
@@ -419,7 +422,10 @@ fn batch_rejections_hold() {
                 b"newref".to_vec(),
                 sibling_bidi(b"value", true),
             )],
-            None,
+            Some(crate::batch::BatchApplyOptions {
+                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                ..Default::default()
+            }),
             None,
             grove_version,
         )
@@ -802,7 +808,7 @@ fn batch_bidi_delete_matches_live() {
             &[TEST_LEAF],
             b"r1",
             Some(DeleteOptions {
-                propagate_backward_references: true,
+                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             None,
@@ -1495,14 +1501,17 @@ fn batch_flagged_overwrite_folds_own_stale_cleanup() {
         )
         .unwrap()
         .unwrap();
-        // Remove the referrer through the supported UNFLAGGED batch path:
+        // Remove the referrer through the supported explicit Skip batch path:
         // the registration on `value` is left dangling.
         db.apply_batch(
             vec![QualifiedGroveDbOp::delete_op(
                 vec![TEST_LEAF.to_vec()],
                 b"ref".to_vec(),
             )],
-            None,
+            Some(crate::batch::BatchApplyOptions {
+                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                ..Default::default()
+            }),
             None,
             grove_version,
         )

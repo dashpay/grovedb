@@ -64,7 +64,7 @@ impl GroveOp {
         // not carry. Ignored by every other op type.
         append_tree_chunk_power: Option<u8>,
         // Whether the batch opts into backward-references bookkeeping
-        // (`BatchApplyOptions::propagate_backward_references`): family ops
+        // (`BatchApplyOptions::backward_references_policy`): family ops
         // and deletes then charge the derived fan-out on GROVE_V4+.
         backward_references_enabled: bool,
         propagate: bool,
@@ -1135,7 +1135,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                     &key,
                     layer_element_estimates,
                     append_tree_chunk_power,
-                    batch_apply_options.propagate_backward_references,
+                    batch_apply_options.backward_references_policy.maintains(),
                     false,
                     grove_version
                 )
@@ -1318,7 +1318,10 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
-            None,
+            Some(crate::batch::BatchApplyOptions {
+                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                ..Default::default()
+            }),
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
@@ -1396,7 +1399,10 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
-            None,
+            Some(crate::batch::BatchApplyOptions {
+                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                ..Default::default()
+            }),
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
@@ -1456,7 +1462,10 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
-            None,
+            Some(crate::batch::BatchApplyOptions {
+                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                ..Default::default()
+            }),
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
@@ -1531,7 +1540,10 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
-            None,
+            Some(crate::batch::BatchApplyOptions {
+                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                ..Default::default()
+            }),
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
@@ -1627,7 +1639,10 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
-            None,
+            Some(crate::batch::BatchApplyOptions {
+                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                ..Default::default()
+            }),
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
@@ -1720,7 +1735,10 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops,
-            None,
+            Some(crate::batch::BatchApplyOptions {
+                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                ..Default::default()
+            }),
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
@@ -1834,7 +1852,10 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
-            None,
+            Some(crate::batch::BatchApplyOptions {
+                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                ..Default::default()
+            }),
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))

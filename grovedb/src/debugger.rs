@@ -1762,7 +1762,7 @@ mod tests {
                     Some(vec![7]),
                 ),
                 Some(InsertOptions {
-                    propagate_backward_references: true,
+                    backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
                     ..Default::default()
                 }),
                 None,

@@ -16,19 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backward-references subsystem that keeps reference chains consistent:
   updating a referenced element propagates the new hash along every chain,
   and deleting/overwriting it cascades the chains away (each affected
-  reference must opt in via `cascade_on_update`). Opt-in per call through
-  the new `propagate_backward_references` flag on `InsertOptions` /
-  `DeleteOptions`. The referrer list is stored on the element itself under a
+  reference must opt in via `cascade_on_update`). Maintenance is automatic
+  on V4, with `BackwardReferencesPolicy::Skip` as an explicit opt-out. The referrer list is stored on the element itself under a
   two-layer hash (`combine(inner, backrefs)`), so registering a referrer
   never re-hashes what existing referrers committed to; public reads return
   the stripped element, and proofs authenticate these elements through the
   new `Node::KVBackwardsReferencesValueHash` wire node whose value hash the
   verifier recomputes. Requires `GROVE_V4`; earlier versions, V0 proofs, and
   `Provable*` aggregate parents reject the new variants (fail closed).
-  `apply_batch` supports the whole family when the batch opts in via
-  `BatchApplyOptions::propagate_backward_references`: a preprocessing pass
+  `apply_batch` supports the whole family by default: a preparation pass
   expands the batch into the derived registration/propagation/cascade
-  operations the live flagged flow performs (shared semantic core, so batch
+  operations the live flow performs (shared semantic core, so batch
   and non-batch execution produce byte-identical root hashes), including
   references whose targets are created in the same batch; conflicting
   combinations (a reference plus its target's deletion, a cascade hitting
@@ -52,6 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Updated proof verification logic to handle parent tree inclusion
 
 ### Changed
+- **BREAKING**: Replace `propagate_backward_references` in insert, delete,
+  and batch options with `backward_references_policy` (`Maintain` by default,
+  or explicit `Skip`). V4 observes old values through retained Merk nodes so
+  ordinary mutations need no separate old-value fetch for classification.
+  Partial batches reject displaced participants; subtree removal/replacement
+  refuses unsupported descendant maintenance before commit. Earlier protocol
+  versions retain their historical behavior.
 - Bumped the GroveDB workspace crates and their internal dependency requirements
   to **6.0.0** for the public API changes since 5.0.1. This package version is
   independent of the existing `GroveVersion` runtime compatibility versions.

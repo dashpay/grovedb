@@ -1645,6 +1645,8 @@ impl GroveDbOpConsistencyResults {
 
 /// Cache for Merk trees by their paths.
 struct TreeCacheMerkByPath<S, F, F2> {
+    backward_references_prepared: bool,
+    unprepared_subtree_removals: Vec<Vec<Vec<u8>>>,
     merks: HashMap<Vec<Vec<u8>>, Merk<S>>,
     /// Empty Merks reserved while scanning tree insertions, with no path
     /// operations applied yet. A skipped insertion must not carry its
@@ -1722,6 +1724,7 @@ impl<S, F, F2> fmt::Debug for TreeCacheMerkByPath<S, F, F2> {
 /// empty on V1..V3.
 #[derive(Default)]
 struct BatchApplyCaptures {
+    unprepared_subtree_removals: Vec<Vec<Vec<u8>>>,
     /// Cidx primary paths displaced by a safe-subset overwrite; their old
     /// primary subtree storage + per-axis secondary namespaces get cleared.
     cidx_overwrite_cleanup_paths: Vec<Vec<Vec<u8>>>,
@@ -1944,6 +1947,10 @@ trait TreeCache<G, SR> {
     /// (primary subtree + secondary namespace) must be cleaned up
     /// because a safe-subset overwrite replaced them with a non-cidx
     /// element or an empty cidx. Default impl returns an empty Vec.
+    fn take_unprepared_subtree_removals(&mut self) -> Vec<Vec<Vec<u8>>> {
+        Vec::new()
+    }
+
     fn take_cidx_overwrite_cleanup_paths(&mut self) -> Vec<Vec<Vec<u8>>> {
         Vec::new()
     }
@@ -2913,6 +2920,10 @@ where
         qualified_path.push(key.get_key_clone());
         self.pending_indexed_elements
             .insert(qualified_path, element.clone());
+    }
+
+    fn take_unprepared_subtree_removals(&mut self) -> Vec<Vec<Vec<u8>>> {
+        std::mem::take(&mut self.unprepared_subtree_removals)
     }
 
     fn take_cidx_overwrite_cleanup_paths(&mut self) -> Vec<Vec<Vec<u8>>> {
@@ -4498,6 +4509,39 @@ where
                 if old_value_gate_error.is_some() {
                     return;
                 }
+                if !self.backward_references_prepared
+                    && batch_apply_options.backward_references_policy.maintains()
+                    && grove_version
+                        .grovedb_versions
+                        .operations
+                        .insert
+                        .insert_on_transaction
+                        >= 2
+                {
+                    match Element::deserialize(old_value, grove_version) {
+                        Ok(element) => {
+                            if element.supports_backward_references() {
+                                old_value_gate_error = Some(Error::NotSupported(
+                                    "partial batches cannot mutate backward-reference participants; use a full batch".to_owned(),
+                                ));
+                                return;
+                            }
+                            if element.is_any_tree()
+                                && !element.uses_non_merk_data_storage()
+                                && (matches!(disposition, OldValueDisposition::Deleted)
+                                    || pending_overwrite_inspections.contains_key(key))
+                            {
+                                let mut qualified = path.clone();
+                                qualified.push(key.to_vec());
+                                self.unprepared_subtree_removals.push(qualified);
+                            }
+                        }
+                        Err(error) => {
+                            old_value_gate_error = Some(error.into());
+                            return;
+                        }
+                    }
+                }
                 match disposition {
                     OldValueDisposition::Replaced => {
                         let Some(new_element) = pending_overwrite_inspections.get(key) else {
@@ -5257,6 +5301,7 @@ impl GroveDb {
             if current_level == stop_level {
                 // we need to pause the batch execution
                 let captures = BatchApplyCaptures {
+                    unprepared_subtree_removals: merk_tree_cache.take_unprepared_subtree_removals(),
                     cidx_overwrite_cleanup_paths: merk_tree_cache
                         .take_cidx_overwrite_cleanup_paths(),
                     deleted_tree_actual_types: merk_tree_cache.take_deleted_tree_actual_types(),
@@ -5274,6 +5319,7 @@ impl GroveDb {
             current_level = current_level.saturating_sub(1);
         }
         let captures = BatchApplyCaptures {
+            unprepared_subtree_removals: merk_tree_cache.take_unprepared_subtree_removals(),
             cidx_overwrite_cleanup_paths: merk_tree_cache.take_cidx_overwrite_cleanup_paths(),
             deleted_tree_actual_types: merk_tree_cache.take_deleted_tree_actual_types(),
             indexed_mirror_rekey_churn_bytes: merk_tree_cache
@@ -5288,6 +5334,7 @@ impl GroveDb {
     /// Merk cache the body ran against so the apply can be continued on it.
     fn apply_body<'db, S, F, F2>(
         &self,
+        backward_references_prepared: bool,
         ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
         update_element_flags_function: impl FnMut(
@@ -5336,6 +5383,8 @@ impl GroveDb {
                 update_element_flags_function,
                 split_removed_bytes_function,
                 TreeCacheMerkByPath {
+                    backward_references_prepared,
+                    unprepared_subtree_removals: Vec::new(),
                     merks: Default::default(),
                     unused_new_merks: Default::default(),
                     skipped_insert_paths: Default::default(),
@@ -5642,9 +5691,10 @@ impl GroveDb {
                         validate_tree_at_path_exists: false,
                         // Same decision as `as_delete_options`: the batch's
                         // opt-in extends to its deletes.
-                        propagate_backward_references: options
+                        backward_references_policy: options
                             .as_ref()
-                            .is_some_and(|o| o.propagate_backward_references),
+                            .map(|o| o.backward_references_policy)
+                            .unwrap_or_default(),
                     };
                     cost_return_on_error!(
                         &mut cost,
@@ -6389,15 +6439,9 @@ impl GroveDb {
         Ok(scan).wrap_with_cost(cost)
     }
 
-    /// Backward-references family elements are only valid in batches that
-    /// opt into the bookkeeping via
-    /// `BatchApplyOptions::propagate_backward_references` (GROVE_V4+),
-    /// where the preprocessor expands them into the derived operations the
-    /// live flagged flow performs. Everywhere else (`allow_family` false:
-    /// unflagged batches, partial batches, partial-batch add-on ops) they
-    /// fail closed — the pipeline would otherwise silently produce
-    /// inconsistent backward-reference state (a `BidirectionalReference`
-    /// whose target never learns about it).
+    /// Family payloads require full-batch planning on V4 (the default policy).
+    /// Explicit Skip and partial batches reject them because those paths
+    /// cannot register their edges or plan cross-subtree reference mutations.
     fn reject_backward_references_elements_in_batch(
         ops: &[QualifiedGroveDbOp],
         allow_family: bool,
@@ -6433,7 +6477,7 @@ impl GroveDb {
                 if !allow_family {
                     return Err(Error::NotSupported(
                         "backward-references family elements require \
-                         BatchApplyOptions::propagate_backward_references (GROVE_V4+)"
+                         BatchApplyOptions::backward_references_policy (GROVE_V4+)"
                             .to_owned(),
                     ));
                 }
@@ -6522,13 +6566,37 @@ impl GroveDb {
             }
         }
 
-        // Backward-references bookkeeping is a per-batch opt-in, and rides
-        // the same activation as the live flagged flow (`GROVE_V4`+, where
-        // `insert_on_transaction` dispatches to v1).
+        let ops = if !check_batch_operation_consistency
+            && grove_version
+                .grovedb_versions
+                .operations
+                .insert
+                .insert_on_transaction
+                >= 2
+        {
+            let mut seen = HashSet::new();
+            let mut retained: Vec<_> = ops
+                .into_iter()
+                .rev()
+                .filter(|op| {
+                    op.key
+                        .as_ref()
+                        .map(|key| seen.insert((op.path.to_path(), key.get_key_clone())))
+                        .unwrap_or(true)
+                })
+                .collect();
+            retained.reverse();
+            retained
+        } else {
+            ops
+        };
+
+        // V4 maintains backward references by default. The prepared Merks
+        // carry observations into execution without fetching the nodes twice.
         let backward_references_enabled = batch_apply_options
             .as_ref()
-            .map(|options| options.propagate_backward_references)
-            .unwrap_or(false)
+            .map(|options| options.backward_references_policy.maintains())
+            .unwrap_or(true)
             && grove_version
                 .grovedb_versions
                 .operations
@@ -6539,12 +6607,14 @@ impl GroveDb {
             cost,
             Self::reject_backward_references_elements_in_batch(&ops, backward_references_enabled)
         );
-        let ops = if backward_references_enabled {
-            let ops = cost_return_on_error!(
+        let storage_batch = StorageBatch::new();
+        let (ops, prepared_merks) = if backward_references_enabled {
+            let (ops, prepared_merks) = cost_return_on_error!(
                 &mut cost,
                 backward_references::expand_backward_references_ops(
                     self,
-                    &tx,
+                    tx.as_ref(),
+                    &storage_batch,
                     ops,
                     batch_apply_options
                         .as_ref()
@@ -6567,10 +6637,11 @@ impl GroveDb {
                     .wrap_with_cost(cost);
                 }
             }
-            ops
+            (ops, prepared_merks)
         } else {
-            ops
+            (ops, HashMap::new())
         };
+        let mut prepared_merks = prepared_merks;
 
         cost_return_on_error!(
             &mut cost,
@@ -6581,10 +6652,6 @@ impl GroveDb {
                 grove_version,
             )
         );
-
-        // `StorageBatch` collects all operations (preprocessing + apply_body)
-        // for a single atomic commit at the end.
-        let storage_batch = StorageBatch::new();
 
         // Preprocess CommitmentTreeInsert ops: execute Sinsemilla operations
         // then convert to ReplaceTreeRootKey ops
@@ -6675,11 +6742,17 @@ impl GroveDb {
         let (_leftover, batch_apply_captures, _, _) = cost_return_on_error!(
             &mut cost,
             self.apply_body(
+                true,
                 ops,
                 batch_apply_options,
                 update_element_flags_function,
                 split_removal_bytes_function,
                 |path, new_merk| {
+                    if let Some(merk) = prepared_merks.remove(path)
+                        && !new_merk
+                    {
+                        return Ok(merk).wrap_with_cost(OperationCost::default());
+                    }
                     self.open_batch_transactional_merk_at_path(
                         &storage_batch,
                         path.into(),
@@ -6704,7 +6777,10 @@ impl GroveDb {
             )
         );
 
+        drop(prepared_merks);
+
         let BatchApplyCaptures {
+            unprepared_subtree_removals: _,
             cidx_overwrite_cleanup_paths,
             deleted_tree_actual_types,
             indexed_mirror_rekey_churn_bytes,
@@ -7112,6 +7188,7 @@ impl GroveDb {
         ) = cost_return_on_error!(
             &mut cost,
             self.apply_body(
+                false,
                 ops,
                 Some(batch_apply_options.clone()),
                 &mut update_element_flags_function,
@@ -7459,15 +7536,31 @@ impl GroveDb {
         );
 
         let BatchApplyCaptures {
+            unprepared_subtree_removals: partial_subtree_removals,
             cidx_overwrite_cleanup_paths: partial_cidx_overwrite_cleanup_paths,
             deleted_tree_actual_types: partial_deleted_tree_actual_types,
             indexed_mirror_rekey_churn_bytes: partial_rekey_churn_bytes,
         } = partial_captures;
         let BatchApplyCaptures {
+            unprepared_subtree_removals: continue_subtree_removals,
             cidx_overwrite_cleanup_paths: continue_cidx_overwrite_cleanup_paths,
             deleted_tree_actual_types: continue_deleted_tree_actual_types,
             indexed_mirror_rekey_churn_bytes: continue_rekey_churn_bytes,
         } = continue_captures;
+
+        for path in partial_subtree_removals
+            .into_iter()
+            .chain(continue_subtree_removals)
+        {
+            if !cost_return_on_error!(
+                &mut cost,
+                self.backward_reference_participants(&path, tx.as_ref(), grove_version)
+            )
+            .is_empty()
+            {
+                return Err(Error::NotSupported("partial batches cannot remove subtrees containing backward-reference participants; use a full batch or live delete".to_owned())).wrap_with_cost(cost);
+            }
+        }
 
         // V4+: fold captures from BOTH applies into the cleanup lists
         // (no-op on V1..V3). The overwrite-cleanup paths are unioned below.
@@ -7921,7 +8014,7 @@ mod tests {
                     disable_operation_consistency_check: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
-                    propagate_backward_references: false,
+                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
                 }),
                 None,
                 grove_version
@@ -8527,7 +8620,7 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
-                    propagate_backward_references: false,
+                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
                 }),
                 None,
                 grove_version
@@ -8569,7 +8662,7 @@ mod tests {
                     validate_insertion_does_not_override: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
-                    propagate_backward_references: false,
+                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
                 }),
                 None,
                 grove_version
@@ -8603,7 +8696,7 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
-                    propagate_backward_references: false,
+                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
                 }),
                 None,
                 grove_version

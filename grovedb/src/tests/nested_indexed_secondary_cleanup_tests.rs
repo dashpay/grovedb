@@ -84,15 +84,31 @@ mod tests {
                 SubelementsDeletionBehavior::DeleteChildren,
             )];
             let result = match route {
-                DeleteRoute::FullBatch => db.apply_batch(ops, None, None, gv),
-                DeleteRoute::PartialBatch => {
-                    db.apply_partial_batch(ops, None, |_, _| Ok(vec![]), None, gv)
-                }
+                DeleteRoute::FullBatch => db.apply_batch(
+                    ops,
+                    Some(BatchApplyOptions {
+                        backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                        ..Default::default()
+                    }),
+                    None,
+                    gv,
+                ),
+                DeleteRoute::PartialBatch => db.apply_partial_batch(
+                    ops,
+                    Some(BatchApplyOptions {
+                        backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                        ..Default::default()
+                    }),
+                    |_, _| Ok(vec![]),
+                    None,
+                    gv,
+                ),
                 DeleteRoute::Direct => db.delete(
                     &[b"parent".as_slice()],
                     b"child",
                     Some(DeleteOptions {
                         allow_deleting_non_empty_trees: true,
+                        backward_references_policy: crate::BackwardReferencesPolicy::Skip,
                         deleting_non_empty_trees_returns_error: false,
                         ..Default::default()
                     }),

@@ -2,7 +2,7 @@
 //!
 //! A behaviour-preserving router. A call that neither inserts a
 //! [`Element::BidirectionalReference`] nor sets
-//! [`InsertOptions::propagate_backward_references`] runs the exact shipped
+//! [`InsertOptions::backward_references_policy`] runs the exact shipped
 //! flow ([`super::v0::insert_on_transaction_body`]) — identical root hashes
 //! and costs. The rest run through the `MerkCache`-based flow below, which
 //! keeps every touched subtree open in one cache so backward-reference
@@ -15,7 +15,7 @@
 //! The `MerkCache` flow supports items, references (all three variants),
 //! and empty plain-Merk trees. Specialized tree types (commitment / MMR /
 //! bulk-append / dense / private document store / indexed trees) and the
-//! aggregation wrappers are rejected when `propagate_backward_references`
+//! aggregation wrappers are rejected when `backward_references_policy`
 //! is set — their child-hash conventions live in
 //! `add_element_on_transaction` and have no backward-references semantics
 //! yet. Insert them without the flag (they cannot be targeted by
@@ -72,7 +72,7 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
     // meta storage, flag or no flag; everything else opts into the
     // backward-references flow via the flag.
     if matches!(element, Element::BidirectionalReference(..))
-        || options.propagate_backward_references
+        || options.backward_references_policy.maintains()
     {
         insert_with_backward_references(
             db,
@@ -266,7 +266,7 @@ fn insert_with_backward_references<'db, 'b, B: AsRef<[u8]>>(
             // targeted by bidirectional references. Insert them without the
             // flag.
             return Err(Error::NotSupported(
-                "this element type cannot be inserted with propagate_backward_references set; \
+                "this element type cannot be inserted with backward_references_policy set; \
                  insert it without the flag"
                     .to_owned(),
             ))

@@ -1,5 +1,5 @@
 //! Estimated-cost coverage for backward-references batch ops (batching
-//! M5): under `BatchApplyOptions::propagate_backward_references`, the
+//! M5): under `BatchApplyOptions::backward_references_policy`, the
 //! GROVE_V4 estimators charge the derived fan-out (registration, chain
 //! propagation, cascade deletion) so `worst-case estimate >= actual` holds
 //! for flagged family batches, while pre-V4 estimation stays byte-stable
@@ -33,7 +33,7 @@ use crate::{
 
 fn batch_flag_on() -> Option<BatchApplyOptions> {
     Some(BatchApplyOptions {
-        propagate_backward_references: true,
+        backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
         ..Default::default()
     })
 }
@@ -218,7 +218,7 @@ fn worst_case_estimate_covers_bidi_insert_with_in_batch_target() {
 }
 
 #[test]
-fn fan_out_terms_activate_only_with_the_flag() {
+fn fan_out_terms_are_default_and_skip_disables_them() {
     let grove_version = GroveVersion::latest();
 
     let family_op = || {
@@ -229,16 +229,34 @@ fn fan_out_terms_activate_only_with_the_flag() {
         )]
     };
 
-    // Flag on adds the fan-out on GROVE_V4+…
-    let flagged = worst_case_estimate(family_op(), batch_flag_on(), grove_version);
-    let unflagged = worst_case_estimate(family_op(), None, grove_version);
+    // Automatic maintenance includes fan-out on GROVE_V4+.
+    let flagged = worst_case_estimate(family_op(), None, grove_version);
+    assert_eq!(
+        flagged,
+        worst_case_estimate(family_op(), batch_flag_on(), grove_version)
+    );
+    let unflagged = worst_case_estimate(
+        family_op(),
+        Some(crate::batch::BatchApplyOptions {
+            backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            ..Default::default()
+        }),
+        grove_version,
+    );
     assert!(
         flagged.seek_count > unflagged.seek_count
             && flagged.storage_cost.replaced_bytes > unflagged.storage_cost.replaced_bytes,
         "the flag must activate the fan-out terms: {flagged:?} vs {unflagged:?}"
     );
     let flagged_avg = average_case_estimate(family_op(), batch_flag_on(), grove_version);
-    let unflagged_avg = average_case_estimate(family_op(), None, grove_version);
+    let unflagged_avg = average_case_estimate(
+        family_op(),
+        Some(crate::batch::BatchApplyOptions {
+            backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            ..Default::default()
+        }),
+        grove_version,
+    );
     assert!(flagged_avg.seek_count > unflagged_avg.seek_count);
 
     // …and a PLAIN-item op also charges the displaced-state fan-out under
@@ -251,7 +269,14 @@ fn fan_out_terms_activate_only_with_the_flag() {
         Element::new_item(b"hello".to_vec()),
     )];
     let flagged_plain = worst_case_estimate(plain_op.clone(), batch_flag_on(), grove_version);
-    let unflagged_plain = worst_case_estimate(plain_op, None, grove_version);
+    let unflagged_plain = worst_case_estimate(
+        plain_op,
+        Some(crate::batch::BatchApplyOptions {
+            backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            ..Default::default()
+        }),
+        grove_version,
+    );
     assert!(
         flagged_plain.seek_count > unflagged_plain.seek_count,
         "plain writes must charge the displaced-state bound under the flag"

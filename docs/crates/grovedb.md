@@ -432,3 +432,10 @@ GroveDB is designed with several core principles:
 - Query language enhancements
 - Improved proof compression
 - Performance optimizations
+
+
+On Grove V4, insert, delete, and full-batch options default to
+`BackwardReferencesPolicy::Maintain`. Old-value preparation retains fetched
+Merk nodes for the mutation. `BackwardReferencesPolicy::Skip` is an explicit
+opt-out that permits stale or dangling references. See
+[the bidirectional references design](../../adr/bidirectional_references.md).

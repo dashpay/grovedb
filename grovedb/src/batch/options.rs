@@ -77,14 +77,12 @@ pub struct BatchApplyOptions {
     /// At what height do we want to pause applying batch operations
     /// Most of the time this should be not set
     pub batch_pause_height: Option<u8>,
-    /// Opt into backward-references bookkeeping for this batch: ops
-    /// carrying the backward-references family (`BidirectionalReference`
-    /// and the three backward-references item variants) become valid, and
-    /// the batch expands into the derived registration / propagation /
-    /// cascade operations the live flagged flow would perform — including
-    /// references whose targets are created in the same batch. See
-    /// `batch::backward_references` for the expansion and conflict rules.
-    pub propagate_backward_references: bool,
+    /// Maintain registrations, propagate updates, and cascade deletions by
+    /// default on V4. Old values are observed in Merks retained for execution.
+    /// `Skip` deliberately permits stale/dangling references and rejects
+    /// family payloads. Partial batches reject participant mutations while
+    /// maintenance is enabled; use a full batch for reference planning.
+    pub backward_references_policy: crate::BackwardReferencesPolicy,
 }
 
 #[cfg(feature = "minimal")]
@@ -96,7 +94,7 @@ impl Default for BatchApplyOptions {
             disable_operation_consistency_check: false,
             base_root_storage_is_free: true,
             batch_pause_height: None,
-            propagate_backward_references: false,
+            backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
         }
     }
 }
@@ -110,7 +108,7 @@ impl BatchApplyOptions {
             validate_insertion_does_not_override_tree: self
                 .validate_insertion_does_not_override_tree,
             base_root_storage_is_free: self.base_root_storage_is_free,
-            propagate_backward_references: self.propagate_backward_references,
+            backward_references_policy: self.backward_references_policy,
         }
     }
 
@@ -121,11 +119,8 @@ impl BatchApplyOptions {
             deleting_non_empty_trees_returns_error: true,
             base_root_storage_is_free: self.base_root_storage_is_free,
             validate_tree_at_path_exists: false,
-            // Forwarded like `as_insert_options` does: a batch that opts
-            // into backward-references bookkeeping keeps its deletes
-            // flagged too, so registered targets cascade instead of
-            // silently dangling.
-            propagate_backward_references: self.propagate_backward_references,
+            // Preserve the batch's maintenance policy for generated deletes.
+            backward_references_policy: self.backward_references_policy,
         }
     }
 

@@ -15,6 +15,7 @@ mod append_family_cost_bound_tests;
 mod append_layer_direction_tests;
 mod append_layer_limit_accounting_tests;
 mod append_storage_accounting_tests;
+mod automatic_backward_references_tests;
 mod batch_backward_references_cost_tests;
 mod batch_backward_references_tests;
 mod batch_coverage_tests;
@@ -4975,7 +4976,7 @@ mod general_tests {
                 None,
             ),
             Some(InsertOptions {
-                propagate_backward_references: true,
+                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             Some(&transaction),
@@ -4997,7 +4998,7 @@ mod general_tests {
                 None,
             ),
             Some(InsertOptions {
-                propagate_backward_references: true,
+                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             Some(&transaction),
@@ -5019,7 +5020,7 @@ mod general_tests {
                 None,
             ),
             Some(InsertOptions {
-                propagate_backward_references: true,
+                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             Some(&transaction),
@@ -5039,7 +5040,7 @@ mod general_tests {
             b"value",
             Element::new_item_allowing_bidirectional_references(b"not hello >:(".to_vec()),
             Some(InsertOptions {
-                propagate_backward_references: true,
+                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             Some(&transaction),
@@ -5130,7 +5131,17 @@ mod general_tests {
                 let before = db.root_hash(None, grove_version).unwrap().unwrap();
                 let ops = vec![valid_op(b"a_valid"), rejected_op.clone()];
                 let result = match phase {
-                    "ordinary" => db.apply_batch(ops, None, None, grove_version).unwrap(),
+                    "ordinary" => db
+                        .apply_batch(
+                            ops,
+                            Some(crate::batch::BatchApplyOptions {
+                                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                                ..Default::default()
+                            }),
+                            None,
+                            grove_version,
+                        )
+                        .unwrap(),
                     "initial" => db
                         .apply_partial_batch(
                             ops,

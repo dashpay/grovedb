@@ -1586,19 +1586,15 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                // Identical to the `_v3_keeps_live_costs` companion below:
-                // `overwrite_indexed_cleanup_inspection >= 1` (V4+, which is
-                // what `latest()` resolves to) classifies each overwritten
-                // element for indexed-overwrite detection, but it does so
-                // from the old value the merk walk already fetched, so the
-                // gate adds no seeks and no loaded bytes over V1..V3.
-                seek_count: 7,
+                // V4 preparation retains the refreshed node, saving one seek
+                // and 129 loaded bytes compared with the historical route.
+                seek_count: 6,
                 storage_cost: StorageCost {
                     added_bytes: 4,
                     replaced_bytes: 285,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 380,
+                storage_loaded_bytes: 251,
                 hash_node_calls: 12,
                 sinsemilla_hash_calls: 0,
             }
@@ -1651,9 +1647,17 @@ mod tests {
                     Element::empty_tree(),
                 ),
             ];
-            db.apply_batch(ops, None, Some(&tx), grove_version)
-                .value
-                .expect("expected to execute setup batch");
+            db.apply_batch(
+                ops,
+                Some(crate::batch::BatchApplyOptions {
+                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                    ..Default::default()
+                }),
+                Some(&tx),
+                grove_version,
+            )
+            .value
+            .expect("expected to execute setup batch");
 
             // Every op shape the V4 gates watch: an item overwrite via
             // InsertOrReplace, a reference overwrite via Replace, and a
@@ -1676,7 +1680,15 @@ mod tests {
                     SubelementsDeletionBehavior::Error,
                 ),
             ];
-            db.apply_batch(ops, None, Some(&tx), grove_version)
+            db.apply_batch(
+                ops,
+                Some(crate::batch::BatchApplyOptions {
+                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                    ..Default::default()
+                }),
+                Some(&tx),
+                grove_version,
+            )
         };
 
         let v3 = run(&grovedb_version::version::v3::GROVE_V3);
