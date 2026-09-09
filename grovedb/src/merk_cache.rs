@@ -338,6 +338,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
 
     /// Consumes `MerkCache` into accumulated batch of uncommitted operations
     /// with subtrees' root hash propagation done.
+    #[cfg(test)]
     pub(crate) fn into_batch(mut self) -> CostResult<Box<StorageBatch>, Error> {
         let mut cost = Default::default();
         cost_return_on_error!(&mut cost, self.propagate_subtrees());
@@ -349,60 +350,6 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
     }
 
     fn propagate_subtrees(&mut self) -> CostResult<(), Error> {
-        let mut cost = Default::default();
-
-        // This relies on [SubtreePath]'s ordering implementation to put the deepest
-        // path's first.
-        while let Some((path, flag_and_merk)) = self.merks.get_mut().pop_first() {
-            let Subtree::LoadedMerk(merk) = flag_and_merk.1 else {
-                continue;
-            };
-
-            if let Some((parent_path, parent_key)) = path.derive_parent_owned() {
-                // Error handling here ensures that it is not a major issue if the
-                // parent Merk was marked as deleted. `MerkCache` is not responsible for
-                // determining how a subtree ended up deleted, especially when some of
-                // its child subtrees still have changes. This situation can arise when
-                // a more efficient deletion process occurs outside the cache without
-                // spending extra time marking entries within it, but still marking the
-                // root of deletion as gone to prevent further propagations and wrong
-                // re-insertions.
-                let mut parent_merk = match self.get_merk(parent_path).unwrap_add_cost(&mut cost) {
-                    Ok(merk) => merk,
-                    Err(Error::MerkCacheSubtreeDeleted(_)) => continue,
-                    // The parent element is already gone from ITS parent (a
-                    // recursive deletion removed it without marking every
-                    // descendant in this cache) — same situation as the
-                    // explicit deleted marker above, so propagate nothing.
-                    Err(Error::PathKeyNotFound(_)) => continue,
-                    Err(e) => return Err(e).wrap_with_cost(cost),
-                };
-
-                let (root_hash, root_key, aggregate_data) = cost_return_on_error!(
-                    &mut cost,
-                    merk.root_hash_key_and_aggregate_data()
-                        .map_err(Error::MerkError)
-                );
-                cost_return_on_error!(
-                    &mut cost,
-                    parent_merk.for_merk(|m| GroveDb::update_tree_item_preserve_flag(
-                        m,
-                        parent_key,
-                        root_key,
-                        root_hash,
-                        aggregate_data,
-                        self.version,
-                    ))
-                );
-            }
-        }
-
-        Ok(()).wrap_with_cost(cost)
-    }
-
-    /// Finalize automatic maintenance into the caller-owned batch. Kept
-    /// separate from historical cache propagation to preserve replay behavior.
-    pub(crate) fn finish_prepared(mut self) -> CostResult<(), Error> {
         let mut cost = Default::default();
 
         // This relies on [SubtreePath]'s ordering implementation to put the deepest
@@ -457,6 +404,11 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
         }
 
         Ok(()).wrap_with_cost(cost)
+    }
+
+    /// Finalize automatic maintenance into the caller-owned batch.
+    pub(crate) fn finish_prepared(mut self) -> CostResult<(), Error> {
+        self.propagate_subtrees()
     }
 }
 

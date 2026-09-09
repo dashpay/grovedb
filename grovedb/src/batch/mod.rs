@@ -4516,7 +4516,7 @@ where
                         .operations
                         .insert
                         .insert_on_transaction
-                        >= 2
+                        >= 1
                 {
                     match Element::deserialize(old_value, grove_version) {
                         Ok(element) => {
@@ -6572,7 +6572,7 @@ impl GroveDb {
                 .operations
                 .insert
                 .insert_on_transaction
-                >= 2
+                >= 1
         {
             let mut seen = HashSet::new();
             let mut retained: Vec<_> = ops

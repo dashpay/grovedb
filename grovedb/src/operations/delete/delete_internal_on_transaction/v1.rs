@@ -71,7 +71,7 @@ impl GroveDb {
             &mut cost,
             self.get_raw(path.clone(), key.as_ref(), Some(transaction), grove_version)
         );
-        let mut subtree_to_delete_from = cost_return_on_error!(
+        let subtree_to_delete_from = cost_return_on_error!(
             &mut cost,
             self.open_transactional_merk_at_path(
                 path.clone(),
@@ -80,6 +80,44 @@ impl GroveDb {
                 grove_version
             )
         );
+        self.delete_prepared_ordinary_v1(
+            element,
+            subtree_to_delete_from,
+            path,
+            key,
+            options,
+            transaction,
+            sectioned_removal,
+            batch,
+            grove_version,
+        )
+        .add_cost(cost)
+    }
+
+    /// Delete on a transaction, reusing the already-open (correctly labeled)
+    /// parent Merk when deleting a non-empty child tree. `GROVE_V4`+; see
+    /// the module docs.
+    pub(crate) fn delete_prepared_ordinary_v1<B: AsRef<[u8]>>(
+        &self,
+        element: Element,
+        mut subtree_to_delete_from: Merk<PrefixedRocksDbTransactionContext>,
+        path: SubtreePath<B>,
+        key: &[u8],
+        options: &DeleteOptions,
+        transaction: &Transaction,
+        sectioned_removal: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            MerkError,
+        >,
+        batch: &StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<bool, Error> {
+        let mut cost = OperationCost::default();
+
         // A generic delete cannot mirror the removed child's ordering value
         // out of an indexed primary's secondary index. Reject before any
         // mutation.

@@ -33,20 +33,17 @@
 //! The two implementations differ ONLY in that non-empty-child-tree branch;
 //! everything else is identical. See [v0] / [v1].
 //!
-//! * **[v2]** — the earlier opt-in reference-maintenance router.
-//! * **v3** — V4 automatic maintenance with cached old-value observation.
+//! * **[v2]** — V4 automatic maintenance with cached old-value observation.
 //!   Ordinary deletions retain indexed propagation and specialized cleanup.
-//!   `Skip` selects the historical v1 route explicitly.
+//!   `Skip` selects the ordinary v1 route explicitly.
 
 //! [v0]: self::v0
 //! [v1]: self::v1
 //! [v2]: self::v2
 
-mod ordinary_v3;
 mod v0;
 mod v1;
 mod v2;
-mod v3;
 
 use grovedb_costs::{
     storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt, OperationCost,
@@ -115,19 +112,10 @@ impl GroveDb {
                 batch,
                 grove_version,
             ),
-            3 => self.delete_internal_on_transaction_v3(
-                path,
-                key,
-                options,
-                transaction,
-                sectioned_removal,
-                batch,
-                grove_version,
-            ),
             version => Err(
                 grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
                     method: "delete_internal_on_transaction".to_string(),
-                    known_versions: vec![0, 1, 2, 3],
+                    known_versions: vec![0, 1, 2],
                     received: version,
                 }
                 .into(),

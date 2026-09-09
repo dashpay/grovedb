@@ -8,14 +8,12 @@
 //!   backward-references element family (`BidirectionalReference`,
 //!   `ItemWithBackwardsReferences`, `SumItemWithBackwardsReferences`), which
 //!   activates with `GROVE_V4`.
-//! * **v1** — the earlier opt-in implementation, retained separately.
-//! * **v2** — V4 automatic maintenance. Observes old values before mutation,
+//! * **[v1]** — V4 automatic maintenance. Observes old values before mutation,
 //!   retaining the fetched nodes for execution. Ordinary values retain indexed
 //!   propagation; participants use the reference cache and shared planners.
 
 mod v0;
 mod v1;
-mod v2;
 
 use grovedb_costs::CostResult;
 use grovedb_path::SubtreePath;
@@ -59,18 +57,6 @@ impl GroveDb {
             }
             1 => {
                 v1::insert_on_transaction(
-                    self,
-                    path,
-                    key,
-                    element,
-                    options,
-                    transaction,
-                    batch,
-                    grove_version,
-                )
-            }
-            2 => {
-                v2::insert_on_transaction(
                     self,
                     path,
                     key,
