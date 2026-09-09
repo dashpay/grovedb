@@ -614,7 +614,7 @@ impl<'db, 'g> Expansion<'db, 'g> {
 /// Expand `ops` with the derived operations the backward-references rules
 /// require, per the module documentation.
 ///
-/// `flag_on` is the batch's `propagate_backward_references_when_unsure`.
+/// `propagate_backward_references_when_unsure` is the batch option of the same name.
 /// With it set every op gets the bookkeeping; without it the pass runs in
 /// per-op mode for the `DeleteWithCascade` ops the batch carries — the
 /// other ops are not read (they pay nothing extra) and only their certain
@@ -624,7 +624,7 @@ pub(super) fn expand_backward_references_ops(
     db: &GroveDb,
     tx: &TxRef<'_, '_>,
     ops: Vec<QualifiedGroveDbOp>,
-    flag_on: bool,
+    propagate_backward_references_when_unsure: bool,
     validate_insertion_does_not_override: bool,
     grove_version: &GroveVersion,
 ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
@@ -679,7 +679,7 @@ pub(super) fn expand_backward_references_ops(
     // `DeleteWithCascade` under a subtree the same batch creates has
     // nothing to delete; its previous-state read fails the batch, which is
     // the fail-closed outcome.)
-    if flag_on {
+    if propagate_backward_references_when_unsure {
         let mut tree_write_positions: Vec<Position> = expansion
             .ops
             .iter()
@@ -736,7 +736,7 @@ pub(super) fn expand_backward_references_ops(
             | GroveOp::Patch { element, .. }
             | GroveOp::InsertIfNotExists { element, .. }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element } => {
-                if !flag_on {
+                if !propagate_backward_references_when_unsure {
                     // Per-op mode: writes carry no bookkeeping (family
                     // payloads were rejected upstream) and are not read.
                     // Stage the ones that certainly land so a cascade
@@ -905,7 +905,7 @@ pub(super) fn expand_backward_references_ops(
                 let check = match op_kind {
                     GroveOp::DeleteWithCascade => true,
                     GroveOp::DeleteWithNoBackwardsReferenceCheck => false,
-                    _ => flag_on,
+                    _ => propagate_backward_references_when_unsure,
                 };
                 if !check {
                     // No read, no bookkeeping: the position simply goes
@@ -967,7 +967,7 @@ pub(super) fn expand_backward_references_ops(
                 flags,
                 ..
             } => {
-                if !flag_on {
+                if !propagate_backward_references_when_unsure {
                     // Per-op mode: a refresh is an ordinary unflagged write
                     // (not read, not staged — the rebuilt shape needs the
                     // stored one).
