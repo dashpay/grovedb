@@ -257,6 +257,13 @@ pub struct GroveDBOperationsVersions {
 /// `DenseAppendOnlyFixedSizeTree`, `PrivateDocumentStore`).
 #[derive(Clone, Debug, Default)]
 pub struct GroveDBOperationsNonMerkTreeVersions {
+    /// Recursive discovery of non-Merk descendant namespaces (issue #890).
+    ///
+    /// - `0` (V1..V3): traverse every tree as Merk storage, preserving
+    ///   historical costs for empty namespaces and errors for populated ones.
+    /// - `1` (V4+): include non-Merk descendants in cleanup without decoding
+    ///   their records as Merk nodes. They cannot contain child subtrees.
+    pub subtree_discovery: FeatureVersion,
     /// How a typed write (a direct append, or the batch
     /// `ReplaceNonMerkTreeRoot` op every batch append preprocesses into)
     /// rebuilds the parent-Merk element that anchors the tree.
