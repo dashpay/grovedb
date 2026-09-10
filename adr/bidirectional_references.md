@@ -67,7 +67,8 @@ intentionally bypass maintenance.
 
 The feature activates with **`GROVE_V4`**. Earlier protocol versions reject the
 four variants and retain their historical execution and cost behavior. V4
-selects `insert_on_transaction` v1 and `delete_internal_on_transaction` v2;
+selects `insert_on_transaction` v1, `delete_internal_on_transaction` v2, and
+`apply_batch.backward_references_maintenance` 1;
 the older implementations remain separate.
 
 Current limitations:

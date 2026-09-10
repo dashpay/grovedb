@@ -147,6 +147,10 @@
 //!   apply path is unaffected on every version (preprocessing rewrites
 //!   keyless ops before the batch structure is built).
 //!
+//! - `apply_batch.backward_references_maintenance: 1` — batches maintain
+//!   backward references by default: planner preparation with retained
+//!   old-value reads, the partial-batch participant gate, and explicit
+//!   `Skip` for `DropFlat`.
 //! - `apply_batch.non_merk_parent_keyed_ops_rejection: 1` — batch execution
 //!   refuses ordinary keyed ops at a level whose parent is a non-Merk data
 //!   tree (`CommitmentTree`, `MmrTree`, `BulkAppendTree`, `DenseTree`,
@@ -353,6 +357,10 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             keyless_op_cost_dispatch: 1,
             add_on_op_collision: 1,
             non_merk_parent_keyed_ops_rejection: 1,
+            // v1: batches maintain backward references by default — planner
+            // preparation with retained old-value reads, the partial-batch
+            // participant gate, and explicit Skip for DropFlat.
+            backward_references_maintenance: 1,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,

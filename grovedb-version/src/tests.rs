@@ -575,16 +575,29 @@ fn delete_internal_on_transaction_is_legacy_until_v4() {
 #[test]
 fn backward_references_flows_activate_at_v4() {
     // The backward-references feature (PR #345) gates on GROVE_V4: the
-    // insert router (v1), the delete router (v2, above), and the
-    // element-level insert_if_changed_value Merk-read variant (v1). All
-    // shipped versions stay at 0.
+    // insert router (v1), the delete router (v2, above), the batch
+    // maintenance slot (v1), and the element-level insert_if_changed_value
+    // Merk-read variant (v1). All shipped versions stay at 0.
     for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3] {
         assert_eq!(
             v.grovedb_versions.operations.insert.insert_on_transaction,
             0
         );
+        assert_eq!(
+            v.grovedb_versions
+                .apply_batch
+                .backward_references_maintenance,
+            0
+        );
         assert_eq!(v.grovedb_versions.element.insert_if_changed_value, 0);
     }
+    assert_eq!(
+        GROVE_V4
+            .grovedb_versions
+            .apply_batch
+            .backward_references_maintenance,
+        1
+    );
     assert_eq!(
         GROVE_V4
             .grovedb_versions

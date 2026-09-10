@@ -115,4 +115,49 @@ impl GroveDb {
             .wrap_with_cost(OperationCost::default()),
         }
     }
+
+    /// Adds `element` into a Merk the caller already opened and observed at
+    /// `path`, without propagating: the caller owns the Merk and its parent
+    /// update. Dispatched on the same slot as
+    /// [`Self::add_element_on_transaction`]; only v2 exposes its body this
+    /// way, so earlier slots are an unknown-version error rather than a
+    /// silent fallback.
+    pub(crate) fn add_element_to_cached_merk<'db, B: AsRef<[u8]>>(
+        &'db self,
+        subtree_to_insert_into: &mut Merk<PrefixedRocksDbTransactionContext<'db>>,
+        path: SubtreePath<B>,
+        key: &[u8],
+        element: Element,
+        options: InsertOptions,
+        transaction: &'db Transaction,
+        batch: &'db StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        match grove_version
+            .grovedb_versions
+            .operations
+            .insert
+            .add_element_on_transaction
+        {
+            2 => self.add_element_to_cached_merk_v2(
+                subtree_to_insert_into,
+                path,
+                key,
+                element,
+                options,
+                transaction,
+                batch,
+                grove_version,
+            ),
+            version => Err(
+                grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                    method: "add_element_to_cached_merk".to_string(),
+                    known_versions: vec![2],
+                    received: version,
+                }
+                .into(),
+            )
+            .wrap_with_cost(OperationCost::default()),
+        }
+    }
 }

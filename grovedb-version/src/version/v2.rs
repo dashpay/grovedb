@@ -43,6 +43,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             keyless_op_cost_dispatch: 0,
             add_on_op_collision: 0,
             non_merk_parent_keyed_ops_rejection: 0,
+            backward_references_maintenance: 0,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,

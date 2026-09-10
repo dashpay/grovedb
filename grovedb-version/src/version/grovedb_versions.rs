@@ -234,6 +234,21 @@ pub struct GroveDBApplyBatchVersions {
     ///   `ReplaceNonMerkTreeRoot` ops at the PARENT level, which never
     ///   dispatches into the non-Merk tree's own path.
     pub non_merk_parent_keyed_ops_rejection: FeatureVersion,
+    /// Whether batches maintain backward references automatically.
+    ///
+    /// - `0` (V1..V3): no reference planning. Backward-reference family
+    ///   payloads are rejected, ordinary ops run the released executor
+    ///   unchanged, and `DropFlat` needs no policy.
+    /// - `1` (V4+): under `BackwardReferencesPolicy::Maintain` (the default)
+    ///   the batch is prepared through the backward-references planner, whose
+    ///   old-value reads are retained for execution; partial batches refuse
+    ///   participant mutations through the old-value gate; and `DropFlat`
+    ///   requires an explicit `Skip`. `Skip` keeps the released executor.
+    ///
+    /// This slot owns the batch surface. The live insert and delete routers
+    /// are versioned by their own `insert_on_transaction` and
+    /// `delete_internal_on_transaction` slots.
+    pub backward_references_maintenance: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

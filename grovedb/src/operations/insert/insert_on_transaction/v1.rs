@@ -54,24 +54,6 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
             grove_version,
         );
     }
-    if grove_version
-        .grovedb_versions
-        .operations
-        .insert
-        .add_element_on_transaction
-        != 2
-    {
-        return super::v0::insert_on_transaction_body(
-            db,
-            path,
-            key,
-            element,
-            options,
-            transaction,
-            batch,
-            grove_version,
-        );
-    }
     let mut cost = Default::default();
     let mut merk = cost_return_on_error!(
         &mut cost,
@@ -150,7 +132,7 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
     if !needs_maintenance {
         cost_return_on_error!(
             &mut cost,
-            db.add_element_to_cached_merk_v2(
+            db.add_element_to_cached_merk(
                 &mut merk,
                 path.clone(),
                 key,
@@ -205,7 +187,7 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
         if !unchanged_family {
             cost_return_on_error!(
                 &mut cost,
-                handle.for_merk(|merk| db.add_element_to_cached_merk_v2(
+                handle.for_merk(|merk| db.add_element_to_cached_merk(
                     merk,
                     path.clone(),
                     key,

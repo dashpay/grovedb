@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   updating a referenced element propagates the new hash along every chain,
   and deleting/overwriting it cascades the chains away (each affected
   reference must opt in via `cascade_on_update`). Maintenance is automatic
-  on V4, with `BackwardReferencesPolicy::Skip` as an explicit opt-out. The referrer list is stored on the element itself under a
+  on V4, with `BackwardReferencesPolicy::Skip` as an explicit opt-out; batch
+  maintenance is gated by the new `apply_batch.backward_references_maintenance`
+  version slot. The referrer list is stored on the element itself under a
   two-layer hash (`combine(inner, backrefs)`), so registering a referrer
   never re-hashes what existing referrers committed to; public reads return
   the stripped element, and proofs authenticate these elements through the
