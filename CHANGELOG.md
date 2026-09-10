@@ -47,6 +47,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DropFlat` require explicit Skip to preserve O(1) cost. Recursive deletions
   under Maintain include participant-scan costs in the V4 cost pins. Ordinary
   batches that touch no participants retain their original executor semantics.
+  Estimation charges the displaced-participant fan-out only in layers that
+  declare it (`EstimatedLayerInformation::may_contain_backward_references`,
+  or the `*WithBackwardReferences` worst-case variants); undeclared layers
+  estimate plain writes exactly as `Skip` does.
 - **BREAKING**: Added `add_parent_tree_on_subquery` feature to PathQuery (#379)
   - New field in `Query` struct: `add_parent_tree_on_subquery: bool`
   - When set to `true`, parent tree elements (like CountTree or SumTree) are included in query results when performing subqueries
@@ -55,6 +59,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Updated proof verification logic to handle parent tree inclusion
 
 ### Changed
+- **BREAKING**: `EstimatedLayerInformation` gains
+  `may_contain_backward_references: bool` (declare `false` for layers that
+  never hold backward-reference participants), and `WorstCaseLayerInformation`
+  gains `MaxElementsNumberWithBackwardReferences` and
+  `NumberOfLevelsWithBackwardReferences`. Under the default `Maintain` policy
+  the estimators charge the displaced-participant fan-out and delete probe
+  only in declared layers, so ordinary V4 estimates no longer inflate for
+  every write.
 - **BREAKING**: Replace `propagate_backward_references` in insert, delete,
   and batch options with `backward_references_policy` (`Maintain` by default,
   or explicit `Skip`). V4 observes old values through retained Merk nodes so

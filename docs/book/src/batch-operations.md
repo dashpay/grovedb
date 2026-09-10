@@ -267,6 +267,13 @@ or new value participates in backward references. Reference planner conflict
 rules apply only to batches that touch participants. Recursive subtree deletion
 and replacement inspect descendants and incur additional read costs.
 
+Cost estimation follows the same split. Layers whose
+`EstimatedLayerInformation` sets `may_contain_backward_references` (or use
+the `WithBackwardReferences` worst-case variants) charge the
+displaced-participant fan-out for plain writes and deletes; undeclared layers
+estimate them exactly as `Skip` would. Ops that write a participant
+themselves are always charged.
+
 `SubelementsDeletionBehavior::DropFlat` requires explicit
 `BatchApplyOptions::backward_references_policy = BackwardReferencesPolicy::Skip`.
 `Maintain` refuses flat drop before scanning, preserving its O(1) contract.

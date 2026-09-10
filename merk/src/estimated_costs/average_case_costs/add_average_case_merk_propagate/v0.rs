@@ -31,6 +31,7 @@ pub(super) fn add_average_case_merk_propagate_v0(
         tree_type,
         estimated_layer_count,
         estimated_layer_sizes,
+        may_contain_backward_references: _,
     } = input;
     let levels = estimated_layer_count.estimate_levels();
     nodes_updated += levels;

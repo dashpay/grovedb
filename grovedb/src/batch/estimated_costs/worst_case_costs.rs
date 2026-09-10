@@ -52,9 +52,11 @@ impl GroveOp {
         key: &KeyInfo,
         in_parent_tree_type: TreeType,
         worst_case_layer_element_estimates: &WorstCaseLayerInformation,
-        // Whether the batch opts into backward-references bookkeeping
-        // (`BatchApplyOptions::backward_references_policy`): family ops
-        // and deletes then charge the derived fan-out on GROVE_V4+.
+        // Whether the batch maintains backward references
+        // (`BatchApplyOptions::backward_references_policy`): participant
+        // writes then charge the derived fan-out on GROVE_V4+, and plain
+        // writes/deletes charge the displaced-state bound only in layers
+        // declaring that they may contain participants.
         backward_references_enabled: bool,
         propagate: bool,
         grove_version: &GroveVersion,
@@ -111,7 +113,13 @@ impl GroveOp {
                 // displaces (or deletes): any other write can land on a
                 // registered family element whose propagation/cascade work
                 // is the full item bound at the protocol ceiling.
-                Some(_) | None => Some(super::BackwardReferencesFanOut::worst_item()),
+                // A plain write or delete can only owe maintenance for the
+                // participant it displaces, and the estimator cannot see
+                // stored state: charge that bound only where the caller
+                // declared the layer may hold participants.
+                Some(_) | None => worst_case_layer_element_estimates
+                    .may_contain_backward_references()
+                    .then(super::BackwardReferencesFanOut::worst_item),
             }
         };
         let with_fan_out = |base: CostResult<(), Error>,
@@ -134,7 +142,10 @@ impl GroveOp {
         // deletion — charged whenever the fan-out is active.
         let flagged_delete_probe = || {
             let mut probe = OperationCost::default();
-            if backward_references_enabled && fan_out_version != 0 {
+            if backward_references_enabled
+                && fan_out_version != 0
+                && worst_case_layer_element_estimates.may_contain_backward_references()
+            {
                 for _ in 0..2 {
                     let _ = add_worst_case_get_merk_node(
                         &mut probe,

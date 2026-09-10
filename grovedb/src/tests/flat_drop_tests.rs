@@ -927,6 +927,7 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(2, false),
                 estimated_layer_sizes: AllSubtrees(32, NoSumTrees, None),
             },
@@ -935,6 +936,7 @@ mod tests {
             KeyInfoPath::from_known_owned_path(vec![TEST_LEAF.to_vec()]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(4, false),
                 estimated_layer_sizes: AllSubtrees(32, NoSumTrees, None),
             },

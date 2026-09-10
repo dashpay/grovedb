@@ -21,6 +21,7 @@ use crate::{
 fn normal_layer_info() -> EstimatedLayerInformation {
     EstimatedLayerInformation {
         tree_type: TreeType::NormalTree,
+        may_contain_backward_references: false,
         estimated_layer_count: EstimatedLayerCount::ApproximateElements(100),
         estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(8, Default::default(), None),
     }

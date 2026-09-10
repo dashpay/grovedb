@@ -63,9 +63,11 @@ impl GroveOp {
         // and compaction terms by `2^chunk_power`, which the op itself does
         // not carry. Ignored by every other op type.
         append_tree_chunk_power: Option<u8>,
-        // Whether the batch opts into backward-references bookkeeping
-        // (`BatchApplyOptions::backward_references_policy`): family ops
-        // and deletes then charge the derived fan-out on GROVE_V4+.
+        // Whether the batch maintains backward references
+        // (`BatchApplyOptions::backward_references_policy`): participant
+        // writes then charge the derived fan-out on GROVE_V4+, and plain
+        // writes/deletes charge the displaced-state bound only in layers
+        // declaring that they may contain participants.
         backward_references_enabled: bool,
         propagate: bool,
         grove_version: &GroveVersion,
@@ -123,7 +125,13 @@ impl GroveOp {
                 // displaces (or deletes): any other write can land on a
                 // registered family element needing propagation/cascade
                 // work, so every write charges the typical item shape.
-                Some(_) | None => Some(super::BackwardReferencesFanOut::average_item()),
+                // A plain write or delete can only owe maintenance for the
+                // participant it displaces, and the estimator cannot see
+                // stored state: charge that bound only where the caller
+                // declared the layer may hold participants.
+                Some(_) | None => layer_element_estimates
+                    .may_contain_backward_references
+                    .then(super::BackwardReferencesFanOut::average_item),
             }
         };
         let with_fan_out = |base: CostResult<(), Error>,
@@ -146,7 +154,10 @@ impl GroveOp {
         // deletion — charged whenever the fan-out is active.
         let flagged_delete_probe = || {
             let mut probe = OperationCost::default();
-            if backward_references_enabled && fan_out_version != 0 {
+            if backward_references_enabled
+                && fan_out_version != 0
+                && layer_element_estimates.may_contain_backward_references
+            {
                 let key_width = GroveDb::average_case_layer_key_size(
                     &layer_element_estimates.estimated_layer_sizes,
                 );
@@ -1311,6 +1322,7 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: ApproximateElements(0),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },
@@ -1384,6 +1396,7 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(0, true),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, Some(3)),
             },
@@ -1392,6 +1405,7 @@ mod tests {
             KeyInfoPath(vec![KeyInfo::KnownKey(b"key1".to_vec())]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(0, true),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },
@@ -1455,6 +1469,7 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(0, true),
                 estimated_layer_sizes: AllItems(4, 3, None),
             },
@@ -1532,6 +1547,7 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
             },
@@ -1622,6 +1638,7 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(0, false),
                 estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
             },
@@ -1631,6 +1648,7 @@ mod tests {
             KeyInfoPath(vec![KeyInfo::KnownKey(b"0".to_vec())]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(0, true),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },
@@ -1706,6 +1724,7 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(
                     1,
@@ -1728,6 +1747,7 @@ mod tests {
             KeyInfoPath::from_known_owned_path(vec![vec![7]]),
             EstimatedLayerInformation {
                 tree_type: TreeType::SumTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: PotentiallyAtMaxElements,
                 estimated_layer_sizes: AllItems(32, 8, None),
             },
@@ -1795,6 +1815,7 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },
@@ -1804,6 +1825,7 @@ mod tests {
             KeyInfoPath(vec![KeyInfo::KnownKey(b"0".to_vec())]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(0, true),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },
@@ -1845,6 +1867,7 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: ApproximateElements(0),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },
@@ -1895,6 +1918,7 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
             },
@@ -1903,6 +1927,7 @@ mod tests {
             KeyInfoPath::from_known_owned_path(vec![vec![7]]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: PotentiallyAtMaxElements,
                 estimated_layer_sizes: AllItems(32, 64, None),
             },
@@ -1952,6 +1977,7 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
             },
@@ -1960,6 +1986,7 @@ mod tests {
             KeyInfoPath::from_known_owned_path(vec![vec![7]]),
             EstimatedLayerInformation {
                 tree_type: TreeType::SumTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: PotentiallyAtMaxElements,
                 estimated_layer_sizes: AllItems(32, 64, None),
             },
@@ -2023,6 +2050,7 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
             },
@@ -2031,6 +2059,7 @@ mod tests {
             KeyInfoPath::from_known_owned_path(vec![vec![7]]),
             EstimatedLayerInformation {
                 tree_type: TreeType::CountSumTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: PotentiallyAtMaxElements,
                 estimated_layer_sizes: AllItems(32, 64, None),
             },
@@ -2092,6 +2121,7 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
             },
@@ -2100,6 +2130,7 @@ mod tests {
             KeyInfoPath::from_known_owned_path(vec![vec![7]]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: PotentiallyAtMaxElements,
                 estimated_layer_sizes: AllItems(32, 64, None),
             },
@@ -2142,6 +2173,7 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
             },
@@ -2150,6 +2182,7 @@ mod tests {
             KeyInfoPath::from_known_owned_path(vec![vec![7]]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: PotentiallyAtMaxElements,
                 estimated_layer_sizes: AllItems(32, 64, None),
             },
@@ -2194,6 +2227,7 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
             },
@@ -2202,6 +2236,7 @@ mod tests {
             KeyInfoPath::from_known_owned_path(vec![vec![7]]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: PotentiallyAtMaxElements,
                 estimated_layer_sizes: AllSubtrees(32, NoSumTrees, None),
             },
@@ -2248,6 +2283,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"tree_key".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: ApproximateElements(10),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -2317,6 +2353,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"mmr_key".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: ApproximateElements(5),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -2366,6 +2403,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"bulk_key".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: ApproximateElements(5),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -2410,6 +2448,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"pds_key".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: ApproximateElements(5),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -2547,6 +2586,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"dense_key".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: ApproximateElements(5),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -2599,6 +2639,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"nmerk_key".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: ApproximateElements(5),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -2642,6 +2683,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"inmerk_key".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: ApproximateElements(0),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -2690,6 +2732,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"merk_key".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: ApproximateElements(0),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -2753,6 +2796,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"inmerk_key".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: ApproximateElements(0),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -2798,6 +2842,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"agg_idx".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: ApproximateElements(8),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -2890,6 +2935,7 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: ApproximateElements(1),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },
@@ -2900,6 +2946,7 @@ mod tests {
             KeyInfoPath(vec![KeyInfo::KnownKey(b"cidx".to_vec())]),
             EstimatedLayerInformation {
                 tree_type: TreeType::ProvableCountIndexedTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: ApproximateElements(1),
                 estimated_layer_sizes: AllItems(2, 2, None),
             },
@@ -2998,6 +3045,7 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: ApproximateElements(1),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },
@@ -3006,6 +3054,7 @@ mod tests {
             KeyInfoPath(vec![KeyInfo::KnownKey(b"cidx".to_vec())]),
             EstimatedLayerInformation {
                 tree_type: TreeType::ProvableCountIndexedTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: ApproximateElements(1),
                 estimated_layer_sizes: AllItems(2, 2, None),
             },
@@ -3111,6 +3160,7 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: ApproximateElements(1),
                 estimated_layer_sizes: AllSubtrees(3, NoSumTrees, None),
             },
@@ -3119,6 +3169,7 @@ mod tests {
             KeyInfoPath(vec![KeyInfo::KnownKey(b"idx".to_vec())]),
             EstimatedLayerInformation {
                 tree_type: TreeType::ProvableCountProvableSumIndexedTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: ApproximateElements(1),
                 estimated_layer_sizes:
                     grovedb_merk::estimated_costs::average_case_costs::EstimatedLayerSizes::AllItemsWithSumItem(2, 2, None),
@@ -3217,6 +3268,7 @@ mod tests {
                 KeyInfoPath(vec![]),
                 EstimatedLayerInformation {
                     tree_type: TreeType::NormalTree,
+                    may_contain_backward_references: false,
                     estimated_layer_count: ApproximateElements(1),
                     estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
                 },
@@ -3225,6 +3277,7 @@ mod tests {
                 KeyInfoPath(vec![KeyInfo::KnownKey(b"cidx".to_vec())]),
                 EstimatedLayerInformation {
                     tree_type: TreeType::ProvableCountIndexedTree,
+                    may_contain_backward_references: false,
                     estimated_layer_count: ApproximateElements(n as u32),
                     estimated_layer_sizes: AllItems(2, 2, None),
                 },
@@ -3316,6 +3369,7 @@ mod tests {
                 KeyInfoPath(vec![]),
                 EstimatedLayerInformation {
                     tree_type: TreeType::NormalTree,
+                    may_contain_backward_references: false,
                     estimated_layer_count: ApproximateElements(1),
                     estimated_layer_sizes: AllSubtrees(3, NoSumTrees, None),
                 },
@@ -3324,6 +3378,7 @@ mod tests {
                 KeyInfoPath(vec![KeyInfo::KnownKey(b"idx".to_vec())]),
                 EstimatedLayerInformation {
                     tree_type: TreeType::ProvableCountProvableSumIndexedTree,
+                    may_contain_backward_references: false,
                     estimated_layer_count: ApproximateElements(n as u32),
                     estimated_layer_sizes:
                         grovedb_merk::estimated_costs::average_case_costs::EstimatedLayerSizes::AllItemsWithSumItem(2, 2, None),
@@ -3411,6 +3466,7 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: ApproximateElements(1),
                 estimated_layer_sizes: AllSubtrees(3, NoSumTrees, None),
             },
@@ -3419,6 +3475,7 @@ mod tests {
             KeyInfoPath(vec![KeyInfo::KnownKey(b"idx".to_vec())]),
             EstimatedLayerInformation {
                 tree_type: TreeType::ProvableCountProvableSumIndexedTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: ApproximateElements(4),
                 estimated_layer_sizes:
                     grovedb_merk::estimated_costs::average_case_costs::EstimatedLayerSizes::AllItemsWithSumItem(2, 2, None),
@@ -3490,6 +3547,7 @@ mod tests {
         let key = KeyInfo::KnownKey(b"pool".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLevel(1, false),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };

@@ -224,6 +224,17 @@ pre-V4
 estimation is preserved byte-for-byte for replay of historical admission
 decisions.
 
+The estimator cannot see stored state, so the bound for a write that may
+displace a participant is a per-layer declaration:
+`EstimatedLayerInformation::may_contain_backward_references` (average case)
+and the `*WithBackwardReferences` variants of `WorstCaseLayerInformation`.
+Undeclared layers charge no displaced-state fan-out and no delete probe —
+their `Maintain` estimates equal `Skip` estimates byte-for-byte — while ops
+that themselves write a participant (family items, bidirectional references)
+are charged from the op regardless. Declaring the layers that hold
+participants is the caller's responsibility; an undeclared layer that does
+hold them under-estimates cascades.
+
 Live writes use the same preparation observer. Ordinary values retain the
 existing parent and indexed-tree propagation; participating values reuse the
 prepared Merk inside `MerkCache` for reference maintenance. All pending

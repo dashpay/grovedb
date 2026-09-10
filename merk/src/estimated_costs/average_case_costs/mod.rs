@@ -224,6 +224,19 @@ pub struct EstimatedLayerInformation {
     pub estimated_layer_count: EstimatedLayerCount,
     /// Estimated layer sizes
     pub estimated_layer_sizes: EstimatedLayerSizes,
+    /// Whether this layer may hold backward-reference participants
+    /// (`ItemWithBackwardsReferences`, `SumItemWithBackwardsReferences`,
+    /// `ItemWithSumItemWithBackwardsReferences`, `BidirectionalReference`).
+    ///
+    /// The estimator cannot see stored state. Under the default
+    /// `BackwardReferencesPolicy::Maintain`, a plain write or delete can owe
+    /// maintenance only for the participant it displaces, so that
+    /// displaced-state fan-out is charged only in layers that declare it.
+    /// Undeclared layers estimate plain writes exactly as `Skip` would; an
+    /// op that itself writes a participant is charged from the op regardless.
+    /// Declaring the layers that hold participants is the caller's
+    /// responsibility.
+    pub may_contain_backward_references: bool,
 }
 
 impl EstimatedLayerInformation {}
@@ -487,6 +500,7 @@ mod tests {
 
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::EstimatedLevel(1, false),
             estimated_layer_sizes: EstimatedLayerSizes::AllItems(5, 20, None),
         };
@@ -506,6 +520,7 @@ mod tests {
     fn test_add_average_case_merk_propagate_all_items_updates_cost() {
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
             estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 32, Some(2)),
         };
@@ -527,6 +542,7 @@ mod tests {
     fn test_propagate_v0_all_subtrees() {
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 8,
@@ -545,6 +561,7 @@ mod tests {
     fn test_propagate_v0_all_items() {
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
             estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 32, Some(2)),
         };
@@ -559,6 +576,7 @@ mod tests {
     fn test_propagate_v0_all_reference() {
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
             estimated_layer_sizes: EstimatedLayerSizes::AllReference(8, 24, Some(2)),
         };
@@ -573,6 +591,7 @@ mod tests {
     fn test_propagate_v0_mix() {
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
             estimated_layer_sizes: EstimatedLayerSizes::Mix {
                 subtrees_size: Some((8, EstimatedSumTrees::NoSumTrees, Some(4), 2)),
@@ -597,6 +616,7 @@ mod tests {
     fn test_propagate_v1_all_reference() {
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
             estimated_layer_sizes: EstimatedLayerSizes::AllReference(8, 24, Some(2)),
         };
@@ -611,6 +631,7 @@ mod tests {
     fn test_propagate_v1_mix() {
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
             estimated_layer_sizes: EstimatedLayerSizes::Mix {
                 subtrees_size: Some((8, EstimatedSumTrees::NoSumTrees, Some(4), 2)),
@@ -902,11 +923,13 @@ mod tests {
         let layer_count = EstimatedLayerCount::EstimatedLevel(3, false);
         let plain_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: layer_count,
             estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 32, Some(2)),
         };
         let sum_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: layer_count,
             estimated_layer_sizes: EstimatedLayerSizes::AllItemsWithSumItem(8, 32, Some(2)),
         };
@@ -938,11 +961,13 @@ mod tests {
         let layer_count = EstimatedLayerCount::EstimatedLevel(3, false);
         let plain_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: layer_count,
             estimated_layer_sizes: EstimatedLayerSizes::AllReference(8, 24, Some(1)),
         };
         let sum_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: layer_count,
             estimated_layer_sizes: EstimatedLayerSizes::AllReferencesWithSumItem(8, 24, Some(1)),
         };
@@ -965,6 +990,7 @@ mod tests {
         let layer_count = EstimatedLayerCount::EstimatedLevel(3, false);
         let base = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: layer_count,
             estimated_layer_sizes: EstimatedLayerSizes::Mix {
                 subtrees_size: None,
@@ -976,6 +1002,7 @@ mod tests {
         };
         let with_sum = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: layer_count,
             estimated_layer_sizes: EstimatedLayerSizes::Mix {
                 subtrees_size: None,
@@ -1361,6 +1388,7 @@ mod tests {
     fn test_propagate_v0_all_items_with_sum_item() {
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
             estimated_layer_sizes: EstimatedLayerSizes::AllItemsWithSumItem(8, 32, Some(2)),
         };
@@ -1371,6 +1399,7 @@ mod tests {
         // sum-bearing cost strictly exceeds the plain-AllItems cost.
         let plain_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
             estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 32, Some(2)),
         };
@@ -1386,6 +1415,7 @@ mod tests {
     fn test_propagate_v0_all_references_with_sum_item() {
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
             estimated_layer_sizes: EstimatedLayerSizes::AllReferencesWithSumItem(8, 24, Some(1)),
         };
@@ -1394,6 +1424,7 @@ mod tests {
 
         let plain_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
             estimated_layer_sizes: EstimatedLayerSizes::AllReference(8, 24, Some(1)),
         };
@@ -1414,6 +1445,7 @@ mod tests {
         let layer_count = EstimatedLayerCount::EstimatedLevel(3, false);
         let base = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: layer_count,
             estimated_layer_sizes: EstimatedLayerSizes::Mix {
                 subtrees_size: Some((8, EstimatedSumTrees::NoSumTrees, Some(4), 1)),
@@ -1425,6 +1457,7 @@ mod tests {
         };
         let with_sum = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: layer_count,
             estimated_layer_sizes: EstimatedLayerSizes::Mix {
                 subtrees_size: Some((8, EstimatedSumTrees::NoSumTrees, Some(4), 1)),
@@ -1474,6 +1507,7 @@ mod tests {
         let layer_count = EstimatedLayerCount::EstimatedLevel(3, false);
         let mix = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: layer_count,
             estimated_layer_sizes: EstimatedLayerSizes::Mix {
                 subtrees_size: None,
@@ -1485,6 +1519,7 @@ mod tests {
         };
         let all_items = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: layer_count,
             estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 32, Some(2)),
         };
@@ -1512,6 +1547,7 @@ mod tests {
         let layer_count = EstimatedLayerCount::EstimatedLevel(3, false);
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: layer_count,
             estimated_layer_sizes: EstimatedLayerSizes::Mix {
                 subtrees_size: Some((8, EstimatedSumTrees::NoSumTrees, Some(4), 2)),
@@ -1564,6 +1600,7 @@ mod tests {
         for layer in cases {
             let info = EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
+                may_contain_backward_references: false,
                 estimated_layer_count: layer_count,
                 estimated_layer_sizes: layer,
             };
@@ -1594,6 +1631,7 @@ mod tests {
             .add_average_case_merk_propagate = 99;
         let info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::EstimatedLevel(2, false),
             estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 32, None),
         };
@@ -1637,6 +1675,7 @@ mod tests {
         let layer_count = EstimatedLayerCount::EstimatedLevel(3, false);
         let base = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: layer_count,
             estimated_layer_sizes: EstimatedLayerSizes::Mix {
                 subtrees_size: None,
@@ -1648,6 +1687,7 @@ mod tests {
         };
         let with_sum = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: layer_count,
             estimated_layer_sizes: EstimatedLayerSizes::Mix {
                 subtrees_size: None,
