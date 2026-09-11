@@ -4513,10 +4513,9 @@ where
                     return;
                 }
                 if !self.backward_references_prepared
-                    && GroveDb::batch_maintains_backward_references(
-                        batch_apply_options.backward_references_policy,
-                        grove_version,
-                    )
+                    && batch_apply_options
+                        .backward_references_policy
+                        .maintains_in_batch(grove_version)
                 {
                     match Element::deserialize(old_value, grove_version) {
                         Ok(element) => {
@@ -6443,28 +6442,13 @@ impl GroveDb {
         Ok(scan).wrap_with_cost(cost)
     }
 
-    /// Whether a batch run under `policy` maintains backward references on
-    /// this version: `apply_batch.backward_references_maintenance` (V4+)
-    /// and a `Maintain` policy. Released versions never plan references.
-    pub(crate) fn batch_maintains_backward_references(
-        policy: BackwardReferencesPolicy,
-        grove_version: &GroveVersion,
-    ) -> bool {
-        policy.maintains()
-            && grove_version
-                .grovedb_versions
-                .apply_batch
-                .backward_references_maintenance
-                >= 1
-    }
-
     /// Flat drop must never acquire a descendant scan from the default policy.
     fn reject_flat_drop_with_maintenance(
         ops: &[QualifiedGroveDbOp],
         policy: BackwardReferencesPolicy,
         grove_version: &GroveVersion,
     ) -> Result<(), Error> {
-        if Self::batch_maintains_backward_references(policy, grove_version)
+        if policy.maintains_in_batch(grove_version)
             && ops.iter().any(|op| {
                 matches!(
                     op.op,
@@ -6608,13 +6592,11 @@ impl GroveDb {
 
         // V4 maintains backward references by default. The prepared Merks
         // carry observations into execution without fetching the nodes twice.
-        let backward_references_enabled = Self::batch_maintains_backward_references(
-            batch_apply_options
-                .as_ref()
-                .map(|options| options.backward_references_policy)
-                .unwrap_or_default(),
-            grove_version,
-        );
+        let backward_references_enabled = batch_apply_options
+            .as_ref()
+            .map(|options| options.backward_references_policy)
+            .unwrap_or_default()
+            .maintains_in_batch(grove_version);
         cost_return_on_error_no_add!(
             cost,
             Self::reject_backward_references_elements_in_batch(&ops, backward_references_enabled)

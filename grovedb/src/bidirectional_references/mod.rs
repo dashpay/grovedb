@@ -11,6 +11,8 @@ pub(crate) mod semantics;
 pub(crate) use semantics::check_carried_referrers_fit;
 
 pub use grovedb_element::{BackwardReference, BidirectionalReference};
+use grovedb_version::version::GroveVersion;
+
 pub(crate) use handling::*;
 
 /// Whether a mutation maintains backward references on GROVE_V4 and later.
@@ -34,6 +36,19 @@ impl BackwardReferencesPolicy {
     pub(crate) fn maintains(self) -> bool {
         matches!(self, Self::Maintain)
     }
+
+    /// Whether a batch run under this policy maintains backward references on
+    /// `grove_version`: `Maintain` plus
+    /// `apply_batch.backward_references_maintenance` (V4+). Released versions
+    /// never plan references, so they answer `false` under either policy.
+    pub(crate) fn maintains_in_batch(self, grove_version: &GroveVersion) -> bool {
+        self.maintains()
+            && grove_version
+                .grovedb_versions
+                .apply_batch
+                .backward_references_maintenance
+                >= 1
+    }
 }
 
 /// Maximum Grove path depth (number of subtree levels) of any position
@@ -54,7 +69,7 @@ impl crate::GroveDb {
         &self,
         path: &[Vec<u8>],
         transaction: &crate::Transaction,
-        grove_version: &grovedb_version::version::GroveVersion,
+        grove_version: &GroveVersion,
     ) -> grovedb_costs::CostResult<Vec<(Vec<Vec<u8>>, Vec<u8>, crate::Element)>, crate::Error> {
         use crate::element::elements_iterator::ElementIteratorExtensions;
         use grovedb_costs::{cost_return_on_error, CostsExt};
