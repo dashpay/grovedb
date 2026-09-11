@@ -264,8 +264,13 @@ supported by live `delete`; see the bidirectional references ADR for scope.
 
 Under `Maintain`, ordinary batches retain their executor semantics when no old
 or new value participates in backward references. Reference planner conflict
-rules apply only to batches that touch participants. Recursive subtree deletion
-and replacement inspect descendants and incur additional read costs.
+rules apply only to batches that touch participants. `DeleteChildren`
+removals and tree replacements inspect descendants and incur additional read
+costs. A `DeleteTree` declared empty
+(`DontCheckWithNoCleanup`) or checked empty at apply time (`Error`, `Skip`) is
+not inspected: every element the batch removed beneath it already passed
+through old-value observation, so a delete-up-tree chain costs the same under
+`Maintain` and `Skip`.
 
 Cost estimation follows the same split. Layers whose
 `EstimatedLayerInformation` sets `may_contain_backward_references` (or use
@@ -278,4 +283,6 @@ themselves are always charged.
 `BatchApplyOptions::backward_references_policy = BackwardReferencesPolicy::Skip`.
 `Maintain` refuses flat drop before scanning, preserving its O(1) contract.
 Partial batches refuse participant mutations in either segment; their subtree
-inspection occurs before commit and can also incur recursive read costs.
+inspection of `DeleteChildren` removals and tree replacements occurs before
+commit and can also incur recursive read costs, with the same declared-empty
+exemption.

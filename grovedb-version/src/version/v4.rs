@@ -150,7 +150,10 @@
 //! - `apply_batch.backward_references_maintenance: 1` — batches maintain
 //!   backward references by default: planner preparation with retained
 //!   old-value reads, the partial-batch participant gate, and explicit
-//!   `Skip` for `DropFlat`.
+//!   `Skip` for `DropFlat`. Removed subtrees are scanned for participants
+//!   only where the batch never read their contents (`DeleteChildren`,
+//!   tree replacement); a `DeleteTree` declared or checked empty is not
+//!   scanned.
 //! - `apply_batch.non_merk_parent_keyed_ops_rejection: 1` — batch execution
 //!   refuses ordinary keyed ops at a level whose parent is a non-Merk data
 //!   tree (`CommitmentTree`, `MmrTree`, `BulkAppendTree`, `DenseTree`,

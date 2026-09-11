@@ -153,6 +153,14 @@ pub enum SubelementsDeletionBehavior {
     /// O(1), storage reclaimed) or [`Self::DeleteChildren`] (recursive
     /// cleanup, O(contents)).
     ///
+    /// Under `BackwardReferencesPolicy::Maintain` (`GROVE_V4`+) the
+    /// declaration also stands in for the removed subtree's
+    /// backward-reference participant scan: every element the batch removed
+    /// beneath the tree passed through the old-value observer (or the full
+    /// batch's preparation), so nothing unobserved can remain and nothing is
+    /// read. A false declaration therefore also strands the registrations of
+    /// any participant it leaks, exactly like the storage.
+    ///
     /// One exception to "touches no child storage": an indexed primary
     /// still gets its per-axis secondary namespaces swept, because those
     /// live outside the primary's prefix and can hold stale rows even when
@@ -170,7 +178,9 @@ pub enum SubelementsDeletionBehavior {
     /// still perform post-apply storage cleanup to remove the child
     /// subtree's storage (and any nested subtrees), walking the structure
     /// via `find_subtrees` — O(contents). Use this when the subtree may
-    /// contain children that should be recursively cleaned up.
+    /// contain children that should be recursively cleaned up. Under
+    /// `BackwardReferencesPolicy::Maintain` the contents are also scanned
+    /// for backward-reference participants before commit.
     DeleteChildren,
     /// Check emptiness at apply time. If the subtree is non-empty,
     /// silently skip this `DeleteTree` operation (no error, no deletion).
@@ -4527,6 +4537,9 @@ where
                             }
                             if element.is_any_tree()
                                 && !element.uses_non_merk_data_storage()
+                                && element
+                                    .root_key_and_tree_type()
+                                    .is_some_and(|(root, _)| root.is_some())
                                 && (matches!(disposition, OldValueDisposition::Deleted)
                                     || pending_overwrite_inspections.contains_key(key))
                             {
@@ -7572,10 +7585,26 @@ impl GroveDb {
             indexed_mirror_rekey_churn_bytes: continue_rekey_churn_bytes,
         } = continue_captures;
 
+        // Removed subtrees whose contents the observer never saw need a
+        // participant scan before commit: `DeleteChildren` removals and tree
+        // replacements. A `DeleteTree` whose behavior declares the subtree
+        // empty (`DontCheckWithNoCleanup`) or verified it at apply time
+        // (`Error`, `Skip`) removed nothing that the batch's own deletes did
+        // not already pass through the observer, so it is not scanned.
         for path in partial_subtree_removals
             .into_iter()
             .chain(continue_subtree_removals)
         {
+            if matches!(
+                delete_tree_behaviors.get(&path),
+                Some(
+                    SubelementsDeletionBehavior::DontCheckWithNoCleanup
+                        | SubelementsDeletionBehavior::Error
+                        | SubelementsDeletionBehavior::Skip
+                )
+            ) {
+                continue;
+            }
             if !cost_return_on_error!(
                 &mut cost,
                 self.backward_reference_participants(&path, tx.as_ref(), grove_version)

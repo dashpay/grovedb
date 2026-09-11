@@ -90,8 +90,14 @@ Current limitations:
   specialized/indexed descendants. Remove those descendants first.
 - Live participant maintenance below an indexed primary requires a full
   batch; the reference cache refuses that propagation before commit.
-- Recursive delete and subtree replacement inspect descendants under `Maintain`.
-  Those scans add reads and are charged in the V4 default cost tests.
+- `DeleteChildren` removals, `Delete` of a populated tree, and subtree
+  replacement inspect descendants under `Maintain`; those scans add reads and
+  are charged in the V4 default cost tests. A `DeleteTree` whose behavior
+  declares the subtree empty
+  (`DontCheckWithNoCleanup`) or verifies emptiness at apply time (`Error`,
+  `Skip`) is not scanned: everything the batch removed beneath it was read as
+  an old value by the batch's own deletes, so a delete-up-tree chain costs
+  exactly what it costs under `Skip`.
 - Flat drop retains its O(1) contract. Standalone `drop_flat_subtree` requires
   an explicit policy argument; it and batch `DropFlat` reject `Maintain`
   before scanning. Use `Skip` to acknowledge stale or dangling registrations,
@@ -116,7 +122,8 @@ transaction's original subtree contents. Cross-segment conflict checks prevent
 those committed-state inspections from overlooking changes staged by the first
 segment. A refusal discards the storage batch and preserves the caller's
 transaction. These scans have real costs, pinned alongside the full-batch costs;
-this API does not promise a no-scan recursive removal.
+this API does not promise a no-scan recursive removal, only that declared-empty
+and apply-time-checked `DeleteTree` removals add no reads of their own.
 
 ## Rules
 

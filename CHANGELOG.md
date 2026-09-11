@@ -76,6 +76,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Partial batches reject displaced participants; subtree removal/replacement
   refuses unsupported descendant maintenance before commit. Earlier protocol
   versions retain their historical behavior.
+- Under `Maintain`, a batch `DeleteTree` whose behavior declares the subtree
+  empty (`DontCheckWithNoCleanup`) or verifies emptiness at apply time
+  (`Error`, `Skip`) no longer runs a backward-reference participant scan in
+  full or partial batches: every element the batch removed beneath it was
+  already read as an old value by the batch's own deletes, so a
+  delete-up-tree chain costs exactly what it costs under `Skip`.
+  `DeleteChildren` removals and tree replacements keep their scan, and the
+  partial-batch observer no longer queues empty trees for scanning.
 - Bumped the GroveDB workspace crates and their internal dependency requirements
   to **6.0.0** for the public API changes since 5.0.1. This package version is
   independent of the existing `GroveVersion` runtime compatibility versions.

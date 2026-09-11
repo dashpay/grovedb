@@ -702,6 +702,12 @@ pub(super) fn expand_backward_references_ops<'db>(
             || previous
                 .as_ref()
                 .is_some_and(Element::supports_backward_references);
+        // A removal whose contents the batch never reads needs a
+        // participant scan: `Delete` on a tree, `DeleteChildren`, and a tree
+        // replacement. A `DeleteTree` whose behavior declares the subtree
+        // empty (`DontCheckWithNoCleanup`) or verifies emptiness at apply
+        // time (`Error`, `Skip`) removes nothing that a same-batch delete
+        // has not already read as its old value, so it is not scanned.
         let removes_subtree = !matches!(
             op.op,
             GroveOp::InsertIfNotExists { .. }
@@ -710,6 +716,7 @@ pub(super) fn expand_backward_references_ops<'db>(
                     _,
                     super::SubelementsDeletionBehavior::Skip
                         | super::SubelementsDeletionBehavior::Error
+                        | super::SubelementsDeletionBehavior::DontCheckWithNoCleanup
                 )
         );
         if removes_subtree
