@@ -6,6 +6,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::BackwardReferencesPolicy;
     use grovedb_element::indexed::IndexAxis;
     use grovedb_merk::element::{
         delete::ElementDeleteFromStorageExtensions, get::ElementFetchFromStorageExtensions,
@@ -1418,7 +1419,7 @@ mod tests {
                 validate_insertion_does_not_override: false,
                 validate_insertion_does_not_override_tree: false,
                 base_root_storage_is_free: true,
-                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                backward_references_policy: BackwardReferencesPolicy::Skip,
             }),
             None,
             &grovedb_version::version::v3::GROVE_V3,

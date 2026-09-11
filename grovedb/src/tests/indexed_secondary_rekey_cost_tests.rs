@@ -19,6 +19,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::batch::BatchApplyOptions;
     use grovedb_costs::{
         storage_cost::{
             removal::{StorageRemovedBytes, UNKNOWN_EPOCH},
@@ -230,7 +231,7 @@ mod tests {
 
         let cost_result = db.apply_partial_batch(
             vec![bump_op(b"p")],
-            Some(crate::batch::BatchApplyOptions::default()),
+            Some(BatchApplyOptions::default()),
             |_cost, _left_over_ops| Ok(vec![bump_op(b"q")]),
             None,
             grove_version,

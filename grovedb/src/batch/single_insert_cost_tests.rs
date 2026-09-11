@@ -2,6 +2,8 @@
 
 #[cfg(feature = "minimal")]
 mod tests {
+    use crate::batch::BatchApplyOptions;
+    use crate::BackwardReferencesPolicy;
     use grovedb_costs::{
         storage_cost::{
             removal::{
@@ -1649,8 +1651,8 @@ mod tests {
             ];
             db.apply_batch(
                 ops,
-                Some(crate::batch::BatchApplyOptions {
-                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                Some(BatchApplyOptions {
+                    backward_references_policy: BackwardReferencesPolicy::Skip,
                     ..Default::default()
                 }),
                 Some(&tx),
@@ -1682,8 +1684,8 @@ mod tests {
             ];
             db.apply_batch(
                 ops,
-                Some(crate::batch::BatchApplyOptions {
-                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                Some(BatchApplyOptions {
+                    backward_references_policy: BackwardReferencesPolicy::Skip,
                     ..Default::default()
                 }),
                 Some(&tx),

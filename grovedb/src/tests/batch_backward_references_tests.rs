@@ -6,6 +6,7 @@
 //! and chains, retargets, identical-edge no-ops, and the M4 conflict
 //! rules.
 
+use crate::BackwardReferencesPolicy;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -19,14 +20,14 @@ use crate::{
 
 fn flag_on() -> Option<InsertOptions> {
     Some(InsertOptions {
-        backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+        backward_references_policy: BackwardReferencesPolicy::Maintain,
         ..Default::default()
     })
 }
 
 fn batch_flag_on() -> Option<BatchApplyOptions> {
     Some(BatchApplyOptions {
-        backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+        backward_references_policy: BackwardReferencesPolicy::Maintain,
         ..Default::default()
     })
 }
@@ -254,7 +255,7 @@ fn batch_delete_cascades_like_live() {
             &[TEST_LEAF],
             b"value",
             Some(DeleteOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             None,
@@ -403,8 +404,8 @@ fn batch_rejections_hold() {
                 b"fresh".to_vec(),
                 Element::new_item_allowing_bidirectional_references(b"x".to_vec()),
             )],
-            Some(crate::batch::BatchApplyOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            Some(BatchApplyOptions {
+                backward_references_policy: BackwardReferencesPolicy::Skip,
                 ..Default::default()
             }),
             None,
@@ -422,8 +423,8 @@ fn batch_rejections_hold() {
                 b"newref".to_vec(),
                 sibling_bidi(b"value", true),
             )],
-            Some(crate::batch::BatchApplyOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            Some(BatchApplyOptions {
+                backward_references_policy: BackwardReferencesPolicy::Skip,
                 ..Default::default()
             }),
             None,
@@ -808,7 +809,7 @@ fn batch_bidi_delete_matches_live() {
             &[TEST_LEAF],
             b"r1",
             Some(DeleteOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             None,
@@ -1508,8 +1509,8 @@ fn batch_flagged_overwrite_folds_own_stale_cleanup() {
                 vec![TEST_LEAF.to_vec()],
                 b"ref".to_vec(),
             )],
-            Some(crate::batch::BatchApplyOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            Some(BatchApplyOptions {
+                backward_references_policy: BackwardReferencesPolicy::Skip,
                 ..Default::default()
             }),
             None,

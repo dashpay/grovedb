@@ -69,6 +69,8 @@
 //! a corrupted-reference error rather than incorrect data. Reference
 //! lifecycle is the caller's responsibility.
 
+use crate::operations::indexed_tree::reject_generic_write_into_indexed_primary;
+use crate::BackwardReferencesPolicy;
 use std::collections::HashMap;
 
 use grovedb_costs::{
@@ -219,7 +221,7 @@ impl GroveDb {
         &self,
         path: P,
         key: &[u8],
-        backward_references_policy: crate::BackwardReferencesPolicy,
+        backward_references_policy: BackwardReferencesPolicy,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
@@ -276,10 +278,7 @@ impl GroveDb {
         // rejection as `delete`.
         cost_return_on_error_no_add!(
             cost,
-            crate::operations::indexed_tree::reject_generic_write_into_indexed_primary(
-                parent_merk.tree_type,
-                "drop_flat_subtree",
-            )
+            reject_generic_write_into_indexed_primary(parent_merk.tree_type, "drop_flat_subtree",)
         );
         let parent_tree_type = parent_merk.tree_type;
 

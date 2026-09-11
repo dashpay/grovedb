@@ -1,6 +1,7 @@
 //! Options
 
 #[cfg(feature = "minimal")]
+use crate::BackwardReferencesPolicy;
 use grovedb_merk::MerkOptions;
 
 #[cfg(feature = "minimal")]
@@ -85,7 +86,7 @@ pub struct BatchApplyOptions {
     /// Recursive removals inspect descendants under Maintain, including in
     /// partial batches before commit. DropFlat requires explicit Skip so it
     /// preserves its O(1) contract without a hidden descendant scan.
-    pub backward_references_policy: crate::BackwardReferencesPolicy,
+    pub backward_references_policy: BackwardReferencesPolicy,
 }
 
 #[cfg(feature = "minimal")]
@@ -97,7 +98,7 @@ impl Default for BatchApplyOptions {
             disable_operation_consistency_check: false,
             base_root_storage_is_free: true,
             batch_pause_height: None,
-            backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+            backward_references_policy: BackwardReferencesPolicy::Maintain,
         }
     }
 }

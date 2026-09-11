@@ -11,6 +11,7 @@
 //! production, so the incoherent behaviour is kept bug-for-bug for replay
 //! compatibility.
 
+use crate::operations::indexed_tree::reject_generic_write_into_indexed_primary;
 use std::collections::HashMap;
 
 use grovedb_costs::{
@@ -60,10 +61,7 @@ impl GroveDb {
         // remove entries through the dedicated `delete_from_*` APIs.
         cost_return_on_error_no_add!(
             cost,
-            crate::operations::indexed_tree::reject_generic_write_into_indexed_primary(
-                merk_to_clear.tree_type,
-                "clear_subtree",
-            )
+            reject_generic_write_into_indexed_primary(merk_to_clear.tree_type, "clear_subtree",)
         );
 
         // Non-Merk data trees store data in the data namespace as non-Element

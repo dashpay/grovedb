@@ -1277,6 +1277,8 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
 #[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
+    use crate::batch::BatchApplyOptions;
+    use crate::BackwardReferencesPolicy;
     use std::collections::HashMap;
 
     use grovedb_costs::{
@@ -1330,8 +1332,8 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
-            Some(crate::batch::BatchApplyOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            Some(BatchApplyOptions {
+                backward_references_policy: BackwardReferencesPolicy::Skip,
                 ..Default::default()
             }),
             |_cost, _old_flags, _new_flags| Ok(false),
@@ -1413,8 +1415,8 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
-            Some(crate::batch::BatchApplyOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            Some(BatchApplyOptions {
+                backward_references_policy: BackwardReferencesPolicy::Skip,
                 ..Default::default()
             }),
             |_cost, _old_flags, _new_flags| Ok(false),
@@ -1477,8 +1479,8 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
-            Some(crate::batch::BatchApplyOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            Some(BatchApplyOptions {
+                backward_references_policy: BackwardReferencesPolicy::Skip,
                 ..Default::default()
             }),
             |_cost, _old_flags, _new_flags| Ok(false),
@@ -1556,8 +1558,8 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
-            Some(crate::batch::BatchApplyOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            Some(BatchApplyOptions {
+                backward_references_policy: BackwardReferencesPolicy::Skip,
                 ..Default::default()
             }),
             |_cost, _old_flags, _new_flags| Ok(false),
@@ -1657,8 +1659,8 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
-            Some(crate::batch::BatchApplyOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            Some(BatchApplyOptions {
+                backward_references_policy: BackwardReferencesPolicy::Skip,
                 ..Default::default()
             }),
             |_cost, _old_flags, _new_flags| Ok(false),
@@ -1755,8 +1757,8 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops,
-            Some(crate::batch::BatchApplyOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            Some(BatchApplyOptions {
+                backward_references_policy: BackwardReferencesPolicy::Skip,
                 ..Default::default()
             }),
             |_cost, _old_flags, _new_flags| Ok(false),
@@ -1875,8 +1877,8 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
-            Some(crate::batch::BatchApplyOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            Some(BatchApplyOptions {
+                backward_references_policy: BackwardReferencesPolicy::Skip,
                 ..Default::default()
             }),
             |_cost, _old_flags, _new_flags| Ok(false),

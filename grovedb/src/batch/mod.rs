@@ -39,6 +39,7 @@ mod single_sum_item_deletion_cost_tests;
 #[cfg(test)]
 mod single_sum_item_insert_cost_tests;
 
+use crate::BackwardReferencesPolicy;
 use core::fmt;
 use std::{
     cmp::Ordering,
@@ -6446,7 +6447,7 @@ impl GroveDb {
     /// this version: `apply_batch.backward_references_maintenance` (V4+)
     /// and a `Maintain` policy. Released versions never plan references.
     pub(crate) fn batch_maintains_backward_references(
-        policy: crate::BackwardReferencesPolicy,
+        policy: BackwardReferencesPolicy,
         grove_version: &GroveVersion,
     ) -> bool {
         policy.maintains()
@@ -6460,7 +6461,7 @@ impl GroveDb {
     /// Flat drop must never acquire a descendant scan from the default policy.
     fn reject_flat_drop_with_maintenance(
         ops: &[QualifiedGroveDbOp],
-        policy: crate::BackwardReferencesPolicy,
+        policy: BackwardReferencesPolicy,
         grove_version: &GroveVersion,
     ) -> Result<(), Error> {
         if Self::batch_maintains_backward_references(policy, grove_version)
@@ -7875,6 +7876,7 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
+    use crate::BackwardReferencesPolicy;
     use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     use grovedb_merk::proofs::Query;
 
@@ -8055,7 +8057,7 @@ mod tests {
                     disable_operation_consistency_check: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
-                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                    backward_references_policy: BackwardReferencesPolicy::Skip,
                 }),
                 None,
                 grove_version
@@ -8661,7 +8663,7 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
-                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                    backward_references_policy: BackwardReferencesPolicy::Skip,
                 }),
                 None,
                 grove_version
@@ -8703,7 +8705,7 @@ mod tests {
                     validate_insertion_does_not_override: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
-                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                    backward_references_policy: BackwardReferencesPolicy::Skip,
                 }),
                 None,
                 grove_version
@@ -8737,7 +8739,7 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
-                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                    backward_references_policy: BackwardReferencesPolicy::Skip,
                 }),
                 None,
                 grove_version

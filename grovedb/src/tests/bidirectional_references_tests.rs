@@ -3,6 +3,8 @@
 //! `bidirectional_references::handling`, and the query paths over the new
 //! element family.
 
+use crate::batch::BatchApplyOptions;
+use crate::BackwardReferencesPolicy;
 use grovedb_path::SubtreePath;
 use grovedb_version::version::GroveVersion;
 
@@ -17,7 +19,7 @@ use crate::{
 
 fn flag_on() -> Option<InsertOptions> {
     Some(InsertOptions {
-        backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+        backward_references_policy: BackwardReferencesPolicy::Maintain,
         ..Default::default()
     })
 }
@@ -363,7 +365,7 @@ fn cascade_requires_opt_in() {
             &[TEST_LEAF],
             b"value",
             Some(DeleteOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             None,
@@ -543,7 +545,7 @@ fn override_checks_apply_under_the_flag() {
             b"value",
             Element::new_item_allowing_bidirectional_references(b"nope".to_vec()),
             Some(InsertOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 validate_insertion_does_not_override: true,
                 ..Default::default()
             }),
@@ -600,7 +602,7 @@ fn delete_with_flag_handles_trees() {
         &[TEST_LEAF],
         b"empty",
         Some(DeleteOptions {
-            backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+            backward_references_policy: BackwardReferencesPolicy::Maintain,
             ..Default::default()
         }),
         None,
@@ -636,7 +638,7 @@ fn delete_with_flag_handles_trees() {
             &[TEST_LEAF],
             b"full",
             Some(DeleteOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 allow_deleting_non_empty_trees: false,
                 deleting_non_empty_trees_returns_error: true,
                 ..Default::default()
@@ -651,7 +653,7 @@ fn delete_with_flag_handles_trees() {
         &[TEST_LEAF],
         b"full",
         Some(DeleteOptions {
-            backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+            backward_references_policy: BackwardReferencesPolicy::Maintain,
             allow_deleting_non_empty_trees: false,
             deleting_non_empty_trees_returns_error: false,
             ..Default::default()
@@ -930,7 +932,7 @@ fn sum_queries_resolve_backward_references_sum_items() {
         b"s3",
         Element::new_reference_with_sum_item(ReferencePathType::SiblingReference(b"s".to_vec()), 0),
         Some(InsertOptions {
-            backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            backward_references_policy: BackwardReferencesPolicy::Skip,
             ..Default::default()
         }),
         None,
@@ -1168,8 +1170,8 @@ fn propagation_skips_and_cleans_origins_removed_without_bookkeeping() {
             vec![TEST_LEAF.to_vec()],
             b"origin".to_vec(),
         )],
-        Some(crate::batch::BatchApplyOptions {
-            backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+        Some(BatchApplyOptions {
+            backward_references_policy: BackwardReferencesPolicy::Skip,
             ..Default::default()
         }),
         None,
@@ -1218,7 +1220,7 @@ fn delete_with_flag_rejects_rows_of_indexed_primaries() {
             &[TEST_LEAF, b"pcit"],
             b"row",
             Some(DeleteOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             None,
@@ -1699,7 +1701,7 @@ fn flagged_inserts_enforce_tree_shape_guards() {
     let opts = Some(InsertOptions {
         validate_insertion_does_not_override: false,
         validate_insertion_does_not_override_tree: true,
-        backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+        backward_references_policy: BackwardReferencesPolicy::Maintain,
         ..Default::default()
     });
     assert!(matches!(
@@ -1752,7 +1754,7 @@ fn dangling_bidirectional_reference_reads_report_corruption() {
         &[TEST_LEAF],
         b"value",
         Some(DeleteOptions {
-            backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            backward_references_policy: BackwardReferencesPolicy::Skip,
             ..Default::default()
         }),
         None,
@@ -1812,7 +1814,7 @@ fn propagation_cleans_dangling_referrers_on_chained_references() {
         &[TEST_LEAF],
         b"a",
         Some(DeleteOptions {
-            backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            backward_references_policy: BackwardReferencesPolicy::Skip,
             ..Default::default()
         }),
         Some(&tx),
@@ -1907,7 +1909,7 @@ fn retargeting_tolerates_targets_rewritten_without_bookkeeping() {
         b"t1",
         Element::new_item(b"plain".to_vec()),
         Some(InsertOptions {
-            backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            backward_references_policy: BackwardReferencesPolicy::Skip,
             ..Default::default()
         }),
         None,
@@ -1933,7 +1935,7 @@ fn retargeting_tolerates_targets_rewritten_without_bookkeeping() {
         b"t3",
         Element::new_item_allowing_bidirectional_references(b"fresh".to_vec()),
         Some(InsertOptions {
-            backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            backward_references_policy: BackwardReferencesPolicy::Skip,
             ..Default::default()
         }),
         None,
@@ -3035,7 +3037,7 @@ fn per_edge_max_hop_is_enforced_on_reads() {
         b"mid_evolved",
         Element::new_reference(ReferencePathType::SiblingReference(b"value".to_vec())),
         Some(InsertOptions {
-            backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            backward_references_policy: BackwardReferencesPolicy::Skip,
             ..Default::default()
         }),
         None,
@@ -3234,7 +3236,7 @@ fn automatic_delete_handles_specialized_descendants() {
     let options = DeleteOptions {
         allow_deleting_non_empty_trees: true,
         deleting_non_empty_trees_returns_error: false,
-        backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+        backward_references_policy: BackwardReferencesPolicy::Maintain,
         ..Default::default()
     };
     db.delete(&[TEST_LEAF], b"outer", Some(options), None, grove_version)
@@ -3625,8 +3627,8 @@ fn bidi_insert_rejects_undersized_max_hop() {
                     None,
                 ),
             )],
-            Some(crate::batch::BatchApplyOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+            Some(BatchApplyOptions {
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             None,
@@ -3678,7 +3680,7 @@ fn proof_generation_respects_bidi_max_hop() {
         b"mid",
         Element::new_reference(ReferencePathType::SiblingReference(b"value".to_vec())),
         Some(InsertOptions {
-            backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            backward_references_policy: BackwardReferencesPolicy::Skip,
             ..Default::default()
         }),
         None,
@@ -3922,8 +3924,8 @@ fn retarget_rejects_upstream_max_hop_violation() {
                 b"b".to_vec(),
                 sibling_bidi(b"d", true),
             )],
-            Some(crate::batch::BatchApplyOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+            Some(BatchApplyOptions {
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             None,
@@ -3964,7 +3966,7 @@ fn cascade_removes_the_physical_referrer_record() {
         &[TEST_LEAF],
         b"value",
         Some(DeleteOptions {
-            backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+            backward_references_policy: BackwardReferencesPolicy::Maintain,
             ..Default::default()
         }),
         None,
@@ -4082,7 +4084,7 @@ fn cascade_forwards_the_sectioned_removal_callback() {
         SubtreePath::from(&[TEST_LEAF]),
         b"value",
         Some(DeleteOptions {
-            backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+            backward_references_policy: BackwardReferencesPolicy::Maintain,
             ..Default::default()
         }),
         None,
@@ -4138,7 +4140,7 @@ fn stale_nonconsenting_registration_does_not_block_target_deletion() {
         &[TEST_LEAF],
         b"ref",
         Some(DeleteOptions {
-            backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            backward_references_policy: BackwardReferencesPolicy::Skip,
             ..Default::default()
         }),
         None,
@@ -4151,7 +4153,7 @@ fn stale_nonconsenting_registration_does_not_block_target_deletion() {
         &[TEST_LEAF],
         b"value",
         Some(DeleteOptions {
-            backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+            backward_references_policy: BackwardReferencesPolicy::Maintain,
             ..Default::default()
         }),
         None,

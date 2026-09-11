@@ -20,6 +20,8 @@
 //!   corrupted-reference error rather than resolving to stale data.
 
 mod tests {
+    use crate::batch::BatchApplyOptions;
+    use crate::BackwardReferencesPolicy;
     use grovedb_costs::OperationCost;
     use grovedb_merk::tree_type::TreeType;
     use grovedb_storage::{
@@ -121,7 +123,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            crate::BackwardReferencesPolicy::Skip,
+            BackwardReferencesPolicy::Skip,
             None,
             grove_version,
         )
@@ -152,7 +154,7 @@ mod tests {
             db.drop_flat_subtree(
                 [TEST_LEAF].as_ref(),
                 b"flat",
-                crate::BackwardReferencesPolicy::Skip,
+                BackwardReferencesPolicy::Skip,
                 None,
                 grove_version,
             )
@@ -181,8 +183,8 @@ mod tests {
                     TreeType::NormalTree,
                     SubelementsDeletionBehavior::DropFlat,
                 )],
-                Some(crate::batch::BatchApplyOptions {
-                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                Some(BatchApplyOptions {
+                    backward_references_policy: BackwardReferencesPolicy::Skip,
                     ..Default::default()
                 }),
                 None,
@@ -213,7 +215,7 @@ mod tests {
             db.drop_flat_subtree(
                 [TEST_LEAF].as_ref(),
                 b"item",
-                crate::BackwardReferencesPolicy::Skip,
+                BackwardReferencesPolicy::Skip,
                 None,
                 grove_version
             )
@@ -232,7 +234,7 @@ mod tests {
             db.drop_flat_subtree(
                 [TEST_LEAF].as_ref(),
                 b"flat",
-                crate::BackwardReferencesPolicy::Skip,
+                BackwardReferencesPolicy::Skip,
                 None,
                 &GROVE_V3
             )
@@ -259,7 +261,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            crate::BackwardReferencesPolicy::Skip,
+            BackwardReferencesPolicy::Skip,
             Some(&tx),
             grove_version,
         )
@@ -306,7 +308,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            crate::BackwardReferencesPolicy::Skip,
+            BackwardReferencesPolicy::Skip,
             Some(&tx),
             grove_version,
         )
@@ -341,7 +343,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            crate::BackwardReferencesPolicy::Skip,
+            BackwardReferencesPolicy::Skip,
             Some(&tx),
             grove_version,
         )
@@ -374,7 +376,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            crate::BackwardReferencesPolicy::Skip,
+            BackwardReferencesPolicy::Skip,
             Some(&tx),
             grove_version,
         )
@@ -482,7 +484,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"cidx",
-            crate::BackwardReferencesPolicy::Skip,
+            BackwardReferencesPolicy::Skip,
             None,
             grove_version,
         )
@@ -550,7 +552,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF, b"sums"].as_ref(),
             b"flat_sums",
-            crate::BackwardReferencesPolicy::Skip,
+            BackwardReferencesPolicy::Skip,
             None,
             grove_version,
         )
@@ -590,8 +592,8 @@ mod tests {
         ];
         db.apply_batch(
             ops,
-            Some(crate::batch::BatchApplyOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            Some(BatchApplyOptions {
+                backward_references_policy: BackwardReferencesPolicy::Skip,
                 ..Default::default()
             }),
             None,
@@ -633,8 +635,8 @@ mod tests {
         )];
         db.apply_batch(
             ops,
-            Some(crate::batch::BatchApplyOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            Some(BatchApplyOptions {
+                backward_references_policy: BackwardReferencesPolicy::Skip,
                 ..Default::default()
             }),
             Some(&tx),
@@ -667,8 +669,8 @@ mod tests {
         assert!(matches!(
             db.apply_batch(
                 ops,
-                Some(crate::batch::BatchApplyOptions {
-                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                Some(BatchApplyOptions {
+                    backward_references_policy: BackwardReferencesPolicy::Skip,
                     ..Default::default()
                 }),
                 None,
@@ -721,8 +723,8 @@ mod tests {
         )];
         db.apply_batch(
             ops,
-            Some(crate::batch::BatchApplyOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            Some(BatchApplyOptions {
+                backward_references_policy: BackwardReferencesPolicy::Skip,
                 ..Default::default()
             }),
             None,
@@ -751,8 +753,8 @@ mod tests {
         )];
         db.apply_operations_without_batching(
             ops,
-            Some(crate::batch::BatchApplyOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            Some(BatchApplyOptions {
+                backward_references_policy: BackwardReferencesPolicy::Skip,
                 ..Default::default()
             }),
             None,
@@ -802,7 +804,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            crate::BackwardReferencesPolicy::Skip,
+            BackwardReferencesPolicy::Skip,
             None,
             grove_version,
         )
@@ -858,7 +860,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            crate::BackwardReferencesPolicy::Skip,
+            BackwardReferencesPolicy::Skip,
             None,
             grove_version,
         )
@@ -944,8 +946,8 @@ mod tests {
         let average = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(average_paths),
             ops.clone(),
-            Some(crate::batch::BatchApplyOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            Some(BatchApplyOptions {
+                backward_references_policy: BackwardReferencesPolicy::Skip,
                 ..Default::default()
             }),
             |_cost, _old_flags, _new_flags| Ok(false),
@@ -966,8 +968,8 @@ mod tests {
         let worst = GroveDb::estimated_case_operations_for_batch(
             WorstCaseCostsType(worst_paths),
             ops.clone(),
-            Some(crate::batch::BatchApplyOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            Some(BatchApplyOptions {
+                backward_references_policy: BackwardReferencesPolicy::Skip,
                 ..Default::default()
             }),
             |_cost, _old_flags, _new_flags| Ok(false),
@@ -982,8 +984,8 @@ mod tests {
         let actual = db
             .apply_batch(
                 ops,
-                Some(crate::batch::BatchApplyOptions {
-                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                Some(BatchApplyOptions {
+                    backward_references_policy: BackwardReferencesPolicy::Skip,
                     ..Default::default()
                 }),
                 None,

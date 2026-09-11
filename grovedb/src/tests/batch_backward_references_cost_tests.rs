@@ -7,6 +7,7 @@
 //! only in layers declaring `may_contain_backward_references`; undeclared
 //! layers estimate them exactly as `Skip` would.
 
+use crate::BackwardReferencesPolicy;
 use std::collections::HashMap;
 
 use grovedb_merk::estimated_costs::{
@@ -37,7 +38,7 @@ use crate::{
 
 fn batch_flag_on() -> Option<BatchApplyOptions> {
     Some(BatchApplyOptions {
-        backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+        backward_references_policy: BackwardReferencesPolicy::Maintain,
         ..Default::default()
     })
 }
@@ -263,8 +264,8 @@ fn fan_out_terms_are_default_and_skip_disables_them() {
     );
     let unflagged = worst_case_estimate(
         family_op(),
-        Some(crate::batch::BatchApplyOptions {
-            backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+        Some(BatchApplyOptions {
+            backward_references_policy: BackwardReferencesPolicy::Skip,
             ..Default::default()
         }),
         grove_version,
@@ -277,8 +278,8 @@ fn fan_out_terms_are_default_and_skip_disables_them() {
     let flagged_avg = average_case_estimate(family_op(), batch_flag_on(), grove_version);
     let unflagged_avg = average_case_estimate(
         family_op(),
-        Some(crate::batch::BatchApplyOptions {
-            backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+        Some(BatchApplyOptions {
+            backward_references_policy: BackwardReferencesPolicy::Skip,
             ..Default::default()
         }),
         grove_version,
@@ -297,8 +298,8 @@ fn fan_out_terms_are_default_and_skip_disables_them() {
     let flagged_plain = worst_case_estimate(plain_op.clone(), batch_flag_on(), grove_version);
     let unflagged_plain = worst_case_estimate(
         plain_op,
-        Some(crate::batch::BatchApplyOptions {
-            backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+        Some(BatchApplyOptions {
+            backward_references_policy: BackwardReferencesPolicy::Skip,
             ..Default::default()
         }),
         grove_version,
@@ -757,7 +758,7 @@ fn undeclared_average_case_layers() -> HashMap<KeyInfoPath, EstimatedLayerInform
 
 fn skip() -> Option<BatchApplyOptions> {
     Some(BatchApplyOptions {
-        backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+        backward_references_policy: BackwardReferencesPolicy::Skip,
         ..Default::default()
     })
 }

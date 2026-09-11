@@ -24,6 +24,7 @@
 //! Everything else is identical. See the module docs in
 //! [`super`][`mod@super`] for the version rationale.
 
+use crate::operations::indexed_tree::reject_generic_write_into_indexed_primary;
 use std::collections::HashMap;
 
 use grovedb_costs::{
@@ -123,10 +124,7 @@ impl GroveDb {
         // mutation.
         cost_return_on_error_no_add!(
             cost,
-            crate::operations::indexed_tree::reject_generic_write_into_indexed_primary(
-                subtree_to_delete_from.tree_type,
-                "delete",
-            )
+            reject_generic_write_into_indexed_primary(subtree_to_delete_from.tree_type, "delete",)
         );
 
         let parent_tree_type = subtree_to_delete_from.tree_type;

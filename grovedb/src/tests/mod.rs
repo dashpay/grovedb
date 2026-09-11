@@ -1175,6 +1175,7 @@ pub fn make_deep_tree_with_sum_trees_mixed_with_items(grove_version: &GroveVersi
 }
 
 mod general_tests {
+    use crate::batch::BatchApplyOptions;
     use batch::QualifiedGroveDbOp;
     use grovedb_merk::{
         element::get::ElementFetchFromStorageExtensions, proofs::query::SubqueryBranch,
@@ -4976,7 +4977,7 @@ mod general_tests {
                 None,
             ),
             Some(InsertOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             Some(&transaction),
@@ -4998,7 +4999,7 @@ mod general_tests {
                 None,
             ),
             Some(InsertOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             Some(&transaction),
@@ -5020,7 +5021,7 @@ mod general_tests {
                 None,
             ),
             Some(InsertOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             Some(&transaction),
@@ -5040,7 +5041,7 @@ mod general_tests {
             b"value",
             Element::new_item_allowing_bidirectional_references(b"not hello >:(".to_vec()),
             Some(InsertOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             Some(&transaction),
@@ -5134,8 +5135,8 @@ mod general_tests {
                     "ordinary" => db
                         .apply_batch(
                             ops,
-                            Some(crate::batch::BatchApplyOptions {
-                                backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                            Some(BatchApplyOptions {
+                                backward_references_policy: BackwardReferencesPolicy::Skip,
                                 ..Default::default()
                             }),
                             None,

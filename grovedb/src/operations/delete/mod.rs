@@ -42,6 +42,7 @@ pub mod flat_drop;
 mod worst_case;
 
 #[cfg(feature = "minimal")]
+use crate::BackwardReferencesPolicy;
 use std::collections::BTreeSet;
 
 #[cfg(feature = "minimal")]
@@ -85,7 +86,7 @@ pub struct ClearOptions {
     /// On V4, Maintain scans for participants and refuses the clear before
     /// mutation if any are found. Delete those participants through the normal
     /// delete API first. Skip explicitly permits dangling registrations.
-    pub backward_references_policy: crate::BackwardReferencesPolicy,
+    pub backward_references_policy: BackwardReferencesPolicy,
 }
 
 #[cfg(feature = "minimal")]
@@ -95,7 +96,7 @@ impl Default for ClearOptions {
             check_for_subtrees: true,
             allow_deleting_subtrees: false,
             trying_to_clear_with_subtrees_returns_error: true,
-            backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+            backward_references_policy: BackwardReferencesPolicy::Maintain,
         }
     }
 }
@@ -116,7 +117,7 @@ pub struct DeleteOptions {
     /// must consent through `cascade_on_update`, or the operation fails
     /// atomically. The initial value is observed in the Merk used for deletion.
     /// `Skip` deliberately allows references to the deleted position to dangle.
-    pub backward_references_policy: crate::BackwardReferencesPolicy,
+    pub backward_references_policy: BackwardReferencesPolicy,
 }
 
 #[cfg(feature = "minimal")]
@@ -127,7 +128,7 @@ impl Default for DeleteOptions {
             deleting_non_empty_trees_returns_error: true,
             base_root_storage_is_free: true,
             validate_tree_at_path_exists: false,
-            backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+            backward_references_policy: BackwardReferencesPolicy::Maintain,
         }
     }
 }
@@ -588,6 +589,7 @@ impl GroveDb {
 #[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
+    use crate::BackwardReferencesPolicy;
     use grovedb_costs::{
         storage_cost::{removal::StorageRemovedBytes::BasicStorageRemoval, StorageCost},
         OperationCost,
@@ -1977,7 +1979,7 @@ mod tests {
             .clear_subtree(
                 [TEST_LEAF, b"key1"].as_ref(),
                 Some(ClearOptions {
-                    backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+                    backward_references_policy: BackwardReferencesPolicy::Maintain,
                     check_for_subtrees: true,
                     allow_deleting_subtrees: false,
                     trying_to_clear_with_subtrees_returns_error: false,
@@ -1992,7 +1994,7 @@ mod tests {
             .clear_subtree(
                 [TEST_LEAF, b"key1"].as_ref(),
                 Some(ClearOptions {
-                    backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+                    backward_references_policy: BackwardReferencesPolicy::Maintain,
                     check_for_subtrees: true,
                     allow_deleting_subtrees: true,
                     trying_to_clear_with_subtrees_returns_error: false,
@@ -2145,7 +2147,7 @@ mod tests {
                 deleting_non_empty_trees_returns_error: true,
                 base_root_storage_is_free: true,
                 validate_tree_at_path_exists: true,
-                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
             }),
             None,
             version,
@@ -2184,7 +2186,7 @@ mod tests {
                 deleting_non_empty_trees_returns_error: false,
                 base_root_storage_is_free: true,
                 validate_tree_at_path_exists: true,
-                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
             }),
             Some(&transaction),
             version,

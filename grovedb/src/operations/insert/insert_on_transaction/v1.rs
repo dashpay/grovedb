@@ -4,6 +4,7 @@
 //! traversal in the same Merk used by the write. Reference maintenance and
 //! parent propagation share that cache until the atomic batch is complete.
 
+use crate::operations::indexed_tree::reject_generic_write_into_indexed_primary;
 use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 use std::collections::HashMap;
 
@@ -65,10 +66,7 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
             let mut cost = Default::default();
             cost_return_on_error_no_add!(
                 cost,
-                crate::operations::indexed_tree::reject_generic_write_into_indexed_primary(
-                    merk.tree_type,
-                    "insert",
-                )
+                reject_generic_write_into_indexed_primary(merk.tree_type, "insert",)
             );
             let mut previous = None;
             cost_return_on_error!(

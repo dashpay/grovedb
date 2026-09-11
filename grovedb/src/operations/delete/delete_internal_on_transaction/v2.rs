@@ -1,5 +1,7 @@
 //! Automatic deletion with cached old-value observation on GROVE_V4.
 
+use crate::operations::indexed_tree::reject_generic_write_into_indexed_primary;
+use crate::BackwardReferencesPolicy;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, storage_cost::removal::StorageRemovedBytes,
     CostResult, CostsExt,
@@ -99,10 +101,7 @@ impl GroveDb {
         let subtree_to_delete_from_type = merk.tree_type;
         cost_return_on_error_no_add!(
             cost,
-            crate::operations::indexed_tree::reject_generic_write_into_indexed_primary(
-                merk.tree_type,
-                "delete"
-            )
+            reject_generic_write_into_indexed_primary(merk.tree_type, "delete")
         );
         let mut observed = None;
         cost_return_on_error!(
@@ -322,7 +321,7 @@ impl GroveDb {
 /// we're good as long as we do nothing outside of the cache, then finalize
 /// it, and only then merge with the final deletion batches.
 struct DeletionVisitor<'c, 'db, 'b, 's, B: AsRef<[u8]>> {
-    backward_references_policy: crate::BackwardReferencesPolicy,
+    backward_references_policy: BackwardReferencesPolicy,
     allow_deleting_subtrees: bool,
     cache: &'c MerkCache<'db, 'b, B>,
     /// The caller's removal-accounting policy, applied to every referrer a
@@ -333,7 +332,7 @@ struct DeletionVisitor<'c, 'db, 'b, 's, B: AsRef<[u8]>> {
 impl<'c, 'db, 'b, 's, B: AsRef<[u8]>> DeletionVisitor<'c, 'db, 'b, 's, B> {
     fn new(
         cache: &'c MerkCache<'db, 'b, B>,
-        backward_references_policy: crate::BackwardReferencesPolicy,
+        backward_references_policy: BackwardReferencesPolicy,
         allow_deleting_subtrees: bool,
         sectioned_removal: bidirectional_references::SectionedRemovalFn<'s>,
     ) -> Self {

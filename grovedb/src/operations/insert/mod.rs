@@ -1,5 +1,6 @@
 //! Insert operations
 
+use crate::BackwardReferencesPolicy;
 use std::option::Option::None;
 
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
@@ -28,7 +29,7 @@ pub struct InsertOptions {
     /// observed in the same Merk used by the write. `Skip` explicitly permits
     /// stale reference hashes and dangling registrations. A newly inserted
     /// bidirectional reference always registers its edge.
-    pub backward_references_policy: crate::BackwardReferencesPolicy,
+    pub backward_references_policy: BackwardReferencesPolicy,
 }
 
 impl Default for InsertOptions {
@@ -37,7 +38,7 @@ impl Default for InsertOptions {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: true,
             base_root_storage_is_free: true,
-            backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+            backward_references_policy: BackwardReferencesPolicy::Maintain,
         }
     }
 }
@@ -278,6 +279,7 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
+    use crate::BackwardReferencesPolicy;
     use grovedb_costs::{
         storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,
@@ -471,7 +473,7 @@ mod tests {
                     validate_insertion_does_not_override: true,
                     validate_insertion_does_not_override_tree: true,
                     base_root_storage_is_free: true,
-                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                    backward_references_policy: BackwardReferencesPolicy::Skip,
                 }),
                 None,
                 gv,
@@ -549,7 +551,7 @@ mod tests {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: false,
             base_root_storage_is_free: true,
-            backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+            backward_references_policy: BackwardReferencesPolicy::Skip,
         }
     }
 
@@ -3310,7 +3312,7 @@ mod tests {
                     validate_insertion_does_not_override: false,
                     validate_insertion_does_not_override_tree: false,
                     base_root_storage_is_free: true,
-                    backward_references_policy: crate::BackwardReferencesPolicy::Skip,
+                    backward_references_policy: BackwardReferencesPolicy::Skip,
                 }),
                 Some(&tx),
                 grove_version,
@@ -3600,7 +3602,7 @@ mod tests {
             b"key5",
             Element::new_item_allowing_bidirectional_references(b"certainly new value".to_vec()),
             Some(InsertOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             None,
@@ -3630,7 +3632,7 @@ mod tests {
             b"key5",
             Element::new_item(b"hello".to_vec()),
             Some(InsertOptions {
-                backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             None,

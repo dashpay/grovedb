@@ -6,6 +6,7 @@
 //! every non-backward-references call through [`insert_on_transaction_body`]
 //! unchanged.
 
+use crate::operations::indexed_tree::reject_generic_write_into_indexed_primary;
 use std::collections::HashMap;
 
 use grovedb_costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt};
@@ -88,10 +89,7 @@ pub(super) fn insert_on_transaction_body<'db, 'b, B: AsRef<[u8]>>(
     // the `StorageBatch` is discarded and nothing is committed.
     cost_return_on_error_no_add!(
         cost,
-        crate::operations::indexed_tree::reject_generic_write_into_indexed_primary(
-            merk.tree_type,
-            "insert",
-        )
+        reject_generic_write_into_indexed_primary(merk.tree_type, "insert",)
     );
     merk_cache.insert(path.clone(), merk);
     cost_return_on_error!(

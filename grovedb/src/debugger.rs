@@ -1309,6 +1309,7 @@ fn node_to_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::BackwardReferencesPolicy;
 
     #[test]
     fn element_to_grovedbg_converts_item_with_sum_item() {
@@ -1762,7 +1763,7 @@ mod tests {
                     Some(vec![7]),
                 ),
                 Some(InsertOptions {
-                    backward_references_policy: crate::BackwardReferencesPolicy::Maintain,
+                    backward_references_policy: BackwardReferencesPolicy::Maintain,
                     ..Default::default()
                 }),
                 None,
