@@ -277,7 +277,7 @@ impl GroveDb {
                 // The backward-references item variants store exactly like
                 // their plain counterparts; the backward-reference
                 // bookkeeping only runs when the caller opts in via
-                // `backward_references_policy` (routed before this call).
+                // `displaced_value` (routed before this call).
                 //
                 // DELIBERATE TRADEOFF (see adr/bidirectional_references.md):
                 // without the flag, overwriting a key that carries backward

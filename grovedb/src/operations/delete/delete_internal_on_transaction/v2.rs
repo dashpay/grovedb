@@ -1,7 +1,7 @@
 //! Automatic deletion with cached old-value observation on GROVE_V4.
 
 use crate::operations::indexed_tree::reject_generic_write_into_indexed_primary;
-use crate::BackwardReferencesPolicy;
+use crate::DisplacedValue;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, storage_cost::removal::StorageRemovedBytes,
     CostResult, CostsExt,
@@ -45,27 +45,15 @@ impl GroveDb {
         batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
-        if options.backward_references_policy.maintains() {
-            self.delete_with_backward_references_v2(
-                path,
-                key,
-                options,
-                transaction,
-                sectioned_removal,
-                batch,
-                grove_version,
-            )
-        } else {
-            self.delete_internal_on_transaction_v1(
-                path,
-                key,
-                options,
-                transaction,
-                sectioned_removal,
-                batch,
-                grove_version,
-            )
-        }
+        self.delete_with_backward_references_v2(
+            path,
+            key,
+            options,
+            transaction,
+            sectioned_removal,
+            batch,
+            grove_version,
+        )
     }
 
     /// The `MerkCache`-based delete flow with backward-references cascade.
@@ -119,7 +107,22 @@ impl GroveDb {
         let element =
             cost_return_on_error_no_add!(cost, observed.transpose().map_err(Error::from)
             .and_then(|value| value.ok_or_else(|| Error::PathKeyNotFound(hex::encode(key)))));
-        let descendants_need_maintenance = if element.is_any_tree()
+        // The displaced value is in hand, so a `NotParticipant` claim costs
+        // nothing to check and fails closed.
+        if !options.displaced_value.may_be_participant() && element.supports_backward_references() {
+            return Err(Error::NotSupported(
+                "delete declared DisplacedValue::NotParticipant but the stored value takes part in \
+                 backward references"
+                    .to_owned(),
+            ))
+            .wrap_with_cost(cost);
+        }
+        // A populated subtree is scanned for participants to maintain only
+        // when the caller says there may be some; a `NotParticipant` removal
+        // takes the ordinary route, whose cleanup walk checks the claim on
+        // the elements it decodes anyway.
+        let descendants_need_maintenance = if options.displaced_value.may_be_participant()
+            && element.is_any_tree()
             && !element.uses_non_merk_data_storage()
             && element
                 .root_key_and_tree_type()
@@ -212,12 +215,7 @@ impl GroveDb {
                 let visitor = GroveVisitor::new(
                     &self.db,
                     transaction,
-                    DeletionVisitor::new(
-                        &cache,
-                        options.backward_references_policy,
-                        true,
-                        sectioned_removal,
-                    ),
+                    DeletionVisitor::new(&cache, options.displaced_value, true, sectioned_removal),
                     true,
                     grove_version,
                 );
@@ -321,7 +319,7 @@ impl GroveDb {
 /// we're good as long as we do nothing outside of the cache, then finalize
 /// it, and only then merge with the final deletion batches.
 struct DeletionVisitor<'c, 'db, 'b, 's, B: AsRef<[u8]>> {
-    backward_references_policy: BackwardReferencesPolicy,
+    displaced_value: DisplacedValue,
     allow_deleting_subtrees: bool,
     cache: &'c MerkCache<'db, 'b, B>,
     /// The caller's removal-accounting policy, applied to every referrer a
@@ -332,12 +330,12 @@ struct DeletionVisitor<'c, 'db, 'b, 's, B: AsRef<[u8]>> {
 impl<'c, 'db, 'b, 's, B: AsRef<[u8]>> DeletionVisitor<'c, 'db, 'b, 's, B> {
     fn new(
         cache: &'c MerkCache<'db, 'b, B>,
-        backward_references_policy: BackwardReferencesPolicy,
+        displaced_value: DisplacedValue,
         allow_deleting_subtrees: bool,
         sectioned_removal: bidirectional_references::SectionedRemovalFn<'s>,
     ) -> Self {
         Self {
-            backward_references_policy,
+            displaced_value,
             allow_deleting_subtrees,
             cache,
             sectioned_removal,
@@ -393,7 +391,7 @@ impl<'b, B: AsRef<[u8]>> Visit<'b, B> for DeletionVisitor<'_, '_, 'b, '_, B> {
 
         // Step 2: perform backward references' deletion on top of cached
         // data:
-        if self.backward_references_policy.maintains()
+        if self.displaced_value.may_be_participant()
             && matches!(
                 element,
                 Element::ItemWithBackwardsReferences(..)

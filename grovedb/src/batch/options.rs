@@ -1,7 +1,7 @@
 //! Options
 
 #[cfg(feature = "minimal")]
-use crate::BackwardReferencesPolicy;
+use crate::DisplacedValue;
 use grovedb_merk::MerkOptions;
 
 #[cfg(feature = "minimal")]
@@ -78,15 +78,6 @@ pub struct BatchApplyOptions {
     /// At what height do we want to pause applying batch operations
     /// Most of the time this should be not set
     pub batch_pause_height: Option<u8>,
-    /// Maintain registrations, propagate updates, and cascade deletions by
-    /// default on V4. Old values are observed in Merks retained for execution.
-    /// `Skip` deliberately permits stale/dangling references and rejects
-    /// family payloads. Partial batches reject participant mutations while
-    /// maintenance is enabled; use a full batch for reference planning.
-    /// Recursive removals inspect descendants under Maintain, including in
-    /// partial batches before commit. DropFlat requires explicit Skip so it
-    /// preserves its O(1) contract without a hidden descendant scan.
-    pub backward_references_policy: BackwardReferencesPolicy,
 }
 
 #[cfg(feature = "minimal")]
@@ -98,7 +89,6 @@ impl Default for BatchApplyOptions {
             disable_operation_consistency_check: false,
             base_root_storage_is_free: true,
             batch_pause_height: None,
-            backward_references_policy: BackwardReferencesPolicy::Maintain,
         }
     }
 }
@@ -112,7 +102,9 @@ impl BatchApplyOptions {
             validate_insertion_does_not_override_tree: self
                 .validate_insertion_does_not_override_tree,
             base_root_storage_is_free: self.base_root_storage_is_free,
-            backward_references_policy: self.backward_references_policy,
+            // Per operation: the caller overrides this with the op's own
+            // declaration.
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -123,8 +115,9 @@ impl BatchApplyOptions {
             deleting_non_empty_trees_returns_error: true,
             base_root_storage_is_free: self.base_root_storage_is_free,
             validate_tree_at_path_exists: false,
-            // Preserve the batch's maintenance policy for generated deletes.
-            backward_references_policy: self.backward_references_policy,
+            // Per operation: the caller overrides this with the op's own
+            // declaration.
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 

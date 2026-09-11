@@ -665,6 +665,8 @@ impl GroveDb {
                         chunk_power,
                     },
                 },
+                // The displaced value is the tree element itself, never a participant.
+                displaced_value: crate::DisplacedValue::NotParticipant,
             };
             replacements.insert(tree_path.clone(), replacement);
         }

@@ -1,6 +1,6 @@
 //! The backward-references batch preprocessor (batching milestones M2–M4).
 //!
-//! With the default [`crate::BackwardReferencesPolicy::Maintain`],
+//! With the default [`crate::DisplacedValue::MayBeParticipant`],
 //! user operations touching the backward-references family — the three ITEM
 //! variants and `BidirectionalReference` itself — expand into the derived
 //! operations the live flow would perform. The decisions come from
@@ -85,7 +85,7 @@ use crate::{
     },
     operations::get::MAX_REFERENCE_HOPS,
     reference_path::{path_from_reference_path_type, ReferencePathType},
-    Element, Error, GroveDb, Transaction,
+    DisplacedValue, Element, Error, GroveDb, Transaction,
 };
 
 /// [`ChainStore`] over the batch's prospective state: an overlay of staged
@@ -558,6 +558,7 @@ impl<'db, 'g> Expansion<'db, 'g> {
                                     node_value_hash,
                                     end_hash,
                                 },
+                                displaced_value: DisplacedValue::MayBeParticipant,
                             },
                         );
                         self.store.stage(position, Some(element));
@@ -576,6 +577,7 @@ impl<'db, 'g> Expansion<'db, 'g> {
                                     node_value_hash,
                                     end_hash,
                                 },
+                                displaced_value: DisplacedValue::MayBeParticipant,
                             },
                         );
                         self.store.stage(position, Some(element));
@@ -698,28 +700,36 @@ pub(super) fn expand_backward_references_ops<'db>(
             _ => continue,
         };
         let previous = cost_return_on_error!(&mut cost, expansion.store.element_at(&path, &key));
-        needs_reference_planning |= new_element.is_some_and(Element::supports_backward_references)
-            || previous
-                .as_ref()
-                .is_some_and(Element::supports_backward_references);
-        // A removal whose contents the batch never reads needs a
-        // participant scan: `Delete` on a tree, `DeleteChildren`, and a tree
-        // replacement. A `DeleteTree` whose behavior declares the subtree
-        // empty (`DontCheckWithNoCleanup`) or verifies emptiness at apply
-        // time (`Error`, `Skip`) removes nothing that a same-batch delete
-        // has not already read as its old value, so it is not scanned.
-        let removes_subtree = !matches!(
-            op.op,
-            GroveOp::InsertIfNotExists { .. }
-                | GroveOp::RefreshReference { .. }
-                | GroveOp::DeleteTree(
-                    _,
-                    super::SubelementsDeletionBehavior::Skip
-                        | super::SubelementsDeletionBehavior::Error
-                        | super::SubelementsDeletionBehavior::DontCheckWithNoCleanup
-                )
-        );
-        if removes_subtree
+        // The displaced value is in hand, so a `NotParticipant` claim costs
+        // nothing to check and fails closed.
+        let previous_participates = previous
+            .as_ref()
+            .is_some_and(Element::supports_backward_references);
+        if previous_participates && !op.displaced_value.may_be_participant() {
+            return Err(Error::NotSupported(
+                "operation declared DisplacedValue::NotParticipant but the stored value takes \
+                 part in backward references"
+                    .to_owned(),
+            ))
+            .wrap_with_cost(cost);
+        }
+        needs_reference_planning |=
+            new_element.is_some_and(Element::supports_backward_references) || previous_participates;
+        // A removal whose contents nothing in this batch reads is scanned for
+        // participants when the op declares there may be some: `Delete` on a
+        // populated tree and a tree replacement. Every `DeleteTree` is
+        // exempt: `DeleteChildren`, `Error` and `Skip` are checked on the
+        // cleanup walk that already decodes the contents, and
+        // `DontCheckWithNoCleanup` declares that the batch's own deletes,
+        // each planned here, emptied the subtree.
+        let removes_unread_subtree = op.displaced_value.may_be_participant()
+            && !matches!(
+                op.op,
+                GroveOp::InsertIfNotExists { .. }
+                    | GroveOp::RefreshReference { .. }
+                    | GroveOp::DeleteTree(..)
+            );
+        if removes_unread_subtree
             && previous.as_ref().is_some_and(|old| {
                 old.is_any_tree()
                     && !old.uses_non_merk_data_storage()
@@ -734,7 +744,7 @@ pub(super) fn expand_backward_references_ops<'db>(
                 &mut cost,
                 db.backward_reference_participants(&qualified, tx, grove_version)
             );
-            if matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..)) {
+            if matches!(op.op, GroveOp::Delete) {
                 if participants.iter().any(|(path, key, _)| {
                     !user_deleted_positions.contains(&(path.clone(), key.clone()))
                 }) {

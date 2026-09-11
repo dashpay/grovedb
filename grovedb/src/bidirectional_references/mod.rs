@@ -15,40 +15,51 @@ use grovedb_version::version::GroveVersion;
 
 pub(crate) use handling::*;
 
-/// Whether a mutation maintains backward references on GROVE_V4 and later.
-/// Ordinary operations maintain references automatically. `Skip` is an
-/// explicit choice to permit dangling references and stale reference hashes;
-/// it is not an assertion that the stored element has no references.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum BackwardReferencesPolicy {
-    /// Register references, propagate changed values, and cascade deletions
-    /// with each referrer's consent before committing the mutation. APIs that
-    /// cannot plan that maintenance refuse participant mutations: partial
-    /// batches and clear_subtree. Flat drop always requires explicit Skip.
+/// What a write or removal declares about the stored value it displaces.
+///
+/// GroveDB reads the displaced value anyway on `GROVE_V4`+ (the batch
+/// old-value observer, the Merk retained for a live write), so for a keyed
+/// operation the declaration decides only what happens when that value takes
+/// part in backward references: `MayBeParticipant` maintains the references,
+/// `NotParticipant` refuses the operation before anything commits. Where
+/// nothing reads the contents — a flat drop, a raw `clear_subtree`, the
+/// replacement of a populated subtree — `NotParticipant` is trusted and
+/// leaves any participant's registrations stale, exactly like the storage it
+/// strands. Recursive removals that already walk their contents check the
+/// claim on the way at no extra cost.
+///
+/// The estimator cannot see stored state, so the same declaration decides
+/// whether a plain write or delete is charged the displaced-participant
+/// fan-out.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum DisplacedValue {
+    /// The displaced value, or for a subtree removal its contents, may take
+    /// part in backward references: register, propagate and cascade with
+    /// each referrer's consent before committing. Partial batches cannot
+    /// plan that maintenance and refuse participant mutations.
     #[default]
-    Maintain,
-    /// Skip maintenance of displaced values. Live bidirectional-reference
-    /// insertion still registers its edge; batches reject family payloads.
-    Skip,
+    MayBeParticipant,
+    /// The caller knows the displaced value takes no part in backward
+    /// references. Checked for free wherever the value is read; refused if
+    /// the claim is false. Required for a flat drop.
+    NotParticipant,
 }
 
-impl BackwardReferencesPolicy {
-    pub(crate) fn maintains(self) -> bool {
-        matches!(self, Self::Maintain)
+impl DisplacedValue {
+    pub(crate) fn may_be_participant(self) -> bool {
+        matches!(self, Self::MayBeParticipant)
     }
+}
 
-    /// Whether a batch run under this policy maintains backward references on
-    /// `grove_version`: `Maintain` plus
-    /// `apply_batch.backward_references_maintenance` (V4+). Released versions
-    /// never plan references, so they answer `false` under either policy.
-    pub(crate) fn maintains_in_batch(self, grove_version: &GroveVersion) -> bool {
-        self.maintains()
-            && grove_version
-                .grovedb_versions
-                .apply_batch
-                .backward_references_maintenance
-                >= 1
-    }
+/// Whether batches maintain backward references on `grove_version`
+/// (`apply_batch.backward_references_maintenance`, V4+). Released versions
+/// never plan references and reject the family payloads outright.
+pub(crate) fn batch_maintains_backward_references(grove_version: &GroveVersion) -> bool {
+    grove_version
+        .grovedb_versions
+        .apply_batch
+        .backward_references_maintenance
+        >= 1
 }
 
 /// Maximum Grove path depth (number of subtree levels) of any position

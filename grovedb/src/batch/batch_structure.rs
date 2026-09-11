@@ -187,6 +187,7 @@ where
                 path: op_path,
                 key: op_key,
                 op: grove_op,
+                displaced_value: _,
             } = op;
 
             // Keyless ops (append-only tree ops: CommitmentTreeInsert,

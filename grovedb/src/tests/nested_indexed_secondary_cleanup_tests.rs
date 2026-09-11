@@ -101,14 +101,15 @@ mod tests {
                 ),
             };
             result.value.expect("delete child");
-            // V4 Maintain includes the participant scan: +312 loaded bytes
-            // for direct delete; +2 seeks, +467 loaded bytes and +1 hash for
-            // full/partial batches. Keep these default costs visible.
+            // A V4 direct delete under the default `MayBeParticipant` scans
+            // the subtree for participants to maintain (+312 loaded bytes).
+            // Batches check the claim on the cleanup walk they make anyway,
+            // so their V4 cost is the plain removal. Keep these visible.
             let (seek_count, storage_loaded_bytes, hash_node_calls) = match route {
                 DeleteRoute::Direct if gv.protocol_version <= 3 => (21, 2415, 14),
                 DeleteRoute::Direct => (20, 2652, 13),
                 _ if gv.protocol_version <= 3 => (13, 1135, 8),
-                _ => (18, 2466, 13),
+                _ => (16, 1999, 12),
             };
             let expected_cost = OperationCost {
                 seek_count,

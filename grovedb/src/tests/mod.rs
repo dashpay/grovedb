@@ -1175,7 +1175,8 @@ pub fn make_deep_tree_with_sum_trees_mixed_with_items(grove_version: &GroveVersi
 }
 
 mod general_tests {
-    use crate::batch::BatchApplyOptions;
+
+    use crate::DisplacedValue;
     use batch::QualifiedGroveDbOp;
     use grovedb_merk::{
         element::get::ElementFetchFromStorageExtensions, proofs::query::SubqueryBranch,
@@ -4977,7 +4978,7 @@ mod general_tests {
                 None,
             ),
             Some(InsertOptions {
-                backward_references_policy: BackwardReferencesPolicy::Maintain,
+                displaced_value: DisplacedValue::MayBeParticipant,
                 ..Default::default()
             }),
             Some(&transaction),
@@ -4999,7 +5000,7 @@ mod general_tests {
                 None,
             ),
             Some(InsertOptions {
-                backward_references_policy: BackwardReferencesPolicy::Maintain,
+                displaced_value: DisplacedValue::MayBeParticipant,
                 ..Default::default()
             }),
             Some(&transaction),
@@ -5021,7 +5022,7 @@ mod general_tests {
                 None,
             ),
             Some(InsertOptions {
-                backward_references_policy: BackwardReferencesPolicy::Maintain,
+                displaced_value: DisplacedValue::MayBeParticipant,
                 ..Default::default()
             }),
             Some(&transaction),
@@ -5041,7 +5042,7 @@ mod general_tests {
             b"value",
             Element::new_item_allowing_bidirectional_references(b"not hello >:(".to_vec()),
             Some(InsertOptions {
-                backward_references_policy: BackwardReferencesPolicy::Maintain,
+                displaced_value: DisplacedValue::MayBeParticipant,
                 ..Default::default()
             }),
             Some(&transaction),
@@ -5092,12 +5093,12 @@ mod general_tests {
         }
     }
 
-    /// Without opt-in bookkeeping, every batch entry point rejects the
-    /// backward-references family and leaves preceding valid writes uncommitted.
+    /// Partial batches cannot plan reference maintenance, so both of their
+    /// segments reject the backward-references family and leave preceding
+    /// valid writes uncommitted; a full batch plans the family by default.
     #[test]
-    fn backward_references_elements_rejected_in_batches() {
+    fn backward_references_elements_rejected_in_partial_batches() {
         let grove_version = GroveVersion::latest();
-        let db = make_test_grovedb(grove_version);
 
         let elements = [
             Element::new_item_allowing_bidirectional_references(b"v".to_vec()),
@@ -5114,6 +5115,7 @@ mod general_tests {
         ];
 
         for element in elements {
+            let db = make_test_grovedb(grove_version);
             let valid_op = |key: &[u8]| {
                 QualifiedGroveDbOp::insert_or_replace_op(
                     vec![TEST_LEAF.to_vec()],
@@ -5121,28 +5123,17 @@ mod general_tests {
                     Element::new_item(b"valid".to_vec()),
                 )
             };
-            let rejected_op = QualifiedGroveDbOp::insert_or_replace_op(
+            let family_op = QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"k".to_vec(),
                 element.clone(),
             );
-            // Exercise ordinary batch rejection, initial partial rejection,
-            // and rejection after a successful initial partial segment.
-            for phase in ["ordinary", "initial", "continuation"] {
+            // Exercise initial partial rejection and rejection after a
+            // successful initial partial segment.
+            for phase in ["initial", "continuation"] {
                 let before = db.root_hash(None, grove_version).unwrap().unwrap();
-                let ops = vec![valid_op(b"a_valid"), rejected_op.clone()];
+                let ops = vec![valid_op(b"a_valid"), family_op.clone()];
                 let result = match phase {
-                    "ordinary" => db
-                        .apply_batch(
-                            ops,
-                            Some(BatchApplyOptions {
-                                backward_references_policy: BackwardReferencesPolicy::Skip,
-                                ..Default::default()
-                            }),
-                            None,
-                            grove_version,
-                        )
-                        .unwrap(),
                     "initial" => db
                         .apply_partial_batch(
                             ops,
@@ -5182,6 +5173,38 @@ mod general_tests {
                     .unwrap()
                     .is_empty());
             }
+
+            // A full batch plans the family by default: the item registers,
+            // while the sum item (TEST_LEAF is not a sum tree) and the
+            // reference (its target `x` does not exist) are held to their
+            // own rules, never refused as unsupported.
+            let result = db
+                .apply_batch(
+                    vec![valid_op(b"a_valid"), family_op],
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap();
+            if !matches!(element, Element::ItemWithBackwardsReferences(..)) {
+                assert!(
+                    !matches!(result, Ok(()) | Err(Error::NotSupported(_))),
+                    "the family payload is refused by its own rules, not as unsupported: \
+                     {result:?}"
+                );
+            } else {
+                result.expect("a full batch plans the family by default");
+                assert_eq!(
+                    db.get([TEST_LEAF].as_ref(), b"k", None, grove_version)
+                        .unwrap()
+                        .unwrap(),
+                    element
+                );
+            }
+            assert!(db
+                .verify_grovedb(None, true, true, grove_version)
+                .unwrap()
+                .is_empty());
         }
     }
 }

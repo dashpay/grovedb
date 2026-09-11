@@ -51,17 +51,18 @@ chain origin. When such behavior is required, a different type of element should
 Moreover, these types are incompatible, which will be discussed in the "Rules" section.
 
 On `GROVE_V4`, ordinary inserts, replacements, deletes, and full batches
-maintain backward references automatically. Callers do not need to predict
-whether a plain operation will displace a participant. `InsertOptions`,
-`DeleteOptions`, `ClearOptions`, and `BatchApplyOptions` expose `backward_references_policy`,
-whose default is `BackwardReferencesPolicy::Maintain`.
-
-`BackwardReferencesPolicy::Skip` deliberately disables maintenance for an
-operation. It permits dangling references and stale hashes; it is not a hint
-that a key is known to have no references. Inserting a bidirectional reference
-through the live API still registers its edge even with `Skip`. Full batches
-with `Skip` reject family payloads, while allowing ordinary mutations that
-intentionally bypass maintenance.
+maintain backward references automatically, and every operation declares
+what it displaces: `InsertOptions`, `DeleteOptions`, `ClearOptions` and each
+`QualifiedGroveDbOp` carry a `DisplacedValue`, `MayBeParticipant` by default.
+GroveDB reads the displaced value for the write anyway, so for a keyed
+operation the declaration only decides what happens when that value takes
+part in backward references: `MayBeParticipant` maintains the references,
+`NotParticipant` refuses the operation before anything commits. Where nothing
+reads the contents — a flat drop, a raw `clear_subtree`, the replacement of a
+populated subtree, a live recursive delete — `NotParticipant` is trusted and
+leaves any participant's registrations stale, exactly like the storage it
+strands. There is no policy that skips maintenance on a value known to
+participate. Inserting a bidirectional reference always registers its edge.
 
 ## Versioning and scope
 
@@ -90,22 +91,26 @@ Current limitations:
   specialized/indexed descendants. Remove those descendants first.
 - Live participant maintenance below an indexed primary requires a full
   batch; the reference cache refuses that propagation before commit.
-- `DeleteChildren` removals, `Delete` of a populated tree, and subtree
-  replacement inspect descendants under `Maintain`; those scans add reads and
-  are charged in the V4 default cost tests. A `DeleteTree` whose behavior
-  declares the subtree empty
-  (`DontCheckWithNoCleanup`) or verifies emptiness at apply time (`Error`,
-  `Skip`) is not scanned: everything the batch removed beneath it was read as
-  an old value by the batch's own deletes, so a delete-up-tree chain costs
-  exactly what it costs under `Skip`.
-- Flat drop retains its O(1) contract. Standalone `drop_flat_subtree` requires
-  an explicit policy argument; it and batch `DropFlat` reject `Maintain`
-  before scanning. Use `Skip` to acknowledge stale or dangling registrations,
-  or use recursive delete when maintenance is required.
-- `clear_subtree` defaults to `Maintain`: it scans and refuses a subtree
+- `Delete` of a populated tree and subtree replacement inspect descendants
+  when declared `MayBeParticipant`; those scans add reads and are charged in
+  the V4 default cost tests. A batch `DeleteTree` is never pre-scanned:
+  `DontCheckWithNoCleanup` declares that the batch's own deletes emptied the
+  subtree, `Error` and `Skip` verify that at apply time, and `DeleteChildren`
+  (with the defensive `Error`/`Skip` sweeps) checks the declaration on the
+  cleanup walk it makes anyway, refusing a participant the batch does not
+  explicitly delete. A delete-up-tree chain and a batch recursive removal
+  therefore cost the plain removal under either declaration.
+- Flat drop retains its O(1) contract. Standalone `drop_flat_subtree` takes
+  the declaration as a required argument; it and batch `DropFlat` refuse
+  `MayBeParticipant` before reading anything and trust `NotParticipant`. Use
+  recursive delete when maintenance is required.
+- `clear_subtree` under `MayBeParticipant` scans and refuses a subtree
   containing participants before making any mutation, including with a caller
-  transaction. Delete the participants through the normal API first. Explicit
-  `ClearOptions::backward_references_policy = Skip` permits a raw clear.
+  transaction; delete the participants through the normal API first.
+  `NotParticipant` is trusted for a raw clear. A live recursive `delete`
+  declared `NotParticipant` likewise trusts its contents: a clear runs one
+  such delete per nested subtree inside the caller's transaction, where a
+  refusal part-way through could not be undone.
 
 Ordinary full batches keep their original operation set when neither stored
 nor incoming values participate in references. Preparation retains the Merks
@@ -122,14 +127,16 @@ transaction's original subtree contents. Cross-segment conflict checks prevent
 those committed-state inspections from overlooking changes staged by the first
 segment. A refusal discards the storage batch and preserves the caller's
 transaction. These scans have real costs, pinned alongside the full-batch costs;
-this API does not promise a no-scan recursive removal, only that declared-empty
-and apply-time-checked `DeleteTree` removals add no reads of their own.
+this API does not promise a no-scan recursive removal, only that `DeleteTree`
+removals add no reads of their own: their contents are checked on the cleanup
+walk.
 
 ## Rules
 
 Next, we’ll go over the rules and limitations for using bidirectional references.
 
-These rules apply by default; `BackwardReferencesPolicy::Skip` explicitly opts out.
+These rules always apply; `DisplacedValue::NotParticipant` is a checked claim, not an
+opt-out.
 
 An 'Element with backward references' refers to `ItemWithBackwardsReferences`,
 `SumItemWithBackwardsReferences`, `ItemWithSumItemWithBackwardsReferences`, and
@@ -156,7 +163,8 @@ registered element) and the node growth registrations can inflict on a target.
 insertion.__ Public reads enforce the declared budget deterministically, so an edge whose
 chain is already longer than its declaration would never resolve; the write path rejects
 such dead edges instead of persisting them. (An edge can still fall out of budget later —
-e.g. its target is overwritten into a plain reference with `BackwardReferencesPolicy::Skip` — and
+e.g. its target is overwritten into a plain reference behind a raw clear declared
+`NotParticipant` — and
 reads then return `ReferenceLimit`.)
 - __Both ends of a bidirectional edge must sit at most 32 subtree levels deep__
 (`MAX_BACKWARD_REFERENCES_GROVE_DEPTH`, enforced at registration). Every later derived
@@ -233,15 +241,13 @@ estimation is preserved byte-for-byte for replay of historical admission
 decisions.
 
 The estimator cannot see stored state, so the bound for a write that may
-displace a participant is a per-layer declaration:
-`EstimatedLayerInformation::may_contain_backward_references` (average case)
-and the `*WithBackwardReferences` variants of `WorstCaseLayerInformation`.
-Undeclared layers charge no displaced-state fan-out and no delete probe —
-their `Maintain` estimates equal `Skip` estimates byte-for-byte — while ops
-that themselves write a participant (family items, bidirectional references)
-are charged from the op regardless. Declaring the layers that hold
-participants is the caller's responsibility; an undeclared layer that does
-hold them under-estimates cascades.
+displace a participant follows the op's own declaration: an op declared
+`MayBeParticipant` charges the displaced-state fan-out and the delete probe,
+an op declared `NotParticipant` charges the plain write alone, and ops that
+themselves write a participant (family items, bidirectional references) are
+charged from the op regardless. Declaring correctly is the caller's
+responsibility; the apply path refuses a false `NotParticipant` claim rather
+than running an unpriced cascade.
 
 Live writes use the same preparation observer. Ordinary values retain the
 existing parent and indexed-tree propagation; participating values reuse the
@@ -317,7 +323,7 @@ Previous read: [Merk cache](./merk_cache.md).
 Deletion or an update of an element with backward references triggers a cascade hash
 update or a deletion, both of which alter the state of affected subtrees, leading to
 regular hash propagation to ancestor subtrees up to the GroveDB root. In short, operations
-under `BackwardReferencesPolicy::Maintain` (the V4 default) can trigger updates across
+on V4 can trigger updates across
 several subtrees simultaneously.
 
 Thus, there are two ongoing propagations:

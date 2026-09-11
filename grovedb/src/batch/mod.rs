@@ -39,7 +39,7 @@ mod single_sum_item_deletion_cost_tests;
 #[cfg(test)]
 mod single_sum_item_insert_cost_tests;
 
-use crate::BackwardReferencesPolicy;
+use crate::{bidirectional_references::batch_maintains_backward_references, DisplacedValue};
 use core::fmt;
 use std::{
     cmp::Ordering,
@@ -153,7 +153,7 @@ pub enum SubelementsDeletionBehavior {
     /// O(1), storage reclaimed) or [`Self::DeleteChildren`] (recursive
     /// cleanup, O(contents)).
     ///
-    /// Under `BackwardReferencesPolicy::Maintain` (`GROVE_V4`+) the
+    /// Under `DisplacedValue::MayBeParticipant` (`GROVE_V4`+) the
     /// declaration also stands in for the removed subtree's
     /// backward-reference participant scan: every element the batch removed
     /// beneath the tree passed through the old-value observer (or the full
@@ -179,7 +179,7 @@ pub enum SubelementsDeletionBehavior {
     /// subtree's storage (and any nested subtrees), walking the structure
     /// via `find_subtrees` — O(contents). Use this when the subtree may
     /// contain children that should be recursively cleaned up. Under
-    /// `BackwardReferencesPolicy::Maintain` the contents are also scanned
+    /// `DisplacedValue::MayBeParticipant` the contents are also scanned
     /// for backward-reference participants before commit.
     DeleteChildren,
     /// Check emptiness at apply time. If the subtree is non-empty,
@@ -195,8 +195,8 @@ pub enum SubelementsDeletionBehavior {
     /// GroveDB owns the transaction, at the caller's next
     /// `flush_pending_prefix_drops` otherwise.
     ///
-    /// Requires explicit `BatchApplyOptions::backward_references_policy = Skip`;
-    /// Maintain refuses this operation before scanning.
+    /// Requires the op to declare `DisplacedValue::NotParticipant`;
+    /// `MayBeParticipant` is refused before reading anything.
     /// The caller declares the subtree contains **no child subtrees**; a
     /// false declaration leaks the children's storage (unreachable,
     /// invisible to hashes/proofs/sync) but never corrupts state. The
@@ -974,6 +974,47 @@ impl KeyInfoPath {
     }
 }
 
+/// Per-position facts a batch consults after apply, keyed by qualified path
+/// (path segments plus key) for ops with known keys.
+#[derive(Default)]
+struct OpDeclarations {
+    /// Each op's declaration about the value it displaces.
+    displaced_values: HashMap<Vec<Vec<u8>>, DisplacedValue>,
+    /// Positions the batch deletes explicitly (`Delete` / `DeleteTree`),
+    /// which account for participants found under a removed subtree.
+    deleted_positions: HashSet<Vec<Vec<u8>>>,
+}
+
+impl OpDeclarations {
+    fn from_ops(ops: &[QualifiedGroveDbOp]) -> Self {
+        let mut declarations = Self::default();
+        declarations.extend_from(ops);
+        declarations
+    }
+
+    fn extend_from(&mut self, ops: &[QualifiedGroveDbOp]) {
+        for op in ops {
+            let Some(key) = op.key.as_ref() else {
+                continue;
+            };
+            let mut qualified = op.path.to_path();
+            qualified.push(key.get_key_clone());
+            if matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..)) {
+                self.deleted_positions.insert(qualified.clone());
+            }
+            self.displaced_values.insert(qualified, op.displaced_value);
+        }
+    }
+
+    fn may_be_participant(&self, qualified_path: &[Vec<u8>]) -> bool {
+        self.displaced_values
+            .get(qualified_path)
+            .copied()
+            .unwrap_or_default()
+            .may_be_participant()
+    }
+}
+
 /// Batch operation
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct QualifiedGroveDbOp {
@@ -986,6 +1027,10 @@ pub struct QualifiedGroveDbOp {
     pub key: Option<KeyInfo>,
     /// Operation to perform on the key
     pub op: GroveOp,
+    /// What this operation declares about the stored value it displaces.
+    /// Every constructor defaults to `MayBeParticipant`; see
+    /// [`Self::with_displaced_value`].
+    pub displaced_value: DisplacedValue,
 }
 
 impl fmt::Debug for QualifiedGroveDbOp {
@@ -1102,6 +1147,29 @@ impl fmt::Debug for QualifiedGroveDbOp {
 }
 
 impl QualifiedGroveDbOp {
+    /// Declare what this operation displaces. Every constructor starts at
+    /// [`DisplacedValue::MayBeParticipant`]; a caller that knows the stored
+    /// value takes no part in backward references declares
+    /// [`DisplacedValue::NotParticipant`] here.
+    pub fn with_displaced_value(mut self, displaced_value: DisplacedValue) -> Self {
+        self.displaced_value = displaced_value;
+        self
+    }
+
+    /// Each op's declaration by `(path, key)`, for the estimators, which see
+    /// ops keyed by position rather than as `QualifiedGroveDbOp`s.
+    pub(in crate::batch) fn displaced_values_by_position(
+        ops: &[Self],
+    ) -> HashMap<(KeyInfoPath, KeyInfo), DisplacedValue> {
+        ops.iter()
+            .filter_map(|op| {
+                op.key
+                    .clone()
+                    .map(|key| ((op.path.clone(), key), op.displaced_value))
+            })
+            .collect()
+    }
+
     /// An insert op using a known owned path and known key.
     /// The caller asserts the key is new — no existence check is performed.
     /// This is a performance optimization hint.
@@ -1115,6 +1183,7 @@ impl QualifiedGroveDbOp {
             path,
             key: Some(KnownKey(key)),
             op: GroveOp::InsertWithKnownToNotAlreadyExist { element },
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -1137,6 +1206,7 @@ impl QualifiedGroveDbOp {
                 element,
                 error_if_exists: true,
             },
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -1155,6 +1225,7 @@ impl QualifiedGroveDbOp {
                 element,
                 error_if_exists: false,
             },
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -1165,6 +1236,7 @@ impl QualifiedGroveDbOp {
             path,
             key: Some(KnownKey(key)),
             op: GroveOp::InsertOrReplace { element },
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -1174,6 +1246,7 @@ impl QualifiedGroveDbOp {
             path,
             key: Some(key),
             op: GroveOp::InsertOrReplace { element },
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -1184,6 +1257,7 @@ impl QualifiedGroveDbOp {
             path,
             key: Some(KnownKey(key)),
             op: GroveOp::Replace { element },
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -1193,6 +1267,7 @@ impl QualifiedGroveDbOp {
             path,
             key: Some(key),
             op: GroveOp::Replace { element },
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -1211,6 +1286,7 @@ impl QualifiedGroveDbOp {
                 element,
                 change_in_bytes,
             },
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -1228,6 +1304,7 @@ impl QualifiedGroveDbOp {
                 element,
                 change_in_bytes,
             },
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -1275,6 +1352,7 @@ impl QualifiedGroveDbOp {
                 flags,
                 non_counted,
             },
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -1318,6 +1396,7 @@ impl QualifiedGroveDbOp {
                 flags,
                 non_counted,
             },
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -1357,6 +1436,7 @@ impl QualifiedGroveDbOp {
                 flags,
                 non_counted,
             },
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -1367,6 +1447,7 @@ impl QualifiedGroveDbOp {
             path,
             key: Some(KnownKey(key)),
             op: GroveOp::Delete,
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -1382,6 +1463,7 @@ impl QualifiedGroveDbOp {
             path,
             key: Some(KnownKey(key)),
             op: GroveOp::DeleteTree(tree_type, subelements_deletion_behavior),
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -1391,6 +1473,7 @@ impl QualifiedGroveDbOp {
             path,
             key: Some(key),
             op: GroveOp::Delete,
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -1405,6 +1488,7 @@ impl QualifiedGroveDbOp {
             path,
             key: Some(key),
             op: GroveOp::DeleteTree(tree_type, subelements_deletion_behavior),
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -1428,6 +1512,7 @@ impl QualifiedGroveDbOp {
                 cv_net,
                 payload,
             },
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -1452,6 +1537,7 @@ impl QualifiedGroveDbOp {
             path,
             key: None,
             op: GroveOp::MmrTreeAppend { value },
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -1462,6 +1548,7 @@ impl QualifiedGroveDbOp {
             path,
             key: None,
             op: GroveOp::BulkAppend { value },
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -1473,6 +1560,7 @@ impl QualifiedGroveDbOp {
             path,
             key: None,
             op: GroveOp::DenseTreeInsert { value },
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -1485,6 +1573,7 @@ impl QualifiedGroveDbOp {
             path,
             key: None,
             op: GroveOp::PrivateDocumentStoreInsert { entry },
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 
@@ -4523,9 +4612,7 @@ where
                     return;
                 }
                 if !self.backward_references_prepared
-                    && batch_apply_options
-                        .backward_references_policy
-                        .maintains_in_batch(grove_version)
+                    && batch_maintains_backward_references(grove_version)
                 {
                     match Element::deserialize(old_value, grove_version) {
                         Ok(element) => {
@@ -5564,7 +5651,9 @@ impl GroveDb {
                             path_slices.as_slice(),
                             key.as_slice(),
                             element.to_owned(),
-                            options.clone().map(|o| o.as_insert_options()),
+                            options.clone().map(|o| o
+                                .as_insert_options()
+                                .with_displaced_value(op.displaced_value)),
                             transaction,
                             grove_version,
                         )
@@ -5585,7 +5674,9 @@ impl GroveDb {
                             path_slices.as_slice(),
                             key.as_slice(),
                             element.to_owned(),
-                            options.clone().map(|o| o.as_insert_options()),
+                            options.clone().map(|o| o
+                                .as_insert_options()
+                                .with_displaced_value(op.displaced_value)),
                             transaction,
                             grove_version,
                         )
@@ -5606,7 +5697,10 @@ impl GroveDb {
                     if error_if_exists {
                         let mut insert_options = options
                             .clone()
-                            .map(|o| o.as_insert_options())
+                            .map(|o| {
+                                o.as_insert_options()
+                                    .with_displaced_value(op.displaced_value)
+                            })
                             .unwrap_or_default();
                         insert_options.validate_insertion_does_not_override = true;
                         cost_return_on_error!(
@@ -5647,7 +5741,9 @@ impl GroveDb {
                         self.delete(
                             path_slices.as_slice(),
                             key.as_slice(),
-                            options.clone().map(|o| o.as_delete_options()),
+                            options.clone().map(|o| o
+                                .as_delete_options()
+                                .with_displaced_value(op.displaced_value)),
                             transaction,
                             grove_version
                         )
@@ -5674,10 +5770,7 @@ impl GroveDb {
                             self.drop_flat_subtree(
                                 path_slices.as_slice(),
                                 key.as_slice(),
-                                options
-                                    .as_ref()
-                                    .map(|o| o.backward_references_policy)
-                                    .unwrap_or_default(),
+                                op.displaced_value,
                                 transaction,
                                 grove_version
                             )
@@ -5707,10 +5800,7 @@ impl GroveDb {
                         validate_tree_at_path_exists: false,
                         // Same decision as `as_delete_options`: the batch's
                         // opt-in extends to its deletes.
-                        backward_references_policy: options
-                            .as_ref()
-                            .map(|o| o.backward_references_policy)
-                            .unwrap_or_default(),
+                        displaced_value: op.displaced_value,
                     };
                     cost_return_on_error!(
                         &mut cost,
@@ -6455,30 +6545,31 @@ impl GroveDb {
         Ok(scan).wrap_with_cost(cost)
     }
 
-    /// Flat drop must never acquire a descendant scan from the default policy.
-    fn reject_flat_drop_with_maintenance(
+    /// Flat drop never reads the subtree it drops, so it cannot check a
+    /// participant claim: the op must declare `DisplacedValue::NotParticipant`
+    /// on versions that maintain backward references.
+    fn reject_flat_drop_declaring_participants(
         ops: &[QualifiedGroveDbOp],
-        policy: BackwardReferencesPolicy,
         grove_version: &GroveVersion,
     ) -> Result<(), Error> {
-        if policy.maintains_in_batch(grove_version)
+        if batch_maintains_backward_references(grove_version)
             && ops.iter().any(|op| {
                 matches!(
                     op.op,
                     GroveOp::DeleteTree(_, SubelementsDeletionBehavior::DropFlat)
-                )
+                ) && op.displaced_value.may_be_participant()
             })
         {
             return Err(Error::NotSupported(
-                "flat drop requires explicit BackwardReferencesPolicy::Skip; use recursive delete for maintenance".to_owned(),
+                "flat drop requires the DeleteTree op to declare DisplacedValue::NotParticipant; use recursive delete for maintenance".to_owned(),
             ));
         }
         Ok(())
     }
 
-    /// Family payloads require full-batch planning on V4 (the default policy).
-    /// Explicit Skip and partial batches reject them because those paths
-    /// cannot register their edges or plan cross-subtree reference mutations.
+    /// Family payloads require full-batch planning on V4. Earlier versions
+    /// and partial batches reject them because those paths cannot register
+    /// their edges or plan cross-subtree reference mutations.
     fn reject_backward_references_elements_in_batch(
         ops: &[QualifiedGroveDbOp],
         allow_family: bool,
@@ -6513,8 +6604,8 @@ impl GroveDb {
                 }
                 if !allow_family {
                     return Err(Error::NotSupported(
-                        "backward-references family elements require \
-                         BatchApplyOptions::backward_references_policy (GROVE_V4+)"
+                        "backward-references family elements require a full batch on \
+                         GROVE_V4+"
                             .to_owned(),
                     ));
                 }
@@ -6603,27 +6694,16 @@ impl GroveDb {
             }
         }
 
-        // V4 maintains backward references by default. The prepared Merks
-        // carry observations into execution without fetching the nodes twice.
-        let backward_references_enabled = batch_apply_options
-            .as_ref()
-            .map(|options| options.backward_references_policy)
-            .unwrap_or_default()
-            .maintains_in_batch(grove_version);
+        // V4 maintains backward references. The prepared Merks carry
+        // observations into execution without fetching the nodes twice.
+        let backward_references_enabled = batch_maintains_backward_references(grove_version);
         cost_return_on_error_no_add!(
             cost,
             Self::reject_backward_references_elements_in_batch(&ops, backward_references_enabled)
         );
         cost_return_on_error_no_add!(
             cost,
-            Self::reject_flat_drop_with_maintenance(
-                &ops,
-                batch_apply_options
-                    .as_ref()
-                    .map(|options| options.backward_references_policy)
-                    .unwrap_or_default(),
-                grove_version
-            )
+            Self::reject_flat_drop_declaring_participants(&ops, grove_version)
         );
         let storage_batch = StorageBatch::new();
         let (ops, prepared_merks) = if backward_references_enabled {
@@ -6757,6 +6837,9 @@ impl GroveDb {
         // 5. Remove operation from the tree, repeat until there are operations to do;
         // 6. Add root leaves save operation to the batch
         // 7. Apply storage_cost batch
+        // The final ops, derived cascades included, account for the
+        // participants a recursive removal's cleanup walk may reach.
+        let op_declarations = OpDeclarations::from_ops(&ops);
         let (_leftover, batch_apply_captures, _, _) = cost_return_on_error!(
             &mut cost,
             self.apply_body(
@@ -6884,6 +6967,7 @@ impl GroveDb {
                         .apply_batch
                         .delete_tree_recursive_secondary_cleanup
                         >= 1,
+                    Some(&op_declarations.deleted_positions),
                     "batch delete",
                     grove_version,
                 )
@@ -6959,6 +7043,7 @@ impl GroveDb {
                     tx.as_ref(),
                     &storage_batch,
                     true,
+                    Some(&op_declarations.deleted_positions),
                     "batch overwrite",
                     grove_version,
                 )
@@ -7085,14 +7170,7 @@ impl GroveDb {
         );
         cost_return_on_error_no_add!(
             cost,
-            Self::reject_flat_drop_with_maintenance(
-                &ops,
-                batch_apply_options
-                    .as_ref()
-                    .map(|options| options.backward_references_policy)
-                    .unwrap_or_default(),
-                grove_version
-            )
+            Self::reject_flat_drop_declaring_participants(&ops, grove_version)
         );
 
         cost_return_on_error!(
@@ -7153,6 +7231,7 @@ impl GroveDb {
         // here from the DECLARED tree types; on V4+ they stay empty and are
         // filled after apply_body from the ACTUAL stored types captured by
         // the merk old-value observer. See `scan_delete_tree_ops`.
+        let mut op_declarations = OpDeclarations::from_ops(&ops);
         let DeleteTreePreScan {
             mut non_merk_delete_paths,
             mut merk_delete_paths,
@@ -7415,11 +7494,7 @@ impl GroveDb {
         );
         cost_return_on_error_no_add!(
             cost,
-            Self::reject_flat_drop_with_maintenance(
-                &new_operations,
-                batch_apply_options.backward_references_policy,
-                grove_version
-            )
+            Self::reject_flat_drop_declaring_participants(&new_operations, grove_version)
         );
 
         // Add-on typed appends (CommitmentTreeInsert, MmrTreeAppend,
@@ -7523,6 +7598,7 @@ impl GroveDb {
         merk_delete_paths.extend(add_on_merk_delete_paths);
         cidx_primary_delete_paths.extend(add_on_cidx_primary_delete_paths);
         delete_tree_behaviors.extend(add_on_delete_tree_behaviors);
+        op_declarations.extend_from(&new_operations);
         for op in &new_operations {
             if is_merged_ancestor(op)
                 && let GroveOp::DeleteTree(_, behavior) = &op.op
@@ -7585,24 +7661,20 @@ impl GroveDb {
             indexed_mirror_rekey_churn_bytes: continue_rekey_churn_bytes,
         } = continue_captures;
 
-        // Removed subtrees whose contents the observer never saw need a
-        // participant scan before commit: `DeleteChildren` removals and tree
-        // replacements. A `DeleteTree` whose behavior declares the subtree
-        // empty (`DontCheckWithNoCleanup`) or verified it at apply time
-        // (`Error`, `Skip`) removed nothing that the batch's own deletes did
-        // not already pass through the observer, so it is not scanned.
+        // A removed subtree whose contents nothing in this batch reads is
+        // scanned for participants before commit when its op declares there
+        // may be some: a tree replacement or a `Delete` of a populated tree.
+        // Every `DeleteTree` is exempt: `DeleteChildren`, `Error` and `Skip`
+        // are checked on the cleanup walk below, which already decodes the
+        // contents, and `DontCheckWithNoCleanup` declares that the batch's
+        // own deletes, each gated by the observer, emptied the subtree.
         for path in partial_subtree_removals
             .into_iter()
             .chain(continue_subtree_removals)
         {
-            if matches!(
-                delete_tree_behaviors.get(&path),
-                Some(
-                    SubelementsDeletionBehavior::DontCheckWithNoCleanup
-                        | SubelementsDeletionBehavior::Error
-                        | SubelementsDeletionBehavior::Skip
-                )
-            ) {
+            if delete_tree_behaviors.contains_key(&path)
+                || !op_declarations.may_be_participant(&path)
+            {
                 continue;
             }
             if !cost_return_on_error!(
@@ -7687,6 +7759,7 @@ impl GroveDb {
                         .apply_batch
                         .delete_tree_recursive_secondary_cleanup
                         >= 1,
+                    Some(&op_declarations.deleted_positions),
                     "batch delete",
                     grove_version,
                 )
@@ -7754,6 +7827,7 @@ impl GroveDb {
                     tx.as_ref(),
                     &storage_batch,
                     true,
+                    Some(&op_declarations.deleted_positions),
                     "batch overwrite",
                     grove_version,
                 )
@@ -7832,6 +7906,7 @@ impl GroveDb {
         if ops.is_empty() {
             return Ok(()).wrap_with_cost(cost);
         }
+        let displaced_values = QualifiedGroveDbOp::displaced_values_by_position(&ops);
 
         match estimated_costs_type {
             EstimatedCostsType::AverageCaseCostsType(estimated_layer_information) => {
@@ -7842,7 +7917,8 @@ impl GroveDb {
                         update_element_flags_function,
                         split_removal_bytes_function,
                         AverageCaseTreeCacheKnownPaths::new_with_estimated_layer_information(
-                            estimated_layer_information
+                            estimated_layer_information,
+                            displaced_values,
                         ),
                         grove_version
                     )
@@ -7865,7 +7941,8 @@ impl GroveDb {
                         update_element_flags_function,
                         split_removal_bytes_function,
                         WorstCaseTreeCacheKnownPaths::new_with_worst_case_layer_information(
-                            worst_case_layer_information
+                            worst_case_layer_information,
+                            displaced_values,
                         ),
                         grove_version
                     )
@@ -7887,7 +7964,7 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
-    use crate::BackwardReferencesPolicy;
+
     use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     use grovedb_merk::proofs::Query;
 
@@ -8068,7 +8145,6 @@ mod tests {
                     disable_operation_consistency_check: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
-                    backward_references_policy: BackwardReferencesPolicy::Skip,
                 }),
                 None,
                 grove_version
@@ -8674,7 +8750,6 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
-                    backward_references_policy: BackwardReferencesPolicy::Skip,
                 }),
                 None,
                 grove_version
@@ -8716,7 +8791,6 @@ mod tests {
                     validate_insertion_does_not_override: true,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
-                    backward_references_policy: BackwardReferencesPolicy::Skip,
                 }),
                 None,
                 grove_version
@@ -8750,7 +8824,6 @@ mod tests {
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
                     batch_pause_height: None,
-                    backward_references_policy: BackwardReferencesPolicy::Skip,
                 }),
                 None,
                 grove_version

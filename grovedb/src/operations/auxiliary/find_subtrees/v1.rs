@@ -3,10 +3,14 @@
 //! Non-Merk descendants remain in the cleanup result but are never traversed:
 //! their data records are not Merk nodes and cannot contain child subtrees.
 
-use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
 use grovedb_path::SubtreePath;
 use grovedb_storage::{Storage, StorageContext};
 use grovedb_version::version::GroveVersion;
+
+use std::collections::HashSet;
 
 use crate::{
     element::elements_iterator::ElementIteratorExtensions, util::TxRef, Element, Error, GroveDb,
@@ -19,6 +23,50 @@ impl GroveDb {
         path: &SubtreePath<B>,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
+    ) -> CostResult<Vec<Vec<Vec<u8>>>, Error> {
+        self.walk_subtrees_v1(path, transaction, grove_version, |_, _, _| Ok(()))
+    }
+
+    /// `find_subtrees_v1` that also checks the claim a recursive removal
+    /// makes about its contents on the elements the walk decodes anyway:
+    /// a backward-reference participant not in `accounted_deletes` (the
+    /// positions the batch deletes explicitly) refuses the removal.
+    pub(crate) fn find_subtrees_refusing_participants_v1<B: AsRef<[u8]>>(
+        &self,
+        path: &SubtreePath<B>,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+        accounted_deletes: &HashSet<Vec<Vec<u8>>>,
+    ) -> CostResult<Vec<Vec<Vec<u8>>>, Error> {
+        self.walk_subtrees_v1(
+            path,
+            transaction,
+            grove_version,
+            |subtree_path, key, element| {
+                if !element.supports_backward_references() {
+                    return Ok(());
+                }
+                let mut qualified = subtree_path.to_vec();
+                qualified.push(key.to_vec());
+                if accounted_deletes.contains(&qualified) {
+                    return Ok(());
+                }
+                Err(Error::NotSupported(
+                    "a recursive subtree removal reached a backward-reference participant it does \
+                 not explicitly delete; delete the participant first, or use live delete with \
+                 DisplacedValue::MayBeParticipant for recursive maintenance"
+                        .to_owned(),
+                ))
+            },
+        )
+    }
+
+    fn walk_subtrees_v1<B: AsRef<[u8]>>(
+        &self,
+        path: &SubtreePath<B>,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+        mut visit: impl FnMut(&[Vec<u8>], &[u8], &Element) -> Result<(), Error>,
     ) -> CostResult<Vec<Vec<Vec<u8>>>, Error> {
         let mut cost = OperationCost::default();
 
@@ -49,6 +97,7 @@ impl GroveDb {
             while let Some((key, value)) =
                 cost_return_on_error!(&mut cost, raw_iter.next_element(grove_version))
             {
+                cost_return_on_error_no_add!(cost, visit(&q, &key, &value));
                 if value.is_any_tree() {
                     let mut sub_path = q.clone();
                     sub_path.push(key.to_vec());

@@ -19,6 +19,8 @@ mod tests {
         Element, Error,
     };
 
+    use crate::DisplacedValue;
+
     // ===================================================================
     // 3. Batch with Patch operation
     // ===================================================================
@@ -502,6 +504,7 @@ mod tests {
                 root_key: None,
                 aggregate_data: AggregateData::NoAggregateData,
             },
+            displaced_value: DisplacedValue::MayBeParticipant,
         };
 
         let options = Some(BatchApplyOptions {
@@ -548,6 +551,7 @@ mod tests {
                 not_summed: false,
                 not_counted_or_summed: false,
             },
+            displaced_value: DisplacedValue::MayBeParticipant,
         };
 
         let options = Some(BatchApplyOptions {
@@ -593,6 +597,7 @@ mod tests {
 
                 non_counted: false,
             },
+            displaced_value: DisplacedValue::MayBeParticipant,
         };
 
         let options = Some(BatchApplyOptions {
@@ -2057,6 +2062,7 @@ mod tests {
                     chunk_power: 4,
                 },
             },
+            displaced_value: DisplacedValue::MayBeParticipant,
         };
 
         // With consistency check enabled (default), this should fail

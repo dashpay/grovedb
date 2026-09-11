@@ -255,34 +255,35 @@ replacement or delete displaces a registered element. Preparation observes
 old values and retains their Merk nodes for execution and storage accounting.
 The existing consent and batch-conflict rules still apply.
 
-Set `BatchApplyOptions { backward_references_policy:
-BackwardReferencesPolicy::Skip, ..Default::default() }` only when deliberately
-bypassing maintenance. This can leave stale hashes or dangling references.
-Partial batches refuse participant mutations; use a full batch for reference
-maintenance. Recursive removal of a subtree containing participants is
-supported by live `delete`; see the bidirectional references ADR for scope.
+Every `QualifiedGroveDbOp` declares what it displaces: `MayBeParticipant`
+(the default) maintains a participant the write lands on, `NotParticipant`
+refuses the write if the stored value turns out to participate. The
+declaration is checked from the value the batch reads for the write anyway,
+so it never costs a read; declare `NotParticipant` through
+`with_displaced_value` on ops whose positions are known to hold no
+participants. Partial batches refuse participant mutations; use a full batch
+for reference maintenance. Recursive removal of a subtree containing
+participants is supported by live `delete`; see the bidirectional references
+ADR for scope.
 
-Under `Maintain`, ordinary batches retain their executor semantics when no old
-or new value participates in backward references. Reference planner conflict
-rules apply only to batches that touch participants. `DeleteChildren`
-removals and tree replacements inspect descendants and incur additional read
-costs. A `DeleteTree` declared empty
-(`DontCheckWithNoCleanup`) or checked empty at apply time (`Error`, `Skip`) is
-not inspected: every element the batch removed beneath it already passed
-through old-value observation, so a delete-up-tree chain costs the same under
-`Maintain` and `Skip`.
+Ordinary batches retain their executor semantics when no old or new value
+participates in backward references. Reference planner conflict rules apply
+only to batches that touch participants. A `Delete` of a populated tree or a
+tree replacement declared `MayBeParticipant` inspects the descendants and
+incurs additional read costs. A `DeleteTree` is never pre-scanned:
+`DontCheckWithNoCleanup` declares that the batch's own deletes emptied the
+subtree, `Error` and `Skip` verify that at apply time, and `DeleteChildren`
+checks the declaration on the cleanup walk it already makes, refusing a
+participant the batch does not explicitly delete. A delete-up-tree chain and
+a recursive removal therefore cost the plain removal.
 
-Cost estimation follows the same split. Layers whose
-`EstimatedLayerInformation` sets `may_contain_backward_references` (or use
-the `WithBackwardReferences` worst-case variants) charge the
-displaced-participant fan-out for plain writes and deletes; undeclared layers
-estimate them exactly as `Skip` would. Ops that write a participant
-themselves are always charged.
+Cost estimation follows the same split: an op declared `MayBeParticipant`
+charges the displaced-participant fan-out for its plain write or delete, an
+op declared `NotParticipant` estimates the plain write alone, and ops that
+write a participant themselves are always charged.
 
-`SubelementsDeletionBehavior::DropFlat` requires explicit
-`BatchApplyOptions::backward_references_policy = BackwardReferencesPolicy::Skip`.
-`Maintain` refuses flat drop before scanning, preserving its O(1) contract.
-Partial batches refuse participant mutations in either segment; their subtree
-inspection of `DeleteChildren` removals and tree replacements occurs before
-commit and can also incur recursive read costs, with the same declared-empty
-exemption.
+`SubelementsDeletionBehavior::DropFlat` requires the op to declare
+`DisplacedValue::NotParticipant`; `MayBeParticipant` is refused before
+reading anything, preserving the O(1) contract. Partial batches refuse
+participant mutations in either segment; their inspection of tree
+replacements occurs before commit and can also incur recursive read costs.

@@ -20,8 +20,8 @@
 //!   corrupted-reference error rather than resolving to stale data.
 
 mod tests {
-    use crate::batch::BatchApplyOptions;
-    use crate::BackwardReferencesPolicy;
+
+    use crate::DisplacedValue;
     use grovedb_costs::OperationCost;
     use grovedb_merk::tree_type::TreeType;
     use grovedb_storage::{
@@ -123,7 +123,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            BackwardReferencesPolicy::Skip,
+            DisplacedValue::NotParticipant,
             None,
             grove_version,
         )
@@ -154,7 +154,7 @@ mod tests {
             db.drop_flat_subtree(
                 [TEST_LEAF].as_ref(),
                 b"flat",
-                BackwardReferencesPolicy::Skip,
+                DisplacedValue::NotParticipant,
                 None,
                 grove_version,
             )
@@ -182,11 +182,9 @@ mod tests {
                     b"flat".to_vec(),
                     TreeType::NormalTree,
                     SubelementsDeletionBehavior::DropFlat,
-                )],
-                Some(BatchApplyOptions {
-                    backward_references_policy: BackwardReferencesPolicy::Skip,
-                    ..Default::default()
-                }),
+                )
+                .with_displaced_value(DisplacedValue::NotParticipant)],
+                None,
                 None,
                 version,
             )
@@ -215,7 +213,7 @@ mod tests {
             db.drop_flat_subtree(
                 [TEST_LEAF].as_ref(),
                 b"item",
-                BackwardReferencesPolicy::Skip,
+                DisplacedValue::NotParticipant,
                 None,
                 grove_version
             )
@@ -234,7 +232,7 @@ mod tests {
             db.drop_flat_subtree(
                 [TEST_LEAF].as_ref(),
                 b"flat",
-                BackwardReferencesPolicy::Skip,
+                DisplacedValue::NotParticipant,
                 None,
                 &GROVE_V3
             )
@@ -261,7 +259,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            BackwardReferencesPolicy::Skip,
+            DisplacedValue::NotParticipant,
             Some(&tx),
             grove_version,
         )
@@ -308,7 +306,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            BackwardReferencesPolicy::Skip,
+            DisplacedValue::NotParticipant,
             Some(&tx),
             grove_version,
         )
@@ -343,7 +341,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            BackwardReferencesPolicy::Skip,
+            DisplacedValue::NotParticipant,
             Some(&tx),
             grove_version,
         )
@@ -376,7 +374,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            BackwardReferencesPolicy::Skip,
+            DisplacedValue::NotParticipant,
             Some(&tx),
             grove_version,
         )
@@ -484,7 +482,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"cidx",
-            BackwardReferencesPolicy::Skip,
+            DisplacedValue::NotParticipant,
             None,
             grove_version,
         )
@@ -552,7 +550,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF, b"sums"].as_ref(),
             b"flat_sums",
-            BackwardReferencesPolicy::Skip,
+            DisplacedValue::NotParticipant,
             None,
             grove_version,
         )
@@ -588,19 +586,12 @@ mod tests {
                 b"flat".to_vec(),
                 TreeType::NormalTree,
                 SubelementsDeletionBehavior::DropFlat,
-            ),
+            )
+            .with_displaced_value(DisplacedValue::NotParticipant),
         ];
-        db.apply_batch(
-            ops,
-            Some(BatchApplyOptions {
-                backward_references_policy: BackwardReferencesPolicy::Skip,
-                ..Default::default()
-            }),
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("apply batch");
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("apply batch");
 
         assert!(matches!(
             db.get_raw([TEST_LEAF].as_ref().into(), b"flat", None, grove_version)
@@ -632,18 +623,11 @@ mod tests {
             b"flat".to_vec(),
             TreeType::NormalTree,
             SubelementsDeletionBehavior::DropFlat,
-        )];
-        db.apply_batch(
-            ops,
-            Some(BatchApplyOptions {
-                backward_references_policy: BackwardReferencesPolicy::Skip,
-                ..Default::default()
-            }),
-            Some(&tx),
-            grove_version,
         )
-        .unwrap()
-        .expect("apply batch in tx");
+        .with_displaced_value(DisplacedValue::NotParticipant)];
+        db.apply_batch(ops, None, Some(&tx), grove_version)
+            .unwrap()
+            .expect("apply batch in tx");
         db.commit_transaction(tx).unwrap().expect("commit");
 
         assert!(data_namespace_key_count(&db, prefix) > 0);
@@ -665,18 +649,10 @@ mod tests {
             b"flat".to_vec(),
             TreeType::NormalTree,
             SubelementsDeletionBehavior::DropFlat,
-        )];
+        )
+        .with_displaced_value(DisplacedValue::NotParticipant)];
         assert!(matches!(
-            db.apply_batch(
-                ops,
-                Some(BatchApplyOptions {
-                    backward_references_policy: BackwardReferencesPolicy::Skip,
-                    ..Default::default()
-                }),
-                None,
-                &GROVE_V3
-            )
-            .unwrap(),
+            db.apply_batch(ops, None, None, &GROVE_V3).unwrap(),
             Err(Error::VersionError(_))
         ));
         assert!(db
@@ -720,18 +696,11 @@ mod tests {
             b"cidx".to_vec(),
             TreeType::ProvableCountIndexedTree,
             SubelementsDeletionBehavior::DropFlat,
-        )];
-        db.apply_batch(
-            ops,
-            Some(BatchApplyOptions {
-                backward_references_policy: BackwardReferencesPolicy::Skip,
-                ..Default::default()
-            }),
-            None,
-            grove_version,
         )
-        .unwrap()
-        .expect("apply batch");
+        .with_displaced_value(DisplacedValue::NotParticipant)];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("apply batch");
 
         assert_grove_verifies(&db, grove_version);
         assert_eq!(data_namespace_key_count(&db, primary_prefix), 0);
@@ -750,18 +719,11 @@ mod tests {
             b"flat".to_vec(),
             TreeType::NormalTree,
             SubelementsDeletionBehavior::DropFlat,
-        )];
-        db.apply_operations_without_batching(
-            ops,
-            Some(BatchApplyOptions {
-                backward_references_policy: BackwardReferencesPolicy::Skip,
-                ..Default::default()
-            }),
-            None,
-            grove_version,
         )
-        .unwrap()
-        .expect("apply without batching");
+        .with_displaced_value(DisplacedValue::NotParticipant)];
+        db.apply_operations_without_batching(ops, None, None, grove_version)
+            .unwrap()
+            .expect("apply without batching");
 
         assert!(matches!(
             db.get_raw([TEST_LEAF].as_ref().into(), b"flat", None, grove_version)
@@ -804,7 +766,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            BackwardReferencesPolicy::Skip,
+            DisplacedValue::NotParticipant,
             None,
             grove_version,
         )
@@ -860,7 +822,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            BackwardReferencesPolicy::Skip,
+            DisplacedValue::NotParticipant,
             None,
             grove_version,
         )
@@ -922,14 +884,14 @@ mod tests {
             b"flat".to_vec(),
             TreeType::NormalTree,
             SubelementsDeletionBehavior::DropFlat,
-        )];
+        )
+        .with_displaced_value(DisplacedValue::NotParticipant)];
 
         let mut average_paths = HashMap::new();
         average_paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(2, false),
                 estimated_layer_sizes: AllSubtrees(32, NoSumTrees, None),
             },
@@ -938,7 +900,6 @@ mod tests {
             KeyInfoPath::from_known_owned_path(vec![TEST_LEAF.to_vec()]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(4, false),
                 estimated_layer_sizes: AllSubtrees(32, NoSumTrees, None),
             },
@@ -946,10 +907,7 @@ mod tests {
         let average = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(average_paths),
             ops.clone(),
-            Some(BatchApplyOptions {
-                backward_references_policy: BackwardReferencesPolicy::Skip,
-                ..Default::default()
-            }),
+            None,
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
@@ -968,10 +926,7 @@ mod tests {
         let worst = GroveDb::estimated_case_operations_for_batch(
             WorstCaseCostsType(worst_paths),
             ops.clone(),
-            Some(BatchApplyOptions {
-                backward_references_policy: BackwardReferencesPolicy::Skip,
-                ..Default::default()
-            }),
+            None,
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
@@ -982,15 +937,7 @@ mod tests {
         .expect("worst case estimate");
 
         let actual = db
-            .apply_batch(
-                ops,
-                Some(BatchApplyOptions {
-                    backward_references_policy: BackwardReferencesPolicy::Skip,
-                    ..Default::default()
-                }),
-                None,
-                grove_version,
-            )
+            .apply_batch(ops, None, None, grove_version)
             .cost_as_result()
             .expect("apply batch");
 

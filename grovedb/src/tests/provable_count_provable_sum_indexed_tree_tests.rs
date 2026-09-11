@@ -16,7 +16,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::BackwardReferencesPolicy;
+    use crate::DisplacedValue;
     use grovedb_element::indexed::IndexAxis;
     use grovedb_version::version::GroveVersion;
 
@@ -2058,7 +2058,7 @@ mod tests {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: false,
             base_root_storage_is_free: true,
-            backward_references_policy: BackwardReferencesPolicy::Skip,
+            displaced_value: DisplacedValue::NotParticipant,
         };
         db.insert(
             [TEST_LEAF].as_ref(),
@@ -2111,7 +2111,7 @@ mod tests {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: false,
             base_root_storage_is_free: true,
-            backward_references_policy: BackwardReferencesPolicy::Skip,
+            displaced_value: DisplacedValue::NotParticipant,
         };
         let res = db
             .insert(
@@ -2492,7 +2492,7 @@ mod tests {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: false,
             base_root_storage_is_free: true,
-            backward_references_policy: BackwardReferencesPolicy::Skip,
+            displaced_value: DisplacedValue::NotParticipant,
         });
         let result = db
             .insert(

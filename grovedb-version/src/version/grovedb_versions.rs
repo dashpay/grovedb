@@ -239,11 +239,11 @@ pub struct GroveDBApplyBatchVersions {
     /// - `0` (V1..V3): no reference planning. Backward-reference family
     ///   payloads are rejected, ordinary ops run the released executor
     ///   unchanged, and `DropFlat` needs no policy.
-    /// - `1` (V4+): under `BackwardReferencesPolicy::Maintain` (the default)
-    ///   the batch is prepared through the backward-references planner, whose
-    ///   old-value reads are retained for execution; partial batches refuse
+    /// - `1` (V4+): the batch is prepared through the backward-references
+    ///   planner, whose old-value reads are retained for execution and check
+    ///   each op's `DisplacedValue` declaration; partial batches refuse
     ///   participant mutations through the old-value gate; and `DropFlat`
-    ///   requires an explicit `Skip`. `Skip` keeps the released executor.
+    ///   requires `NotParticipant`.
     ///
     /// This slot owns the batch surface. The live insert and delete routers
     /// are versioned by their own `insert_on_transaction` and
@@ -558,8 +558,8 @@ pub struct GroveDBOperationsAverageCaseVersions {
     ///   refused. Matches those versions' apply path, which rejects the
     ///   family in batches, so historical admission decisions replay
     ///   byte-identically.
-    /// - `1` (V4+): family-carrying ops and (under
-    ///   `BatchApplyOptions::backward_references_policy`) deletes charge
+    /// - `1` (V4+): family-carrying ops and (when declared
+    ///   `DisplacedValue::MayBeParticipant`) plain writes and deletes charge
     ///   the derived registration / propagation / cascade fan-out, bounded
     ///   by the apply path's budgets (≤32 referrers per item, ≤10-hop
     ///   chains, 1 referrer per reference), and the derived op itself gets

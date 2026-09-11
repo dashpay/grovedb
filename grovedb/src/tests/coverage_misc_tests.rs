@@ -274,7 +274,6 @@ mod tests {
         let primary_path = KeyInfoPath::from_known_path([b"primary".as_ref()]);
         let layer = EstimatedLayerInformation {
             tree_type: TreeType::ProvableCountProvableSumIndexedTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(100),
             estimated_layer_sizes: sizes,
         };

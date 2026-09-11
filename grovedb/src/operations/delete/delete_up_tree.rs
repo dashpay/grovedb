@@ -1,6 +1,6 @@
 //! Delete up tree
 
-use crate::BackwardReferencesPolicy;
+use crate::DisplacedValue;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
@@ -52,7 +52,7 @@ impl DeleteUpTreeOptions {
             deleting_non_empty_trees_returns_error: self.deleting_non_empty_trees_returns_error,
             base_root_storage_is_free: self.base_root_storage_is_free,
             validate_tree_at_path_exists: self.validate_tree_at_path_exists,
-            backward_references_policy: BackwardReferencesPolicy::Skip,
+            displaced_value: DisplacedValue::NotParticipant,
         }
     }
 }

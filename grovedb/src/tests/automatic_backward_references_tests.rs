@@ -9,7 +9,7 @@ use crate::{
     operations::{delete::DeleteOptions, insert::InsertOptions},
     reference_path::ReferencePathType,
     tests::{make_test_grovedb, TempGroveDb, TEST_LEAF},
-    BackwardReferencesPolicy, BidirectionalReference, Element, Error,
+    BidirectionalReference, DisplacedValue, Element, Error,
 };
 
 fn reference(target: &[u8], cascade: bool) -> Element {
@@ -22,6 +22,12 @@ fn reference(target: &[u8], cascade: bool) -> Element {
         },
         None,
     )
+}
+
+fn not_participant(ops: Vec<QualifiedGroveDbOp>) -> Vec<QualifiedGroveDbOp> {
+    ops.into_iter()
+        .map(|op| op.with_displaced_value(DisplacedValue::NotParticipant))
+        .collect()
 }
 
 fn chain(cascade: bool) -> TempGroveDb {
@@ -133,60 +139,64 @@ fn default_live_and_batch_updates_preserve_registrations_and_refresh_hashes() {
 }
 
 #[test]
-fn default_plain_overwrite_cascades_and_explicit_skip_keeps_dangling_references() {
+fn default_plain_overwrite_cascades_and_a_false_not_participant_claim_is_refused() {
     let version = GroveVersion::latest();
     for batch in [false, true] {
-        for skip in [false, true] {
+        for declared in [
+            DisplacedValue::MayBeParticipant,
+            DisplacedValue::NotParticipant,
+        ] {
             let db = chain(true);
-            let policy = if skip {
-                BackwardReferencesPolicy::Skip
-            } else {
-                BackwardReferencesPolicy::Maintain
-            };
+            let before = db.root_hash(None, version).unwrap().unwrap();
             let item = Element::new_item(b"plain".to_vec());
-            if batch {
+            let result = if batch {
                 db.apply_batch(
                     vec![QualifiedGroveDbOp::insert_or_replace_op(
                         vec![TEST_LEAF.to_vec()],
                         b"value".to_vec(),
                         item.clone(),
-                    )],
-                    Some(BatchApplyOptions {
-                        backward_references_policy: policy,
-                        ..Default::default()
-                    }),
+                    )
+                    .with_displaced_value(declared)],
+                    None,
                     None,
                     version,
                 )
                 .unwrap()
-                .unwrap();
             } else {
                 db.insert(
                     &[TEST_LEAF],
                     b"value",
                     item.clone(),
                     Some(InsertOptions {
-                        backward_references_policy: policy,
+                        displaced_value: declared,
                         ..Default::default()
                     }),
                     None,
                     version,
                 )
                 .unwrap()
-                .unwrap();
+            };
+            let refused = !declared.may_be_participant();
+            if refused {
+                // The stored value is read for the write anyway, so the
+                // false claim is caught for free and nothing changes.
+                assert!(matches!(result, Err(Error::NotSupported(_))));
+                assert_eq!(db.root_hash(None, version).unwrap().unwrap(), before);
+            } else {
+                result.unwrap();
+                assert_eq!(
+                    db.get(&[TEST_LEAF], b"value", None, version)
+                        .unwrap()
+                        .unwrap(),
+                    item
+                );
             }
-            assert_eq!(
-                db.get(&[TEST_LEAF], b"value", None, version)
-                    .unwrap()
-                    .unwrap(),
-                item
-            );
             for key in [b"r1".as_slice(), b"r2"] {
                 assert_eq!(
                     db.get_raw(SubtreePath::from(&[TEST_LEAF]), key, None, version)
                         .unwrap()
                         .is_ok(),
-                    skip
+                    refused
                 );
             }
         }
@@ -345,15 +355,7 @@ fn ordinary_mutations_reuse_preparation_reads() {
             .cost_as_result()
             .unwrap();
         let skipped_cost = skipped
-            .apply_batch(
-                ops,
-                Some(BatchApplyOptions {
-                    backward_references_policy: BackwardReferencesPolicy::Skip,
-                    ..Default::default()
-                }),
-                None,
-                version,
-            )
+            .apply_batch(not_participant(ops), None, None, version)
             .cost_as_result()
             .unwrap();
         assert_eq!(observed_cost, skipped_cost);
@@ -365,21 +367,22 @@ fn ordinary_mutations_reuse_preparation_reads() {
 }
 
 #[test]
-fn skip_delete_is_an_explicit_opt_out() {
+fn not_participant_delete_of_a_participant_is_refused() {
     let version = GroveVersion::latest();
     let db = chain(true);
-    db.delete(
+    let before = db.root_hash(None, version).unwrap().unwrap();
+    let result = db.delete(
         &[TEST_LEAF],
         b"value",
         Some(DeleteOptions {
-            backward_references_policy: BackwardReferencesPolicy::Skip,
+            displaced_value: DisplacedValue::NotParticipant,
             ..Default::default()
         }),
         None,
         version,
-    )
-    .unwrap()
-    .unwrap();
+    );
+    assert!(matches!(result.unwrap(), Err(Error::NotSupported(_))));
+    assert_eq!(db.root_hash(None, version).unwrap().unwrap(), before);
     assert!(db
         .get_raw(SubtreePath::from(&[TEST_LEAF]), b"r1", None, version)
         .unwrap()
@@ -389,6 +392,7 @@ fn skip_delete_is_an_explicit_opt_out() {
 #[test]
 fn recursive_removal_cannot_bypass_descendant_maintenance() {
     use crate::batch::SubelementsDeletionBehavior;
+
     use grovedb_merk::TreeType;
     let version = GroveVersion::latest();
     let db = make_test_grovedb(version);
@@ -636,7 +640,7 @@ fn clear_subtree_refuses_incoming_and_outgoing_edges_before_mutating_the_transac
                 &[TEST_LEAF],
                 Some(ClearOptions {
                     allow_deleting_subtrees: true,
-                    backward_references_policy: BackwardReferencesPolicy::Skip,
+                    displaced_value: DisplacedValue::NotParticipant,
                     ..Default::default()
                 }),
                 Some(&tx),
@@ -650,7 +654,7 @@ fn clear_subtree_refuses_incoming_and_outgoing_edges_before_mutating_the_transac
                     .is_err());
             } else {
                 // Public get_raw strips the registered referrers; inspect the
-                // stored element to verify the explicit Skip contract.
+                // stored element to verify the trusted NotParticipant contract.
                 let merk = db
                     .open_transactional_merk_at_path(
                         SubtreePath::from(root.as_slice()),
@@ -666,7 +670,7 @@ fn clear_subtree_refuses_incoming_and_outgoing_edges_before_mutating_the_transac
                 assert_eq!(
                     target.backward_references().unwrap().len(),
                     1,
-                    "Skip leaves the registration deliberately stale"
+                    "a raw clear declared NotParticipant leaves the registration stale"
                 );
             }
         }
@@ -674,7 +678,7 @@ fn clear_subtree_refuses_incoming_and_outgoing_edges_before_mutating_the_transac
 }
 
 #[test]
-fn flat_drop_requires_explicit_skip_in_live_full_and_both_partial_segments() {
+fn flat_drop_requires_not_participant_in_live_full_and_both_partial_segments() {
     use crate::batch::SubelementsDeletionBehavior;
     use grovedb_merk::TreeType;
     let version = GroveVersion::latest();
@@ -692,7 +696,7 @@ fn flat_drop_requires_explicit_skip_in_live_full_and_both_partial_segments() {
             0 => db.drop_flat_subtree(
                 &[] as &[&[u8]],
                 TEST_LEAF,
-                BackwardReferencesPolicy::Maintain,
+                DisplacedValue::MayBeParticipant,
                 Some(&tx),
                 version,
             ),
@@ -737,9 +741,9 @@ fn ordinary_batch_conditionals_and_duplicate_positions_keep_executor_semantics()
     let version = GroveVersion::latest();
     for scenario in 0..4 {
         let mut roots = Vec::new();
-        for policy in [
-            BackwardReferencesPolicy::Maintain,
-            BackwardReferencesPolicy::Skip,
+        for declared in [
+            DisplacedValue::MayBeParticipant,
+            DisplacedValue::NotParticipant,
         ] {
             let db = make_test_grovedb(version);
             db.insert(
@@ -793,10 +797,11 @@ fn ordinary_batch_conditionals_and_duplicate_positions_keep_executor_semantics()
                 ],
             };
             db.apply_batch(
-                ops,
+                ops.into_iter()
+                    .map(|op| op.with_displaced_value(declared))
+                    .collect(),
                 Some(BatchApplyOptions {
                     disable_operation_consistency_check: true,
-                    backward_references_policy: policy,
                     ..Default::default()
                 }),
                 None,
@@ -902,7 +907,7 @@ fn declared_empty_subtree_removals_skip_the_participant_scan() {
         .unwrap()
         .unwrap();
     };
-    let delete_up_tree = vec![
+    let delete_up_tree = [
         QualifiedGroveDbOp::delete_op(
             vec![TEST_LEAF.to_vec(), b"a".to_vec(), b"b".to_vec()],
             b"c".to_vec(),
@@ -920,57 +925,60 @@ fn declared_empty_subtree_removals_skip_the_participant_scan() {
             SubelementsDeletionBehavior::DontCheckWithNoCleanup,
         ),
     ];
-    let skip = Some(BatchApplyOptions {
-        backward_references_policy: BackwardReferencesPolicy::Skip,
-        ..Default::default()
-    });
     for partial in [false, true] {
         let mut runs = Vec::new();
-        for options in [None, skip.clone()] {
+        for declared in [
+            DisplacedValue::MayBeParticipant,
+            DisplacedValue::NotParticipant,
+        ] {
             let db = make_test_grovedb(version);
             seed(&db);
+            let ops: Vec<QualifiedGroveDbOp> = delete_up_tree
+                .iter()
+                .cloned()
+                .map(|op| op.with_displaced_value(declared))
+                .collect();
             let result = if partial {
-                db.apply_partial_batch(
-                    delete_up_tree.clone(),
-                    options,
-                    |_, _| Ok(vec![]),
-                    None,
-                    version,
-                )
+                db.apply_partial_batch(ops, None, |_, _| Ok(vec![]), None, version)
             } else {
-                db.apply_batch(delete_up_tree.clone(), options, None, version)
+                db.apply_batch(ops, None, None, version)
             };
             result.value.expect("delete up the tree");
             runs.push((result.cost, db.root_hash(None, version).unwrap().unwrap()));
         }
-        let (maintain, skip_run) = (&runs[0], &runs[1]);
-        assert_eq!(maintain.1, skip_run.1, "partial={partial}: root hash");
+        let (may_be, not) = (&runs[0], &runs[1]);
+        assert_eq!(may_be.1, not.1, "partial={partial}: root hash");
         assert_eq!(
-            maintain.0, skip_run.0,
-            "partial={partial}: Maintain must cost exactly what Skip costs"
+            may_be.0, not.0,
+            "partial={partial}: MayBeParticipant must cost exactly what NotParticipant costs"
         );
     }
 
-    let recursive = vec![QualifiedGroveDbOp::delete_tree_op(
+    let recursive = [QualifiedGroveDbOp::delete_tree_op(
         vec![TEST_LEAF.to_vec()],
         b"a".to_vec(),
         TreeType::NormalTree,
         SubelementsDeletionBehavior::DeleteChildren,
     )];
     let mut costs = Vec::new();
-    for options in [None, skip] {
+    for declared in [
+        DisplacedValue::MayBeParticipant,
+        DisplacedValue::NotParticipant,
+    ] {
         let db = make_test_grovedb(version);
         seed(&db);
-        let result = db.apply_batch(recursive.clone(), options, None, version);
+        let ops: Vec<QualifiedGroveDbOp> = recursive
+            .iter()
+            .cloned()
+            .map(|op| op.with_displaced_value(declared))
+            .collect();
+        let result = db.apply_batch(ops, None, None, version);
         result.value.expect("recursive delete");
         costs.push(result.cost);
     }
-    assert!(
-        costs[0].seek_count > costs[1].seek_count
-            && costs[0].storage_loaded_bytes > costs[1].storage_loaded_bytes,
-        "DeleteChildren still pays for its participant scan: {:?} vs {:?}",
-        costs[0],
-        costs[1]
+    assert_eq!(
+        costs[0], costs[1],
+        "DeleteChildren checks its contents on the cleanup walk it makes anyway"
     );
 }
 

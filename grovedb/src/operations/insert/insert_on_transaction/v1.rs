@@ -40,21 +40,6 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
         ))
         .wrap_with_cost(Default::default());
     }
-    // A new bidirectional reference must register its target even under Skip.
-    if !options.backward_references_policy.maintains()
-        && !matches!(element, Element::BidirectionalReference(..))
-    {
-        return super::v0::insert_on_transaction_body(
-            db,
-            path,
-            key,
-            element,
-            options,
-            transaction,
-            batch,
-            grove_version,
-        );
-    }
     let mut cost = Default::default();
     let mut merk = cost_return_on_error!(
         &mut cost,
@@ -101,21 +86,40 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
         ))
         .wrap_with_cost(cost);
     }
-    if previous.as_ref().is_some_and(|old| {
-        old.is_any_tree()
-            && !old.uses_non_merk_data_storage()
-            && old
-                .root_key_and_tree_type()
-                .is_some_and(|(root, _)| root.is_some())
-    }) && !cost_return_on_error!(
-        &mut cost,
-        db.backward_reference_participants(
-            &path.derive_owned_with_child(key).to_vec(),
-            transaction,
-            grove_version,
+    // The displaced value is in hand, so a `NotParticipant` claim costs
+    // nothing to check and fails closed.
+    if !options.displaced_value.may_be_participant()
+        && previous
+            .as_ref()
+            .is_some_and(Element::supports_backward_references)
+    {
+        return Err(Error::NotSupported(
+            "insert declared DisplacedValue::NotParticipant but the stored value takes part in \
+             backward references"
+                .to_owned(),
+        ))
+        .wrap_with_cost(cost);
+    }
+    // Replacing a populated subtree reads none of its contents: scan it for
+    // participants when the caller says there may be some, trust the
+    // caller otherwise.
+    if options.displaced_value.may_be_participant()
+        && previous.as_ref().is_some_and(|old| {
+            old.is_any_tree()
+                && !old.uses_non_merk_data_storage()
+                && old
+                    .root_key_and_tree_type()
+                    .is_some_and(|(root, _)| root.is_some())
+        })
+        && !cost_return_on_error!(
+            &mut cost,
+            db.backward_reference_participants(
+                &path.derive_owned_with_child(key).to_vec(),
+                transaction,
+                grove_version,
+            )
         )
-    )
-    .is_empty()
+        .is_empty()
     {
         return Err(Error::NotSupported(
             "delete a subtree containing backward-reference participants before replacing it"
