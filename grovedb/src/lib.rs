@@ -175,7 +175,7 @@ use std::sync::Arc;
 use std::{collections::HashMap, option::Option::None, path::Path};
 
 #[cfg(feature = "minimal")]
-pub use bidirectional_references::BidirectionalReference;
+pub use bidirectional_references::{BackwardReferencesPolicy, BidirectionalReference};
 #[cfg(feature = "grovedbg")]
 use debugger::start_visualizer;
 #[cfg(any(feature = "minimal", feature = "verify"))]

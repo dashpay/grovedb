@@ -101,6 +101,7 @@ fn try_average_case_estimate(
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLevel(1, false),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         },
@@ -110,6 +111,7 @@ fn try_average_case_estimate(
             KeyInfoPath::from_known_owned_path(vec![b"pool".to_vec()]),
             EstimatedLayerInformation {
                 tree_type: TreeType::CommitmentTree(chunk_power),
+                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(16, false),
                 estimated_layer_sizes: AllItems(8, 312, None),
             },
@@ -552,6 +554,7 @@ fn test_commitment_tree_insert_estimated_covers_actual_with_large_flags() {
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLevel(1, false),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, Some(FLAGS_LEN as u32)),
         },
@@ -560,6 +563,7 @@ fn test_commitment_tree_insert_estimated_covers_actual_with_large_flags() {
         KeyInfoPath::from_known_owned_path(vec![b"pool".to_vec()]),
         EstimatedLayerInformation {
             tree_type: TreeType::CommitmentTree(CHUNK_POWER),
+            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLevel(16, false),
             estimated_layer_sizes: AllItems(8, 312, None),
         },

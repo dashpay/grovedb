@@ -8,15 +8,9 @@
 //!   backward-references element family (`BidirectionalReference`,
 //!   `ItemWithBackwardsReferences`, `SumItemWithBackwardsReferences`), which
 //!   activates with `GROVE_V4`.
-//! * **[v1]** — `GROVE_V4`+. Behaviour-preserving router: calls that neither
-//!   insert a `BidirectionalReference` nor set
-//!   `InsertOptions::propagate_backward_references` run the exact v0 body
-//!   (same root hashes, same costs). The remainder run through the
-//!   `MerkCache`-based flow in [v1], which performs backward-reference
-//!   bookkeeping and propagation (see `adr/bidirectional_references.md`).
-//!
-//! [v0]: self::v0
-//! [v1]: self::v1
+//! * **[v1]** — V4 automatic maintenance. Observes old values before mutation,
+//!   retaining the fetched nodes for execution. Ordinary values retain indexed
+//!   propagation; participants use the reference cache and shared planners.
 
 mod v0;
 mod v1;

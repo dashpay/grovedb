@@ -953,8 +953,10 @@ fn test_private_document_store_empty_root_constant_matches_insert_binding() {
 /// Exercise the v0 `add_element_on_transaction` arm for
 /// PrivateDocumentStore. No registered version pairs the v0 insert
 /// implementation with an enabled PDS family (V1..V3 fail closed, V4 uses
-/// v1), so drive it with a custom version: V4 with the insert
-/// implementation slot dialed back to 0.
+/// v2), so drive it with a custom version: V4 with the insert router and
+/// the insert implementation slots both dialed back to 0. The v1 router
+/// only composes with the v2 implementation (its cached-Merk body), so it
+/// is dialed back together rather than silently falling back.
 #[test]
 fn test_private_document_store_insert_v0_element_path() {
     let mut custom = GROVE_V4.clone();
@@ -963,6 +965,11 @@ fn test_private_document_store_insert_v0_element_path() {
         .operations
         .insert
         .add_element_on_transaction = 0;
+    custom
+        .grovedb_versions
+        .operations
+        .insert
+        .insert_on_transaction = 0;
     let db = make_empty_grovedb();
 
     db.insert(

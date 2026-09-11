@@ -3,6 +3,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::BackwardReferencesPolicy;
     use grovedb_merk::proofs::{query::query_item::QueryItem, Query};
     use grovedb_version::version::GroveVersion;
 
@@ -554,6 +555,7 @@ mod tests {
             .clear_subtree(
                 [TEST_LEAF, b"to_clear"].as_ref(),
                 Some(ClearOptions {
+                    backward_references_policy: BackwardReferencesPolicy::Maintain,
                     check_for_subtrees: true,
                     allow_deleting_subtrees: false,
                     trying_to_clear_with_subtrees_returns_error: true,
@@ -1560,7 +1562,7 @@ mod tests {
                     validate_insertion_does_not_override: true,
                     validate_insertion_does_not_override_tree: true,
                     base_root_storage_is_free: true,
-                    propagate_backward_references: false,
+                    backward_references_policy: BackwardReferencesPolicy::Skip,
                 }),
                 None,
                 grove_version,
@@ -1613,7 +1615,7 @@ mod tests {
                     validate_insertion_does_not_override: false,
                     validate_insertion_does_not_override_tree: true,
                     base_root_storage_is_free: true,
-                    propagate_backward_references: false,
+                    backward_references_policy: BackwardReferencesPolicy::Skip,
                 }),
                 None,
                 grove_version,
@@ -2601,6 +2603,7 @@ mod tests {
         let result = db.clear_subtree(
             [TEST_LEAF, b"parent"].as_ref(),
             Some(ClearOptions {
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 check_for_subtrees: true,
                 allow_deleting_subtrees: false,
                 trying_to_clear_with_subtrees_returns_error: true,
@@ -2650,6 +2653,7 @@ mod tests {
             .clear_subtree(
                 [TEST_LEAF, b"parent2"].as_ref(),
                 Some(ClearOptions {
+                    backward_references_policy: BackwardReferencesPolicy::Maintain,
                     check_for_subtrees: true,
                     allow_deleting_subtrees: false,
                     trying_to_clear_with_subtrees_returns_error: false,
@@ -2709,6 +2713,7 @@ mod tests {
             .clear_subtree(
                 [TEST_LEAF, b"parent3"].as_ref(),
                 Some(ClearOptions {
+                    backward_references_policy: BackwardReferencesPolicy::Maintain,
                     check_for_subtrees: true,
                     allow_deleting_subtrees: true,
                     trying_to_clear_with_subtrees_returns_error: true,
@@ -3167,7 +3172,7 @@ mod tests {
                 validate_insertion_does_not_override: true,
                 validate_insertion_does_not_override_tree: true,
                 base_root_storage_is_free: true,
-                propagate_backward_references: false,
+                backward_references_policy: BackwardReferencesPolicy::Skip,
             }),
             None,
             grove_version,
@@ -3210,7 +3215,7 @@ mod tests {
                 validate_insertion_does_not_override: false,
                 validate_insertion_does_not_override_tree: true,
                 base_root_storage_is_free: true,
-                propagate_backward_references: false,
+                backward_references_policy: BackwardReferencesPolicy::Skip,
             }),
             None,
             grove_version,
@@ -3243,7 +3248,7 @@ mod tests {
                 validate_insertion_does_not_override: false,
                 validate_insertion_does_not_override_tree: false,
                 base_root_storage_is_free: false,
-                propagate_backward_references: false,
+                backward_references_policy: BackwardReferencesPolicy::Skip,
             }),
             None,
             grove_version,

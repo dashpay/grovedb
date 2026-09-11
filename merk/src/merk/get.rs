@@ -14,6 +14,61 @@ impl<'db, S> Merk<S>
 where
     S: StorageContext<'db>,
 {
+    /// Observe an existing value while preparing a mutation. The traversal
+    /// retains every fetched node in this Merk, so applying the mutation on
+    /// the same instance reuses those reads. An absent key does not invoke
+    /// the observer and returns `false`.
+    ///
+    /// Unlike the apply-time old-value observer, this callback runs before
+    /// any mutation. Callers may therefore use the captured bytes to plan
+    /// dependent operations before applying and committing a batch.
+    pub fn observe_old_value<V, O>(
+        &self,
+        key: &[u8],
+        value_defined_cost_fn: Option<&V>,
+        observer: &mut O,
+        grove_version: &GroveVersion,
+    ) -> CostResult<bool, Error>
+    where
+        V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        O: FnMut(&[u8], &[u8]),
+    {
+        self.walk(|walker| {
+            fn observe<F, V, O>(
+                mut walker: crate::tree::RefWalker<'_, F>,
+                key: &[u8],
+                value_defined_cost_fn: Option<&V>,
+                observer: &mut O,
+                grove_version: &GroveVersion,
+            ) -> CostResult<bool, Error>
+            where
+                F: crate::tree::Fetch + Clone,
+                V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+                O: FnMut(&[u8], &[u8]),
+            {
+                if walker.tree().key() == key {
+                    observer(key, walker.tree().value_as_slice());
+                    return Ok(true).wrap_with_cost(OperationCost::default());
+                }
+                let left = key < walker.tree().key();
+                walker
+                    .walk(left, value_defined_cost_fn, grove_version)
+                    .flat_map_ok(|child| match child {
+                        Some(child) => {
+                            observe(child, key, value_defined_cost_fn, observer, grove_version)
+                        }
+                        None => Ok(false).wrap_with_cost(OperationCost::default()),
+                    })
+            }
+            match walker {
+                Some(walker) => {
+                    observe(walker, key, value_defined_cost_fn, observer, grove_version)
+                }
+                None => Ok(false).wrap_with_cost(OperationCost::default()),
+            }
+        })
+    }
+
     /// Gets an auxiliary value.
     pub fn get_aux(&self, key: &[u8]) -> CostResult<Option<Vec<u8>>, Error> {
         self.storage.get_aux(key).map_err(StorageError)
@@ -556,5 +611,99 @@ mod test {
             .unwrap();
 
         assert!(result);
+    }
+}
+
+#[cfg(all(test, feature = "full"))]
+mod preparation_tests {
+    use super::*;
+    use crate::{test_utils::TempMerk, Op, TreeFeatureType::BasicMerkNode};
+
+    #[test]
+    fn observing_cold_nodes_reuses_the_mutations_storage_reads() {
+        let version = GroveVersion::latest();
+        for operation in [Op::Delete, Op::Put(vec![99; 32], BasicMerkNode)] {
+            let initial: Vec<_> = (0u8..63)
+                .map(|key| (vec![key], Op::Put(vec![key; 32], BasicMerkNode)))
+                .collect();
+            let mut prepared = TempMerk::new(version);
+            let mut direct = TempMerk::new(version);
+            for merk in [&mut prepared, &mut direct] {
+                merk.apply::<_, Vec<u8>>(&initial, &[], None, version)
+                    .unwrap()
+                    .unwrap();
+                merk.commit(version);
+            }
+            let before = prepared.root_hash().unwrap();
+            let mut old = None;
+            let preparation_cost = prepared
+                .observe_old_value(
+                    &[1],
+                    None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                    &mut |key, value| old = Some((key.to_vec(), value.to_vec())),
+                    version,
+                )
+                .cost_as_result()
+                .unwrap();
+            assert_eq!(old, Some((vec![1], vec![1; 32])));
+            assert_eq!(
+                prepared.root_hash().unwrap(),
+                before,
+                "observation cannot mutate the root"
+            );
+            assert!(
+                preparation_cost.seek_count > 0,
+                "exercise a cold non-root node"
+            );
+            let batch = vec![(vec![1], operation)];
+            let prepared_cost = prepared
+                .apply::<_, Vec<u8>>(&batch, &[], None, version)
+                .cost_as_result()
+                .unwrap();
+            let direct_cost = direct
+                .apply::<_, Vec<u8>>(&batch, &[], None, version)
+                .cost_as_result()
+                .unwrap();
+            assert_eq!(preparation_cost + prepared_cost, direct_cost);
+            assert_eq!(prepared.root_hash().unwrap(), direct.root_hash().unwrap());
+        }
+    }
+
+    #[test]
+    fn missing_value_does_not_call_observer_and_keeps_insertion_reads_cached() {
+        let version = GroveVersion::latest();
+        let initial = vec![
+            (vec![1], Op::Put(vec![1], BasicMerkNode)),
+            (vec![3], Op::Put(vec![3], BasicMerkNode)),
+        ];
+        let mut prepared = TempMerk::new(version);
+        let mut direct = TempMerk::new(version);
+        for merk in [&mut prepared, &mut direct] {
+            merk.apply::<_, Vec<u8>>(&initial, &[], None, version)
+                .unwrap()
+                .unwrap();
+            merk.commit(version);
+        }
+        let mut cost = OperationCost::default();
+        assert!(!prepared
+            .observe_old_value(
+                &[2],
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                &mut |_, _| panic!("missing key has no old value"),
+                version,
+            )
+            .unwrap_add_cost(&mut cost)
+            .unwrap());
+        let batch = vec![(vec![2], Op::Put(vec![2], BasicMerkNode))];
+        prepared
+            .apply::<_, Vec<u8>>(&batch, &[], None, version)
+            .unwrap_add_cost(&mut cost)
+            .unwrap();
+        let direct_cost = direct
+            .apply::<_, Vec<u8>>(&batch, &[], None, version)
+            .cost_as_result()
+            .unwrap();
+        assert_eq!(cost, direct_cost);
+        assert_eq!(prepared.root_hash().unwrap(), direct.root_hash().unwrap());
     }
 }

@@ -147,6 +147,10 @@
 //!   apply path is unaffected on every version (preprocessing rewrites
 //!   keyless ops before the batch structure is built).
 //!
+//! - `apply_batch.backward_references_maintenance: 1` — batches maintain
+//!   backward references by default: planner preparation with retained
+//!   old-value reads, the partial-batch participant gate, and explicit
+//!   `Skip` for `DropFlat`.
 //! - `apply_batch.non_merk_parent_keyed_ops_rejection: 1` — batch execution
 //!   refuses ordinary keyed ops at a level whose parent is a non-Merk data
 //!   tree (`CommitmentTree`, `MmrTree`, `BulkAppendTree`, `DenseTree`,
@@ -353,6 +357,10 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             keyless_op_cost_dispatch: 1,
             add_on_op_collision: 1,
             non_merk_parent_keyed_ops_rejection: 1,
+            // v1: batches maintain backward references by default — planner
+            // preparation with retained old-value reads, the partial-batch
+            // participant gate, and explicit Skip for DropFlat.
+            backward_references_maintenance: 1,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,
@@ -436,9 +444,8 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             },
             insert: GroveDBOperationsInsertVersions {
                 insert: 0,
-                // v1: backward-references router. Calls that neither insert a
-                // BidirectionalReference nor set
-                // propagate_backward_references run the exact v0 body.
+                // v1: automatic backward-reference maintenance, observing old
+                // values in Merks retained for the write.
                 insert_on_transaction: 1,
                 // v2: a directly inserted Reference binds the value hash of its
                 // terminal's STORED bytes (wrapper included for a NonCounted
@@ -477,8 +484,8 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 // with the child's tree type (issue #686). v0 (GROVE_V1..V3)
                 // keeps the legacy reopen byte-for-byte for replay
                 // compatibility.
-                // v2: backward-references router on top of v1 — flag-less
-                // calls run the exact v1 body.
+                // v2: automatic backward-reference maintenance with cached
+                // old-value observation. Skip retains the v1 route.
                 delete_internal_on_transaction: 2,
                 average_case_delete_operation_for_delete: 0,
                 worst_case_delete_operation_for_delete: 0,

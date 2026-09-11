@@ -33,11 +33,10 @@
 //! The two implementations differ ONLY in that non-empty-child-tree branch;
 //! everything else is identical. See [v0] / [v1].
 //!
-//! * **[v2]** — `GROVE_V4`+ with backward-references support. A router:
-//!   calls without `DeleteOptions::propagate_backward_references` run the
-//!   exact v1 body (identical root hashes and costs); calls with the flag
-//!   run a `MerkCache`-based flow that cascades backward-reference chains.
-//!
+//! * **[v2]** — V4 automatic maintenance with cached old-value observation.
+//!   Ordinary deletions retain indexed propagation and specialized cleanup.
+//!   `Skip` selects the ordinary v1 route explicitly.
+
 //! [v0]: self::v0
 //! [v1]: self::v1
 //! [v2]: self::v2

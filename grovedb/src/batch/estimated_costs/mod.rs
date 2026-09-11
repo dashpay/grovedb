@@ -43,7 +43,7 @@ pub(in crate::batch) fn wrapper_overhead_for(
 
 // ── Backward-references fan-out estimation model ────────────────────────
 //
-// Under `BatchApplyOptions::propagate_backward_references` (GROVE_V4+), a
+// Under `BatchApplyOptions::backward_references_policy` (GROVE_V4+), a
 // single op can expand into derived operations in OTHER subtrees:
 // registering on a target, rewriting every referrer chain with a new end
 // hash, cascading deletions through referrer chains. The estimator cannot

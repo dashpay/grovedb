@@ -11,7 +11,8 @@
 //! its key, the parent Merk's shape, and the path. The subtree's contents
 //! are **never opened, checked, or metered**, which is what makes the cost
 //! O(1) in the subtree's size: dropping a tree of ten million entries
-//! costs the same as dropping a tree of ten.
+//! costs the same as dropping a tree of ten. Both entry points require explicit
+//! `BackwardReferencesPolicy::Skip`; Maintain is refused before reading contents.
 //!
 //! Atomically with the delete, a durable redo record
 //! ([`PendingPrefixDropRecord`]) is committed into a reserved namespace of
@@ -68,6 +69,8 @@
 //! a corrupted-reference error rather than incorrect data. Reference
 //! lifecycle is the caller's responsibility.
 
+use crate::operations::indexed_tree::reject_generic_write_into_indexed_primary;
+use crate::BackwardReferencesPolicy;
 use std::collections::HashMap;
 
 use grovedb_costs::{
@@ -206,7 +209,8 @@ impl GroveDb {
     /// or sweeping its contents, and stage its storage prefixes for
     /// reclamation. See the [module documentation](self) for the full
     /// contract: the caller declares the subtree contains **no child
-    /// subtrees**, incoming references dangle, and the dropped path must
+    /// subtrees** and explicitly selects `BackwardReferencesPolicy::Skip`.
+    /// Incoming references may dangle, and the dropped path must
     /// not be re-created before its record drains.
     ///
     /// The returned cost covers the parent-Merk delete, upward hash
@@ -217,6 +221,7 @@ impl GroveDb {
         &self,
         path: P,
         key: &[u8],
+        backward_references_policy: BackwardReferencesPolicy,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
@@ -238,6 +243,12 @@ impl GroveDb {
                     .drop_flat_subtree,
             )
         );
+
+        if backward_references_policy.maintains() {
+            return Err(Error::NotSupported(
+                "flat drop requires explicit BackwardReferencesPolicy::Skip; use recursive delete for maintenance".to_owned(),
+            )).wrap_with_cost(cost);
+        }
 
         let tx = TxRef::new(&self.db, transaction);
         let batch = StorageBatch::new();
@@ -267,10 +278,7 @@ impl GroveDb {
         // rejection as `delete`.
         cost_return_on_error_no_add!(
             cost,
-            crate::operations::indexed_tree::reject_generic_write_into_indexed_primary(
-                parent_merk.tree_type,
-                "drop_flat_subtree",
-            )
+            reject_generic_write_into_indexed_primary(parent_merk.tree_type, "drop_flat_subtree",)
         );
         let parent_tree_type = parent_merk.tree_type;
 

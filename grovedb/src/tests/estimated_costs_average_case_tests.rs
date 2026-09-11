@@ -24,6 +24,7 @@ use crate::{
 fn normal_layer_info() -> EstimatedLayerInformation {
     EstimatedLayerInformation {
         tree_type: TreeType::NormalTree,
+        may_contain_backward_references: false,
         estimated_layer_count: EstimatedLayerCount::ApproximateElements(100),
         estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(8, Default::default(), None),
     }
@@ -33,6 +34,7 @@ fn normal_layer_info() -> EstimatedLayerInformation {
 fn sum_tree_layer_info() -> EstimatedLayerInformation {
     EstimatedLayerInformation {
         tree_type: TreeType::SumTree,
+        may_contain_backward_references: false,
         estimated_layer_count: EstimatedLayerCount::ApproximateElements(50),
         estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(8, Default::default(), None),
     }
@@ -42,6 +44,7 @@ fn sum_tree_layer_info() -> EstimatedLayerInformation {
 fn items_layer_info() -> EstimatedLayerInformation {
     EstimatedLayerInformation {
         tree_type: TreeType::NormalTree,
+        may_contain_backward_references: false,
         estimated_layer_count: EstimatedLayerCount::ApproximateElements(200),
         estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 100, None),
     }
@@ -671,6 +674,7 @@ fn test_average_case_replace_tree_sum_vs_normal() {
 fn indexed_layer_info(tt: TreeType) -> EstimatedLayerInformation {
     EstimatedLayerInformation {
         tree_type: tt,
+        may_contain_backward_references: false,
         estimated_layer_count: EstimatedLayerCount::ApproximateElements(50),
         estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(8, Default::default(), None),
     }

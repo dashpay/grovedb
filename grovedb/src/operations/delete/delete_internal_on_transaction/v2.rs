@@ -1,29 +1,14 @@
-//! `delete_internal_on_transaction` — **v2** (`GROVE_V4`+).
-//!
-//! A behaviour-preserving router. A call without
-//! [`DeleteOptions::propagate_backward_references`] runs the exact v1 body
-//! (`GROVE_V4`'s parent-reuse delete, issue #686) — identical root hashes
-//! and costs. A call WITH the flag runs the `MerkCache`-based flow below,
-//! which fetches the deleted element, cascades backward-reference chains
-//! (each affected bidirectional reference must allow `cascade_on_update`),
-//! and for subtree deletion sweeps the subtree with a raw-iterator visitor
-//! while cleaning up backward references along the way. See
-//! `adr/bidirectional_references.md`.
-//!
-//! ## Support under the backward-references flow
-//!
-//! The flag-on flow supports plain Merk subtrees. Specialized tree types
-//! (commitment / MMR / bulk-append / dense / private document store) and
-//! indexed-tree primaries are rejected with the flag set — delete them
-//! without the flag (none of their contents can be targeted by
-//! bidirectional references).
+//! Automatic deletion with cached old-value observation on GROVE_V4.
 
+use crate::operations::indexed_tree::reject_generic_write_into_indexed_primary;
+use crate::BackwardReferencesPolicy;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, storage_cost::removal::StorageRemovedBytes,
     CostResult, CostsExt,
 };
+use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 use grovedb_merk::{
-    element::{delete::ElementDeleteFromStorageExtensions, get::ElementFetchFromStorageExtensions},
+    element::{costs::ElementCostExtensions, delete::ElementDeleteFromStorageExtensions},
     Error as MerkError,
 };
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
@@ -41,7 +26,7 @@ use crate::{
 };
 
 impl GroveDb {
-    /// `delete_internal_on_transaction` v2 — see the module documentation.
+    /// Automatic V4 delete dispatcher.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn delete_internal_on_transaction_v2<B: AsRef<[u8]>>(
         &self,
@@ -60,8 +45,8 @@ impl GroveDb {
         batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
-        if options.propagate_backward_references {
-            self.delete_with_backward_references(
+        if options.backward_references_policy.maintains() {
+            self.delete_with_backward_references_v2(
                 path,
                 key,
                 options,
@@ -85,7 +70,7 @@ impl GroveDb {
 
     /// The `MerkCache`-based delete flow with backward-references cascade.
     #[allow(clippy::too_many_arguments)]
-    fn delete_with_backward_references<B: AsRef<[u8]>>(
+    fn delete_with_backward_references_v2<B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<B>,
         key: &[u8],
@@ -104,35 +89,79 @@ impl GroveDb {
     ) -> CostResult<bool, Error> {
         let mut cost = Default::default();
 
-        let cache = MerkCache::<B>::new(self, transaction, grove_version);
-
-        let mut subtree_to_delete_from =
-            cost_return_on_error!(&mut cost, cache.get_merk(path.derive_owned()));
-
-        let subtree_to_delete_from_type = cost_return_on_error!(
+        let merk = cost_return_on_error!(
             &mut cost,
-            subtree_to_delete_from.for_merk(|m| Ok(m.tree_type).wrap_with_cost(Default::default()))
-        );
-
-        // Guard on the CONTAINING Merk's type, before even looking the key
-        // up: deleting a row out of an indexed-tree primary through this
-        // generic flow would strand its mirrored secondary state. (The
-        // separate check further down guards the case where the deleted
-        // element is itself a specialized/indexed tree.)
-        cost_return_on_error_no_add!(
-            cost,
-            crate::operations::indexed_tree::reject_generic_write_into_indexed_primary(
-                subtree_to_delete_from_type,
-                "delete with propagate_backward_references",
+            self.open_transactional_merk_at_path(
+                path.clone(),
+                transaction,
+                Some(batch),
+                grove_version
             )
         );
-
-        let element = cost_return_on_error!(
-            &mut cost,
-            subtree_to_delete_from.for_merk(|m| {
-                Element::get(m, key, true, grove_version).map_err(Error::MerkError)
-            })
+        let subtree_to_delete_from_type = merk.tree_type;
+        cost_return_on_error_no_add!(
+            cost,
+            reject_generic_write_into_indexed_primary(merk.tree_type, "delete")
         );
+        let mut observed = None;
+        cost_return_on_error!(
+            &mut cost,
+            merk.observe_old_value(
+                key,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                &mut |_, bytes| {
+                    observed = Some(Element::deserialize(bytes, grove_version));
+                },
+                grove_version,
+            )
+            .map_err(Error::MerkError)
+        );
+        let element =
+            cost_return_on_error_no_add!(cost, observed.transpose().map_err(Error::from)
+            .and_then(|value| value.ok_or_else(|| Error::PathKeyNotFound(hex::encode(key)))));
+        let descendants_need_maintenance = if element.is_any_tree()
+            && !element.uses_non_merk_data_storage()
+            && element
+                .root_key_and_tree_type()
+                .is_some_and(|(root, _)| root.is_some())
+        {
+            !cost_return_on_error!(
+                &mut cost,
+                self.backward_reference_participants(
+                    path.derive_owned_with_child(key).to_vec().as_slice(),
+                    transaction,
+                    grove_version,
+                )
+            )
+            .is_empty()
+        } else {
+            false
+        };
+        if !element.supports_backward_references() && !descendants_need_maintenance {
+            return self
+                .delete_prepared_ordinary_v1(
+                    element,
+                    merk,
+                    path,
+                    key,
+                    options,
+                    transaction,
+                    sectioned_removal,
+                    batch,
+                    grove_version,
+                )
+                .add_cost(cost);
+        }
+        let cache = MerkCache::with_prepared_merk(
+            self,
+            transaction,
+            grove_version,
+            path.derive_owned(),
+            merk,
+            batch,
+        );
+        let mut subtree_to_delete_from =
+            cost_return_on_error!(&mut cost, cache.get_merk(path.derive_owned()));
 
         if element.is_any_tree() {
             // A subtree deletion was requested.
@@ -147,7 +176,7 @@ impl GroveDb {
             {
                 return Err(Error::NotSupported(
                     "specialized data trees and indexed trees cannot be deleted with \
-                     propagate_backward_references set; delete them without the flag"
+                     automatic reference maintenance; remove specialized descendants first"
                         .to_owned(),
                 ))
                 .wrap_with_cost(cost);
@@ -185,7 +214,7 @@ impl GroveDb {
                     transaction,
                     DeletionVisitor::new(
                         &cache,
-                        options.propagate_backward_references,
+                        options.backward_references_policy,
                         true,
                         sectioned_removal,
                     ),
@@ -233,7 +262,7 @@ impl GroveDb {
             //    operations (from the cache) have already removed all
             //    connections to this data, no special handling is needed —
             //    just cleanup.
-            batch.merge_overwriting(*cost_return_on_error!(&mut cost, cache.into_batch()));
+            cost_return_on_error!(&mut cost, cache.finish_prepared());
             deletion_batch
                 .into_iter()
                 .for_each(|b| batch.merge_overwriting(b));
@@ -245,12 +274,6 @@ impl GroveDb {
                 &mut cost,
                 subtree_to_delete_from.for_merk(|m| {
                     let mut inner_cost = Default::default();
-
-                    let old = cost_return_on_error!(
-                        &mut inner_cost,
-                        Element::get_optional(m, key, true, grove_version)
-                            .map_err(Error::MerkError)
-                    );
 
                     cost_return_on_error!(
                         &mut inner_cost,
@@ -266,7 +289,7 @@ impl GroveDb {
                         .map_err(Error::MerkError)
                     );
 
-                    Ok(old).wrap_with_cost(inner_cost)
+                    Ok(Some(element)).wrap_with_cost(inner_cost)
                 })
             );
 
@@ -284,7 +307,7 @@ impl GroveDb {
 
             // Fill the provided batch with what we ended up with after
             // deletion using the cache:
-            batch.merge_overwriting(*cost_return_on_error!(&mut cost, cache.into_batch()));
+            cost_return_on_error!(&mut cost, cache.finish_prepared());
             Ok(true).wrap_with_cost(cost)
         }
     }
@@ -298,7 +321,7 @@ impl GroveDb {
 /// we're good as long as we do nothing outside of the cache, then finalize
 /// it, and only then merge with the final deletion batches.
 struct DeletionVisitor<'c, 'db, 'b, 's, B: AsRef<[u8]>> {
-    propagate_backward_references: bool,
+    backward_references_policy: BackwardReferencesPolicy,
     allow_deleting_subtrees: bool,
     cache: &'c MerkCache<'db, 'b, B>,
     /// The caller's removal-accounting policy, applied to every referrer a
@@ -309,12 +332,12 @@ struct DeletionVisitor<'c, 'db, 'b, 's, B: AsRef<[u8]>> {
 impl<'c, 'db, 'b, 's, B: AsRef<[u8]>> DeletionVisitor<'c, 'db, 'b, 's, B> {
     fn new(
         cache: &'c MerkCache<'db, 'b, B>,
-        propagate_backward_references: bool,
+        backward_references_policy: BackwardReferencesPolicy,
         allow_deleting_subtrees: bool,
         sectioned_removal: bidirectional_references::SectionedRemovalFn<'s>,
     ) -> Self {
         Self {
-            propagate_backward_references,
+            backward_references_policy,
             allow_deleting_subtrees,
             cache,
             sectioned_removal,
@@ -360,7 +383,7 @@ impl<'b, B: AsRef<[u8]>> Visit<'b, B> for DeletionVisitor<'_, '_, 'b, '_, B> {
             {
                 return Err(Error::NotSupported(
                     "a descendant specialized data tree or indexed tree blocks deletion with \
-                     propagate_backward_references set; delete it without the flag first"
+                     automatic reference maintenance; remove it separately first"
                         .to_owned(),
                 ))
                 .wrap_with_cost(cost);
@@ -370,7 +393,7 @@ impl<'b, B: AsRef<[u8]>> Visit<'b, B> for DeletionVisitor<'_, '_, 'b, '_, B> {
 
         // Step 2: perform backward references' deletion on top of cached
         // data:
-        if self.propagate_backward_references
+        if self.backward_references_policy.maintains()
             && matches!(
                 element,
                 Element::ItemWithBackwardsReferences(..)

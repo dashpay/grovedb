@@ -46,6 +46,7 @@ pub(crate) struct MerkCache<'db, 'b, B: AsRef<[u8]>> {
     db: &'db GroveDb,
     pub(crate) version: &'db GroveVersion,
     batch: Box<StorageBatch>,
+    external_batch: Option<&'db StorageBatch>,
     tx: &'db Transaction<'db>,
     merks: UnsafeCell<Merks<'db, 'b, B>>,
 }
@@ -63,7 +64,28 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
             version,
             merks: Default::default(),
             batch: Default::default(),
+            external_batch: None,
         }
+    }
+
+    /// Seed a cache with an already observed Merk. Its storage batch is owned
+    /// by the caller and outlives the cache. All paths and operation boundaries
+    /// use that same batch, preserving ordering between reference mutations.
+    pub(crate) fn with_prepared_merk(
+        db: &'db GroveDb,
+        tx: &'db Transaction<'db>,
+        version: &'db GroveVersion,
+        path: SubtreePathBuilder<'b, B>,
+        merk: TxMerk<'db>,
+        batch: &'db StorageBatch,
+    ) -> Self {
+        let mut cache = Self::new(db, tx, version);
+        cache.external_batch = Some(batch);
+        cache.merks.get_mut().insert(
+            path,
+            Box::new((Cell::new(false), Subtree::LoadedMerk(merk))),
+        );
+        cache
     }
 
     pub(crate) fn mark_deleted(&self, path: SubtreePathBuilder<'b, B>) {
@@ -182,11 +204,11 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
         // references, so as long as the `Box` allocation
         // outlives those references we're safe,
         // and it will outlive because Merks are dropped first.
-        let batch = unsafe {
+        let batch = self.external_batch.unwrap_or_else(|| unsafe {
             (&*self.batch as *const StorageBatch)
                 .as_ref()
                 .expect("`Box` is never null")
-        };
+        });
 
         // Getting mutable reference for subtree with lifetime unlinked from the rest
         // of Merks map.
@@ -308,7 +330,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
                 taken_handle: taken_handle_ref
                     .as_ref()
                     .expect("`Box` contents are never null"),
-                batch: &self.batch,
+                batch: self.external_batch.unwrap_or(&self.batch),
             }
         })
         .wrap_with_cost(cost)
@@ -316,6 +338,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
 
     /// Consumes `MerkCache` into accumulated batch of uncommitted operations
     /// with subtrees' root hash propagation done.
+    #[cfg(test)]
     pub(crate) fn into_batch(mut self) -> CostResult<Box<StorageBatch>, Error> {
         let mut cost = Default::default();
         cost_return_on_error!(&mut cost, self.propagate_subtrees());
@@ -363,19 +386,29 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
                 );
                 cost_return_on_error!(
                     &mut cost,
-                    parent_merk.for_merk(|m| GroveDb::update_tree_item_preserve_flag(
-                        m,
-                        parent_key,
-                        root_key,
-                        root_hash,
-                        aggregate_data,
-                        self.version,
-                    ))
+                    parent_merk.for_merk(|m| {
+                        // This reference-cache executor does not mirror secondary
+                        // rows. Refuse before commit; full batches support the
+                        // indexed propagation path and can perform this mutation.
+                        if m.tree_type.is_indexed_primary() {
+                            return Err(Error::NotSupported(
+                                "live backward-reference maintenance below indexed primaries requires a full batch".to_owned(),
+                            )).wrap_with_cost(Default::default());
+                        }
+                        GroveDb::update_tree_item_preserve_flag(
+                            m, parent_key, root_key, root_hash, aggregate_data, self.version,
+                        )
+                    })
                 );
             }
         }
 
         Ok(()).wrap_with_cost(cost)
+    }
+
+    /// Finalize automatic maintenance into the caller-owned batch.
+    pub(crate) fn finish_prepared(mut self) -> CostResult<(), Error> {
+        self.propagate_subtrees()
     }
 }
 

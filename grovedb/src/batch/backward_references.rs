@@ -1,9 +1,9 @@
 //! The backward-references batch preprocessor (batching milestones M2–M4).
 //!
-//! When [`super::BatchApplyOptions::propagate_backward_references`] is set,
+//! With the default [`crate::BackwardReferencesPolicy::Maintain`],
 //! user operations touching the backward-references family — the three ITEM
 //! variants and `BidirectionalReference` itself — expand into the derived
-//! operations the live flagged flow would perform. The decisions come from
+//! operations the live flow would perform. The decisions come from
 //! the shared semantic core in
 //! [`crate::bidirectional_references::semantics`] — the same planners the
 //! `MerkCache` driver uses — so live and batched semantics cannot drift.
@@ -48,7 +48,7 @@
 //! - a propagation/registration rewrite hitting a position whose user op is
 //!   a delete or a `RefreshReference` → error;
 //! - `RefreshReference` on a position holding a bidirectional reference →
-//!   rejected (re-insert the reference through a flagged op instead);
+//!   rejected (re-insert the reference through an insert/replace op instead);
 //! - registrations onto targets written in the same batch merge into the
 //!   target op's element — but ONLY into an already-processed,
 //!   guaranteed-to-execute family write (`InsertIfNotExists` over an
@@ -59,6 +59,7 @@
 //!   processing drops the pending derived op and plans the bookkeeping its
 //!   own overwrite requires, preserving sequential semantics.
 
+use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
@@ -66,11 +67,15 @@ use std::{
 
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_merk::{
-    element::{get::ElementFetchFromStorageExtensions, ElementExt},
-    CryptoHash,
+    element::{costs::ElementCostExtensions, ElementExt},
+    CryptoHash, Merk,
 };
 use grovedb_path::SubtreePath;
+use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, StorageBatch};
 use grovedb_version::version::GroveVersion;
+
+pub(super) type PreparedMerks<'db> =
+    HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext<'db>>>;
 
 use super::{key_info::KeyInfo, GroveOp, KeyInfoPath, QualifiedGroveDbOp};
 use crate::{
@@ -80,17 +85,19 @@ use crate::{
     },
     operations::get::MAX_REFERENCE_HOPS,
     reference_path::{path_from_reference_path_type, ReferencePathType},
-    util::TxRef,
     Element, Error, GroveDb, Transaction,
 };
 
 /// [`ChainStore`] over the batch's prospective state: an overlay of staged
 /// pending position states (what the batch has decided each position will
 /// hold) falling back to the database at the batch's transaction snapshot.
-/// Hashes are derived from element bytes via the logical-hash convention,
-/// so no merk node reads are required.
+/// Logical hashes come from the observed element bytes, avoiding a separate
+/// value-hash lookup. Observed Merks remain cached for execution.
 pub(super) struct OverlayChainStore<'db, 'g> {
-    db: &'g GroveDb,
+    db: &'db GroveDb,
+    batch: &'db StorageBatch,
+    merks: RefCell<PreparedMerks<'db>>,
+    observed: RefCell<HashMap<Position, Option<Element>>>,
     tx: &'db Transaction<'db>,
     version: &'g GroveVersion,
     /// Staged pending state: `Some(element)` = the batch writes this,
@@ -112,9 +119,17 @@ pub(super) struct OverlayChainStore<'db, 'g> {
 }
 
 impl<'db, 'g> OverlayChainStore<'db, 'g> {
-    fn new(db: &'g GroveDb, tx: &'db Transaction<'db>, version: &'g GroveVersion) -> Self {
+    fn new(
+        db: &'db GroveDb,
+        tx: &'db Transaction<'db>,
+        batch: &'db StorageBatch,
+        version: &'g GroveVersion,
+    ) -> Self {
         Self {
             db,
+            batch,
+            merks: RefCell::new(HashMap::new()),
+            observed: RefCell::new(HashMap::new()),
             tx,
             version,
             overlay: RefCell::new(HashMap::new()),
@@ -158,36 +173,6 @@ impl<'db, 'g> OverlayChainStore<'db, 'g> {
         (1..=path.len()).any(|i| fresh.contains(&path[..i]))
     }
 
-    /// Whether the subtree at `qualified` holds any prospective content:
-    /// positions the batch stages under it, or committed elements (unless
-    /// the subtree is fresh, in which case committed storage has nothing).
-    fn subtree_has_content(&self, qualified: &[Vec<u8>]) -> CostResult<bool, Error> {
-        let staged_content = self.overlay.borrow().iter().any(|((path, _), element)| {
-            element.is_some()
-                && path.len() >= qualified.len()
-                && path[..qualified.len()] == *qualified
-        });
-        if staged_content {
-            return Ok(true).wrap_with_cost(OperationCost::default());
-        }
-        if self.under_fresh_subtree(qualified) || self.fresh_subtrees.borrow().contains(qualified) {
-            return Ok(false).wrap_with_cost(OperationCost::default());
-        }
-        let mut cost = OperationCost::default();
-        let path_slices: Vec<&[u8]> = qualified.iter().map(|p| p.as_slice()).collect();
-        let merk = cost_return_on_error!(
-            &mut cost,
-            self.db.open_transactional_merk_at_path(
-                SubtreePath::from(path_slices.as_slice()),
-                self.tx,
-                None,
-                self.version,
-            )
-        );
-        let is_empty = merk.is_empty_tree().unwrap_add_cost(&mut cost);
-        Ok(!is_empty).wrap_with_cost(cost)
-    }
-
     fn resolve_position(
         &self,
         path: &[Vec<u8>],
@@ -229,20 +214,47 @@ impl<'db, 'g> ChainStore for OverlayChainStore<'db, 'g> {
         if self.under_fresh_subtree(path) {
             return Ok(None).wrap_with_cost(OperationCost::default());
         }
+        let position = (path.to_vec(), key.to_vec());
+        if let Some(observed) = self.observed.borrow().get(&position) {
+            return Ok(observed.clone()).wrap_with_cost(OperationCost::default());
+        }
         let mut cost = OperationCost::default();
-        let path_slices: Vec<&[u8]> = path.iter().map(|p| p.as_slice()).collect();
-        let merk = cost_return_on_error!(
+        let mut merks = self.merks.borrow_mut();
+        if !merks.contains_key(path) {
+            let merk = cost_return_on_error!(
+                &mut cost,
+                self.db.open_batch_transactional_merk_at_path(
+                    self.batch,
+                    SubtreePath::from(path),
+                    self.tx,
+                    false,
+                    self.version,
+                )
+            );
+            merks.insert(path.to_vec(), merk);
+        }
+        let merk = merks.get(path).expect("opened above");
+        let mut observed = None;
+        cost_return_on_error!(
             &mut cost,
-            self.db.open_transactional_merk_at_path(
-                SubtreePath::from(path_slices.as_slice()),
-                self.tx,
-                None,
+            merk.observe_old_value(
+                key,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                &mut |_, bytes| {
+                    observed = Some(Element::deserialize(bytes, self.version));
+                },
                 self.version,
             )
-        );
-        Element::get_optional(&merk, key, true, self.version)
             .map_err(Error::MerkError)
-            .add_cost(cost)
+        );
+        let observed = match observed.transpose() {
+            Ok(value) => value,
+            Err(error) => return Err(error.into()).wrap_with_cost(cost),
+        };
+        self.observed
+            .borrow_mut()
+            .insert(position, observed.clone());
+        Ok(observed).wrap_with_cost(cost)
     }
 
     fn resolve_once(
@@ -600,17 +612,18 @@ impl<'db, 'g> Expansion<'db, 'g> {
 
 /// Expand `ops` with the derived operations the backward-references rules
 /// require, per the module documentation.
-pub(super) fn expand_backward_references_ops(
-    db: &GroveDb,
-    tx: &TxRef<'_, '_>,
+pub(super) fn expand_backward_references_ops<'db>(
+    db: &'db GroveDb,
+    tx: &'db Transaction<'db>,
+    batch: &'db StorageBatch,
     ops: Vec<QualifiedGroveDbOp>,
     validate_insertion_does_not_override: bool,
     grove_version: &GroveVersion,
-) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
+) -> CostResult<(Vec<QualifiedGroveDbOp>, PreparedMerks<'db>), Error> {
     let mut cost = OperationCost::default();
 
     let mut expansion = Expansion {
-        store: OverlayChainStore::new(db, tx.as_ref(), grove_version),
+        store: OverlayChainStore::new(db, tx, batch, grove_version),
         user_index_by_position: HashMap::new(),
         user_deleted_positions: HashSet::new(),
         derived: BTreeMap::new(),
@@ -618,26 +631,6 @@ pub(super) fn expand_backward_references_ops(
         ops: Vec::new(),
     };
 
-    for (index, op) in ops.iter().enumerate() {
-        if let Some(position) = Expansion::op_position(op) {
-            // Consistency checking has already rejected duplicate
-            // positions; a stray duplicate would silently lose an op here,
-            // so refuse it outright.
-            if expansion
-                .user_index_by_position
-                .insert(position.clone(), index)
-                .is_some()
-            {
-                return Err(Error::InvalidBatchOperation(
-                    "batch operations fail consistency checks",
-                ))
-                .wrap_with_cost(cost);
-            }
-            if matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..)) {
-                expansion.user_deleted_positions.insert(position);
-            }
-        }
-    }
     expansion.ops = ops.into_iter().map(Some).collect();
 
     // Fresh-subtree pre-scan: a tree written where committed storage holds
@@ -680,6 +673,103 @@ pub(super) fn expand_backward_references_ops(
         }
     }
 
+    // Observe first, without applying reference-specific conflict or conditional
+    // write rules. Ordinary batches keep the executor's original operation set,
+    // including its behavior when consistency checking is disabled.
+    let mut needs_reference_planning = false;
+    let user_deleted_positions: HashSet<_> = expansion
+        .ops
+        .iter()
+        .flatten()
+        .filter(|op| matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..)))
+        .filter_map(Expansion::op_position)
+        .collect();
+    for op in expansion.ops.iter().flatten() {
+        let Some((path, key)) = Expansion::op_position(op) else {
+            continue;
+        };
+        let new_element = match &op.op {
+            GroveOp::InsertOrReplace { element }
+            | GroveOp::Replace { element }
+            | GroveOp::Patch { element, .. }
+            | GroveOp::InsertIfNotExists { element, .. }
+            | GroveOp::InsertWithKnownToNotAlreadyExist { element } => Some(element),
+            GroveOp::Delete | GroveOp::DeleteTree(..) | GroveOp::RefreshReference { .. } => None,
+            _ => continue,
+        };
+        let previous = cost_return_on_error!(&mut cost, expansion.store.element_at(&path, &key));
+        needs_reference_planning |= new_element.is_some_and(Element::supports_backward_references)
+            || previous
+                .as_ref()
+                .is_some_and(Element::supports_backward_references);
+        let removes_subtree = !matches!(
+            op.op,
+            GroveOp::InsertIfNotExists { .. }
+                | GroveOp::RefreshReference { .. }
+                | GroveOp::DeleteTree(
+                    _,
+                    super::SubelementsDeletionBehavior::Skip
+                        | super::SubelementsDeletionBehavior::Error
+                )
+        );
+        if removes_subtree
+            && previous.as_ref().is_some_and(|old| {
+                old.is_any_tree()
+                    && !old.uses_non_merk_data_storage()
+                    && old
+                        .root_key_and_tree_type()
+                        .is_some_and(|(root, _)| root.is_some())
+            })
+        {
+            let mut qualified = path;
+            qualified.push(key);
+            let participants = cost_return_on_error!(
+                &mut cost,
+                db.backward_reference_participants(&qualified, tx, grove_version)
+            );
+            if matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..)) {
+                if participants.iter().any(|(path, key, _)| {
+                    !user_deleted_positions.contains(&(path.clone(), key.clone()))
+                }) {
+                    return Err(Error::NotSupported(
+                        "a batch subtree deletion must explicitly delete its backward-reference participants; use live delete for recursive maintenance".to_owned(),
+                    )).wrap_with_cost(cost);
+                }
+            } else if !participants.is_empty() {
+                return Err(Error::NotSupported(
+                    "delete a subtree containing backward-reference participants before replacing it".to_owned(),
+                )).wrap_with_cost(cost);
+            }
+        }
+    }
+    if !needs_reference_planning {
+        return Ok((
+            expansion.ops.into_iter().flatten().collect(),
+            expansion.store.merks.into_inner(),
+        ))
+        .wrap_with_cost(cost);
+    }
+
+    for (index, op) in expansion.ops.iter().flatten().enumerate() {
+        if let Some(position) = Expansion::op_position(op) {
+            // Consistency checking has already rejected duplicate
+            // positions; a stray duplicate would silently lose an op here,
+            // so refuse it outright.
+            if expansion
+                .user_index_by_position
+                .insert(position.clone(), index)
+                .is_some()
+            {
+                return Err(Error::InvalidBatchOperation(
+                    "batch operations fail consistency checks",
+                ))
+                .wrap_with_cost(cost);
+            }
+            if matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..)) {
+                expansion.user_deleted_positions.insert(position);
+            }
+        }
+    }
     // Pass 1: every non-reference op in user order. Each op's effect is
     // staged into the overlay; item-family and bidi-position bookkeeping is
     // planned against DB-plus-overlay. `BidirectionalReference` ops are
@@ -779,6 +869,10 @@ pub(super) fn expand_backward_references_ops(
                 if let Some(previous) = previous {
                     if is_insert_if_not_exists {
                         if error_if_exists || expansion.validate_insertion_does_not_override {
+                            if !element.supports_backward_references() {
+                                // Let the ordinary executor preserve its type-specific refusal.
+                                continue;
+                            }
                             return Err(Error::InvalidBatchOperation(
                                 "attempting to insert element that already exists",
                             ))
@@ -793,7 +887,10 @@ pub(super) fn expand_backward_references_ops(
                         expansion.ops[index] = None;
                         continue;
                     }
-                    if is_known_new && is_family_item(&element) {
+                    if is_known_new
+                        && (element.supports_backward_references()
+                            || previous.supports_backward_references())
+                    {
                         // The caller's not-exists assertion is false. The
                         // plain-element path skips the existence check by
                         // design, but a blind family overwrite would skip
@@ -855,31 +952,6 @@ pub(super) fn expand_backward_references_ops(
             GroveOp::Delete | GroveOp::DeleteTree(..) => {
                 let previous =
                     cost_return_on_error!(&mut cost, expansion.store.element_at(&path, &key));
-                // Deleting a NON-EMPTY subtree is refused under the flag:
-                // its descendants may hold bidirectional-reference
-                // participants whose external registrations, cascade
-                // consents, and surviving referrers the batch engine's
-                // wholesale clearing would silently skip. The live flagged
-                // delete walks descendants with full bookkeeping — use it,
-                // or empty the subtree first.
-                if previous.as_ref().map(|p| p.is_any_tree()).unwrap_or(false) {
-                    let mut qualified = path.clone();
-                    qualified.push(key.clone());
-                    let non_empty = cost_return_on_error!(
-                        &mut cost,
-                        expansion.store.subtree_has_content(&qualified)
-                    );
-                    if non_empty {
-                        return Err(Error::NotSupported(
-                            "deleting a non-empty subtree in a batch with \
-                             propagate_backward_references is not supported; delete it through \
-                             the live flagged flow (which cascades descendants) or empty it \
-                             first"
-                                .to_owned(),
-                        ))
-                        .wrap_with_cost(cost);
-                    }
-                }
                 expansion.store.stage(position, None);
                 let Some(previous) = previous else { continue };
                 let needs_bookkeeping = matches!(previous, Element::BidirectionalReference(..))
@@ -906,14 +978,17 @@ pub(super) fn expand_backward_references_ops(
             } => {
                 let previous =
                     cost_return_on_error!(&mut cost, expansion.store.element_at(&path, &key));
-                if matches!(previous, Some(Element::BidirectionalReference(..))) {
+                if previous
+                    .as_ref()
+                    .is_some_and(Element::supports_backward_references)
+                {
                     // M4: refreshing a bidirectional reference is rejected —
                     // a refresh rewrites the node without the registration /
                     // propagation bookkeeping. Re-insert the reference
-                    // through a flagged op instead.
+                    // through an insert/replace op instead.
                     return Err(Error::NotSupported(
                         "RefreshReference cannot target a bidirectional reference; re-insert \
-                         the reference through a flagged batch operation instead"
+                         the reference through a batch insert/replace operation instead"
                             .to_owned(),
                     ))
                     .wrap_with_cost(cost);
@@ -1067,7 +1142,7 @@ pub(super) fn expand_backward_references_ops(
 
     let mut expanded: Vec<QualifiedGroveDbOp> = expansion.ops.into_iter().flatten().collect();
     expanded.extend(expansion.derived.into_values());
-    Ok(expanded).wrap_with_cost(cost)
+    Ok((expanded, expansion.store.merks.into_inner())).wrap_with_cost(cost)
 }
 
 /// The qualified position of a reference's first hop, when the path type is

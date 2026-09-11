@@ -6,16 +6,16 @@
 //! does **not** track backward (incoming) references. When an element is
 //! deleted, any existing references that point to it become *dangling*.
 //! Attempting to follow a dangling reference will return
-//! [`Error::CorruptedReferencePathKeyNotFound`](crate::Error::CorruptedReferencePathKeyNotFound)
+//! [`Error::CorruptedReferencePathKeyNotFound`]
 //! rather than incorrect data, so the failure mode is safe.
 //!
 //! Callers are responsible for ensuring that all ordinary references to an
 //! element are removed before (or atomically with) the deletion of that
 //! element.
 //!
-//! The exception is the opt-in bidirectional-references machinery
-//! (`GROVE_V4`+): deleting with
-//! [`DeleteOptions::propagate_backward_references`] set cascades any
+//! The exception is the bidirectional-references machinery (`GROVE_V4`+):
+//! deleting with
+//! the default [`crate::BackwardReferencesPolicy::Maintain`] cascades any
 //! [`BidirectionalReference`](crate::Element::BidirectionalReference)
 //! chains that point at the deleted element (each affected reference must
 //! allow `cascade_on_update`, otherwise the delete errors instead). See
@@ -42,6 +42,7 @@ pub mod flat_drop;
 mod worst_case;
 
 #[cfg(feature = "minimal")]
+use crate::BackwardReferencesPolicy;
 use std::collections::BTreeSet;
 
 #[cfg(feature = "minimal")]
@@ -82,6 +83,10 @@ pub struct ClearOptions {
     /// If we check for subtrees, and we don't allow deleting and there are
     /// some, should we error?
     pub trying_to_clear_with_subtrees_returns_error: bool,
+    /// On V4, Maintain scans for participants and refuses the clear before
+    /// mutation if any are found. Delete those participants through the normal
+    /// delete API first. Skip explicitly permits dangling registrations.
+    pub backward_references_policy: BackwardReferencesPolicy,
 }
 
 #[cfg(feature = "minimal")]
@@ -91,6 +96,7 @@ impl Default for ClearOptions {
             check_for_subtrees: true,
             allow_deleting_subtrees: false,
             trying_to_clear_with_subtrees_returns_error: true,
+            backward_references_policy: BackwardReferencesPolicy::Maintain,
         }
     }
 }
@@ -107,13 +113,11 @@ pub struct DeleteOptions {
     pub base_root_storage_is_free: bool,
     /// Validate tree at path exists
     pub validate_tree_at_path_exists: bool,
-    /// Propagate updates to elements with backward references. This enables
-    /// bidirectional-reference bookkeeping for this call: deletions of
-    /// backward-references elements cascade along the reference chains
-    /// (each affected reference must allow `cascade_on_update`, otherwise
-    /// the operation errors). Opt-in per call because the checks require an
-    /// extra fetch on every delete. Requires `GROVE_V4`+.
-    pub propagate_backward_references: bool,
+    /// Maintain backward references by default on V4. Every cascaded reference
+    /// must consent through `cascade_on_update`, or the operation fails
+    /// atomically. The initial value is observed in the Merk used for deletion.
+    /// `Skip` deliberately allows references to the deleted position to dangle.
+    pub backward_references_policy: BackwardReferencesPolicy,
 }
 
 #[cfg(feature = "minimal")]
@@ -124,7 +128,7 @@ impl Default for DeleteOptions {
             deleting_non_empty_trees_returns_error: true,
             base_root_storage_is_free: true,
             validate_tree_at_path_exists: false,
-            propagate_backward_references: false,
+            backward_references_policy: BackwardReferencesPolicy::Maintain,
         }
     }
 }
@@ -144,16 +148,16 @@ impl GroveDb {
     ///
     /// # Dangling references
     ///
-    /// Without [`DeleteOptions::propagate_backward_references`], this
+    /// With [`crate::BackwardReferencesPolicy::Skip`], this
     /// operation does **not** check for incoming references. If other
     /// elements hold [`Reference`](crate::Element::Reference) paths that point
     /// to the deleted element, those references become dangling. Following a
     /// dangling reference will return
-    /// [`Error::CorruptedReferencePathKeyNotFound`](crate::Error::CorruptedReferencePathKeyNotFound),
+    /// [`Error::CorruptedReferencePathKeyNotFound`],
     /// not incorrect data. Callers must manage reference lifecycle and remove
     /// or update any ordinary references to this element before deleting it.
     ///
-    /// With the flag set (`GROVE_V4`+), bidirectional references pointing at
+    /// With the default maintenance policy (`GROVE_V4`+), bidirectional references pointing at
     /// the deleted element are cascade-deleted instead — see the
     /// [module-level documentation](self).
     pub fn delete<'b, B, P>(
@@ -213,9 +217,13 @@ impl GroveDb {
     ///
     /// # Dangling references
     ///
-    /// This operation does **not** check for incoming references. Any
-    /// [`Reference`](crate::Element::Reference) elements that point to the
-    /// deleted element will become dangling. See the
+    /// Ordinary [`Reference`](crate::Element::Reference) elements are not
+    /// tracked: any that point to the deleted element become dangling, and
+    /// callers must manage their lifecycle. Under the default
+    /// [`Maintain`](crate::BackwardReferencesPolicy::Maintain) policy
+    /// (`GROVE_V4`+), bidirectional references pointing at the deleted element
+    /// are cascaded or the delete is refused, as described on [`Self::delete`];
+    /// explicit `Skip` leaves them dangling too. See the
     /// [module-level documentation](self) for details.
     pub fn delete_with_sectional_storage_function<B: AsRef<[u8]>>(
         &self,
@@ -299,9 +307,13 @@ impl GroveDb {
     ///
     /// # Dangling references
     ///
-    /// This operation does **not** check for incoming references. Any
-    /// [`Reference`](crate::Element::Reference) elements that point to the
-    /// deleted tree will become dangling. See the
+    /// Ordinary [`Reference`](crate::Element::Reference) elements are not
+    /// tracked: any that point to the deleted tree become dangling, and
+    /// callers must manage their lifecycle. Under the default
+    /// [`Maintain`](crate::BackwardReferencesPolicy::Maintain) policy
+    /// (`GROVE_V4`+), bidirectional references pointing at the deleted tree
+    /// are cascaded or the delete is refused, as described on [`Self::delete`];
+    /// explicit `Skip` leaves them dangling too. See the
     /// [module-level documentation](self) for details.
     pub fn delete_if_empty_tree<'b, B, P>(
         &self,
@@ -423,9 +435,12 @@ impl GroveDb {
     ///
     /// # Dangling references
     ///
-    /// This operation does **not** check for incoming references. Any
-    /// [`Reference`](crate::Element::Reference) elements that point to the
-    /// deleted element will become dangling. See the
+    /// This builds a batch operation; it performs no reference check itself.
+    /// Ordinary [`Reference`](crate::Element::Reference) elements pointing at
+    /// the deleted element become dangling when the batch applies. Whether
+    /// bidirectional references are cascaded is decided by the
+    /// [`BackwardReferencesPolicy`] of the
+    /// batch that applies the operation. See the
     /// [module-level documentation](self) for details.
     pub fn delete_operation_for_delete_internal<B: AsRef<[u8]>>(
         &self,
@@ -585,6 +600,7 @@ impl GroveDb {
 #[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
+    use crate::BackwardReferencesPolicy;
     use grovedb_costs::{
         storage_cost::{removal::StorageRemovedBytes::BasicStorageRemoval, StorageCost},
         OperationCost,
@@ -1708,13 +1724,13 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 6, // todo: verify this
+                seek_count: 4, // V4 reuses the observed node.
                 storage_cost: StorageCost {
                     added_bytes: 0,
                     replaced_bytes: 0,
                     removed_bytes: BasicStorageRemoval(149)
                 },
-                storage_loaded_bytes: 154, // todo: verify this
+                storage_loaded_bytes: 77,
                 hash_node_calls: 0,
                 sinsemilla_hash_calls: 0,
             }
@@ -1795,14 +1811,14 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 8, // todo: verify this
+                seek_count: 6, // V4 reuses the observed node.
                 storage_cost: StorageCost {
                     added_bytes: 0,
                     replaced_bytes: 91,
                     removed_bytes: BasicStorageRemoval(170)
                 },
-                storage_loaded_bytes: 418, // todo: verify this
-                hash_node_calls: 5,
+                storage_loaded_bytes: 252,
+                hash_node_calls: 4,
                 sinsemilla_hash_calls: 0,
             }
         );
@@ -1883,14 +1899,14 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 8, // todo: verify this
+                seek_count: 6, // V4 reuses the observed node.
                 storage_cost: StorageCost {
                     added_bytes: 0,
                     replaced_bytes: 91,
                     removed_bytes: BasicStorageRemoval(167)
                 },
-                storage_loaded_bytes: 418, // todo: verify this
-                hash_node_calls: 5,
+                storage_loaded_bytes: 251,
+                hash_node_calls: 4,
                 sinsemilla_hash_calls: 0,
             }
         );
@@ -1974,6 +1990,7 @@ mod tests {
             .clear_subtree(
                 [TEST_LEAF, b"key1"].as_ref(),
                 Some(ClearOptions {
+                    backward_references_policy: BackwardReferencesPolicy::Maintain,
                     check_for_subtrees: true,
                     allow_deleting_subtrees: false,
                     trying_to_clear_with_subtrees_returns_error: false,
@@ -1988,6 +2005,7 @@ mod tests {
             .clear_subtree(
                 [TEST_LEAF, b"key1"].as_ref(),
                 Some(ClearOptions {
+                    backward_references_policy: BackwardReferencesPolicy::Maintain,
                     check_for_subtrees: true,
                     allow_deleting_subtrees: true,
                     trying_to_clear_with_subtrees_returns_error: false,
@@ -2140,7 +2158,7 @@ mod tests {
                 deleting_non_empty_trees_returns_error: true,
                 base_root_storage_is_free: true,
                 validate_tree_at_path_exists: true,
-                propagate_backward_references: true,
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
             }),
             None,
             version,
@@ -2179,7 +2197,7 @@ mod tests {
                 deleting_non_empty_trees_returns_error: false,
                 base_root_storage_is_free: true,
                 validate_tree_at_path_exists: true,
-                propagate_backward_references: true,
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
             }),
             Some(&transaction),
             version,

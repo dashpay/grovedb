@@ -1,10 +1,13 @@
 //! Estimated-cost coverage for backward-references batch ops (batching
-//! M5): under `BatchApplyOptions::propagate_backward_references`, the
+//! M5): under `BatchApplyOptions::backward_references_policy`, the
 //! GROVE_V4 estimators charge the derived fan-out (registration, chain
 //! propagation, cascade deletion) so `worst-case estimate >= actual` holds
-//! for flagged family batches, while pre-V4 estimation stays byte-stable
-//! for replay.
+//! for maintained family batches, while pre-V4 estimation stays byte-stable
+//! for replay. Plain writes and deletes charge the displaced-state bound
+//! only in layers declaring `may_contain_backward_references`; undeclared
+//! layers estimate them exactly as `Skip` would.
 
+use crate::BackwardReferencesPolicy;
 use std::collections::HashMap;
 
 use grovedb_merk::estimated_costs::{
@@ -14,7 +17,9 @@ use grovedb_merk::estimated_costs::{
         EstimatedLayerSizes::{AllItems, AllSubtrees},
         EstimatedSumTrees::NoSumTrees,
     },
-    worst_case_costs::WorstCaseLayerInformation::MaxElementsNumber,
+    worst_case_costs::WorstCaseLayerInformation::{
+        self, MaxElementsNumber, MaxElementsNumberWithBackwardReferences,
+    },
 };
 use grovedb_merk::tree_type::TreeType;
 use grovedb_version::version::GroveVersion;
@@ -33,7 +38,7 @@ use crate::{
 
 fn batch_flag_on() -> Option<BatchApplyOptions> {
     Some(BatchApplyOptions {
-        propagate_backward_references: true,
+        backward_references_policy: BackwardReferencesPolicy::Maintain,
         ..Default::default()
     })
 }
@@ -73,9 +78,11 @@ fn worst_case_layers(
 {
     let mut paths = HashMap::new();
     paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(4));
+    // `db_with_chain` stores its participants directly under TEST_LEAF, so
+    // the layer declares them; the root layer holds none.
     paths.insert(
         KeyInfoPath(vec![KeyInfo::KnownKey(TEST_LEAF.to_vec())]),
-        MaxElementsNumber(16),
+        MaxElementsNumberWithBackwardReferences(16),
     );
     paths
 }
@@ -86,6 +93,7 @@ fn average_case_layers() -> HashMap<KeyInfoPath, EstimatedLayerInformation> {
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLevel(1, false),
             estimated_layer_sizes: AllSubtrees(32, NoSumTrees, None),
         },
@@ -94,6 +102,7 @@ fn average_case_layers() -> HashMap<KeyInfoPath, EstimatedLayerInformation> {
         KeyInfoPath(vec![KeyInfo::KnownKey(TEST_LEAF.to_vec())]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
+            may_contain_backward_references: true,
             estimated_layer_count: EstimatedLevel(2, true),
             estimated_layer_sizes: AllItems(32, 128, None),
         },
@@ -106,8 +115,17 @@ fn worst_case_estimate(
     options: Option<BatchApplyOptions>,
     grove_version: &GroveVersion,
 ) -> grovedb_costs::OperationCost {
+    worst_case_estimate_with_layers(worst_case_layers(), ops, options, grove_version)
+}
+
+fn worst_case_estimate_with_layers(
+    layers: HashMap<KeyInfoPath, WorstCaseLayerInformation>,
+    ops: Vec<QualifiedGroveDbOp>,
+    options: Option<BatchApplyOptions>,
+    grove_version: &GroveVersion,
+) -> grovedb_costs::OperationCost {
     GroveDb::estimated_case_operations_for_batch(
-        WorstCaseCostsType(worst_case_layers()),
+        WorstCaseCostsType(layers),
         ops,
         options,
         |_cost, _old_flags, _new_flags| Ok(false),
@@ -128,8 +146,17 @@ fn average_case_estimate(
     options: Option<BatchApplyOptions>,
     grove_version: &GroveVersion,
 ) -> grovedb_costs::OperationCost {
+    average_case_estimate_with_layers(average_case_layers(), ops, options, grove_version)
+}
+
+fn average_case_estimate_with_layers(
+    layers: HashMap<KeyInfoPath, EstimatedLayerInformation>,
+    ops: Vec<QualifiedGroveDbOp>,
+    options: Option<BatchApplyOptions>,
+    grove_version: &GroveVersion,
+) -> grovedb_costs::OperationCost {
     GroveDb::estimated_case_operations_for_batch(
-        AverageCaseCostsType(average_case_layers()),
+        AverageCaseCostsType(layers),
         ops,
         options,
         |_cost, _old_flags, _new_flags| Ok(false),
@@ -218,7 +245,7 @@ fn worst_case_estimate_covers_bidi_insert_with_in_batch_target() {
 }
 
 #[test]
-fn fan_out_terms_activate_only_with_the_flag() {
+fn fan_out_terms_are_default_and_skip_disables_them() {
     let grove_version = GroveVersion::latest();
 
     let family_op = || {
@@ -229,16 +256,34 @@ fn fan_out_terms_activate_only_with_the_flag() {
         )]
     };
 
-    // Flag on adds the fan-out on GROVE_V4+…
-    let flagged = worst_case_estimate(family_op(), batch_flag_on(), grove_version);
-    let unflagged = worst_case_estimate(family_op(), None, grove_version);
+    // Automatic maintenance includes fan-out on GROVE_V4+.
+    let flagged = worst_case_estimate(family_op(), None, grove_version);
+    assert_eq!(
+        flagged,
+        worst_case_estimate(family_op(), batch_flag_on(), grove_version)
+    );
+    let unflagged = worst_case_estimate(
+        family_op(),
+        Some(BatchApplyOptions {
+            backward_references_policy: BackwardReferencesPolicy::Skip,
+            ..Default::default()
+        }),
+        grove_version,
+    );
     assert!(
         flagged.seek_count > unflagged.seek_count
             && flagged.storage_cost.replaced_bytes > unflagged.storage_cost.replaced_bytes,
         "the flag must activate the fan-out terms: {flagged:?} vs {unflagged:?}"
     );
     let flagged_avg = average_case_estimate(family_op(), batch_flag_on(), grove_version);
-    let unflagged_avg = average_case_estimate(family_op(), None, grove_version);
+    let unflagged_avg = average_case_estimate(
+        family_op(),
+        Some(BatchApplyOptions {
+            backward_references_policy: BackwardReferencesPolicy::Skip,
+            ..Default::default()
+        }),
+        grove_version,
+    );
     assert!(flagged_avg.seek_count > unflagged_avg.seek_count);
 
     // …and a PLAIN-item op also charges the displaced-state fan-out under
@@ -251,10 +296,17 @@ fn fan_out_terms_activate_only_with_the_flag() {
         Element::new_item(b"hello".to_vec()),
     )];
     let flagged_plain = worst_case_estimate(plain_op.clone(), batch_flag_on(), grove_version);
-    let unflagged_plain = worst_case_estimate(plain_op, None, grove_version);
+    let unflagged_plain = worst_case_estimate(
+        plain_op,
+        Some(BatchApplyOptions {
+            backward_references_policy: BackwardReferencesPolicy::Skip,
+            ..Default::default()
+        }),
+        grove_version,
+    );
     assert!(
         flagged_plain.seek_count > unflagged_plain.seek_count,
-        "plain writes must charge the displaced-state bound under the flag"
+        "plain writes must charge the displaced-state bound in a declared layer"
     );
 }
 
@@ -540,7 +592,7 @@ fn worst_case_estimate_covers_max_fan_out_deep_component() {
     paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(8));
     paths.insert(
         KeyInfoPath(vec![KeyInfo::KnownKey(TEST_LEAF.to_vec())]),
-        MaxElementsNumber(128),
+        MaxElementsNumberWithBackwardReferences(128),
     );
     let estimate = GroveDb::estimated_case_operations_for_batch(
         WorstCaseCostsType(paths),
@@ -674,4 +726,193 @@ fn declared_capacity_tightens_the_worst_case_estimate() {
             && tight_average.hash_node_calls < default_average.hash_node_calls,
         "{tight_average:?} vs {default_average:?}"
     );
+}
+
+fn undeclared_worst_case_layers() -> HashMap<KeyInfoPath, WorstCaseLayerInformation> {
+    worst_case_layers()
+        .into_iter()
+        .map(|(path, layer)| {
+            let undeclared = match layer {
+                MaxElementsNumber(n) | MaxElementsNumberWithBackwardReferences(n) => {
+                    MaxElementsNumber(n)
+                }
+                WorstCaseLayerInformation::NumberOfLevels(n)
+                | WorstCaseLayerInformation::NumberOfLevelsWithBackwardReferences(n) => {
+                    WorstCaseLayerInformation::NumberOfLevels(n)
+                }
+            };
+            (path, undeclared)
+        })
+        .collect()
+}
+
+fn undeclared_average_case_layers() -> HashMap<KeyInfoPath, EstimatedLayerInformation> {
+    average_case_layers()
+        .into_iter()
+        .map(|(path, mut layer)| {
+            layer.may_contain_backward_references = false;
+            (path, layer)
+        })
+        .collect()
+}
+
+fn skip() -> Option<BatchApplyOptions> {
+    Some(BatchApplyOptions {
+        backward_references_policy: BackwardReferencesPolicy::Skip,
+        ..Default::default()
+    })
+}
+
+/// The estimator cannot see stored state. A layer that does not declare
+/// `may_contain_backward_references` charges neither the displaced-state
+/// fan-out nor the delete probe, so default (`Maintain`) estimates for plain
+/// writes and deletes are byte-identical to explicit `Skip` estimates, in
+/// both estimators. Declaring the layer reinstates the bound, and an op that
+/// itself writes a participant is charged from the op regardless.
+#[test]
+fn undeclared_layers_estimate_plain_writes_exactly_like_skip() {
+    let grove_version = GroveVersion::latest();
+    let plain_ops = [
+        (
+            "insert_or_replace",
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"value".to_vec(),
+                Element::new_item(b"hello".to_vec()),
+            ),
+        ),
+        (
+            "delete",
+            QualifiedGroveDbOp::delete_op(vec![TEST_LEAF.to_vec()], b"value".to_vec()),
+        ),
+    ];
+    for (name, op) in plain_ops {
+        let ops = || vec![op.clone()];
+        let default_average = average_case_estimate_with_layers(
+            undeclared_average_case_layers(),
+            ops(),
+            None,
+            grove_version,
+        );
+        let skip_average = average_case_estimate_with_layers(
+            undeclared_average_case_layers(),
+            ops(),
+            skip(),
+            grove_version,
+        );
+        assert_eq!(
+            default_average, skip_average,
+            "{name}: an undeclared layer must estimate the default policy exactly like Skip"
+        );
+        let default_worst = worst_case_estimate_with_layers(
+            undeclared_worst_case_layers(),
+            ops(),
+            None,
+            grove_version,
+        );
+        let skip_worst = worst_case_estimate_with_layers(
+            undeclared_worst_case_layers(),
+            ops(),
+            skip(),
+            grove_version,
+        );
+        assert_eq!(
+            default_worst, skip_worst,
+            "{name}: an undeclared layer must estimate the default policy exactly like Skip"
+        );
+
+        let declared_average = average_case_estimate(ops(), None, grove_version);
+        let declared_worst = worst_case_estimate(ops(), None, grove_version);
+        assert!(
+            declared_average.seek_count > default_average.seek_count,
+            "{name}: the declaration must reinstate the average-case bound: {declared_average:?} \
+             vs {default_average:?}"
+        );
+        assert!(
+            declared_worst.seek_count > default_worst.seek_count,
+            "{name}: the declaration must reinstate the worst-case bound: {declared_worst:?} vs \
+             {default_worst:?}"
+        );
+    }
+
+    let family = || {
+        vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"value".to_vec(),
+            Element::new_item_allowing_bidirectional_references(b"hello".to_vec()),
+        )]
+    };
+    let family_average = average_case_estimate_with_layers(
+        undeclared_average_case_layers(),
+        family(),
+        None,
+        grove_version,
+    );
+    let family_average_skip = average_case_estimate_with_layers(
+        undeclared_average_case_layers(),
+        family(),
+        skip(),
+        grove_version,
+    );
+    assert!(
+        family_average.seek_count > family_average_skip.seek_count,
+        "a participant write is charged from the op even in an undeclared layer"
+    );
+    let family_worst = worst_case_estimate_with_layers(
+        undeclared_worst_case_layers(),
+        family(),
+        None,
+        grove_version,
+    );
+    let family_worst_skip = worst_case_estimate_with_layers(
+        undeclared_worst_case_layers(),
+        family(),
+        skip(),
+        grove_version,
+    );
+    assert!(family_worst.seek_count > family_worst_skip.seek_count);
+}
+
+/// Overwriting a registered target with a plain item cascades its chain.
+/// Only the declared layer's worst-case estimate covers that work; the
+/// undeclared estimate is the `Skip` estimate, which is the caller's
+/// acknowledged trade-off for not declaring the layer.
+#[test]
+fn declared_layer_covers_the_displaced_cascade_an_undeclared_layer_cannot_see() {
+    let grove_version = GroveVersion::latest();
+    let db = db_with_chain(grove_version);
+    let ops = || {
+        vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"value".to_vec(),
+            Element::new_item(b"plain".to_vec()),
+        )]
+    };
+
+    let declared = worst_case_estimate(ops(), None, grove_version);
+    let undeclared =
+        worst_case_estimate_with_layers(undeclared_worst_case_layers(), ops(), None, grove_version);
+    assert_eq!(
+        undeclared,
+        worst_case_estimate_with_layers(
+            undeclared_worst_case_layers(),
+            ops(),
+            skip(),
+            grove_version
+        )
+    );
+
+    let actual = db
+        .apply_batch(ops(), None, None, grove_version)
+        .cost_as_result()
+        .expect("the chain cascades under the default policy");
+    assert!(
+        declared.worse_or_eq_than(&actual),
+        "the declared estimate {declared:?} must cover the cascade {actual:?}"
+    );
+    assert!(declared.seek_count > undeclared.seek_count);
+    assert!(db
+        .verify_grovedb(None, true, true, grove_version)
+        .unwrap()
+        .is_empty());
 }

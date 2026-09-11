@@ -3,6 +3,8 @@
 //! `bidirectional_references::handling`, and the query paths over the new
 //! element family.
 
+use crate::batch::BatchApplyOptions;
+use crate::BackwardReferencesPolicy;
 use grovedb_path::SubtreePath;
 use grovedb_version::version::GroveVersion;
 
@@ -17,7 +19,7 @@ use crate::{
 
 fn flag_on() -> Option<InsertOptions> {
     Some(InsertOptions {
-        propagate_backward_references: true,
+        backward_references_policy: BackwardReferencesPolicy::Maintain,
         ..Default::default()
     })
 }
@@ -363,7 +365,7 @@ fn cascade_requires_opt_in() {
             &[TEST_LEAF],
             b"value",
             Some(DeleteOptions {
-                propagate_backward_references: true,
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             None,
@@ -433,7 +435,7 @@ fn plain_references_work_under_the_flag() {
             grove_version,
         )
         .unwrap(),
-        Err(Error::NotSupported(_))
+        Err(Error::InvalidInput(_))
     ));
 }
 
@@ -484,30 +486,52 @@ fn empty_trees_insert_under_the_flag() {
 }
 
 #[test]
-fn specialized_types_and_wrappers_rejected_under_the_flag() {
-    let grove_version = GroveVersion::latest();
-    let db = make_test_grovedb(grove_version);
-
-    for element in [
-        Element::MmrTree(0, None),
-        Element::new_non_counted(Element::new_item(b"x".to_vec())).unwrap(),
+fn specialized_types_and_wrappers_work_with_automatic_maintenance() {
+    let version = GroveVersion::latest();
+    let db = make_test_grovedb(version);
+    db.insert(
+        &[TEST_LEAF],
+        b"counts",
+        Element::empty_count_tree(),
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    for (key, element) in [
+        (b"mmr".as_slice(), Element::MmrTree(0, None)),
+        (
+            b"wrapped",
+            Element::new_non_counted(Element::new_item(b"x".to_vec())).unwrap(),
+        ),
     ] {
-        assert!(
-            matches!(
-                db.insert(
-                    &[TEST_LEAF],
-                    b"k",
-                    element.clone(),
-                    flag_on(),
-                    None,
-                    grove_version,
-                )
-                .unwrap(),
-                Err(Error::NotSupported(_))
-            ),
-            "expected NotSupported under the flag for {element:?}"
+        db.insert(
+            &[TEST_LEAF, b"counts"],
+            key,
+            element.clone(),
+            None,
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            db.get_raw(
+                SubtreePath::from(&[TEST_LEAF, b"counts"]),
+                key,
+                None,
+                version
+            )
+            .unwrap()
+            .unwrap(),
+            element
         );
     }
+    assert!(db
+        .verify_grovedb(None, true, true, version)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -521,7 +545,7 @@ fn override_checks_apply_under_the_flag() {
             b"value",
             Element::new_item_allowing_bidirectional_references(b"nope".to_vec()),
             Some(InsertOptions {
-                propagate_backward_references: true,
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 validate_insertion_does_not_override: true,
                 ..Default::default()
             }),
@@ -578,7 +602,7 @@ fn delete_with_flag_handles_trees() {
         &[TEST_LEAF],
         b"empty",
         Some(DeleteOptions {
-            propagate_backward_references: true,
+            backward_references_policy: BackwardReferencesPolicy::Maintain,
             ..Default::default()
         }),
         None,
@@ -614,7 +638,7 @@ fn delete_with_flag_handles_trees() {
             &[TEST_LEAF],
             b"full",
             Some(DeleteOptions {
-                propagate_backward_references: true,
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 allow_deleting_non_empty_trees: false,
                 deleting_non_empty_trees_returns_error: true,
                 ..Default::default()
@@ -629,7 +653,7 @@ fn delete_with_flag_handles_trees() {
         &[TEST_LEAF],
         b"full",
         Some(DeleteOptions {
-            propagate_backward_references: true,
+            backward_references_policy: BackwardReferencesPolicy::Maintain,
             allow_deleting_non_empty_trees: false,
             deleting_non_empty_trees_returns_error: false,
             ..Default::default()
@@ -644,7 +668,7 @@ fn delete_with_flag_handles_trees() {
         .unwrap()
         .is_ok());
 
-    // Specialized data trees are rejected under the flag.
+    // Specialized data trees contain no reference participants and delete normally.
     db.insert(
         &[TEST_LEAF],
         b"mmr",
@@ -655,20 +679,13 @@ fn delete_with_flag_handles_trees() {
     )
     .unwrap()
     .unwrap();
-    assert!(matches!(
-        db.delete(
-            &[TEST_LEAF],
-            b"mmr",
-            Some(DeleteOptions {
-                propagate_backward_references: true,
-                ..Default::default()
-            }),
-            None,
-            grove_version,
-        )
-        .unwrap(),
-        Err(Error::NotSupported(_))
-    ));
+    db.delete(&[TEST_LEAF], b"mmr", None, None, grove_version)
+        .unwrap()
+        .unwrap();
+    assert!(db
+        .get_raw(SubtreePath::from(&[TEST_LEAF]), b"mmr", None, grove_version)
+        .unwrap()
+        .is_err());
 }
 
 #[test]
@@ -880,7 +897,7 @@ fn sum_queries_resolve_backward_references_sum_items() {
     ));
 
     // …and an edge that falls out of budget AFTER insertion (its target
-    // evolved into a reference through an unflagged overwrite) hits the
+    // evolved into a reference through an explicit Skip overwrite) hits the
     // budget on the read.
     db.insert(
         &[TEST_LEAF, b"sums"],
@@ -914,7 +931,10 @@ fn sum_queries_resolve_backward_references_sum_items() {
         &[TEST_LEAF, b"sums"],
         b"s3",
         Element::new_reference_with_sum_item(ReferencePathType::SiblingReference(b"s".to_vec()), 0),
-        None,
+        Some(InsertOptions {
+            backward_references_policy: BackwardReferencesPolicy::Skip,
+            ..Default::default()
+        }),
         None,
         grove_version,
     )
@@ -1150,7 +1170,10 @@ fn propagation_skips_and_cleans_origins_removed_without_bookkeeping() {
             vec![TEST_LEAF.to_vec()],
             b"origin".to_vec(),
         )],
-        None,
+        Some(BatchApplyOptions {
+            backward_references_policy: BackwardReferencesPolicy::Skip,
+            ..Default::default()
+        }),
         None,
         grove_version,
     )
@@ -1197,7 +1220,7 @@ fn delete_with_flag_rejects_rows_of_indexed_primaries() {
             &[TEST_LEAF, b"pcit"],
             b"row",
             Some(DeleteOptions {
-                propagate_backward_references: true,
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             None,
@@ -1678,7 +1701,7 @@ fn flagged_inserts_enforce_tree_shape_guards() {
     let opts = Some(InsertOptions {
         validate_insertion_does_not_override: false,
         validate_insertion_does_not_override_tree: true,
-        propagate_backward_references: true,
+        backward_references_policy: BackwardReferencesPolicy::Maintain,
         ..Default::default()
     });
     assert!(matches!(
@@ -1708,7 +1731,7 @@ fn flagged_inserts_enforce_tree_shape_guards() {
         .is_err());
 }
 
-/// Reads that follow a reference whose target was removed by an unflagged
+/// Reads that follow a reference whose target was removed by an explicit Skip
 /// write surface the dedicated corrupted-reference error.
 #[test]
 fn dangling_bidirectional_reference_reads_report_corruption() {
@@ -1725,11 +1748,20 @@ fn dangling_bidirectional_reference_reads_report_corruption() {
     .unwrap()
     .unwrap();
 
-    // Unflagged delete skips all bookkeeping — allowed, consistency
+    // Explicit Skip delete skips all bookkeeping — allowed, consistency
     // forfeited.
-    db.delete(&[TEST_LEAF], b"value", None, None, grove_version)
-        .unwrap()
-        .unwrap();
+    db.delete(
+        &[TEST_LEAF],
+        b"value",
+        Some(DeleteOptions {
+            backward_references_policy: BackwardReferencesPolicy::Skip,
+            ..Default::default()
+        }),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
 
     assert!(matches!(
         db.get(&[TEST_LEAF], b"ref", None, grove_version).unwrap(),
@@ -1778,9 +1810,18 @@ fn propagation_cleans_dangling_referrers_on_chained_references() {
     .unwrap();
 
     // Remove the chain head without bookkeeping.
-    db.delete(&[TEST_LEAF], b"a", None, Some(&tx), grove_version)
-        .unwrap()
-        .unwrap();
+    db.delete(
+        &[TEST_LEAF],
+        b"a",
+        Some(DeleteOptions {
+            backward_references_policy: BackwardReferencesPolicy::Skip,
+            ..Default::default()
+        }),
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
 
     // Flagged update of the end target propagates through `b`, which finds
     // its referrer `a` dangling and lazily drops the entry.
@@ -1862,12 +1903,15 @@ fn retargeting_tolerates_targets_rewritten_without_bookkeeping() {
     .unwrap();
 
     // t1 overwritten by a PLAIN item (no backward-references support) via
-    // an unflagged write; retargeting r1 finds nothing to clean.
+    // an explicit Skip write; retargeting r1 finds nothing to clean.
     db.insert(
         &[TEST_LEAF],
         b"t1",
         Element::new_item(b"plain".to_vec()),
-        None,
+        Some(InsertOptions {
+            backward_references_policy: BackwardReferencesPolicy::Skip,
+            ..Default::default()
+        }),
         None,
         grove_version,
     )
@@ -1885,12 +1929,15 @@ fn retargeting_tolerates_targets_rewritten_without_bookkeeping() {
     .unwrap();
 
     // t3 overwritten by a FRESH backward-references item (empty referrer
-    // list) via an unflagged write; retargeting r2 finds its entry gone.
+    // list) via an explicit Skip write; retargeting r2 finds its entry gone.
     db.insert(
         &[TEST_LEAF],
         b"t3",
         Element::new_item_allowing_bidirectional_references(b"fresh".to_vec()),
-        None,
+        Some(InsertOptions {
+            backward_references_policy: BackwardReferencesPolicy::Skip,
+            ..Default::default()
+        }),
         None,
         grove_version,
     )
@@ -2953,7 +3000,7 @@ fn per_edge_max_hop_is_enforced_on_reads() {
     ));
 
     // An edge can still fall OUT of budget after insertion: head points at
-    // a family item within budget, then an unflagged overwrite turns that
+    // a family item within budget, then an explicit Skip overwrite turns that
     // target into a plain reference — reads must now hit the budget.
     db.insert(
         &[TEST_LEAF],
@@ -2989,7 +3036,10 @@ fn per_edge_max_hop_is_enforced_on_reads() {
         &[TEST_LEAF],
         b"mid_evolved",
         Element::new_reference(ReferencePathType::SiblingReference(b"value".to_vec())),
-        None,
+        Some(InsertOptions {
+            backward_references_policy: BackwardReferencesPolicy::Skip,
+            ..Default::default()
+        }),
         None,
         grove_version,
     )
@@ -3159,7 +3209,7 @@ fn raw_queries_strip_referrer_lists() {
 /// Flagged deletion refuses to sweep through descendant specialized trees
 /// instead of corrupting or failing mid-way.
 #[test]
-fn flagged_delete_rejects_specialized_descendants() {
+fn automatic_delete_handles_specialized_descendants() {
     let grove_version = GroveVersion::latest();
     let db = make_test_grovedb(grove_version);
     db.insert(
@@ -3186,14 +3236,25 @@ fn flagged_delete_rejects_specialized_descendants() {
     let options = DeleteOptions {
         allow_deleting_non_empty_trees: true,
         deleting_non_empty_trees_returns_error: false,
-        propagate_backward_references: true,
+        backward_references_policy: BackwardReferencesPolicy::Maintain,
         ..Default::default()
     };
-    assert!(matches!(
-        db.delete(&[TEST_LEAF], b"outer", Some(options), None, grove_version)
-            .unwrap(),
-        Err(Error::NotSupported(_))
-    ));
+    db.delete(&[TEST_LEAF], b"outer", Some(options), None, grove_version)
+        .unwrap()
+        .unwrap();
+    assert!(db
+        .get_raw(
+            SubtreePath::from(&[TEST_LEAF]),
+            b"outer",
+            None,
+            grove_version
+        )
+        .unwrap()
+        .is_err());
+    assert!(db
+        .verify_grovedb(None, true, true, grove_version)
+        .unwrap()
+        .is_empty());
 }
 
 /// `verify_grovedb` audits reciprocity: a forged referrer entry naming a
@@ -3566,8 +3627,8 @@ fn bidi_insert_rejects_undersized_max_hop() {
                     None,
                 ),
             )],
-            Some(crate::batch::BatchApplyOptions {
-                propagate_backward_references: true,
+            Some(BatchApplyOptions {
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             None,
@@ -3618,7 +3679,10 @@ fn proof_generation_respects_bidi_max_hop() {
         &[TEST_LEAF],
         b"mid",
         Element::new_reference(ReferencePathType::SiblingReference(b"value".to_vec())),
-        None,
+        Some(InsertOptions {
+            backward_references_policy: BackwardReferencesPolicy::Skip,
+            ..Default::default()
+        }),
         None,
         grove_version,
     )
@@ -3860,8 +3924,8 @@ fn retarget_rejects_upstream_max_hop_violation() {
                 b"b".to_vec(),
                 sibling_bidi(b"d", true),
             )],
-            Some(crate::batch::BatchApplyOptions {
-                propagate_backward_references: true,
+            Some(BatchApplyOptions {
+                backward_references_policy: BackwardReferencesPolicy::Maintain,
                 ..Default::default()
             }),
             None,
@@ -3902,7 +3966,7 @@ fn cascade_removes_the_physical_referrer_record() {
         &[TEST_LEAF],
         b"value",
         Some(DeleteOptions {
-            propagate_backward_references: true,
+            backward_references_policy: BackwardReferencesPolicy::Maintain,
             ..Default::default()
         }),
         None,
@@ -4020,7 +4084,7 @@ fn cascade_forwards_the_sectioned_removal_callback() {
         SubtreePath::from(&[TEST_LEAF]),
         b"value",
         Some(DeleteOptions {
-            propagate_backward_references: true,
+            backward_references_policy: BackwardReferencesPolicy::Maintain,
             ..Default::default()
         }),
         None,
@@ -4053,7 +4117,7 @@ fn cascade_forwards_the_sectioned_removal_callback() {
     );
 }
 
-/// A registration whose referrer was removed by an unflagged write is stale
+/// A registration whose referrer was removed by an explicit Skip write is stale
 /// bookkeeping: it must neither require consent nor block deleting its
 /// former target.
 #[test]
@@ -4070,17 +4134,26 @@ fn stale_nonconsenting_registration_does_not_block_target_deletion() {
     )
     .unwrap()
     .unwrap();
-    // Unflagged delete of the non-consenting referrer leaves its
+    // Explicit Skip delete of the non-consenting referrer leaves its
     // registration dangling on `value`.
-    db.delete(&[TEST_LEAF], b"ref", None, None, grove_version)
-        .unwrap()
-        .unwrap();
+    db.delete(
+        &[TEST_LEAF],
+        b"ref",
+        Some(DeleteOptions {
+            backward_references_policy: BackwardReferencesPolicy::Skip,
+            ..Default::default()
+        }),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
 
     db.delete(
         &[TEST_LEAF],
         b"value",
         Some(DeleteOptions {
-            propagate_backward_references: true,
+            backward_references_policy: BackwardReferencesPolicy::Maintain,
             ..Default::default()
         }),
         None,

@@ -13,6 +13,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::BackwardReferencesPolicy;
     use grovedb_element::indexed::IndexAxis;
     use grovedb_path::SubtreePath;
     use grovedb_storage::{
@@ -85,7 +86,7 @@ mod tests {
             deleting_non_empty_trees_returns_error: false,
             base_root_storage_is_free: true,
             validate_tree_at_path_exists: false,
-            propagate_backward_references: false,
+            backward_references_policy: BackwardReferencesPolicy::Skip,
         }
     }
 

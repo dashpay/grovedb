@@ -16,19 +16,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backward-references subsystem that keeps reference chains consistent:
   updating a referenced element propagates the new hash along every chain,
   and deleting/overwriting it cascades the chains away (each affected
-  reference must opt in via `cascade_on_update`). Opt-in per call through
-  the new `propagate_backward_references` flag on `InsertOptions` /
-  `DeleteOptions`. The referrer list is stored on the element itself under a
+  reference must opt in via `cascade_on_update`). Maintenance is automatic
+  on V4, with `BackwardReferencesPolicy::Skip` as an explicit opt-out; batch
+  maintenance is gated by the new `apply_batch.backward_references_maintenance`
+  version slot. The referrer list is stored on the element itself under a
   two-layer hash (`combine(inner, backrefs)`), so registering a referrer
   never re-hashes what existing referrers committed to; public reads return
   the stripped element, and proofs authenticate these elements through the
   new `Node::KVBackwardsReferencesValueHash` wire node whose value hash the
   verifier recomputes. Requires `GROVE_V4`; earlier versions, V0 proofs, and
   `Provable*` aggregate parents reject the new variants (fail closed).
-  `apply_batch` supports the whole family when the batch opts in via
-  `BatchApplyOptions::propagate_backward_references`: a preprocessing pass
+  `apply_batch` supports the whole family by default: a preparation pass
   expands the batch into the derived registration/propagation/cascade
-  operations the live flagged flow performs (shared semantic core, so batch
+  operations the live flow performs (shared semantic core, so batch
   and non-batch execution produce byte-identical root hashes), including
   references whose targets are created in the same batch; conflicting
   combinations (a reference plus its target's deletion, a cascade hitting
@@ -43,7 +43,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capacity, the ceiling for writes that cannot see the element they
   displace, ≤10-hop chains, 1 referrer per reference) while pre-V4
   estimation stays byte-stable for replay. See
-  `adr/bidirectional_references.md`.
+  `adr/bidirectional_references.md`. `clear_subtree` now exposes the same policy:
+  default Maintain refuses participant-containing subtrees before mutation.
+  `drop_flat_subtree` adds a required policy argument, and both it and batch
+  `DropFlat` require explicit Skip to preserve O(1) cost. Recursive deletions
+  under Maintain include participant-scan costs in the V4 cost pins. Ordinary
+  batches that touch no participants retain their original executor semantics.
+  Estimation charges the displaced-participant fan-out only in layers that
+  declare it (`EstimatedLayerInformation::may_contain_backward_references`,
+  or the `*WithBackwardReferences` worst-case variants); undeclared layers
+  estimate plain writes exactly as `Skip` does.
 - **BREAKING**: Added `add_parent_tree_on_subquery` feature to PathQuery (#379)
   - New field in `Query` struct: `add_parent_tree_on_subquery: bool`
   - When set to `true`, parent tree elements (like CountTree or SumTree) are included in query results when performing subqueries
@@ -52,6 +61,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Updated proof verification logic to handle parent tree inclusion
 
 ### Changed
+- **BREAKING**: `EstimatedLayerInformation` gains
+  `may_contain_backward_references: bool` (declare `false` for layers that
+  never hold backward-reference participants), and `WorstCaseLayerInformation`
+  gains `MaxElementsNumberWithBackwardReferences` and
+  `NumberOfLevelsWithBackwardReferences`. Under the default `Maintain` policy
+  the estimators charge the displaced-participant fan-out and delete probe
+  only in declared layers, so ordinary V4 estimates no longer inflate for
+  every write.
+- **BREAKING**: Replace `propagate_backward_references` in insert, delete,
+  and batch options with `backward_references_policy` (`Maintain` by default,
+  or explicit `Skip`). V4 observes old values through retained Merk nodes so
+  ordinary mutations need no separate old-value fetch for classification.
+  Partial batches reject displaced participants; subtree removal/replacement
+  refuses unsupported descendant maintenance before commit. Earlier protocol
+  versions retain their historical behavior.
 - Bumped the GroveDB workspace crates and their internal dependency requirements
   to **6.0.0** for the public API changes since 5.0.1. This package version is
   independent of the existing `GroveVersion` runtime compatibility versions.

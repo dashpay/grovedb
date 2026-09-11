@@ -25,6 +25,7 @@
 //!
 //! GROVE_V3 is live, so its legacy figures are pinned here.
 
+use crate::BackwardReferencesPolicy;
 use grovedb_costs::{
     storage_cost::{
         removal::StorageRemovedBytes::{BasicStorageRemoval, NoStorageRemoval},
@@ -67,7 +68,7 @@ fn overwrite_options() -> InsertOptions {
         validate_insertion_does_not_override: false,
         validate_insertion_does_not_override_tree: false,
         base_root_storage_is_free: true,
-        propagate_backward_references: false,
+        backward_references_policy: BackwardReferencesPolicy::Skip,
     }
 }
 

@@ -12,6 +12,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::batch::BatchApplyOptions;
     use grovedb_element::indexed::IndexAxis;
     use grovedb_merk::tree_type::TreeType;
     use grovedb_version::version::GroveVersion;
@@ -1007,7 +1008,7 @@ mod tests {
             b"cidx".to_vec(),
             Element::new_item(b"replacement".to_vec()),
         )];
-        let options = crate::batch::BatchApplyOptions {
+        let options = BatchApplyOptions {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: false,
             ..Default::default()
@@ -1041,7 +1042,7 @@ mod tests {
             b"cidx".to_vec(),
             Element::new_item(b"replacement".to_vec()),
         )];
-        let options = crate::batch::BatchApplyOptions {
+        let options = BatchApplyOptions {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: false,
             ..Default::default()
@@ -1073,7 +1074,7 @@ mod tests {
             Element::new_item(b"replacement".to_vec()),
             0,
         )];
-        let options = crate::batch::BatchApplyOptions {
+        let options = BatchApplyOptions {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: false,
             ..Default::default()
