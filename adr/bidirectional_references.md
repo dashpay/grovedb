@@ -128,7 +128,8 @@ those committed-state inspections from overlooking changes staged by the first
 segment. A refusal discards the storage batch and preserves the caller's
 transaction. These scans have real costs, pinned alongside the full-batch costs;
 this API does not promise a no-scan recursive removal, only that `DeleteTree`
-removals add no reads of their own: their contents are checked on the cleanup
+removals add no participant-scan reads of their own (`Error` and `Skip` still
+read the tree to check emptiness): their contents are checked on the cleanup
 walk.
 
 ## Rules

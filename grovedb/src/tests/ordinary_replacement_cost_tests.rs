@@ -113,7 +113,8 @@ fn replace_cost(
                 vec![b"tree".to_vec()],
                 KEY.to_vec(),
                 after,
-            )],
+            )
+            .with_displaced_value(DisplacedValue::NotParticipant)],
             None,
             Some(&tx),
             grove_version,

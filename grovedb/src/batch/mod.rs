@@ -5651,9 +5651,13 @@ impl GroveDb {
                             path_slices.as_slice(),
                             key.as_slice(),
                             element.to_owned(),
-                            options.clone().map(|o| o
-                                .as_insert_options()
-                                .with_displaced_value(op.displaced_value)),
+                            Some(
+                                options
+                                    .as_ref()
+                                    .map(BatchApplyOptions::as_insert_options)
+                                    .unwrap_or_default()
+                                    .with_displaced_value(op.displaced_value),
+                            ),
                             transaction,
                             grove_version,
                         )
@@ -5674,9 +5678,13 @@ impl GroveDb {
                             path_slices.as_slice(),
                             key.as_slice(),
                             element.to_owned(),
-                            options.clone().map(|o| o
-                                .as_insert_options()
-                                .with_displaced_value(op.displaced_value)),
+                            Some(
+                                options
+                                    .as_ref()
+                                    .map(BatchApplyOptions::as_insert_options)
+                                    .unwrap_or_default()
+                                    .with_displaced_value(op.displaced_value),
+                            ),
                             transaction,
                             grove_version,
                         )
@@ -5696,12 +5704,10 @@ impl GroveDb {
                     );
                     if error_if_exists {
                         let mut insert_options = options
-                            .clone()
-                            .map(|o| {
-                                o.as_insert_options()
-                                    .with_displaced_value(op.displaced_value)
-                            })
-                            .unwrap_or_default();
+                            .as_ref()
+                            .map(BatchApplyOptions::as_insert_options)
+                            .unwrap_or_default()
+                            .with_displaced_value(op.displaced_value);
                         insert_options.validate_insertion_does_not_override = true;
                         cost_return_on_error!(
                             &mut cost,
@@ -5741,9 +5747,13 @@ impl GroveDb {
                         self.delete(
                             path_slices.as_slice(),
                             key.as_slice(),
-                            options.clone().map(|o| o
-                                .as_delete_options()
-                                .with_displaced_value(op.displaced_value)),
+                            Some(
+                                options
+                                    .as_ref()
+                                    .map(BatchApplyOptions::as_delete_options)
+                                    .unwrap_or_default()
+                                    .with_displaced_value(op.displaced_value),
+                            ),
                             transaction,
                             grove_version
                         )
@@ -6802,7 +6812,7 @@ impl GroveDb {
             mut merk_delete_paths,
             mut cidx_primary_delete_paths,
             skipped_delete_paths,
-            delete_tree_behaviors,
+            mut delete_tree_behaviors,
         } = cost_return_on_error!(
             &mut cost,
             self.scan_delete_tree_ops(&ops, &storage_batch, tx.as_ref(), grove_version)
@@ -6826,6 +6836,12 @@ impl GroveDb {
         } else {
             ops
         };
+        // A skipped `DeleteTree` executed nothing: its behavior must not exempt
+        // a later replacement of the same populated tree from the participant
+        // scan, so only executed ops keep their entry.
+        for path in &skipped_delete_paths {
+            delete_tree_behaviors.remove(path);
+        }
 
         // With the only one difference (if there is a transaction) do the following:
         // 2. If nothing left to do and we were on a non-leaf subtree or we're done with
@@ -7261,6 +7277,12 @@ impl GroveDb {
         } else {
             ops
         };
+        // A skipped `DeleteTree` executed nothing: its behavior must not exempt
+        // a later replacement of the same populated tree from the participant
+        // scan, so only executed ops keep their entry.
+        for path in &skipped_delete_paths {
+            delete_tree_behaviors.remove(path);
+        }
         if batch_apply_options.batch_pause_height.is_none() {
             // we default to pausing at the root tree, which is the most common case
             batch_apply_options.batch_pause_height = Some(1);
@@ -7630,6 +7652,11 @@ impl GroveDb {
         } else {
             new_operations
         };
+        // Same as the initial segment: a skipped add-on `DeleteTree` exempts
+        // nothing.
+        for path in &add_on_skipped_delete_paths {
+            delete_tree_behaviors.remove(path);
+        }
 
         // we are trying to finalize
         batch_apply_options.batch_pause_height = None;

@@ -705,7 +705,12 @@ pub(super) fn expand_backward_references_ops<'db>(
         let previous_participates = previous
             .as_ref()
             .is_some_and(Element::supports_backward_references);
-        if previous_participates && !op.displaced_value.may_be_participant() {
+        // A conditional insert over an existing key writes nothing (or fails
+        // for existing), so it displaces nothing to check.
+        if previous_participates
+            && !op.displaced_value.may_be_participant()
+            && !matches!(op.op, GroveOp::InsertIfNotExists { .. })
+        {
             return Err(Error::NotSupported(
                 "operation declared DisplacedValue::NotParticipant but the stored value takes \
                  part in backward references"

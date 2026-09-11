@@ -234,10 +234,11 @@ impl GroveDb {
     /// Ordinary [`Reference`](crate::Element::Reference) elements are not
     /// tracked: any that point to the deleted element become dangling, and
     /// callers must manage their lifecycle. Under the default
-    /// [`Maintain`](crate::DisplacedValue::MayBeParticipant) policy
-    /// (`GROVE_V4`+), bidirectional references pointing at the deleted element
-    /// are cascaded or the delete is refused, as described on [`Self::delete`];
-    /// explicit `Skip` leaves them dangling too. See the
+    /// [`MayBeParticipant`](crate::DisplacedValue::MayBeParticipant)
+    /// declaration (`GROVE_V4`+), bidirectional references pointing at the
+    /// deleted element are cascaded or the delete is refused, as described on
+    /// [`Self::delete`]; a `NotParticipant` delete of a participant is refused
+    /// outright. See the
     /// [module-level documentation](self) for details.
     pub fn delete_with_sectional_storage_function<B: AsRef<[u8]>>(
         &self,
@@ -324,10 +325,11 @@ impl GroveDb {
     /// Ordinary [`Reference`](crate::Element::Reference) elements are not
     /// tracked: any that point to the deleted tree become dangling, and
     /// callers must manage their lifecycle. Under the default
-    /// [`Maintain`](crate::DisplacedValue::MayBeParticipant) policy
-    /// (`GROVE_V4`+), bidirectional references pointing at the deleted tree
-    /// are cascaded or the delete is refused, as described on [`Self::delete`];
-    /// explicit `Skip` leaves them dangling too. See the
+    /// [`MayBeParticipant`](crate::DisplacedValue::MayBeParticipant)
+    /// declaration (`GROVE_V4`+), bidirectional references pointing at the
+    /// deleted tree are cascaded or the delete is refused, as described on
+    /// [`Self::delete`]; a `NotParticipant` delete of a participant is refused
+    /// outright. See the
     /// [module-level documentation](self) for details.
     pub fn delete_if_empty_tree<'b, B, P>(
         &self,
@@ -452,9 +454,8 @@ impl GroveDb {
     /// This builds a batch operation; it performs no reference check itself.
     /// Ordinary [`Reference`](crate::Element::Reference) elements pointing at
     /// the deleted element become dangling when the batch applies. Whether
-    /// bidirectional references are cascaded is decided by the
-    /// [`DisplacedValue`] of the
-    /// batch that applies the operation. See the
+    /// bidirectional references are cascaded is decided by the operation's
+    /// own [`DisplacedValue`] declaration. See the
     /// [module-level documentation](self) for details.
     pub fn delete_operation_for_delete_internal<B: AsRef<[u8]>>(
         &self,
