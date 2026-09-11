@@ -19,6 +19,6 @@ permissions:
   statuses: write
 jobs:
   policy:
-    uses: dashpay/platform/.github/workflows/pr-review-reusable.yml@0028f509341f262e9cf7c118f74daa99654ed50d
+    uses: dashpay/platform/.github/workflows/pr-review-reusable.yml@467e0058aaea6032b7e5fc74f19467df0531925d
     with:
-      engine_revision: 0028f509341f262e9cf7c118f74daa99654ed50d
+      engine_revision: 467e0058aaea6032b7e5fc74f19467df0531925d
