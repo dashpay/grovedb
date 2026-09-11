@@ -310,7 +310,8 @@ Previous read: [Merk cache](./merk_cache.md).
 Deletion or an update of an element with backward references triggers a cascade hash
 update or a deletion, both of which alter the state of affected subtrees, leading to
 regular hash propagation to ancestor subtrees up to the GroveDB root. In short, operations
-with the required flag enabled can trigger updates across several subtrees simultaneously.
+under `BackwardReferencesPolicy::Maintain` (the V4 default) can trigger updates across
+several subtrees simultaneously.
 
 Thus, there are two ongoing propagations:
 

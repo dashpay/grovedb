@@ -13,8 +13,8 @@
 //! element are removed before (or atomically with) the deletion of that
 //! element.
 //!
-//! The exception is the opt-in bidirectional-references machinery
-//! (`GROVE_V4`+): deleting with
+//! The exception is the bidirectional-references machinery (`GROVE_V4`+):
+//! deleting with
 //! the default [`crate::BackwardReferencesPolicy::Maintain`] cascades any
 //! [`BidirectionalReference`](crate::Element::BidirectionalReference)
 //! chains that point at the deleted element (each affected reference must
@@ -217,9 +217,13 @@ impl GroveDb {
     ///
     /// # Dangling references
     ///
-    /// This operation does **not** check for incoming references. Any
-    /// [`Reference`](crate::Element::Reference) elements that point to the
-    /// deleted element will become dangling. See the
+    /// Ordinary [`Reference`](crate::Element::Reference) elements are not
+    /// tracked: any that point to the deleted element become dangling, and
+    /// callers must manage their lifecycle. Under the default
+    /// [`Maintain`](crate::BackwardReferencesPolicy::Maintain) policy
+    /// (`GROVE_V4`+), bidirectional references pointing at the deleted element
+    /// are cascaded or the delete is refused, as described on [`Self::delete`];
+    /// explicit `Skip` leaves them dangling too. See the
     /// [module-level documentation](self) for details.
     pub fn delete_with_sectional_storage_function<B: AsRef<[u8]>>(
         &self,
@@ -303,9 +307,13 @@ impl GroveDb {
     ///
     /// # Dangling references
     ///
-    /// This operation does **not** check for incoming references. Any
-    /// [`Reference`](crate::Element::Reference) elements that point to the
-    /// deleted tree will become dangling. See the
+    /// Ordinary [`Reference`](crate::Element::Reference) elements are not
+    /// tracked: any that point to the deleted tree become dangling, and
+    /// callers must manage their lifecycle. Under the default
+    /// [`Maintain`](crate::BackwardReferencesPolicy::Maintain) policy
+    /// (`GROVE_V4`+), bidirectional references pointing at the deleted tree
+    /// are cascaded or the delete is refused, as described on [`Self::delete`];
+    /// explicit `Skip` leaves them dangling too. See the
     /// [module-level documentation](self) for details.
     pub fn delete_if_empty_tree<'b, B, P>(
         &self,
@@ -427,9 +435,12 @@ impl GroveDb {
     ///
     /// # Dangling references
     ///
-    /// This operation does **not** check for incoming references. Any
-    /// [`Reference`](crate::Element::Reference) elements that point to the
-    /// deleted element will become dangling. See the
+    /// This builds a batch operation; it performs no reference check itself.
+    /// Ordinary [`Reference`](crate::Element::Reference) elements pointing at
+    /// the deleted element become dangling when the batch applies. Whether
+    /// bidirectional references are cascaded is decided by the
+    /// [`BackwardReferencesPolicy`](crate::BackwardReferencesPolicy) of the
+    /// batch that applies the operation. See the
     /// [module-level documentation](self) for details.
     pub fn delete_operation_for_delete_internal<B: AsRef<[u8]>>(
         &self,
