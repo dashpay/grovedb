@@ -7,8 +7,6 @@ on:
   workflow_run:
     workflows: [PR review signal]
     types: [completed]
-  push:
-    paths: ['.github/pr-review-policy.json']
   workflow_dispatch:
   schedule:
     - cron: '*/15 * * * *'
@@ -19,6 +17,6 @@ permissions:
   statuses: write
 jobs:
   policy:
-    uses: dashpay/platform/.github/workflows/pr-review-reusable.yml@467e0058aaea6032b7e5fc74f19467df0531925d
+    uses: dashpay/stale_prs_are_bad/.github/workflows/pr-review-reusable.yml@5ee27dc4a7d8c18de1a9d1723cc9b7b641cee90a
     with:
-      engine_revision: 467e0058aaea6032b7e5fc74f19467df0531925d
+      engine_revision: 5ee27dc4a7d8c18de1a9d1723cc9b7b641cee90a
