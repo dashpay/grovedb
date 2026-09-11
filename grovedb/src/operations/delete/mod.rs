@@ -6,7 +6,7 @@
 //! does **not** track backward (incoming) references. When an element is
 //! deleted, any existing references that point to it become *dangling*.
 //! Attempting to follow a dangling reference will return
-//! [`Error::CorruptedReferencePathKeyNotFound`](crate::Error::CorruptedReferencePathKeyNotFound)
+//! [`Error::CorruptedReferencePathKeyNotFound`]
 //! rather than incorrect data, so the failure mode is safe.
 //!
 //! Callers are responsible for ensuring that all ordinary references to an
@@ -153,7 +153,7 @@ impl GroveDb {
     /// elements hold [`Reference`](crate::Element::Reference) paths that point
     /// to the deleted element, those references become dangling. Following a
     /// dangling reference will return
-    /// [`Error::CorruptedReferencePathKeyNotFound`](crate::Error::CorruptedReferencePathKeyNotFound),
+    /// [`Error::CorruptedReferencePathKeyNotFound`],
     /// not incorrect data. Callers must manage reference lifecycle and remove
     /// or update any ordinary references to this element before deleting it.
     ///
@@ -439,7 +439,7 @@ impl GroveDb {
     /// Ordinary [`Reference`](crate::Element::Reference) elements pointing at
     /// the deleted element become dangling when the batch applies. Whether
     /// bidirectional references are cascaded is decided by the
-    /// [`BackwardReferencesPolicy`](crate::BackwardReferencesPolicy) of the
+    /// [`BackwardReferencesPolicy`] of the
     /// batch that applies the operation. See the
     /// [module-level documentation](self) for details.
     pub fn delete_operation_for_delete_internal<B: AsRef<[u8]>>(
