@@ -1,16 +1,16 @@
 //! Batch support for the backward-references family (batching M2–M4): the
 //! master invariant is that a batch under
-//! `BatchApplyOptions::backward_references_policy` produces the exact
+//! `BatchApplyOptions::displaced_value` produces the exact
 //! root hash the live flagged flow produces for the same logical
 //! operations — including `BidirectionalReference` ops, in-batch targets
 //! and chains, retargets, identical-edge no-ops, and the M4 conflict
 //! rules.
 
-use crate::BackwardReferencesPolicy;
+use crate::DisplacedValue;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
-    batch::{BatchApplyOptions, QualifiedGroveDbOp},
+    batch::QualifiedGroveDbOp,
     bidirectional_references::BidirectionalReference,
     operations::{delete::DeleteOptions, insert::InsertOptions},
     reference_path::ReferencePathType,
@@ -20,14 +20,7 @@ use crate::{
 
 fn flag_on() -> Option<InsertOptions> {
     Some(InsertOptions {
-        backward_references_policy: BackwardReferencesPolicy::Maintain,
-        ..Default::default()
-    })
-}
-
-fn batch_flag_on() -> Option<BatchApplyOptions> {
-    Some(BatchApplyOptions {
-        backward_references_policy: BackwardReferencesPolicy::Maintain,
+        displaced_value: DisplacedValue::MayBeParticipant,
         ..Default::default()
     })
 }
@@ -109,7 +102,7 @@ fn batch_fresh_insert_matches_live() {
                 b"value".to_vec(),
                 Element::new_item_allowing_bidirectional_references(b"hello".to_vec()),
             )],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -143,7 +136,7 @@ fn batch_overwrite_propagates_along_the_chain_like_live() {
                 b"value".to_vec(),
                 updated.clone(),
             )],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -212,7 +205,7 @@ fn batch_sum_twin_overwrite_matches_live() {
                 b"twin".to_vec(),
                 updated.clone(),
             )],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -244,7 +237,7 @@ fn batch_delete_cascades_like_live() {
                 vec![TEST_LEAF.to_vec()],
                 b"value".to_vec(),
             )],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -255,7 +248,7 @@ fn batch_delete_cascades_like_live() {
             &[TEST_LEAF],
             b"value",
             Some(DeleteOptions {
-                backward_references_policy: BackwardReferencesPolicy::Maintain,
+                displaced_value: DisplacedValue::MayBeParticipant,
                 ..Default::default()
             }),
             None,
@@ -289,7 +282,7 @@ fn batch_overwrite_with_plain_item_cascades_like_live() {
                 b"value".to_vec(),
                 plain.clone(),
             )],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -341,7 +334,7 @@ fn batch_cascade_requires_consent() {
                 vec![TEST_LEAF.to_vec()],
                 b"value".to_vec(),
             )],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -367,7 +360,7 @@ fn batch_clears_caller_supplied_referrer_lists() {
             b"planted".to_vec(),
             Element::ItemWithBackwardsReferences(b"x".to_vec(), vec![forged].into(), None),
         )],
-        batch_flag_on(),
+        None,
         None,
         grove_version,
     )
@@ -396,37 +389,17 @@ fn batch_rejections_hold() {
     let grove_version = GroveVersion::latest();
     let (db, _other) = twin_dbs_with_chain(grove_version);
 
-    // Family item ops with maintenance explicitly skipped: rejected.
+    // A family payload declared `NotParticipant` over a stored participant:
+    // the claim is false and is refused from the value already in hand.
     assert!(matches!(
         db.apply_batch(
             vec![QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
-                b"fresh".to_vec(),
+                b"value".to_vec(),
                 Element::new_item_allowing_bidirectional_references(b"x".to_vec()),
-            )],
-            Some(BatchApplyOptions {
-                backward_references_policy: BackwardReferencesPolicy::Skip,
-                ..Default::default()
-            }),
+            )
+            .dont_check()],
             None,
-            grove_version,
-        )
-        .unwrap(),
-        Err(Error::NotSupported(_))
-    ));
-
-    // BidirectionalReference element ops with maintenance explicitly skipped: rejected.
-    assert!(matches!(
-        db.apply_batch(
-            vec![QualifiedGroveDbOp::insert_or_replace_op(
-                vec![TEST_LEAF.to_vec()],
-                b"newref".to_vec(),
-                sibling_bidi(b"value", true),
-            )],
-            Some(BatchApplyOptions {
-                backward_references_policy: BackwardReferencesPolicy::Skip,
-                ..Default::default()
-            }),
             None,
             grove_version,
         )
@@ -446,7 +419,7 @@ fn batch_rejections_hold() {
                     end_hash: None,
                 },
             }],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -467,7 +440,7 @@ fn batch_rejections_hold() {
                 ),
                 QualifiedGroveDbOp::delete_op(vec![TEST_LEAF.to_vec()], b"r1".to_vec()),
             ],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -484,7 +457,7 @@ fn batch_rejections_hold() {
                 b"fresh".to_vec(),
                 Element::new_item_allowing_bidirectional_references(b"x".to_vec()),
             )],
-            batch_flag_on(),
+            None,
             None,
             v3,
         )
@@ -521,7 +494,7 @@ fn batch_bidi_insert_with_existing_target_matches_live() {
                 b"ref".to_vec(),
                 sibling_bidi(b"value", true),
             )],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -578,7 +551,7 @@ fn batch_bidi_insert_with_in_batch_target_matches_live_in_any_op_order() {
         let batch_db = make_test_grovedb(grove_version);
         let live_db = make_test_grovedb(grove_version);
         batch_db
-            .apply_batch(vec![op_a, op_b], batch_flag_on(), None, grove_version)
+            .apply_batch(vec![op_a, op_b], None, None, grove_version)
             .unwrap()
             .unwrap();
         // The live twin's only valid sequential order is target first.
@@ -634,7 +607,7 @@ fn batch_whole_chain_created_in_one_batch_matches_live() {
                     Element::new_item_allowing_bidirectional_references(b"hello".to_vec()),
                 ),
             ],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -688,7 +661,7 @@ fn batch_retarget_matches_live() {
                 b"ref".to_vec(),
                 sibling_bidi(b"b", true),
             )],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -737,7 +710,7 @@ fn batch_retarget_with_upstream_referrer_matches_live() {
                 b"r1".to_vec(),
                 sibling_bidi(b"other", true),
             )],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -771,7 +744,7 @@ fn batch_identical_edge_reinsert_is_a_no_op() {
                 b"r1".to_vec(),
                 sibling_bidi(b"value", true),
             )],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -798,7 +771,7 @@ fn batch_bidi_delete_matches_live() {
                 vec![TEST_LEAF.to_vec()],
                 b"r1".to_vec(),
             )],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -809,7 +782,7 @@ fn batch_bidi_delete_matches_live() {
             &[TEST_LEAF],
             b"r1",
             Some(DeleteOptions {
-                backward_references_policy: BackwardReferencesPolicy::Maintain,
+                displaced_value: DisplacedValue::MayBeParticipant,
                 ..Default::default()
             }),
             None,
@@ -840,7 +813,7 @@ fn batch_overwrite_bidi_with_plain_item_matches_live() {
                 b"r1".to_vec(),
                 plain.clone(),
             )],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -887,7 +860,7 @@ fn batch_two_refs_to_same_target_matches_live() {
                     sibling_bidi(b"value", true),
                 ),
             ],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -933,7 +906,7 @@ fn batch_ref_plus_target_overwrite_in_same_batch_matches_live() {
                     sibling_bidi(b"value", true),
                 ),
             ],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -985,7 +958,7 @@ fn batch_component_budget_enforced_against_prospective_state() {
             sibling_bidi(format!("t{}", i - 1).as_bytes(), true),
         ));
     }
-    db.apply_batch(ops.clone(), batch_flag_on(), None, grove_version)
+    db.apply_batch(ops.clone(), None, None, grove_version)
         .unwrap()
         .expect("a chain at the hop budget is valid");
 
@@ -1002,8 +975,7 @@ fn batch_component_budget_enforced_against_prospective_state() {
         sibling_bidi(format!("t{}", MAX_REFERENCE_HOPS - 1).as_bytes(), true),
     ));
     assert!(matches!(
-        db.apply_batch(ops, batch_flag_on(), None, grove_version)
-            .unwrap(),
+        db.apply_batch(ops, None, None, grove_version).unwrap(),
         Err(Error::BidirectionalReferenceRule(_))
     ));
 }
@@ -1041,8 +1013,7 @@ fn batch_ref_insert_with_target_deleted_in_same_batch_errors() {
         }
         assert!(
             matches!(
-                db.apply_batch(ops, batch_flag_on(), None, grove_version)
-                    .unwrap(),
+                db.apply_batch(ops, None, None, grove_version).unwrap(),
                 Err(Error::InvalidBatchOperation(_))
                     | Err(Error::CorruptedReferencePathKeyNotFound(_))
             ),
@@ -1067,7 +1038,7 @@ fn batch_cascade_hitting_a_user_write_errors() {
                     Element::new_item(b"squatter".to_vec()),
                 ),
             ],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -1093,7 +1064,7 @@ fn batch_refresh_reference_on_bidi_errors() {
         },
     };
     assert!(matches!(
-        db.apply_batch(vec![refresh], batch_flag_on(), None, grove_version)
+        db.apply_batch(vec![refresh], None, None, grove_version)
             .unwrap(),
         Err(Error::NotSupported(_))
     ));
@@ -1121,7 +1092,7 @@ fn batch_plain_reference_can_point_at_in_batch_family_target() {
                     Element::new_reference(ReferencePathType::SiblingReference(b"value".to_vec())),
                 ),
             ],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -1187,7 +1158,7 @@ fn batch_bidi_ops_keep_caller_authority_rules() {
             b"ref".to_vec(),
             reference,
         )],
-        batch_flag_on(),
+        None,
         None,
         grove_version,
     )
@@ -1256,7 +1227,7 @@ fn batch_no_op_insert_if_not_exists_does_not_swallow_registration() {
                     sibling_bidi(b"value", true),
                 ),
             ],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -1324,7 +1295,7 @@ fn batch_later_plain_overwrite_supersedes_propagation() {
             ops.reverse();
         }
         batch_db
-            .apply_batch(ops, batch_flag_on(), None, grove_version)
+            .apply_batch(ops, None, None, grove_version)
             .unwrap()
             .unwrap();
 
@@ -1410,7 +1381,7 @@ fn batch_populates_a_subtree_created_in_the_same_batch() {
 
     let batch_db = make_test_grovedb(grove_version);
     batch_db
-        .apply_batch(ops(), batch_flag_on(), None, grove_version)
+        .apply_batch(ops(), None, None, grove_version)
         .unwrap()
         .expect("a batch may create and populate a subtree under the flag");
 
@@ -1421,7 +1392,7 @@ fn batch_populates_a_subtree_created_in_the_same_batch() {
     let mut reversed = ops();
     reversed.reverse();
     reversed_db
-        .apply_batch(reversed, batch_flag_on(), None, grove_version)
+        .apply_batch(reversed, None, None, grove_version)
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -1474,7 +1445,7 @@ fn batch_populates_a_subtree_created_in_the_same_batch() {
 }
 
 /// A flagged overwrite of a family item carrying a DANGLING registration
-/// (its referrer was removed through an unflagged batch) plans a stale-
+/// (its referrer was removed through a raw clear) plans a stale-
 /// entry cleanup targeting the op's own position: that cleanup must fold
 /// into the op itself, not become a second op that fails consistency.
 #[test]
@@ -1494,29 +1465,47 @@ fn batch_flagged_overwrite_folds_own_stale_cleanup() {
         .unwrap();
         db.insert(
             &[TEST_LEAF],
-            b"ref",
-            sibling_bidi(b"value", true),
+            b"refs",
+            Element::empty_tree(),
             None,
             None,
             grove_version,
         )
         .unwrap()
         .unwrap();
-        // Remove the referrer through the supported explicit Skip batch path:
-        // the registration on `value` is left dangling.
-        db.apply_batch(
-            vec![QualifiedGroveDbOp::delete_op(
-                vec![TEST_LEAF.to_vec()],
-                b"ref".to_vec(),
-            )],
-            Some(BatchApplyOptions {
-                backward_references_policy: BackwardReferencesPolicy::Skip,
+        db.insert(
+            &[TEST_LEAF, b"refs"],
+            b"ref",
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                        TEST_LEAF.to_vec(),
+                        b"value".to_vec(),
+                    ]),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: None,
+                },
+                None,
+            ),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        // Remove the referrer through a trusted path that reads nothing: a
+        // raw `clear_subtree` declared `NotParticipant` leaves the
+        // registration on `value` dangling.
+        db.clear_subtree(
+            &[TEST_LEAF, b"refs"],
+            Some(crate::operations::delete::ClearOptions {
+                displaced_value: DisplacedValue::NotParticipant,
                 ..Default::default()
             }),
             None,
             grove_version,
         )
-        .unwrap()
         .unwrap();
         db
     };
@@ -1530,7 +1519,7 @@ fn batch_flagged_overwrite_folds_own_stale_cleanup() {
                 b"value".to_vec(),
                 updated.clone(),
             )],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -1573,7 +1562,7 @@ fn batch_patch_created_subtree_is_fresh() {
                 Element::new_item(b"i".to_vec()),
             ),
         ],
-        batch_flag_on(),
+        None,
         None,
         grove_version,
     )
@@ -1661,7 +1650,7 @@ fn batch_registration_depth_is_bounded() {
                 b"ref".to_vec(),
                 ref_to_value(),
             )],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -1690,7 +1679,7 @@ fn batch_registration_depth_is_bounded() {
             b"ref".to_vec(),
             ref_to_value(),
         )],
-        batch_flag_on(),
+        None,
         None,
         grove_version,
     )
@@ -1792,7 +1781,7 @@ fn batch_flags_mutation_on_derived_rewrite_rehashes_final_bytes() {
     let db = build();
     db.apply_batch_with_element_flags_update(
         ops(),
-        batch_flag_on(),
+        None,
         |_cost, _old_flags, _new_flags| Ok(false),
         |_flags, _removed_key_bytes, _removed_value_bytes| {
             Ok((
@@ -1818,7 +1807,7 @@ fn batch_flags_mutation_on_derived_rewrite_rehashes_final_bytes() {
     let mut mutated = 0usize;
     db.apply_batch_with_element_flags_update(
         ops(),
-        batch_flag_on(),
+        None,
         |_cost, _old_flags, new_flags| {
             new_flags.push(7);
             mutated += 1;
@@ -1887,7 +1876,7 @@ fn batch_refuses_wrapped_backward_references_elements() {
         Default::default(),
         None,
     )));
-    for flag in [batch_flag_on(), None] {
+    for flag in [None, None] {
         let err = db
             .apply_batch(
                 vec![QualifiedGroveDbOp::insert_or_replace_op(
@@ -1952,7 +1941,7 @@ fn batch_flagged_non_empty_subtree_deletion_is_refused() {
                 vec![TEST_LEAF.to_vec()],
                 b"sub".to_vec(),
             )],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -1978,7 +1967,7 @@ fn batch_flagged_non_empty_subtree_deletion_is_refused() {
                 ),
                 QualifiedGroveDbOp::delete_op(vec![TEST_LEAF.to_vec()], b"sub".to_vec()),
             ],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -2002,7 +1991,7 @@ fn batch_flagged_non_empty_subtree_deletion_is_refused() {
             vec![TEST_LEAF.to_vec()],
             b"empty_sub".to_vec(),
         )],
-        batch_flag_on(),
+        None,
         None,
         grove_version,
     )
@@ -2079,7 +2068,7 @@ fn batch_paired_upstream_updates_validate_against_pending_edges() {
             ops.reverse();
         }
         batch_db
-            .apply_batch(ops, batch_flag_on(), None, grove_version)
+            .apply_batch(ops, None, None, grove_version)
             .unwrap()
             .unwrap_or_else(|e| {
                 panic!(
@@ -2133,7 +2122,7 @@ fn batch_paired_upstream_updates_validate_against_pending_edges() {
             ops.reverse();
         }
         batch_db
-            .apply_batch(ops, batch_flag_on(), None, grove_version)
+            .apply_batch(ops, None, None, grove_version)
             .unwrap()
             .unwrap_or_else(|e| panic!("A detaches from B in the same batch; B's retarget is free (flip: {flip}): {e:?}"));
         assert!(batch_db
@@ -2152,7 +2141,7 @@ fn batch_paired_upstream_updates_validate_against_pending_edges() {
                 b"b".to_vec(),
                 sibling_bidi(b"d", true),
             )],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -2223,8 +2212,7 @@ fn batch_skipped_conditional_does_not_relax_upstream_budget() {
         }
         assert!(
             matches!(
-                db.apply_batch(ops, batch_flag_on(), None, grove_version)
-                    .unwrap(),
+                db.apply_batch(ops, None, None, grove_version).unwrap(),
                 Err(Error::BidirectionalReferenceRule(_))
             ),
             "a skipped conditional must not relax the stored budget (flip: {flip})"
@@ -2306,7 +2294,7 @@ fn batch_detached_ancestor_frees_full_downstream_budget() {
         if flip {
             ops.reverse();
         }
-        db.apply_batch(ops, batch_flag_on(), None, grove_version)
+        db.apply_batch(ops, None, None, grove_version)
             .unwrap()
             .unwrap_or_else(|e| {
                 panic!("the detached A must not count against B's component (flip: {flip}): {e:?}")
@@ -2358,7 +2346,7 @@ fn batch_enforces_declared_capacity() {
                 b"r2".to_vec(),
                 referrer(),
             )],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -2376,7 +2364,7 @@ fn batch_enforces_declared_capacity() {
                 b"target".to_vec(),
                 Element::new_item_allowing_bidirectional_references_with_capacity(b"w".to_vec(), 0),
             )],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )
@@ -2400,7 +2388,7 @@ fn batch_enforces_declared_capacity() {
                 referrer(),
             ),
         ],
-        batch_flag_on(),
+        None,
         None,
         grove_version,
     )
@@ -2431,7 +2419,7 @@ fn batch_enforces_declared_capacity() {
                 b"r3".to_vec(),
                 referrer(),
             )],
-            batch_flag_on(),
+            None,
             None,
             grove_version,
         )

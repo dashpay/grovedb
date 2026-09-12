@@ -221,7 +221,7 @@ impl GroveDb {
 
         // Validate the entire removal before any child delete can modify the
         // caller's transaction. A raw clear cannot repair cross-subtree edges.
-        if options.backward_references_policy.maintains()
+        if options.displaced_value.may_be_participant()
             && !cost_return_on_error!(
                 &mut cost,
                 self.backward_reference_participants(
@@ -233,7 +233,7 @@ impl GroveDb {
             .is_empty()
         {
             return Err(Error::NotSupported(
-                "clear_subtree cannot remove backward-reference participants under Maintain; delete the participants normally first or explicitly select Skip".to_owned(),
+                "clear_subtree cannot remove backward-reference participants; delete them normally first or declare DisplacedValue::NotParticipant for a raw clear".to_owned(),
             )).wrap_with_cost(cost);
         }
 
@@ -267,7 +267,7 @@ impl GroveDb {
                                 Some(DeleteOptions {
                                     allow_deleting_non_empty_trees: true,
                                     deleting_non_empty_trees_returns_error: false,
-                                    backward_references_policy: options.backward_references_policy,
+                                    displaced_value: options.displaced_value,
                                     ..Default::default()
                                 }),
                                 Some(tx.as_ref()),

@@ -3,8 +3,9 @@
 //! `bidirectional_references::handling`, and the query paths over the new
 //! element family.
 
-use crate::batch::BatchApplyOptions;
-use crate::BackwardReferencesPolicy;
+use crate::operations::delete::ClearOptions;
+use crate::DisplacedValue;
+use crate::TransactionArg;
 use grovedb_path::SubtreePath;
 use grovedb_version::version::GroveVersion;
 
@@ -19,7 +20,7 @@ use crate::{
 
 fn flag_on() -> Option<InsertOptions> {
     Some(InsertOptions {
-        backward_references_policy: BackwardReferencesPolicy::Maintain,
+        displaced_value: DisplacedValue::MayBeParticipant,
         ..Default::default()
     })
 }
@@ -51,6 +52,72 @@ fn db_with_bwr_item() -> TempGroveDb {
     .unwrap()
     .unwrap();
     db
+}
+
+/// A bidirectional reference to an absolute position, for a referrer that
+/// lives in a different subtree than its target.
+fn absolute_bidi(path: Vec<Vec<u8>>, cascade: bool, max_hop: Option<u8>) -> Element {
+    Element::BidirectionalReference(
+        BidirectionalReference {
+            forward_reference_path: ReferencePathType::AbsolutePathReference(path),
+            backward_references: Vec::new(),
+            cascade_on_update: cascade,
+            max_hop,
+        },
+        None,
+    )
+}
+
+/// A fresh `tree` at `[parent.., name]` holding `key => element`.
+fn nested(
+    db: &TempGroveDb,
+    parent: &[&[u8]],
+    name: &[u8],
+    tree: Element,
+    key: &[u8],
+    element: Element,
+    transaction: TransactionArg,
+    grove_version: &GroveVersion,
+) {
+    db.insert(parent, name, tree, None, transaction, grove_version)
+        .unwrap()
+        .unwrap();
+    let mut child: Vec<&[u8]> = parent.to_vec();
+    child.push(name);
+    db.insert(
+        child.as_slice(),
+        key,
+        element,
+        None,
+        transaction,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+}
+
+/// Empty the subtree at `path` through the one route that reads nothing and
+/// is therefore trusted with a `NotParticipant` claim it cannot check: a raw
+/// `clear_subtree`. Registrations pointing at, or held by, the removed
+/// element are deliberately left stale; that inconsistency is what the
+/// regressions below reproduce.
+fn raw_clear(
+    db: &TempGroveDb,
+    path: &[&[u8]],
+    transaction: TransactionArg,
+    grove_version: &GroveVersion,
+) {
+    db.clear_subtree(
+        path,
+        Some(ClearOptions {
+            check_for_subtrees: false,
+            displaced_value: DisplacedValue::NotParticipant,
+            ..Default::default()
+        }),
+        transaction,
+        grove_version,
+    )
+    .unwrap();
 }
 
 #[test]
@@ -365,7 +432,7 @@ fn cascade_requires_opt_in() {
             &[TEST_LEAF],
             b"value",
             Some(DeleteOptions {
-                backward_references_policy: BackwardReferencesPolicy::Maintain,
+                displaced_value: DisplacedValue::MayBeParticipant,
                 ..Default::default()
             }),
             None,
@@ -545,7 +612,7 @@ fn override_checks_apply_under_the_flag() {
             b"value",
             Element::new_item_allowing_bidirectional_references(b"nope".to_vec()),
             Some(InsertOptions {
-                backward_references_policy: BackwardReferencesPolicy::Maintain,
+                displaced_value: DisplacedValue::MayBeParticipant,
                 validate_insertion_does_not_override: true,
                 ..Default::default()
             }),
@@ -602,7 +669,7 @@ fn delete_with_flag_handles_trees() {
         &[TEST_LEAF],
         b"empty",
         Some(DeleteOptions {
-            backward_references_policy: BackwardReferencesPolicy::Maintain,
+            displaced_value: DisplacedValue::MayBeParticipant,
             ..Default::default()
         }),
         None,
@@ -638,7 +705,7 @@ fn delete_with_flag_handles_trees() {
             &[TEST_LEAF],
             b"full",
             Some(DeleteOptions {
-                backward_references_policy: BackwardReferencesPolicy::Maintain,
+                displaced_value: DisplacedValue::MayBeParticipant,
                 allow_deleting_non_empty_trees: false,
                 deleting_non_empty_trees_returns_error: true,
                 ..Default::default()
@@ -653,7 +720,7 @@ fn delete_with_flag_handles_trees() {
         &[TEST_LEAF],
         b"full",
         Some(DeleteOptions {
-            backward_references_policy: BackwardReferencesPolicy::Maintain,
+            displaced_value: DisplacedValue::MayBeParticipant,
             allow_deleting_non_empty_trees: false,
             deleting_non_empty_trees_returns_error: false,
             ..Default::default()
@@ -897,29 +964,30 @@ fn sum_queries_resolve_backward_references_sum_items() {
     ));
 
     // …and an edge that falls out of budget AFTER insertion (its target
-    // evolved into a reference through an explicit Skip overwrite) hits the
-    // budget on the read.
-    db.insert(
+    // evolved into a reference behind a raw clear, the trusted route that
+    // reads nothing) hits the budget on the read.
+    nested(
+        &db,
         &[TEST_LEAF, b"sums"],
+        b"s3s",
+        Element::empty_sum_tree(),
         b"s3",
         Element::new_sum_item_allowing_bidirectional_references(9),
         None,
-        None,
         grove_version,
-    )
-    .unwrap()
-    .unwrap();
+    );
     db.insert(
         &[TEST_LEAF, b"sums"],
         b"capped",
-        Element::BidirectionalReference(
-            BidirectionalReference {
-                forward_reference_path: ReferencePathType::SiblingReference(b"s3".to_vec()),
-                backward_references: Vec::new(),
-                cascade_on_update: true,
-                max_hop: Some(1),
-            },
-            None,
+        absolute_bidi(
+            vec![
+                TEST_LEAF.to_vec(),
+                b"sums".to_vec(),
+                b"s3s".to_vec(),
+                b"s3".to_vec(),
+            ],
+            true,
+            Some(1),
         ),
         None,
         None,
@@ -927,14 +995,19 @@ fn sum_queries_resolve_backward_references_sum_items() {
     )
     .unwrap()
     .unwrap();
+    raw_clear(&db, &[TEST_LEAF, b"sums", b"s3s"], None, grove_version);
     db.insert(
-        &[TEST_LEAF, b"sums"],
+        &[TEST_LEAF, b"sums", b"s3s"],
         b"s3",
-        Element::new_reference_with_sum_item(ReferencePathType::SiblingReference(b"s".to_vec()), 0),
-        Some(InsertOptions {
-            backward_references_policy: BackwardReferencesPolicy::Skip,
-            ..Default::default()
-        }),
+        Element::new_reference_with_sum_item(
+            ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec(),
+                b"sums".to_vec(),
+                b"s".to_vec(),
+            ]),
+            0,
+        ),
+        None,
         None,
         grove_version,
     )
@@ -1146,17 +1219,38 @@ fn reinserting_an_identical_edge_is_a_no_op() {
 #[test]
 fn propagation_skips_and_cleans_origins_removed_without_bookkeeping() {
     // An origin removed through a path that performs no backward-references
-    // bookkeeping (here: a batch delete, which is rejected only for ops
-    // CARRYING the element family, not for ops touching participants)
-    // leaves a dangling slot on its target. Later flagged updates must not
-    // fail on it: the slot is skipped and lazily cleaned.
+    // bookkeeping (here: a raw `clear_subtree` declared `NotParticipant`,
+    // the trusted claim that reads nothing) leaves a dangling slot on its
+    // target. Later flagged updates must not fail on it: the slot is
+    // skipped and lazily cleaned.
     let grove_version = GroveVersion::latest();
     let db = db_with_bwr_item();
 
     db.insert(
         &[TEST_LEAF],
+        b"origins",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF, b"origins"],
         b"origin",
-        sibling_bidi(b"value", true),
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    b"value".to_vec(),
+                ]),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: None,
+            },
+            None,
+        ),
         None,
         None,
         grove_version,
@@ -1164,20 +1258,16 @@ fn propagation_skips_and_cleans_origins_removed_without_bookkeeping() {
     .unwrap()
     .unwrap();
 
-    // Batch-delete the origin: no backward-references bookkeeping runs.
-    db.apply_batch(
-        vec![crate::batch::QualifiedGroveDbOp::delete_op(
-            vec![TEST_LEAF.to_vec()],
-            b"origin".to_vec(),
-        )],
-        Some(BatchApplyOptions {
-            backward_references_policy: BackwardReferencesPolicy::Skip,
+    // Raw-clear the origin's subtree: no backward-references bookkeeping runs.
+    db.clear_subtree(
+        &[TEST_LEAF, b"origins"],
+        Some(ClearOptions {
+            displaced_value: DisplacedValue::NotParticipant,
             ..Default::default()
         }),
         None,
         grove_version,
     )
-    .unwrap()
     .unwrap();
 
     // A flagged update of the target now encounters the dangling slot —
@@ -1220,7 +1310,7 @@ fn delete_with_flag_rejects_rows_of_indexed_primaries() {
             &[TEST_LEAF, b"pcit"],
             b"row",
             Some(DeleteOptions {
-                backward_references_policy: BackwardReferencesPolicy::Maintain,
+                displaced_value: DisplacedValue::MayBeParticipant,
                 ..Default::default()
             }),
             None,
@@ -1701,7 +1791,7 @@ fn flagged_inserts_enforce_tree_shape_guards() {
     let opts = Some(InsertOptions {
         validate_insertion_does_not_override: false,
         validate_insertion_does_not_override_tree: true,
-        backward_references_policy: BackwardReferencesPolicy::Maintain,
+        displaced_value: DisplacedValue::MayBeParticipant,
         ..Default::default()
     });
     assert!(matches!(
@@ -1731,16 +1821,30 @@ fn flagged_inserts_enforce_tree_shape_guards() {
         .is_err());
 }
 
-/// Reads that follow a reference whose target was removed by an explicit Skip
-/// write surface the dedicated corrupted-reference error.
+/// Reads that follow a reference whose target was removed without
+/// bookkeeping surface the dedicated corrupted-reference error.
 #[test]
 fn dangling_bidirectional_reference_reads_report_corruption() {
     let grove_version = GroveVersion::latest();
-    let db = db_with_bwr_item();
+    let db = make_test_grovedb(grove_version);
+    nested(
+        &db,
+        &[TEST_LEAF],
+        b"targets",
+        Element::empty_tree(),
+        b"value",
+        Element::new_item_allowing_bidirectional_references(b"hello".to_vec()),
+        None,
+        grove_version,
+    );
     db.insert(
         &[TEST_LEAF],
         b"ref",
-        sibling_bidi(b"value", true),
+        absolute_bidi(
+            vec![TEST_LEAF.to_vec(), b"targets".to_vec(), b"value".to_vec()],
+            true,
+            None,
+        ),
         None,
         None,
         grove_version,
@@ -1748,20 +1852,9 @@ fn dangling_bidirectional_reference_reads_report_corruption() {
     .unwrap()
     .unwrap();
 
-    // Explicit Skip delete skips all bookkeeping — allowed, consistency
-    // forfeited.
-    db.delete(
-        &[TEST_LEAF],
-        b"value",
-        Some(DeleteOptions {
-            backward_references_policy: BackwardReferencesPolicy::Skip,
-            ..Default::default()
-        }),
-        None,
-        grove_version,
-    )
-    .unwrap()
-    .unwrap();
+    // The target vanishes behind a raw clear, which reads nothing and so
+    // cannot maintain the referrer: consistency forfeited.
+    raw_clear(&db, &[TEST_LEAF, b"targets"], None, grove_version);
 
     assert!(matches!(
         db.get(&[TEST_LEAF], b"ref", None, grove_version).unwrap(),
@@ -1798,30 +1891,19 @@ fn propagation_cleans_dangling_referrers_on_chained_references() {
     )
     .unwrap()
     .unwrap();
-    db.insert(
+    nested(
+        &db,
         &[TEST_LEAF],
+        b"heads",
+        Element::empty_tree(),
         b"a",
-        sibling_bidi(b"b", true),
-        None,
+        absolute_bidi(vec![TEST_LEAF.to_vec(), b"b".to_vec()], true, None),
         Some(&tx),
         grove_version,
-    )
-    .unwrap()
-    .unwrap();
+    );
 
     // Remove the chain head without bookkeeping.
-    db.delete(
-        &[TEST_LEAF],
-        b"a",
-        Some(DeleteOptions {
-            backward_references_policy: BackwardReferencesPolicy::Skip,
-            ..Default::default()
-        }),
-        Some(&tx),
-        grove_version,
-    )
-    .unwrap()
-    .unwrap();
+    raw_clear(&db, &[TEST_LEAF, b"heads"], Some(&tx), grove_version);
 
     // Flagged update of the end target propagates through `b`, which finds
     // its referrer `a` dangling and lazily drops the entry.
@@ -1864,12 +1946,7 @@ fn propagation_cleans_dangling_referrers_on_chained_references() {
 fn retargeting_tolerates_targets_rewritten_without_bookkeeping() {
     let grove_version = GroveVersion::latest();
     let db = make_test_grovedb(grove_version);
-    for (key, value) in [
-        (b"t1".as_slice(), b"one".as_slice()),
-        (b"t2", b"two"),
-        (b"t3", b"three"),
-        (b"t4", b"four"),
-    ] {
+    for (key, value) in [(b"t2".as_slice(), b"two".as_slice()), (b"t4", b"four")] {
         db.insert(
             &[TEST_LEAF],
             key,
@@ -1881,10 +1958,36 @@ fn retargeting_tolerates_targets_rewritten_without_bookkeeping() {
         .unwrap()
         .unwrap();
     }
+    // t1 and t3 live in their own subtrees so they can be rewritten behind
+    // the raw clear, the trusted route that reads nothing.
+    nested(
+        &db,
+        &[TEST_LEAF],
+        b"t1s",
+        Element::empty_tree(),
+        b"t1",
+        Element::new_item_allowing_bidirectional_references(b"one".to_vec()),
+        None,
+        grove_version,
+    );
+    nested(
+        &db,
+        &[TEST_LEAF],
+        b"t3s",
+        Element::empty_tree(),
+        b"t3",
+        Element::new_item_allowing_bidirectional_references(b"three".to_vec()),
+        None,
+        grove_version,
+    );
     db.insert(
         &[TEST_LEAF],
         b"r1",
-        sibling_bidi(b"t1", true),
+        absolute_bidi(
+            vec![TEST_LEAF.to_vec(), b"t1s".to_vec(), b"t1".to_vec()],
+            true,
+            None,
+        ),
         None,
         None,
         grove_version,
@@ -1894,7 +1997,11 @@ fn retargeting_tolerates_targets_rewritten_without_bookkeeping() {
     db.insert(
         &[TEST_LEAF],
         b"r2",
-        sibling_bidi(b"t3", true),
+        absolute_bidi(
+            vec![TEST_LEAF.to_vec(), b"t3s".to_vec(), b"t3".to_vec()],
+            true,
+            None,
+        ),
         None,
         None,
         grove_version,
@@ -1902,16 +2009,14 @@ fn retargeting_tolerates_targets_rewritten_without_bookkeeping() {
     .unwrap()
     .unwrap();
 
-    // t1 overwritten by a PLAIN item (no backward-references support) via
-    // an explicit Skip write; retargeting r1 finds nothing to clean.
+    // t1 rewritten as a PLAIN item (no backward-references support) behind
+    // the raw clear; retargeting r1 finds nothing to clean.
+    raw_clear(&db, &[TEST_LEAF, b"t1s"], None, grove_version);
     db.insert(
-        &[TEST_LEAF],
+        &[TEST_LEAF, b"t1s"],
         b"t1",
         Element::new_item(b"plain".to_vec()),
-        Some(InsertOptions {
-            backward_references_policy: BackwardReferencesPolicy::Skip,
-            ..Default::default()
-        }),
+        None,
         None,
         grove_version,
     )
@@ -1928,16 +2033,14 @@ fn retargeting_tolerates_targets_rewritten_without_bookkeeping() {
     .unwrap()
     .unwrap();
 
-    // t3 overwritten by a FRESH backward-references item (empty referrer
-    // list) via an explicit Skip write; retargeting r2 finds its entry gone.
+    // t3 rewritten as a FRESH backward-references item (empty referrer
+    // list) behind the raw clear; retargeting r2 finds its entry gone.
+    raw_clear(&db, &[TEST_LEAF, b"t3s"], None, grove_version);
     db.insert(
-        &[TEST_LEAF],
+        &[TEST_LEAF, b"t3s"],
         b"t3",
         Element::new_item_allowing_bidirectional_references(b"fresh".to_vec()),
-        Some(InsertOptions {
-            backward_references_policy: BackwardReferencesPolicy::Skip,
-            ..Default::default()
-        }),
+        None,
         None,
         grove_version,
     )
@@ -3000,31 +3103,30 @@ fn per_edge_max_hop_is_enforced_on_reads() {
     ));
 
     // An edge can still fall OUT of budget after insertion: head points at
-    // a family item within budget, then an explicit Skip overwrite turns that
-    // target into a plain reference — reads must now hit the budget.
-    db.insert(
+    // a family item within budget, then that target evolves into a plain
+    // reference behind a raw clear (the trusted route that reads nothing);
+    // reads must now hit the budget.
+    nested(
+        &db,
         &[TEST_LEAF],
+        b"mids",
+        Element::empty_tree(),
         b"mid_evolved",
         Element::new_item_allowing_bidirectional_references(b"m".to_vec()),
         None,
-        None,
         grove_version,
-    )
-    .unwrap()
-    .unwrap();
+    );
     db.insert(
         &[TEST_LEAF],
         b"head",
-        Element::BidirectionalReference(
-            BidirectionalReference {
-                forward_reference_path: ReferencePathType::SiblingReference(
-                    b"mid_evolved".to_vec(),
-                ),
-                backward_references: Vec::new(),
-                cascade_on_update: true,
-                max_hop: Some(1),
-            },
-            None,
+        absolute_bidi(
+            vec![
+                TEST_LEAF.to_vec(),
+                b"mids".to_vec(),
+                b"mid_evolved".to_vec(),
+            ],
+            true,
+            Some(1),
         ),
         None,
         None,
@@ -3032,14 +3134,15 @@ fn per_edge_max_hop_is_enforced_on_reads() {
     )
     .unwrap()
     .unwrap();
+    raw_clear(&db, &[TEST_LEAF, b"mids"], None, grove_version);
     db.insert(
-        &[TEST_LEAF],
+        &[TEST_LEAF, b"mids"],
         b"mid_evolved",
-        Element::new_reference(ReferencePathType::SiblingReference(b"value".to_vec())),
-        Some(InsertOptions {
-            backward_references_policy: BackwardReferencesPolicy::Skip,
-            ..Default::default()
-        }),
+        Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+            TEST_LEAF.to_vec(),
+            b"value".to_vec(),
+        ])),
+        None,
         None,
         grove_version,
     )
@@ -3236,7 +3339,7 @@ fn automatic_delete_handles_specialized_descendants() {
     let options = DeleteOptions {
         allow_deleting_non_empty_trees: true,
         deleting_non_empty_trees_returns_error: false,
-        backward_references_policy: BackwardReferencesPolicy::Maintain,
+        displaced_value: DisplacedValue::MayBeParticipant,
         ..Default::default()
     };
     db.delete(&[TEST_LEAF], b"outer", Some(options), None, grove_version)
@@ -3627,10 +3730,7 @@ fn bidi_insert_rejects_undersized_max_hop() {
                     None,
                 ),
             )],
-            Some(BatchApplyOptions {
-                backward_references_policy: BackwardReferencesPolicy::Maintain,
-                ..Default::default()
-            }),
+            None,
             None,
             grove_version,
         )
@@ -3647,27 +3747,26 @@ fn bidi_insert_rejects_undersized_max_hop() {
 fn proof_generation_respects_bidi_max_hop() {
     let grove_version = GroveVersion::latest();
     let db = db_with_bwr_item();
-    db.insert(
+    // head -> mid within budget, then mid evolves into a plain reference
+    // behind a raw clear (the trusted route that reads nothing): the chain
+    // now needs two hops.
+    nested(
+        &db,
         &[TEST_LEAF],
+        b"mids",
+        Element::empty_tree(),
         b"mid",
         Element::new_item_allowing_bidirectional_references(b"m".to_vec()),
         None,
-        None,
         grove_version,
-    )
-    .unwrap()
-    .unwrap();
+    );
     db.insert(
         &[TEST_LEAF],
         b"head",
-        Element::BidirectionalReference(
-            BidirectionalReference {
-                forward_reference_path: ReferencePathType::SiblingReference(b"mid".to_vec()),
-                backward_references: Vec::new(),
-                cascade_on_update: true,
-                max_hop: Some(1),
-            },
-            None,
+        absolute_bidi(
+            vec![TEST_LEAF.to_vec(), b"mids".to_vec(), b"mid".to_vec()],
+            true,
+            Some(1),
         ),
         None,
         None,
@@ -3675,14 +3774,15 @@ fn proof_generation_respects_bidi_max_hop() {
     )
     .unwrap()
     .unwrap();
+    raw_clear(&db, &[TEST_LEAF, b"mids"], None, grove_version);
     db.insert(
-        &[TEST_LEAF],
+        &[TEST_LEAF, b"mids"],
         b"mid",
-        Element::new_reference(ReferencePathType::SiblingReference(b"value".to_vec())),
-        Some(InsertOptions {
-            backward_references_policy: BackwardReferencesPolicy::Skip,
-            ..Default::default()
-        }),
+        Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+            TEST_LEAF.to_vec(),
+            b"value".to_vec(),
+        ])),
+        None,
         None,
         grove_version,
     )
@@ -3924,10 +4024,7 @@ fn retarget_rejects_upstream_max_hop_violation() {
                 b"b".to_vec(),
                 sibling_bidi(b"d", true),
             )],
-            Some(BatchApplyOptions {
-                backward_references_policy: BackwardReferencesPolicy::Maintain,
-                ..Default::default()
-            }),
+            None,
             None,
             grove_version,
         )
@@ -3966,7 +4063,7 @@ fn cascade_removes_the_physical_referrer_record() {
         &[TEST_LEAF],
         b"value",
         Some(DeleteOptions {
-            backward_references_policy: BackwardReferencesPolicy::Maintain,
+            displaced_value: DisplacedValue::MayBeParticipant,
             ..Default::default()
         }),
         None,
@@ -4084,7 +4181,7 @@ fn cascade_forwards_the_sectioned_removal_callback() {
         SubtreePath::from(&[TEST_LEAF]),
         b"value",
         Some(DeleteOptions {
-            backward_references_policy: BackwardReferencesPolicy::Maintain,
+            displaced_value: DisplacedValue::MayBeParticipant,
             ..Default::default()
         }),
         None,
@@ -4117,43 +4214,32 @@ fn cascade_forwards_the_sectioned_removal_callback() {
     );
 }
 
-/// A registration whose referrer was removed by an explicit Skip write is stale
+/// A registration whose referrer was removed without bookkeeping is stale
 /// bookkeeping: it must neither require consent nor block deleting its
 /// former target.
 #[test]
 fn stale_nonconsenting_registration_does_not_block_target_deletion() {
     let grove_version = GroveVersion::latest();
     let db = db_with_bwr_item();
-    db.insert(
+    nested(
+        &db,
         &[TEST_LEAF],
+        b"refs",
+        Element::empty_tree(),
         b"ref",
-        sibling_bidi(b"value", false),
-        flag_on(),
+        absolute_bidi(vec![TEST_LEAF.to_vec(), b"value".to_vec()], false, None),
         None,
         grove_version,
-    )
-    .unwrap()
-    .unwrap();
-    // Explicit Skip delete of the non-consenting referrer leaves its
+    );
+    // Removing the non-consenting referrer behind a raw clear leaves its
     // registration dangling on `value`.
-    db.delete(
-        &[TEST_LEAF],
-        b"ref",
-        Some(DeleteOptions {
-            backward_references_policy: BackwardReferencesPolicy::Skip,
-            ..Default::default()
-        }),
-        None,
-        grove_version,
-    )
-    .unwrap()
-    .unwrap();
+    raw_clear(&db, &[TEST_LEAF, b"refs"], None, grove_version);
 
     db.delete(
         &[TEST_LEAF],
         b"value",
         Some(DeleteOptions {
-            backward_references_policy: BackwardReferencesPolicy::Maintain,
+            displaced_value: DisplacedValue::MayBeParticipant,
             ..Default::default()
         }),
         None,

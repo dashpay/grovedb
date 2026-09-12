@@ -30,6 +30,8 @@
 
 mod find_subtrees;
 
+use std::collections::HashSet;
+
 use grovedb_costs::{
     cost_return_on_error, storage_cost::key_value_cost::KeyValueStorageCost, CostResult, CostsExt,
     OperationCost,
@@ -158,6 +160,12 @@ impl GroveDb {
     /// and hashes for ordinary trees. Direct deletion keeps it enabled on
     /// every version because its legacy loop already included the sweep.
     ///
+    /// With `accounted_deletes`, the V4+ walk also checks the removal's
+    /// claim about its contents on the elements it decodes anyway: a
+    /// backward-reference participant not deleted explicitly by the caller
+    /// (a position in the set) refuses the removal. Earlier versions never
+    /// hold participants and keep their historical walk.
+    ///
     /// `context` names the calling operation in error messages.
     pub(crate) fn clear_subtree_storage_recursively<'db, B: AsRef<[u8]>>(
         &'db self,
@@ -165,15 +173,36 @@ impl GroveDb {
         transaction: &'db Transaction,
         batch: &'db StorageBatch,
         sweep_secondary_namespaces: bool,
+        accounted_deletes: Option<&HashSet<Vec<Vec<u8>>>>,
         context: &str,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        let subtrees_paths = cost_return_on_error!(
-            &mut cost,
-            self.find_subtrees(path, Some(transaction), grove_version)
-        );
+        let subtrees_paths = match accounted_deletes {
+            Some(accounted_deletes)
+                if grove_version
+                    .grovedb_versions
+                    .operations
+                    .non_merk_tree
+                    .subtree_discovery
+                    >= 1 =>
+            {
+                cost_return_on_error!(
+                    &mut cost,
+                    self.find_subtrees_refusing_participants_v1(
+                        path,
+                        Some(transaction),
+                        grove_version,
+                        accounted_deletes,
+                    )
+                )
+            }
+            _ => cost_return_on_error!(
+                &mut cost,
+                self.find_subtrees(path, Some(transaction), grove_version)
+            ),
+        };
         for subtree_path in subtrees_paths {
             let p: SubtreePath<_> = subtree_path.as_slice().into();
             let mut storage = self

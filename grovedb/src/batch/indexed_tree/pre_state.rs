@@ -79,14 +79,19 @@ fn validate_indexed_child_ops(
         // uses for exactly this bug class.
         let element = match op {
             GroveOp::InsertOrReplace { element }
+            | GroveOp::InsertOrReplaceDontCheck { element }
             | GroveOp::Replace { element }
+            | GroveOp::ReplaceDontCheck { element }
             | GroveOp::Patch { element, .. }
+            | GroveOp::PatchDontCheck { element, .. }
             | GroveOp::InsertIfNotExists { element, .. }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element } => element,
             // Ops that carry no caller-supplied element, or whose element is
             // internally derived rather than caller-claimed.
             GroveOp::Delete
+            | GroveOp::DeleteDontCheck
             | GroveOp::DeleteTree(..)
+            | GroveOp::DeleteTreeDontCheck(..)
             | GroveOp::ReplaceBackwardReferenceFamilyMember { .. }
             | GroveOp::ReplaceTreeRootKey { .. }
             | GroveOp::InsertTreeWithRootHash { .. }

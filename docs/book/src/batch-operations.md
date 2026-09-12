@@ -255,27 +255,37 @@ replacement or delete displaces a registered element. Preparation observes
 old values and retains their Merk nodes for execution and storage accounting.
 The existing consent and batch-conflict rules still apply.
 
-Set `BatchApplyOptions { backward_references_policy:
-BackwardReferencesPolicy::Skip, ..Default::default() }` only when deliberately
-bypassing maintenance. This can leave stale hashes or dangling references.
-Partial batches refuse participant mutations; use a full batch for reference
-maintenance. Recursive removal of a subtree containing participants is
-supported by live `delete`; see the bidirectional references ADR for scope.
+Every displacing op declares what it displaces through its variant: the
+checked op (`Delete`, `DeleteTree`, `InsertOrReplace`, `Replace`, `Patch`)
+maintains a participant the write lands on, its `DontCheck` twin
+(`DeleteDontCheck`, `DeleteTreeDontCheck`, `InsertOrReplaceDontCheck`,
+`ReplaceDontCheck`, `PatchDontCheck`) declares the stored value takes no
+part in backward references and is refused if that turns out to be false.
+The check reads nothing extra, since the batch reads the value for the
+write anyway; convert a checked op with `QualifiedGroveDbOp::dont_check` at
+positions known to hold no participants. Partial batches refuse participant mutations; use a full batch
+for reference maintenance. Recursive removal of a subtree containing
+participants is supported by live `delete`; see the bidirectional references
+ADR for scope.
 
-Under `Maintain`, ordinary batches retain their executor semantics when no old
-or new value participates in backward references. Reference planner conflict
-rules apply only to batches that touch participants. Recursive subtree deletion
-and replacement inspect descendants and incur additional read costs.
+Ordinary batches retain their executor semantics when no old or new value
+participates in backward references. Reference planner conflict rules apply
+only to batches that touch participants. A `Delete` of a populated tree or a
+tree replacement declared `MayBeParticipant` inspects the descendants and
+incurs additional read costs. A `DeleteTree` is never pre-scanned:
+`DontCheckWithNoCleanup` declares that the batch's own deletes emptied the
+subtree, `Error` and `Skip` verify that at apply time, and `DeleteChildren`
+checks the declaration on the cleanup walk it already makes, refusing a
+participant the batch does not explicitly delete. A delete-up-tree chain and
+a recursive removal therefore cost the plain removal.
 
-Cost estimation follows the same split. Layers whose
-`EstimatedLayerInformation` sets `may_contain_backward_references` (or use
-the `WithBackwardReferences` worst-case variants) charge the
-displaced-participant fan-out for plain writes and deletes; undeclared layers
-estimate them exactly as `Skip` would. Ops that write a participant
-themselves are always charged.
+Cost estimation follows the same split: an op declared `MayBeParticipant`
+charges the displaced-participant fan-out for its plain write or delete, an
+op declared `NotParticipant` estimates the plain write alone, and ops that
+write a participant themselves are always charged.
 
-`SubelementsDeletionBehavior::DropFlat` requires explicit
-`BatchApplyOptions::backward_references_policy = BackwardReferencesPolicy::Skip`.
-`Maintain` refuses flat drop before scanning, preserving its O(1) contract.
-Partial batches refuse participant mutations in either segment; their subtree
-inspection occurs before commit and can also incur recursive read costs.
+`SubelementsDeletionBehavior::DropFlat` requires the `DeleteTreeDontCheck`
+twin; the checked `DeleteTree` is refused before reading anything,
+preserving the O(1) contract. Partial batches refuse
+participant mutations in either segment; their inspection of tree
+replacements occurs before commit and can also incur recursive read costs.

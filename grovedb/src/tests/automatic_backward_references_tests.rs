@@ -9,7 +9,7 @@ use crate::{
     operations::{delete::DeleteOptions, insert::InsertOptions},
     reference_path::ReferencePathType,
     tests::{make_test_grovedb, TempGroveDb, TEST_LEAF},
-    BackwardReferencesPolicy, BidirectionalReference, Element, Error,
+    BidirectionalReference, DisplacedValue, Element, Error,
 };
 
 fn reference(target: &[u8], cascade: bool) -> Element {
@@ -22,6 +22,10 @@ fn reference(target: &[u8], cascade: bool) -> Element {
         },
         None,
     )
+}
+
+fn not_participant(ops: Vec<QualifiedGroveDbOp>) -> Vec<QualifiedGroveDbOp> {
+    ops.into_iter().map(|op| op.dont_check()).collect()
 }
 
 fn chain(cascade: bool) -> TempGroveDb {
@@ -133,60 +137,67 @@ fn default_live_and_batch_updates_preserve_registrations_and_refresh_hashes() {
 }
 
 #[test]
-fn default_plain_overwrite_cascades_and_explicit_skip_keeps_dangling_references() {
+fn default_plain_overwrite_cascades_and_a_false_not_participant_claim_is_refused() {
     let version = GroveVersion::latest();
     for batch in [false, true] {
-        for skip in [false, true] {
+        for declared in [
+            DisplacedValue::MayBeParticipant,
+            DisplacedValue::NotParticipant,
+        ] {
             let db = chain(true);
-            let policy = if skip {
-                BackwardReferencesPolicy::Skip
-            } else {
-                BackwardReferencesPolicy::Maintain
-            };
+            let before = db.root_hash(None, version).unwrap().unwrap();
             let item = Element::new_item(b"plain".to_vec());
-            if batch {
+            let result = if batch {
+                let op = QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"value".to_vec(),
+                    item.clone(),
+                );
                 db.apply_batch(
-                    vec![QualifiedGroveDbOp::insert_or_replace_op(
-                        vec![TEST_LEAF.to_vec()],
-                        b"value".to_vec(),
-                        item.clone(),
-                    )],
-                    Some(BatchApplyOptions {
-                        backward_references_policy: policy,
-                        ..Default::default()
-                    }),
+                    vec![match declared {
+                        DisplacedValue::MayBeParticipant => op,
+                        DisplacedValue::NotParticipant => op.dont_check(),
+                    }],
+                    None,
                     None,
                     version,
                 )
                 .unwrap()
-                .unwrap();
             } else {
                 db.insert(
                     &[TEST_LEAF],
                     b"value",
                     item.clone(),
                     Some(InsertOptions {
-                        backward_references_policy: policy,
+                        displaced_value: declared,
                         ..Default::default()
                     }),
                     None,
                     version,
                 )
                 .unwrap()
-                .unwrap();
+            };
+            let refused = !declared.may_be_participant();
+            if refused {
+                // The stored value is read for the write anyway, so the
+                // false claim is caught for free and nothing changes.
+                assert!(matches!(result, Err(Error::NotSupported(_))));
+                assert_eq!(db.root_hash(None, version).unwrap().unwrap(), before);
+            } else {
+                result.unwrap();
+                assert_eq!(
+                    db.get(&[TEST_LEAF], b"value", None, version)
+                        .unwrap()
+                        .unwrap(),
+                    item
+                );
             }
-            assert_eq!(
-                db.get(&[TEST_LEAF], b"value", None, version)
-                    .unwrap()
-                    .unwrap(),
-                item
-            );
             for key in [b"r1".as_slice(), b"r2"] {
                 assert_eq!(
                     db.get_raw(SubtreePath::from(&[TEST_LEAF]), key, None, version)
                         .unwrap()
                         .is_ok(),
-                    skip
+                    refused
                 );
             }
         }
@@ -345,15 +356,7 @@ fn ordinary_mutations_reuse_preparation_reads() {
             .cost_as_result()
             .unwrap();
         let skipped_cost = skipped
-            .apply_batch(
-                ops,
-                Some(BatchApplyOptions {
-                    backward_references_policy: BackwardReferencesPolicy::Skip,
-                    ..Default::default()
-                }),
-                None,
-                version,
-            )
+            .apply_batch(not_participant(ops), None, None, version)
             .cost_as_result()
             .unwrap();
         assert_eq!(observed_cost, skipped_cost);
@@ -365,21 +368,22 @@ fn ordinary_mutations_reuse_preparation_reads() {
 }
 
 #[test]
-fn skip_delete_is_an_explicit_opt_out() {
+fn not_participant_delete_of_a_participant_is_refused() {
     let version = GroveVersion::latest();
     let db = chain(true);
-    db.delete(
+    let before = db.root_hash(None, version).unwrap().unwrap();
+    let result = db.delete(
         &[TEST_LEAF],
         b"value",
         Some(DeleteOptions {
-            backward_references_policy: BackwardReferencesPolicy::Skip,
+            displaced_value: DisplacedValue::NotParticipant,
             ..Default::default()
         }),
         None,
         version,
-    )
-    .unwrap()
-    .unwrap();
+    );
+    assert!(matches!(result.unwrap(), Err(Error::NotSupported(_))));
+    assert_eq!(db.root_hash(None, version).unwrap().unwrap(), before);
     assert!(db
         .get_raw(SubtreePath::from(&[TEST_LEAF]), b"r1", None, version)
         .unwrap()
@@ -389,6 +393,7 @@ fn skip_delete_is_an_explicit_opt_out() {
 #[test]
 fn recursive_removal_cannot_bypass_descendant_maintenance() {
     use crate::batch::SubelementsDeletionBehavior;
+
     use grovedb_merk::TreeType;
     let version = GroveVersion::latest();
     let db = make_test_grovedb(version);
@@ -636,7 +641,7 @@ fn clear_subtree_refuses_incoming_and_outgoing_edges_before_mutating_the_transac
                 &[TEST_LEAF],
                 Some(ClearOptions {
                     allow_deleting_subtrees: true,
-                    backward_references_policy: BackwardReferencesPolicy::Skip,
+                    displaced_value: DisplacedValue::NotParticipant,
                     ..Default::default()
                 }),
                 Some(&tx),
@@ -650,7 +655,7 @@ fn clear_subtree_refuses_incoming_and_outgoing_edges_before_mutating_the_transac
                     .is_err());
             } else {
                 // Public get_raw strips the registered referrers; inspect the
-                // stored element to verify the explicit Skip contract.
+                // stored element to verify the trusted NotParticipant contract.
                 let merk = db
                     .open_transactional_merk_at_path(
                         SubtreePath::from(root.as_slice()),
@@ -666,7 +671,7 @@ fn clear_subtree_refuses_incoming_and_outgoing_edges_before_mutating_the_transac
                 assert_eq!(
                     target.backward_references().unwrap().len(),
                     1,
-                    "Skip leaves the registration deliberately stale"
+                    "a raw clear declared NotParticipant leaves the registration stale"
                 );
             }
         }
@@ -674,7 +679,7 @@ fn clear_subtree_refuses_incoming_and_outgoing_edges_before_mutating_the_transac
 }
 
 #[test]
-fn flat_drop_requires_explicit_skip_in_live_full_and_both_partial_segments() {
+fn flat_drop_requires_not_participant_in_live_full_and_both_partial_segments() {
     use crate::batch::SubelementsDeletionBehavior;
     use grovedb_merk::TreeType;
     let version = GroveVersion::latest();
@@ -692,7 +697,7 @@ fn flat_drop_requires_explicit_skip_in_live_full_and_both_partial_segments() {
             0 => db.drop_flat_subtree(
                 &[] as &[&[u8]],
                 TEST_LEAF,
-                BackwardReferencesPolicy::Maintain,
+                DisplacedValue::MayBeParticipant,
                 Some(&tx),
                 version,
             ),
@@ -737,9 +742,9 @@ fn ordinary_batch_conditionals_and_duplicate_positions_keep_executor_semantics()
     let version = GroveVersion::latest();
     for scenario in 0..4 {
         let mut roots = Vec::new();
-        for policy in [
-            BackwardReferencesPolicy::Maintain,
-            BackwardReferencesPolicy::Skip,
+        for declared in [
+            DisplacedValue::MayBeParticipant,
+            DisplacedValue::NotParticipant,
         ] {
             let db = make_test_grovedb(version);
             db.insert(
@@ -793,10 +798,14 @@ fn ordinary_batch_conditionals_and_duplicate_positions_keep_executor_semantics()
                 ],
             };
             db.apply_batch(
-                ops,
+                ops.into_iter()
+                    .map(|op| match declared {
+                        DisplacedValue::MayBeParticipant => op,
+                        DisplacedValue::NotParticipant => op.dont_check(),
+                    })
+                    .collect(),
                 Some(BatchApplyOptions {
                     disable_operation_consistency_check: true,
-                    backward_references_policy: policy,
                     ..Default::default()
                 }),
                 None,
@@ -857,4 +866,535 @@ fn partial_subtree_refusal_is_atomic_in_the_continuation_and_caller_transaction(
             .unwrap()
             .is_empty());
     }
+}
+
+/// Delete-up-tree shape: the batch deletes a leaf, then removes the emptied
+/// trees above it with `DontCheckWithNoCleanup`. Every element the batch
+/// removes is read as an old value on the way, so `Maintain` has nothing
+/// left to scan and adds no reads over `Skip`, in full and partial batches
+/// alike. `DeleteChildren` keeps its scan: GroveDB cannot see what that
+/// removal takes with it.
+#[test]
+fn declared_empty_subtree_removals_skip_the_participant_scan() {
+    use crate::batch::SubelementsDeletionBehavior;
+    use grovedb_merk::TreeType;
+    let version = GroveVersion::latest();
+    let seed = |db: &TempGroveDb| {
+        db.insert(
+            &[TEST_LEAF],
+            b"a",
+            Element::empty_tree(),
+            None,
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+        db.insert(
+            &[TEST_LEAF, b"a"],
+            b"b",
+            Element::empty_tree(),
+            None,
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+        db.insert(
+            &[TEST_LEAF, b"a", b"b"],
+            b"c",
+            Element::new_item(vec![1]),
+            None,
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+    };
+    // Every declared-empty or apply-time-checked removal behaves the same:
+    // `DontCheckWithNoCleanup` trusts the batch's own deletes, `Error` and
+    // `Skip` verify emptiness against them at apply time.
+    for behavior in [
+        SubelementsDeletionBehavior::DontCheckWithNoCleanup,
+        SubelementsDeletionBehavior::Error,
+        SubelementsDeletionBehavior::Skip,
+    ] {
+        let delete_up_tree = [
+            QualifiedGroveDbOp::delete_op(
+                vec![TEST_LEAF.to_vec(), b"a".to_vec(), b"b".to_vec()],
+                b"c".to_vec(),
+            ),
+            QualifiedGroveDbOp::delete_tree_op(
+                vec![TEST_LEAF.to_vec(), b"a".to_vec()],
+                b"b".to_vec(),
+                TreeType::NormalTree,
+                behavior,
+            ),
+            QualifiedGroveDbOp::delete_tree_op(
+                vec![TEST_LEAF.to_vec()],
+                b"a".to_vec(),
+                TreeType::NormalTree,
+                behavior,
+            ),
+        ];
+        for partial in [false, true] {
+            let mut runs = Vec::new();
+            for declared in [
+                DisplacedValue::MayBeParticipant,
+                DisplacedValue::NotParticipant,
+            ] {
+                let db = make_test_grovedb(version);
+                seed(&db);
+                let ops: Vec<QualifiedGroveDbOp> = delete_up_tree
+                    .iter()
+                    .cloned()
+                    .map(|op| match declared {
+                        DisplacedValue::MayBeParticipant => op,
+                        DisplacedValue::NotParticipant => op.dont_check(),
+                    })
+                    .collect();
+                let result = if partial {
+                    db.apply_partial_batch(ops, None, |_, _| Ok(vec![]), None, version)
+                } else {
+                    db.apply_batch(ops, None, None, version)
+                };
+                result.value.expect("delete up the tree");
+                // `Skip` checks emptiness before the same-batch deletes land
+                // and silently keeps the populated chain; the other two
+                // remove it.
+                assert_eq!(
+                    db.get_raw(SubtreePath::from(&[TEST_LEAF]), b"a", None, version)
+                        .unwrap()
+                        .is_err(),
+                    !matches!(behavior, SubelementsDeletionBehavior::Skip),
+                    "{behavior:?} partial={partial}"
+                );
+                runs.push((result.cost, db.root_hash(None, version).unwrap().unwrap()));
+            }
+            let (may_be, not) = (&runs[0], &runs[1]);
+            assert_eq!(may_be.1, not.1, "{behavior:?} partial={partial}: root hash");
+            assert_eq!(
+                may_be.0, not.0,
+                "{behavior:?} partial={partial}: MayBeParticipant must cost exactly what \
+                 NotParticipant costs"
+            );
+        }
+    }
+
+    let recursive = [QualifiedGroveDbOp::delete_tree_op(
+        vec![TEST_LEAF.to_vec()],
+        b"a".to_vec(),
+        TreeType::NormalTree,
+        SubelementsDeletionBehavior::DeleteChildren,
+    )];
+    let mut costs = Vec::new();
+    for declared in [
+        DisplacedValue::MayBeParticipant,
+        DisplacedValue::NotParticipant,
+    ] {
+        let db = make_test_grovedb(version);
+        seed(&db);
+        let ops: Vec<QualifiedGroveDbOp> = recursive
+            .iter()
+            .cloned()
+            .map(|op| match declared {
+                DisplacedValue::MayBeParticipant => op,
+                DisplacedValue::NotParticipant => op.dont_check(),
+            })
+            .collect();
+        let result = db.apply_batch(ops, None, None, version);
+        result.value.expect("recursive delete");
+        costs.push(result.cost);
+    }
+    assert_eq!(
+        costs[0], costs[1],
+        "DeleteChildren checks its contents on the cleanup walk it makes anyway"
+    );
+}
+
+/// A declared-empty removal relies on the batch's own deletes for
+/// maintenance: the explicitly deleted participant cascades its referrer in
+/// a full batch, and a partial batch still refuses the participant mutation
+/// before anything is committed.
+#[test]
+fn declared_empty_subtree_removal_still_maintains_the_deleted_participant() {
+    use crate::batch::SubelementsDeletionBehavior;
+    use grovedb_merk::TreeType;
+    let version = GroveVersion::latest();
+    let seed = |db: &TempGroveDb| {
+        db.insert(
+            &[TEST_LEAF],
+            b"tree",
+            Element::empty_tree(),
+            None,
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+        db.insert(
+            &[TEST_LEAF, b"tree"],
+            b"value",
+            Element::new_item_allowing_bidirectional_references(vec![1]),
+            None,
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+        let outside = Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    b"tree".to_vec(),
+                    b"value".to_vec(),
+                ]),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: None,
+            },
+            None,
+        );
+        db.insert(&[TEST_LEAF], b"outside", outside, None, None, version)
+            .unwrap()
+            .unwrap();
+    };
+    let ops = vec![
+        QualifiedGroveDbOp::delete_op(
+            vec![TEST_LEAF.to_vec(), b"tree".to_vec()],
+            b"value".to_vec(),
+        ),
+        QualifiedGroveDbOp::delete_tree_op(
+            vec![TEST_LEAF.to_vec()],
+            b"tree".to_vec(),
+            TreeType::NormalTree,
+            SubelementsDeletionBehavior::DontCheckWithNoCleanup,
+        ),
+    ];
+
+    let db = make_test_grovedb(version);
+    seed(&db);
+    db.apply_batch(ops.clone(), None, None, version)
+        .unwrap()
+        .expect("the explicit participant delete cascades its referrer");
+    assert!(db
+        .get_raw(SubtreePath::from(&[TEST_LEAF]), b"outside", None, version)
+        .unwrap()
+        .is_err());
+    assert!(db
+        .get_raw(SubtreePath::from(&[TEST_LEAF]), b"tree", None, version)
+        .unwrap()
+        .is_err());
+    assert!(db
+        .verify_grovedb(None, true, true, version)
+        .unwrap()
+        .is_empty());
+
+    let db = make_test_grovedb(version);
+    seed(&db);
+    let before = db.root_hash(None, version).unwrap().unwrap();
+    let result = db.apply_partial_batch(ops, None, |_, _| Ok(vec![]), None, version);
+    assert!(matches!(result.unwrap(), Err(Error::NotSupported(_))));
+    assert_eq!(db.root_hash(None, version).unwrap().unwrap(), before);
+}
+
+/// A `DeleteTree(Skip)` over a populated tree executes nothing, so its
+/// behavior must not exempt a callback replacement of that same tree from
+/// the participant scan: the replacement is refused before commit and the
+/// outside reference keeps resolving.
+#[test]
+fn skipped_delete_tree_does_not_exempt_a_callback_replacement() {
+    use crate::batch::SubelementsDeletionBehavior;
+    use grovedb_merk::TreeType;
+    let version = GroveVersion::latest();
+    let db = make_test_grovedb(version);
+    db.insert(
+        &[TEST_LEAF],
+        b"tree",
+        Element::empty_tree(),
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF, b"tree"],
+        b"value",
+        Element::new_item_allowing_bidirectional_references(vec![1]),
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF],
+        b"outside",
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    b"tree".to_vec(),
+                    b"value".to_vec(),
+                ]),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: None,
+            },
+            None,
+        ),
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    let before = db.root_hash(None, version).unwrap().unwrap();
+    let result = db.apply_partial_batch(
+        vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![TEST_LEAF.to_vec()],
+            b"tree".to_vec(),
+            TreeType::NormalTree,
+            SubelementsDeletionBehavior::Skip,
+        )],
+        None,
+        |_, _| {
+            Ok(vec![QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"tree".to_vec(),
+                Element::empty_tree(),
+            )])
+        },
+        None,
+        version,
+    );
+    assert!(matches!(result.unwrap(), Err(Error::NotSupported(_))));
+    assert_eq!(db.root_hash(None, version).unwrap().unwrap(), before);
+    db.get(&[TEST_LEAF], b"outside", None, version)
+        .unwrap()
+        .expect("the outside reference still resolves");
+    assert!(db
+        .verify_grovedb(None, true, true, version)
+        .unwrap()
+        .is_empty());
+}
+
+/// The non-batched adapter must carry each op's declaration whether or not
+/// batch options are supplied: a false `NotParticipant` claim is refused
+/// with `None` exactly as with `Some(BatchApplyOptions::default())`.
+#[test]
+fn non_batched_apply_keeps_the_op_declaration_without_options() {
+    let version = GroveVersion::latest();
+    let overwrite = QualifiedGroveDbOp::insert_or_replace_op(
+        vec![TEST_LEAF.to_vec()],
+        b"value".to_vec(),
+        Element::new_item(vec![2]),
+    )
+    .dont_check();
+    let delete =
+        QualifiedGroveDbOp::delete_op(vec![TEST_LEAF.to_vec()], b"value".to_vec()).dont_check();
+    for op in [overwrite, delete] {
+        for options in [None, Some(BatchApplyOptions::default())] {
+            let db = chain(true);
+            let before = db.root_hash(None, version).unwrap().unwrap();
+            let result =
+                db.apply_operations_without_batching(vec![op.clone()], options, None, version);
+            assert!(
+                matches!(result.unwrap(), Err(Error::NotSupported(_))),
+                "{op:?} must be refused"
+            );
+            assert_eq!(db.root_hash(None, version).unwrap().unwrap(), before);
+        }
+    }
+}
+
+/// A conditional insert over an existing key writes nothing, so it has no
+/// displaced value to check: declaring `NotParticipant` on it is not a false
+/// claim even when the existing value participates.
+#[test]
+fn skipped_conditional_insert_checks_no_displaced_value() {
+    let version = GroveVersion::latest();
+    let db = chain(true);
+    let before = db.root_hash(None, version).unwrap().unwrap();
+    db.apply_batch(
+        vec![QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+            vec![TEST_LEAF.to_vec()],
+            b"value".to_vec(),
+            Element::new_item(vec![2]),
+        )
+        .dont_check()],
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .expect("a skipped conditional insert displaces nothing");
+    assert_eq!(db.root_hash(None, version).unwrap().unwrap(), before);
+}
+
+/// A removal observed in the initial segment keeps the declaration of the
+/// op that displaced it: a callback op at the same path declared
+/// `NotParticipant` (a plain overwrite, or a `DeleteTree(Skip)` that ends up
+/// skipped) cannot speak for the earlier tree replacement.
+#[test]
+fn initial_segment_removal_keeps_its_own_declaration() {
+    use crate::batch::SubelementsDeletionBehavior;
+    use grovedb_merk::TreeType;
+    let version = GroveVersion::latest();
+    for callback_deletes in [false, true] {
+        let db = make_test_grovedb(version);
+        db.insert(
+            &[TEST_LEAF],
+            b"tree",
+            Element::empty_tree(),
+            None,
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+        db.insert(
+            &[TEST_LEAF, b"tree"],
+            b"value",
+            Element::new_item_allowing_bidirectional_references(vec![1]),
+            None,
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+        db.insert(
+            &[TEST_LEAF],
+            b"outside",
+            Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                        TEST_LEAF.to_vec(),
+                        b"tree".to_vec(),
+                        b"value".to_vec(),
+                    ]),
+                    backward_references: Vec::new(),
+                    cascade_on_update: true,
+                    max_hop: None,
+                },
+                None,
+            ),
+            None,
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+        let before = db.root_hash(None, version).unwrap().unwrap();
+        let result = db.apply_partial_batch(
+            vec![QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"tree".to_vec(),
+                Element::new_item(vec![1]),
+            )],
+            None,
+            |_, _| {
+                Ok(vec![if callback_deletes {
+                    QualifiedGroveDbOp::delete_tree_op(
+                        vec![TEST_LEAF.to_vec()],
+                        b"tree".to_vec(),
+                        TreeType::NormalTree,
+                        SubelementsDeletionBehavior::Skip,
+                    )
+                } else {
+                    QualifiedGroveDbOp::insert_or_replace_op(
+                        vec![TEST_LEAF.to_vec()],
+                        b"tree".to_vec(),
+                        Element::new_item(vec![2]),
+                    )
+                }
+                .dont_check()])
+            },
+            None,
+            version,
+        );
+        assert!(
+            matches!(result.unwrap(), Err(Error::NotSupported(_))),
+            "callback_deletes={callback_deletes}"
+        );
+        assert_eq!(db.root_hash(None, version).unwrap().unwrap(), before);
+        db.get(&[TEST_LEAF], b"outside", None, version)
+            .unwrap()
+            .expect("the outside reference still resolves");
+        assert!(db
+            .verify_grovedb(None, true, true, version)
+            .unwrap()
+            .is_empty());
+    }
+}
+
+/// A skipped callback `DeleteTree(Skip)` must not erase the cleanup behavior
+/// of the `DeleteTree(DeleteChildren)` the initial segment executed at the
+/// same path: the removed subtree's storage is still cleaned.
+#[test]
+fn skipped_callback_delete_keeps_the_executed_deletions_cleanup() {
+    use crate::batch::SubelementsDeletionBehavior;
+    use grovedb_merk::TreeType;
+    use grovedb_storage::{Storage, StorageContext};
+    let version = GroveVersion::latest();
+    let db = make_test_grovedb(version);
+    db.insert(
+        &[TEST_LEAF],
+        b"tree",
+        Element::empty_tree(),
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF, b"tree"],
+        b"child",
+        Element::new_item(vec![1]),
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    db.apply_partial_batch(
+        vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![TEST_LEAF.to_vec()],
+            b"tree".to_vec(),
+            TreeType::NormalTree,
+            SubelementsDeletionBehavior::DeleteChildren,
+        )],
+        None,
+        |_, _| {
+            Ok(vec![QualifiedGroveDbOp::delete_tree_op(
+                vec![TEST_LEAF.to_vec()],
+                b"tree".to_vec(),
+                TreeType::NormalTree,
+                SubelementsDeletionBehavior::Skip,
+            )])
+        },
+        None,
+        version,
+    )
+    .unwrap()
+    .expect("the executed deletion applies; the skipped one is dropped");
+    assert!(db
+        .get_raw(SubtreePath::from(&[TEST_LEAF]), b"tree", None, version)
+        .unwrap()
+        .is_err());
+    let tx = db.start_transaction();
+    let storage = db
+        .db
+        .get_transactional_storage_context(SubtreePath::from(&[TEST_LEAF, b"tree"]), None, &tx)
+        .unwrap();
+    assert!(
+        storage.get(b"child").unwrap().unwrap().is_none(),
+        "the executed DeleteChildren must still clean the subtree's storage"
+    );
+    assert!(db
+        .verify_grovedb(None, true, true, version)
+        .unwrap()
+        .is_empty());
 }

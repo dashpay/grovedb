@@ -127,7 +127,7 @@ pub fn insert<B: AsRef<[u8]>>(
 #### Delete Operations
 - **delete**: Standard deletion
 - **delete_up_tree**: Remove empty parents recursively
-- **clear_subtree**: Bulk deletion; V4 Maintain scans and refuses backward-reference participants. Explicit Skip permits raw clearing.
+- **clear_subtree**: Bulk deletion; on V4, `MayBeParticipant` scans and refuses backward-reference participants, `NotParticipant` is trusted for a raw clear.
 
 #### Query System
 
@@ -434,8 +434,10 @@ GroveDB is designed with several core principles:
 - Performance optimizations
 
 
-On Grove V4, insert, delete, and full-batch options default to
-`BackwardReferencesPolicy::Maintain`. Old-value preparation retains fetched
-Merk nodes for the mutation. `BackwardReferencesPolicy::Skip` is an explicit
-opt-out that permits stale or dangling references. See
+On Grove V4, every insert, delete and batch operation declares what it
+displaces (`DisplacedValue`, `MayBeParticipant` by default). Old-value
+preparation retains fetched Merk nodes for the mutation, so the declaration
+is checked for free: `MayBeParticipant` maintains a participant it finds,
+`NotParticipant` refuses the operation. Only routes that read nothing (flat
+drop, raw clear) trust the claim. See
 [the bidirectional references design](../../adr/bidirectional_references.md).

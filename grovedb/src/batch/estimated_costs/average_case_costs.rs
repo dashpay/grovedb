@@ -33,7 +33,6 @@ use integer_encoding::VarInt;
 #[cfg(feature = "minimal")]
 use itertools::Itertools;
 
-use crate::Element;
 #[cfg(feature = "minimal")]
 use crate::{
     batch::{
@@ -42,6 +41,7 @@ use crate::{
     },
     Error, GroveDb,
 };
+use crate::{DisplacedValue, Element};
 
 #[cfg(feature = "minimal")]
 impl GroveOp {
@@ -63,12 +63,11 @@ impl GroveOp {
         // and compaction terms by `2^chunk_power`, which the op itself does
         // not carry. Ignored by every other op type.
         append_tree_chunk_power: Option<u8>,
-        // Whether the batch maintains backward references
-        // (`BatchApplyOptions::backward_references_policy`): participant
-        // writes then charge the derived fan-out on GROVE_V4+, and plain
-        // writes/deletes charge the displaced-state bound only in layers
-        // declaring that they may contain participants.
-        backward_references_enabled: bool,
+        // The op's own declaration about the value it displaces: participant
+        // payloads charge the derived fan-out on GROVE_V4+ regardless, and a
+        // plain write or delete charges the displaced-state bound only when
+        // it declares `MayBeParticipant`.
+        displaced_value: DisplacedValue,
         propagate: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -89,7 +88,7 @@ impl GroveOp {
         // documented shape (see the model in `super`). `None` when the op
         // triggers no bookkeeping or the flag/version leaves it inactive.
         let backward_references_fan_out = |element: Option<&Element>| {
-            if !backward_references_enabled || fan_out_version == 0 {
+            if fan_out_version == 0 {
                 return None;
             }
             match element {
@@ -121,16 +120,12 @@ impl GroveOp {
                 ) => Some(super::BackwardReferencesFanOut::average_item_with_capacity(
                     element.max_incoming_references().unwrap_or(0),
                 )),
-                // The estimator cannot see the STORED element the op
-                // displaces (or deletes): any other write can land on a
-                // registered family element needing propagation/cascade
-                // work, so every write charges the typical item shape.
                 // A plain write or delete can only owe maintenance for the
                 // participant it displaces, and the estimator cannot see
-                // stored state: charge that bound only where the caller
-                // declared the layer may hold participants.
-                Some(_) | None => layer_element_estimates
-                    .may_contain_backward_references
+                // stored state: charge that bound only when the op declares
+                // the displaced value may be a participant.
+                Some(_) | None => displaced_value
+                    .may_be_participant()
                     .then(super::BackwardReferencesFanOut::average_item),
             }
         };
@@ -154,10 +149,7 @@ impl GroveOp {
         // deletion — charged whenever the fan-out is active.
         let flagged_delete_probe = || {
             let mut probe = OperationCost::default();
-            if backward_references_enabled
-                && fan_out_version != 0
-                && layer_element_estimates.may_contain_backward_references
-            {
+            if fan_out_version != 0 && displaced_value.may_be_participant() {
                 let key_width = GroveDb::average_case_layer_key_size(
                     &layer_element_estimates.estimated_layer_sizes,
                 );
@@ -233,6 +225,7 @@ impl GroveOp {
                 grove_version,
             ),
             GroveOp::InsertOrReplace { element }
+            | GroveOp::InsertOrReplaceDontCheck { element }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element } => with_fan_out(
                 GroveDb::average_case_merk_insert_element(
                     key,
@@ -325,7 +318,7 @@ impl GroveOp {
                     grove_version,
                 )
             }
-            GroveOp::Replace { element } => with_fan_out(
+            GroveOp::Replace { element } | GroveOp::ReplaceDontCheck { element } => with_fan_out(
                 GroveDb::average_case_merk_replace_element(
                     key,
                     element,
@@ -336,6 +329,10 @@ impl GroveOp {
                 backward_references_fan_out(Some(element)),
             ),
             GroveOp::Patch {
+                element,
+                change_in_bytes,
+            }
+            | GroveOp::PatchDontCheck {
                 element,
                 change_in_bytes,
             } => with_fan_out(
@@ -349,7 +346,7 @@ impl GroveOp {
                 ),
                 backward_references_fan_out(Some(element)),
             ),
-            GroveOp::Delete => with_fan_out(
+            GroveOp::Delete | GroveOp::DeleteDontCheck => with_fan_out(
                 GroveDb::average_case_merk_delete_element(
                     key,
                     layer_element_estimates,
@@ -359,17 +356,19 @@ impl GroveOp {
                 backward_references_fan_out(None),
             )
             .add_cost(flagged_delete_probe()),
-            GroveOp::DeleteTree(tree_type, _) => with_fan_out(
-                GroveDb::average_case_merk_delete_tree(
-                    key,
-                    *tree_type,
-                    layer_element_estimates,
-                    propagate,
-                    grove_version,
-                ),
-                backward_references_fan_out(None),
-            )
-            .add_cost(flagged_delete_probe()),
+            GroveOp::DeleteTree(tree_type, _) | GroveOp::DeleteTreeDontCheck(tree_type, _) => {
+                with_fan_out(
+                    GroveDb::average_case_merk_delete_tree(
+                        key,
+                        *tree_type,
+                        layer_element_estimates,
+                        propagate,
+                        grove_version,
+                    ),
+                    backward_references_fan_out(None),
+                )
+                .add_cost(flagged_delete_probe())
+            }
             GroveOp::CommitmentTreeInsert { payload, .. } => {
                 Self::average_case_commitment_tree_insert(
                     payload,
@@ -980,7 +979,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         path: &KeyInfoPath,
         ops_at_path_by_key: BTreeMap<KeyInfo, GroveOp>,
         _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, GroveOp>,
-        batch_apply_options: &BatchApplyOptions,
+        _batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
         grove_version: &GroveVersion,
@@ -1133,6 +1132,10 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             if let GroveOp::DeleteTree(
                 tree_type,
                 crate::batch::SubelementsDeletionBehavior::DropFlat,
+            )
+            | GroveOp::DeleteTreeDontCheck(
+                tree_type,
+                crate::batch::SubelementsDeletionBehavior::DropFlat,
             ) = &op
             {
                 crate::operations::delete::flat_drop::add_flat_drop_record_put_estimate(
@@ -1146,7 +1149,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                     &key,
                     layer_element_estimates,
                     append_tree_chunk_power,
-                    batch_apply_options.backward_references_policy.maintains(),
+                    op.displaced_value(),
                     false,
                     grove_version
                 )
@@ -1277,8 +1280,13 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
 #[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
-    use crate::batch::BatchApplyOptions;
-    use crate::BackwardReferencesPolicy;
+    /// The estimator charges the displaced-participant fan-out only for ops
+    /// that declare `MayBeParticipant`; these plain-write pins declare none.
+    fn not_participant(ops: Vec<QualifiedGroveDbOp>) -> Vec<QualifiedGroveDbOp> {
+        ops.into_iter().map(|op| op.dont_check()).collect()
+    }
+
+    use crate::DisplacedValue;
     use std::collections::HashMap;
 
     use grovedb_costs::{
@@ -1314,17 +1322,16 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_tree(),
-        )];
+        )]);
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: ApproximateElements(0),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },
@@ -1332,10 +1339,7 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
-            Some(BatchApplyOptions {
-                backward_references_policy: BackwardReferencesPolicy::Skip,
-                ..Default::default()
-            }),
+            None,
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
@@ -1388,17 +1392,16 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_tree_with_flags(Some(b"cat".to_vec())),
-        )];
+        )]);
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(0, true),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, Some(3)),
             },
@@ -1407,7 +1410,6 @@ mod tests {
             KeyInfoPath(vec![KeyInfo::KnownKey(b"key1".to_vec())]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(0, true),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },
@@ -1415,10 +1417,7 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
-            Some(BatchApplyOptions {
-                backward_references_policy: BackwardReferencesPolicy::Skip,
-                ..Default::default()
-            }),
+            None,
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
@@ -1461,17 +1460,16 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::new_item(b"cat".to_vec()),
-        )];
+        )]);
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(0, true),
                 estimated_layer_sizes: AllItems(4, 3, None),
             },
@@ -1479,10 +1477,7 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
-            Some(BatchApplyOptions {
-                backward_references_policy: BackwardReferencesPolicy::Skip,
-                ..Default::default()
-            }),
+            None,
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
@@ -1539,17 +1534,16 @@ mod tests {
         .unwrap()
         .expect("successful root tree leaf insert");
 
-        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_tree(),
-        )];
+        )]);
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
             },
@@ -1558,10 +1552,7 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
-            Some(BatchApplyOptions {
-                backward_references_policy: BackwardReferencesPolicy::Skip,
-                ..Default::default()
-            }),
+            None,
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
@@ -1630,17 +1621,16 @@ mod tests {
         .unwrap()
         .expect("successful root tree leaf insert");
 
-        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"0".to_vec()],
             b"key1".to_vec(),
             Element::empty_tree(),
-        )];
+        )]);
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(0, false),
                 estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
             },
@@ -1650,7 +1640,6 @@ mod tests {
             KeyInfoPath(vec![KeyInfo::KnownKey(b"0".to_vec())]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(0, true),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },
@@ -1659,10 +1648,7 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
-            Some(BatchApplyOptions {
-                backward_references_policy: BackwardReferencesPolicy::Skip,
-                ..Default::default()
-            }),
+            None,
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
@@ -1715,18 +1701,17 @@ mod tests {
     #[test]
     fn test_batch_root_one_sum_item_replace_op_average_case_costs() {
         let grove_version = GroveVersion::latest();
-        let ops = vec![QualifiedGroveDbOp::replace_op(
+        let ops = not_participant(vec![QualifiedGroveDbOp::replace_op(
             vec![vec![7]],
             hex::decode("46447a3b4c8939fd4cf8b610ba7da3d3f6b52b39ab2549bf91503b9b07814055")
                 .unwrap(),
             Element::new_sum_item(500),
-        )];
+        )]);
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(
                     1,
@@ -1749,7 +1734,6 @@ mod tests {
             KeyInfoPath::from_known_owned_path(vec![vec![7]]),
             EstimatedLayerInformation {
                 tree_type: TreeType::SumTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: PotentiallyAtMaxElements,
                 estimated_layer_sizes: AllItems(32, 8, None),
             },
@@ -1757,10 +1741,7 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops,
-            Some(BatchApplyOptions {
-                backward_references_policy: BackwardReferencesPolicy::Skip,
-                ..Default::default()
-            }),
+            None,
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
@@ -1807,17 +1788,16 @@ mod tests {
         .unwrap()
         .expect("successful root tree leaf insert");
 
-        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_tree(),
-        )];
+        )]);
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },
@@ -1827,7 +1807,6 @@ mod tests {
             KeyInfoPath(vec![KeyInfo::KnownKey(b"0".to_vec())]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(0, true),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },
@@ -1859,17 +1838,16 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_dense_tree(3),
-        )];
+        )]);
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: ApproximateElements(0),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },
@@ -1877,10 +1855,7 @@ mod tests {
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
-            Some(BatchApplyOptions {
-                backward_references_policy: BackwardReferencesPolicy::Skip,
-                ..Default::default()
-            }),
+            None,
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
@@ -1906,7 +1881,7 @@ mod tests {
     #[test]
     fn test_refresh_reference_average_case_cost() {
         let grove_version = GroveVersion::latest();
-        let ops = vec![QualifiedGroveDbOp::refresh_reference_op(
+        let ops = not_participant(vec![QualifiedGroveDbOp::refresh_reference_op(
             vec![vec![7]],
             b"ref_key".to_vec(),
             ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]),
@@ -1914,13 +1889,12 @@ mod tests {
             None,
             /* non_counted = */ false,
             true,
-        )];
+        )]);
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
             },
@@ -1929,7 +1903,6 @@ mod tests {
             KeyInfoPath::from_known_owned_path(vec![vec![7]]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: PotentiallyAtMaxElements,
                 estimated_layer_sizes: AllItems(32, 64, None),
             },
@@ -1964,22 +1937,23 @@ mod tests {
     #[test]
     fn test_refresh_reference_with_sum_item_average_case_cost() {
         let grove_version = GroveVersion::latest();
-        let ops = vec![QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
-            vec![vec![7]],
-            b"ref_key".to_vec(),
-            ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]),
-            Some(5),
-            42,    // sum_value
-            None,  // flags
-            false, // non_counted
-            true,  // trust_refresh_reference
-        )];
+        let ops = not_participant(vec![
+            QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+                vec![vec![7]],
+                b"ref_key".to_vec(),
+                ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]),
+                Some(5),
+                42,    // sum_value
+                None,  // flags
+                false, // non_counted
+                true,  // trust_refresh_reference
+            ),
+        ]);
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
             },
@@ -1988,7 +1962,6 @@ mod tests {
             KeyInfoPath::from_known_owned_path(vec![vec![7]]),
             EstimatedLayerInformation {
                 tree_type: TreeType::SumTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: PotentiallyAtMaxElements,
                 estimated_layer_sizes: AllItems(32, 64, None),
             },
@@ -2052,7 +2025,6 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
             },
@@ -2061,7 +2033,6 @@ mod tests {
             KeyInfoPath::from_known_owned_path(vec![vec![7]]),
             EstimatedLayerInformation {
                 tree_type: TreeType::CountSumTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: PotentiallyAtMaxElements,
                 estimated_layer_sizes: AllItems(32, 64, None),
             },
@@ -2112,18 +2083,17 @@ mod tests {
     #[test]
     fn test_patch_average_case_cost() {
         let grove_version = GroveVersion::latest();
-        let ops = vec![QualifiedGroveDbOp::patch_op(
+        let ops = not_participant(vec![QualifiedGroveDbOp::patch_op(
             vec![vec![7]],
             b"patch_key".to_vec(),
             Element::new_item(b"patched_value".to_vec()),
             5, // change_in_bytes
-        )];
+        )]);
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
             },
@@ -2132,7 +2102,6 @@ mod tests {
             KeyInfoPath::from_known_owned_path(vec![vec![7]]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: PotentiallyAtMaxElements,
                 estimated_layer_sizes: AllItems(32, 64, None),
             },
@@ -2166,16 +2135,15 @@ mod tests {
     #[test]
     fn test_delete_average_case_cost() {
         let grove_version = GroveVersion::latest();
-        let ops = vec![QualifiedGroveDbOp::delete_op(
+        let ops = not_participant(vec![QualifiedGroveDbOp::delete_op(
             vec![vec![7]],
             b"del_key".to_vec(),
-        )];
+        )]);
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
             },
@@ -2184,7 +2152,6 @@ mod tests {
             KeyInfoPath::from_known_owned_path(vec![vec![7]]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: PotentiallyAtMaxElements,
                 estimated_layer_sizes: AllItems(32, 64, None),
             },
@@ -2218,18 +2185,17 @@ mod tests {
     #[test]
     fn test_delete_tree_average_case_cost() {
         let grove_version = GroveVersion::latest();
-        let ops = vec![QualifiedGroveDbOp::delete_tree_op(
+        let ops = not_participant(vec![QualifiedGroveDbOp::delete_tree_op(
             vec![vec![7]],
             b"tree_key".to_vec(),
             TreeType::NormalTree,
             SubelementsDeletionBehavior::Error,
-        )];
+        )]);
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
             },
@@ -2238,7 +2204,6 @@ mod tests {
             KeyInfoPath::from_known_owned_path(vec![vec![7]]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: PotentiallyAtMaxElements,
                 estimated_layer_sizes: AllSubtrees(32, NoSumTrees, None),
             },
@@ -2285,7 +2250,6 @@ mod tests {
         let key = KeyInfo::KnownKey(b"tree_key".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: ApproximateElements(10),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -2297,7 +2261,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                false,
+                DisplacedValue::NotParticipant,
                 false,
                 grove_version
             )
@@ -2309,7 +2273,7 @@ mod tests {
                 &key,
                 &layer_info,
                 Some(10),
-                false,
+                DisplacedValue::NotParticipant,
                 false,
                 grove_version,
             )
@@ -2355,7 +2319,6 @@ mod tests {
         let key = KeyInfo::KnownKey(b"mmr_key".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: ApproximateElements(5),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -2365,7 +2328,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                false,
+                DisplacedValue::NotParticipant,
                 false,
                 grove_version,
             )
@@ -2405,7 +2368,6 @@ mod tests {
         let key = KeyInfo::KnownKey(b"bulk_key".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: ApproximateElements(5),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -2415,7 +2377,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                false,
+                DisplacedValue::NotParticipant,
                 false,
                 grove_version,
             )
@@ -2450,7 +2412,6 @@ mod tests {
         let key = KeyInfo::KnownKey(b"pds_key".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: ApproximateElements(5),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -2460,7 +2421,7 @@ mod tests {
                 &key,
                 &layer_info,
                 Some(4),
-                false,
+                DisplacedValue::NotParticipant,
                 false,
                 grove_version,
             )
@@ -2496,7 +2457,7 @@ mod tests {
                 &key,
                 &layer_info,
                 Some(4),
-                false,
+                DisplacedValue::NotParticipant,
                 false,
                 grove_version,
             )
@@ -2511,7 +2472,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                false,
+                DisplacedValue::NotParticipant,
                 false,
                 grove_version
             )
@@ -2530,7 +2491,7 @@ mod tests {
                 &key,
                 &layer_info,
                 Some(2),
-                false,
+                DisplacedValue::NotParticipant,
                 false,
                 grove_version,
             )
@@ -2542,7 +2503,7 @@ mod tests {
                 &key,
                 &layer_info,
                 Some(10),
-                false,
+                DisplacedValue::NotParticipant,
                 false,
                 grove_version,
             )
@@ -2588,7 +2549,6 @@ mod tests {
         let key = KeyInfo::KnownKey(b"dense_key".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: ApproximateElements(5),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -2598,7 +2558,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                false,
+                DisplacedValue::NotParticipant,
                 false,
                 grove_version,
             )
@@ -2641,7 +2601,6 @@ mod tests {
         let key = KeyInfo::KnownKey(b"nmerk_key".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: ApproximateElements(5),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -2651,7 +2610,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                false,
+                DisplacedValue::NotParticipant,
                 false,
                 grove_version,
             )
@@ -2685,7 +2644,6 @@ mod tests {
         let key = KeyInfo::KnownKey(b"inmerk_key".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: ApproximateElements(0),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -2695,7 +2653,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                false,
+                DisplacedValue::NotParticipant,
                 false,
                 grove_version,
             )
@@ -2734,7 +2692,6 @@ mod tests {
         let key = KeyInfo::KnownKey(b"merk_key".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: ApproximateElements(0),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -2753,7 +2710,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                false,
+                DisplacedValue::NotParticipant,
                 false,
                 grove_version,
             )
@@ -2798,7 +2755,6 @@ mod tests {
         let key = KeyInfo::KnownKey(b"inmerk_key".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: ApproximateElements(0),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -2816,7 +2772,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                false,
+                DisplacedValue::NotParticipant,
                 false,
                 grove_version,
             )
@@ -2844,7 +2800,6 @@ mod tests {
         let key = KeyInfo::KnownKey(b"agg_idx".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: ApproximateElements(8),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -2864,7 +2819,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                false,
+                DisplacedValue::NotParticipant,
                 false,
                 grove_version,
             )
@@ -2884,7 +2839,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                false,
+                DisplacedValue::NotParticipant,
                 true,
                 grove_version,
             )
@@ -2926,18 +2881,17 @@ mod tests {
         .unwrap()
         .expect("create pcit");
 
-        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"cidx".to_vec()],
             b"k1".to_vec(),
             Element::new_item(b"v1".to_vec()),
-        )];
+        )]);
 
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: ApproximateElements(1),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },
@@ -2948,7 +2902,6 @@ mod tests {
             KeyInfoPath(vec![KeyInfo::KnownKey(b"cidx".to_vec())]),
             EstimatedLayerInformation {
                 tree_type: TreeType::ProvableCountIndexedTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: ApproximateElements(1),
                 estimated_layer_sizes: AllItems(2, 2, None),
             },
@@ -3036,18 +2989,17 @@ mod tests {
         .expect("seed entry");
 
         // Same key, same count contribution, different bytes.
-        let ops = vec![QualifiedGroveDbOp::replace_op(
+        let ops = not_participant(vec![QualifiedGroveDbOp::replace_op(
             vec![b"cidx".to_vec()],
             b"k1".to_vec(),
             Element::new_item(b"v2".to_vec()),
-        )];
+        )]);
 
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: ApproximateElements(1),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },
@@ -3056,7 +3008,6 @@ mod tests {
             KeyInfoPath(vec![KeyInfo::KnownKey(b"cidx".to_vec())]),
             EstimatedLayerInformation {
                 tree_type: TreeType::ProvableCountIndexedTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: ApproximateElements(1),
                 estimated_layer_sizes: AllItems(2, 2, None),
             },
@@ -3151,18 +3102,17 @@ mod tests {
         .unwrap()
         .expect("seed entry");
 
-        let ops = vec![QualifiedGroveDbOp::replace_op(
+        let ops = not_participant(vec![QualifiedGroveDbOp::replace_op(
             vec![b"idx".to_vec()],
             b"k1".to_vec(),
             Element::new_item_with_sum_item(b"v2".to_vec(), 777),
-        )];
+        )]);
 
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: ApproximateElements(1),
                 estimated_layer_sizes: AllSubtrees(3, NoSumTrees, None),
             },
@@ -3171,7 +3121,6 @@ mod tests {
             KeyInfoPath(vec![KeyInfo::KnownKey(b"idx".to_vec())]),
             EstimatedLayerInformation {
                 tree_type: TreeType::ProvableCountProvableSumIndexedTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: ApproximateElements(1),
                 estimated_layer_sizes:
                     grovedb_merk::estimated_costs::average_case_costs::EstimatedLayerSizes::AllItemsWithSumItem(2, 2, None),
@@ -3270,7 +3219,6 @@ mod tests {
                 KeyInfoPath(vec![]),
                 EstimatedLayerInformation {
                     tree_type: TreeType::NormalTree,
-                    may_contain_backward_references: false,
                     estimated_layer_count: ApproximateElements(1),
                     estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
                 },
@@ -3279,7 +3227,6 @@ mod tests {
                 KeyInfoPath(vec![KeyInfo::KnownKey(b"cidx".to_vec())]),
                 EstimatedLayerInformation {
                     tree_type: TreeType::ProvableCountIndexedTree,
-                    may_contain_backward_references: false,
                     estimated_layer_count: ApproximateElements(n as u32),
                     estimated_layer_sizes: AllItems(2, 2, None),
                 },
@@ -3371,7 +3318,6 @@ mod tests {
                 KeyInfoPath(vec![]),
                 EstimatedLayerInformation {
                     tree_type: TreeType::NormalTree,
-                    may_contain_backward_references: false,
                     estimated_layer_count: ApproximateElements(1),
                     estimated_layer_sizes: AllSubtrees(3, NoSumTrees, None),
                 },
@@ -3380,7 +3326,6 @@ mod tests {
                 KeyInfoPath(vec![KeyInfo::KnownKey(b"idx".to_vec())]),
                 EstimatedLayerInformation {
                     tree_type: TreeType::ProvableCountProvableSumIndexedTree,
-                    may_contain_backward_references: false,
                     estimated_layer_count: ApproximateElements(n as u32),
                     estimated_layer_sizes:
                         grovedb_merk::estimated_costs::average_case_costs::EstimatedLayerSizes::AllItemsWithSumItem(2, 2, None),
@@ -3468,7 +3413,6 @@ mod tests {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: ApproximateElements(1),
                 estimated_layer_sizes: AllSubtrees(3, NoSumTrees, None),
             },
@@ -3477,7 +3421,6 @@ mod tests {
             KeyInfoPath(vec![KeyInfo::KnownKey(b"idx".to_vec())]),
             EstimatedLayerInformation {
                 tree_type: TreeType::ProvableCountProvableSumIndexedTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: ApproximateElements(4),
                 estimated_layer_sizes:
                     grovedb_merk::estimated_costs::average_case_costs::EstimatedLayerSizes::AllItemsWithSumItem(2, 2, None),
@@ -3549,7 +3492,6 @@ mod tests {
         let key = KeyInfo::KnownKey(b"pool".to_vec());
         let layer_info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLevel(1, false),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         };
@@ -3560,7 +3502,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                false,
+                DisplacedValue::NotParticipant,
                 false,
                 grove_version,
             )
@@ -3574,7 +3516,7 @@ mod tests {
                 &key,
                 &layer_info,
                 Some(4),
-                false,
+                DisplacedValue::NotParticipant,
                 false,
                 grove_version,
             )

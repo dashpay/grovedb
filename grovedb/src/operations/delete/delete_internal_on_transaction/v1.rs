@@ -265,6 +265,13 @@ impl GroveDb {
                             transaction,
                             batch,
                             true,
+                            // A live recursive removal trusts its declaration about the
+                            // contents: `clear_subtree` runs one such delete per nested
+                            // subtree inside the caller's transaction, where a refusal
+                            // part-way through could not be undone. Batches, whose
+                            // refusal discards the whole staged batch, check the claim
+                            // on this same walk.
+                            None,
                             "delete",
                             grove_version,
                         )
