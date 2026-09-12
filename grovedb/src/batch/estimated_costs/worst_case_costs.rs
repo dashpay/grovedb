@@ -207,6 +207,7 @@ impl GroveOp {
                 grove_version,
             ),
             GroveOp::InsertOrReplace { element }
+            | GroveOp::InsertOrReplaceDontCheck { element }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element } => with_fan_out(
                 GroveDb::worst_case_merk_insert_element(
                     key,
@@ -290,7 +291,7 @@ impl GroveOp {
                     grove_version,
                 )
             }
-            GroveOp::Replace { element } => with_fan_out(
+            GroveOp::Replace { element } | GroveOp::ReplaceDontCheck { element } => with_fan_out(
                 GroveDb::worst_case_merk_replace_element(
                     key,
                     element,
@@ -303,6 +304,10 @@ impl GroveOp {
             GroveOp::Patch {
                 element,
                 change_in_bytes: _,
+            }
+            | GroveOp::PatchDontCheck {
+                element,
+                change_in_bytes: _,
             } => with_fan_out(
                 GroveDb::worst_case_merk_replace_element(
                     key,
@@ -313,7 +318,7 @@ impl GroveOp {
                 ),
                 backward_references_fan_out(Some(element)),
             ),
-            GroveOp::Delete => with_fan_out(
+            GroveOp::Delete | GroveOp::DeleteDontCheck => with_fan_out(
                 GroveDb::worst_case_merk_delete_element(
                     key,
                     worst_case_layer_element_estimates,
@@ -323,17 +328,19 @@ impl GroveOp {
                 backward_references_fan_out(None),
             )
             .add_cost(flagged_delete_probe()),
-            GroveOp::DeleteTree(tree_type, _) => with_fan_out(
-                GroveDb::worst_case_merk_delete_tree(
-                    key,
-                    *tree_type,
-                    worst_case_layer_element_estimates,
-                    propagate,
-                    grove_version,
-                ),
-                backward_references_fan_out(None),
-            )
-            .add_cost(flagged_delete_probe()),
+            GroveOp::DeleteTree(tree_type, _) | GroveOp::DeleteTreeDontCheck(tree_type, _) => {
+                with_fan_out(
+                    GroveDb::worst_case_merk_delete_tree(
+                        key,
+                        *tree_type,
+                        worst_case_layer_element_estimates,
+                        propagate,
+                        grove_version,
+                    ),
+                    backward_references_fan_out(None),
+                )
+                .add_cost(flagged_delete_probe())
+            }
             GroveOp::CommitmentTreeInsert { payload, .. } => {
                 Self::worst_case_commitment_tree_insert(
                     payload,
@@ -795,8 +802,6 @@ fn add_worst_case_backward_references_fan_out(
 pub(in crate::batch) struct WorstCaseTreeCacheKnownPaths {
     paths: HashMap<KeyInfoPath, WorstCaseLayerInformation>,
     cached_merks: HashSet<KeyInfoPath>,
-    /// Each op's declaration about the value it displaces, by position.
-    displaced_values: HashMap<(KeyInfoPath, KeyInfo), DisplacedValue>,
 }
 
 #[cfg(feature = "minimal")]
@@ -804,12 +809,10 @@ impl WorstCaseTreeCacheKnownPaths {
     /// Updates the cache with the default settings and the given paths
     pub(in crate::batch) fn new_with_worst_case_layer_information(
         paths: HashMap<KeyInfoPath, WorstCaseLayerInformation>,
-        displaced_values: HashMap<(KeyInfoPath, KeyInfo), DisplacedValue>,
     ) -> Self {
         WorstCaseTreeCacheKnownPaths {
             paths,
             cached_merks: HashSet::default(),
-            displaced_values,
         }
     }
 }
@@ -887,6 +890,10 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
             if let GroveOp::DeleteTree(
                 tree_type,
                 crate::batch::SubelementsDeletionBehavior::DropFlat,
+            )
+            | GroveOp::DeleteTreeDontCheck(
+                tree_type,
+                crate::batch::SubelementsDeletionBehavior::DropFlat,
             ) = &op
             {
                 crate::operations::delete::flat_drop::add_flat_drop_record_put_estimate(
@@ -900,10 +907,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
                     &key,
                     TreeType::NormalTree,
                     worst_case_layer_element_estimates,
-                    self.displaced_values
-                        .get(&(path.clone(), key.clone()))
-                        .copied()
-                        .unwrap_or_default(),
+                    op.displaced_value(),
                     false,
                     grove_version
                 )
@@ -950,9 +954,7 @@ mod tests {
     /// The estimator charges the displaced-participant fan-out only for ops
     /// that declare `MayBeParticipant`; these plain-write pins declare none.
     fn not_participant(ops: Vec<QualifiedGroveDbOp>) -> Vec<QualifiedGroveDbOp> {
-        ops.into_iter()
-            .map(|op| op.with_displaced_value(DisplacedValue::NotParticipant))
-            .collect()
+        ops.into_iter().map(|op| op.dont_check()).collect()
     }
 
     use crate::DisplacedValue;

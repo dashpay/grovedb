@@ -398,7 +398,7 @@ fn batch_rejections_hold() {
                 b"value".to_vec(),
                 Element::new_item_allowing_bidirectional_references(b"x".to_vec()),
             )
-            .with_displaced_value(DisplacedValue::NotParticipant)],
+            .dont_check()],
             None,
             None,
             grove_version,
@@ -418,7 +418,6 @@ fn batch_rejections_hold() {
                     node_value_hash: [7; 32],
                     end_hash: None,
                 },
-                displaced_value: DisplacedValue::MayBeParticipant,
             }],
             None,
             None,
@@ -1063,7 +1062,6 @@ fn batch_refresh_reference_on_bidi_errors() {
             flags: None,
             non_counted: false,
         },
-        displaced_value: DisplacedValue::MayBeParticipant,
     };
     assert!(matches!(
         db.apply_batch(vec![refresh], None, None, grove_version)

@@ -7,7 +7,6 @@
 //! `DisplacedValue::MayBeParticipant`; an op declared `NotParticipant`
 //! estimates the plain write alone.
 
-use crate::DisplacedValue;
 use std::collections::HashMap;
 
 use grovedb_merk::estimated_costs::{
@@ -35,9 +34,7 @@ use crate::{
 };
 
 fn not_participant(ops: Vec<QualifiedGroveDbOp>) -> Vec<QualifiedGroveDbOp> {
-    ops.into_iter()
-        .map(|op| op.with_displaced_value(DisplacedValue::NotParticipant))
-        .collect()
+    ops.into_iter().map(|op| op.dont_check()).collect()
 }
 
 fn sibling_bidi(key: &[u8]) -> Element {
@@ -434,7 +431,6 @@ fn derived_op_estimation_is_version_gated() {
                 node_value_hash: [7; 32],
                 end_hash: None,
             },
-            displaced_value: DisplacedValue::MayBeParticipant,
         }]
     };
 

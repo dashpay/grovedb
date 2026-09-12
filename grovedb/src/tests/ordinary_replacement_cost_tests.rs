@@ -114,7 +114,7 @@ fn replace_cost(
                 KEY.to_vec(),
                 after,
             )
-            .with_displaced_value(DisplacedValue::NotParticipant)],
+            .dont_check()],
             None,
             Some(&tx),
             grove_version,

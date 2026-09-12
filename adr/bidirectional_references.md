@@ -52,8 +52,12 @@ Moreover, these types are incompatible, which will be discussed in the "Rules" s
 
 On `GROVE_V4`, ordinary inserts, replacements, deletes, and full batches
 maintain backward references automatically, and every operation declares
-what it displaces: `InsertOptions`, `DeleteOptions`, `ClearOptions` and each
-`QualifiedGroveDbOp` carry a `DisplacedValue`, `MayBeParticipant` by default.
+what it displaces: the live `InsertOptions`, `DeleteOptions` and
+`ClearOptions` carry a `DisplacedValue` (`MayBeParticipant` by default), and
+each displacing batch op has a `DontCheck` twin (`DeleteDontCheck`,
+`DeleteTreeDontCheck`, `InsertOrReplaceDontCheck`, `ReplaceDontCheck`,
+`PatchDontCheck`) that makes the `NotParticipant` declaration; the checked op
+is `MayBeParticipant`.
 GroveDB reads the displaced value for the write anyway, so for a keyed
 operation the declaration only decides what happens when that value takes
 part in backward references: `MayBeParticipant` maintains the references,
@@ -136,8 +140,8 @@ walk.
 
 Next, we’ll go over the rules and limitations for using bidirectional references.
 
-These rules always apply; `DisplacedValue::NotParticipant` is a checked claim, not an
-opt-out.
+These rules always apply; `DisplacedValue::NotParticipant` (a `DontCheck` op in a
+batch) is a checked claim, not an opt-out.
 
 An 'Element with backward references' refers to `ItemWithBackwardsReferences`,
 `SumItemWithBackwardsReferences`, `ItemWithSumItemWithBackwardsReferences`, and

@@ -187,7 +187,6 @@ where
                 path: op_path,
                 key: op_key,
                 op: grove_op,
-                displaced_value: _,
             } = op;
 
             // Keyless ops (append-only tree ops: CommitmentTreeInsert,
@@ -267,8 +266,11 @@ where
                 GroveOp::InsertWithKnownToNotAlreadyExist { element }
                 | GroveOp::InsertIfNotExists { element, .. }
                 | GroveOp::InsertOrReplace { element }
+                | GroveOp::InsertOrReplaceDontCheck { element }
                 | GroveOp::Replace { element }
+                | GroveOp::ReplaceDontCheck { element }
                 | GroveOp::Patch { element, .. }
+                | GroveOp::PatchDontCheck { element, .. }
                 | GroveOp::ReplaceBackwardReferenceFamilyMember { element, .. } => {
                     if let Some(tree_type) = element.tree_type() {
                         cost_return_on_error!(
@@ -281,9 +283,11 @@ where
                     }
                     Ok(())
                 }
-                GroveOp::RefreshReference { .. } | GroveOp::Delete | GroveOp::DeleteTree(..) => {
-                    Ok(())
-                }
+                GroveOp::RefreshReference { .. }
+                | GroveOp::Delete
+                | GroveOp::DeleteDontCheck
+                | GroveOp::DeleteTree(..)
+                | GroveOp::DeleteTreeDontCheck(..) => Ok(()),
                 GroveOp::CommitmentTreeInsert { .. }
                 | GroveOp::MmrTreeAppend { .. }
                 | GroveOp::BulkAppend { .. }
@@ -438,10 +442,13 @@ pub(super) fn merge_add_on_op_over_pending(
 
     match &add_on {
         GroveOp::InsertOrReplace { element }
+        | GroveOp::InsertOrReplaceDontCheck { element }
         | GroveOp::InsertWithKnownToNotAlreadyExist { element }
         | GroveOp::InsertIfNotExists { element, .. }
         | GroveOp::Replace { element }
-        | GroveOp::Patch { element, .. } => {
+        | GroveOp::ReplaceDontCheck { element }
+        | GroveOp::Patch { element, .. }
+        | GroveOp::PatchDontCheck { element, .. } => {
             // The pending state was computed using the child's original node
             // layout and hash scheme. It cannot authenticate a different tree
             // type, including an indexed/non-indexed counterpart with the same
@@ -464,7 +471,10 @@ pub(super) fn merge_add_on_op_over_pending(
                 axes,
             )
         }
-        GroveOp::Delete | GroveOp::DeleteTree(..) => {
+        GroveOp::Delete
+        | GroveOp::DeleteDontCheck
+        | GroveOp::DeleteTree(..)
+        | GroveOp::DeleteTreeDontCheck(..) => {
             if root_key.is_some() {
                 Err(Error::InvalidBatchOperation(
                     "modification of tree when it will be deleted",

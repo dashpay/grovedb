@@ -225,6 +225,7 @@ impl GroveOp {
                 grove_version,
             ),
             GroveOp::InsertOrReplace { element }
+            | GroveOp::InsertOrReplaceDontCheck { element }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element } => with_fan_out(
                 GroveDb::average_case_merk_insert_element(
                     key,
@@ -317,7 +318,7 @@ impl GroveOp {
                     grove_version,
                 )
             }
-            GroveOp::Replace { element } => with_fan_out(
+            GroveOp::Replace { element } | GroveOp::ReplaceDontCheck { element } => with_fan_out(
                 GroveDb::average_case_merk_replace_element(
                     key,
                     element,
@@ -328,6 +329,10 @@ impl GroveOp {
                 backward_references_fan_out(Some(element)),
             ),
             GroveOp::Patch {
+                element,
+                change_in_bytes,
+            }
+            | GroveOp::PatchDontCheck {
                 element,
                 change_in_bytes,
             } => with_fan_out(
@@ -341,7 +346,7 @@ impl GroveOp {
                 ),
                 backward_references_fan_out(Some(element)),
             ),
-            GroveOp::Delete => with_fan_out(
+            GroveOp::Delete | GroveOp::DeleteDontCheck => with_fan_out(
                 GroveDb::average_case_merk_delete_element(
                     key,
                     layer_element_estimates,
@@ -351,17 +356,19 @@ impl GroveOp {
                 backward_references_fan_out(None),
             )
             .add_cost(flagged_delete_probe()),
-            GroveOp::DeleteTree(tree_type, _) => with_fan_out(
-                GroveDb::average_case_merk_delete_tree(
-                    key,
-                    *tree_type,
-                    layer_element_estimates,
-                    propagate,
-                    grove_version,
-                ),
-                backward_references_fan_out(None),
-            )
-            .add_cost(flagged_delete_probe()),
+            GroveOp::DeleteTree(tree_type, _) | GroveOp::DeleteTreeDontCheck(tree_type, _) => {
+                with_fan_out(
+                    GroveDb::average_case_merk_delete_tree(
+                        key,
+                        *tree_type,
+                        layer_element_estimates,
+                        propagate,
+                        grove_version,
+                    ),
+                    backward_references_fan_out(None),
+                )
+                .add_cost(flagged_delete_probe())
+            }
             GroveOp::CommitmentTreeInsert { payload, .. } => {
                 Self::average_case_commitment_tree_insert(
                     payload,
@@ -894,8 +901,6 @@ pub(in crate::batch) struct AverageCaseTreeCacheKnownPaths {
     /// The axes each pending path maintains, so the emitted op carries one
     /// entry per axis exactly as a real apply would.
     pending_cidx_axes: HashMap<Vec<Vec<u8>>, Vec<grovedb_element::indexed::IndexAxis>>,
-    /// Each op's declaration about the value it displaces, by position.
-    displaced_values: HashMap<(KeyInfoPath, KeyInfo), DisplacedValue>,
 }
 
 #[cfg(feature = "minimal")]
@@ -903,14 +908,12 @@ impl AverageCaseTreeCacheKnownPaths {
     /// Updates the cache to the default setting with the given subtree paths
     pub(in crate::batch) fn new_with_estimated_layer_information(
         paths: HashMap<KeyInfoPath, EstimatedLayerInformation>,
-        displaced_values: HashMap<(KeyInfoPath, KeyInfo), DisplacedValue>,
     ) -> Self {
         AverageCaseTreeCacheKnownPaths {
             paths,
             cached_merks: HashMap::default(),
             pending_cidx_secondary: HashSet::default(),
             pending_cidx_axes: HashMap::default(),
-            displaced_values,
         }
     }
 }
@@ -1129,6 +1132,10 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             if let GroveOp::DeleteTree(
                 tree_type,
                 crate::batch::SubelementsDeletionBehavior::DropFlat,
+            )
+            | GroveOp::DeleteTreeDontCheck(
+                tree_type,
+                crate::batch::SubelementsDeletionBehavior::DropFlat,
             ) = &op
             {
                 crate::operations::delete::flat_drop::add_flat_drop_record_put_estimate(
@@ -1142,10 +1149,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                     &key,
                     layer_element_estimates,
                     append_tree_chunk_power,
-                    self.displaced_values
-                        .get(&(path.clone(), key.clone()))
-                        .copied()
-                        .unwrap_or_default(),
+                    op.displaced_value(),
                     false,
                     grove_version
                 )
@@ -1279,9 +1283,7 @@ mod tests {
     /// The estimator charges the displaced-participant fan-out only for ops
     /// that declare `MayBeParticipant`; these plain-write pins declare none.
     fn not_participant(ops: Vec<QualifiedGroveDbOp>) -> Vec<QualifiedGroveDbOp> {
-        ops.into_iter()
-            .map(|op| op.with_displaced_value(DisplacedValue::NotParticipant))
-            .collect()
+        ops.into_iter().map(|op| op.dont_check()).collect()
     }
 
     use crate::DisplacedValue;

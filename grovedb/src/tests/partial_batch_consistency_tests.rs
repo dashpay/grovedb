@@ -25,8 +25,6 @@ mod tests {
         Element, Error,
     };
 
-    use crate::DisplacedValue;
-
     // ===================================================================
     // 1. Callback returning duplicate operations should be rejected
     // ===================================================================
@@ -114,7 +112,6 @@ mod tests {
                             root_key: None,
                             aggregate_data: AggregateData::NoAggregateData,
                         },
-                        displaced_value: DisplacedValue::MayBeParticipant,
                     };
                     Ok(vec![internal_op])
                 },

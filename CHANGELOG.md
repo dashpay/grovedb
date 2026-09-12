@@ -60,11 +60,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **BREAKING**: Replace `propagate_backward_references` with a per-operation
-  declaration of the stored value an operation displaces,
-  `DisplacedValue::{MayBeParticipant, NotParticipant}`, on `InsertOptions`,
-  `DeleteOptions`, `ClearOptions` and every `QualifiedGroveDbOp`
-  (`with_displaced_value`; `MayBeParticipant` is the default everywhere).
-  `BatchApplyOptions` carries no backward-references policy. V4 has one write
+  declaration of the stored value an operation displaces. The live
+  `InsertOptions`, `DeleteOptions` and `ClearOptions` carry
+  `DisplacedValue::{MayBeParticipant, NotParticipant}` (`MayBeParticipant`
+  by default), and every displacing batch op has a `DontCheck` twin that
+  makes the `NotParticipant` declaration: `DeleteDontCheck`,
+  `DeleteTreeDontCheck`, `InsertOrReplaceDontCheck`, `ReplaceDontCheck`,
+  `PatchDontCheck` (`GroveOp::dont_check` / `QualifiedGroveDbOp::dont_check`
+  convert a checked op). `BatchApplyOptions` carries no backward-references
+  policy. V4 has one write
   path: the displaced value is read for the write anyway, so
   `MayBeParticipant` maintains a participant it finds and `NotParticipant`
   refuses the operation before anything commits; where nothing reads the
@@ -75,7 +79,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that at apply time, and `DeleteChildren` checks the declaration on the
   cleanup walk it makes anyway, refusing a participant the batch does not
   explicitly delete. A delete-up-tree chain and a batch recursive removal
-  therefore cost the plain removal on V4. Partial batches still refuse
+  therefore cost the plain removal on V4. A flat drop must be a
+  `DeleteTreeDontCheck`. Partial batches still refuse
   participant mutations, and earlier protocol versions retain their
   historical behavior.
 - **BREAKING**: `EstimatedLayerInformation::may_contain_backward_references`

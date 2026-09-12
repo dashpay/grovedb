@@ -23,7 +23,7 @@ use crate::{
         key_info::KeyInfo::KnownKey, GroveOp, KeyInfoPath, NonMerkTreeMeta, QualifiedGroveDbOp,
     },
     tests::{common::EMPTY_PATH, make_empty_grovedb},
-    DisplacedValue, Element, Error,
+    Element, Error,
 };
 
 #[test]
@@ -39,7 +39,6 @@ fn test_apply_batch_rejects_replace_tree_root_key() {
             root_key: None,
             aggregate_data: AggregateData::NoAggregateData,
         },
-        displaced_value: DisplacedValue::MayBeParticipant,
     };
 
     let result = db.apply_batch(vec![op], None, None, grove_version).value;
@@ -80,7 +79,6 @@ fn test_apply_batch_rejects_insert_tree_with_root_hash() {
             not_summed: false,
             not_counted_or_summed: false,
         },
-        displaced_value: DisplacedValue::MayBeParticipant,
     };
 
     let result = db.apply_batch(vec![op], None, None, grove_version).value;
@@ -120,7 +118,6 @@ fn test_apply_batch_rejects_insert_non_merk_tree() {
 
             non_counted: false,
         },
-        displaced_value: DisplacedValue::MayBeParticipant,
     };
 
     let result = db.apply_batch(vec![op], None, None, grove_version).value;
@@ -207,7 +204,6 @@ fn test_apply_batch_replace_non_merk_tree_root_wrong_meta() {
                 height: 3,
             },
         },
-        displaced_value: DisplacedValue::MayBeParticipant,
     };
 
     let result = db.apply_batch(vec![op], None, None, grove_version).value;

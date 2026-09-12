@@ -15,7 +15,11 @@ use grovedb_version::version::GroveVersion;
 
 pub(crate) use handling::*;
 
-/// What a write or removal declares about the stored value it displaces.
+/// What a write or removal declares about the stored value it displaces:
+/// carried by the live `InsertOptions`, `DeleteOptions` and `ClearOptions`,
+/// and expressed by a batch op through its `DontCheck` twin
+/// (`DeleteDontCheck`, `DeleteTreeDontCheck`, `InsertOrReplaceDontCheck`,
+/// `ReplaceDontCheck`, `PatchDontCheck`; see `GroveOp::displaced_value`).
 ///
 /// GroveDB reads the displaced value anyway on `GROVE_V4`+ (the batch
 /// old-value observer, the Merk retained for a live write), so for a keyed

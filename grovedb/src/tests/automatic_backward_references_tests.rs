@@ -25,9 +25,7 @@ fn reference(target: &[u8], cascade: bool) -> Element {
 }
 
 fn not_participant(ops: Vec<QualifiedGroveDbOp>) -> Vec<QualifiedGroveDbOp> {
-    ops.into_iter()
-        .map(|op| op.with_displaced_value(DisplacedValue::NotParticipant))
-        .collect()
+    ops.into_iter().map(|op| op.dont_check()).collect()
 }
 
 fn chain(cascade: bool) -> TempGroveDb {
@@ -150,13 +148,16 @@ fn default_plain_overwrite_cascades_and_a_false_not_participant_claim_is_refused
             let before = db.root_hash(None, version).unwrap().unwrap();
             let item = Element::new_item(b"plain".to_vec());
             let result = if batch {
+                let op = QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"value".to_vec(),
+                    item.clone(),
+                );
                 db.apply_batch(
-                    vec![QualifiedGroveDbOp::insert_or_replace_op(
-                        vec![TEST_LEAF.to_vec()],
-                        b"value".to_vec(),
-                        item.clone(),
-                    )
-                    .with_displaced_value(declared)],
+                    vec![match declared {
+                        DisplacedValue::MayBeParticipant => op,
+                        DisplacedValue::NotParticipant => op.dont_check(),
+                    }],
                     None,
                     None,
                     version,
@@ -798,7 +799,10 @@ fn ordinary_batch_conditionals_and_duplicate_positions_keep_executor_semantics()
             };
             db.apply_batch(
                 ops.into_iter()
-                    .map(|op| op.with_displaced_value(declared))
+                    .map(|op| match declared {
+                        DisplacedValue::MayBeParticipant => op,
+                        DisplacedValue::NotParticipant => op.dont_check(),
+                    })
                     .collect(),
                 Some(BatchApplyOptions {
                     disable_operation_consistency_check: true,
@@ -944,7 +948,10 @@ fn declared_empty_subtree_removals_skip_the_participant_scan() {
                 let ops: Vec<QualifiedGroveDbOp> = delete_up_tree
                     .iter()
                     .cloned()
-                    .map(|op| op.with_displaced_value(declared))
+                    .map(|op| match declared {
+                        DisplacedValue::MayBeParticipant => op,
+                        DisplacedValue::NotParticipant => op.dont_check(),
+                    })
                     .collect();
                 let result = if partial {
                     db.apply_partial_batch(ops, None, |_, _| Ok(vec![]), None, version)
@@ -990,7 +997,10 @@ fn declared_empty_subtree_removals_skip_the_participant_scan() {
         let ops: Vec<QualifiedGroveDbOp> = recursive
             .iter()
             .cloned()
-            .map(|op| op.with_displaced_value(declared))
+            .map(|op| match declared {
+                DisplacedValue::MayBeParticipant => op,
+                DisplacedValue::NotParticipant => op.dont_check(),
+            })
             .collect();
         let result = db.apply_batch(ops, None, None, version);
         result.value.expect("recursive delete");
@@ -1181,9 +1191,9 @@ fn non_batched_apply_keeps_the_op_declaration_without_options() {
         b"value".to_vec(),
         Element::new_item(vec![2]),
     )
-    .with_displaced_value(DisplacedValue::NotParticipant);
-    let delete = QualifiedGroveDbOp::delete_op(vec![TEST_LEAF.to_vec()], b"value".to_vec())
-        .with_displaced_value(DisplacedValue::NotParticipant);
+    .dont_check();
+    let delete =
+        QualifiedGroveDbOp::delete_op(vec![TEST_LEAF.to_vec()], b"value".to_vec()).dont_check();
     for op in [overwrite, delete] {
         for options in [None, Some(BatchApplyOptions::default())] {
             let db = chain(true);
@@ -1213,7 +1223,7 @@ fn skipped_conditional_insert_checks_no_displaced_value() {
             b"value".to_vec(),
             Element::new_item(vec![2]),
         )
-        .with_displaced_value(DisplacedValue::NotParticipant)],
+        .dont_check()],
         None,
         None,
         version,
@@ -1299,7 +1309,7 @@ fn initial_segment_removal_keeps_its_own_declaration() {
                         Element::new_item(vec![2]),
                     )
                 }
-                .with_displaced_value(DisplacedValue::NotParticipant)])
+                .dont_check()])
             },
             None,
             version,

@@ -255,13 +255,15 @@ replacement or delete displaces a registered element. Preparation observes
 old values and retains their Merk nodes for execution and storage accounting.
 The existing consent and batch-conflict rules still apply.
 
-Every `QualifiedGroveDbOp` declares what it displaces: `MayBeParticipant`
-(the default) maintains a participant the write lands on, `NotParticipant`
-refuses the write if the stored value turns out to participate. The
-declaration is checked from the value the batch reads for the write anyway,
-so it never costs a read; declare `NotParticipant` through
-`with_displaced_value` on ops whose positions are known to hold no
-participants. Partial batches refuse participant mutations; use a full batch
+Every displacing op declares what it displaces through its variant: the
+checked op (`Delete`, `DeleteTree`, `InsertOrReplace`, `Replace`, `Patch`)
+maintains a participant the write lands on, its `DontCheck` twin
+(`DeleteDontCheck`, `DeleteTreeDontCheck`, `InsertOrReplaceDontCheck`,
+`ReplaceDontCheck`, `PatchDontCheck`) declares the stored value takes no
+part in backward references and is refused if that turns out to be false.
+The check reads nothing extra, since the batch reads the value for the
+write anyway; convert a checked op with `QualifiedGroveDbOp::dont_check` at
+positions known to hold no participants. Partial batches refuse participant mutations; use a full batch
 for reference maintenance. Recursive removal of a subtree containing
 participants is supported by live `delete`; see the bidirectional references
 ADR for scope.
@@ -282,8 +284,8 @@ charges the displaced-participant fan-out for its plain write or delete, an
 op declared `NotParticipant` estimates the plain write alone, and ops that
 write a participant themselves are always charged.
 
-`SubelementsDeletionBehavior::DropFlat` requires the op to declare
-`DisplacedValue::NotParticipant`; `MayBeParticipant` is refused before
-reading anything, preserving the O(1) contract. Partial batches refuse
+`SubelementsDeletionBehavior::DropFlat` requires the `DeleteTreeDontCheck`
+twin; the checked `DeleteTree` is refused before reading anything,
+preserving the O(1) contract. Partial batches refuse
 participant mutations in either segment; their inspection of tree
 replacements occurs before commit and can also incur recursive read costs.

@@ -18,7 +18,7 @@ mod tests {
     };
     use crate::reference_path::ReferencePathType;
     use crate::tests::{common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, TEST_LEAF};
-    use crate::DisplacedValue;
+
     use crate::{Element, Error};
 
     // ===================================================================
@@ -467,7 +467,6 @@ mod tests {
                 root_key: None,
                 aggregate_data: AggregateData::NoAggregateData,
             },
-            displaced_value: DisplacedValue::MayBeParticipant,
         };
         let dbg = format!("{:?}", internal_op);
         assert!(dbg.contains("Replace Tree Hash and Root Key"));
@@ -485,7 +484,6 @@ mod tests {
                 not_summed: false,
                 not_counted_or_summed: false,
             },
-            displaced_value: DisplacedValue::MayBeParticipant,
         };
         let dbg = format!("{:?}", internal_op2);
         assert!(dbg.contains("Insert Tree Hash and Root Key"));
@@ -496,7 +494,6 @@ mod tests {
             path: KeyInfoPath::from_known_path([b"p".as_ref()]),
             key: Some(KnownKey(b"k".to_vec())),
             op: GroveOp::ReplaceNonMerkTreeRoot { hash, meta },
-            displaced_value: DisplacedValue::MayBeParticipant,
         };
         let dbg = format!("{:?}", internal_op3);
         assert!(dbg.contains("Replace Non-Merk Tree Root"));
@@ -518,7 +515,6 @@ mod tests {
 
                 non_counted: false,
             },
-            displaced_value: DisplacedValue::MayBeParticipant,
         };
         let dbg = format!("{:?}", internal_op4);
         assert!(dbg.contains("Insert Non-Merk Tree"));
