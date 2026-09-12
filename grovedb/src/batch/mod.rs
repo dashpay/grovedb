@@ -1005,14 +1005,6 @@ impl OpDeclarations {
             self.displaced_values.insert(qualified, op.displaced_value);
         }
     }
-
-    fn may_be_participant(&self, qualified_path: &[Vec<u8>]) -> bool {
-        self.displaced_values
-            .get(qualified_path)
-            .copied()
-            .unwrap_or_default()
-            .may_be_participant()
-    }
 }
 
 /// Batch operation
@@ -1748,7 +1740,12 @@ impl GroveDbOpConsistencyResults {
 /// Cache for Merk trees by their paths.
 struct TreeCacheMerkByPath<S, F, F2> {
     backward_references_prepared: bool,
-    unprepared_subtree_removals: Vec<Vec<Vec<u8>>>,
+    /// Each op's declaration by qualified path, for the ops this cache is
+    /// applying: the initial segment's, then the continuation's added on top.
+    declarations: HashMap<Vec<Vec<u8>>, DisplacedValue>,
+    /// Populated Merk subtrees the observer saw removed or replaced, each
+    /// with the declaration of the op that displaced it.
+    unprepared_subtree_removals: Vec<(Vec<Vec<u8>>, DisplacedValue)>,
     merks: HashMap<Vec<Vec<u8>>, Merk<S>>,
     /// Empty Merks reserved while scanning tree insertions, with no path
     /// operations applied yet. A skipped insertion must not carry its
@@ -1826,7 +1823,7 @@ impl<S, F, F2> fmt::Debug for TreeCacheMerkByPath<S, F, F2> {
 /// empty on V1..V3.
 #[derive(Default)]
 struct BatchApplyCaptures {
-    unprepared_subtree_removals: Vec<Vec<Vec<u8>>>,
+    unprepared_subtree_removals: Vec<(Vec<Vec<u8>>, DisplacedValue)>,
     /// Cidx primary paths displaced by a safe-subset overwrite; their old
     /// primary subtree storage + per-axis secondary namespaces get cleared.
     cidx_overwrite_cleanup_paths: Vec<Vec<Vec<u8>>>,
@@ -2049,7 +2046,7 @@ trait TreeCache<G, SR> {
     /// (primary subtree + secondary namespace) must be cleaned up
     /// because a safe-subset overwrite replaced them with a non-cidx
     /// element or an empty cidx. Default impl returns an empty Vec.
-    fn take_unprepared_subtree_removals(&mut self) -> Vec<Vec<Vec<u8>>> {
+    fn take_unprepared_subtree_removals(&mut self) -> Vec<(Vec<Vec<u8>>, DisplacedValue)> {
         Vec::new()
     }
 
@@ -3024,7 +3021,7 @@ where
             .insert(qualified_path, element.clone());
     }
 
-    fn take_unprepared_subtree_removals(&mut self) -> Vec<Vec<Vec<u8>>> {
+    fn take_unprepared_subtree_removals(&mut self) -> Vec<(Vec<Vec<u8>>, DisplacedValue)> {
         std::mem::take(&mut self.unprepared_subtree_removals)
     }
 
@@ -4632,7 +4629,16 @@ where
                             {
                                 let mut qualified = path.clone();
                                 qualified.push(key.to_vec());
-                                self.unprepared_subtree_removals.push(qualified);
+                                // The declaration of the op displacing this
+                                // tree, recorded here so a later op at the
+                                // same path (another segment) cannot speak
+                                // for it.
+                                let declared = self
+                                    .declarations
+                                    .get(&qualified)
+                                    .copied()
+                                    .unwrap_or_default();
+                                self.unprepared_subtree_removals.push((qualified, declared));
                             }
                         }
                         Err(error) => {
@@ -5470,6 +5476,7 @@ impl GroveDb {
         )
             -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
     {
+        let declarations = OpDeclarations::from_ops(&ops).displaced_values;
         check_grovedb_v0_with_cost!(
             "apply_body",
             grove_version.grovedb_versions.apply_batch.apply_body
@@ -5483,6 +5490,7 @@ impl GroveDb {
                 split_removed_bytes_function,
                 TreeCacheMerkByPath {
                     backward_references_prepared,
+                    declarations,
                     unprepared_subtree_removals: Vec::new(),
                     merks: Default::default(),
                     unused_new_merks: Default::default(),
@@ -5554,6 +5562,13 @@ impl GroveDb {
                 .apply_batch
                 .continue_partial_apply_body
         );
+        // The continuation applies the initial segment's leftover ops (already
+        // declared) plus the add-on ops; positions cannot collide across
+        // segments except validated ancestor merges, where the add-on op is
+        // the one executing.
+        merk_tree_cache
+            .declarations
+            .extend(OpDeclarations::from_ops(&additional_ops).displaced_values);
         // The first segment's conditional insertions may have been skipped.
         // Keep their actual stored values authoritative for references and
         // discard only unused placeholders reserved for the attempted trees.
@@ -7606,7 +7621,7 @@ impl GroveDb {
             merk_delete_paths: add_on_merk_delete_paths,
             cidx_primary_delete_paths: add_on_cidx_primary_delete_paths,
             skipped_delete_paths: add_on_skipped_delete_paths,
-            delete_tree_behaviors: add_on_delete_tree_behaviors,
+            delete_tree_behaviors: mut add_on_delete_tree_behaviors,
         } = cost_return_on_error!(
             &mut cost,
             self.scan_delete_tree_ops(
@@ -7619,8 +7634,14 @@ impl GroveDb {
         non_merk_delete_paths.extend(add_on_non_merk_delete_paths);
         merk_delete_paths.extend(add_on_merk_delete_paths);
         cidx_primary_delete_paths.extend(add_on_cidx_primary_delete_paths);
+        // A skipped add-on `DeleteTree` executed nothing: drop its entry
+        // before merging so it neither exempts a replacement nor erases the
+        // cleanup behavior of a deletion the initial segment executed at the
+        // same path.
+        for path in &add_on_skipped_delete_paths {
+            add_on_delete_tree_behaviors.remove(path);
+        }
         delete_tree_behaviors.extend(add_on_delete_tree_behaviors);
-        op_declarations.extend_from(&new_operations);
         for op in &new_operations {
             if is_merged_ancestor(op)
                 && let GroveOp::DeleteTree(_, behavior) = &op.op
@@ -7652,11 +7673,9 @@ impl GroveDb {
         } else {
             new_operations
         };
-        // Same as the initial segment: a skipped add-on `DeleteTree` exempts
-        // nothing.
-        for path in &add_on_skipped_delete_paths {
-            delete_tree_behaviors.remove(path);
-        }
+        // Only executed add-on deletes account for participants under a
+        // removed subtree.
+        op_declarations.extend_from(&new_operations);
 
         // we are trying to finalize
         batch_apply_options.batch_pause_height = None;
@@ -7695,13 +7714,11 @@ impl GroveDb {
         // are checked on the cleanup walk below, which already decodes the
         // contents, and `DontCheckWithNoCleanup` declares that the batch's
         // own deletes, each gated by the observer, emptied the subtree.
-        for path in partial_subtree_removals
+        for (path, declared) in partial_subtree_removals
             .into_iter()
             .chain(continue_subtree_removals)
         {
-            if delete_tree_behaviors.contains_key(&path)
-                || !op_declarations.may_be_participant(&path)
-            {
+            if delete_tree_behaviors.contains_key(&path) || !declared.may_be_participant() {
                 continue;
             }
             if !cost_return_on_error!(
