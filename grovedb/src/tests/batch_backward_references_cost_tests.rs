@@ -34,7 +34,9 @@ use crate::{
 };
 
 fn not_participant(ops: Vec<QualifiedGroveDbOp>) -> Vec<QualifiedGroveDbOp> {
-    ops.into_iter().map(|op| op.dont_check()).collect()
+    ops.into_iter()
+        .map(|op| op.dont_check_for_backwards_references())
+        .collect()
 }
 
 fn sibling_bidi(key: &[u8]) -> Element {

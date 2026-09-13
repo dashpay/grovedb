@@ -1283,7 +1283,9 @@ mod tests {
     /// The estimator charges the displaced-participant fan-out only for ops
     /// that declare `MayBeParticipant`; these plain-write pins declare none.
     fn not_participant(ops: Vec<QualifiedGroveDbOp>) -> Vec<QualifiedGroveDbOp> {
-        ops.into_iter().map(|op| op.dont_check()).collect()
+        ops.into_iter()
+            .map(|op| op.dont_check_for_backwards_references())
+            .collect()
     }
 
     use crate::DisplacedValue;

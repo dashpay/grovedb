@@ -681,7 +681,7 @@ impl GroveOp {
 
     /// The `DontCheck` twin of a displacing op (`InsertOrReplace`, `Replace`,
     /// `Patch`, `Delete`, `DeleteTree`); every other op is returned as is.
-    pub fn dont_check(self) -> Self {
+    pub fn dont_check_for_backwards_references(self) -> Self {
         match self {
             GroveOp::InsertOrReplace { element } => GroveOp::InsertOrReplaceDontCheck { element },
             GroveOp::Replace { element } => GroveOp::ReplaceDontCheck { element },
@@ -1254,8 +1254,8 @@ impl QualifiedGroveDbOp {
     /// The same op with its `DontCheck` twin: the declaration that the value
     /// it displaces takes no part in backward references. Ops without a twin
     /// are returned as is.
-    pub fn dont_check(mut self) -> Self {
-        self.op = self.op.dont_check();
+    pub fn dont_check_for_backwards_references(mut self) -> Self {
+        self.op = self.op.dont_check_for_backwards_references();
         self
     }
 
@@ -1266,7 +1266,7 @@ impl QualifiedGroveDbOp {
     pub fn with_displaced_value(mut self, displaced_value: DisplacedValue) -> Self {
         self.op = match displaced_value {
             DisplacedValue::MayBeParticipant => self.op.checked(),
-            DisplacedValue::NotParticipant => self.op.dont_check(),
+            DisplacedValue::NotParticipant => self.op.dont_check_for_backwards_references(),
         };
         self
     }

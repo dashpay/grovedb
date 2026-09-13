@@ -66,7 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by default), and every displacing batch op has a `DontCheck` twin that
   makes the `NotParticipant` declaration: `DeleteDontCheck`,
   `DeleteTreeDontCheck`, `InsertOrReplaceDontCheck`, `ReplaceDontCheck`,
-  `PatchDontCheck` (`GroveOp::dont_check` / `QualifiedGroveDbOp::dont_check`
+  `PatchDontCheck` (`GroveOp::dont_check_for_backwards_references` / `QualifiedGroveDbOp::dont_check_for_backwards_references`
   convert a checked op). `BatchApplyOptions` carries no backward-references
   policy. V4 has one write
   path: the displaced value is read for the write anyway, so

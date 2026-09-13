@@ -398,7 +398,7 @@ fn batch_rejections_hold() {
                 b"value".to_vec(),
                 Element::new_item_allowing_bidirectional_references(b"x".to_vec()),
             )
-            .dont_check()],
+            .dont_check_for_backwards_references()],
             None,
             None,
             grove_version,

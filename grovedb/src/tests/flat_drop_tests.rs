@@ -183,7 +183,7 @@ mod tests {
                     TreeType::NormalTree,
                     SubelementsDeletionBehavior::DropFlat,
                 )
-                .dont_check()],
+                .dont_check_for_backwards_references()],
                 None,
                 None,
                 version,
@@ -587,7 +587,7 @@ mod tests {
                 TreeType::NormalTree,
                 SubelementsDeletionBehavior::DropFlat,
             )
-            .dont_check(),
+            .dont_check_for_backwards_references(),
         ];
         db.apply_batch(ops, None, None, grove_version)
             .unwrap()
@@ -624,7 +624,7 @@ mod tests {
             TreeType::NormalTree,
             SubelementsDeletionBehavior::DropFlat,
         )
-        .dont_check()];
+        .dont_check_for_backwards_references()];
         db.apply_batch(ops, None, Some(&tx), grove_version)
             .unwrap()
             .expect("apply batch in tx");
@@ -650,7 +650,7 @@ mod tests {
             TreeType::NormalTree,
             SubelementsDeletionBehavior::DropFlat,
         )
-        .dont_check()];
+        .dont_check_for_backwards_references()];
         assert!(matches!(
             db.apply_batch(ops, None, None, &GROVE_V3).unwrap(),
             Err(Error::VersionError(_))
@@ -697,7 +697,7 @@ mod tests {
             TreeType::ProvableCountIndexedTree,
             SubelementsDeletionBehavior::DropFlat,
         )
-        .dont_check()];
+        .dont_check_for_backwards_references()];
         db.apply_batch(ops, None, None, grove_version)
             .unwrap()
             .expect("apply batch");
@@ -720,7 +720,7 @@ mod tests {
             TreeType::NormalTree,
             SubelementsDeletionBehavior::DropFlat,
         )
-        .dont_check()];
+        .dont_check_for_backwards_references()];
         db.apply_operations_without_batching(ops, None, None, grove_version)
             .unwrap()
             .expect("apply without batching");
@@ -885,7 +885,7 @@ mod tests {
             TreeType::NormalTree,
             SubelementsDeletionBehavior::DropFlat,
         )
-        .dont_check()];
+        .dont_check_for_backwards_references()];
 
         let mut average_paths = HashMap::new();
         average_paths.insert(

@@ -29,7 +29,9 @@ fn reference(target: &[u8], cascade: bool) -> Element {
 }
 
 fn not_participant(ops: Vec<QualifiedGroveDbOp>) -> Vec<QualifiedGroveDbOp> {
-    ops.into_iter().map(|op| op.dont_check()).collect()
+    ops.into_iter()
+        .map(|op| op.dont_check_for_backwards_references())
+        .collect()
 }
 
 fn chain(cascade: bool) -> TempGroveDb {
@@ -160,7 +162,7 @@ fn default_plain_overwrite_cascades_and_a_false_not_participant_claim_is_refused
                 db.apply_batch(
                     vec![match declared {
                         DisplacedValue::MayBeParticipant => op,
-                        DisplacedValue::NotParticipant => op.dont_check(),
+                        DisplacedValue::NotParticipant => op.dont_check_for_backwards_references(),
                     }],
                     None,
                     None,
@@ -805,7 +807,7 @@ fn ordinary_batch_conditionals_and_duplicate_positions_keep_executor_semantics()
                 ops.into_iter()
                     .map(|op| match declared {
                         DisplacedValue::MayBeParticipant => op,
-                        DisplacedValue::NotParticipant => op.dont_check(),
+                        DisplacedValue::NotParticipant => op.dont_check_for_backwards_references(),
                     })
                     .collect(),
                 Some(BatchApplyOptions {
@@ -954,7 +956,7 @@ fn declared_empty_subtree_removals_skip_the_participant_scan() {
                     .cloned()
                     .map(|op| match declared {
                         DisplacedValue::MayBeParticipant => op,
-                        DisplacedValue::NotParticipant => op.dont_check(),
+                        DisplacedValue::NotParticipant => op.dont_check_for_backwards_references(),
                     })
                     .collect();
                 let result = if partial {
@@ -1003,7 +1005,7 @@ fn declared_empty_subtree_removals_skip_the_participant_scan() {
             .cloned()
             .map(|op| match declared {
                 DisplacedValue::MayBeParticipant => op,
-                DisplacedValue::NotParticipant => op.dont_check(),
+                DisplacedValue::NotParticipant => op.dont_check_for_backwards_references(),
             })
             .collect();
         let result = db.apply_batch(ops, None, None, version);
@@ -1195,9 +1197,9 @@ fn non_batched_apply_keeps_the_op_declaration_without_options() {
         b"value".to_vec(),
         Element::new_item(vec![2]),
     )
-    .dont_check();
-    let delete =
-        QualifiedGroveDbOp::delete_op(vec![TEST_LEAF.to_vec()], b"value".to_vec()).dont_check();
+    .dont_check_for_backwards_references();
+    let delete = QualifiedGroveDbOp::delete_op(vec![TEST_LEAF.to_vec()], b"value".to_vec())
+        .dont_check_for_backwards_references();
     for op in [overwrite, delete] {
         for options in [None, Some(BatchApplyOptions::default())] {
             let db = chain(true);
@@ -1227,7 +1229,7 @@ fn skipped_conditional_insert_checks_no_displaced_value() {
             b"value".to_vec(),
             Element::new_item(vec![2]),
         )
-        .dont_check()],
+        .dont_check_for_backwards_references()],
         None,
         None,
         version,
@@ -1313,7 +1315,7 @@ fn initial_segment_removal_keeps_its_own_declaration() {
                         Element::new_item(vec![2]),
                     )
                 }
-                .dont_check()])
+                .dont_check_for_backwards_references()])
             },
             None,
             version,

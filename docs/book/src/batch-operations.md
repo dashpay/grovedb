@@ -262,7 +262,7 @@ maintains a participant the write lands on, its `DontCheck` twin
 `ReplaceDontCheck`, `PatchDontCheck`) declares the stored value takes no
 part in backward references and is refused if that turns out to be false.
 The check reads nothing extra, since the batch reads the value for the
-write anyway; convert a checked op with `QualifiedGroveDbOp::dont_check` at
+write anyway; convert a checked op with `QualifiedGroveDbOp::dont_check_for_backwards_references` at
 positions known to hold no participants. Partial batches refuse participant mutations; use a full batch
 for reference maintenance. Recursive removal of a subtree containing
 participants is supported by live `delete`; see the bidirectional references

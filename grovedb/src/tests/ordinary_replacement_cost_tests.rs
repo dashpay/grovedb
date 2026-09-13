@@ -114,7 +114,7 @@ fn replace_cost(
                 KEY.to_vec(),
                 after,
             )
-            .dont_check()],
+            .dont_check_for_backwards_references()],
             None,
             Some(&tx),
             grove_version,
