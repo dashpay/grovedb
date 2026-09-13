@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.1] - 2026-09-13
+
+GroveDB 6.0.1 is the 6.0 release to depend on. It supersedes 6.0.0, which is
+withdrawn (see its yanked entry below for what 6.0.1 changes relative to it).
+The entries below are the notable changes recorded in this file; the full list
+of merged pull requests is in the GitHub release notes for v6.0.0 and v6.0.1.
+The package version is independent of the `GroveVersion` runtime compatibility
+versions, which gain `GROVE_V4` in this release.
+
 ### Added
 - Bidirectional references (#345): four new `Element` variants —
   `BidirectionalReference` (discriminant 25), `ItemWithBackwardsReferences`
@@ -99,16 +108,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   delete probe per op declared `Check` instead of per layer; ops
   that write a participant themselves are charged from the op regardless.
 - Bumped the GroveDB workspace crates and their internal dependency requirements
-  to **6.0.0** for the public API changes since 5.0.1. This package version is
+  to **6.0.1** for the public API changes since 5.0.1 (6.0.0 was published on
+  2026-09-08 and withdrawn; see its entry below). This package version is
   independent of the existing `GroveVersion` runtime compatibility versions.
 - Bumped `grovedb-bincode` and `grovedb-bincode-derive` together to **2.1.0**.
   Their new opt-in untrusted decoding traits, derives, and entry points are
   backward-compatible API additions to the fork's upstream 2.0.1 baseline.
+- **BREAKING**: Git consumers of the GroveDB workspace now resolve the
+  published `grovedb-bincode` / `grovedb-bincode-derive` 2.1.0 registry crates
+  instead of the repository-local copies: the workspace `path` entries are
+  removed and the exact `=2.1.0` requirements stay. Types that use GroveDB's
+  codec share one `Encode` / `Decode` trait identity with SDKs that use the
+  published crates; serialized bytes and decoding behavior are unchanged
+  (#948)
 - Updated delete function to include grove_version parameter (#377)
 - Adjusted batch size type for better performance (#377)
 - Renamed `prove_internal` to `prove_query_non_serialized` for clarity (#373)
 
 ### Fixed
+- Recursive subtree discovery (`find_subtrees`, used by recursive deletion and
+  `delete_up_tree`) no longer tries to decode populated non-Merk descendants
+  (MMR, bulk append, dense, commitment and private document store trees) as
+  Merk nodes, which failed with a Merk decoding error and prevented deleting an
+  otherwise healthy ancestor. On `GROVE_V4`
+  (`operations.non_merk_tree.subtree_discovery: 1`) descendants are classified
+  from their already-decoded elements: every tree namespace stays in the
+  cleanup result, only Merk-backed descendants are traversed, and the cleanup
+  still clears non-Merk payloads and all indexed-axis namespaces at no extra
+  storage reads. `GROVE_V1`..`GROVE_V3` keep the historical traversal, costs
+  and failures. `GroveDBOperationsNonMerkTreeVersions` gains the
+  `subtree_discovery` slot (#949, closes #890)
 - `verify_query_get_parent_tree_info_with_options` no longer rejects every `SizedQuery::offset` before decoding the proof; it defers to the same envelope gate as `verify_query_with_options`, so an offset-paginated V1 count-offset proof over a `ProvableCountTree` / `ProvableCountSumTree` / `ProvableCountProvableSumTree` verifies through it (V0 envelopes still reject a nonzero offset, and `Some(0)` is no offset). Empty targets report their own zero aggregates instead of stale ancestor metadata or a missing-parent-info error. Absence-proof verification (`absence_proofs_for_non_existing_searched_keys`, the `*_with_absence_proof` entry points and the decoded `GroveDBProof` variants) now refuses a nonzero offset with `NotSupported` on every entry: the expected-key projection (`terminal_keys`) enumerates a range from its first key and a count-offset proof does not reveal which rows the offset skipped, so a V1 proof for the `offset 2, limit 5` page of `a..=e` reported the existing rows `a` and `b` as proven absent (#707)
 - An add-on operation returned by a partial batch's callback (`apply_partial_batch*`) no longer discards the ancestor update the paused batch is still carrying, on `GROVE_V4` (`apply_batch.add_on_op_collision: 1`). The leftover root-level `ReplaceTreeRootKey` / `InsertTreeWithRootHash` for a modified child tree was silently replaced by an add-on op at the same path and key, so the child's writes were committed but its parent element was rewritten from the callback's bytes with no root key and a stale aggregate, orphaning the subtree. A colliding unconditional add-on insert is now merged with the pending root state only if it preserves the tree type; conditional inserts retain their error-or-skip semantics without changing pending flags or child state. A colliding delete is accepted only if the child ended the batch empty, a collision with a pending non-Merk root update is refused with `InvalidBatchOperation`, and an add-on op duplicating a still-unexecuted user op of the initial batch is refused by the consistency check (last op wins when that check is disabled, as within a single batch). `GROVE_V3` cannot compose these collisions and the cross-segment safety gate refuses them (#708)
 - Count-offset paginated proofs (`SizedQuery::offset` over a `ProvableCountTree` / `ProvableCountSumTree` / `ProvableCountProvableSumTree`) no longer paginate by descendant totals. A nested count-bearing tree contributes its own aggregate count to the host (0 when empty) but is one row to ordinary pagination, so a collapsed `HashWithCount` over it consumed several rows of offset for one physical row and proved a different page than the trusted read, with a valid count commitment. The prover now walks every subtree it is about to collapse for offset and refuses the query unless each row contributes exactly one count unit, and refuses a non-unit row it descends through; Disjoint and past-limit collapses are unchanged. Proof format and verifier are unchanged and honest proofs are byte-identical, so no version gate. The verifier's `skipped` is documented as count units (#864)
@@ -119,6 +148,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Direct and batch references to `NonCounted`-wrapped items now commit to identical stored terminal bytes on `GROVE_V4` (`add_element_on_transaction: 2`). `verify_grovedb` and V1 proof generation select the terminal representation matching each reference's stored commitment, preserving older direct-write hashes across upgrades. Offset-paginated proof rows resolved through a reference may surface the wrapped target (`CountOffsetReturnedItem::resolved_from_reference`) (#858)
 - Corrected proof verification logic in GroveDb (#371)
 - Added ASCII check before appending string to hex display for better visualization (#376)
+
+## [6.0.0] - 2026-09-08 [YANKED]
+
+Do not use 6.0.0. It is superseded by 6.0.1 and should be treated as
+withdrawn. Relative to 6.0.0, 6.0.1:
+
+- Maintains backward references by default. In 6.0.0 maintenance was opt-in
+  per call (`propagate_backward_references`, default off), so an ordinary
+  insert, delete or batch over a referenced element left stale hashes and
+  dangling registrations behind. 6.0.1 maintains the chains on every V4 write
+  and replaces the flag with a per-operation `Check` / `DontCheck`
+  declaration whose false `DontCheck` claims are refused (#951, #953).
+- Fixes recursive discovery and deletion, which failed with a Merk decoding
+  error on any tree holding a populated non-Merk descendant (#949, #890).
+- Makes Git consumers resolve the published `grovedb-bincode` 2.1.0 crates,
+  so their types share `Encode` / `Decode` trait identities with SDKs that use
+  the registry crates (#948).
+- Publishes the workspace crates through the release workflow in dependency
+  order, skipping versions already on crates.io (#947). The 6.0.0 publish was
+  partial: `grovedb` and `grovedb-merk` were never published at 6.0.0.
 
 ## Version History
 
