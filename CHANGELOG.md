@@ -80,9 +80,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cleanup walk it makes anyway, refusing a participant the batch does not
   explicitly delete. A delete-up-tree chain and a batch recursive removal
   therefore cost the plain removal on V4. A flat drop must be a
-  `DeleteTreeDontCheck`. Partial batches still refuse
-  participant mutations, and earlier protocol versions retain their
-  historical behavior.
+  `DeleteTreeDontCheck`. The batch ops GroveDB builds for a caller carry
+  the caller's declaration: `delete_operation_for_delete_internal` reads it
+  from `DeleteOptions`, the delete-up-tree chain from the new
+  `DeleteUpTreeOptions::displaced_value`, and the average- and worst-case
+  delete builders take a `DisplacedValue` parameter
+  (`QualifiedGroveDbOp::with_displaced_value` applies one to any op).
+  Partial batches still refuse participant mutations, and earlier protocol
+  versions retain their historical behavior.
 - **BREAKING**: `EstimatedLayerInformation::may_contain_backward_references`
   and the `*WithBackwardReferences` variants of `WorstCaseLayerInformation`
   are removed. The estimators charge the displaced-participant fan-out and

@@ -1259,6 +1259,18 @@ impl QualifiedGroveDbOp {
         self
     }
 
+    /// The same op carrying `displaced_value` as its declaration: the
+    /// `DontCheck` twin for [`DisplacedValue::NotParticipant`], the checked
+    /// op for [`DisplacedValue::MayBeParticipant`]. Ops without a twin are
+    /// returned as is.
+    pub fn with_displaced_value(mut self, displaced_value: DisplacedValue) -> Self {
+        self.op = match displaced_value {
+            DisplacedValue::MayBeParticipant => self.op.checked(),
+            DisplacedValue::NotParticipant => self.op.dont_check(),
+        };
+        self
+    }
+
     /// An insert op using a known owned path and known key.
     /// The caller asserts the key is new — no existence check is performed.
     /// This is a performance optimization hint.

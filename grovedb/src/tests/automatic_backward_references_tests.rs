@@ -1,15 +1,19 @@
 //! Default maintenance, explicit opt-out, and cached observation regressions.
 
-use grovedb_merk::element::get::ElementFetchFromStorageExtensions;
+use grovedb_merk::{element::get::ElementFetchFromStorageExtensions, tree_type::TreeType};
 use grovedb_path::SubtreePath;
+use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
-    batch::{BatchApplyOptions, QualifiedGroveDbOp},
-    operations::{delete::DeleteOptions, insert::InsertOptions},
+    batch::{key_info::KeyInfo, BatchApplyOptions, GroveOp, KeyInfoPath, QualifiedGroveDbOp},
+    operations::{
+        delete::{DeleteOptions, DeleteUpTreeOptions},
+        insert::InsertOptions,
+    },
     reference_path::ReferencePathType,
     tests::{make_test_grovedb, TempGroveDb, TEST_LEAF},
-    BidirectionalReference, DisplacedValue, Element, Error,
+    BidirectionalReference, DisplacedValue, Element, Error, GroveDb,
 };
 
 fn reference(target: &[u8], cascade: bool) -> Element {
@@ -1397,4 +1401,228 @@ fn skipped_callback_delete_keeps_the_executed_deletions_cleanup() {
         .verify_grovedb(None, true, true, version)
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn delete_op_builders_carry_the_declared_displaced_value() {
+    let version = GroveVersion::latest();
+    let db = make_test_grovedb(version);
+    db.insert(
+        &[TEST_LEAF],
+        b"item",
+        Element::new_item(b"v".to_vec()),
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF],
+        b"outer",
+        Element::empty_tree(),
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF, b"outer"],
+        b"inner",
+        Element::empty_tree(),
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+
+    let build = |path: &[&[u8]], key: &[u8], declared: DisplacedValue| {
+        db.delete_operation_for_delete_internal(
+            SubtreePath::from(path),
+            key,
+            &DeleteOptions::default().with_displaced_value(declared),
+            None,
+            &[],
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap()
+        .expect("the delete op is built")
+        .op
+    };
+    assert!(matches!(
+        build(&[TEST_LEAF], b"item", DisplacedValue::MayBeParticipant),
+        GroveOp::Delete
+    ));
+    assert!(matches!(
+        build(&[TEST_LEAF], b"item", DisplacedValue::NotParticipant),
+        GroveOp::DeleteDontCheck
+    ));
+    assert!(matches!(
+        build(
+            &[TEST_LEAF, b"outer"],
+            b"inner",
+            DisplacedValue::MayBeParticipant
+        ),
+        GroveOp::DeleteTree(..)
+    ));
+    assert!(matches!(
+        build(
+            &[TEST_LEAF, b"outer"],
+            b"inner",
+            DisplacedValue::NotParticipant
+        ),
+        GroveOp::DeleteTreeDontCheck(..)
+    ));
+
+    // The up-tree chain declares every level from its own options.
+    let chain_ops = |declared: DisplacedValue| {
+        db.delete_operations_for_delete_up_tree_while_empty(
+            SubtreePath::from([TEST_LEAF, b"outer"].as_ref()),
+            b"inner",
+            &DeleteUpTreeOptions {
+                // Stop before the root leaf, which cannot be deleted.
+                stop_path_height: Some(0),
+                displaced_value: declared,
+                ..Default::default()
+            },
+            None,
+            vec![],
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let checked = chain_ops(DisplacedValue::MayBeParticipant);
+    assert_eq!(checked.len(), 2, "inner, then the emptied outer");
+    assert!(checked.iter().all(|op| !op.op.is_dont_check()));
+    let declared = chain_ops(DisplacedValue::NotParticipant);
+    assert_eq!(declared.len(), 2);
+    assert!(declared.iter().all(|op| op.op.is_dont_check()));
+
+    // The estimated builders declare the same way, so the estimator sees the
+    // op the stateful path would apply.
+    let path = KeyInfoPath::from_known_owned_path(vec![TEST_LEAF.to_vec()]);
+    let key = KeyInfo::KnownKey(b"item".to_vec());
+    let average = GroveDb::average_case_delete_operation_for_delete::<RocksDbStorage>(
+        &path,
+        &key,
+        TreeType::NormalTree,
+        false,
+        true,
+        0,
+        (4, 8),
+        DisplacedValue::NotParticipant,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(matches!(average.op, GroveOp::DeleteDontCheck));
+    let worst = GroveDb::worst_case_delete_operation_for_delete::<RocksDbStorage>(
+        &path,
+        &key,
+        TreeType::NormalTree,
+        false,
+        true,
+        0,
+        8,
+        DisplacedValue::MayBeParticipant,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(matches!(worst.op, GroveOp::Delete));
+}
+
+#[test]
+fn delete_up_tree_honors_the_declared_displaced_value() {
+    let version = GroveVersion::latest();
+    let db = make_test_grovedb(version);
+    let sub: &[&[u8]] = &[TEST_LEAF, b"sub"];
+    db.insert(
+        &[TEST_LEAF],
+        b"sub",
+        Element::empty_tree(),
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    db.apply_batch(
+        vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"sub".to_vec()],
+                b"r2".to_vec(),
+                reference(b"r1", true),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"sub".to_vec()],
+                b"value".to_vec(),
+                Element::new_item_allowing_bidirectional_references(b"old".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"sub".to_vec()],
+                b"r1".to_vec(),
+                reference(b"value", true),
+            ),
+        ],
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    let before = db.root_hash(None, version).unwrap().unwrap();
+
+    // A false NotParticipant claim over a participant is refused before
+    // anything commits.
+    let result = db
+        .delete_up_tree_while_empty(
+            sub,
+            b"value",
+            &DeleteUpTreeOptions {
+                stop_path_height: Some(1),
+                displaced_value: DisplacedValue::NotParticipant,
+                ..Default::default()
+            },
+            None,
+            version,
+        )
+        .unwrap();
+    assert!(matches!(result, Err(Error::NotSupported(_))), "{result:?}");
+    assert_eq!(db.root_hash(None, version).unwrap().unwrap(), before);
+    assert!(db
+        .get_raw(SubtreePath::from(sub), b"r1", None, version)
+        .unwrap()
+        .is_ok());
+
+    // The default declaration maintains the chain: the cascading references
+    // go with the value, and the subtree they lived in stays.
+    db.delete_up_tree_while_empty(
+        sub,
+        b"value",
+        &DeleteUpTreeOptions {
+            stop_path_height: Some(1),
+            ..Default::default()
+        },
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    for key in [&b"value"[..], b"r1", b"r2"] {
+        let got = db
+            .get_raw(SubtreePath::from(sub), key, None, version)
+            .unwrap();
+        assert!(matches!(got, Err(Error::PathKeyNotFound(_))), "{got:?}");
+    }
+    assert!(db
+        .get_raw(SubtreePath::from(&[TEST_LEAF]), b"sub", None, version)
+        .unwrap()
+        .is_ok());
 }

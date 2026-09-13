@@ -12,6 +12,8 @@ use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 use intmap::IntMap;
 
+use crate::DisplacedValue;
+
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath, QualifiedGroveDbOp},
     Error, GroveDb,
@@ -27,6 +29,7 @@ impl GroveDb {
         validate: bool,
         intermediate_tree_info: IntMap<u64, (TreeType, u32)>,
         max_element_size: u32,
+        displaced_value: DisplacedValue,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         check_grovedb_v0_with_cost!(
@@ -100,6 +103,7 @@ impl GroveDb {
                         check_if_tree,
                         except_keys_count,
                         max_element_size,
+                        displaced_value,
                         grove_version
                     )
                 );
@@ -110,6 +114,10 @@ impl GroveDb {
     }
 
     /// Worst case costs for delete operation for delete
+    ///
+    /// `displaced_value` picks the checked op or its `DontCheck` twin, which
+    /// decides whether the batch estimator charges the displaced-participant
+    /// fan-out for it.
     pub fn worst_case_delete_operation_for_delete<'db, S: Storage<'db>>(
         path: &KeyInfoPath,
         key: &KeyInfo,
@@ -118,6 +126,7 @@ impl GroveDb {
         check_if_tree: bool,
         except_keys_count: u16,
         max_element_size: u32,
+        displaced_value: DisplacedValue,
         grove_version: &GroveVersion,
     ) -> CostResult<QualifiedGroveDbOp, Error> {
         check_grovedb_v0_with_cost!(
@@ -157,10 +166,10 @@ impl GroveDb {
         // in the worst case this is a tree
         add_worst_case_cost_for_is_empty_tree_except(&mut cost, except_keys_count);
 
-        Ok(QualifiedGroveDbOp::delete_estimated_op(
-            path.clone(),
-            key.clone(),
-        ))
+        Ok(
+            QualifiedGroveDbOp::delete_estimated_op(path.clone(), key.clone())
+                .with_displaced_value(displaced_value),
+        )
         .wrap_with_cost(cost)
     }
 }

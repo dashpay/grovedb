@@ -29,6 +29,10 @@ pub struct DeleteUpTreeOptions {
     pub validate_tree_at_path_exists: bool,
     /// Stop path height
     pub stop_path_height: Option<u16>,
+    /// Whether the values the chain displaces may take part in backward
+    /// references. `NotParticipant` builds the `DontCheck` twins of the
+    /// delete ops; a participant met under that declaration is refused.
+    pub displaced_value: DisplacedValue,
 }
 
 #[cfg(feature = "minimal")]
@@ -40,6 +44,7 @@ impl Default for DeleteUpTreeOptions {
             base_root_storage_is_free: true,
             validate_tree_at_path_exists: false,
             stop_path_height: None,
+            displaced_value: DisplacedValue::MayBeParticipant,
         }
     }
 }
@@ -52,7 +57,7 @@ impl DeleteUpTreeOptions {
             deleting_non_empty_trees_returns_error: self.deleting_non_empty_trees_returns_error,
             base_root_storage_is_free: self.base_root_storage_is_free,
             validate_tree_at_path_exists: self.validate_tree_at_path_exists,
-            displaced_value: DisplacedValue::NotParticipant,
+            displaced_value: self.displaced_value,
         }
     }
 }

@@ -453,9 +453,10 @@ impl GroveDb {
     ///
     /// This builds a batch operation; it performs no reference check itself.
     /// Ordinary [`Reference`](crate::Element::Reference) elements pointing at
-    /// the deleted element become dangling when the batch applies. Whether
-    /// bidirectional references are cascaded is decided by the operation's
-    /// own [`DisplacedValue`] declaration. See the
+    /// the deleted element become dangling when the batch applies. The op
+    /// carries `options.displaced_value`: [`DisplacedValue::NotParticipant`]
+    /// builds the `DontCheck` twin, so whether the batch maintains or refuses
+    /// a backward-reference participant is decided here. See the
     /// [module-level documentation](self) for details.
     pub fn delete_operation_for_delete_internal<B: AsRef<[u8]>>(
         &self,
@@ -595,12 +596,15 @@ impl GroveDb {
                     // Emptiness was already verified above — use
                     // DontCheckWithNoCleanup to avoid a redundant re-check
                     // and skip cleanup (the tree is empty, nothing to clean).
-                    Ok(Some(QualifiedGroveDbOp::delete_tree_op(
-                        path.to_vec(),
-                        key.to_vec(),
-                        tree_type,
-                        SubelementsDeletionBehavior::DontCheckWithNoCleanup,
-                    )))
+                    Ok(Some(
+                        QualifiedGroveDbOp::delete_tree_op(
+                            path.to_vec(),
+                            key.to_vec(),
+                            tree_type,
+                            SubelementsDeletionBehavior::DontCheckWithNoCleanup,
+                        )
+                        .with_displaced_value(options.displaced_value),
+                    ))
                 } else {
                     Err(Error::NotSupported(
                         "deletion operation for non empty tree not currently supported".to_string(),
@@ -608,10 +612,10 @@ impl GroveDb {
                 };
                 result.wrap_with_cost(cost)
             } else {
-                Ok(Some(QualifiedGroveDbOp::delete_op(
-                    path.to_vec(),
-                    key.to_vec(),
-                )))
+                Ok(Some(
+                    QualifiedGroveDbOp::delete_op(path.to_vec(), key.to_vec())
+                        .with_displaced_value(options.displaced_value),
+                ))
                 .wrap_with_cost(cost)
             }
         }
