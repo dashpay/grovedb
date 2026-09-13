@@ -1824,3 +1824,410 @@ fn callback_delete_tree_cannot_exempt_an_initial_replacement() {
         .unwrap()
         .is_empty());
 }
+
+/// Every displacing op converts to its twin and back, reports its
+/// declaration, and renders as such; ops without a twin are returned as is.
+#[test]
+fn twin_conversions_and_debug_output() {
+    use crate::batch::SubelementsDeletionBehavior;
+    use grovedb_merk::TreeType;
+    let path = vec![TEST_LEAF.to_vec()];
+    let item = Element::new_item(vec![1]);
+    let checked_ops = vec![
+        QualifiedGroveDbOp::insert_or_replace_op(path.clone(), b"a".to_vec(), item.clone()),
+        QualifiedGroveDbOp::replace_op(path.clone(), b"b".to_vec(), item.clone()),
+        QualifiedGroveDbOp::patch_op(path.clone(), b"c".to_vec(), item.clone(), 0),
+        QualifiedGroveDbOp::delete_op(path.clone(), b"d".to_vec()),
+        QualifiedGroveDbOp::delete_tree_op(
+            path.clone(),
+            b"t".to_vec(),
+            TreeType::NormalTree,
+            SubelementsDeletionBehavior::DeleteChildren,
+        ),
+    ];
+    for checked in checked_ops {
+        assert!(!checked.op.is_dont_check_for_backwards_references());
+        assert_eq!(
+            checked.op.backwards_references(),
+            BackwardsReferences::Check
+        );
+        let twin = checked.clone().dont_check_for_backwards_references();
+        assert!(twin.op.is_dont_check_for_backwards_references());
+        assert_eq!(
+            twin.op.backwards_references(),
+            BackwardsReferences::DontCheck
+        );
+        assert_ne!(twin.op, checked.op);
+        assert_eq!(twin.op.clone().checked(), checked.op);
+        assert_eq!(checked.op.clone().checked(), checked.op);
+        assert_eq!(
+            twin.clone()
+                .with_backwards_references(BackwardsReferences::Check)
+                .op,
+            checked.op
+        );
+        assert_eq!(
+            checked
+                .clone()
+                .with_backwards_references(BackwardsReferences::DontCheck)
+                .op,
+            twin.op
+        );
+        let rendered = format!("{twin:?}");
+        assert!(
+            rendered.contains("dont check for backwards references"),
+            "{rendered}"
+        );
+        assert!(!format!("{checked:?}").contains("dont check"));
+        assert_eq!(twin.op.to_u8(), checked.op.to_u8());
+        assert!(checked.op < twin.op);
+    }
+    let no_twin =
+        QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(path, b"n".to_vec(), item);
+    let unchanged = no_twin.clone().dont_check_for_backwards_references();
+    assert_eq!(unchanged.op, no_twin.op);
+    assert!(!unchanged.op.is_dont_check_for_backwards_references());
+    assert_eq!(unchanged.op.checked(), no_twin.op);
+}
+
+/// The write twins (`InsertOrReplace`, `Replace`, `Patch`) flow through the
+/// full batch (planner and executor, including root propagation onto a
+/// twin that inserts a subtree the same batch writes into), the partial
+/// batch (initial segment footprint) and the non-batched adapter, and land
+/// exactly like their checked ops.
+#[test]
+fn write_twins_apply_through_every_batch_path() {
+    let version = GroveVersion::latest();
+    let db = make_test_grovedb(version);
+    for key in [&b"a"[..], b"b", b"c"] {
+        db.insert(
+            &[TEST_LEAF],
+            key,
+            Element::new_item(vec![1, 2, 3]),
+            None,
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+    }
+    for tree in [&b"sub"[..], b"sub2"] {
+        db.insert(
+            &[TEST_LEAF],
+            tree,
+            Element::empty_tree(),
+            None,
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+    }
+    let leaf = || vec![TEST_LEAF.to_vec()];
+    let under = |tree: &[u8]| vec![TEST_LEAF.to_vec(), tree.to_vec()];
+    let item = |byte: u8| Element::new_item(vec![byte, byte, byte]);
+
+    // Full batch: item twins plus empty-subtree twins whose contents the
+    // same batch writes, so the parent-level op is rebuilt with the
+    // propagated root.
+    db.apply_batch(
+        vec![
+            QualifiedGroveDbOp::insert_or_replace_op(leaf(), b"a".to_vec(), item(4))
+                .dont_check_for_backwards_references(),
+            QualifiedGroveDbOp::replace_op(leaf(), b"b".to_vec(), item(4))
+                .dont_check_for_backwards_references(),
+            QualifiedGroveDbOp::patch_op(leaf(), b"c".to_vec(), item(4), 0)
+                .dont_check_for_backwards_references(),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                leaf(),
+                b"sub".to_vec(),
+                Element::empty_tree(),
+            )
+            .dont_check_for_backwards_references(),
+            QualifiedGroveDbOp::insert_or_replace_op(under(b"sub"), b"y".to_vec(), item(7))
+                .dont_check_for_backwards_references(),
+            QualifiedGroveDbOp::replace_op(leaf(), b"sub2".to_vec(), Element::empty_tree())
+                .dont_check_for_backwards_references(),
+            QualifiedGroveDbOp::insert_or_replace_op(under(b"sub2"), b"z".to_vec(), item(8)),
+        ],
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .expect("write twins over plain values apply");
+    for key in [&b"a"[..], b"b", b"c"] {
+        assert_eq!(
+            db.get(&[TEST_LEAF], key, None, version).unwrap().unwrap(),
+            item(4)
+        );
+    }
+    assert_eq!(
+        db.get(&[TEST_LEAF, b"sub"], b"y", None, version)
+            .unwrap()
+            .unwrap(),
+        item(7)
+    );
+    assert_eq!(
+        db.get(&[TEST_LEAF, b"sub2"], b"z", None, version)
+            .unwrap()
+            .unwrap(),
+        item(8)
+    );
+
+    // Partial batch: the same twins in the initial segment, a twin in the
+    // callback.
+    db.apply_partial_batch(
+        vec![
+            QualifiedGroveDbOp::insert_or_replace_op(leaf(), b"a".to_vec(), item(1))
+                .dont_check_for_backwards_references(),
+            QualifiedGroveDbOp::replace_op(leaf(), b"b".to_vec(), item(1))
+                .dont_check_for_backwards_references(),
+            QualifiedGroveDbOp::patch_op(leaf(), b"c".to_vec(), item(1), 0)
+                .dont_check_for_backwards_references(),
+        ],
+        None,
+        |_, _| {
+            Ok(vec![QualifiedGroveDbOp::replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"a".to_vec(),
+                Element::new_item(vec![2, 2, 2]),
+            )
+            .dont_check_for_backwards_references()])
+        },
+        None,
+        version,
+    )
+    .unwrap()
+    .expect("write twins apply in both partial-batch segments");
+    assert_eq!(
+        db.get(&[TEST_LEAF], b"a", None, version).unwrap().unwrap(),
+        item(2)
+    );
+
+    // Non-batched adapter.
+    db.apply_operations_without_batching(
+        vec![
+            QualifiedGroveDbOp::replace_op(leaf(), b"b".to_vec(), item(3))
+                .dont_check_for_backwards_references(),
+            QualifiedGroveDbOp::insert_or_replace_op(leaf(), b"c".to_vec(), item(3))
+                .dont_check_for_backwards_references(),
+        ],
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .expect("write twins apply without batching");
+    assert_eq!(
+        db.get(&[TEST_LEAF], b"b", None, version).unwrap().unwrap(),
+        item(3)
+    );
+    assert!(db
+        .verify_grovedb(None, true, true, version)
+        .unwrap()
+        .is_empty());
+}
+
+/// A live insert that replaces a populated subtree reads none of its
+/// contents, so the default declaration scans it: a participant inside is
+/// refused, a subtree without one is replaced.
+#[test]
+fn live_tree_replacement_scans_participants_when_checked() {
+    let version = GroveVersion::latest();
+    let seed = |db: &TempGroveDb, child: Element| {
+        db.insert(
+            &[TEST_LEAF],
+            b"sub",
+            Element::empty_tree(),
+            None,
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+        db.insert(&[TEST_LEAF, b"sub"], b"value", child, None, None, version)
+            .unwrap()
+            .unwrap();
+    };
+
+    let db = make_test_grovedb(version);
+    seed(&db, Element::new_item(vec![1]));
+    let over_tree = || {
+        Some(InsertOptions {
+            validate_insertion_does_not_override_tree: false,
+            ..Default::default()
+        })
+    };
+    db.insert(
+        &[TEST_LEAF],
+        b"sub",
+        Element::empty_tree(),
+        over_tree(),
+        None,
+        version,
+    )
+    .unwrap()
+    .expect("a subtree without participants is replaced");
+
+    let db = make_test_grovedb(version);
+    seed(
+        &db,
+        Element::new_item_allowing_bidirectional_references(vec![1]),
+    );
+    db.insert(
+        &[TEST_LEAF],
+        b"outside",
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    b"sub".to_vec(),
+                    b"value".to_vec(),
+                ]),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: None,
+            },
+            None,
+        ),
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    let before = db.root_hash(None, version).unwrap().unwrap();
+    let result = db
+        .insert(
+            &[TEST_LEAF],
+            b"sub",
+            Element::empty_tree(),
+            over_tree(),
+            None,
+            version,
+        )
+        .unwrap();
+    assert!(matches!(result, Err(Error::NotSupported(_))), "{result:?}");
+    assert_eq!(db.root_hash(None, version).unwrap().unwrap(), before);
+    db.get(&[TEST_LEAF], b"outside", None, version)
+        .unwrap()
+        .expect("the outside reference still resolves");
+}
+
+/// A partial batch replacing a populated subtree with a `DontCheck` twin
+/// skips the post-apply participant scan (the observer records the twin's
+/// declaration), and a `DeleteChildren` removal whose participant the
+/// batch explicitly deletes passes the cleanup walk's accounting.
+#[test]
+fn dont_check_replacement_in_a_partial_batch_and_accounted_participant_on_the_cleanup_walk() {
+    use crate::batch::SubelementsDeletionBehavior;
+    use grovedb_merk::TreeType;
+    let version = GroveVersion::latest();
+    let db = make_test_grovedb(version);
+    db.insert(
+        &[TEST_LEAF],
+        b"sub",
+        Element::empty_tree(),
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF, b"sub"],
+        b"x",
+        Element::new_item(vec![1]),
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    db.apply_partial_batch(
+        vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"sub".to_vec(),
+            Element::empty_tree(),
+        )
+        .dont_check_for_backwards_references()],
+        None,
+        |_, _| Ok(vec![]),
+        None,
+        version,
+    )
+    .unwrap()
+    .expect("a DontCheck replacement of a plain subtree is not scanned");
+
+    let db = make_test_grovedb(version);
+    db.insert(
+        &[TEST_LEAF],
+        b"tree",
+        Element::empty_tree(),
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF, b"tree"],
+        b"value",
+        Element::new_item_allowing_bidirectional_references(vec![1]),
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF],
+        b"outside",
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    b"tree".to_vec(),
+                    b"value".to_vec(),
+                ]),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: None,
+            },
+            None,
+        ),
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    db.apply_batch(
+        vec![
+            QualifiedGroveDbOp::delete_op(
+                vec![TEST_LEAF.to_vec(), b"tree".to_vec()],
+                b"value".to_vec(),
+            ),
+            QualifiedGroveDbOp::delete_tree_op(
+                vec![TEST_LEAF.to_vec()],
+                b"tree".to_vec(),
+                TreeType::NormalTree,
+                SubelementsDeletionBehavior::DeleteChildren,
+            ),
+        ],
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .expect("the explicitly deleted participant is accounted for on the cleanup walk");
+    assert!(db
+        .get_raw(SubtreePath::from(&[TEST_LEAF]), b"outside", None, version)
+        .unwrap()
+        .is_err());
+    assert!(db
+        .verify_grovedb(None, true, true, version)
+        .unwrap()
+        .is_empty());
+}
