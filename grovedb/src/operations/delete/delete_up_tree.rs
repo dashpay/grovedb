@@ -30,7 +30,7 @@ pub struct DeleteUpTreeOptions {
     /// Stop path height
     pub stop_path_height: Option<u16>,
     /// Whether the values the chain displaces may take part in backward
-    /// references. `NotParticipant` builds the `DontCheck` twins of the
+    /// references. `NotParticipant` builds the `DontCheckForBackwardsReferences` twins of the
     /// delete ops; a participant met under that declaration is refused.
     pub displaced_value: DisplacedValue,
 }

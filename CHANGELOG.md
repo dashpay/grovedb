@@ -63,10 +63,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   declaration of the stored value an operation displaces. The live
   `InsertOptions`, `DeleteOptions` and `ClearOptions` carry
   `DisplacedValue::{MayBeParticipant, NotParticipant}` (`MayBeParticipant`
-  by default), and every displacing batch op has a `DontCheck` twin that
-  makes the `NotParticipant` declaration: `DeleteDontCheck`,
-  `DeleteTreeDontCheck`, `InsertOrReplaceDontCheck`, `ReplaceDontCheck`,
-  `PatchDontCheck` (`GroveOp::dont_check_for_backwards_references` / `QualifiedGroveDbOp::dont_check_for_backwards_references`
+  by default), and every displacing batch op has a `DontCheckForBackwardsReferences` twin that
+  makes the `NotParticipant` declaration: `DeleteDontCheckForBackwardsReferences`,
+  `DeleteTreeDontCheckForBackwardsReferences`, `InsertOrReplaceDontCheckForBackwardsReferences`, `ReplaceDontCheckForBackwardsReferences`,
+  `PatchDontCheckForBackwardsReferences` (`GroveOp::dont_check_for_backwards_references` / `QualifiedGroveDbOp::dont_check_for_backwards_references`
   convert a checked op). `BatchApplyOptions` carries no backward-references
   policy. V4 has one write
   path: the displaced value is read for the write anyway, so
@@ -80,7 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cleanup walk it makes anyway, refusing a participant the batch does not
   explicitly delete. A delete-up-tree chain and a batch recursive removal
   therefore cost the plain removal on V4. A flat drop must be a
-  `DeleteTreeDontCheck`. The batch ops GroveDB builds for a caller carry
+  `DeleteTreeDontCheckForBackwardsReferences`. The batch ops GroveDB builds for a caller carry
   the caller's declaration: `delete_operation_for_delete_internal` reads it
   from `DeleteOptions`, the delete-up-tree chain from the new
   `DeleteUpTreeOptions::displaced_value`, and the average- and worst-case

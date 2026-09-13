@@ -266,11 +266,11 @@ where
                 GroveOp::InsertWithKnownToNotAlreadyExist { element }
                 | GroveOp::InsertIfNotExists { element, .. }
                 | GroveOp::InsertOrReplace { element }
-                | GroveOp::InsertOrReplaceDontCheck { element }
+                | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
                 | GroveOp::Replace { element }
-                | GroveOp::ReplaceDontCheck { element }
+                | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
                 | GroveOp::Patch { element, .. }
-                | GroveOp::PatchDontCheck { element, .. }
+                | GroveOp::PatchDontCheckForBackwardsReferences { element, .. }
                 | GroveOp::ReplaceBackwardReferenceFamilyMember { element, .. } => {
                     if let Some(tree_type) = element.tree_type() {
                         cost_return_on_error!(
@@ -285,9 +285,9 @@ where
                 }
                 GroveOp::RefreshReference { .. }
                 | GroveOp::Delete
-                | GroveOp::DeleteDontCheck
+                | GroveOp::DeleteDontCheckForBackwardsReferences
                 | GroveOp::DeleteTree(..)
-                | GroveOp::DeleteTreeDontCheck(..) => Ok(()),
+                | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..) => Ok(()),
                 GroveOp::CommitmentTreeInsert { .. }
                 | GroveOp::MmrTreeAppend { .. }
                 | GroveOp::BulkAppend { .. }
@@ -442,13 +442,13 @@ pub(super) fn merge_add_on_op_over_pending(
 
     match &add_on {
         GroveOp::InsertOrReplace { element }
-        | GroveOp::InsertOrReplaceDontCheck { element }
+        | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
         | GroveOp::InsertWithKnownToNotAlreadyExist { element }
         | GroveOp::InsertIfNotExists { element, .. }
         | GroveOp::Replace { element }
-        | GroveOp::ReplaceDontCheck { element }
+        | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
         | GroveOp::Patch { element, .. }
-        | GroveOp::PatchDontCheck { element, .. } => {
+        | GroveOp::PatchDontCheckForBackwardsReferences { element, .. } => {
             // The pending state was computed using the child's original node
             // layout and hash scheme. It cannot authenticate a different tree
             // type, including an indexed/non-indexed counterpart with the same
@@ -472,9 +472,9 @@ pub(super) fn merge_add_on_op_over_pending(
             )
         }
         GroveOp::Delete
-        | GroveOp::DeleteDontCheck
+        | GroveOp::DeleteDontCheckForBackwardsReferences
         | GroveOp::DeleteTree(..)
-        | GroveOp::DeleteTreeDontCheck(..) => {
+        | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..) => {
             if root_key.is_some() {
                 Err(Error::InvalidBatchOperation(
                     "modification of tree when it will be deleted",

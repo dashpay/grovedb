@@ -455,7 +455,7 @@ impl GroveDb {
     /// Ordinary [`Reference`](crate::Element::Reference) elements pointing at
     /// the deleted element become dangling when the batch applies. The op
     /// carries `options.displaced_value`: [`DisplacedValue::NotParticipant`]
-    /// builds the `DontCheck` twin, so whether the batch maintains or refuses
+    /// builds the `DontCheckForBackwardsReferences` twin, so whether the batch maintains or refuses
     /// a backward-reference participant is decided here. See the
     /// [module-level documentation](self) for details.
     pub fn delete_operation_for_delete_internal<B: AsRef<[u8]>>(
@@ -545,9 +545,9 @@ impl GroveDb {
                         .iter()
                         .filter_map(|op| match op.op {
                             GroveOp::Delete
-                            | GroveOp::DeleteDontCheck
+                            | GroveOp::DeleteDontCheckForBackwardsReferences
                             | GroveOp::DeleteTree(..)
-                            | GroveOp::DeleteTreeDontCheck(..) => {
+                            | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..) => {
                                 if op.path.eq_path_vec(&subtree_merk_path_vec) {
                                     Some(op.key.as_ref()?.as_slice())
                                 } else {
@@ -577,9 +577,9 @@ impl GroveDb {
                 // tree then it is not empty either
                 is_empty &= !current_batch_operations.iter().any(|op| match op.op {
                     GroveOp::Delete
-                    | GroveOp::DeleteDontCheck
+                    | GroveOp::DeleteDontCheckForBackwardsReferences
                     | GroveOp::DeleteTree(..)
-                    | GroveOp::DeleteTreeDontCheck(..) => false,
+                    | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..) => false,
                     _ => op.path.eq_path_vec(&subtree_merk_path_vec),
                 });
 

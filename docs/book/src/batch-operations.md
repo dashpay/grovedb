@@ -257,9 +257,9 @@ The existing consent and batch-conflict rules still apply.
 
 Every displacing op declares what it displaces through its variant: the
 checked op (`Delete`, `DeleteTree`, `InsertOrReplace`, `Replace`, `Patch`)
-maintains a participant the write lands on, its `DontCheck` twin
-(`DeleteDontCheck`, `DeleteTreeDontCheck`, `InsertOrReplaceDontCheck`,
-`ReplaceDontCheck`, `PatchDontCheck`) declares the stored value takes no
+maintains a participant the write lands on, its `DontCheckForBackwardsReferences` twin
+(`DeleteDontCheckForBackwardsReferences`, `DeleteTreeDontCheckForBackwardsReferences`, `InsertOrReplaceDontCheckForBackwardsReferences`,
+`ReplaceDontCheckForBackwardsReferences`, `PatchDontCheckForBackwardsReferences`) declares the stored value takes no
 part in backward references and is refused if that turns out to be false.
 The check reads nothing extra, since the batch reads the value for the
 write anyway; convert a checked op with `QualifiedGroveDbOp::dont_check_for_backwards_references` at
@@ -284,7 +284,7 @@ charges the displaced-participant fan-out for its plain write or delete, an
 op declared `NotParticipant` estimates the plain write alone, and ops that
 write a participant themselves are always charged.
 
-`SubelementsDeletionBehavior::DropFlat` requires the `DeleteTreeDontCheck`
+`SubelementsDeletionBehavior::DropFlat` requires the `DeleteTreeDontCheckForBackwardsReferences`
 twin; the checked `DeleteTree` is refused before reading anything,
 preserving the O(1) contract. Partial batches refuse
 participant mutations in either segment; their inspection of tree

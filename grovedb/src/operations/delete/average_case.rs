@@ -140,7 +140,7 @@ impl GroveDb {
 
     /// Average case delete operation for delete
     ///
-    /// `displaced_value` picks the checked op or its `DontCheck` twin, which
+    /// `displaced_value` picks the checked op or its `DontCheckForBackwardsReferences` twin, which
     /// decides whether the batch estimator charges the displaced-participant
     /// fan-out for it.
     pub fn average_case_delete_operation_for_delete<'db, S: Storage<'db>>(

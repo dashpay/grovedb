@@ -65,9 +65,9 @@ impl InitialSegmentFootprint {
             if matches!(
                 op,
                 GroveOp::Delete
-                    | GroveOp::DeleteDontCheck
+                    | GroveOp::DeleteDontCheckForBackwardsReferences
                     | GroveOp::DeleteTree(..)
-                    | GroveOp::DeleteTreeDontCheck(..)
+                    | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..)
             ) {
                 deleted.push(qualified.clone());
             }
@@ -78,13 +78,15 @@ impl InitialSegmentFootprint {
             // committed-state deletion checks and cleanup cannot observe.
             let tree_type = match op {
                 GroveOp::InsertOrReplace { element }
-                | GroveOp::InsertOrReplaceDontCheck { element }
+                | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
                 | GroveOp::InsertWithKnownToNotAlreadyExist { element }
                 | GroveOp::InsertIfNotExists { element, .. }
                 | GroveOp::Replace { element }
-                | GroveOp::ReplaceDontCheck { element }
+                | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
                 | GroveOp::Patch { element, .. }
-                | GroveOp::PatchDontCheck { element, .. } => element.tree_type(),
+                | GroveOp::PatchDontCheckForBackwardsReferences { element, .. } => {
+                    element.tree_type()
+                }
                 _ => None,
             };
             if let Some(tree_type) = tree_type {
@@ -144,17 +146,17 @@ impl InitialSegmentFootprint {
             let replaces_or_deletes_subtree = matches!(
                 op.op,
                 GroveOp::Delete
-                    | GroveOp::DeleteDontCheck
+                    | GroveOp::DeleteDontCheckForBackwardsReferences
                     | GroveOp::DeleteTree(..)
-                    | GroveOp::DeleteTreeDontCheck(..)
+                    | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..)
                     | GroveOp::InsertOrReplace { .. }
-                    | GroveOp::InsertOrReplaceDontCheck { .. }
+                    | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { .. }
                     | GroveOp::InsertWithKnownToNotAlreadyExist { .. }
                     | GroveOp::InsertIfNotExists { .. }
                     | GroveOp::Replace { .. }
-                    | GroveOp::ReplaceDontCheck { .. }
+                    | GroveOp::ReplaceDontCheckForBackwardsReferences { .. }
                     | GroveOp::Patch { .. }
-                    | GroveOp::PatchDontCheck { .. }
+                    | GroveOp::PatchDontCheckForBackwardsReferences { .. }
             );
             if replaces_or_deletes_subtree && let Some(key) = op.key.as_ref() {
                 let mut qualified = path;

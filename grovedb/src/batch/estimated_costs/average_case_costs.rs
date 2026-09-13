@@ -225,7 +225,7 @@ impl GroveOp {
                 grove_version,
             ),
             GroveOp::InsertOrReplace { element }
-            | GroveOp::InsertOrReplaceDontCheck { element }
+            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element } => with_fan_out(
                 GroveDb::average_case_merk_insert_element(
                     key,
@@ -318,7 +318,8 @@ impl GroveOp {
                     grove_version,
                 )
             }
-            GroveOp::Replace { element } | GroveOp::ReplaceDontCheck { element } => with_fan_out(
+            GroveOp::Replace { element }
+            | GroveOp::ReplaceDontCheckForBackwardsReferences { element } => with_fan_out(
                 GroveDb::average_case_merk_replace_element(
                     key,
                     element,
@@ -332,7 +333,7 @@ impl GroveOp {
                 element,
                 change_in_bytes,
             }
-            | GroveOp::PatchDontCheck {
+            | GroveOp::PatchDontCheckForBackwardsReferences {
                 element,
                 change_in_bytes,
             } => with_fan_out(
@@ -346,7 +347,7 @@ impl GroveOp {
                 ),
                 backward_references_fan_out(Some(element)),
             ),
-            GroveOp::Delete | GroveOp::DeleteDontCheck => with_fan_out(
+            GroveOp::Delete | GroveOp::DeleteDontCheckForBackwardsReferences => with_fan_out(
                 GroveDb::average_case_merk_delete_element(
                     key,
                     layer_element_estimates,
@@ -356,19 +357,18 @@ impl GroveOp {
                 backward_references_fan_out(None),
             )
             .add_cost(flagged_delete_probe()),
-            GroveOp::DeleteTree(tree_type, _) | GroveOp::DeleteTreeDontCheck(tree_type, _) => {
-                with_fan_out(
-                    GroveDb::average_case_merk_delete_tree(
-                        key,
-                        *tree_type,
-                        layer_element_estimates,
-                        propagate,
-                        grove_version,
-                    ),
-                    backward_references_fan_out(None),
-                )
-                .add_cost(flagged_delete_probe())
-            }
+            GroveOp::DeleteTree(tree_type, _)
+            | GroveOp::DeleteTreeDontCheckForBackwardsReferences(tree_type, _) => with_fan_out(
+                GroveDb::average_case_merk_delete_tree(
+                    key,
+                    *tree_type,
+                    layer_element_estimates,
+                    propagate,
+                    grove_version,
+                ),
+                backward_references_fan_out(None),
+            )
+            .add_cost(flagged_delete_probe()),
             GroveOp::CommitmentTreeInsert { payload, .. } => {
                 Self::average_case_commitment_tree_insert(
                     payload,
@@ -1133,7 +1133,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                 tree_type,
                 crate::batch::SubelementsDeletionBehavior::DropFlat,
             )
-            | GroveOp::DeleteTreeDontCheck(
+            | GroveOp::DeleteTreeDontCheckForBackwardsReferences(
                 tree_type,
                 crate::batch::SubelementsDeletionBehavior::DropFlat,
             ) = &op

@@ -195,7 +195,7 @@ pub enum SubelementsDeletionBehavior {
     /// GroveDB owns the transaction, at the caller's next
     /// `flush_pending_prefix_drops` otherwise.
     ///
-    /// Requires the `DeleteTreeDontCheck` twin; the checked `DeleteTree` is
+    /// Requires the `DeleteTreeDontCheckForBackwardsReferences` twin; the checked `DeleteTree` is
     /// refused before reading anything.
     /// The caller declares the subtree contains **no child subtrees**; a
     /// false declaration leaks the children's storage (unreachable,
@@ -370,7 +370,7 @@ pub enum GroveOp {
     /// fan-out, and a populated subtree it replaces is not scanned. GroveDB
     /// still reads the displaced value for the write, so a value that does
     /// participate is refused rather than left with stale references.
-    InsertOrReplaceDontCheck {
+    InsertOrReplaceDontCheckForBackwardsReferences {
         /// Element
         element: Element,
     },
@@ -380,8 +380,8 @@ pub enum GroveOp {
         element: Element,
     },
     /// [`Replace`](Self::Replace) with the same declaration as
-    /// [`InsertOrReplaceDontCheck`](Self::InsertOrReplaceDontCheck).
-    ReplaceDontCheck {
+    /// [`InsertOrReplaceDontCheckForBackwardsReferences`](Self::InsertOrReplaceDontCheckForBackwardsReferences).
+    ReplaceDontCheckForBackwardsReferences {
         /// Element
         element: Element,
     },
@@ -393,8 +393,8 @@ pub enum GroveOp {
         change_in_bytes: i32,
     },
     /// [`Patch`](Self::Patch) with the same declaration as
-    /// [`InsertOrReplaceDontCheck`](Self::InsertOrReplaceDontCheck).
-    PatchDontCheck {
+    /// [`InsertOrReplaceDontCheckForBackwardsReferences`](Self::InsertOrReplaceDontCheckForBackwardsReferences).
+    PatchDontCheckForBackwardsReferences {
         /// Element
         element: Element,
         /// Byte change
@@ -610,14 +610,14 @@ pub enum GroveOp {
     /// charges no displaced-participant fan-out or delete probe, and a
     /// populated subtree it removes is not scanned. GroveDB still reads the
     /// value for the delete, so a value that does participate is refused.
-    DeleteDontCheck,
+    DeleteDontCheckForBackwardsReferences,
     /// Delete tree
     DeleteTree(TreeType, SubelementsDeletionBehavior),
     /// [`DeleteTree`](Self::DeleteTree) with the same declaration as
-    /// [`DeleteDontCheck`](Self::DeleteDontCheck): the subtree's contents are
+    /// [`DeleteDontCheckForBackwardsReferences`](Self::DeleteDontCheckForBackwardsReferences): the subtree's contents are
     /// declared free of participants. Recursive removals still check that
     /// on the cleanup walk they make anyway; a flat drop requires it.
-    DeleteTreeDontCheck(TreeType, SubelementsDeletionBehavior),
+    DeleteTreeDontCheckForBackwardsReferences(TreeType, SubelementsDeletionBehavior),
     /// Insert a note commitment + payload into a CommitmentTree
     CommitmentTreeInsert {
         /// 32-byte note commitment (must be a valid Pallas field element)
@@ -655,67 +655,75 @@ pub enum GroveOp {
 }
 
 impl GroveOp {
-    /// Whether this is a `DontCheck` twin: the op declares that the value it
+    /// Whether this is a `DontCheckForBackwardsReferences` twin: the op declares that the value it
     /// displaces takes no part in backward references.
-    pub fn is_dont_check(&self) -> bool {
+    pub fn is_dont_check_for_backwards_references(&self) -> bool {
         matches!(
             self,
-            GroveOp::InsertOrReplaceDontCheck { .. }
-                | GroveOp::ReplaceDontCheck { .. }
-                | GroveOp::PatchDontCheck { .. }
-                | GroveOp::DeleteDontCheck
-                | GroveOp::DeleteTreeDontCheck(..)
+            GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { .. }
+                | GroveOp::ReplaceDontCheckForBackwardsReferences { .. }
+                | GroveOp::PatchDontCheckForBackwardsReferences { .. }
+                | GroveOp::DeleteDontCheckForBackwardsReferences
+                | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..)
         )
     }
 
-    /// What the op declares about the value it displaces: a `DontCheck` twin
+    /// What the op declares about the value it displaces: a `DontCheckForBackwardsReferences` twin
     /// declares [`DisplacedValue::NotParticipant`], every other op
     /// [`DisplacedValue::MayBeParticipant`].
     pub fn displaced_value(&self) -> DisplacedValue {
-        if self.is_dont_check() {
+        if self.is_dont_check_for_backwards_references() {
             DisplacedValue::NotParticipant
         } else {
             DisplacedValue::MayBeParticipant
         }
     }
 
-    /// The `DontCheck` twin of a displacing op (`InsertOrReplace`, `Replace`,
+    /// The `DontCheckForBackwardsReferences` twin of a displacing op (`InsertOrReplace`, `Replace`,
     /// `Patch`, `Delete`, `DeleteTree`); every other op is returned as is.
     pub fn dont_check_for_backwards_references(self) -> Self {
         match self {
-            GroveOp::InsertOrReplace { element } => GroveOp::InsertOrReplaceDontCheck { element },
-            GroveOp::Replace { element } => GroveOp::ReplaceDontCheck { element },
+            GroveOp::InsertOrReplace { element } => {
+                GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
+            }
+            GroveOp::Replace { element } => {
+                GroveOp::ReplaceDontCheckForBackwardsReferences { element }
+            }
             GroveOp::Patch {
                 element,
                 change_in_bytes,
-            } => GroveOp::PatchDontCheck {
+            } => GroveOp::PatchDontCheckForBackwardsReferences {
                 element,
                 change_in_bytes,
             },
-            GroveOp::Delete => GroveOp::DeleteDontCheck,
+            GroveOp::Delete => GroveOp::DeleteDontCheckForBackwardsReferences,
             GroveOp::DeleteTree(tree_type, behavior) => {
-                GroveOp::DeleteTreeDontCheck(tree_type, behavior)
+                GroveOp::DeleteTreeDontCheckForBackwardsReferences(tree_type, behavior)
             }
             other => other,
         }
     }
 
-    /// The checked variant of a `DontCheck` twin; every other op is returned
+    /// The checked variant of a `DontCheckForBackwardsReferences` twin; every other op is returned
     /// as is. Execution paths that do not care about the declaration
     /// normalise through this after reading it.
     pub fn checked(self) -> Self {
         match self {
-            GroveOp::InsertOrReplaceDontCheck { element } => GroveOp::InsertOrReplace { element },
-            GroveOp::ReplaceDontCheck { element } => GroveOp::Replace { element },
-            GroveOp::PatchDontCheck {
+            GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element } => {
+                GroveOp::InsertOrReplace { element }
+            }
+            GroveOp::ReplaceDontCheckForBackwardsReferences { element } => {
+                GroveOp::Replace { element }
+            }
+            GroveOp::PatchDontCheckForBackwardsReferences {
                 element,
                 change_in_bytes,
             } => GroveOp::Patch {
                 element,
                 change_in_bytes,
             },
-            GroveOp::DeleteDontCheck => GroveOp::Delete,
-            GroveOp::DeleteTreeDontCheck(tree_type, behavior) => {
+            GroveOp::DeleteDontCheckForBackwardsReferences => GroveOp::Delete,
+            GroveOp::DeleteTreeDontCheckForBackwardsReferences(tree_type, behavior) => {
                 GroveOp::DeleteTree(tree_type, behavior)
             }
             other => other,
@@ -729,17 +737,18 @@ impl GroveOp {
     /// associated tests are intentionally strict.
     pub(crate) fn to_u8(&self) -> u8 {
         match self {
-            // A `DontCheck` twin sorts with its checked variant; `Ord` breaks
+            // A `DontCheckForBackwardsReferences` twin sorts with its checked variant; `Ord` breaks
             // the tie on the declaration so it stays consistent with `Eq`.
-            GroveOp::DeleteTree(..) | GroveOp::DeleteTreeDontCheck(..) => 0,
+            GroveOp::DeleteTree(..) | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..) => 0,
             // 1 used to be used for the DeleteSumTree
-            GroveOp::Delete | GroveOp::DeleteDontCheck => 2,
+            GroveOp::Delete | GroveOp::DeleteDontCheckForBackwardsReferences => 2,
             GroveOp::InsertTreeWithRootHash { .. } => 3,
             GroveOp::ReplaceTreeRootKey { .. } => 4,
             GroveOp::RefreshReference { .. } => 5,
-            GroveOp::Replace { .. } | GroveOp::ReplaceDontCheck { .. } => 6,
-            GroveOp::Patch { .. } | GroveOp::PatchDontCheck { .. } => 7,
-            GroveOp::InsertOrReplace { .. } | GroveOp::InsertOrReplaceDontCheck { .. } => 8,
+            GroveOp::Replace { .. } | GroveOp::ReplaceDontCheckForBackwardsReferences { .. } => 6,
+            GroveOp::Patch { .. } | GroveOp::PatchDontCheckForBackwardsReferences { .. } => 7,
+            GroveOp::InsertOrReplace { .. }
+            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { .. } => 8,
             GroveOp::InsertWithKnownToNotAlreadyExist { .. } => 9,
             GroveOp::InsertIfNotExists { .. } => 10,
             GroveOp::CommitmentTreeInsert { .. } => 11,
@@ -785,15 +794,15 @@ impl GroveOp {
             | GroveOp::InsertIfNotExists { .. }
             | GroveOp::ReplaceBackwardReferenceFamilyMember { .. }
             | GroveOp::InsertOrReplace { .. }
-            | GroveOp::InsertOrReplaceDontCheck { .. }
+            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { .. }
             | GroveOp::Replace { .. }
-            | GroveOp::ReplaceDontCheck { .. }
+            | GroveOp::ReplaceDontCheckForBackwardsReferences { .. }
             | GroveOp::Patch { .. }
-            | GroveOp::PatchDontCheck { .. }
+            | GroveOp::PatchDontCheckForBackwardsReferences { .. }
             | GroveOp::Delete
-            | GroveOp::DeleteDontCheck
+            | GroveOp::DeleteDontCheckForBackwardsReferences
             | GroveOp::DeleteTree(..)
-            | GroveOp::DeleteTreeDontCheck(..)
+            | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..)
             | GroveOp::RefreshReference { .. } => true,
 
             // Bubble-up ops emitted by propagation. Each updates the
@@ -869,15 +878,15 @@ impl GroveOp {
             | GroveOp::InsertIfNotExists { .. }
             | GroveOp::ReplaceBackwardReferenceFamilyMember { .. }
             | GroveOp::InsertOrReplace { .. }
-            | GroveOp::InsertOrReplaceDontCheck { .. }
+            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { .. }
             | GroveOp::Replace { .. }
-            | GroveOp::ReplaceDontCheck { .. }
+            | GroveOp::ReplaceDontCheckForBackwardsReferences { .. }
             | GroveOp::Patch { .. }
-            | GroveOp::PatchDontCheck { .. }
+            | GroveOp::PatchDontCheckForBackwardsReferences { .. }
             | GroveOp::Delete
-            | GroveOp::DeleteDontCheck
+            | GroveOp::DeleteDontCheckForBackwardsReferences
             | GroveOp::DeleteTree(..)
-            | GroveOp::DeleteTreeDontCheck(..)
+            | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..)
             | GroveOp::RefreshReference { .. }
             | GroveOp::ReplaceTreeRootKey { .. }
             | GroveOp::InsertTreeWithRootHash { .. }
@@ -909,9 +918,10 @@ impl PartialOrd for GroveOp {
 
 impl Ord for GroveOp {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.to_u8()
-            .cmp(&other.to_u8())
-            .then(self.is_dont_check().cmp(&other.is_dont_check()))
+        self.to_u8().cmp(&other.to_u8()).then(
+            self.is_dont_check_for_backwards_references()
+                .cmp(&other.is_dont_check_for_backwards_references()),
+        )
     }
 }
 
@@ -1091,7 +1101,7 @@ impl KeyInfoPath {
 }
 
 /// The positions a batch deletes explicitly (`Delete` / `DeleteTree` and
-/// their `DontCheck` twins), keyed by qualified path: a participant found
+/// their `DontCheckForBackwardsReferences` twins), keyed by qualified path: a participant found
 /// under a removed subtree at one of them is accounted for.
 fn explicitly_deleted_positions(ops: &[QualifiedGroveDbOp]) -> HashSet<Vec<Vec<u8>>> {
     ops.iter()
@@ -1099,9 +1109,9 @@ fn explicitly_deleted_positions(ops: &[QualifiedGroveDbOp]) -> HashSet<Vec<Vec<u
             matches!(
                 op.op,
                 GroveOp::Delete
-                    | GroveOp::DeleteDontCheck
+                    | GroveOp::DeleteDontCheckForBackwardsReferences
                     | GroveOp::DeleteTree(..)
-                    | GroveOp::DeleteTreeDontCheck(..)
+                    | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..)
             )
         })
         .filter_map(|op| {
@@ -1144,8 +1154,11 @@ impl fmt::Debug for QualifiedGroveDbOp {
 
         let op_dbg = match &self.op {
             GroveOp::InsertOrReplace { element } => format!("Insert Or Replace {:?}", element),
-            GroveOp::InsertOrReplaceDontCheck { element } => {
-                format!("Insert Or Replace (dont check) {:?}", element)
+            GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element } => {
+                format!(
+                    "Insert Or Replace (dont check for backwards references) {:?}",
+                    element
+                )
             }
             GroveOp::InsertWithKnownToNotAlreadyExist { element } => {
                 format!("Insert With Known To Not Already Exist {:?}", element)
@@ -1161,9 +1174,14 @@ impl fmt::Debug for QualifiedGroveDbOp {
                 }
             }
             GroveOp::Replace { element } => format!("Replace {:?}", element),
-            GroveOp::ReplaceDontCheck { element } => format!("Replace (dont check) {:?}", element),
+            GroveOp::ReplaceDontCheckForBackwardsReferences { element } => format!(
+                "Replace (dont check for backwards references) {:?}",
+                element
+            ),
             GroveOp::Patch { element, .. } => format!("Patch {:?}", element),
-            GroveOp::PatchDontCheck { element, .. } => format!("Patch (dont check) {:?}", element),
+            GroveOp::PatchDontCheckForBackwardsReferences { element, .. } => {
+                format!("Patch (dont check for backwards references) {:?}", element)
+            }
             GroveOp::RefreshReference {
                 reference_path_type,
                 max_reference_hop,
@@ -1206,12 +1224,17 @@ impl fmt::Debug for QualifiedGroveDbOp {
                 hex::encode(node_value_hash)
             ),
             GroveOp::Delete => "Delete".to_string(),
-            GroveOp::DeleteDontCheck => "Delete (dont check)".to_string(),
+            GroveOp::DeleteDontCheckForBackwardsReferences => {
+                "Delete (dont check for backwards references)".to_string()
+            }
             GroveOp::DeleteTree(tree_type, check) => {
                 format!("Delete Tree {} ({:?})", tree_type, check)
             }
-            GroveOp::DeleteTreeDontCheck(tree_type, check) => {
-                format!("Delete Tree (dont check) {} ({:?})", tree_type, check)
+            GroveOp::DeleteTreeDontCheckForBackwardsReferences(tree_type, check) => {
+                format!(
+                    "Delete Tree (dont check for backwards references) {} ({:?})",
+                    tree_type, check
+                )
             }
             GroveOp::ReplaceTreeRootKey { .. } => "Replace Tree Hash and Root Key".to_string(),
             GroveOp::InsertTreeWithRootHash { .. } => "Insert Tree Hash and Root Key".to_string(),
@@ -1251,7 +1274,7 @@ impl fmt::Debug for QualifiedGroveDbOp {
 }
 
 impl QualifiedGroveDbOp {
-    /// The same op with its `DontCheck` twin: the declaration that the value
+    /// The same op with its `DontCheckForBackwardsReferences` twin: the declaration that the value
     /// it displaces takes no part in backward references. Ops without a twin
     /// are returned as is.
     pub fn dont_check_for_backwards_references(mut self) -> Self {
@@ -1260,7 +1283,7 @@ impl QualifiedGroveDbOp {
     }
 
     /// The same op carrying `displaced_value` as its declaration: the
-    /// `DontCheck` twin for [`DisplacedValue::NotParticipant`], the checked
+    /// `DontCheckForBackwardsReferences` twin for [`DisplacedValue::NotParticipant`], the checked
     /// op for [`DisplacedValue::MayBeParticipant`]. Ops without a twin are
     /// returned as is.
     pub fn with_displaced_value(mut self, displaced_value: DisplacedValue) -> Self {
@@ -1751,9 +1774,9 @@ impl QualifiedGroveDbOp {
             if matches!(
                 op.op,
                 GroveOp::Delete
-                    | GroveOp::DeleteDontCheck
+                    | GroveOp::DeleteDontCheckForBackwardsReferences
                     | GroveOp::DeleteTree(..)
-                    | GroveOp::DeleteTreeDontCheck(..)
+                    | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..)
             ) {
                 let Some(ref key) = op.key else {
                     continue;
@@ -1774,11 +1797,11 @@ impl QualifiedGroveDbOp {
                 GroveOp::InsertWithKnownToNotAlreadyExist { .. }
                 | GroveOp::InsertIfNotExists { .. }
                 | GroveOp::InsertOrReplace { .. }
-                | GroveOp::InsertOrReplaceDontCheck { .. }
+                | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { .. }
                 | GroveOp::Replace { .. }
-                | GroveOp::ReplaceDontCheck { .. }
+                | GroveOp::ReplaceDontCheckForBackwardsReferences { .. }
                 | GroveOp::Patch { .. }
-                | GroveOp::PatchDontCheck { .. } => {}
+                | GroveOp::PatchDontCheckForBackwardsReferences { .. } => {}
                 _ => continue,
             }
             for prefix_len in 1..=op.path.len() as usize {
@@ -2736,11 +2759,11 @@ where
                 ))
                 .wrap_with_cost(cost),
                 GroveOp::InsertOrReplace { element }
-                | GroveOp::InsertOrReplaceDontCheck { element }
+                | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
                 | GroveOp::Replace { element }
-                | GroveOp::ReplaceDontCheck { element }
+                | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
                 | GroveOp::Patch { element, .. }
-                | GroveOp::PatchDontCheck { element, .. } => {
+                | GroveOp::PatchDontCheckForBackwardsReferences { element, .. } => {
                     // Look through NonCounted for dispatch; serialize the outer
                     // wrapper for hashing so the value hash matches storage.
                     match element.underlying() {
@@ -3049,12 +3072,14 @@ where
                     )
                 }
                 GroveOp::Delete
-                | GroveOp::DeleteDontCheck
+                | GroveOp::DeleteDontCheckForBackwardsReferences
                 | GroveOp::DeleteTree(..)
-                | GroveOp::DeleteTreeDontCheck(..) => Err(Error::InvalidBatchOperation(
-                    "references can not point to something currently being deleted",
-                ))
-                .wrap_with_cost(cost),
+                | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..) => {
+                    Err(Error::InvalidBatchOperation(
+                        "references can not point to something currently being deleted",
+                    ))
+                    .wrap_with_cost(cost)
+                }
             }
         } else {
             self.process_reference(
@@ -3261,11 +3286,11 @@ where
             .map(|(key, _)| key.get_key_clone())
             .collect();
         let mut batch_operations: Vec<(Vec<u8>, Op)> = vec![];
-        // Keys whose op is a `DontCheck` twin: their declaration about the
+        // Keys whose op is a `DontCheckForBackwardsReferences` twin: their declaration about the
         // value they displace, consulted by the old-value observer below.
-        let dont_check_keys: HashSet<Vec<u8>> = ops_at_path_by_key
+        let dont_check_for_backwards_references_keys: HashSet<Vec<u8>> = ops_at_path_by_key
             .iter()
-            .filter(|(_, op)| op.is_dont_check())
+            .filter(|(_, op)| op.is_dont_check_for_backwards_references())
             .map(|(key, _)| key.get_key_clone())
             .collect();
         for (key_info, op) in ops_at_path_by_key.into_iter() {
@@ -3318,11 +3343,11 @@ where
                 op_ref @ (GroveOp::InsertWithKnownToNotAlreadyExist { .. }
                 | GroveOp::InsertIfNotExists { .. }
                 | GroveOp::InsertOrReplace { .. }
-                | GroveOp::InsertOrReplaceDontCheck { .. }
+                | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { .. }
                 | GroveOp::Replace { .. }
-                | GroveOp::ReplaceDontCheck { .. }
+                | GroveOp::ReplaceDontCheckForBackwardsReferences { .. }
                 | GroveOp::Patch { .. }
-                | GroveOp::PatchDontCheck { .. }) => {
+                | GroveOp::PatchDontCheckForBackwardsReferences { .. }) => {
                     let (is_insert_if_not_exists, error_if_exists) = match &op_ref {
                         GroveOp::InsertIfNotExists {
                             error_if_exists, ..
@@ -3332,21 +3357,21 @@ where
                     let op_could_overwrite = matches!(
                         &op_ref,
                         GroveOp::InsertOrReplace { .. }
-                            | GroveOp::InsertOrReplaceDontCheck { .. }
+                            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { .. }
                             | GroveOp::Replace { .. }
-                            | GroveOp::ReplaceDontCheck { .. }
+                            | GroveOp::ReplaceDontCheckForBackwardsReferences { .. }
                             | GroveOp::Patch { .. }
-                            | GroveOp::PatchDontCheck { .. }
+                            | GroveOp::PatchDontCheckForBackwardsReferences { .. }
                     );
                     let element = match op_ref {
                         GroveOp::InsertWithKnownToNotAlreadyExist { element }
                         | GroveOp::InsertIfNotExists { element, .. }
                         | GroveOp::InsertOrReplace { element }
-                        | GroveOp::InsertOrReplaceDontCheck { element }
+                        | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
                         | GroveOp::Replace { element }
-                        | GroveOp::ReplaceDontCheck { element }
+                        | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
                         | GroveOp::Patch { element, .. }
-                        | GroveOp::PatchDontCheck { element, .. } => element,
+                        | GroveOp::PatchDontCheckForBackwardsReferences { element, .. } => element,
                         // Structurally unreachable: the enclosing arm already
                         // constrained op_ref to exactly these five variants.
                         // Fail gracefully instead of panicking if a refactor
@@ -4338,7 +4363,7 @@ where
                         )
                     );
                 }
-                GroveOp::Delete | GroveOp::DeleteDontCheck => {
+                GroveOp::Delete | GroveOp::DeleteDontCheckForBackwardsReferences => {
                     cost_return_on_error_into!(
                         &mut cost,
                         Element::delete_into_batch_operations(
@@ -4351,7 +4376,8 @@ where
                         )
                     );
                 }
-                GroveOp::DeleteTree(tree_type, _) | GroveOp::DeleteTreeDontCheck(tree_type, _) => {
+                GroveOp::DeleteTree(tree_type, _)
+                | GroveOp::DeleteTreeDontCheckForBackwardsReferences(tree_type, _) => {
                     // CountIndexedTree owns two child Merks (primary +
                     // secondary). The standard DeleteTree path runs
                     // find_subtrees on the primary's prefix and clears
@@ -4749,11 +4775,12 @@ where
                                 // tree, read off the op this level applies so
                                 // a later op at the same path (another
                                 // segment) cannot speak for it.
-                                let declared = if dont_check_keys.contains(key) {
-                                    DisplacedValue::NotParticipant
-                                } else {
-                                    DisplacedValue::MayBeParticipant
-                                };
+                                let declared =
+                                    if dont_check_for_backwards_references_keys.contains(key) {
+                                        DisplacedValue::NotParticipant
+                                    } else {
+                                        DisplacedValue::MayBeParticipant
+                                    };
                                 self.unprepared_subtree_removals.push((qualified, declared));
                             }
                         }
@@ -4990,11 +5017,11 @@ where
             let fresh_indexed_element = ops_by_qualified_paths
                 .get(path)
                 .and_then(|op| match op {
-                    GroveOp::InsertOrReplace { element } | GroveOp::InsertOrReplaceDontCheck { element }
+                    GroveOp::InsertOrReplace { element } | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
                     | GroveOp::InsertWithKnownToNotAlreadyExist { element }
                     | GroveOp::InsertIfNotExists { element, .. }
-                    | GroveOp::Replace { element } | GroveOp::ReplaceDontCheck { element }
-                    | GroveOp::Patch { element, .. } | GroveOp::PatchDontCheck { element, .. }
+                    | GroveOp::Replace { element } | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
+                    | GroveOp::Patch { element, .. } | GroveOp::PatchDontCheckForBackwardsReferences { element, .. }
                         if element.is_indexed_tree() =>
                     {
                         Some(element)
@@ -5391,15 +5418,15 @@ impl GroveDb {
                                                     .wrap_with_cost(cost);
                                                 }
                                                 GroveOp::InsertOrReplace { element }
-                                                | GroveOp::InsertOrReplaceDontCheck { element }
+                                                | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
                                                 | GroveOp::InsertWithKnownToNotAlreadyExist {
                                                     element,
                                                 }
                                                 | GroveOp::InsertIfNotExists { element, .. }
                                                 | GroveOp::Replace { element }
-                                                | GroveOp::ReplaceDontCheck { element }
+                                                | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
                                                 | GroveOp::Patch { element, .. }
-                                                | GroveOp::PatchDontCheck { element, .. } => {
+                                                | GroveOp::PatchDontCheckForBackwardsReferences { element, .. } => {
                                                     *mutable_occupied_entry = cost_return_on_error_no_add!(
                                                         cost,
                                                         insert_op_with_propagated_root(
@@ -5429,9 +5456,9 @@ impl GroveDb {
                                                     .wrap_with_cost(cost);
                                                 }
                                                 GroveOp::Delete
-                                                | GroveOp::DeleteDontCheck
+                                                | GroveOp::DeleteDontCheckForBackwardsReferences
                                                 | GroveOp::DeleteTree(..)
-                                                | GroveOp::DeleteTreeDontCheck(..) => {
+                                                | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..) => {
                                                     if calculated_root_key.is_some() {
                                                         return Err(Error::InvalidBatchOperation(
                                                             "modification of tree when it will be \
@@ -5765,9 +5792,9 @@ impl GroveDb {
                     .wrap_with_cost(cost);
                 }
                 GroveOp::InsertOrReplace { element }
-                | GroveOp::InsertOrReplaceDontCheck { element }
+                | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
                 | GroveOp::Replace { element }
-                | GroveOp::ReplaceDontCheck { element } => {
+                | GroveOp::ReplaceDontCheckForBackwardsReferences { element } => {
                     // TODO: paths in batches is something to think about
                     let path_slices: Vec<&[u8]> =
                         op.path.iterator().map(|p| p.as_slice()).collect();
@@ -5865,7 +5892,7 @@ impl GroveDb {
                         );
                     }
                 }
-                GroveOp::Delete | GroveOp::DeleteDontCheck => {
+                GroveOp::Delete | GroveOp::DeleteDontCheckForBackwardsReferences => {
                     let path_slices: Vec<&[u8]> =
                         op.path.iterator().map(|p| p.as_slice()).collect();
                     let key = cost_return_on_error_no_add!(
@@ -5892,7 +5919,10 @@ impl GroveDb {
                     );
                 }
                 GroveOp::DeleteTree(_, subelements_deletion_behavior)
-                | GroveOp::DeleteTreeDontCheck(_, subelements_deletion_behavior) => {
+                | GroveOp::DeleteTreeDontCheckForBackwardsReferences(
+                    _,
+                    subelements_deletion_behavior,
+                ) => {
                     let path_slices: Vec<&[u8]> =
                         op.path.iterator().map(|p| p.as_slice()).collect();
                     let key = cost_return_on_error_no_add!(
@@ -6065,7 +6095,7 @@ impl GroveDb {
                     );
                 }
                 GroveOp::Patch { .. }
-                | GroveOp::PatchDontCheck { .. }
+                | GroveOp::PatchDontCheckForBackwardsReferences { .. }
                 | GroveOp::RefreshReference { .. } => {
                     return Err(Error::NotSupported(
                         "Patch and RefreshReference are batch-only operations".to_string(),
@@ -6368,7 +6398,10 @@ impl GroveDb {
             >= 1;
         for op in ops.iter() {
             if let GroveOp::DeleteTree(tree_type, subelements_deletion_behavior)
-            | GroveOp::DeleteTreeDontCheck(tree_type, subelements_deletion_behavior) = &op.op
+            | GroveOp::DeleteTreeDontCheckForBackwardsReferences(
+                tree_type,
+                subelements_deletion_behavior,
+            ) = &op.op
                 && let Some(key) = op.key.as_ref()
             {
                 let mut child_path = op.path.to_path();
@@ -6450,35 +6483,38 @@ impl GroveDb {
                                 // those might not execute if their target is
                                 // non-empty, so we cannot assume they will
                                 // delete their key.
-                                let batch_deleted_keys = ops
-                                    .iter()
-                                    .filter_map(|other_op| match &other_op.op {
-                                        GroveOp::Delete | GroveOp::DeleteDontCheck => {
-                                            if other_op.path.to_path() == child_path {
-                                                Some(other_op.key.as_ref()?.as_slice().to_vec())
-                                            } else {
-                                                None
+                                let batch_deleted_keys =
+                                    ops.iter()
+                                        .filter_map(|other_op| match &other_op.op {
+                                            GroveOp::Delete
+                                            | GroveOp::DeleteDontCheckForBackwardsReferences => {
+                                                if other_op.path.to_path() == child_path {
+                                                    Some(other_op.key.as_ref()?.as_slice().to_vec())
+                                                } else {
+                                                    None
+                                                }
                                             }
-                                        }
-                                        GroveOp::DeleteTree(
-                                            _,
-                                            SubelementsDeletionBehavior::Skip,
-                                        )
-                                        | GroveOp::DeleteTreeDontCheck(
-                                            _,
-                                            SubelementsDeletionBehavior::Skip,
-                                        ) => None,
-                                        GroveOp::DeleteTree(..)
-                                        | GroveOp::DeleteTreeDontCheck(..) => {
-                                            if other_op.path.to_path() == child_path {
-                                                Some(other_op.key.as_ref()?.as_slice().to_vec())
-                                            } else {
-                                                None
+                                            GroveOp::DeleteTree(
+                                                _,
+                                                SubelementsDeletionBehavior::Skip,
+                                            )
+                                            | GroveOp::DeleteTreeDontCheckForBackwardsReferences(
+                                                _,
+                                                SubelementsDeletionBehavior::Skip,
+                                            ) => None,
+                                            GroveOp::DeleteTree(..)
+                                            | GroveOp::DeleteTreeDontCheckForBackwardsReferences(
+                                                ..,
+                                            ) => {
+                                                if other_op.path.to_path() == child_path {
+                                                    Some(other_op.key.as_ref()?.as_slice().to_vec())
+                                                } else {
+                                                    None
+                                                }
                                             }
-                                        }
-                                        _ => None,
-                                    })
-                                    .collect::<Vec<Vec<u8>>>();
+                                            _ => None,
+                                        })
+                                        .collect::<Vec<Vec<u8>>>();
                                 let batch_deleted_keys_refs: std::collections::BTreeSet<&[u8]> =
                                     batch_deleted_keys.iter().map(|k| k.as_slice()).collect();
 
@@ -6607,7 +6643,8 @@ impl GroveDb {
                             let batch_deleted_keys = ops
                                 .iter()
                                 .filter_map(|other_op| match &other_op.op {
-                                    GroveOp::Delete | GroveOp::DeleteDontCheck => {
+                                    GroveOp::Delete
+                                    | GroveOp::DeleteDontCheckForBackwardsReferences => {
                                         if other_op.path.to_path() == child_path {
                                             Some(other_op.key.as_ref()?.as_slice().to_vec())
                                         } else {
@@ -6615,11 +6652,12 @@ impl GroveDb {
                                         }
                                     }
                                     GroveOp::DeleteTree(_, SubelementsDeletionBehavior::Skip)
-                                    | GroveOp::DeleteTreeDontCheck(
+                                    | GroveOp::DeleteTreeDontCheckForBackwardsReferences(
                                         _,
                                         SubelementsDeletionBehavior::Skip,
                                     ) => None,
-                                    GroveOp::DeleteTree(..) | GroveOp::DeleteTreeDontCheck(..) => {
+                                    GroveOp::DeleteTree(..)
+                                    | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..) => {
                                         if other_op.path.to_path() == child_path {
                                             Some(other_op.key.as_ref()?.as_slice().to_vec())
                                         } else {
@@ -6700,7 +6738,7 @@ impl GroveDb {
 
     /// Flat drop never reads the subtree it drops, so it cannot check a
     /// participant claim: on versions that maintain backward references the
-    /// op must be the `DeleteTreeDontCheck` twin.
+    /// op must be the `DeleteTreeDontCheckForBackwardsReferences` twin.
     fn reject_flat_drop_declaring_participants(
         ops: &[QualifiedGroveDbOp],
         grove_version: &GroveVersion,
@@ -6714,7 +6752,7 @@ impl GroveDb {
             })
         {
             return Err(Error::NotSupported(
-                "flat drop requires DeleteTreeDontCheck; use recursive delete for maintenance"
+                "flat drop requires DeleteTreeDontCheckForBackwardsReferences; use recursive delete for maintenance"
                     .to_owned(),
             ));
         }
@@ -6742,11 +6780,11 @@ impl GroveDb {
                 GroveOp::InsertWithKnownToNotAlreadyExist { element }
                 | GroveOp::InsertIfNotExists { element, .. }
                 | GroveOp::InsertOrReplace { element }
-                | GroveOp::InsertOrReplaceDontCheck { element }
+                | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
                 | GroveOp::Replace { element }
-                | GroveOp::ReplaceDontCheck { element }
+                | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
                 | GroveOp::Patch { element, .. }
-                | GroveOp::PatchDontCheck { element, .. } => element,
+                | GroveOp::PatchDontCheckForBackwardsReferences { element, .. } => element,
                 _ => continue,
             };
             if element.underlying().supports_backward_references() {
@@ -6970,7 +7008,8 @@ impl GroveDb {
         let ops = if !skipped_delete_paths.is_empty() {
             ops.into_iter()
                 .filter(|op| {
-                    if let GroveOp::DeleteTree(..) | GroveOp::DeleteTreeDontCheck(..) = &op.op
+                    if let GroveOp::DeleteTree(..)
+                    | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..) = &op.op
                         && let Some(key) = op.key.as_ref()
                     {
                         let mut child_path = op.path.to_path();
@@ -7411,7 +7450,8 @@ impl GroveDb {
         let ops = if !skipped_delete_paths.is_empty() {
             ops.into_iter()
                 .filter(|op| {
-                    if let GroveOp::DeleteTree(..) | GroveOp::DeleteTreeDontCheck(..) = &op.op
+                    if let GroveOp::DeleteTree(..)
+                    | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..) = &op.op
                         && let Some(key) = op.key.as_ref()
                     {
                         let mut child_path = op.path.to_path();
@@ -7738,7 +7778,8 @@ impl GroveDb {
             .map(|mut op| {
                 if is_merged_ancestor(&op)
                     && let GroveOp::DeleteTree(_, behavior)
-                    | GroveOp::DeleteTreeDontCheck(_, behavior) = &mut op.op
+                    | GroveOp::DeleteTreeDontCheckForBackwardsReferences(_, behavior) =
+                        &mut op.op
                     && matches!(
                         behavior,
                         SubelementsDeletionBehavior::Error | SubelementsDeletionBehavior::Skip
@@ -7777,8 +7818,8 @@ impl GroveDb {
         delete_tree_behaviors.extend(add_on_delete_tree_behaviors);
         for op in &new_operations {
             if is_merged_ancestor(op)
-                && let GroveOp::DeleteTree(_, behavior) | GroveOp::DeleteTreeDontCheck(_, behavior) =
-                    &op.op
+                && let GroveOp::DeleteTree(_, behavior)
+                | GroveOp::DeleteTreeDontCheckForBackwardsReferences(_, behavior) = &op.op
                 && let Some(key) = op.key.as_ref()
             {
                 let mut qualified = op.path.to_path();
@@ -7794,7 +7835,8 @@ impl GroveDb {
             new_operations
                 .into_iter()
                 .filter(|op| {
-                    if let GroveOp::DeleteTree(..) | GroveOp::DeleteTreeDontCheck(..) = &op.op
+                    if let GroveOp::DeleteTree(..)
+                    | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..) = &op.op
                         && let Some(key) = op.key.as_ref()
                     {
                         let mut child_path = op.path.to_path();

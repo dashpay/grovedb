@@ -1461,7 +1461,7 @@ fn delete_op_builders_carry_the_declared_displaced_value() {
     ));
     assert!(matches!(
         build(&[TEST_LEAF], b"item", DisplacedValue::NotParticipant),
-        GroveOp::DeleteDontCheck
+        GroveOp::DeleteDontCheckForBackwardsReferences
     ));
     assert!(matches!(
         build(
@@ -1477,7 +1477,7 @@ fn delete_op_builders_carry_the_declared_displaced_value() {
             b"inner",
             DisplacedValue::NotParticipant
         ),
-        GroveOp::DeleteTreeDontCheck(..)
+        GroveOp::DeleteTreeDontCheckForBackwardsReferences(..)
     ));
 
     // The up-tree chain declares every level from its own options.
@@ -1501,10 +1501,14 @@ fn delete_op_builders_carry_the_declared_displaced_value() {
     };
     let checked = chain_ops(DisplacedValue::MayBeParticipant);
     assert_eq!(checked.len(), 2, "inner, then the emptied outer");
-    assert!(checked.iter().all(|op| !op.op.is_dont_check()));
+    assert!(checked
+        .iter()
+        .all(|op| !op.op.is_dont_check_for_backwards_references()));
     let declared = chain_ops(DisplacedValue::NotParticipant);
     assert_eq!(declared.len(), 2);
-    assert!(declared.iter().all(|op| op.op.is_dont_check()));
+    assert!(declared
+        .iter()
+        .all(|op| op.op.is_dont_check_for_backwards_references()));
 
     // The estimated builders declare the same way, so the estimator sees the
     // op the stateful path would apply.
@@ -1523,7 +1527,10 @@ fn delete_op_builders_carry_the_declared_displaced_value() {
     )
     .unwrap()
     .unwrap();
-    assert!(matches!(average.op, GroveOp::DeleteDontCheck));
+    assert!(matches!(
+        average.op,
+        GroveOp::DeleteDontCheckForBackwardsReferences
+    ));
     let worst = GroveDb::worst_case_delete_operation_for_delete::<RocksDbStorage>(
         &path,
         &key,
