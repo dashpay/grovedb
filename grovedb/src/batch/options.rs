@@ -1,7 +1,7 @@
 //! Options
 
 #[cfg(feature = "minimal")]
-use crate::DisplacedValue;
+use crate::BackwardsReferences;
 use grovedb_merk::MerkOptions;
 
 #[cfg(feature = "minimal")]
@@ -104,7 +104,7 @@ impl BatchApplyOptions {
             base_root_storage_is_free: self.base_root_storage_is_free,
             // Per operation: the caller overrides this with the op's own
             // declaration.
-            displaced_value: DisplacedValue::MayBeParticipant,
+            backwards_references: BackwardsReferences::Check,
         }
     }
 
@@ -117,7 +117,7 @@ impl BatchApplyOptions {
             validate_tree_at_path_exists: false,
             // Per operation: the caller overrides this with the op's own
             // declaration.
-            displaced_value: DisplacedValue::MayBeParticipant,
+            backwards_references: BackwardsReferences::Check,
         }
     }
 

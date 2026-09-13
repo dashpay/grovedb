@@ -149,10 +149,10 @@
 //!
 //! - `apply_batch.backward_references_maintenance: 1` — batches maintain
 //!   backward references: planner preparation with retained old-value
-//!   reads, the partial-batch participant gate, each op's `DisplacedValue`
+//!   reads, the partial-batch participant gate, each op's `BackwardsReferences`
 //!   declaration checked from the value the write reads anyway, and
-//!   `NotParticipant` required for `DropFlat`. A `Delete` of a populated
-//!   tree or a tree replacement declared `MayBeParticipant` is scanned; a
+//!   `DontCheck` required for `DropFlat`. A `Delete` of a populated
+//!   tree or a tree replacement declared `Check` is scanned; a
 //!   `DeleteTree` never is, `DeleteChildren` checking the declaration on
 //!   its cleanup walk instead.
 //! - `apply_batch.non_merk_parent_keyed_ops_rejection: 1` — batch execution
@@ -363,8 +363,8 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             non_merk_parent_keyed_ops_rejection: 1,
             // v1: batches maintain backward references — planner
             // preparation with retained old-value reads, the partial-batch
-            // participant gate, per-op DisplacedValue declarations, and
-            // NotParticipant required for DropFlat.
+            // participant gate, per-op BackwardsReferences declarations, and
+            // DontCheck required for DropFlat.
             backward_references_maintenance: 1,
         },
         element: GroveDBElementMethodVersions {
@@ -491,7 +491,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 // compatibility.
                 // v2: automatic backward-reference maintenance with cached
                 // old-value observation, one route for both declarations;
-                // `NotParticipant` refuses a participant it finds.
+                // `DontCheck` refuses a participant it finds.
                 delete_internal_on_transaction: 2,
                 average_case_delete_operation_for_delete: 0,
                 worst_case_delete_operation_for_delete: 0,

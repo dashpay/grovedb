@@ -19,15 +19,15 @@ pub(crate) use handling::*;
 /// carried by the live `InsertOptions`, `DeleteOptions` and `ClearOptions`,
 /// and expressed by a batch op through its `DontCheckForBackwardsReferences` twin
 /// (`DeleteDontCheckForBackwardsReferences`, `DeleteTreeDontCheckForBackwardsReferences`, `InsertOrReplaceDontCheckForBackwardsReferences`,
-/// `ReplaceDontCheckForBackwardsReferences`, `PatchDontCheckForBackwardsReferences`; see `GroveOp::displaced_value`).
+/// `ReplaceDontCheckForBackwardsReferences`, `PatchDontCheckForBackwardsReferences`; see `GroveOp::backwards_references`).
 ///
 /// GroveDB reads the displaced value anyway on `GROVE_V4`+ (the batch
 /// old-value observer, the Merk retained for a live write), so for a keyed
 /// operation the declaration decides only what happens when that value takes
-/// part in backward references: `MayBeParticipant` maintains the references,
-/// `NotParticipant` refuses the operation before anything commits. Where
+/// part in backward references: `Check` maintains the references,
+/// `DontCheck` refuses the operation before anything commits. Where
 /// nothing reads the contents — a flat drop, a raw `clear_subtree`, the
-/// replacement of a populated subtree — `NotParticipant` is trusted and
+/// replacement of a populated subtree — `DontCheck` is trusted and
 /// leaves any participant's registrations stale, exactly like the storage it
 /// strands. Recursive removals that already walk their contents check the
 /// claim on the way at no extra cost.
@@ -36,22 +36,22 @@ pub(crate) use handling::*;
 /// whether a plain write or delete is charged the displaced-participant
 /// fan-out.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub enum DisplacedValue {
+pub enum BackwardsReferences {
     /// The displaced value, or for a subtree removal its contents, may take
     /// part in backward references: register, propagate and cascade with
     /// each referrer's consent before committing. Partial batches cannot
     /// plan that maintenance and refuse participant mutations.
     #[default]
-    MayBeParticipant,
+    Check,
     /// The caller knows the displaced value takes no part in backward
     /// references. Checked for free wherever the value is read; refused if
     /// the claim is false. Required for a flat drop.
-    NotParticipant,
+    DontCheck,
 }
 
-impl DisplacedValue {
-    pub(crate) fn may_be_participant(self) -> bool {
-        matches!(self, Self::MayBeParticipant)
+impl BackwardsReferences {
+    pub(crate) fn should_check(self) -> bool {
+        matches!(self, Self::Check)
     }
 }
 

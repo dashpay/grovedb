@@ -1,12 +1,12 @@
 //! Batch support for the backward-references family (batching M2–M4): the
 //! master invariant is that a batch under
-//! `BatchApplyOptions::displaced_value` produces the exact
+//! `BatchApplyOptions::backwards_references` produces the exact
 //! root hash the live flagged flow produces for the same logical
 //! operations — including `BidirectionalReference` ops, in-batch targets
 //! and chains, retargets, identical-edge no-ops, and the M4 conflict
 //! rules.
 
-use crate::DisplacedValue;
+use crate::BackwardsReferences;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -20,7 +20,7 @@ use crate::{
 
 fn flag_on() -> Option<InsertOptions> {
     Some(InsertOptions {
-        displaced_value: DisplacedValue::MayBeParticipant,
+        backwards_references: BackwardsReferences::Check,
         ..Default::default()
     })
 }
@@ -248,7 +248,7 @@ fn batch_delete_cascades_like_live() {
             &[TEST_LEAF],
             b"value",
             Some(DeleteOptions {
-                displaced_value: DisplacedValue::MayBeParticipant,
+                backwards_references: BackwardsReferences::Check,
                 ..Default::default()
             }),
             None,
@@ -389,7 +389,7 @@ fn batch_rejections_hold() {
     let grove_version = GroveVersion::latest();
     let (db, _other) = twin_dbs_with_chain(grove_version);
 
-    // A family payload declared `NotParticipant` over a stored participant:
+    // A family payload declared `DontCheck` over a stored participant:
     // the claim is false and is refused from the value already in hand.
     assert!(matches!(
         db.apply_batch(
@@ -782,7 +782,7 @@ fn batch_bidi_delete_matches_live() {
             &[TEST_LEAF],
             b"r1",
             Some(DeleteOptions {
-                displaced_value: DisplacedValue::MayBeParticipant,
+                backwards_references: BackwardsReferences::Check,
                 ..Default::default()
             }),
             None,
@@ -1495,12 +1495,12 @@ fn batch_flagged_overwrite_folds_own_stale_cleanup() {
         .unwrap()
         .unwrap();
         // Remove the referrer through a trusted path that reads nothing: a
-        // raw `clear_subtree` declared `NotParticipant` leaves the
+        // raw `clear_subtree` declared `DontCheck` leaves the
         // registration on `value` dangling.
         db.clear_subtree(
             &[TEST_LEAF, b"refs"],
             Some(crate::operations::delete::ClearOptions {
-                displaced_value: DisplacedValue::NotParticipant,
+                backwards_references: BackwardsReferences::DontCheck,
                 ..Default::default()
             }),
             None,

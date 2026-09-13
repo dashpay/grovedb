@@ -1,6 +1,6 @@
 //! The backward-references batch preprocessor (batching milestones M2–M4).
 //!
-//! With the default [`crate::DisplacedValue::MayBeParticipant`],
+//! With the default [`crate::BackwardsReferences::Check`],
 //! user operations touching the backward-references family — the three ITEM
 //! variants and `BidirectionalReference` itself — expand into the derived
 //! operations the live flow would perform. The decisions come from
@@ -739,7 +739,7 @@ pub(super) fn expand_backward_references_ops<'db>(
             _ => continue,
         };
         let previous = cost_return_on_error!(&mut cost, expansion.store.element_at(&path, &key));
-        // The displaced value is in hand, so a `NotParticipant` claim costs
+        // The displaced value is in hand, so a `DontCheck` claim costs
         // nothing to check and fails closed.
         let previous_participates = previous
             .as_ref()
@@ -747,7 +747,7 @@ pub(super) fn expand_backward_references_ops<'db>(
         // A conditional insert over an existing key writes nothing (or fails
         // for existing), so it displaces nothing to check.
         if previous_participates
-            && !op.op.displaced_value().may_be_participant()
+            && !op.op.backwards_references().should_check()
             && !matches!(op.op, GroveOp::InsertIfNotExists { .. })
         {
             return Err(Error::NotSupported(
@@ -766,7 +766,7 @@ pub(super) fn expand_backward_references_ops<'db>(
         // cleanup walk that already decodes the contents, and
         // `DontCheckWithNoCleanup` declares that the batch's own deletes,
         // each planned here, emptied the subtree.
-        let removes_unread_subtree = op.op.displaced_value().may_be_participant()
+        let removes_unread_subtree = op.op.backwards_references().should_check()
             && !matches!(
                 op.op,
                 GroveOp::InsertIfNotExists { .. }

@@ -13,7 +13,7 @@ use crate::{
     },
     reference_path::ReferencePathType,
     tests::{make_test_grovedb, TempGroveDb, TEST_LEAF},
-    BidirectionalReference, DisplacedValue, Element, Error, GroveDb,
+    BackwardsReferences, BidirectionalReference, Element, Error, GroveDb,
 };
 
 fn reference(target: &[u8], cascade: bool) -> Element {
@@ -28,7 +28,7 @@ fn reference(target: &[u8], cascade: bool) -> Element {
     )
 }
 
-fn not_participant(ops: Vec<QualifiedGroveDbOp>) -> Vec<QualifiedGroveDbOp> {
+fn dont_check(ops: Vec<QualifiedGroveDbOp>) -> Vec<QualifiedGroveDbOp> {
     ops.into_iter()
         .map(|op| op.dont_check_for_backwards_references())
         .collect()
@@ -146,10 +146,7 @@ fn default_live_and_batch_updates_preserve_registrations_and_refresh_hashes() {
 fn default_plain_overwrite_cascades_and_a_false_not_participant_claim_is_refused() {
     let version = GroveVersion::latest();
     for batch in [false, true] {
-        for declared in [
-            DisplacedValue::MayBeParticipant,
-            DisplacedValue::NotParticipant,
-        ] {
+        for declared in [BackwardsReferences::Check, BackwardsReferences::DontCheck] {
             let db = chain(true);
             let before = db.root_hash(None, version).unwrap().unwrap();
             let item = Element::new_item(b"plain".to_vec());
@@ -161,8 +158,8 @@ fn default_plain_overwrite_cascades_and_a_false_not_participant_claim_is_refused
                 );
                 db.apply_batch(
                     vec![match declared {
-                        DisplacedValue::MayBeParticipant => op,
-                        DisplacedValue::NotParticipant => op.dont_check_for_backwards_references(),
+                        BackwardsReferences::Check => op,
+                        BackwardsReferences::DontCheck => op.dont_check_for_backwards_references(),
                     }],
                     None,
                     None,
@@ -175,7 +172,7 @@ fn default_plain_overwrite_cascades_and_a_false_not_participant_claim_is_refused
                     b"value",
                     item.clone(),
                     Some(InsertOptions {
-                        displaced_value: declared,
+                        backwards_references: declared,
                         ..Default::default()
                     }),
                     None,
@@ -183,7 +180,7 @@ fn default_plain_overwrite_cascades_and_a_false_not_participant_claim_is_refused
                 )
                 .unwrap()
             };
-            let refused = !declared.may_be_participant();
+            let refused = !declared.should_check();
             if refused {
                 // The stored value is read for the write anyway, so the
                 // false claim is caught for free and nothing changes.
@@ -362,7 +359,7 @@ fn ordinary_mutations_reuse_preparation_reads() {
             .cost_as_result()
             .unwrap();
         let skipped_cost = skipped
-            .apply_batch(not_participant(ops), None, None, version)
+            .apply_batch(dont_check(ops), None, None, version)
             .cost_as_result()
             .unwrap();
         assert_eq!(observed_cost, skipped_cost);
@@ -382,7 +379,7 @@ fn not_participant_delete_of_a_participant_is_refused() {
         &[TEST_LEAF],
         b"value",
         Some(DeleteOptions {
-            displaced_value: DisplacedValue::NotParticipant,
+            backwards_references: BackwardsReferences::DontCheck,
             ..Default::default()
         }),
         None,
@@ -647,7 +644,7 @@ fn clear_subtree_refuses_incoming_and_outgoing_edges_before_mutating_the_transac
                 &[TEST_LEAF],
                 Some(ClearOptions {
                     allow_deleting_subtrees: true,
-                    displaced_value: DisplacedValue::NotParticipant,
+                    backwards_references: BackwardsReferences::DontCheck,
                     ..Default::default()
                 }),
                 Some(&tx),
@@ -661,7 +658,7 @@ fn clear_subtree_refuses_incoming_and_outgoing_edges_before_mutating_the_transac
                     .is_err());
             } else {
                 // Public get_raw strips the registered referrers; inspect the
-                // stored element to verify the trusted NotParticipant contract.
+                // stored element to verify the trusted DontCheck contract.
                 let merk = db
                     .open_transactional_merk_at_path(
                         SubtreePath::from(root.as_slice()),
@@ -677,7 +674,7 @@ fn clear_subtree_refuses_incoming_and_outgoing_edges_before_mutating_the_transac
                 assert_eq!(
                     target.backward_references().unwrap().len(),
                     1,
-                    "a raw clear declared NotParticipant leaves the registration stale"
+                    "a raw clear declared DontCheck leaves the registration stale"
                 );
             }
         }
@@ -703,7 +700,7 @@ fn flat_drop_requires_not_participant_in_live_full_and_both_partial_segments() {
             0 => db.drop_flat_subtree(
                 &[] as &[&[u8]],
                 TEST_LEAF,
-                DisplacedValue::MayBeParticipant,
+                BackwardsReferences::Check,
                 Some(&tx),
                 version,
             ),
@@ -748,10 +745,7 @@ fn ordinary_batch_conditionals_and_duplicate_positions_keep_executor_semantics()
     let version = GroveVersion::latest();
     for scenario in 0..4 {
         let mut roots = Vec::new();
-        for declared in [
-            DisplacedValue::MayBeParticipant,
-            DisplacedValue::NotParticipant,
-        ] {
+        for declared in [BackwardsReferences::Check, BackwardsReferences::DontCheck] {
             let db = make_test_grovedb(version);
             db.insert(
                 &[TEST_LEAF],
@@ -806,8 +800,8 @@ fn ordinary_batch_conditionals_and_duplicate_positions_keep_executor_semantics()
             db.apply_batch(
                 ops.into_iter()
                     .map(|op| match declared {
-                        DisplacedValue::MayBeParticipant => op,
-                        DisplacedValue::NotParticipant => op.dont_check_for_backwards_references(),
+                        BackwardsReferences::Check => op,
+                        BackwardsReferences::DontCheck => op.dont_check_for_backwards_references(),
                     })
                     .collect(),
                 Some(BatchApplyOptions {
@@ -945,18 +939,15 @@ fn declared_empty_subtree_removals_skip_the_participant_scan() {
         ];
         for partial in [false, true] {
             let mut runs = Vec::new();
-            for declared in [
-                DisplacedValue::MayBeParticipant,
-                DisplacedValue::NotParticipant,
-            ] {
+            for declared in [BackwardsReferences::Check, BackwardsReferences::DontCheck] {
                 let db = make_test_grovedb(version);
                 seed(&db);
                 let ops: Vec<QualifiedGroveDbOp> = delete_up_tree
                     .iter()
                     .cloned()
                     .map(|op| match declared {
-                        DisplacedValue::MayBeParticipant => op,
-                        DisplacedValue::NotParticipant => op.dont_check_for_backwards_references(),
+                        BackwardsReferences::Check => op,
+                        BackwardsReferences::DontCheck => op.dont_check_for_backwards_references(),
                     })
                     .collect();
                 let result = if partial {
@@ -981,8 +972,8 @@ fn declared_empty_subtree_removals_skip_the_participant_scan() {
             assert_eq!(may_be.1, not.1, "{behavior:?} partial={partial}: root hash");
             assert_eq!(
                 may_be.0, not.0,
-                "{behavior:?} partial={partial}: MayBeParticipant must cost exactly what \
-                 NotParticipant costs"
+                "{behavior:?} partial={partial}: Check must cost exactly what \
+                 DontCheck costs"
             );
         }
     }
@@ -994,18 +985,15 @@ fn declared_empty_subtree_removals_skip_the_participant_scan() {
         SubelementsDeletionBehavior::DeleteChildren,
     )];
     let mut costs = Vec::new();
-    for declared in [
-        DisplacedValue::MayBeParticipant,
-        DisplacedValue::NotParticipant,
-    ] {
+    for declared in [BackwardsReferences::Check, BackwardsReferences::DontCheck] {
         let db = make_test_grovedb(version);
         seed(&db);
         let ops: Vec<QualifiedGroveDbOp> = recursive
             .iter()
             .cloned()
             .map(|op| match declared {
-                DisplacedValue::MayBeParticipant => op,
-                DisplacedValue::NotParticipant => op.dont_check_for_backwards_references(),
+                BackwardsReferences::Check => op,
+                BackwardsReferences::DontCheck => op.dont_check_for_backwards_references(),
             })
             .collect();
         let result = db.apply_batch(ops, None, None, version);
@@ -1187,7 +1175,7 @@ fn skipped_delete_tree_does_not_exempt_a_callback_replacement() {
 }
 
 /// The non-batched adapter must carry each op's declaration whether or not
-/// batch options are supplied: a false `NotParticipant` claim is refused
+/// batch options are supplied: a false `DontCheck` claim is refused
 /// with `None` exactly as with `Some(BatchApplyOptions::default())`.
 #[test]
 fn non_batched_apply_keeps_the_op_declaration_without_options() {
@@ -1216,7 +1204,7 @@ fn non_batched_apply_keeps_the_op_declaration_without_options() {
 }
 
 /// A conditional insert over an existing key writes nothing, so it has no
-/// displaced value to check: declaring `NotParticipant` on it is not a false
+/// displaced value to check: declaring `DontCheck` on it is not a false
 /// claim even when the existing value participates.
 #[test]
 fn skipped_conditional_insert_checks_no_displaced_value() {
@@ -1241,7 +1229,7 @@ fn skipped_conditional_insert_checks_no_displaced_value() {
 
 /// A removal observed in the initial segment keeps the declaration of the
 /// op that displaced it: a callback op at the same path declared
-/// `NotParticipant` (a plain overwrite, or a `DeleteTree(Skip)` that ends up
+/// `DontCheck` (a plain overwrite, or a `DeleteTree(Skip)` that ends up
 /// skipped) cannot speak for the earlier tree replacement.
 #[test]
 fn initial_segment_removal_keeps_its_own_declaration() {
@@ -1440,11 +1428,11 @@ fn delete_op_builders_carry_the_declared_displaced_value() {
     .unwrap()
     .unwrap();
 
-    let build = |path: &[&[u8]], key: &[u8], declared: DisplacedValue| {
+    let build = |path: &[&[u8]], key: &[u8], declared: BackwardsReferences| {
         db.delete_operation_for_delete_internal(
             SubtreePath::from(path),
             key,
-            &DeleteOptions::default().with_displaced_value(declared),
+            &DeleteOptions::default().with_backwards_references(declared),
             None,
             &[],
             None,
@@ -1456,39 +1444,35 @@ fn delete_op_builders_carry_the_declared_displaced_value() {
         .op
     };
     assert!(matches!(
-        build(&[TEST_LEAF], b"item", DisplacedValue::MayBeParticipant),
+        build(&[TEST_LEAF], b"item", BackwardsReferences::Check),
         GroveOp::Delete
     ));
     assert!(matches!(
-        build(&[TEST_LEAF], b"item", DisplacedValue::NotParticipant),
+        build(&[TEST_LEAF], b"item", BackwardsReferences::DontCheck),
         GroveOp::DeleteDontCheckForBackwardsReferences
     ));
     assert!(matches!(
-        build(
-            &[TEST_LEAF, b"outer"],
-            b"inner",
-            DisplacedValue::MayBeParticipant
-        ),
+        build(&[TEST_LEAF, b"outer"], b"inner", BackwardsReferences::Check),
         GroveOp::DeleteTree(..)
     ));
     assert!(matches!(
         build(
             &[TEST_LEAF, b"outer"],
             b"inner",
-            DisplacedValue::NotParticipant
+            BackwardsReferences::DontCheck
         ),
         GroveOp::DeleteTreeDontCheckForBackwardsReferences(..)
     ));
 
     // The up-tree chain declares every level from its own options.
-    let chain_ops = |declared: DisplacedValue| {
+    let chain_ops = |declared: BackwardsReferences| {
         db.delete_operations_for_delete_up_tree_while_empty(
             SubtreePath::from([TEST_LEAF, b"outer"].as_ref()),
             b"inner",
             &DeleteUpTreeOptions {
                 // Stop before the root leaf, which cannot be deleted.
                 stop_path_height: Some(0),
-                displaced_value: declared,
+                backwards_references: declared,
                 ..Default::default()
             },
             None,
@@ -1499,12 +1483,12 @@ fn delete_op_builders_carry_the_declared_displaced_value() {
         .unwrap()
         .unwrap()
     };
-    let checked = chain_ops(DisplacedValue::MayBeParticipant);
+    let checked = chain_ops(BackwardsReferences::Check);
     assert_eq!(checked.len(), 2, "inner, then the emptied outer");
     assert!(checked
         .iter()
         .all(|op| !op.op.is_dont_check_for_backwards_references()));
-    let declared = chain_ops(DisplacedValue::NotParticipant);
+    let declared = chain_ops(BackwardsReferences::DontCheck);
     assert_eq!(declared.len(), 2);
     assert!(declared
         .iter()
@@ -1522,7 +1506,7 @@ fn delete_op_builders_carry_the_declared_displaced_value() {
         true,
         0,
         (4, 8),
-        DisplacedValue::NotParticipant,
+        BackwardsReferences::DontCheck,
         version,
     )
     .unwrap()
@@ -1539,7 +1523,7 @@ fn delete_op_builders_carry_the_declared_displaced_value() {
         true,
         0,
         8,
-        DisplacedValue::MayBeParticipant,
+        BackwardsReferences::Check,
         version,
     )
     .unwrap()
@@ -1588,7 +1572,7 @@ fn delete_up_tree_honors_the_declared_displaced_value() {
     .unwrap();
     let before = db.root_hash(None, version).unwrap().unwrap();
 
-    // A false NotParticipant claim over a participant is refused before
+    // A false DontCheck claim over a participant is refused before
     // anything commits.
     let result = db
         .delete_up_tree_while_empty(
@@ -1596,7 +1580,7 @@ fn delete_up_tree_honors_the_declared_displaced_value() {
             b"value",
             &DeleteUpTreeOptions {
                 stop_path_height: Some(1),
-                displaced_value: DisplacedValue::NotParticipant,
+                backwards_references: BackwardsReferences::DontCheck,
                 ..Default::default()
             },
             None,

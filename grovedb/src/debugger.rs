@@ -1309,7 +1309,7 @@ fn node_to_update(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DisplacedValue;
+    use crate::BackwardsReferences;
 
     #[test]
     fn element_to_grovedbg_converts_item_with_sum_item() {
@@ -1763,7 +1763,7 @@ mod tests {
                     Some(vec![7]),
                 ),
                 Some(InsertOptions {
-                    displaced_value: DisplacedValue::MayBeParticipant,
+                    backwards_references: BackwardsReferences::Check,
                     ..Default::default()
                 }),
                 None,

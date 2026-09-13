@@ -271,7 +271,7 @@ ADR for scope.
 Ordinary batches retain their executor semantics when no old or new value
 participates in backward references. Reference planner conflict rules apply
 only to batches that touch participants. A `Delete` of a populated tree or a
-tree replacement declared `MayBeParticipant` inspects the descendants and
+tree replacement declared `Check` inspects the descendants and
 incurs additional read costs. A `DeleteTree` is never pre-scanned:
 `DontCheckWithNoCleanup` declares that the batch's own deletes emptied the
 subtree, `Error` and `Skip` verify that at apply time, and `DeleteChildren`
@@ -279,9 +279,9 @@ checks the declaration on the cleanup walk it already makes, refusing a
 participant the batch does not explicitly delete. A delete-up-tree chain and
 a recursive removal therefore cost the plain removal.
 
-Cost estimation follows the same split: an op declared `MayBeParticipant`
+Cost estimation follows the same split: an op declared `Check`
 charges the displaced-participant fan-out for its plain write or delete, an
-op declared `NotParticipant` estimates the plain write alone, and ops that
+op declared `DontCheck` estimates the plain write alone, and ops that
 write a participant themselves are always charged.
 
 `SubelementsDeletionBehavior::DropFlat` requires the `DeleteTreeDontCheckForBackwardsReferences`

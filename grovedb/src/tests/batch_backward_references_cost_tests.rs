@@ -4,7 +4,7 @@
 //! holds for maintained family batches, while pre-V4 estimation stays
 //! byte-stable for replay. A plain write or delete charges the
 //! displaced-state bound only when the op declares
-//! `DisplacedValue::MayBeParticipant`; an op declared `NotParticipant`
+//! `BackwardsReferences::Check`; an op declared `DontCheck`
 //! estimates the plain write alone.
 
 use std::collections::HashMap;
@@ -33,7 +33,7 @@ use crate::{
     Element, Error, GroveDb,
 };
 
-fn not_participant(ops: Vec<QualifiedGroveDbOp>) -> Vec<QualifiedGroveDbOp> {
+fn dont_check(ops: Vec<QualifiedGroveDbOp>) -> Vec<QualifiedGroveDbOp> {
     ops.into_iter()
         .map(|op| op.dont_check_for_backwards_references())
         .collect()
@@ -253,12 +253,12 @@ fn fan_out_terms_follow_the_op_declaration() {
     let family = worst_case_estimate(family_op(), None, grove_version);
     assert_eq!(
         family,
-        worst_case_estimate(not_participant(family_op()), None, grove_version),
+        worst_case_estimate(dont_check(family_op()), None, grove_version),
         "a participant payload charges its fan-out regardless of the declaration"
     );
     assert_eq!(
         average_case_estimate(family_op(), None, grove_version),
-        average_case_estimate(not_participant(family_op()), None, grove_version)
+        average_case_estimate(dont_check(family_op()), None, grove_version)
     );
 
     // A PLAIN-item op charges the displaced-state fan-out only when it
@@ -270,7 +270,7 @@ fn fan_out_terms_follow_the_op_declaration() {
         Element::new_item(b"hello".to_vec()),
     )];
     let may_be_plain = worst_case_estimate(plain_op.clone(), None, grove_version);
-    let not_plain = worst_case_estimate(not_participant(plain_op), None, grove_version);
+    let not_plain = worst_case_estimate(dont_check(plain_op), None, grove_version);
     assert!(
         may_be_plain.seek_count > not_plain.seek_count
             && may_be_plain.storage_cost.replaced_bytes > not_plain.storage_cost.replaced_bytes,
@@ -697,10 +697,10 @@ fn declared_capacity_tightens_the_worst_case_estimate() {
     );
 }
 
-/// The estimator cannot see stored state. An op declared `NotParticipant`
+/// The estimator cannot see stored state. An op declared `DontCheck`
 /// charges neither the displaced-state fan-out nor the delete probe, so its
 /// estimate is the plain write's alone in both estimators; the default
-/// `MayBeParticipant` reinstates the bound, and an op that itself writes a
+/// `Check` reinstates the bound, and an op that itself writes a
 /// participant is charged from the op regardless.
 #[test]
 fn not_participant_ops_estimate_plain_writes_without_the_displaced_bound() {
@@ -721,8 +721,8 @@ fn not_participant_ops_estimate_plain_writes_without_the_displaced_bound() {
     ];
     for (name, op) in plain_ops {
         let ops = || vec![op.clone()];
-        let not_average = average_case_estimate(not_participant(ops()), None, grove_version);
-        let not_worst = worst_case_estimate(not_participant(ops()), None, grove_version);
+        let not_average = average_case_estimate(dont_check(ops()), None, grove_version);
+        let not_worst = worst_case_estimate(dont_check(ops()), None, grove_version);
         let may_be_average = average_case_estimate(ops(), None, grove_version);
         let may_be_worst = worst_case_estimate(ops(), None, grove_version);
         assert!(
@@ -746,18 +746,18 @@ fn not_participant_ops_estimate_plain_writes_without_the_displaced_bound() {
     };
     assert_eq!(
         average_case_estimate(family(), None, grove_version),
-        average_case_estimate(not_participant(family()), None, grove_version),
+        average_case_estimate(dont_check(family()), None, grove_version),
         "a participant write is charged from the op whatever it declares"
     );
     assert_eq!(
         worst_case_estimate(family(), None, grove_version),
-        worst_case_estimate(not_participant(family()), None, grove_version)
+        worst_case_estimate(dont_check(family()), None, grove_version)
     );
 }
 
 /// Overwriting a registered target with a plain item cascades its chain.
-/// Only the `MayBeParticipant` worst-case estimate covers that work; a
-/// `NotParticipant` estimate is the plain write's, and the apply refuses the
+/// Only the `Check` worst-case estimate covers that work; a
+/// `DontCheck` estimate is the plain write's, and the apply refuses the
 /// false claim rather than running the cascade unpriced.
 #[test]
 fn may_be_participant_covers_the_displaced_cascade_not_participant_cannot_see() {
@@ -772,9 +772,9 @@ fn may_be_participant_covers_the_displaced_cascade_not_participant_cannot_see() 
     };
 
     let declared = worst_case_estimate(ops(), None, grove_version);
-    let undeclared = worst_case_estimate(not_participant(ops()), None, grove_version);
+    let undeclared = worst_case_estimate(dont_check(ops()), None, grove_version);
     assert!(matches!(
-        db.apply_batch(not_participant(ops()), None, None, grove_version)
+        db.apply_batch(dont_check(ops()), None, None, grove_version)
             .unwrap(),
         Err(Error::NotSupported(_))
     ));

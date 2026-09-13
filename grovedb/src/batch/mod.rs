@@ -39,7 +39,7 @@ mod single_sum_item_deletion_cost_tests;
 #[cfg(test)]
 mod single_sum_item_insert_cost_tests;
 
-use crate::{bidirectional_references::batch_maintains_backward_references, DisplacedValue};
+use crate::{bidirectional_references::batch_maintains_backward_references, BackwardsReferences};
 use core::fmt;
 use std::{
     cmp::Ordering,
@@ -153,7 +153,7 @@ pub enum SubelementsDeletionBehavior {
     /// O(1), storage reclaimed) or [`Self::DeleteChildren`] (recursive
     /// cleanup, O(contents)).
     ///
-    /// Under `DisplacedValue::MayBeParticipant` (`GROVE_V4`+) the
+    /// Under `BackwardsReferences::Check` (`GROVE_V4`+) the
     /// declaration also stands in for the removed subtree's
     /// backward-reference participant scan: every element the batch removed
     /// beneath the tree passed through the old-value observer (or the full
@@ -179,7 +179,7 @@ pub enum SubelementsDeletionBehavior {
     /// subtree's storage (and any nested subtrees), walking the structure
     /// via `find_subtrees` — O(contents). Use this when the subtree may
     /// contain children that should be recursively cleaned up. Under
-    /// `DisplacedValue::MayBeParticipant` the contents are also scanned
+    /// `BackwardsReferences::Check` the contents are also scanned
     /// for backward-reference participants before commit.
     DeleteChildren,
     /// Check emptiness at apply time. If the subtree is non-empty,
@@ -669,13 +669,13 @@ impl GroveOp {
     }
 
     /// What the op declares about the value it displaces: a `DontCheckForBackwardsReferences` twin
-    /// declares [`DisplacedValue::NotParticipant`], every other op
-    /// [`DisplacedValue::MayBeParticipant`].
-    pub fn displaced_value(&self) -> DisplacedValue {
+    /// declares [`BackwardsReferences::DontCheck`], every other op
+    /// [`BackwardsReferences::Check`].
+    pub fn backwards_references(&self) -> BackwardsReferences {
         if self.is_dont_check_for_backwards_references() {
-            DisplacedValue::NotParticipant
+            BackwardsReferences::DontCheck
         } else {
-            DisplacedValue::MayBeParticipant
+            BackwardsReferences::Check
         }
     }
 
@@ -1282,14 +1282,14 @@ impl QualifiedGroveDbOp {
         self
     }
 
-    /// The same op carrying `displaced_value` as its declaration: the
-    /// `DontCheckForBackwardsReferences` twin for [`DisplacedValue::NotParticipant`], the checked
-    /// op for [`DisplacedValue::MayBeParticipant`]. Ops without a twin are
+    /// The same op carrying `backwards_references` as its declaration: the
+    /// `DontCheckForBackwardsReferences` twin for [`BackwardsReferences::DontCheck`], the checked
+    /// op for [`BackwardsReferences::Check`]. Ops without a twin are
     /// returned as is.
-    pub fn with_displaced_value(mut self, displaced_value: DisplacedValue) -> Self {
-        self.op = match displaced_value {
-            DisplacedValue::MayBeParticipant => self.op.checked(),
-            DisplacedValue::NotParticipant => self.op.dont_check_for_backwards_references(),
+    pub fn with_backwards_references(mut self, backwards_references: BackwardsReferences) -> Self {
+        self.op = match backwards_references {
+            BackwardsReferences::Check => self.op.checked(),
+            BackwardsReferences::DontCheck => self.op.dont_check_for_backwards_references(),
         };
         self
     }
@@ -1862,7 +1862,7 @@ struct TreeCacheMerkByPath<S, F, F2> {
     backward_references_prepared: bool,
     /// Populated Merk subtrees the observer saw removed or replaced, each
     /// with the declaration of the op that displaced it.
-    unprepared_subtree_removals: Vec<(Vec<Vec<u8>>, DisplacedValue)>,
+    unprepared_subtree_removals: Vec<(Vec<Vec<u8>>, BackwardsReferences)>,
     merks: HashMap<Vec<Vec<u8>>, Merk<S>>,
     /// Empty Merks reserved while scanning tree insertions, with no path
     /// operations applied yet. A skipped insertion must not carry its
@@ -1940,7 +1940,7 @@ impl<S, F, F2> fmt::Debug for TreeCacheMerkByPath<S, F, F2> {
 /// empty on V1..V3.
 #[derive(Default)]
 struct BatchApplyCaptures {
-    unprepared_subtree_removals: Vec<(Vec<Vec<u8>>, DisplacedValue)>,
+    unprepared_subtree_removals: Vec<(Vec<Vec<u8>>, BackwardsReferences)>,
     /// Cidx primary paths displaced by a safe-subset overwrite; their old
     /// primary subtree storage + per-axis secondary namespaces get cleared.
     cidx_overwrite_cleanup_paths: Vec<Vec<Vec<u8>>>,
@@ -2163,7 +2163,7 @@ trait TreeCache<G, SR> {
     /// (primary subtree + secondary namespace) must be cleaned up
     /// because a safe-subset overwrite replaced them with a non-cidx
     /// element or an empty cidx. Default impl returns an empty Vec.
-    fn take_unprepared_subtree_removals(&mut self) -> Vec<(Vec<Vec<u8>>, DisplacedValue)> {
+    fn take_unprepared_subtree_removals(&mut self) -> Vec<(Vec<Vec<u8>>, BackwardsReferences)> {
         Vec::new()
     }
 
@@ -3146,7 +3146,7 @@ where
             .insert(qualified_path, element.clone());
     }
 
-    fn take_unprepared_subtree_removals(&mut self) -> Vec<(Vec<Vec<u8>>, DisplacedValue)> {
+    fn take_unprepared_subtree_removals(&mut self) -> Vec<(Vec<Vec<u8>>, BackwardsReferences)> {
         std::mem::take(&mut self.unprepared_subtree_removals)
     }
 
@@ -4777,9 +4777,9 @@ where
                                 // segment) cannot speak for it.
                                 let declared =
                                     if dont_check_for_backwards_references_keys.contains(key) {
-                                        DisplacedValue::NotParticipant
+                                        BackwardsReferences::DontCheck
                                     } else {
-                                        DisplacedValue::MayBeParticipant
+                                        BackwardsReferences::Check
                                     };
                                 self.unprepared_subtree_removals.push((qualified, declared));
                             }
@@ -5782,7 +5782,7 @@ impl GroveDb {
         );
         let mut cost = OperationCost::default();
         for op in ops.into_iter() {
-            let declared = op.op.displaced_value();
+            let declared = op.op.backwards_references();
             match op.op {
                 GroveOp::ReplaceBackwardReferenceFamilyMember { .. } => {
                     return Err(Error::NotSupported(
@@ -5815,7 +5815,7 @@ impl GroveDb {
                                     .as_ref()
                                     .map(BatchApplyOptions::as_insert_options)
                                     .unwrap_or_default()
-                                    .with_displaced_value(declared),
+                                    .with_backwards_references(declared),
                             ),
                             transaction,
                             grove_version,
@@ -5842,7 +5842,7 @@ impl GroveDb {
                                     .as_ref()
                                     .map(BatchApplyOptions::as_insert_options)
                                     .unwrap_or_default()
-                                    .with_displaced_value(declared),
+                                    .with_backwards_references(declared),
                             ),
                             transaction,
                             grove_version,
@@ -5866,7 +5866,7 @@ impl GroveDb {
                             .as_ref()
                             .map(BatchApplyOptions::as_insert_options)
                             .unwrap_or_default()
-                            .with_displaced_value(declared);
+                            .with_backwards_references(declared);
                         insert_options.validate_insertion_does_not_override = true;
                         cost_return_on_error!(
                             &mut cost,
@@ -5911,7 +5911,7 @@ impl GroveDb {
                                     .as_ref()
                                     .map(BatchApplyOptions::as_delete_options)
                                     .unwrap_or_default()
-                                    .with_displaced_value(declared),
+                                    .with_backwards_references(declared),
                             ),
                             transaction,
                             grove_version
@@ -5973,7 +5973,7 @@ impl GroveDb {
                         validate_tree_at_path_exists: false,
                         // Same decision as `as_delete_options`: the batch's
                         // opt-in extends to its deletes.
-                        displaced_value: declared,
+                        backwards_references: declared,
                     };
                     cost_return_on_error!(
                         &mut cost,
@@ -7894,7 +7894,7 @@ impl GroveDb {
             .into_iter()
             .chain(continue_subtree_removals)
         {
-            if delete_tree_behaviors.contains_key(&path) || !declared.may_be_participant() {
+            if delete_tree_behaviors.contains_key(&path) || !declared.should_check() {
                 continue;
             }
             if !cost_return_on_error!(

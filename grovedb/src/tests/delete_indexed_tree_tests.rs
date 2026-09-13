@@ -13,7 +13,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::DisplacedValue;
+    use crate::BackwardsReferences;
     use grovedb_element::indexed::IndexAxis;
     use grovedb_path::SubtreePath;
     use grovedb_storage::{
@@ -86,7 +86,7 @@ mod tests {
             deleting_non_empty_trees_returns_error: false,
             base_root_storage_is_free: true,
             validate_tree_at_path_exists: false,
-            displaced_value: DisplacedValue::NotParticipant,
+            backwards_references: BackwardsReferences::DontCheck,
         }
     }
 

@@ -101,7 +101,7 @@ mod tests {
                 ),
             };
             result.value.expect("delete child");
-            // A V4 direct delete under the default `MayBeParticipant` scans
+            // A V4 direct delete under the default `Check` scans
             // the subtree for participants to maintain (+312 loaded bytes).
             // Batches check the claim on the cleanup walk they make anyway,
             // so their V4 cost is the plain removal. Keep these visible.

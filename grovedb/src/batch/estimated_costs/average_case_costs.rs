@@ -41,7 +41,7 @@ use crate::{
     },
     Error, GroveDb,
 };
-use crate::{DisplacedValue, Element};
+use crate::{BackwardsReferences, Element};
 
 #[cfg(feature = "minimal")]
 impl GroveOp {
@@ -66,8 +66,8 @@ impl GroveOp {
         // The op's own declaration about the value it displaces: participant
         // payloads charge the derived fan-out on GROVE_V4+ regardless, and a
         // plain write or delete charges the displaced-state bound only when
-        // it declares `MayBeParticipant`.
-        displaced_value: DisplacedValue,
+        // it declares `Check`.
+        backwards_references: BackwardsReferences,
         propagate: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -124,8 +124,8 @@ impl GroveOp {
                 // participant it displaces, and the estimator cannot see
                 // stored state: charge that bound only when the op declares
                 // the displaced value may be a participant.
-                Some(_) | None => displaced_value
-                    .may_be_participant()
+                Some(_) | None => backwards_references
+                    .should_check()
                     .then(super::BackwardReferencesFanOut::average_item),
             }
         };
@@ -149,7 +149,7 @@ impl GroveOp {
         // deletion — charged whenever the fan-out is active.
         let flagged_delete_probe = || {
             let mut probe = OperationCost::default();
-            if fan_out_version != 0 && displaced_value.may_be_participant() {
+            if fan_out_version != 0 && backwards_references.should_check() {
                 let key_width = GroveDb::average_case_layer_key_size(
                     &layer_element_estimates.estimated_layer_sizes,
                 );
@@ -1149,7 +1149,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                     &key,
                     layer_element_estimates,
                     append_tree_chunk_power,
-                    op.displaced_value(),
+                    op.backwards_references(),
                     false,
                     grove_version
                 )
@@ -1281,14 +1281,14 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
 #[cfg(test)]
 mod tests {
     /// The estimator charges the displaced-participant fan-out only for ops
-    /// that declare `MayBeParticipant`; these plain-write pins declare none.
-    fn not_participant(ops: Vec<QualifiedGroveDbOp>) -> Vec<QualifiedGroveDbOp> {
+    /// that declare `Check`; these plain-write pins declare none.
+    fn dont_check(ops: Vec<QualifiedGroveDbOp>) -> Vec<QualifiedGroveDbOp> {
         ops.into_iter()
             .map(|op| op.dont_check_for_backwards_references())
             .collect()
     }
 
-    use crate::DisplacedValue;
+    use crate::BackwardsReferences;
     use std::collections::HashMap;
 
     use grovedb_costs::{
@@ -1324,7 +1324,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_tree(),
@@ -1394,7 +1394,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_tree_with_flags(Some(b"cat".to_vec())),
@@ -1462,7 +1462,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::new_item(b"cat".to_vec()),
@@ -1536,7 +1536,7 @@ mod tests {
         .unwrap()
         .expect("successful root tree leaf insert");
 
-        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_tree(),
@@ -1623,7 +1623,7 @@ mod tests {
         .unwrap()
         .expect("successful root tree leaf insert");
 
-        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"0".to_vec()],
             b"key1".to_vec(),
             Element::empty_tree(),
@@ -1703,7 +1703,7 @@ mod tests {
     #[test]
     fn test_batch_root_one_sum_item_replace_op_average_case_costs() {
         let grove_version = GroveVersion::latest();
-        let ops = not_participant(vec![QualifiedGroveDbOp::replace_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::replace_op(
             vec![vec![7]],
             hex::decode("46447a3b4c8939fd4cf8b610ba7da3d3f6b52b39ab2549bf91503b9b07814055")
                 .unwrap(),
@@ -1790,7 +1790,7 @@ mod tests {
         .unwrap()
         .expect("successful root tree leaf insert");
 
-        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_tree(),
@@ -1840,7 +1840,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_dense_tree(3),
@@ -1883,7 +1883,7 @@ mod tests {
     #[test]
     fn test_refresh_reference_average_case_cost() {
         let grove_version = GroveVersion::latest();
-        let ops = not_participant(vec![QualifiedGroveDbOp::refresh_reference_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::refresh_reference_op(
             vec![vec![7]],
             b"ref_key".to_vec(),
             ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]),
@@ -1939,7 +1939,7 @@ mod tests {
     #[test]
     fn test_refresh_reference_with_sum_item_average_case_cost() {
         let grove_version = GroveVersion::latest();
-        let ops = not_participant(vec![
+        let ops = dont_check(vec![
             QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
                 vec![vec![7]],
                 b"ref_key".to_vec(),
@@ -2085,7 +2085,7 @@ mod tests {
     #[test]
     fn test_patch_average_case_cost() {
         let grove_version = GroveVersion::latest();
-        let ops = not_participant(vec![QualifiedGroveDbOp::patch_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::patch_op(
             vec![vec![7]],
             b"patch_key".to_vec(),
             Element::new_item(b"patched_value".to_vec()),
@@ -2137,7 +2137,7 @@ mod tests {
     #[test]
     fn test_delete_average_case_cost() {
         let grove_version = GroveVersion::latest();
-        let ops = not_participant(vec![QualifiedGroveDbOp::delete_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::delete_op(
             vec![vec![7]],
             b"del_key".to_vec(),
         )]);
@@ -2187,7 +2187,7 @@ mod tests {
     #[test]
     fn test_delete_tree_average_case_cost() {
         let grove_version = GroveVersion::latest();
-        let ops = not_participant(vec![QualifiedGroveDbOp::delete_tree_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::delete_tree_op(
             vec![vec![7]],
             b"tree_key".to_vec(),
             TreeType::NormalTree,
@@ -2263,7 +2263,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version
             )
@@ -2275,7 +2275,7 @@ mod tests {
                 &key,
                 &layer_info,
                 Some(10),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -2330,7 +2330,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -2379,7 +2379,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -2423,7 +2423,7 @@ mod tests {
                 &key,
                 &layer_info,
                 Some(4),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -2459,7 +2459,7 @@ mod tests {
                 &key,
                 &layer_info,
                 Some(4),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -2474,7 +2474,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version
             )
@@ -2493,7 +2493,7 @@ mod tests {
                 &key,
                 &layer_info,
                 Some(2),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -2505,7 +2505,7 @@ mod tests {
                 &key,
                 &layer_info,
                 Some(10),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -2560,7 +2560,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -2612,7 +2612,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -2655,7 +2655,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -2712,7 +2712,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -2774,7 +2774,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -2821,7 +2821,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -2841,7 +2841,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 true,
                 grove_version,
             )
@@ -2883,7 +2883,7 @@ mod tests {
         .unwrap()
         .expect("create pcit");
 
-        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"cidx".to_vec()],
             b"k1".to_vec(),
             Element::new_item(b"v1".to_vec()),
@@ -2991,7 +2991,7 @@ mod tests {
         .expect("seed entry");
 
         // Same key, same count contribution, different bytes.
-        let ops = not_participant(vec![QualifiedGroveDbOp::replace_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::replace_op(
             vec![b"cidx".to_vec()],
             b"k1".to_vec(),
             Element::new_item(b"v2".to_vec()),
@@ -3104,7 +3104,7 @@ mod tests {
         .unwrap()
         .expect("seed entry");
 
-        let ops = not_participant(vec![QualifiedGroveDbOp::replace_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::replace_op(
             vec![b"idx".to_vec()],
             b"k1".to_vec(),
             Element::new_item_with_sum_item(b"v2".to_vec(), 777),
@@ -3504,7 +3504,7 @@ mod tests {
                 &key,
                 &layer_info,
                 None,
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -3518,7 +3518,7 @@ mod tests {
                 &key,
                 &layer_info,
                 Some(4),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )

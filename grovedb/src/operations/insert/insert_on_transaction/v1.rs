@@ -86,15 +86,15 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
         ))
         .wrap_with_cost(cost);
     }
-    // The displaced value is in hand, so a `NotParticipant` claim costs
+    // The displaced value is in hand, so a `DontCheck` claim costs
     // nothing to check and fails closed.
-    if !options.displaced_value.may_be_participant()
+    if !options.backwards_references.should_check()
         && previous
             .as_ref()
             .is_some_and(Element::supports_backward_references)
     {
         return Err(Error::NotSupported(
-            "insert declared DisplacedValue::NotParticipant but the stored value takes part in \
+            "insert declared BackwardsReferences::DontCheck but the stored value takes part in \
              backward references"
                 .to_owned(),
         ))
@@ -103,7 +103,7 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
     // Replacing a populated subtree reads none of its contents: scan it for
     // participants when the caller says there may be some, trust the
     // caller otherwise.
-    if options.displaced_value.may_be_participant()
+    if options.backwards_references.should_check()
         && previous.as_ref().is_some_and(|old| {
             old.is_any_tree()
                 && !old.uses_non_merk_data_storage()

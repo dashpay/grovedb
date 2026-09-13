@@ -32,7 +32,7 @@
 //!   canonical secondary row when the parent is an indexed primary.
 //!
 //! v1 also refuses clears containing backward-reference participants when
-//! declared `MayBeParticipant`. See [v0] / [v1].
+//! declared `Check`. See [v0] / [v1].
 //!
 //! [v0]: self::v0
 //! [v1]: self::v1
@@ -51,10 +51,10 @@ impl GroveDb {
     /// Delete all elements in a specified subtree.
     /// Returns if we successfully cleared the subtree.
     ///
-    /// On V4, the default `MayBeParticipant` declaration scans for
+    /// On V4, the default `Check` declaration scans for
     /// backward-reference participants and refuses the clear before mutation
     /// if any are found. Delete those participants through the normal delete
-    /// API first, or declare `ClearOptions::displaced_value = NotParticipant`
+    /// API first, or declare `ClearOptions::backwards_references = DontCheck`
     /// for a raw clear that trusts the claim.
     /// Ordinary `Reference` elements have no registrations and remain the
     /// caller's responsibility. V1–V3 retain their historical behavior.

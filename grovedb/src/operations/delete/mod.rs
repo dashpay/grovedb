@@ -15,7 +15,7 @@
 //!
 //! The exception is the bidirectional-references machinery (`GROVE_V4`+):
 //! deleting with
-//! the default [`crate::DisplacedValue::MayBeParticipant`] cascades any
+//! the default [`crate::BackwardsReferences::Check`] cascades any
 //! [`BidirectionalReference`](crate::Element::BidirectionalReference)
 //! chains that point at the deleted element (each affected reference must
 //! allow `cascade_on_update`, otherwise the delete errors instead). See
@@ -42,7 +42,7 @@ pub mod flat_drop;
 mod worst_case;
 
 #[cfg(feature = "minimal")]
-use crate::DisplacedValue;
+use crate::BackwardsReferences;
 use std::collections::BTreeSet;
 
 #[cfg(feature = "minimal")]
@@ -83,11 +83,11 @@ pub struct ClearOptions {
     /// If we check for subtrees, and we don't allow deleting and there are
     /// some, should we error?
     pub trying_to_clear_with_subtrees_returns_error: bool,
-    /// On V4, `MayBeParticipant` scans for participants and refuses the clear
+    /// On V4, `Check` scans for participants and refuses the clear
     /// before mutation if any are found; delete those participants through the
-    /// normal delete API first. `NotParticipant` is trusted: a raw clear reads
+    /// normal delete API first. `DontCheck` is trusted: a raw clear reads
     /// nothing, so a false claim strands the participants' registrations.
-    pub displaced_value: DisplacedValue,
+    pub backwards_references: BackwardsReferences,
 }
 
 #[cfg(feature = "minimal")]
@@ -97,7 +97,7 @@ impl Default for ClearOptions {
             check_for_subtrees: true,
             allow_deleting_subtrees: false,
             trying_to_clear_with_subtrees_returns_error: true,
-            displaced_value: DisplacedValue::MayBeParticipant,
+            backwards_references: BackwardsReferences::Check,
         }
     }
 }
@@ -116,20 +116,20 @@ pub struct DeleteOptions {
     pub validate_tree_at_path_exists: bool,
     /// What the delete declares about the value it removes. The stored value
     /// is observed in the Merk used for the deletion: under
-    /// `MayBeParticipant` a participant cascades with each referrer's
+    /// `Check` a participant cascades with each referrer's
     /// consent (or the delete fails atomically) and a populated subtree is
-    /// scanned so its participants are maintained; under `NotParticipant` a
+    /// scanned so its participants are maintained; under `DontCheck` a
     /// participant is refused, and a recursive removal trusts the claim for
     /// its contents (a batch removal checks it on the cleanup walk it makes
     /// anyway).
-    pub displaced_value: DisplacedValue,
+    pub backwards_references: BackwardsReferences,
 }
 
 #[cfg(feature = "minimal")]
 impl DeleteOptions {
     /// Replace the declaration about the displaced value.
-    pub fn with_displaced_value(mut self, displaced_value: DisplacedValue) -> Self {
-        self.displaced_value = displaced_value;
+    pub fn with_backwards_references(mut self, backwards_references: BackwardsReferences) -> Self {
+        self.backwards_references = backwards_references;
         self
     }
 }
@@ -142,7 +142,7 @@ impl Default for DeleteOptions {
             deleting_non_empty_trees_returns_error: true,
             base_root_storage_is_free: true,
             validate_tree_at_path_exists: false,
-            displaced_value: DisplacedValue::MayBeParticipant,
+            backwards_references: BackwardsReferences::Check,
         }
     }
 }
@@ -162,7 +162,7 @@ impl GroveDb {
     ///
     /// # Dangling references
     ///
-    /// With [`crate::DisplacedValue::NotParticipant`], this
+    /// With [`crate::BackwardsReferences::DontCheck`], this
     /// operation does **not** check for incoming references. If other
     /// elements hold [`Reference`](crate::Element::Reference) paths that point
     /// to the deleted element, those references become dangling. Following a
@@ -234,10 +234,10 @@ impl GroveDb {
     /// Ordinary [`Reference`](crate::Element::Reference) elements are not
     /// tracked: any that point to the deleted element become dangling, and
     /// callers must manage their lifecycle. Under the default
-    /// [`MayBeParticipant`](crate::DisplacedValue::MayBeParticipant)
+    /// [`Check`](crate::BackwardsReferences::Check)
     /// declaration (`GROVE_V4`+), bidirectional references pointing at the
     /// deleted element are cascaded or the delete is refused, as described on
-    /// [`Self::delete`]; a `NotParticipant` delete of a participant is refused
+    /// [`Self::delete`]; a `DontCheck` delete of a participant is refused
     /// outright. See the
     /// [module-level documentation](self) for details.
     pub fn delete_with_sectional_storage_function<B: AsRef<[u8]>>(
@@ -325,10 +325,10 @@ impl GroveDb {
     /// Ordinary [`Reference`](crate::Element::Reference) elements are not
     /// tracked: any that point to the deleted tree become dangling, and
     /// callers must manage their lifecycle. Under the default
-    /// [`MayBeParticipant`](crate::DisplacedValue::MayBeParticipant)
+    /// [`Check`](crate::BackwardsReferences::Check)
     /// declaration (`GROVE_V4`+), bidirectional references pointing at the
     /// deleted tree are cascaded or the delete is refused, as described on
-    /// [`Self::delete`]; a `NotParticipant` delete of a participant is refused
+    /// [`Self::delete`]; a `DontCheck` delete of a participant is refused
     /// outright. See the
     /// [module-level documentation](self) for details.
     pub fn delete_if_empty_tree<'b, B, P>(
@@ -454,7 +454,7 @@ impl GroveDb {
     /// This builds a batch operation; it performs no reference check itself.
     /// Ordinary [`Reference`](crate::Element::Reference) elements pointing at
     /// the deleted element become dangling when the batch applies. The op
-    /// carries `options.displaced_value`: [`DisplacedValue::NotParticipant`]
+    /// carries `options.backwards_references`: [`BackwardsReferences::DontCheck`]
     /// builds the `DontCheckForBackwardsReferences` twin, so whether the batch maintains or refuses
     /// a backward-reference participant is decided here. See the
     /// [module-level documentation](self) for details.
@@ -603,7 +603,7 @@ impl GroveDb {
                             tree_type,
                             SubelementsDeletionBehavior::DontCheckWithNoCleanup,
                         )
-                        .with_displaced_value(options.displaced_value),
+                        .with_backwards_references(options.backwards_references),
                     ))
                 } else {
                     Err(Error::NotSupported(
@@ -614,7 +614,7 @@ impl GroveDb {
             } else {
                 Ok(Some(
                     QualifiedGroveDbOp::delete_op(path.to_vec(), key.to_vec())
-                        .with_displaced_value(options.displaced_value),
+                        .with_backwards_references(options.backwards_references),
                 ))
                 .wrap_with_cost(cost)
             }
@@ -625,7 +625,7 @@ impl GroveDb {
 #[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
-    use crate::DisplacedValue;
+    use crate::BackwardsReferences;
     use grovedb_costs::{
         storage_cost::{removal::StorageRemovedBytes::BasicStorageRemoval, StorageCost},
         OperationCost,
@@ -2015,7 +2015,7 @@ mod tests {
             .clear_subtree(
                 [TEST_LEAF, b"key1"].as_ref(),
                 Some(ClearOptions {
-                    displaced_value: DisplacedValue::MayBeParticipant,
+                    backwards_references: BackwardsReferences::Check,
                     check_for_subtrees: true,
                     allow_deleting_subtrees: false,
                     trying_to_clear_with_subtrees_returns_error: false,
@@ -2030,7 +2030,7 @@ mod tests {
             .clear_subtree(
                 [TEST_LEAF, b"key1"].as_ref(),
                 Some(ClearOptions {
-                    displaced_value: DisplacedValue::MayBeParticipant,
+                    backwards_references: BackwardsReferences::Check,
                     check_for_subtrees: true,
                     allow_deleting_subtrees: true,
                     trying_to_clear_with_subtrees_returns_error: false,
@@ -2183,7 +2183,7 @@ mod tests {
                 deleting_non_empty_trees_returns_error: true,
                 base_root_storage_is_free: true,
                 validate_tree_at_path_exists: true,
-                displaced_value: DisplacedValue::MayBeParticipant,
+                backwards_references: BackwardsReferences::Check,
             }),
             None,
             version,
@@ -2222,7 +2222,7 @@ mod tests {
                 deleting_non_empty_trees_returns_error: false,
                 base_root_storage_is_free: true,
                 validate_tree_at_path_exists: true,
-                displaced_value: DisplacedValue::MayBeParticipant,
+                backwards_references: BackwardsReferences::Check,
             }),
             Some(&transaction),
             version,

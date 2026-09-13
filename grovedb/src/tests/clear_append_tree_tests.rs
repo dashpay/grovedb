@@ -15,7 +15,7 @@
 //! commitment stale, nothing propagated — is pinned for replay
 //! compatibility.
 
-use crate::DisplacedValue;
+use crate::BackwardsReferences;
 use grovedb_version::version::{v3::GROVE_V3, GroveVersion};
 
 use crate::{
@@ -561,7 +561,7 @@ fn clear_ordinary_tree_with_subtrees_under_grove_v3_option_branches() {
         .clear_subtree(
             [b"tree".as_ref()].as_ref(),
             Some(ClearOptions {
-                displaced_value: DisplacedValue::MayBeParticipant,
+                backwards_references: BackwardsReferences::Check,
                 check_for_subtrees: true,
                 allow_deleting_subtrees: false,
                 trying_to_clear_with_subtrees_returns_error: false,
@@ -577,7 +577,7 @@ fn clear_ordinary_tree_with_subtrees_under_grove_v3_option_branches() {
         .clear_subtree(
             [b"tree".as_ref()].as_ref(),
             Some(ClearOptions {
-                displaced_value: DisplacedValue::MayBeParticipant,
+                backwards_references: BackwardsReferences::Check,
                 check_for_subtrees: true,
                 allow_deleting_subtrees: true,
                 trying_to_clear_with_subtrees_returns_error: false,

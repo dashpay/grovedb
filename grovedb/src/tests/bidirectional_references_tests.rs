@@ -4,7 +4,7 @@
 //! element family.
 
 use crate::operations::delete::ClearOptions;
-use crate::DisplacedValue;
+use crate::BackwardsReferences;
 use crate::TransactionArg;
 use grovedb_path::SubtreePath;
 use grovedb_version::version::GroveVersion;
@@ -20,7 +20,7 @@ use crate::{
 
 fn flag_on() -> Option<InsertOptions> {
     Some(InsertOptions {
-        displaced_value: DisplacedValue::MayBeParticipant,
+        backwards_references: BackwardsReferences::Check,
         ..Default::default()
     })
 }
@@ -97,7 +97,7 @@ fn nested(
 }
 
 /// Empty the subtree at `path` through the one route that reads nothing and
-/// is therefore trusted with a `NotParticipant` claim it cannot check: a raw
+/// is therefore trusted with a `DontCheck` claim it cannot check: a raw
 /// `clear_subtree`. Registrations pointing at, or held by, the removed
 /// element are deliberately left stale; that inconsistency is what the
 /// regressions below reproduce.
@@ -111,7 +111,7 @@ fn raw_clear(
         path,
         Some(ClearOptions {
             check_for_subtrees: false,
-            displaced_value: DisplacedValue::NotParticipant,
+            backwards_references: BackwardsReferences::DontCheck,
             ..Default::default()
         }),
         transaction,
@@ -432,7 +432,7 @@ fn cascade_requires_opt_in() {
             &[TEST_LEAF],
             b"value",
             Some(DeleteOptions {
-                displaced_value: DisplacedValue::MayBeParticipant,
+                backwards_references: BackwardsReferences::Check,
                 ..Default::default()
             }),
             None,
@@ -612,7 +612,7 @@ fn override_checks_apply_under_the_flag() {
             b"value",
             Element::new_item_allowing_bidirectional_references(b"nope".to_vec()),
             Some(InsertOptions {
-                displaced_value: DisplacedValue::MayBeParticipant,
+                backwards_references: BackwardsReferences::Check,
                 validate_insertion_does_not_override: true,
                 ..Default::default()
             }),
@@ -669,7 +669,7 @@ fn delete_with_flag_handles_trees() {
         &[TEST_LEAF],
         b"empty",
         Some(DeleteOptions {
-            displaced_value: DisplacedValue::MayBeParticipant,
+            backwards_references: BackwardsReferences::Check,
             ..Default::default()
         }),
         None,
@@ -705,7 +705,7 @@ fn delete_with_flag_handles_trees() {
             &[TEST_LEAF],
             b"full",
             Some(DeleteOptions {
-                displaced_value: DisplacedValue::MayBeParticipant,
+                backwards_references: BackwardsReferences::Check,
                 allow_deleting_non_empty_trees: false,
                 deleting_non_empty_trees_returns_error: true,
                 ..Default::default()
@@ -720,7 +720,7 @@ fn delete_with_flag_handles_trees() {
         &[TEST_LEAF],
         b"full",
         Some(DeleteOptions {
-            displaced_value: DisplacedValue::MayBeParticipant,
+            backwards_references: BackwardsReferences::Check,
             allow_deleting_non_empty_trees: false,
             deleting_non_empty_trees_returns_error: false,
             ..Default::default()
@@ -1219,7 +1219,7 @@ fn reinserting_an_identical_edge_is_a_no_op() {
 #[test]
 fn propagation_skips_and_cleans_origins_removed_without_bookkeeping() {
     // An origin removed through a path that performs no backward-references
-    // bookkeeping (here: a raw `clear_subtree` declared `NotParticipant`,
+    // bookkeeping (here: a raw `clear_subtree` declared `DontCheck`,
     // the trusted claim that reads nothing) leaves a dangling slot on its
     // target. Later flagged updates must not fail on it: the slot is
     // skipped and lazily cleaned.
@@ -1262,7 +1262,7 @@ fn propagation_skips_and_cleans_origins_removed_without_bookkeeping() {
     db.clear_subtree(
         &[TEST_LEAF, b"origins"],
         Some(ClearOptions {
-            displaced_value: DisplacedValue::NotParticipant,
+            backwards_references: BackwardsReferences::DontCheck,
             ..Default::default()
         }),
         None,
@@ -1310,7 +1310,7 @@ fn delete_with_flag_rejects_rows_of_indexed_primaries() {
             &[TEST_LEAF, b"pcit"],
             b"row",
             Some(DeleteOptions {
-                displaced_value: DisplacedValue::MayBeParticipant,
+                backwards_references: BackwardsReferences::Check,
                 ..Default::default()
             }),
             None,
@@ -1791,7 +1791,7 @@ fn flagged_inserts_enforce_tree_shape_guards() {
     let opts = Some(InsertOptions {
         validate_insertion_does_not_override: false,
         validate_insertion_does_not_override_tree: true,
-        displaced_value: DisplacedValue::MayBeParticipant,
+        backwards_references: BackwardsReferences::Check,
         ..Default::default()
     });
     assert!(matches!(
@@ -3339,7 +3339,7 @@ fn automatic_delete_handles_specialized_descendants() {
     let options = DeleteOptions {
         allow_deleting_non_empty_trees: true,
         deleting_non_empty_trees_returns_error: false,
-        displaced_value: DisplacedValue::MayBeParticipant,
+        backwards_references: BackwardsReferences::Check,
         ..Default::default()
     };
     db.delete(&[TEST_LEAF], b"outer", Some(options), None, grove_version)
@@ -4063,7 +4063,7 @@ fn cascade_removes_the_physical_referrer_record() {
         &[TEST_LEAF],
         b"value",
         Some(DeleteOptions {
-            displaced_value: DisplacedValue::MayBeParticipant,
+            backwards_references: BackwardsReferences::Check,
             ..Default::default()
         }),
         None,
@@ -4181,7 +4181,7 @@ fn cascade_forwards_the_sectioned_removal_callback() {
         SubtreePath::from(&[TEST_LEAF]),
         b"value",
         Some(DeleteOptions {
-            displaced_value: DisplacedValue::MayBeParticipant,
+            backwards_references: BackwardsReferences::Check,
             ..Default::default()
         }),
         None,
@@ -4239,7 +4239,7 @@ fn stale_nonconsenting_registration_does_not_block_target_deletion() {
         &[TEST_LEAF],
         b"value",
         Some(DeleteOptions {
-            displaced_value: DisplacedValue::MayBeParticipant,
+            backwards_references: BackwardsReferences::Check,
             ..Default::default()
         }),
         None,

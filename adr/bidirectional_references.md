@@ -53,17 +53,17 @@ Moreover, these types are incompatible, which will be discussed in the "Rules" s
 On `GROVE_V4`, ordinary inserts, replacements, deletes, and full batches
 maintain backward references automatically, and every operation declares
 what it displaces: the live `InsertOptions`, `DeleteOptions` and
-`ClearOptions` carry a `DisplacedValue` (`MayBeParticipant` by default), and
+`ClearOptions` carry a `BackwardsReferences` (`Check` by default), and
 each displacing batch op has a `DontCheckForBackwardsReferences` twin (`DeleteDontCheckForBackwardsReferences`,
 `DeleteTreeDontCheckForBackwardsReferences`, `InsertOrReplaceDontCheckForBackwardsReferences`, `ReplaceDontCheckForBackwardsReferences`,
-`PatchDontCheckForBackwardsReferences`) that makes the `NotParticipant` declaration; the checked op
-is `MayBeParticipant`.
+`PatchDontCheckForBackwardsReferences`) that makes the `DontCheck` declaration; the checked op
+is `Check`.
 GroveDB reads the displaced value for the write anyway, so for a keyed
 operation the declaration only decides what happens when that value takes
-part in backward references: `MayBeParticipant` maintains the references,
-`NotParticipant` refuses the operation before anything commits. Where nothing
+part in backward references: `Check` maintains the references,
+`DontCheck` refuses the operation before anything commits. Where nothing
 reads the contents — a flat drop, a raw `clear_subtree`, the replacement of a
-populated subtree, a live recursive delete — `NotParticipant` is trusted and
+populated subtree, a live recursive delete — `DontCheck` is trusted and
 leaves any participant's registrations stale, exactly like the storage it
 strands. There is no policy that skips maintenance on a value known to
 participate. Inserting a bidirectional reference always registers its edge.
@@ -96,7 +96,7 @@ Current limitations:
 - Live participant maintenance below an indexed primary requires a full
   batch; the reference cache refuses that propagation before commit.
 - `Delete` of a populated tree and subtree replacement inspect descendants
-  when declared `MayBeParticipant`; those scans add reads and are charged in
+  when declared `Check`; those scans add reads and are charged in
   the V4 default cost tests. A batch `DeleteTree` is never pre-scanned:
   `DontCheckWithNoCleanup` declares that the batch's own deletes emptied the
   subtree, `Error` and `Skip` verify that at apply time, and `DeleteChildren`
@@ -106,13 +106,13 @@ Current limitations:
   therefore cost the plain removal under either declaration.
 - Flat drop retains its O(1) contract. Standalone `drop_flat_subtree` takes
   the declaration as a required argument; it and batch `DropFlat` refuse
-  `MayBeParticipant` before reading anything and trust `NotParticipant`. Use
+  `Check` before reading anything and trust `DontCheck`. Use
   recursive delete when maintenance is required.
-- `clear_subtree` under `MayBeParticipant` scans and refuses a subtree
+- `clear_subtree` under `Check` scans and refuses a subtree
   containing participants before making any mutation, including with a caller
   transaction; delete the participants through the normal API first.
-  `NotParticipant` is trusted for a raw clear. A live recursive `delete`
-  declared `NotParticipant` likewise trusts its contents: a clear runs one
+  `DontCheck` is trusted for a raw clear. A live recursive `delete`
+  declared `DontCheck` likewise trusts its contents: a clear runs one
   such delete per nested subtree inside the caller's transaction, where a
   refusal part-way through could not be undone.
 
@@ -140,7 +140,7 @@ walk.
 
 Next, we’ll go over the rules and limitations for using bidirectional references.
 
-These rules always apply; `DisplacedValue::NotParticipant` (a `DontCheckForBackwardsReferences` op in a
+These rules always apply; `BackwardsReferences::DontCheck` (a `DontCheckForBackwardsReferences` op in a
 batch) is a checked claim, not an opt-out.
 
 An 'Element with backward references' refers to `ItemWithBackwardsReferences`,
@@ -169,7 +169,7 @@ insertion.__ Public reads enforce the declared budget deterministically, so an e
 chain is already longer than its declaration would never resolve; the write path rejects
 such dead edges instead of persisting them. (An edge can still fall out of budget later —
 e.g. its target is overwritten into a plain reference behind a raw clear declared
-`NotParticipant` — and
+`DontCheck` — and
 reads then return `ReferenceLimit`.)
 - __Both ends of a bidirectional edge must sit at most 32 subtree levels deep__
 (`MAX_BACKWARD_REFERENCES_GROVE_DEPTH`, enforced at registration). Every later derived
@@ -247,11 +247,11 @@ decisions.
 
 The estimator cannot see stored state, so the bound for a write that may
 displace a participant follows the op's own declaration: an op declared
-`MayBeParticipant` charges the displaced-state fan-out and the delete probe,
-an op declared `NotParticipant` charges the plain write alone, and ops that
+`Check` charges the displaced-state fan-out and the delete probe,
+an op declared `DontCheck` charges the plain write alone, and ops that
 themselves write a participant (family items, bidirectional references) are
 charged from the op regardless. Declaring correctly is the caller's
-responsibility; the apply path refuses a false `NotParticipant` claim rather
+responsibility; the apply path refuses a false `DontCheck` claim rather
 than running an unpriced cascade.
 
 Live writes use the same preparation observer. Ordinary values retain the

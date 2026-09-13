@@ -21,7 +21,7 @@
 
 mod tests {
 
-    use crate::DisplacedValue;
+    use crate::BackwardsReferences;
     use grovedb_costs::OperationCost;
     use grovedb_merk::tree_type::TreeType;
     use grovedb_storage::{
@@ -123,7 +123,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            DisplacedValue::NotParticipant,
+            BackwardsReferences::DontCheck,
             None,
             grove_version,
         )
@@ -154,7 +154,7 @@ mod tests {
             db.drop_flat_subtree(
                 [TEST_LEAF].as_ref(),
                 b"flat",
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 None,
                 grove_version,
             )
@@ -213,7 +213,7 @@ mod tests {
             db.drop_flat_subtree(
                 [TEST_LEAF].as_ref(),
                 b"item",
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 None,
                 grove_version
             )
@@ -232,7 +232,7 @@ mod tests {
             db.drop_flat_subtree(
                 [TEST_LEAF].as_ref(),
                 b"flat",
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 None,
                 &GROVE_V3
             )
@@ -259,7 +259,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            DisplacedValue::NotParticipant,
+            BackwardsReferences::DontCheck,
             Some(&tx),
             grove_version,
         )
@@ -306,7 +306,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            DisplacedValue::NotParticipant,
+            BackwardsReferences::DontCheck,
             Some(&tx),
             grove_version,
         )
@@ -341,7 +341,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            DisplacedValue::NotParticipant,
+            BackwardsReferences::DontCheck,
             Some(&tx),
             grove_version,
         )
@@ -374,7 +374,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            DisplacedValue::NotParticipant,
+            BackwardsReferences::DontCheck,
             Some(&tx),
             grove_version,
         )
@@ -482,7 +482,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"cidx",
-            DisplacedValue::NotParticipant,
+            BackwardsReferences::DontCheck,
             None,
             grove_version,
         )
@@ -550,7 +550,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF, b"sums"].as_ref(),
             b"flat_sums",
-            DisplacedValue::NotParticipant,
+            BackwardsReferences::DontCheck,
             None,
             grove_version,
         )
@@ -766,7 +766,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            DisplacedValue::NotParticipant,
+            BackwardsReferences::DontCheck,
             None,
             grove_version,
         )
@@ -822,7 +822,7 @@ mod tests {
         db.drop_flat_subtree(
             [TEST_LEAF].as_ref(),
             b"flat",
-            DisplacedValue::NotParticipant,
+            BackwardsReferences::DontCheck,
             None,
             grove_version,
         )

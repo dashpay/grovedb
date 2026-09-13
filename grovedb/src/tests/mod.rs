@@ -1176,7 +1176,7 @@ pub fn make_deep_tree_with_sum_trees_mixed_with_items(grove_version: &GroveVersi
 
 mod general_tests {
 
-    use crate::DisplacedValue;
+    use crate::BackwardsReferences;
     use batch::QualifiedGroveDbOp;
     use grovedb_merk::{
         element::get::ElementFetchFromStorageExtensions, proofs::query::SubqueryBranch,
@@ -4978,7 +4978,7 @@ mod general_tests {
                 None,
             ),
             Some(InsertOptions {
-                displaced_value: DisplacedValue::MayBeParticipant,
+                backwards_references: BackwardsReferences::Check,
                 ..Default::default()
             }),
             Some(&transaction),
@@ -5000,7 +5000,7 @@ mod general_tests {
                 None,
             ),
             Some(InsertOptions {
-                displaced_value: DisplacedValue::MayBeParticipant,
+                backwards_references: BackwardsReferences::Check,
                 ..Default::default()
             }),
             Some(&transaction),
@@ -5022,7 +5022,7 @@ mod general_tests {
                 None,
             ),
             Some(InsertOptions {
-                displaced_value: DisplacedValue::MayBeParticipant,
+                backwards_references: BackwardsReferences::Check,
                 ..Default::default()
             }),
             Some(&transaction),
@@ -5042,7 +5042,7 @@ mod general_tests {
             b"value",
             Element::new_item_allowing_bidirectional_references(b"not hello >:(".to_vec()),
             Some(InsertOptions {
-                displaced_value: DisplacedValue::MayBeParticipant,
+                backwards_references: BackwardsReferences::Check,
                 ..Default::default()
             }),
             Some(&transaction),

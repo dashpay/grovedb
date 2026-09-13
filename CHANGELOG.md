@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   updating a referenced element propagates the new hash along every chain,
   and deleting/overwriting it cascades the chains away (each affected
   reference must opt in via `cascade_on_update`). Maintenance is automatic
-  on V4, and every operation declares what it displaces (`DisplacedValue`,
+  on V4, and every operation declares what it displaces (`BackwardsReferences`,
   see Changed); batch maintenance is gated by the new
   `apply_batch.backward_references_maintenance` version slot. The referrer list is stored on the element itself under a
   two-layer hash (`combine(inner, backrefs)`), so registering a referrer
@@ -44,13 +44,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   displace, ≤10-hop chains, 1 referrer per reference) while pre-V4
   estimation stays byte-stable for replay. See
   `adr/bidirectional_references.md`. `clear_subtree` exposes the same
-  declaration: `MayBeParticipant` refuses participant-containing subtrees
-  before mutation, `NotParticipant` is trusted for a raw clear.
+  declaration: `Check` refuses participant-containing subtrees
+  before mutation, `DontCheck` is trusted for a raw clear.
   `drop_flat_subtree` takes the declaration as a required argument, and both
-  it and batch `DropFlat` require `NotParticipant` to preserve O(1) cost.
+  it and batch `DropFlat` require `DontCheck` to preserve O(1) cost.
   Ordinary batches that touch no participants retain their original executor
   semantics. Estimation charges the displaced-participant fan-out only for
-  ops declared `MayBeParticipant`.
+  ops declared `Check`.
 - **BREAKING**: Added `add_parent_tree_on_subquery` feature to PathQuery (#379)
   - New field in `Query` struct: `add_parent_tree_on_subquery: bool`
   - When set to `true`, parent tree elements (like CountTree or SumTree) are included in query results when performing subqueries
@@ -62,18 +62,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING**: Replace `propagate_backward_references` with a per-operation
   declaration of the stored value an operation displaces. The live
   `InsertOptions`, `DeleteOptions` and `ClearOptions` carry
-  `DisplacedValue::{MayBeParticipant, NotParticipant}` (`MayBeParticipant`
+  `BackwardsReferences::{Check, DontCheck}` (`Check`
   by default), and every displacing batch op has a `DontCheckForBackwardsReferences` twin that
-  makes the `NotParticipant` declaration: `DeleteDontCheckForBackwardsReferences`,
+  makes the `DontCheck` declaration: `DeleteDontCheckForBackwardsReferences`,
   `DeleteTreeDontCheckForBackwardsReferences`, `InsertOrReplaceDontCheckForBackwardsReferences`, `ReplaceDontCheckForBackwardsReferences`,
   `PatchDontCheckForBackwardsReferences` (`GroveOp::dont_check_for_backwards_references` / `QualifiedGroveDbOp::dont_check_for_backwards_references`
   convert a checked op). `BatchApplyOptions` carries no backward-references
   policy. V4 has one write
   path: the displaced value is read for the write anyway, so
-  `MayBeParticipant` maintains a participant it finds and `NotParticipant`
+  `Check` maintains a participant it finds and `DontCheck`
   refuses the operation before anything commits; where nothing reads the
   contents (a flat drop, a raw `clear_subtree`, replacing a populated
-  subtree, a live recursive delete) `NotParticipant` is trusted. A batch
+  subtree, a live recursive delete) `DontCheck` is trusted. A batch
   `DeleteTree` is never pre-scanned: `DontCheckWithNoCleanup` declares that
   the batch's own deletes emptied the subtree, `Error` and `Skip` verify
   that at apply time, and `DeleteChildren` checks the declaration on the
@@ -83,15 +83,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DeleteTreeDontCheckForBackwardsReferences`. The batch ops GroveDB builds for a caller carry
   the caller's declaration: `delete_operation_for_delete_internal` reads it
   from `DeleteOptions`, the delete-up-tree chain from the new
-  `DeleteUpTreeOptions::displaced_value`, and the average- and worst-case
-  delete builders take a `DisplacedValue` parameter
-  (`QualifiedGroveDbOp::with_displaced_value` applies one to any op).
+  `DeleteUpTreeOptions::backwards_references`, and the average- and worst-case
+  delete builders take a `BackwardsReferences` parameter
+  (`QualifiedGroveDbOp::with_backwards_references` applies one to any op).
   Partial batches still refuse participant mutations, and earlier protocol
   versions retain their historical behavior.
 - **BREAKING**: `EstimatedLayerInformation::may_contain_backward_references`
   and the `*WithBackwardReferences` variants of `WorstCaseLayerInformation`
   are removed. The estimators charge the displaced-participant fan-out and
-  delete probe per op declared `MayBeParticipant` instead of per layer; ops
+  delete probe per op declared `Check` instead of per layer; ops
   that write a participant themselves are charged from the op regardless.
 - Bumped the GroveDB workspace crates and their internal dependency requirements
   to **6.0.0** for the public API changes since 5.0.1. This package version is

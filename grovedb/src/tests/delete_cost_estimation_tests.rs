@@ -15,7 +15,7 @@ use intmap::IntMap;
 
 use crate::{
     batch::{key_info::KeyInfo::KnownKey, GroveOp, KeyInfoPath},
-    DisplacedValue, GroveDb,
+    BackwardsReferences, GroveDb,
 };
 
 fn normal_layer_info() -> EstimatedLayerInformation {
@@ -48,7 +48,7 @@ fn test_average_case_delete_no_validate() {
         false,
         0,
         (8, 100),
-        DisplacedValue::MayBeParticipant,
+        BackwardsReferences::Check,
         grove_version,
     );
 
@@ -91,7 +91,7 @@ fn test_average_case_delete_up_tree_multi_level() {
             Some(0),
             true,
             estimated_layer_info,
-            DisplacedValue::MayBeParticipant,
+            BackwardsReferences::Check,
             grove_version,
         );
 
@@ -118,7 +118,7 @@ fn test_average_case_delete_up_tree_path_too_short_error() {
             Some(5),
             true,
             IntMap::new(),
-            DisplacedValue::MayBeParticipant,
+            BackwardsReferences::Check,
             grove_version,
         );
 
@@ -144,7 +144,7 @@ fn test_average_case_delete_up_tree_missing_intermediate_info_error() {
             Some(0),
             true,
             estimated_layer_info,
-            DisplacedValue::MayBeParticipant,
+            BackwardsReferences::Check,
             grove_version,
         );
 
@@ -170,7 +170,7 @@ fn test_average_case_delete_up_tree_missing_leaf_info_error() {
             Some(0),
             true,
             IntMap::new(), // no layer info at all
-            DisplacedValue::MayBeParticipant,
+            BackwardsReferences::Check,
             grove_version,
         );
 
@@ -202,7 +202,7 @@ fn test_worst_case_delete_with_validate() {
         true,
         0,
         256,
-        DisplacedValue::MayBeParticipant,
+        BackwardsReferences::Check,
         grove_version,
     );
 
@@ -231,7 +231,7 @@ fn test_worst_case_delete_no_validate() {
         false,
         0,
         256,
-        DisplacedValue::MayBeParticipant,
+        BackwardsReferences::Check,
         grove_version,
     );
 
@@ -274,7 +274,7 @@ fn test_worst_case_delete_up_tree_multi_level() {
             true,
             intermediate_tree_info,
             256,
-            DisplacedValue::MayBeParticipant,
+            BackwardsReferences::Check,
             grove_version,
         );
 
@@ -304,7 +304,7 @@ fn test_worst_case_delete_up_tree_path_too_short_error() {
             true,
             IntMap::new(),
             256,
-            DisplacedValue::MayBeParticipant,
+            BackwardsReferences::Check,
             grove_version,
         );
 
@@ -330,7 +330,7 @@ fn test_worst_case_delete_up_tree_missing_tree_info_error() {
             true,
             intermediate_tree_info,
             256,
-            DisplacedValue::MayBeParticipant,
+            BackwardsReferences::Check,
             grove_version,
         );
 

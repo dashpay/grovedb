@@ -39,7 +39,7 @@ use crate::{
     },
     Error, GroveDb,
 };
-use crate::{DisplacedValue, Element};
+use crate::{BackwardsReferences, Element};
 
 #[cfg(feature = "minimal")]
 impl GroveOp {
@@ -55,8 +55,8 @@ impl GroveOp {
         // The op's own declaration about the value it displaces: participant
         // payloads charge the derived fan-out on GROVE_V4+ regardless, and a
         // plain write or delete charges the displaced-state bound only when
-        // it declares `MayBeParticipant`.
-        displaced_value: DisplacedValue,
+        // it declares `Check`.
+        backwards_references: BackwardsReferences,
         propagate: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -116,8 +116,8 @@ impl GroveOp {
                 // participant it displaces, and the estimator cannot see
                 // stored state: charge that bound only when the op declares
                 // the displaced value may be a participant.
-                Some(_) | None => displaced_value
-                    .may_be_participant()
+                Some(_) | None => backwards_references
+                    .should_check()
                     .then(super::BackwardReferencesFanOut::worst_item),
             }
         };
@@ -141,7 +141,7 @@ impl GroveOp {
         // deletion — charged whenever the fan-out is active.
         let flagged_delete_probe = || {
             let mut probe = OperationCost::default();
-            if fan_out_version != 0 && displaced_value.may_be_participant() {
+            if fan_out_version != 0 && backwards_references.should_check() {
                 for _ in 0..2 {
                     let _ = add_worst_case_get_merk_node(
                         &mut probe,
@@ -907,7 +907,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
                     &key,
                     TreeType::NormalTree,
                     worst_case_layer_element_estimates,
-                    op.displaced_value(),
+                    op.backwards_references(),
                     false,
                     grove_version
                 )
@@ -952,14 +952,14 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
 #[cfg(test)]
 mod tests {
     /// The estimator charges the displaced-participant fan-out only for ops
-    /// that declare `MayBeParticipant`; these plain-write pins declare none.
-    fn not_participant(ops: Vec<QualifiedGroveDbOp>) -> Vec<QualifiedGroveDbOp> {
+    /// that declare `Check`; these plain-write pins declare none.
+    fn dont_check(ops: Vec<QualifiedGroveDbOp>) -> Vec<QualifiedGroveDbOp> {
         ops.into_iter()
             .map(|op| op.dont_check_for_backwards_references())
             .collect()
     }
 
-    use crate::DisplacedValue;
+    use crate::BackwardsReferences;
     use std::collections::HashMap;
 
     use grovedb_costs::{
@@ -987,7 +987,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_tree(),
@@ -1043,7 +1043,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_tree_with_flags(Some(b"cat".to_vec())),
@@ -1099,7 +1099,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::new_item(b"cat".to_vec()),
@@ -1166,7 +1166,7 @@ mod tests {
         .unwrap()
         .expect("successful root tree leaf insert");
 
-        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_tree(),
@@ -1233,7 +1233,7 @@ mod tests {
         .unwrap()
         .expect("successful root tree leaf insert");
 
-        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"0".to_vec()],
             b"key1".to_vec(),
             Element::empty_tree(),
@@ -1298,7 +1298,7 @@ mod tests {
         .unwrap()
         .expect("successful root tree leaf insert");
 
-        let ops = not_participant(vec![QualifiedGroveDbOp::insert_or_replace_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_tree(),
@@ -1333,7 +1333,7 @@ mod tests {
     #[test]
     fn test_refresh_reference_worst_case_cost() {
         let grove_version = GroveVersion::latest();
-        let ops = not_participant(vec![QualifiedGroveDbOp::refresh_reference_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::refresh_reference_op(
             vec![vec![7]],
             b"ref_key".to_vec(),
             ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]),
@@ -1367,7 +1367,7 @@ mod tests {
     #[test]
     fn test_refresh_reference_with_sum_item_worst_case_cost() {
         let grove_version = GroveVersion::latest();
-        let ops = not_participant(vec![
+        let ops = dont_check(vec![
             QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
                 vec![vec![7]],
                 b"ref_key".to_vec(),
@@ -1477,7 +1477,7 @@ mod tests {
     #[test]
     fn test_patch_worst_case_cost() {
         let grove_version = GroveVersion::latest();
-        let ops = not_participant(vec![QualifiedGroveDbOp::patch_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::patch_op(
             vec![vec![7]],
             b"patch_key".to_vec(),
             Element::new_item(b"patched_value".to_vec()),
@@ -1508,7 +1508,7 @@ mod tests {
     #[test]
     fn test_delete_worst_case_cost() {
         let grove_version = GroveVersion::latest();
-        let ops = not_participant(vec![QualifiedGroveDbOp::delete_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::delete_op(
             vec![vec![7]],
             b"del_key".to_vec(),
         )]);
@@ -1536,7 +1536,7 @@ mod tests {
     #[test]
     fn test_delete_tree_worst_case_cost() {
         let grove_version = GroveVersion::latest();
-        let ops = not_participant(vec![QualifiedGroveDbOp::delete_tree_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::delete_tree_op(
             vec![vec![7]],
             b"tree_key".to_vec(),
             TreeType::NormalTree,
@@ -1581,7 +1581,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -1607,7 +1607,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 true,
                 grove_version,
             )
@@ -1632,7 +1632,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -1657,7 +1657,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -1681,7 +1681,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -1717,7 +1717,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -1745,7 +1745,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 true,
                 grove_version,
             )
@@ -1769,7 +1769,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(50),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 true,
                 grove_version,
             )
@@ -1801,7 +1801,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -1833,7 +1833,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 true,
                 grove_version,
             )
@@ -1869,7 +1869,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -1925,7 +1925,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -1945,7 +1945,7 @@ mod tests {
     #[test]
     fn test_replace_worst_case_cost() {
         let grove_version = GroveVersion::latest();
-        let ops = not_participant(vec![QualifiedGroveDbOp::replace_op(
+        let ops = dont_check(vec![QualifiedGroveDbOp::replace_op(
             vec![vec![7]],
             b"key1".to_vec(),
             Element::new_item(b"val".to_vec()),
@@ -1996,7 +1996,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -2023,7 +2023,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 true,
                 grove_version,
             )
@@ -2073,7 +2073,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &layer_info,
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )
@@ -2133,7 +2133,7 @@ mod tests {
                 &key,
                 TreeType::NormalTree,
                 &MaxElementsNumber(100),
-                DisplacedValue::NotParticipant,
+                BackwardsReferences::DontCheck,
                 false,
                 grove_version,
             )

@@ -1,7 +1,7 @@
 //! Automatic deletion with cached old-value observation on GROVE_V4.
 
 use crate::operations::indexed_tree::reject_generic_write_into_indexed_primary;
-use crate::DisplacedValue;
+use crate::BackwardsReferences;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, storage_cost::removal::StorageRemovedBytes,
     CostResult, CostsExt,
@@ -107,21 +107,21 @@ impl GroveDb {
         let element =
             cost_return_on_error_no_add!(cost, observed.transpose().map_err(Error::from)
             .and_then(|value| value.ok_or_else(|| Error::PathKeyNotFound(hex::encode(key)))));
-        // The displaced value is in hand, so a `NotParticipant` claim costs
+        // The displaced value is in hand, so a `DontCheck` claim costs
         // nothing to check and fails closed.
-        if !options.displaced_value.may_be_participant() && element.supports_backward_references() {
+        if !options.backwards_references.should_check() && element.supports_backward_references() {
             return Err(Error::NotSupported(
-                "delete declared DisplacedValue::NotParticipant but the stored value takes part in \
+                "delete declared BackwardsReferences::DontCheck but the stored value takes part in \
                  backward references"
                     .to_owned(),
             ))
             .wrap_with_cost(cost);
         }
         // A populated subtree is scanned for participants to maintain only
-        // when the caller says there may be some; a `NotParticipant` removal
+        // when the caller says there may be some; a `DontCheck` removal
         // takes the ordinary route, whose cleanup walk checks the claim on
         // the elements it decodes anyway.
-        let descendants_need_maintenance = if options.displaced_value.may_be_participant()
+        let descendants_need_maintenance = if options.backwards_references.should_check()
             && element.is_any_tree()
             && !element.uses_non_merk_data_storage()
             && element
@@ -215,7 +215,12 @@ impl GroveDb {
                 let visitor = GroveVisitor::new(
                     &self.db,
                     transaction,
-                    DeletionVisitor::new(&cache, options.displaced_value, true, sectioned_removal),
+                    DeletionVisitor::new(
+                        &cache,
+                        options.backwards_references,
+                        true,
+                        sectioned_removal,
+                    ),
                     true,
                     grove_version,
                 );
@@ -319,7 +324,7 @@ impl GroveDb {
 /// we're good as long as we do nothing outside of the cache, then finalize
 /// it, and only then merge with the final deletion batches.
 struct DeletionVisitor<'c, 'db, 'b, 's, B: AsRef<[u8]>> {
-    displaced_value: DisplacedValue,
+    backwards_references: BackwardsReferences,
     allow_deleting_subtrees: bool,
     cache: &'c MerkCache<'db, 'b, B>,
     /// The caller's removal-accounting policy, applied to every referrer a
@@ -330,12 +335,12 @@ struct DeletionVisitor<'c, 'db, 'b, 's, B: AsRef<[u8]>> {
 impl<'c, 'db, 'b, 's, B: AsRef<[u8]>> DeletionVisitor<'c, 'db, 'b, 's, B> {
     fn new(
         cache: &'c MerkCache<'db, 'b, B>,
-        displaced_value: DisplacedValue,
+        backwards_references: BackwardsReferences,
         allow_deleting_subtrees: bool,
         sectioned_removal: bidirectional_references::SectionedRemovalFn<'s>,
     ) -> Self {
         Self {
-            displaced_value,
+            backwards_references,
             allow_deleting_subtrees,
             cache,
             sectioned_removal,
@@ -391,7 +396,7 @@ impl<'b, B: AsRef<[u8]>> Visit<'b, B> for DeletionVisitor<'_, '_, 'b, '_, B> {
 
         // Step 2: perform backward references' deletion on top of cached
         // data:
-        if self.displaced_value.may_be_participant()
+        if self.backwards_references.should_check()
             && matches!(
                 element,
                 Element::ItemWithBackwardsReferences(..)

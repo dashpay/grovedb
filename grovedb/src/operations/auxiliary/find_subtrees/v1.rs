@@ -54,7 +54,7 @@ impl GroveDb {
                 Err(Error::NotSupported(
                     "a recursive subtree removal reached a backward-reference participant it does \
                  not explicitly delete; delete the participant first, or use live delete with \
-                 DisplacedValue::MayBeParticipant for recursive maintenance"
+                 BackwardsReferences::Check for recursive maintenance"
                         .to_owned(),
                 ))
             },
