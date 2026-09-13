@@ -1899,3 +1899,225 @@ fn merge_descends_into_a_synthesized_split_in_either_direction() {
         );
     }
 }
+
+#[test]
+fn ordered_limited_page_with_bound_branch_verifies() {
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
+    use crate::tests::common::EMPTY_PATH;
+    db.insert(
+        EMPTY_PATH,
+        b"root",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    for key in [b"post".as_slice(), b"like".as_slice()] {
+        db.insert(
+            &[b"root".as_slice()],
+            key,
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+    }
+    db.insert(
+        &[b"root".as_slice(), b"post".as_slice()],
+        b"language",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[
+            b"root".as_slice(),
+            b"post".as_slice(),
+            b"language".as_slice(),
+        ],
+        b"en",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[
+            b"root".as_slice(),
+            b"post".as_slice(),
+            b"language".as_slice(),
+            b"en".as_slice(),
+        ],
+        b"createdAt",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    for i in 1u8..31 {
+        let timestamp = [i];
+        db.insert(
+            &[
+                b"root".as_slice(),
+                b"post".as_slice(),
+                b"language".as_slice(),
+                b"en".as_slice(),
+                b"createdAt".as_slice(),
+            ],
+            &timestamp,
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        db.insert(
+            &[
+                b"root".as_slice(),
+                b"post".as_slice(),
+                b"language".as_slice(),
+                b"en".as_slice(),
+                b"createdAt".as_slice(),
+                &timestamp,
+            ],
+            &[0],
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        for doc in 0u8..30 {
+            db.insert(
+                &[
+                    b"root".as_slice(),
+                    b"post".as_slice(),
+                    b"language".as_slice(),
+                    b"en".as_slice(),
+                    b"createdAt".as_slice(),
+                    &timestamp,
+                    &[0],
+                ],
+                &[doc],
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+            db.insert(
+                &[
+                    b"root".as_slice(),
+                    b"post".as_slice(),
+                    b"language".as_slice(),
+                    b"en".as_slice(),
+                    b"createdAt".as_slice(),
+                    &timestamp,
+                    &[0],
+                    &[doc],
+                ],
+                &i.to_be_bytes(),
+                Element::new_item(vec![i]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
+        }
+    }
+    db.insert(
+        &[b"root".as_slice(), b"like".as_slice()],
+        b"postId",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
+    for i in 0u8..20 {
+        let key = [i];
+        db.insert(
+            &[b"root".as_slice(), b"like".as_slice(), b"postId".as_slice()],
+            &key,
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        db.insert(
+            &[
+                b"root".as_slice(),
+                b"like".as_slice(),
+                b"postId".as_slice(),
+                &key,
+            ],
+            &[0],
+            Element::new_item(vec![1]),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+    }
+
+    let mut page = Query::new_with_direction(false);
+    page.insert_range_after(vec![0]..);
+    let mut ids = Query::new_with_direction(true);
+    ids.insert_all();
+    page.set_subquery_key(vec![0]);
+    page.set_subquery(ids.clone());
+    page.add_conditional_subquery(
+        grovedb_query::QueryItem::Key(Vec::new()),
+        Some(vec![vec![0]]),
+        Some(ids),
+    );
+    let page_path = PathQuery::new(
+        vec![
+            b"root".to_vec(),
+            b"post".to_vec(),
+            b"language".to_vec(),
+            b"en".to_vec(),
+            b"createdAt".to_vec(),
+        ],
+        SizedQuery::new(page, Some(20), None),
+    );
+    let mut count_query = Query::new_with_direction(false);
+    for i in 0u8..20 {
+        count_query.insert_key(vec![i]);
+    }
+    let count = PathQuery::new_unsized(
+        vec![b"root".to_vec(), b"like".to_vec(), b"postId".to_vec()],
+        count_query,
+    );
+    let merged = PathQuery::merge(vec![&page_path, &count], grove_version).unwrap();
+    let proof = db
+        .prove_query_many(vec![&count, &page_path], None, grove_version)
+        .unwrap()
+        .unwrap();
+    let verified = crate::GroveDb::verify_query(&proof, &merged, grove_version);
+    assert!(
+        verified.is_ok(),
+        "verification failed: {:?}",
+        verified.err()
+    );
+}

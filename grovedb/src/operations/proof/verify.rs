@@ -1649,10 +1649,22 @@ impl GroveDb {
             limit_state.global
         };
 
+        // Once an enclosing per-instance budget is exhausted, the prover may
+        // still carry authenticated sibling rows in this Merk layer so the
+        // parent root remains complete. Those rows are no longer part of the
+        // requested result set. Passing a zero limit to Merk would reject an
+        // honest proof as soon as it encounters one of these bound filler
+        // rows ("Proof returns more data than limit"). Verify the layer
+        // unbounded and stop before materializing any rows; the proof's root
+        // remains fully checked while the exhausted branch contributes no
+        // results. This applies only after the V1 frame budget is exhausted;
+        // ordinary global limits retain Merk's strict over-limit check.
+        let frame_exhausted = frame_instance == Some(0);
+        let execute_limit = if frame_exhausted { None } else { layer_limit };
         let (root_hash, merk_result) = level_query
             .execute_proof(
                 merk_proof_bytes,
-                layer_limit,
+                execute_limit,
                 left_to_right,
                 PROOF_VERSION_LATEST, // V1 proof: strict mode rejects items in value hash nodes
             )
@@ -1663,6 +1675,9 @@ impl GroveDb {
                     format!("Invalid V1 proof verification parameters: {}", e),
                 )
             })?;
+        if frame_exhausted {
+            return Ok(root_hash);
+        }
 
         let mut verified_keys = BTreeSet::new();
 
