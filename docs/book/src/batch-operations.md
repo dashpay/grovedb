@@ -260,9 +260,11 @@ checked op (`Delete`, `DeleteTree`, `InsertOrReplace`, `Replace`, `Patch`)
 maintains a participant the write lands on, its `DontCheckForBackwardsReferences` twin
 (`DeleteDontCheckForBackwardsReferences`, `DeleteTreeDontCheckForBackwardsReferences`, `InsertOrReplaceDontCheckForBackwardsReferences`,
 `ReplaceDontCheckForBackwardsReferences`, `PatchDontCheckForBackwardsReferences`) declares the stored value takes no
-part in backward references and is refused if that turns out to be false.
-The check reads nothing extra, since the batch reads the value for the
-write anyway; convert a checked op with `QualifiedGroveDbOp::dont_check_for_backwards_references` at
+part in backward references and is refused if that turns out to be false
+wherever the batch reads the value. The check reads nothing extra, since
+the batch reads the value for the write anyway. A flat drop
+(`DeleteTreeDontCheckForBackwardsReferences` with `DropFlat`) reads nothing
+and trusts the declaration. Convert a checked op with `QualifiedGroveDbOp::dont_check_for_backwards_references` at
 positions known to hold no participants. Partial batches refuse participant mutations; use a full batch
 for reference maintenance. Recursive removal of a subtree containing
 participants is supported by live `delete`; see the bidirectional references

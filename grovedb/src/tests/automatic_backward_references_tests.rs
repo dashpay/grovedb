@@ -1619,3 +1619,208 @@ fn delete_up_tree_honors_the_declared_displaced_value() {
         .unwrap()
         .is_ok());
 }
+
+/// A callback `DeleteTree(DontCheckWithNoCleanup)` at the same key as an
+/// initial-segment `DeleteTree(DeleteChildren)` must not change how the
+/// initial deletion is cleaned up: the cleanup walk still runs, so it still
+/// clears the subtree's storage and still refuses a participant the batch
+/// does not explicitly delete.
+#[test]
+fn callback_delete_tree_cannot_erase_the_initial_segments_cleanup() {
+    use crate::batch::SubelementsDeletionBehavior;
+    use grovedb_merk::TreeType;
+    use grovedb_storage::{Storage, StorageContext};
+    let version = GroveVersion::latest();
+    let seed = |db: &TempGroveDb, child: Element| {
+        db.insert(
+            &[TEST_LEAF],
+            b"tree",
+            Element::empty_tree(),
+            None,
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+        db.insert(&[TEST_LEAF, b"tree"], b"value", child, None, None, version)
+            .unwrap()
+            .unwrap();
+    };
+    let ops = || {
+        (
+            vec![QualifiedGroveDbOp::delete_tree_op(
+                vec![TEST_LEAF.to_vec()],
+                b"tree".to_vec(),
+                TreeType::NormalTree,
+                SubelementsDeletionBehavior::DeleteChildren,
+            )],
+            |_: &_, _: &_| {
+                Ok(vec![QualifiedGroveDbOp::delete_tree_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"tree".to_vec(),
+                    TreeType::NormalTree,
+                    SubelementsDeletionBehavior::DontCheckWithNoCleanup,
+                )])
+            },
+        )
+    };
+
+    // A plain child: the batch applies and the initial deletion's cleanup
+    // still clears the subtree's storage.
+    let db = make_test_grovedb(version);
+    seed(&db, Element::new_item(vec![1]));
+    let (initial, callback) = ops();
+    db.apply_partial_batch(initial, None, callback, None, version)
+        .unwrap()
+        .expect("both deletions apply");
+    assert!(db
+        .get_raw(SubtreePath::from(&[TEST_LEAF]), b"tree", None, version)
+        .unwrap()
+        .is_err());
+    let tx = db.start_transaction();
+    let storage = db
+        .db
+        .get_transactional_storage_context(SubtreePath::from(&[TEST_LEAF, b"tree"]), None, &tx)
+        .unwrap();
+    assert!(
+        storage.get(b"value").unwrap().unwrap().is_none(),
+        "the initial DeleteChildren must still clean the subtree's storage"
+    );
+    drop(storage);
+    drop(tx);
+    assert!(db
+        .verify_grovedb(None, true, true, version)
+        .unwrap()
+        .is_empty());
+
+    // A participant referenced from outside the subtree: the cleanup walk
+    // of the initial deletion still refuses it, so nothing dangles.
+    let db = make_test_grovedb(version);
+    seed(
+        &db,
+        Element::new_item_allowing_bidirectional_references(vec![1]),
+    );
+    db.insert(
+        &[TEST_LEAF],
+        b"outside",
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    b"tree".to_vec(),
+                    b"value".to_vec(),
+                ]),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: None,
+            },
+            None,
+        ),
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    let before = db.root_hash(None, version).unwrap().unwrap();
+    let (initial, callback) = ops();
+    let result = db
+        .apply_partial_batch(initial, None, callback, None, version)
+        .unwrap();
+    assert!(matches!(result, Err(Error::NotSupported(_))), "{result:?}");
+    assert_eq!(db.root_hash(None, version).unwrap().unwrap(), before);
+    db.get(&[TEST_LEAF], b"outside", None, version)
+        .unwrap()
+        .expect("the outside reference still resolves");
+    assert!(db
+        .verify_grovedb(None, true, true, version)
+        .unwrap()
+        .is_empty());
+}
+
+/// The mirror image: a callback `DeleteTree(DontCheckWithNoCleanup)` at the
+/// same key as an initial-segment replacement of a populated tree must not
+/// exempt that replacement from the participant scan. The initial-segment
+/// footprint guard refuses the add-on op before that question arises, and
+/// this pins that the refusal leaves nothing dangling.
+#[test]
+fn callback_delete_tree_cannot_exempt_an_initial_replacement() {
+    use crate::batch::SubelementsDeletionBehavior;
+    use grovedb_merk::TreeType;
+    let version = GroveVersion::latest();
+    let db = make_test_grovedb(version);
+    db.insert(
+        &[TEST_LEAF],
+        b"tree",
+        Element::empty_tree(),
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF, b"tree"],
+        b"value",
+        Element::new_item_allowing_bidirectional_references(vec![1]),
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    db.insert(
+        &[TEST_LEAF],
+        b"outside",
+        Element::BidirectionalReference(
+            BidirectionalReference {
+                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    b"tree".to_vec(),
+                    b"value".to_vec(),
+                ]),
+                backward_references: Vec::new(),
+                cascade_on_update: true,
+                max_hop: None,
+            },
+            None,
+        ),
+        None,
+        None,
+        version,
+    )
+    .unwrap()
+    .unwrap();
+    let before = db.root_hash(None, version).unwrap().unwrap();
+    let result = db.apply_partial_batch(
+        vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"tree".to_vec(),
+            Element::empty_tree(),
+        )],
+        None,
+        |_, _| {
+            Ok(vec![QualifiedGroveDbOp::delete_tree_op(
+                vec![TEST_LEAF.to_vec()],
+                b"tree".to_vec(),
+                TreeType::NormalTree,
+                SubelementsDeletionBehavior::DontCheckWithNoCleanup,
+            )])
+        },
+        None,
+        version,
+    );
+    let result = result.unwrap();
+    assert!(
+        matches!(result, Err(Error::InvalidBatchOperation(_))),
+        "{result:?}"
+    );
+    assert_eq!(db.root_hash(None, version).unwrap().unwrap(), before);
+    db.get(&[TEST_LEAF], b"outside", None, version)
+        .unwrap()
+        .expect("the outside reference still resolves");
+    assert!(db
+        .verify_grovedb(None, true, true, version)
+        .unwrap()
+        .is_empty());
+}

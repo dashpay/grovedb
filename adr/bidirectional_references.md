@@ -141,7 +141,9 @@ walk.
 Next, we’ll go over the rules and limitations for using bidirectional references.
 
 These rules always apply; `BackwardsReferences::DontCheck` (a `DontCheckForBackwardsReferences` op in a
-batch) is a checked claim, not an opt-out.
+batch) is a checked claim, not an opt-out, wherever the write reads the value it
+displaces. The paths that read nothing (a flat drop, a raw `clear_subtree`, the
+replacement of a populated subtree, a live recursive delete) trust it.
 
 An 'Element with backward references' refers to `ItemWithBackwardsReferences`,
 `SumItemWithBackwardsReferences`, `ItemWithSumItemWithBackwardsReferences`, and
@@ -251,8 +253,9 @@ displace a participant follows the op's own declaration: an op declared
 an op declared `DontCheck` charges the plain write alone, and ops that
 themselves write a participant (family items, bidirectional references) are
 charged from the op regardless. Declaring correctly is the caller's
-responsibility; the apply path refuses a false `DontCheck` claim rather
-than running an unpriced cascade.
+responsibility; every path that inspects the displaced state refuses a false
+`DontCheck` claim rather than running an unpriced cascade, and the trusted
+paths listed above leave a wrongly declared participant's registrations stale.
 
 Live writes use the same preparation observer. Ordinary values retain the
 existing parent and indexed-tree propagation; participating values reuse the

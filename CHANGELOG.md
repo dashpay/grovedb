@@ -86,6 +86,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DeleteUpTreeOptions::backwards_references`, and the average- and worst-case
   delete builders take a `BackwardsReferences` parameter
   (`QualifiedGroveDbOp::with_backwards_references` applies one to any op).
+  Each `DeleteTree` removal a batch performs carries its own cleanup
+  behavior and its own exemption from the post-apply participant scan, read
+  off the op that performed it, so a `DeleteTree` in another partial-batch
+  segment can neither change how it is cleaned up nor exempt a replacement
+  at the same path.
   Partial batches still refuse participant mutations, and earlier protocol
   versions retain their historical behavior.
 - **BREAKING**: `EstimatedLayerInformation::may_contain_backward_references`

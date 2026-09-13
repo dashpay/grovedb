@@ -1919,7 +1919,7 @@ struct TreeCacheMerkByPath<S, F, F2> {
     /// merk delete surfaces through the old-value observer. Consumed by
     /// `apply_batch`'s post-apply phase to select cleanup namespaces from
     /// what was really stored rather than what the op declared.
-    deleted_tree_actual_types: Vec<(Vec<Vec<u8>>, TreeType)>,
+    deleted_tree_actual_types: Vec<(Vec<Vec<u8>>, TreeType, SubelementsDeletionBehavior)>,
     /// Total secondary-mirror re-key churn bytes accumulated across every
     /// indexed primary this apply mirrored. Consumed by `apply_batch`'s
     /// commit-time cost assembly, which rebills this many bytes out of the
@@ -1944,10 +1944,13 @@ struct BatchApplyCaptures {
     /// Cidx primary paths displaced by a safe-subset overwrite; their old
     /// primary subtree storage + per-axis secondary namespaces get cleared.
     cidx_overwrite_cleanup_paths: Vec<Vec<Vec<u8>>>,
-    /// `(qualified_path, ACTUAL stored tree type)` of every `DeleteTree`
-    /// target that was really deleted; cleanup namespaces are selected from
-    /// the actual type, not the declared one.
-    deleted_tree_actual_types: Vec<(Vec<Vec<u8>>, TreeType)>,
+    /// `(qualified_path, ACTUAL stored tree type, deletion behavior)` of
+    /// every `DeleteTree` target that was really deleted; cleanup namespaces
+    /// are selected from the actual type, not the declared one, and the
+    /// behavior is the one of the op that performed the deletion, so a
+    /// later op at the same path (another partial-batch segment) cannot
+    /// change how this deletion is cleaned up.
+    deleted_tree_actual_types: Vec<(Vec<Vec<u8>>, TreeType, SubelementsDeletionBehavior)>,
     /// Total secondary-mirror re-key churn bytes; rebilled as
     /// `replaced_bytes` at commit-time cost assembly.
     indexed_mirror_rekey_churn_bytes: u32,
@@ -2042,32 +2045,23 @@ struct DeleteTreePreScan {
     /// Paths whose `Skip`-behavior `DeleteTree` found a non-empty tree;
     /// their ops are filtered out of the batch before `apply_body`.
     skipped_delete_paths: HashSet<Vec<Vec<u8>>>,
-    /// V4+ only: qualified path → deletion behavior of every `DeleteTree`
-    /// op, so `classify_captured_delete_trees` can honor the behavior when
-    /// folding captured actual types into the cleanup lists.
-    delete_tree_behaviors: HashMap<Vec<Vec<u8>>, SubelementsDeletionBehavior>,
 }
 
 /// V4+ post-apply classification: fold the `(qualified_path, ACTUAL stored
-/// tree type)` pairs captured by the merk old-value observer into the
-/// cleanup lists, honoring each op's deletion behavior. On V1..V3 the
+/// tree type, deletion behavior)` triples captured by the merk old-value
+/// observer into the cleanup lists. Each capture carries the behavior of the
+/// op that performed the deletion, so two partial-batch segments deleting
+/// the same path each get the cleanup they asked for. On V1..V3 the
 /// captures are empty and this is a no-op — the lists were already built
 /// pre-apply from the declared types, exactly as released.
 fn classify_captured_delete_trees(
-    captures: Vec<(Vec<Vec<u8>>, TreeType)>,
-    behaviors: &HashMap<Vec<Vec<u8>>, SubelementsDeletionBehavior>,
+    captures: Vec<(Vec<Vec<u8>>, TreeType, SubelementsDeletionBehavior)>,
     non_merk_delete_paths: &mut Vec<Vec<Vec<u8>>>,
     merk_delete_paths: &mut Vec<Vec<Vec<u8>>>,
     cidx_primary_delete_paths: &mut Vec<Vec<Vec<u8>>>,
     flat_drop_records: &mut Vec<(Vec<Vec<u8>>, TreeType)>,
 ) {
-    for (qualified_path, actual_tree_type) in captures {
-        // Ops the pre-scan did not register (e.g. add-on DeleteTree ops
-        // returned by a partial batch's callback) keep their released
-        // no-cleanup behaviour.
-        let Some(behavior) = behaviors.get(&qualified_path) else {
-            continue;
-        };
+    for (qualified_path, actual_tree_type, behavior) in captures {
         match behavior {
             SubelementsDeletionBehavior::DontCheckWithNoCleanup => {
                 // No primary storage cleanup — but an indexed primary still
@@ -2176,7 +2170,9 @@ trait TreeCache<G, SR> {
     /// (V4+ only) for the `DeleteTree` targets that were really deleted, so
     /// the post-apply cleanup can classify namespaces by the ACTUAL stored
     /// type. Default impl returns an empty Vec.
-    fn take_deleted_tree_actual_types(&mut self) -> Vec<(Vec<Vec<u8>>, TreeType)> {
+    fn take_deleted_tree_actual_types(
+        &mut self,
+    ) -> Vec<(Vec<Vec<u8>>, TreeType, SubelementsDeletionBehavior)> {
         Vec::new()
     }
 
@@ -3154,7 +3150,9 @@ where
         std::mem::take(&mut self.cidx_overwrite_cleanup_paths)
     }
 
-    fn take_deleted_tree_actual_types(&mut self) -> Vec<(Vec<Vec<u8>>, TreeType)> {
+    fn take_deleted_tree_actual_types(
+        &mut self,
+    ) -> Vec<(Vec<Vec<u8>>, TreeType, SubelementsDeletionBehavior)> {
         std::mem::take(&mut self.deleted_tree_actual_types)
     }
 
@@ -3268,7 +3266,10 @@ where
         // delete it — so no dedicated stored-element read (and no extra
         // tracked cost) is issued. On V1..V3 both maps stay empty.
         let mut pending_overwrite_inspections: BTreeMap<Vec<u8>, Element> = BTreeMap::new();
-        let mut pending_delete_tree_checks: BTreeMap<Vec<u8>, TreeType> = BTreeMap::new();
+        let mut pending_delete_tree_checks: BTreeMap<
+            Vec<u8>,
+            (TreeType, SubelementsDeletionBehavior),
+        > = BTreeMap::new();
 
         // Derive skipped insertions from the writes actually emitted below,
         // covering every element variant without another existence read.
@@ -4376,8 +4377,11 @@ where
                         )
                     );
                 }
-                GroveOp::DeleteTree(tree_type, _)
-                | GroveOp::DeleteTreeDontCheckForBackwardsReferences(tree_type, _) => {
+                GroveOp::DeleteTree(tree_type, deletion_behavior)
+                | GroveOp::DeleteTreeDontCheckForBackwardsReferences(
+                    tree_type,
+                    deletion_behavior,
+                ) => {
                     // CountIndexedTree owns two child Merks (primary +
                     // secondary). The standard DeleteTree path runs
                     // find_subtrees on the primary's prefix and clears
@@ -4402,7 +4406,8 @@ where
                         .delete_tree_cleanup_type_source
                         >= 1
                     {
-                        pending_delete_tree_checks.insert(key_info.get_key_clone(), tree_type);
+                        pending_delete_tree_checks
+                            .insert(key_info.get_key_clone(), (tree_type, deletion_behavior));
                     }
                     cost_return_on_error_into!(
                         &mut cost,
@@ -4744,7 +4749,8 @@ where
         // pending storage batch, which the caller discards on error).
         let mut old_value_gate_error: Option<Error> = None;
         let mut cidx_overwrite_cleanups: Vec<Vec<Vec<u8>>> = vec![];
-        let mut deleted_tree_captures: Vec<(Vec<u8>, TreeType)> = vec![];
+        let mut deleted_tree_captures: Vec<(Vec<u8>, TreeType, SubelementsDeletionBehavior)> =
+            vec![];
         let mut old_value_observer =
             |key: &[u8], old_value: &[u8], disposition: OldValueDisposition| {
                 if old_value_gate_error.is_some() {
@@ -4761,6 +4767,18 @@ where
                                 ));
                                 return;
                             }
+                            // A `DeleteTree` removal is never queued for the
+                            // post-apply participant scan: `DeleteChildren`,
+                            // `Error` and `Skip` are checked on the cleanup
+                            // walk, which decodes the contents anyway, and
+                            // `DontCheckWithNoCleanup` declares that the
+                            // batch's own deletes, each gated here, emptied
+                            // the subtree. Decided from the op this level
+                            // applies, so a `DeleteTree` at the same path in
+                            // another segment cannot exempt a replacement.
+                            let removed_by_delete_tree =
+                                matches!(disposition, OldValueDisposition::Deleted)
+                                    && pending_delete_tree_checks.contains_key(key);
                             if element.is_any_tree()
                                 && !element.uses_non_merk_data_storage()
                                 && element
@@ -4768,6 +4786,7 @@ where
                                     .is_some_and(|(root, _)| root.is_some())
                                 && (matches!(disposition, OldValueDisposition::Deleted)
                                     || pending_overwrite_inspections.contains_key(key))
+                                && !removed_by_delete_tree
                             {
                                 let mut qualified = path.clone();
                                 qualified.push(key.to_vec());
@@ -4809,7 +4828,9 @@ where
                         }
                     }
                     OldValueDisposition::Deleted => {
-                        let Some(declared_tree_type) = pending_delete_tree_checks.get(key) else {
+                        let Some((declared_tree_type, deletion_behavior)) =
+                            pending_delete_tree_checks.get(key)
+                        else {
                             return;
                         };
                         let outcome = Element::deserialize(old_value, grove_version)
@@ -4825,9 +4846,11 @@ where
                                 )
                             });
                         match outcome {
-                            Ok(actual_tree_type) => {
-                                deleted_tree_captures.push((key.to_vec(), actual_tree_type))
-                            }
+                            Ok(actual_tree_type) => deleted_tree_captures.push((
+                                key.to_vec(),
+                                actual_tree_type,
+                                *deletion_behavior,
+                            )),
                             Err(e) => old_value_gate_error = Some(e),
                         }
                     }
@@ -4993,11 +5016,14 @@ where
         }
         self.cidx_overwrite_cleanup_paths
             .extend(cidx_overwrite_cleanups);
-        for (key, actual_tree_type) in deleted_tree_captures {
+        for (key, actual_tree_type, deletion_behavior) in deleted_tree_captures {
             let mut qualified_path = path.to_vec();
             qualified_path.push(key);
-            self.deleted_tree_actual_types
-                .push((qualified_path, actual_tree_type));
+            self.deleted_tree_actual_types.push((
+                qualified_path,
+                actual_tree_type,
+                deletion_behavior,
+            ));
         }
 
         // Post-apply: if this level was a cidx primary, mirror each
@@ -6428,8 +6454,6 @@ impl GroveDb {
                 }
 
                 if capture_actual_types {
-                    scan.delete_tree_behaviors
-                        .insert(child_path.clone(), *subelements_deletion_behavior);
                     match subelements_deletion_behavior {
                         SubelementsDeletionBehavior::DontCheckWithNoCleanup
                         | SubelementsDeletionBehavior::DeleteChildren
@@ -6997,7 +7021,6 @@ impl GroveDb {
             mut merk_delete_paths,
             mut cidx_primary_delete_paths,
             skipped_delete_paths,
-            mut delete_tree_behaviors,
         } = cost_return_on_error!(
             &mut cost,
             self.scan_delete_tree_ops(&ops, &storage_batch, tx.as_ref(), grove_version)
@@ -7022,12 +7045,6 @@ impl GroveDb {
         } else {
             ops
         };
-        // A skipped `DeleteTree` executed nothing: its behavior must not exempt
-        // a later replacement of the same populated tree from the participant
-        // scan, so only executed ops keep their entry.
-        for path in &skipped_delete_paths {
-            delete_tree_behaviors.remove(path);
-        }
 
         // With the only one difference (if there is a transaction) do the following:
         // 2. If nothing left to do and we were on a non-leaf subtree or we're done with
@@ -7096,7 +7113,6 @@ impl GroveDb {
         let mut flat_drop_records: Vec<(Vec<Vec<u8>>, TreeType)> = Vec::new();
         classify_captured_delete_trees(
             deleted_tree_actual_types,
-            &delete_tree_behaviors,
             &mut non_merk_delete_paths,
             &mut merk_delete_paths,
             &mut cidx_primary_delete_paths,
@@ -7439,7 +7455,6 @@ impl GroveDb {
             mut merk_delete_paths,
             mut cidx_primary_delete_paths,
             skipped_delete_paths,
-            mut delete_tree_behaviors,
         } = cost_return_on_error!(
             &mut cost,
             self.scan_delete_tree_ops(&ops, &storage_batch, tx.as_ref(), grove_version)
@@ -7464,12 +7479,6 @@ impl GroveDb {
         } else {
             ops
         };
-        // A skipped `DeleteTree` executed nothing: its behavior must not exempt
-        // a later replacement of the same populated tree from the participant
-        // scan, so only executed ops keep their entry.
-        for path in &skipped_delete_paths {
-            delete_tree_behaviors.remove(path);
-        }
         if batch_apply_options.batch_pause_height.is_none() {
             // we default to pausing at the root tree, which is the most common case
             batch_apply_options.batch_pause_height = Some(1);
@@ -7795,7 +7804,6 @@ impl GroveDb {
             merk_delete_paths: add_on_merk_delete_paths,
             cidx_primary_delete_paths: add_on_cidx_primary_delete_paths,
             skipped_delete_paths: add_on_skipped_delete_paths,
-            delete_tree_behaviors: mut add_on_delete_tree_behaviors,
         } = cost_return_on_error!(
             &mut cost,
             self.scan_delete_tree_ops(
@@ -7808,25 +7816,6 @@ impl GroveDb {
         non_merk_delete_paths.extend(add_on_non_merk_delete_paths);
         merk_delete_paths.extend(add_on_merk_delete_paths);
         cidx_primary_delete_paths.extend(add_on_cidx_primary_delete_paths);
-        // A skipped add-on `DeleteTree` executed nothing: drop its entry
-        // before merging so it neither exempts a replacement nor erases the
-        // cleanup behavior of a deletion the initial segment executed at the
-        // same path.
-        for path in &add_on_skipped_delete_paths {
-            add_on_delete_tree_behaviors.remove(path);
-        }
-        delete_tree_behaviors.extend(add_on_delete_tree_behaviors);
-        for op in &new_operations {
-            if is_merged_ancestor(op)
-                && let GroveOp::DeleteTree(_, behavior)
-                | GroveOp::DeleteTreeDontCheckForBackwardsReferences(_, behavior) = &op.op
-                && let Some(key) = op.key.as_ref()
-            {
-                let mut qualified = op.path.to_path();
-                qualified.push(key.get_key_clone());
-                delete_tree_behaviors.insert(qualified, *behavior);
-            }
-        }
 
         // Filter out add-on DeleteTree ops skipped by
         // SubelementsDeletionBehavior::Skip on non-empty trees, exactly
@@ -7886,15 +7875,16 @@ impl GroveDb {
         // A removed subtree whose contents nothing in this batch reads is
         // scanned for participants before commit when its op declares there
         // may be some: a tree replacement or a `Delete` of a populated tree.
-        // Every `DeleteTree` is exempt: `DeleteChildren`, `Error` and `Skip`
-        // are checked on the cleanup walk below, which already decodes the
+        // `DeleteTree` removals are not in this list (the observer keys that
+        // on the op it applies): `DeleteChildren`, `Error` and `Skip` are
+        // checked on the cleanup walk below, which already decodes the
         // contents, and `DontCheckWithNoCleanup` declares that the batch's
         // own deletes, each gated by the observer, emptied the subtree.
         for (path, declared) in partial_subtree_removals
             .into_iter()
             .chain(continue_subtree_removals)
         {
-            if delete_tree_behaviors.contains_key(&path) || !declared.should_check() {
+            if !declared.should_check() {
                 continue;
             }
             if !cost_return_on_error!(
@@ -7915,7 +7905,6 @@ impl GroveDb {
                 .into_iter()
                 .chain(continue_deleted_tree_actual_types)
                 .collect(),
-            &delete_tree_behaviors,
             &mut non_merk_delete_paths,
             &mut merk_delete_paths,
             &mut cidx_primary_delete_paths,
