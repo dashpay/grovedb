@@ -42,8 +42,8 @@ Add both crates to your application's `Cargo.toml`:
 
 ```toml
 [dependencies]
-grovedb = "6.0"
-grovedb-version = "6.0"
+grovedb = "6.0.1"
+grovedb-version = "6.0.1"
 ```
 
 Save the following as `src/main.rs` and run `cargo run`. It creates a tree,
@@ -116,8 +116,8 @@ Applications that only verify proofs can disable the default storage features:
 
 ```toml
 [dependencies]
-grovedb = { version = "6.0", default-features = false, features = ["verify"] }
-grovedb-version = "6.0"
+grovedb = { version = "6.0.1", default-features = false, features = ["verify"] }
+grovedb-version = "6.0.1"
 ```
 
 Verification checks a proof against the requested query and returns its root
