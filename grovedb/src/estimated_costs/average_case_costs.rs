@@ -538,7 +538,6 @@ impl GroveDb {
             .min(u32::MAX as usize) as u32;
             let secondary_layer = EstimatedLayerInformation {
                 tree_type: axis_secondary_tree_type(*axis),
-                may_contain_backward_references: false,
                 // 1:1 with the primary.
                 estimated_layer_count: primary_layer_information.estimated_layer_count,
                 // The row shape's OWN variant, not `AllItems`: the two

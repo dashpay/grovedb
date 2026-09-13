@@ -1,6 +1,6 @@
 //! Delete up tree
 
-use crate::BackwardReferencesPolicy;
+use crate::BackwardsReferences;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
@@ -29,6 +29,10 @@ pub struct DeleteUpTreeOptions {
     pub validate_tree_at_path_exists: bool,
     /// Stop path height
     pub stop_path_height: Option<u16>,
+    /// Whether the values the chain displaces may take part in backward
+    /// references. `DontCheck` builds the `DontCheckForBackwardsReferences` twins of the
+    /// delete ops; a participant met under that declaration is refused.
+    pub backwards_references: BackwardsReferences,
 }
 
 #[cfg(feature = "minimal")]
@@ -40,6 +44,7 @@ impl Default for DeleteUpTreeOptions {
             base_root_storage_is_free: true,
             validate_tree_at_path_exists: false,
             stop_path_height: None,
+            backwards_references: BackwardsReferences::Check,
         }
     }
 }
@@ -52,7 +57,7 @@ impl DeleteUpTreeOptions {
             deleting_non_empty_trees_returns_error: self.deleting_non_empty_trees_returns_error,
             base_root_storage_is_free: self.base_root_storage_is_free,
             validate_tree_at_path_exists: self.validate_tree_at_path_exists,
-            backward_references_policy: BackwardReferencesPolicy::Skip,
+            backwards_references: self.backwards_references,
         }
     }
 }

@@ -604,7 +604,6 @@ fn bulk_average_case_estimate(
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLevel(1, false),
             estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
         },
@@ -614,7 +613,6 @@ fn bulk_average_case_estimate(
             KeyInfoPath::from_known_owned_path(vec![b"bulk".to_vec()]),
             EstimatedLayerInformation {
                 tree_type: TreeType::BulkAppendTree(chunk_power),
-                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLevel(16, false),
                 estimated_layer_sizes: AllItems(8, value_size, None),
             },

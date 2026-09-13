@@ -2,8 +2,7 @@
 
 #[cfg(feature = "minimal")]
 mod tests {
-    use crate::batch::BatchApplyOptions;
-    use crate::BackwardReferencesPolicy;
+
     use grovedb_costs::{
         storage_cost::{
             removal::{
@@ -1649,17 +1648,9 @@ mod tests {
                     Element::empty_tree(),
                 ),
             ];
-            db.apply_batch(
-                ops,
-                Some(BatchApplyOptions {
-                    backward_references_policy: BackwardReferencesPolicy::Skip,
-                    ..Default::default()
-                }),
-                Some(&tx),
-                grove_version,
-            )
-            .value
-            .expect("expected to execute setup batch");
+            db.apply_batch(ops, None, Some(&tx), grove_version)
+                .value
+                .expect("expected to execute setup batch");
 
             // Every op shape the V4 gates watch: an item overwrite via
             // InsertOrReplace, a reference overwrite via Replace, and a
@@ -1682,15 +1673,7 @@ mod tests {
                     SubelementsDeletionBehavior::Error,
                 ),
             ];
-            db.apply_batch(
-                ops,
-                Some(BatchApplyOptions {
-                    backward_references_policy: BackwardReferencesPolicy::Skip,
-                    ..Default::default()
-                }),
-                Some(&tx),
-                grove_version,
-            )
+            db.apply_batch(ops, None, Some(&tx), grove_version)
         };
 
         let v3 = run(&grovedb_version::version::v3::GROVE_V3);

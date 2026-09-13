@@ -30,10 +30,13 @@ fn freshly_created_indexed_paths(ops: &[QualifiedGroveDbOp]) -> Vec<Vec<Vec<u8>>
     for op in ops {
         let elem = match &op.op {
             GroveOp::InsertOrReplace { element }
+            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element }
             | GroveOp::InsertIfNotExists { element, .. }
             | GroveOp::Replace { element }
-            | GroveOp::Patch { element, .. } => element,
+            | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
+            | GroveOp::Patch { element, .. }
+            | GroveOp::PatchDontCheckForBackwardsReferences { element, .. } => element,
             _ => continue,
         };
         if matches!(

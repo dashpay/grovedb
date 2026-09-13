@@ -1,6 +1,6 @@
 //! The backward-references batch preprocessor (batching milestones M2–M4).
 //!
-//! With the default [`crate::BackwardReferencesPolicy::Maintain`],
+//! With the default [`crate::BackwardsReferences::Check`],
 //! user operations touching the backward-references family — the three ITEM
 //! variants and `BidirectionalReference` itself — expand into the derived
 //! operations the live flow would perform. The decisions come from
@@ -477,10 +477,20 @@ impl<'db, 'g> Expansion<'db, 'g> {
                                 GroveOp::InsertOrReplace {
                                     element: op_element,
                                 }
+                                | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences {
+                                    element: op_element,
+                                }
                                 | GroveOp::Replace {
                                     element: op_element,
                                 }
+                                | GroveOp::ReplaceDontCheckForBackwardsReferences {
+                                    element: op_element,
+                                }
                                 | GroveOp::Patch {
+                                    element: op_element,
+                                    ..
+                                }
+                                | GroveOp::PatchDontCheckForBackwardsReferences {
                                     element: op_element,
                                     ..
                                 }
@@ -500,10 +510,20 @@ impl<'db, 'g> Expansion<'db, 'g> {
                             GroveOp::InsertOrReplace {
                                 element: op_element,
                             }
+                            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences {
+                                element: op_element,
+                            }
                             | GroveOp::Replace {
                                 element: op_element,
                             }
+                            | GroveOp::ReplaceDontCheckForBackwardsReferences {
+                                element: op_element,
+                            }
                             | GroveOp::Patch {
+                                element: op_element,
+                                ..
+                            }
+                            | GroveOp::PatchDontCheckForBackwardsReferences {
                                 element: op_element,
                                 ..
                             }
@@ -525,8 +545,11 @@ impl<'db, 'g> Expansion<'db, 'g> {
                         let user_op = self.ops[index].as_ref().expect("retained above");
                         let (colliding_write, payload_is_bidi) = match &user_op.op {
                             GroveOp::InsertOrReplace { element }
+                            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
                             | GroveOp::Replace { element }
+                            | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
                             | GroveOp::Patch { element, .. }
+                            | GroveOp::PatchDontCheckForBackwardsReferences { element, .. }
                             | GroveOp::InsertIfNotExists { element, .. }
                             | GroveOp::InsertWithKnownToNotAlreadyExist { element } => {
                                 (true, matches!(element, Element::BidirectionalReference(..)))
@@ -646,8 +669,11 @@ pub(super) fn expand_backward_references_ops<'db>(
         .flatten()
         .filter_map(|op| match &op.op {
             GroveOp::InsertOrReplace { element }
+            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
             | GroveOp::Replace { element }
+            | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
             | GroveOp::Patch { element, .. }
+            | GroveOp::PatchDontCheckForBackwardsReferences { element, .. }
             | GroveOp::InsertIfNotExists { element, .. }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element }
                 if element.is_any_tree() =>
@@ -681,7 +707,15 @@ pub(super) fn expand_backward_references_ops<'db>(
         .ops
         .iter()
         .flatten()
-        .filter(|op| matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..)))
+        .filter(|op| {
+            matches!(
+                op.op,
+                GroveOp::Delete
+                    | GroveOp::DeleteDontCheckForBackwardsReferences
+                    | GroveOp::DeleteTree(..)
+                    | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..)
+            )
+        })
         .filter_map(Expansion::op_position)
         .collect();
     for op in expansion.ops.iter().flatten() {
@@ -690,29 +724,57 @@ pub(super) fn expand_backward_references_ops<'db>(
         };
         let new_element = match &op.op {
             GroveOp::InsertOrReplace { element }
+            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
             | GroveOp::Replace { element }
+            | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
             | GroveOp::Patch { element, .. }
+            | GroveOp::PatchDontCheckForBackwardsReferences { element, .. }
             | GroveOp::InsertIfNotExists { element, .. }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element } => Some(element),
-            GroveOp::Delete | GroveOp::DeleteTree(..) | GroveOp::RefreshReference { .. } => None,
+            GroveOp::Delete
+            | GroveOp::DeleteDontCheckForBackwardsReferences
+            | GroveOp::DeleteTree(..)
+            | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..)
+            | GroveOp::RefreshReference { .. } => None,
             _ => continue,
         };
         let previous = cost_return_on_error!(&mut cost, expansion.store.element_at(&path, &key));
-        needs_reference_planning |= new_element.is_some_and(Element::supports_backward_references)
-            || previous
-                .as_ref()
-                .is_some_and(Element::supports_backward_references);
-        let removes_subtree = !matches!(
-            op.op,
-            GroveOp::InsertIfNotExists { .. }
-                | GroveOp::RefreshReference { .. }
-                | GroveOp::DeleteTree(
-                    _,
-                    super::SubelementsDeletionBehavior::Skip
-                        | super::SubelementsDeletionBehavior::Error
-                )
-        );
-        if removes_subtree
+        // The displaced value is in hand, so a `DontCheck` claim costs
+        // nothing to check and fails closed.
+        let previous_participates = previous
+            .as_ref()
+            .is_some_and(Element::supports_backward_references);
+        // A conditional insert over an existing key writes nothing (or fails
+        // for existing), so it displaces nothing to check.
+        if previous_participates
+            && !op.op.backwards_references().should_check()
+            && !matches!(op.op, GroveOp::InsertIfNotExists { .. })
+        {
+            return Err(Error::NotSupported(
+                "a DontCheckForBackwardsReferences op displaces a value that takes part in backward references; use \
+                 the checked op for maintenance"
+                    .to_owned(),
+            ))
+            .wrap_with_cost(cost);
+        }
+        needs_reference_planning |=
+            new_element.is_some_and(Element::supports_backward_references) || previous_participates;
+        // A removal whose contents nothing in this batch reads is scanned for
+        // participants when the op declares there may be some: `Delete` on a
+        // populated tree and a tree replacement. Every `DeleteTree` is
+        // exempt: `DeleteChildren`, `Error` and `Skip` are checked on the
+        // cleanup walk that already decodes the contents, and
+        // `DontCheckWithNoCleanup` declares that the batch's own deletes,
+        // each planned here, emptied the subtree.
+        let removes_unread_subtree = op.op.backwards_references().should_check()
+            && !matches!(
+                op.op,
+                GroveOp::InsertIfNotExists { .. }
+                    | GroveOp::RefreshReference { .. }
+                    | GroveOp::DeleteTree(..)
+                    | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..)
+            );
+        if removes_unread_subtree
             && previous.as_ref().is_some_and(|old| {
                 old.is_any_tree()
                     && !old.uses_non_merk_data_storage()
@@ -727,7 +789,10 @@ pub(super) fn expand_backward_references_ops<'db>(
                 &mut cost,
                 db.backward_reference_participants(&qualified, tx, grove_version)
             );
-            if matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..)) {
+            if matches!(
+                op.op,
+                GroveOp::Delete | GroveOp::DeleteDontCheckForBackwardsReferences
+            ) {
                 if participants.iter().any(|(path, key, _)| {
                     !user_deleted_positions.contains(&(path.clone(), key.clone()))
                 }) {
@@ -765,7 +830,13 @@ pub(super) fn expand_backward_references_ops<'db>(
                 ))
                 .wrap_with_cost(cost);
             }
-            if matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..)) {
+            if matches!(
+                op.op,
+                GroveOp::Delete
+                    | GroveOp::DeleteDontCheckForBackwardsReferences
+                    | GroveOp::DeleteTree(..)
+                    | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..)
+            ) {
                 expansion.user_deleted_positions.insert(position);
             }
         }
@@ -788,8 +859,11 @@ pub(super) fn expand_backward_references_ops<'db>(
 
         match &op_kind {
             GroveOp::InsertOrReplace { element }
+            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
             | GroveOp::Replace { element }
+            | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
             | GroveOp::Patch { element, .. }
+            | GroveOp::PatchDontCheckForBackwardsReferences { element, .. }
             | GroveOp::InsertIfNotExists { element, .. }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element } => {
                 if let Element::BidirectionalReference(reference, _) = element {
@@ -825,8 +899,11 @@ pub(super) fn expand_backward_references_ops<'db>(
                 let writes_over_existing = matches!(
                     op_kind,
                     GroveOp::InsertOrReplace { .. }
+                        | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { .. }
                         | GroveOp::Replace { .. }
+                        | GroveOp::ReplaceDontCheckForBackwardsReferences { .. }
                         | GroveOp::Patch { .. }
+                        | GroveOp::PatchDontCheckForBackwardsReferences { .. }
                 );
                 let (is_insert_if_not_exists, error_if_exists) = match &op_kind {
                     GroveOp::InsertIfNotExists {
@@ -855,8 +932,15 @@ pub(super) fn expand_backward_references_ops<'db>(
                     if let Some(user_op) = expansion.ops[index].as_mut() {
                         match &mut user_op.op {
                             GroveOp::InsertOrReplace { element: e }
+                            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences {
+                                element: e,
+                            }
                             | GroveOp::Replace { element: e }
+                            | GroveOp::ReplaceDontCheckForBackwardsReferences { element: e }
                             | GroveOp::Patch { element: e, .. }
+                            | GroveOp::PatchDontCheckForBackwardsReferences {
+                                element: e, ..
+                            }
                             | GroveOp::InsertIfNotExists { element: e, .. }
                             | GroveOp::InsertWithKnownToNotAlreadyExist { element: e } => {
                                 *e = element.clone();
@@ -949,7 +1033,10 @@ pub(super) fn expand_backward_references_ops<'db>(
                     expansion.store.stage(position, Some(element));
                 }
             }
-            GroveOp::Delete | GroveOp::DeleteTree(..) => {
+            GroveOp::Delete
+            | GroveOp::DeleteDontCheckForBackwardsReferences
+            | GroveOp::DeleteTree(..)
+            | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..) => {
                 let previous =
                     cost_return_on_error!(&mut cost, expansion.store.element_at(&path, &key));
                 expansion.store.stage(position, None);
@@ -1045,7 +1132,9 @@ pub(super) fn expand_backward_references_ops<'db>(
 
         let (reference, reference_flags) = match &op_kind {
             GroveOp::InsertOrReplace { element }
+            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
             | GroveOp::Replace { element }
+            | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
             | GroveOp::InsertIfNotExists { element, .. }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element } => {
                 let Element::BidirectionalReference(reference, flags) = element else {
@@ -1053,7 +1142,7 @@ pub(super) fn expand_backward_references_ops<'db>(
                 };
                 (reference.clone(), flags.clone())
             }
-            GroveOp::Patch { .. } => {
+            GroveOp::Patch { .. } | GroveOp::PatchDontCheckForBackwardsReferences { .. } => {
                 return Err(Error::NotSupported(
                     "Patch operations cannot carry bidirectional references".to_owned(),
                 ))
@@ -1086,7 +1175,10 @@ pub(super) fn expand_backward_references_ops<'db>(
                 ))
                 .wrap_with_cost(cost);
             }
-            GroveOp::InsertOrReplace { .. } | GroveOp::Replace { .. }
+            GroveOp::InsertOrReplace { .. }
+            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { .. }
+            | GroveOp::Replace { .. }
+            | GroveOp::ReplaceDontCheckForBackwardsReferences { .. }
                 if previous.is_some() && expansion.validate_insertion_does_not_override =>
             {
                 return Err(Error::InvalidBatchOperation(
@@ -1094,7 +1186,9 @@ pub(super) fn expand_backward_references_ops<'db>(
                 ))
                 .wrap_with_cost(cost);
             }
-            GroveOp::Replace { .. } if previous.is_none() => {
+            GroveOp::Replace { .. } | GroveOp::ReplaceDontCheckForBackwardsReferences { .. }
+                if previous.is_none() =>
+            {
                 return Err(Error::InvalidBatchOperation(
                     "attempting to replace an element that does not exist",
                 ))
@@ -1177,8 +1271,11 @@ fn order_reference_ops_targets_first(
         };
         let reference = match &op.op {
             GroveOp::InsertOrReplace { element }
+            | GroveOp::InsertOrReplaceDontCheckForBackwardsReferences { element }
             | GroveOp::Replace { element }
+            | GroveOp::ReplaceDontCheckForBackwardsReferences { element }
             | GroveOp::Patch { element, .. }
+            | GroveOp::PatchDontCheckForBackwardsReferences { element, .. }
             | GroveOp::InsertIfNotExists { element, .. }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element } => match element {
                 Element::BidirectionalReference(reference, _) => Some(reference),

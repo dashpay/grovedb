@@ -15,13 +15,12 @@ use intmap::IntMap;
 
 use crate::{
     batch::{key_info::KeyInfo::KnownKey, GroveOp, KeyInfoPath},
-    GroveDb,
+    BackwardsReferences, GroveDb,
 };
 
 fn normal_layer_info() -> EstimatedLayerInformation {
     EstimatedLayerInformation {
         tree_type: TreeType::NormalTree,
-        may_contain_backward_references: false,
         estimated_layer_count: EstimatedLayerCount::ApproximateElements(100),
         estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(8, Default::default(), None),
     }
@@ -49,6 +48,7 @@ fn test_average_case_delete_no_validate() {
         false,
         0,
         (8, 100),
+        BackwardsReferences::Check,
         grove_version,
     );
 
@@ -91,6 +91,7 @@ fn test_average_case_delete_up_tree_multi_level() {
             Some(0),
             true,
             estimated_layer_info,
+            BackwardsReferences::Check,
             grove_version,
         );
 
@@ -110,9 +111,16 @@ fn test_average_case_delete_up_tree_path_too_short_error() {
     let path = KeyInfoPath::from_vec(vec![KnownKey(b"short".to_vec())]);
     let key = KnownKey(b"leaf".to_vec());
 
-    let result = GroveDb::average_case_delete_operations_for_delete_up_tree_while_empty::<
-        RocksDbStorage,
-    >(&path, &key, Some(5), true, IntMap::new(), grove_version);
+    let result =
+        GroveDb::average_case_delete_operations_for_delete_up_tree_while_empty::<RocksDbStorage>(
+            &path,
+            &key,
+            Some(5),
+            true,
+            IntMap::new(),
+            BackwardsReferences::Check,
+            grove_version,
+        );
 
     assert!(result.value.is_err(), "should fail when path < stop height");
 }
@@ -136,6 +144,7 @@ fn test_average_case_delete_up_tree_missing_intermediate_info_error() {
             Some(0),
             true,
             estimated_layer_info,
+            BackwardsReferences::Check,
             grove_version,
         );
 
@@ -161,6 +170,7 @@ fn test_average_case_delete_up_tree_missing_leaf_info_error() {
             Some(0),
             true,
             IntMap::new(), // no layer info at all
+            BackwardsReferences::Check,
             grove_version,
         );
 
@@ -192,6 +202,7 @@ fn test_worst_case_delete_with_validate() {
         true,
         0,
         256,
+        BackwardsReferences::Check,
         grove_version,
     );
 
@@ -220,6 +231,7 @@ fn test_worst_case_delete_no_validate() {
         false,
         0,
         256,
+        BackwardsReferences::Check,
         grove_version,
     );
 
@@ -262,6 +274,7 @@ fn test_worst_case_delete_up_tree_multi_level() {
             true,
             intermediate_tree_info,
             256,
+            BackwardsReferences::Check,
             grove_version,
         );
 
@@ -291,6 +304,7 @@ fn test_worst_case_delete_up_tree_path_too_short_error() {
             true,
             IntMap::new(),
             256,
+            BackwardsReferences::Check,
             grove_version,
         );
 
@@ -316,6 +330,7 @@ fn test_worst_case_delete_up_tree_missing_tree_info_error() {
             true,
             intermediate_tree_info,
             256,
+            BackwardsReferences::Check,
             grove_version,
         );
 

@@ -519,7 +519,6 @@ fn wipe_db() {
 fn avg_items_layer_info() -> EstimatedLayerInformation {
     EstimatedLayerInformation {
         tree_type: TreeType::NormalTree,
-        may_contain_backward_references: false,
         estimated_layer_count: EstimatedLayerCount::ApproximateElements(100),
         estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 32, None),
     }
@@ -612,7 +611,6 @@ fn batch_average_case_mixed_operations_cost() {
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(50),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 8,
@@ -626,7 +624,6 @@ fn batch_average_case_mixed_operations_cost() {
         KeyInfoPath(vec![KeyInfo::KnownKey(b"new_tree".to_vec())]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(0),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 8,
@@ -772,7 +769,6 @@ fn batch_worst_case_gte_average_case() {
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(100),
             estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 32, None),
         },
@@ -864,7 +860,6 @@ fn batch_average_case_insert_tree_cost_actual_comparison() {
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(0),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 7,
@@ -1410,7 +1405,6 @@ fn batch_average_case_sum_tree_insert() {
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(10),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 12,
@@ -1433,7 +1427,6 @@ fn batch_average_case_sum_tree_insert() {
         KeyInfoPath(vec![KeyInfo::KnownKey(b"sum_tree_key".to_vec())]),
         EstimatedLayerInformation {
             tree_type: TreeType::SumTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(0),
             estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 8, None),
         },
@@ -1543,7 +1536,6 @@ fn batch_average_case_delete_tree_cost() {
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(20),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 10,
@@ -1556,7 +1548,6 @@ fn batch_average_case_delete_tree_cost() {
         KeyInfoPath(vec![KeyInfo::KnownKey(b"leaf".to_vec())]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(20),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 10,
@@ -1862,7 +1853,6 @@ fn batch_average_case_replace_with_tree() {
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(10),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 8,
@@ -1875,7 +1865,6 @@ fn batch_average_case_replace_with_tree() {
         KeyInfoPath(vec![KeyInfo::KnownKey(b"leaf".to_vec())]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(10),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 8,
@@ -1915,7 +1904,6 @@ fn batch_average_case_patch_item_cost() {
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(10),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 8,
@@ -1928,7 +1916,6 @@ fn batch_average_case_patch_item_cost() {
         KeyInfoPath(vec![KeyInfo::KnownKey(b"leaf".to_vec())]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(50),
             estimated_layer_sizes: EstimatedLayerSizes::AllItems(9, 32, None),
         },
@@ -1970,7 +1957,6 @@ fn batch_average_case_refresh_reference_cost() {
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(10),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 8,
@@ -1983,7 +1969,6 @@ fn batch_average_case_refresh_reference_cost() {
         KeyInfoPath(vec![KeyInfo::KnownKey(b"leaf".to_vec())]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(50),
             estimated_layer_sizes: EstimatedLayerSizes::AllItems(7, 64, None),
         },
@@ -2018,7 +2003,6 @@ fn batch_average_case_replace_sum_item_cost() {
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(10),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 8,
@@ -2041,7 +2025,6 @@ fn batch_average_case_replace_sum_item_cost() {
         KeyInfoPath(vec![KeyInfo::KnownKey(b"leaf".to_vec())]),
         EstimatedLayerInformation {
             tree_type: TreeType::SumTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(100),
             estimated_layer_sizes: EstimatedLayerSizes::AllItems(32, 8, None),
         },
@@ -2076,7 +2059,6 @@ fn batch_average_case_replace_sum_tree_cost() {
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(10),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 8,
@@ -2099,7 +2081,6 @@ fn batch_average_case_replace_sum_tree_cost() {
         KeyInfoPath(vec![KeyInfo::KnownKey(b"leaf".to_vec())]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(20),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 16,
@@ -2150,7 +2131,6 @@ fn batch_average_case_insert_into_sum_tree() {
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(5),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 10,
@@ -2173,7 +2153,6 @@ fn batch_average_case_insert_into_sum_tree() {
         KeyInfoPath(vec![KeyInfo::KnownKey(b"sum_parent".to_vec())]),
         EstimatedLayerInformation {
             tree_type: TreeType::SumTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(0),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 8,
@@ -2448,7 +2427,6 @@ fn batch_average_case_delete_sum_tree_cost() {
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(10),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 8,
@@ -2471,7 +2449,6 @@ fn batch_average_case_delete_sum_tree_cost() {
         KeyInfoPath(vec![KeyInfo::KnownKey(b"leaf".to_vec())]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(20),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 16,
@@ -2904,7 +2881,6 @@ fn batch_average_case_insert_count_tree_cost() {
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(10),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 14,
@@ -2927,7 +2903,6 @@ fn batch_average_case_insert_count_tree_cost() {
         KeyInfoPath(vec![KeyInfo::KnownKey(b"count_tree_key".to_vec())]),
         EstimatedLayerInformation {
             tree_type: TreeType::CountTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(0),
             estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 32, None),
         },
@@ -3004,7 +2979,6 @@ fn batch_average_case_insert_only_item_cost() {
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(5),
             estimated_layer_sizes: EstimatedLayerSizes::AllItems(15, 17, None),
         },
@@ -3086,7 +3060,6 @@ fn batch_average_case_insert_if_not_exists_item_cost() {
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
                 tree_type: TreeType::NormalTree,
-                may_contain_backward_references: false,
                 estimated_layer_count: EstimatedLayerCount::ApproximateElements(5),
                 estimated_layer_sizes: EstimatedLayerSizes::AllItems(15, 17, None),
             },
@@ -3211,7 +3184,6 @@ fn batch_average_case_delete_in_subtree_cost() {
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(10),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 4,
@@ -3224,7 +3196,6 @@ fn batch_average_case_delete_in_subtree_cost() {
         KeyInfoPath(vec![KeyInfo::KnownKey(b"leaf".to_vec())]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(50),
             estimated_layer_sizes: EstimatedLayerSizes::AllItems(14, 32, None),
         },
@@ -3265,7 +3236,6 @@ fn batch_average_case_insert_reference_element() {
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(5),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 4,
@@ -3278,7 +3248,6 @@ fn batch_average_case_insert_reference_element() {
         KeyInfoPath(vec![KeyInfo::KnownKey(b"leaf".to_vec())]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(20),
             estimated_layer_sizes: EstimatedLayerSizes::AllItems(11, 64, None),
         },
@@ -3316,7 +3285,6 @@ fn batch_average_case_replace_item_with_flags() {
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(10),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 4,
@@ -3329,7 +3297,6 @@ fn batch_average_case_replace_item_with_flags() {
         KeyInfoPath(vec![KeyInfo::KnownKey(b"leaf".to_vec())]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(50),
             estimated_layer_sizes: EstimatedLayerSizes::AllItems(12, 32, Some(7)),
         },
@@ -3476,7 +3443,6 @@ fn batch_average_case_insert_big_sum_tree() {
         KeyInfoPath(vec![]),
         EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(10),
             estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
                 7,
@@ -3499,7 +3465,6 @@ fn batch_average_case_insert_big_sum_tree() {
         KeyInfoPath(vec![KeyInfo::KnownKey(b"big_sum".to_vec())]),
         EstimatedLayerInformation {
             tree_type: TreeType::BigSumTree,
-            may_contain_backward_references: false,
             estimated_layer_count: EstimatedLayerCount::ApproximateElements(0),
             estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 32, None),
         },

@@ -51,27 +51,6 @@ pub enum WorstCaseLayerInformation {
     MaxElementsNumber(u32),
     /// Number of levels
     NumberOfLevels(u32),
-    /// `MaxElementsNumber`, additionally declaring that the layer may hold
-    /// backward-reference participants; see
-    /// [`EstimatedLayerInformation::may_contain_backward_references`](super::average_case_costs::EstimatedLayerInformation::may_contain_backward_references).
-    MaxElementsNumberWithBackwardReferences(u32),
-    /// `NumberOfLevels`, additionally declaring that the layer may hold
-    /// backward-reference participants.
-    NumberOfLevelsWithBackwardReferences(u32),
-}
-
-#[cfg(feature = "minimal")]
-impl WorstCaseLayerInformation {
-    /// Whether the caller declared that this layer may hold backward-reference
-    /// participants, so worst-case estimation charges the displaced-state
-    /// fan-out for plain writes and deletes into it.
-    pub fn may_contain_backward_references(&self) -> bool {
-        matches!(
-            self,
-            WorstCaseLayerInformation::MaxElementsNumberWithBackwardReferences(_)
-                | WorstCaseLayerInformation::NumberOfLevelsWithBackwardReferences(_)
-        )
-    }
 }
 
 #[cfg(feature = "minimal")]
@@ -205,16 +184,14 @@ pub fn add_worst_case_merk_propagate(
     let mut nodes_updated = 0;
     // Propagation requires to recompute and write hashes up to the root
     let levels = match input {
-        WorstCaseLayerInformation::MaxElementsNumber(n)
-        | WorstCaseLayerInformation::MaxElementsNumberWithBackwardReferences(n) => {
+        WorstCaseLayerInformation::MaxElementsNumber(n) => {
             if *n == u32::MAX {
                 32
             } else {
                 ((*n + 1) as f32).log2().ceil() as u32
             }
         }
-        WorstCaseLayerInformation::NumberOfLevels(n)
-        | WorstCaseLayerInformation::NumberOfLevelsWithBackwardReferences(n) => *n,
+        WorstCaseLayerInformation::NumberOfLevels(n) => *n,
     };
     nodes_updated += levels;
 
@@ -301,28 +278,6 @@ mod tests {
 
         assert_eq!(cost.seek_count, 34);
         assert_eq!(cost.hash_node_calls, 68);
-    }
-
-    #[test]
-    fn test_backward_reference_declaration_does_not_change_propagation() {
-        for (plain, declared) in [
-            (
-                WorstCaseLayerInformation::MaxElementsNumber(16),
-                WorstCaseLayerInformation::MaxElementsNumberWithBackwardReferences(16),
-            ),
-            (
-                WorstCaseLayerInformation::NumberOfLevels(3),
-                WorstCaseLayerInformation::NumberOfLevelsWithBackwardReferences(3),
-            ),
-        ] {
-            let mut plain_cost = OperationCost::default();
-            add_worst_case_merk_propagate(&mut plain_cost, &plain).unwrap();
-            let mut declared_cost = OperationCost::default();
-            add_worst_case_merk_propagate(&mut declared_cost, &declared).unwrap();
-            assert_eq!(plain_cost, declared_cost);
-            assert!(!plain.may_contain_backward_references());
-            assert!(declared.may_contain_backward_references());
-        }
     }
 
     #[test]

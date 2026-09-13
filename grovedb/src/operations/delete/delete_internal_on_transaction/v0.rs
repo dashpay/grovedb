@@ -233,6 +233,7 @@ impl GroveDb {
                             transaction,
                             batch,
                             true,
+                            None,
                             "delete",
                             grove_version,
                         )

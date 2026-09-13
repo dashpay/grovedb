@@ -1,6 +1,6 @@
 //! Insert operations
 
-use crate::BackwardReferencesPolicy;
+use crate::BackwardsReferences;
 use std::option::Option::None;
 
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
@@ -25,11 +25,21 @@ pub struct InsertOptions {
     pub validate_insertion_does_not_override_tree: bool,
     /// Base root storage is free
     pub base_root_storage_is_free: bool,
-    /// Maintain backward references by default on V4. The stored value is
-    /// observed in the same Merk used by the write. `Skip` explicitly permits
-    /// stale reference hashes and dangling registrations. A newly inserted
+    /// What the write declares about the value it displaces. The stored
+    /// value is observed in the same Merk used for the write, so on V4 a
+    /// participant is maintained under `Check` and refused under
+    /// `DontCheck`. Replacing a populated subtree is scanned for
+    /// participants only under `Check`. A newly inserted
     /// bidirectional reference always registers its edge.
-    pub backward_references_policy: BackwardReferencesPolicy,
+    pub backwards_references: BackwardsReferences,
+}
+
+impl InsertOptions {
+    /// Replace the declaration about the displaced value.
+    pub fn with_backwards_references(mut self, backwards_references: BackwardsReferences) -> Self {
+        self.backwards_references = backwards_references;
+        self
+    }
 }
 
 impl Default for InsertOptions {
@@ -38,7 +48,7 @@ impl Default for InsertOptions {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: true,
             base_root_storage_is_free: true,
-            backward_references_policy: BackwardReferencesPolicy::Maintain,
+            backwards_references: BackwardsReferences::Check,
         }
     }
 }
@@ -279,7 +289,7 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
-    use crate::BackwardReferencesPolicy;
+    use crate::BackwardsReferences;
     use grovedb_costs::{
         storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,
@@ -473,7 +483,7 @@ mod tests {
                     validate_insertion_does_not_override: true,
                     validate_insertion_does_not_override_tree: true,
                     base_root_storage_is_free: true,
-                    backward_references_policy: BackwardReferencesPolicy::Skip,
+                    backwards_references: BackwardsReferences::DontCheck,
                 }),
                 None,
                 gv,
@@ -551,7 +561,7 @@ mod tests {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: false,
             base_root_storage_is_free: true,
-            backward_references_policy: BackwardReferencesPolicy::Skip,
+            backwards_references: BackwardsReferences::DontCheck,
         }
     }
 
@@ -3312,7 +3322,7 @@ mod tests {
                     validate_insertion_does_not_override: false,
                     validate_insertion_does_not_override_tree: false,
                     base_root_storage_is_free: true,
-                    backward_references_policy: BackwardReferencesPolicy::Skip,
+                    backwards_references: BackwardsReferences::DontCheck,
                 }),
                 Some(&tx),
                 grove_version,
@@ -3602,7 +3612,7 @@ mod tests {
             b"key5",
             Element::new_item_allowing_bidirectional_references(b"certainly new value".to_vec()),
             Some(InsertOptions {
-                backward_references_policy: BackwardReferencesPolicy::Maintain,
+                backwards_references: BackwardsReferences::Check,
                 ..Default::default()
             }),
             None,
@@ -3632,7 +3642,7 @@ mod tests {
             b"key5",
             Element::new_item(b"hello".to_vec()),
             Some(InsertOptions {
-                backward_references_policy: BackwardReferencesPolicy::Maintain,
+                backwards_references: BackwardsReferences::Check,
                 ..Default::default()
             }),
             None,

@@ -11,8 +11,9 @@
 //! its key, the parent Merk's shape, and the path. The subtree's contents
 //! are **never opened, checked, or metered**, which is what makes the cost
 //! O(1) in the subtree's size: dropping a tree of ten million entries
-//! costs the same as dropping a tree of ten. Both entry points require explicit
-//! `BackwardReferencesPolicy::Skip`; Maintain is refused before reading contents.
+//! costs the same as dropping a tree of ten. Both entry points require
+//! `BackwardsReferences::DontCheck`; `Check` is refused before
+//! reading anything.
 //!
 //! Atomically with the delete, a durable redo record
 //! ([`PendingPrefixDropRecord`]) is committed into a reserved namespace of
@@ -70,7 +71,7 @@
 //! lifecycle is the caller's responsibility.
 
 use crate::operations::indexed_tree::reject_generic_write_into_indexed_primary;
-use crate::BackwardReferencesPolicy;
+use crate::BackwardsReferences;
 use std::collections::HashMap;
 
 use grovedb_costs::{
@@ -209,7 +210,7 @@ impl GroveDb {
     /// or sweeping its contents, and stage its storage prefixes for
     /// reclamation. See the [module documentation](self) for the full
     /// contract: the caller declares the subtree contains **no child
-    /// subtrees** and explicitly selects `BackwardReferencesPolicy::Skip`.
+    /// subtrees** and explicitly selects `BackwardsReferences::DontCheck`.
     /// Incoming references may dangle, and the dropped path must
     /// not be re-created before its record drains.
     ///
@@ -221,7 +222,7 @@ impl GroveDb {
         &self,
         path: P,
         key: &[u8],
-        backward_references_policy: BackwardReferencesPolicy,
+        backwards_references: BackwardsReferences,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
@@ -244,9 +245,9 @@ impl GroveDb {
             )
         );
 
-        if backward_references_policy.maintains() {
+        if backwards_references.should_check() {
             return Err(Error::NotSupported(
-                "flat drop requires explicit BackwardReferencesPolicy::Skip; use recursive delete for maintenance".to_owned(),
+                "flat drop requires BackwardsReferences::DontCheck; use recursive delete for maintenance".to_owned(),
             )).wrap_with_cost(cost);
         }
 

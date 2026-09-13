@@ -15,6 +15,8 @@ use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 use intmap::IntMap;
 
+use crate::BackwardsReferences;
+
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath, QualifiedGroveDbOp},
     Error, GroveDb,
@@ -32,6 +34,7 @@ impl GroveDb {
         stop_path_height: Option<u16>,
         validate: bool,
         estimated_layer_info: IntMap<u16, EstimatedLayerInformation>,
+        backwards_references: BackwardsReferences,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         check_grovedb_v0_with_cost!(
@@ -125,6 +128,7 @@ impl GroveDb {
                         check_if_tree,
                         except_keys_count,
                         (key_len, estimated_element_size),
+                        backwards_references,
                         grove_version,
                     )
                 );
@@ -135,6 +139,10 @@ impl GroveDb {
     }
 
     /// Average case delete operation for delete
+    ///
+    /// `backwards_references` picks the checked op or its `DontCheckForBackwardsReferences` twin, which
+    /// decides whether the batch estimator charges the displaced-participant
+    /// fan-out for it.
     pub fn average_case_delete_operation_for_delete<'db, S: Storage<'db>>(
         path: &KeyInfoPath,
         key: &KeyInfo,
@@ -143,6 +151,7 @@ impl GroveDb {
         check_if_tree: bool,
         except_keys_count: u16,
         estimated_key_element_size: EstimatedKeyAndElementSize,
+        backwards_references: BackwardsReferences,
         grove_version: &GroveVersion,
     ) -> CostResult<QualifiedGroveDbOp, Error> {
         check_grovedb_v0_with_cost!(
@@ -187,10 +196,10 @@ impl GroveDb {
             estimated_key_element_size.0 + HASH_LENGTH_U32,
         );
 
-        Ok(QualifiedGroveDbOp::delete_estimated_op(
-            path.clone(),
-            key.clone(),
-        ))
+        Ok(
+            QualifiedGroveDbOp::delete_estimated_op(path.clone(), key.clone())
+                .with_backwards_references(backwards_references),
+        )
         .wrap_with_cost(cost)
     }
 }

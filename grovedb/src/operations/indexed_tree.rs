@@ -514,6 +514,7 @@ impl GroveDb {
             transaction,
             batch,
             true,
+            None,
             "dedicated indexed-tree overwrite/delete",
             grove_version,
         )
