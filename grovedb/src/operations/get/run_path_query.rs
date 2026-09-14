@@ -224,11 +224,42 @@ impl GroveDb {
                 }
             },
             PathQueryShape::AxisRead { axis } => {
+                // Mirror the proof's absence semantics (and the branched
+                // arm's per-branch probe): a queried path that does not
+                // exist — a missing segment, or an empty tree above one
+                // — answers with the traversal's empty result rather
+                // than a storage error, exactly what the prover hands
+                // out and the verifier accepts for that state. The probe
+                // is one raw read per segment; the axis primitives then
+                // run only over a path known to exist, so the remaining
+                // errors are about the element's kind, never its
+                // absence.
                 let path_refs: Vec<&[u8]> = path_query
                     .path
                     .iter()
                     .map(|segment| segment.as_slice())
                     .collect();
+                let mut resolved: Vec<&[u8]> = Vec::with_capacity(path_refs.len());
+                for segment in &path_refs {
+                    let present = cost_return_on_error!(
+                        &mut cost,
+                        self.get_raw_optional(
+                            SubtreePath::from(resolved.as_slice()),
+                            segment,
+                            transaction,
+                            grove_version,
+                        )
+                    );
+                    match present {
+                        None => return Self::absent_axis_run(axis).wrap_with_cost(cost),
+                        // A present non-tree element part-way down: the
+                        // path is not absent, it is the wrong kind, and
+                        // the primitive below reports that — the same
+                        // verdict the prover reaches.
+                        Some(element) if !element.is_any_tree() => break,
+                        Some(_) => resolved.push(segment),
+                    }
+                }
                 self.run_axis_read(path_refs.as_slice(), axis, transaction, grove_version)
                     .add_cost(cost)
             }
@@ -358,9 +389,58 @@ impl GroveDb {
         }
     }
 
+    /// The empty answer of a single-path axis read over a path that does
+    /// not exist, per traversal: no entries and a zero skip for a ranked
+    /// page (the population is zero), no entries and no skip for a
+    /// bounded walk, a zero aggregate for a value-range aggregate. A
+    /// rank-of-key read has no empty answer — the key has no rank in a
+    /// tree that does not exist — and fails as it does for a key absent
+    /// from a present tree. The same mapping the verifier applies to a
+    /// proof with zero axis layers.
+    fn absent_axis_run(
+        axis_query: &grovedb_merk::proofs::query::AxisQuery,
+    ) -> Result<PathQueryRun, Error> {
+        let axis = axis_query.axis;
+        let keys_only = axis_query.projection == AxisProjection::Keys;
+        let empty_page = |skipped: Option<u64>| {
+            if keys_only {
+                PathQueryRun::AxisKeys {
+                    keys: AxisKeys::empty_for_axis(axis),
+                    skipped,
+                }
+            } else {
+                PathQueryRun::AxisEntries {
+                    entries: AxisEntries::empty_for_axis(axis),
+                    skipped,
+                }
+            }
+        };
+        match &axis_query.traversal {
+            AxisTraversal::RankedPage { .. } => Ok(empty_page(Some(0))),
+            AxisTraversal::Bounded { .. } => Ok(empty_page(None)),
+            AxisTraversal::RankOfKey { .. } => Err(Error::PathKeyNotFound(
+                "indexed-axis rank: the queried path does not exist, so the key has no rank"
+                    .to_string(),
+            )),
+            AxisTraversal::AggregateOverValueRange { fold, .. } => match (axis, fold) {
+                (IndexAxis::Count | IndexAxis::Sum, AggregateFold::Population) => Ok(
+                    PathQueryRun::AxisAggregate(AxisAggregateValue::Population(0)),
+                ),
+                (IndexAxis::Count | IndexAxis::Sum, AggregateFold::Total) => {
+                    Ok(PathQueryRun::AxisAggregate(AxisAggregateValue::Total(0)))
+                }
+                // classify rejects value-range aggregates on the Avg axis.
+                (IndexAxis::Avg, _) => Err(Error::CorruptedCodeExecution(
+                    "value-range aggregate on the Avg axis survived classification",
+                )),
+            },
+        }
+    }
+
     /// Single-path axis read: route one validated
     /// [`AxisQuery`](grovedb_merk::proofs::query::AxisQuery) to the
     /// indexed-tree primitive that serves its `(axis, traversal)` pair.
+    /// The caller has established that `path` exists.
     fn run_axis_read(
         &self,
         path: &[&[u8]],

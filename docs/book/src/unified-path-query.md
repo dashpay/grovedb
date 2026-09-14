@@ -199,7 +199,15 @@ merged union.
 
 Branched reads mirror the proof's absence semantics: a branch key — or
 any suffix segment under it — that does not exist yields `None` for
-that branch rather than failing the whole read.
+that branch rather than failing the whole read. A single-path axis read
+over a path that does not exist — a missing segment, or an empty tree
+above one — likewise answers with the traversal's empty result: no
+entries and `skipped: Some(0)` for a ranked page (the population is
+zero), no entries and `None` for a bounded walk, `0` for a value-range
+aggregate. The trusted read and the proof agree on it; only `RankOfKey`,
+which has no empty answer, fails as it does for a key absent from a
+present tree. A path that exists but does not lead to an indexed tree
+carrying the axis is still an error on both sides.
 
 ## One verify entry point: `verify_path_query`
 
@@ -264,6 +272,17 @@ axis-descent terminal, and shared-prefix layers are deduplicated by
 while omitting its axis layer is rejected — hiding entries behind fake
 absence fails closed — and an axis-read position with a missing lower
 layer is a hard error, never a silent absence.
+
+A single-path read whose walk verifies with **zero** axis layers is the
+absent-path case, and the layers that were emitted are what
+authenticate it: every present non-empty tree on the path had to carry
+its lower layer, an empty ancestor is bound to `NULL_HASH`, and the
+parent of the missing segment proves that key absent through its
+single-key Merk proof. The verifier then returns the traversal's empty
+answer (a present non-tree element on the path, which the walk surfaces
+as a row, is rejected instead). The prover settles the same question
+against its own snapshot before handing the proof out, and refuses when
+the path is present but does not lead to an indexed tree.
 
 ### Sum-budget windows (`ProofBytes::SumBudgetWindow`)
 

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Single-path axis reads (`PathQuery::new_axis*`) over a path that does not
+  exist — a missing segment, or an empty tree above one — now answer with the
+  traversal's empty result (no entries and `skipped: Some(0)` for a ranked
+  page, `None` for a bounded walk, `0` for a value-range aggregate) on
+  `run_path_query`, `prove_query` and `verify_path_query` alike, matching
+  key selection and the branched axis shape. Previously the trusted read
+  failed with a storage error and the prover refused to generate ("must
+  produce exactly one axis descent"), so a ranking over a window nothing had
+  been written to yet was unanswerable. A path that is present but does not
+  lead to an indexed tree is still refused, and `RankOfKey` still fails over
+  an absent path. `AxisKeys::empty_for_axis` is new. (#965)
+
 ## [6.0.1] - 2026-09-13
 
 GroveDB 6.0.1 is the 6.0 release to depend on. It supersedes 6.0.0, which is

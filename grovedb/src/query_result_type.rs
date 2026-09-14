@@ -80,6 +80,15 @@ pub enum AxisKeys {
 }
 
 impl AxisKeys {
+    /// An empty pair list of the right variant for `axis`.
+    pub fn empty_for_axis(axis: grovedb_element::indexed::IndexAxis) -> Self {
+        match axis {
+            grovedb_element::indexed::IndexAxis::Count => AxisKeys::Count(Vec::new()),
+            grovedb_element::indexed::IndexAxis::Sum => AxisKeys::Sum(Vec::new()),
+            grovedb_element::indexed::IndexAxis::Avg => AxisKeys::Avg(Vec::new()),
+        }
+    }
+
     /// Number of pairs.
     pub fn len(&self) -> usize {
         match self {
