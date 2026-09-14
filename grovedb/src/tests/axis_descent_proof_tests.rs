@@ -1345,29 +1345,41 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
-    fn a_single_path_axis_read_without_a_target_fails_generation() {
-        // Review finding (P2): the generic walk produces no axis descent
-        // when the queried path is missing or is not an indexed tree,
-        // and used to return `Ok` with an ordinary layer — a proof the
-        // verifier could only reject as "got 0 axis layers". The prover
-        // must refuse to emit it instead.
+    fn a_single_path_axis_read_over_a_present_non_indexed_target_fails_generation() {
+        // The generic walk produces no axis descent when the queried
+        // path leads to something other than an indexed tree, and used
+        // to return `Ok` with an ordinary layer — a proof the verifier
+        // could only reject as "got 0 axis layers". The prover must
+        // refuse to emit it instead. (An ABSENT path is different: it
+        // has an empty answer, see
+        // `a_single_path_axis_read_over_an_absent_path_answers_empty_everywhere`.)
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         build_psit(&db, grove_version, PSIT_ENTRIES);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"item",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert item");
 
         // A present element that is an ordinary tree...
         let plain_target =
             PathQuery::new_axis_top_k(vec![TEST_LEAF.to_vec()], IndexAxis::Sum, 2, 0, true);
-        // ...and a path that names nothing at all.
-        let missing_target = PathQuery::new_axis_top_k(
-            vec![TEST_LEAF.to_vec(), b"ghost".to_vec()],
+        // ...and a path that runs through an item.
+        let through_item = PathQuery::new_axis_top_k(
+            vec![TEST_LEAF.to_vec(), b"item".to_vec(), b"psit".to_vec()],
             IndexAxis::Sum,
             2,
             0,
             true,
         );
 
-        for pq in [plain_target, missing_target] {
+        for pq in [plain_target, through_item] {
             match db.prove_query(&pq, None, grove_version).unwrap() {
                 Err(Error::InvalidPath(message)) => assert!(
                     message.contains("exactly one axis descent"),
@@ -1375,6 +1387,325 @@ mod tests {
                 ),
                 other => panic!("an axis read with no indexed target must be refused: {other:?}"),
             }
+            // The trusted read agrees: a present non-indexed target is an
+            // error, not an empty page.
+            assert!(
+                db.run_path_query(
+                    &pq,
+                    true,
+                    true,
+                    true,
+                    crate::query_result_type::QueryResultType::QueryKeyElementPairResultType,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .is_err(),
+                "the trusted read must refuse an axis read over a present non-indexed target"
+            );
+        }
+    }
+
+    /// A single-path axis read over a path that does not exist — a
+    /// missing last segment, a missing intermediate segment, or an
+    /// empty tree above the would-be target — is a question with an
+    /// answer: nothing is ranked there. The trusted read returns the
+    /// traversal's empty result, the prover hands out a proof whose
+    /// layers authenticate the absence, and the verifier reconstructs
+    /// the live root hash from it. The one traversal without an empty
+    /// answer, rank-of-key, fails on both sides exactly as it does for
+    /// a key absent from a present tree.
+    #[test]
+    fn a_single_path_axis_read_over_an_absent_path_answers_empty_everywhere() {
+        use crate::operations::get::{AxisAggregateValue, PathQueryRun};
+        use crate::query_result_type::QueryResultType;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_psit(&db, grove_version, PSIT_ENTRIES);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"hollow",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert empty tree");
+        let live_root = root_hash(&db, grove_version);
+
+        let read = |pq: &PathQuery| {
+            db.run_path_query(
+                pq,
+                true,
+                true,
+                true,
+                QueryResultType::QueryKeyElementPairResultType,
+                None,
+                grove_version,
+            )
+            .unwrap()
+        };
+
+        let absent_paths: [(&str, Vec<Vec<u8>>); 3] = [
+            (
+                "missing last segment",
+                vec![TEST_LEAF.to_vec(), b"ghost".to_vec()],
+            ),
+            (
+                "missing intermediate segment",
+                vec![TEST_LEAF.to_vec(), b"ghost".to_vec(), b"psit".to_vec()],
+            ),
+            (
+                "empty ancestor",
+                vec![TEST_LEAF.to_vec(), b"hollow".to_vec(), b"psit".to_vec()],
+            ),
+        ];
+        for (label, path) in absent_paths {
+            // Ranked page: no entries, and a ZERO skip — the population is
+            // zero, so the requested offset of 1 could not be skipped.
+            let page = PathQuery::new_axis_top_k(path.clone(), IndexAxis::Sum, 3, 1, true);
+            match read(&page).expect(label) {
+                PathQueryRun::AxisEntries { entries, skipped } => {
+                    assert!(entries.is_empty(), "{label}: read entries");
+                    assert_eq!(skipped, Some(0), "{label}: read skip");
+                }
+                other => panic!("{label}: expected AxisEntries, got {other:?}"),
+            }
+            let keys_only = PathQuery::new_axis(
+                path.clone(),
+                AxisQuery::top_k(IndexAxis::Sum, 3, 1, true).keys_only(),
+            );
+            match read(&keys_only).expect(label) {
+                PathQueryRun::AxisKeys { keys, skipped } => {
+                    assert!(keys.is_empty(), "{label}: read keys");
+                    assert_eq!(skipped, Some(0), "{label}: keys-only read skip");
+                }
+                other => panic!("{label}: expected AxisKeys, got {other:?}"),
+            }
+            let proof = prove(&db, &page, grove_version);
+            match GroveDb::verify_path_query(&proof, &page, grove_version)
+                .unwrap_or_else(|e| panic!("{label}: absent-path page proof verifies: {e}"))
+            {
+                VerifiedPathQuery::AxisEntries {
+                    root_hash,
+                    entries,
+                    skipped,
+                } => {
+                    assert_eq!(root_hash, live_root, "{label}: page root");
+                    assert!(entries.is_empty(), "{label}: verified entries");
+                    assert_eq!(skipped, Some(0), "{label}: verified skip");
+                }
+                other => panic!("{label}: expected AxisEntries, got {other:?}"),
+            }
+
+            // Bounded: no entries, no skip.
+            let bounded =
+                PathQuery::new_axis_bounded(path.clone(), IndexAxis::Sum, -100, 100, 5, false);
+            match read(&bounded).expect(label) {
+                PathQueryRun::AxisEntries { entries, skipped } => {
+                    assert!(entries.is_empty(), "{label}: bounded read entries");
+                    assert_eq!(skipped, None, "{label}: bounded read skip");
+                }
+                other => panic!("{label}: expected AxisEntries, got {other:?}"),
+            }
+            let proof = prove(&db, &bounded, grove_version);
+            match GroveDb::verify_path_query(&proof, &bounded, grove_version)
+                .unwrap_or_else(|e| panic!("{label}: absent-path bounded proof verifies: {e}"))
+            {
+                VerifiedPathQuery::AxisEntries {
+                    root_hash,
+                    entries,
+                    skipped,
+                } => {
+                    assert_eq!(root_hash, live_root, "{label}: bounded root");
+                    assert!(entries.is_empty(), "{label}: verified bounded entries");
+                    assert_eq!(skipped, None, "{label}: verified bounded skip");
+                }
+                other => panic!("{label}: expected AxisEntries, got {other:?}"),
+            }
+
+            // Value-range aggregates: zero, under either fold.
+            for (fold, expected) in [
+                (AggregateFold::Total, AxisAggregateValue::Total(0)),
+                (AggregateFold::Population, AxisAggregateValue::Population(0)),
+            ] {
+                let aggregate = PathQuery::new_axis_aggregate_over_value_range(
+                    path.clone(),
+                    IndexAxis::Sum,
+                    -100,
+                    100,
+                    fold,
+                );
+                match read(&aggregate).expect(label) {
+                    PathQueryRun::AxisAggregate(value) => {
+                        assert_eq!(value, expected, "{label}: {fold:?} read");
+                    }
+                    other => panic!("{label}: expected AxisAggregate, got {other:?}"),
+                }
+                let proof = prove(&db, &aggregate, grove_version);
+                match GroveDb::verify_path_query(&proof, &aggregate, grove_version)
+                    .unwrap_or_else(|e| panic!("{label}: absent-path {fold:?} proof verifies: {e}"))
+                {
+                    VerifiedPathQuery::AxisAggregate { root_hash, value } => {
+                        assert_eq!(root_hash, live_root, "{label}: {fold:?} root");
+                        assert_eq!(value, 0, "{label}: verified {fold:?}");
+                    }
+                    other => panic!("{label}: expected AxisAggregate, got {other:?}"),
+                }
+            }
+
+            // Rank of key: no empty answer, so both sides fail — with the
+            // same error a key absent from a present tree gets.
+            let rank = PathQuery::new_axis_rank_of_key(
+                path.clone(),
+                IndexAxis::Sum,
+                b"alice".to_vec(),
+                true,
+            );
+            assert!(
+                matches!(read(&rank), Err(Error::PathKeyNotFound(_))),
+                "{label}: rank-of-key read over an absent path must fail as key-not-found"
+            );
+            assert!(
+                matches!(
+                    db.prove_query(&rank, None, grove_version).unwrap(),
+                    Err(Error::PathKeyNotFound(_))
+                ),
+                "{label}: rank-of-key proof over an absent path must be refused"
+            );
+        }
+    }
+
+    /// An absent-path proof authenticates absence the way any Merk
+    /// absence proof does: the parent layer proves the GAP the missing
+    /// segment falls into, so the same bytes also verify another key in
+    /// that gap absent (which it truly is) — and verify nothing outside
+    /// it: neither a key past the gap nor the present indexed tree next
+    /// to it.
+    #[test]
+    fn an_absent_path_proof_covers_only_its_own_gap() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_psit(&db, grove_version, PSIT_ENTRIES);
+        // Enough siblings that a single-key proof no longer carries the
+        // whole tree: far subtrees are hashed out, so a key in one of
+        // them is NOT covered. (Over a tiny tree the proof includes every
+        // node and honestly proves every absent key.)
+        for i in 0..64u8 {
+            db.insert(
+                [TEST_LEAF].as_ref(),
+                format!("k{i:02}").as_bytes(),
+                Element::new_item(vec![i]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert filler item");
+        }
+
+        let ghost = PathQuery::new_axis_top_k(
+            vec![TEST_LEAF.to_vec(), b"ghost".to_vec()],
+            IndexAxis::Sum,
+            2,
+            0,
+            true,
+        );
+        let proof = prove(&db, &ghost, grove_version);
+        GroveDb::verify_path_query(&proof, &ghost, grove_version)
+            .expect("the absent-path proof verifies for its own query");
+
+        // `ghosu` sits in the same gap as `ghost` — the proof genuinely
+        // covers it, so it verifies absent too.
+        let same_gap = PathQuery::new_axis_top_k(
+            vec![TEST_LEAF.to_vec(), b"ghosu".to_vec()],
+            IndexAxis::Sum,
+            2,
+            0,
+            true,
+        );
+        match GroveDb::verify_path_query(&proof, &same_gap, grove_version)
+            .expect("a key inside the proven gap is proven absent by the same bytes")
+        {
+            VerifiedPathQuery::AxisEntries { entries, .. } => assert!(entries.is_empty()),
+            other => panic!("expected AxisEntries, got {other:?}"),
+        }
+
+        // `zzz` lies past `psit`, outside the proven gap.
+        let past_the_gap = PathQuery::new_axis_top_k(
+            vec![TEST_LEAF.to_vec(), b"zzz".to_vec()],
+            IndexAxis::Sum,
+            2,
+            0,
+            true,
+        );
+        GroveDb::verify_path_query(&proof, &past_the_gap, grove_version)
+            .expect_err("an absence proof for `ghost` must not verify a key outside its gap");
+
+        let present = PathQuery::new_axis_top_k(psit_path(), IndexAxis::Sum, 2, 0, true);
+        GroveDb::verify_path_query(&proof, &present, grove_version)
+            .expect_err("an absence proof must not verify the present tree's ranking as empty");
+    }
+
+    /// Accepting zero axis layers as absence must not open a way to hide
+    /// a present tree: stripping the axis layer of a present indexed
+    /// tree — populated or empty — from an honest single-path proof is
+    /// rejected, never read as an empty page.
+    #[test]
+    fn stripping_a_single_path_axis_layer_is_rejected_not_read_as_absence() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_psit(&db, grove_version, PSIT_ENTRIES);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"vacant",
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create empty PSIT");
+
+        fn strip_key(layer: &mut LayerProof, key: &[u8]) -> bool {
+            if layer.lower_layers.remove(key).is_some() {
+                return true;
+            }
+            layer
+                .lower_layers
+                .values_mut()
+                .any(|lower| strip_key(lower, key))
+        }
+        let config = bincode::config::standard().with_big_endian();
+        for (label, key) in [
+            ("populated", b"psit".as_slice()),
+            ("empty", b"vacant".as_slice()),
+        ] {
+            let pq = PathQuery::new_axis_top_k(
+                vec![TEST_LEAF.to_vec(), key.to_vec()],
+                IndexAxis::Sum,
+                2,
+                0,
+                true,
+            );
+            let proof = prove(&db, &pq, grove_version);
+            GroveDb::verify_path_query(&proof, &pq, grove_version)
+                .unwrap_or_else(|e| panic!("{label}: honest proof verifies: {e}"));
+
+            let (mut decoded, _): (GroveDBProof, usize) =
+                bincode::decode_from_slice(&proof, config).expect("decode envelope");
+            let GroveDBProof::V1(ref mut v1) = decoded else {
+                panic!("expected V1 envelope");
+            };
+            assert!(
+                strip_key(&mut v1.root_layer, key),
+                "{label}: axis layer stripped"
+            );
+            let tampered = bincode::encode_to_vec(&decoded, config).expect("re-encode");
+            GroveDb::verify_path_query(&tampered, &pq, grove_version)
+                .expect_err("hiding a present indexed tree behind fake absence must be rejected");
         }
     }
 

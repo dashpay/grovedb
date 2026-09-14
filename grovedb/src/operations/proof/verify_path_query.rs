@@ -16,7 +16,10 @@
 //! Key-selection and aggregate shapes route to the existing verifiers
 //! unchanged.
 
-use grovedb_merk::{proofs::query::AxisTraversal, CryptoHash};
+use grovedb_merk::{
+    proofs::query::{AxisQuery, AxisTraversal},
+    CryptoHash,
+};
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -240,19 +243,31 @@ impl GroveDb {
                 }
             },
             PathQueryShape::AxisRead { axis } => {
-                let (root_hash, _, outcomes) =
+                let (root_hash, trios, outcomes) =
                     Self::verify_axis_shape_walk(proof, &validated, grove_version)?;
-                let [outcome]: [AxisWalkOutcome; 1] =
-                    outcomes.try_into().map_err(|outcomes: Vec<_>| {
-                        Error::InvalidProof(
+                let outcome = match <[AxisWalkOutcome; 1]>::try_from(outcomes) {
+                    Ok([outcome]) => outcome,
+                    // No axis layer at all: the walk authenticated that
+                    // the queried path does not exist, and the answer
+                    // is the traversal's empty one. See
+                    // `absent_axis_path_into_verified` for why zero
+                    // layers can mean nothing else.
+                    Err(outcomes) if outcomes.is_empty() => {
+                        return Self::absent_axis_path_into_verified(
+                            root_hash, axis, &trios, path_query,
+                        );
+                    }
+                    Err(outcomes) => {
+                        return Err(Error::InvalidProof(
                             path_query.clone(),
                             format!(
                                 "a single-path axis read must verify exactly one axis layer, \
                                  got {}",
                                 outcomes.len()
                             ),
-                        )
-                    })?;
+                        ));
+                    }
+                };
                 if outcome.path != path_query.path {
                     return Err(Error::InvalidProof(
                         path_query.clone(),
@@ -434,6 +449,87 @@ impl GroveDb {
     > {
         let proof_v1 = validated.require_v1_envelope(decode_grovedb_proof_canonical(proof)?)?;
         Self::verify_proof_v1_with_axis_outcomes(&proof_v1, validated.query(), grove_version)
+    }
+
+    /// The answer of a single-path axis read whose walk verified with
+    /// **no** axis layer: the queried path does not exist, and the
+    /// traversal's empty answer is what the proof authenticates.
+    ///
+    /// Zero layers can mean nothing else. The walk fails closed on every
+    /// other way of reaching the end without an axis layer: a present
+    /// non-empty tree on the path must carry its lower layer, the
+    /// axis-read position itself must be an indexed tree with an axis
+    /// layer (a non-indexed element or a missing layer is a hard error,
+    /// never a silent absence), and a present-but-empty ancestor is
+    /// bound to `NULL_HASH` so a populated tree cannot be rewritten as
+    /// empty to hide the descent. What remains is a path segment the
+    /// parent's single-key Merk proof authenticated as absent — or an
+    /// empty ancestor below which nothing can exist — and that is the
+    /// prover's "absent path" too (`GroveDb::path_is_present` decides
+    /// it against the proof's own snapshot before the proof is handed
+    /// out). The one state the walk reports instead of refusing — a
+    /// present non-tree element somewhere on the path, surfaced as a
+    /// result row — is rejected here: an axis read has no meaning
+    /// under an item, and the prover refuses to generate it.
+    ///
+    /// Only entry-listing and aggregate traversals have an empty answer.
+    /// A rank-of-key read does not (the key has no rank in a tree that
+    /// does not exist), so it is rejected exactly as the prover and the
+    /// trusted read refuse it.
+    fn absent_axis_path_into_verified(
+        root_hash: CryptoHash,
+        axis: &AxisQuery,
+        trios: &[PathKeyOptionalElementTrio],
+        path_query: &PathQuery,
+    ) -> Result<VerifiedPathQuery, Error> {
+        let on_the_queried_path = |trio_path: &[Vec<u8>], trio_key: &[u8]| {
+            trio_path.len() < path_query.path.len()
+                && path_query.path[..trio_path.len()] == *trio_path
+                && path_query.path[trio_path.len()] == *trio_key
+        };
+        if let Some((trio_path, trio_key, _)) =
+            trios.iter().find(|(trio_path, trio_key, element)| {
+                element.is_some() && on_the_queried_path(trio_path, trio_key)
+            })
+        {
+            return Err(Error::InvalidProof(
+                path_query.clone(),
+                format!(
+                    "the queried path runs through a present non-tree element at {}/{}; an \
+                     axis read has no meaning there, so the path is not absent and the \
+                     proof cannot answer the query",
+                    trio_path
+                        .iter()
+                        .map(hex::encode)
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                    hex::encode(trio_key),
+                ),
+            ));
+        }
+        match &axis.traversal {
+            AxisTraversal::RankedPage { .. } => Ok(VerifiedPathQuery::AxisEntries {
+                root_hash,
+                entries: AxisEntries::empty_for_axis(axis.axis),
+                skipped: Some(0),
+            }),
+            AxisTraversal::Bounded { .. } => Ok(VerifiedPathQuery::AxisEntries {
+                root_hash,
+                entries: AxisEntries::empty_for_axis(axis.axis),
+                skipped: None,
+            }),
+            AxisTraversal::AggregateOverValueRange { .. } => Ok(VerifiedPathQuery::AxisAggregate {
+                root_hash,
+                value: 0,
+            }),
+            AxisTraversal::RankOfKey { .. } => Err(Error::InvalidProof(
+                path_query.clone(),
+                "a rank-of-key axis read has no answer over an absent path: the key has no \
+                 rank in a tree that does not exist, and the prover refuses to generate such \
+                 a proof"
+                    .to_string(),
+            )),
+        }
     }
 
     /// Map a single-path axis outcome into the public result, checking

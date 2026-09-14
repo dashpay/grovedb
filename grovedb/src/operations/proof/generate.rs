@@ -11,11 +11,16 @@ use grovedb_costs::{
 use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
 use grovedb_merk::{
     element::ElementExt,
-    proofs::{encode_into, query::QueryItem, Node, Op},
+    proofs::{
+        encode_into,
+        query::{AxisTraversal, QueryItem},
+        Node, Op,
+    },
     tree::{combine_hash, value_hash, NULL_HASH},
     Merk, ProofWithoutEncodingResult, TreeFeatureType,
 };
 use grovedb_merkle_mountain_range::MmrTreeProof;
+use grovedb_path::SubtreePath;
 use grovedb_storage::{Storage, StorageContext};
 use grovedb_version::{
     check_grovedb_v0_or_v1_with_cost, check_grovedb_v0_with_cost, version::GroveVersion,
@@ -1754,18 +1759,32 @@ impl GroveDb {
         );
 
         // A single-path axis read has exactly one answer — the axis
-        // descent at the queried path. The generic walk cannot produce
-        // one when the target is missing or is not an indexed tree; it
-        // returns `Ok` with an ordinary (or empty) layer instead, and
-        // the verifier then rejects the result as "must verify exactly
-        // one axis layer, got 0". Fail generation here instead, so the
-        // prover never hands out a proof that cannot answer the query
-        // it was asked.
+        // descent at the queried path — or, when that path does not
+        // exist, the empty answer for its traversal. The generic walk
+        // produces no descent in two states that must not be confused:
+        //
+        //   * the path is ABSENT (a segment is missing, or an empty tree
+        //     sits above one). The layers the walk did emit authenticate
+        //     that — the parent of the missing segment proves its key
+        //     absent through the single-key Merk proof, an empty
+        //     ancestor is bound to `NULL_HASH` — and the verifier reads
+        //     zero axis layers as the empty answer. "Nothing ranked at
+        //     this path yet" is a legitimate answer, so the proof is
+        //     handed out;
+        //   * the path is PRESENT but names something other than an
+        //     indexed tree carrying that axis. No proof can answer an
+        //     axis read there, so generation fails rather than handing
+        //     out a proof the verifier can only reject.
+        //
+        // Told apart against the same snapshot the proof was built
+        // from. A rank-of-key read has no empty answer (the key has no
+        // rank in a tree that does not exist), so it fails over an
+        // absent path exactly as the trusted read does.
         //
         // Branched axis reads are deliberately excluded: an absent
         // branch key legitimately produces no descent, and its absence
         // is what the branching-level Merk proof authenticates.
-        if matches!(validated.shape(), PathQueryShape::AxisRead { .. }) {
+        if let PathQueryShape::AxisRead { axis } = validated.shape() {
             fn count_axis_descents(layer: &LayerProof) -> usize {
                 usize::from(matches!(
                     layer.merk_proof,
@@ -1776,18 +1795,82 @@ impl GroveDb {
                     .map(count_axis_descents)
                     .sum::<usize>()
             }
-            let descents = count_axis_descents(&root_layer);
-            if descents != 1 {
-                return Err(Error::InvalidPath(format!(
-                    "a single-path axis read must produce exactly one axis descent at the \
-                     queried path, but the walk produced {descents} — the path does not \
-                     name an indexed tree carrying that axis"
-                )))
-                .wrap_with_cost(cost);
+            match count_axis_descents(&root_layer) {
+                1 => {}
+                0 => {
+                    let path_present = cost_return_on_error!(
+                        &mut cost,
+                        self.path_is_present(
+                            &path_query.path,
+                            &snapshot_transaction,
+                            grove_version
+                        )
+                    );
+                    if path_present {
+                        return Err(Error::InvalidPath(
+                            "a single-path axis read must produce exactly one axis descent \
+                             at the queried path, but the walk produced 0 — the path is \
+                             present but does not lead to an indexed tree carrying that axis"
+                                .to_string(),
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                    if matches!(axis.traversal, AxisTraversal::RankOfKey { .. }) {
+                        return Err(Error::PathKeyNotFound(
+                            "indexed-axis rank: the queried path does not exist, so the key \
+                             has no rank"
+                                .to_string(),
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                }
+                descents => {
+                    return Err(Error::InvalidPath(format!(
+                        "a single-path axis read must produce exactly one axis descent at \
+                         the queried path, but the walk produced {descents}"
+                    )))
+                    .wrap_with_cost(cost);
+                }
             }
         }
 
         Ok(GroveDBProof::V1(GroveDBProofV1 { root_layer })).wrap_with_cost(cost)
+    }
+
+    /// Whether `path` leads to a present element, read under
+    /// `transaction`. `false` as soon as a segment is missing —
+    /// including below an empty tree, whose (empty) Merk holds no key —
+    /// which is exactly the state whose absence the generic proof walk
+    /// authenticates. A present non-tree element part-way down the path
+    /// counts as present: nothing can be absent below it, and the walk
+    /// surfaces it as a row the verifier refuses rather than reads as
+    /// absence. Mirrors the trusted reader's chain probe, so the
+    /// prover's "absent path" and the reader's agree.
+    fn path_is_present(
+        &self,
+        path: &[Vec<u8>],
+        transaction: &Transaction,
+        grove_version: &GroveVersion,
+    ) -> CostResult<bool, Error> {
+        let mut cost = OperationCost::default();
+        let mut resolved: Vec<&[u8]> = Vec::with_capacity(path.len());
+        for segment in path {
+            let present = cost_return_on_error!(
+                &mut cost,
+                self.get_raw_optional(
+                    SubtreePath::from(resolved.as_slice()),
+                    segment,
+                    Some(transaction),
+                    grove_version,
+                )
+            );
+            match present {
+                None => return Ok(false).wrap_with_cost(cost),
+                Some(element) if !element.is_any_tree() => return Ok(true).wrap_with_cost(cost),
+                Some(_) => resolved.push(segment.as_slice()),
+            }
+        }
+        Ok(true).wrap_with_cost(cost)
     }
 
     /// Compute the 32-byte secondary attestation that an indexed-tree element
