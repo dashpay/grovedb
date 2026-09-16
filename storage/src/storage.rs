@@ -234,6 +234,11 @@ pub trait StorageContext<'db> {
 
     /// Get raw iterator over storage
     fn raw_iter(&self) -> Self::RawIterator;
+
+    /// Get raw iterator over auxiliary data storage. Like [`Self::raw_iter`]
+    /// it is scoped to this context's prefix, and yields keys as they were
+    /// given to [`Self::put_aux`].
+    fn raw_iter_aux(&self) -> Self::RawIterator;
 }
 
 /// Database batch (not to be confused with multi-tree operations batch).

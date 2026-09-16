@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `StorageContext::raw_iter_aux`, a raw iterator over the aux column family
+  scoped to the context's subtree prefix like `raw_iter`, and
+  `GroveDb::get_aux_by_key_prefix`, which lists every aux entry under a key
+  prefix in key order, including a transaction's own uncommitted writes when
+  read through it. Aux storage was reachable by exact key only, so a
+  collection kept as one aux entry per member could not be read back. (#968)
+
 ### Changed
 - Single-path axis reads (`PathQuery::new_axis*`) over a path that does not
   exist — a missing segment, or an empty tree above one — now answer with the

@@ -316,6 +316,10 @@ mod storage_tests {
         fn raw_iter(&self) -> Self::RawIterator {
             StubRawIterator
         }
+
+        fn raw_iter_aux(&self) -> Self::RawIterator {
+            StubRawIterator
+        }
     }
 
     // ── Failing mock for error paths ────────────────────────────────────
@@ -435,6 +439,10 @@ mod storage_tests {
         }
 
         fn raw_iter(&self) -> Self::RawIterator {
+            StubRawIterator
+        }
+
+        fn raw_iter_aux(&self) -> Self::RawIterator {
             StubRawIterator
         }
     }

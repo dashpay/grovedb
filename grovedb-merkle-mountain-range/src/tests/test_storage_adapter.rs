@@ -258,6 +258,10 @@ impl<'db> StorageContext<'db> for MockStorageContext {
     fn raw_iter(&self) -> Self::RawIterator {
         StubRawIterator
     }
+
+    fn raw_iter_aux(&self) -> Self::RawIterator {
+        StubRawIterator
+    }
 }
 
 /// Mock StorageContext that returns errors for get and put.
@@ -372,6 +376,10 @@ impl<'db> StorageContext<'db> for FailingStorageContext {
     }
 
     fn raw_iter(&self) -> Self::RawIterator {
+        StubRawIterator
+    }
+
+    fn raw_iter_aux(&self) -> Self::RawIterator {
         StubRawIterator
     }
 }

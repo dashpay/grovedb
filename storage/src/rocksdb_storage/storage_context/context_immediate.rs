@@ -236,4 +236,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
             raw_iterator: self.transaction.raw_iterator(),
         }
     }
+
+    fn raw_iter_aux(&self) -> Self::RawIterator {
+        PrefixedRocksDbRawIterator {
+            prefix: self.prefix,
+            raw_iterator: self.transaction.raw_iterator_cf(self.cf_aux()),
+        }
+    }
 }
