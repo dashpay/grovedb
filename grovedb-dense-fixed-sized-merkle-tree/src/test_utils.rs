@@ -177,6 +177,10 @@ impl<'db> StorageContext<'db> for MemStorageContext {
     fn raw_iter(&self) -> Self::RawIterator {
         unimplemented!("MemStorageContext::raw_iter")
     }
+
+    fn raw_iter_aux(&self) -> Self::RawIterator {
+        unimplemented!("MemStorageContext::raw_iter")
+    }
 }
 
 /// Storage context that can be configured to fail on specific positions.
@@ -324,6 +328,10 @@ impl<'db> StorageContext<'db> for FailingStorageContext {
     }
 
     fn raw_iter(&self) -> Self::RawIterator {
+        unimplemented!()
+    }
+
+    fn raw_iter_aux(&self) -> Self::RawIterator {
         unimplemented!()
     }
 }

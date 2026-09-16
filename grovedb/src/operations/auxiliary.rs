@@ -38,7 +38,9 @@ use grovedb_costs::{
 };
 use grovedb_element::indexed::IndexAxis;
 use grovedb_path::SubtreePath;
-use grovedb_storage::{rocksdb_storage::RocksDbStorage, Storage, StorageBatch, StorageContext};
+use grovedb_storage::{
+    rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageBatch, StorageContext,
+};
 use grovedb_version::version::GroveVersion;
 
 use crate::{util::TxRef, Error, GroveDb, Transaction, TransactionArg};
@@ -129,6 +131,48 @@ impl GroveDb {
             .get_aux(key.as_ref())
             .map_err(|e| e.into())
             .add_cost(cost)
+    }
+
+    /// Every aux entry whose key starts with `key_prefix`, in key order, as
+    /// `(key, value)` pairs with the key exactly as it was given to
+    /// [`Self::put_aux`]. An empty prefix lists every aux entry.
+    ///
+    /// Aux storage is otherwise reachable only by exact key, so a caller that
+    /// keeps a collection as one entry per member under a shared key prefix
+    /// reads the collection back with this. Through a transaction the listing
+    /// includes that transaction's own uncommitted puts and deletes.
+    pub fn get_aux_by_key_prefix<K: AsRef<[u8]>>(
+        &self,
+        key_prefix: K,
+        transaction: TransactionArg,
+    ) -> CostResult<Vec<(Vec<u8>, Vec<u8>)>, Error> {
+        let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
+        let key_prefix = key_prefix.as_ref();
+
+        let aux_storage = self
+            .db
+            .get_transactional_storage_context(SubtreePath::empty(), None, tx.as_ref())
+            .unwrap_add_cost(&mut cost);
+
+        let mut iter = aux_storage.raw_iter_aux();
+        iter.seek(key_prefix).unwrap_add_cost(&mut cost);
+
+        let mut entries = Vec::new();
+        while let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
+            if !key.starts_with(key_prefix) {
+                break;
+            }
+            let key = key.to_vec();
+            // A key was read, so the iterator is valid and the value is present.
+            let Some(value) = iter.value().unwrap_add_cost(&mut cost) else {
+                break;
+            };
+            entries.push((key, value.to_vec()));
+            iter.next().unwrap_add_cost(&mut cost);
+        }
+
+        Ok(entries).wrap_with_cost(cost)
     }
 
     /// Recursively clear storage owned by the subtree at `path`: the
@@ -246,5 +290,116 @@ impl GroveDb {
             }
         }
         Ok(()).wrap_with_cost(cost)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{tests::make_empty_grovedb, GroveDb, TransactionArg};
+
+    fn put(db: &GroveDb, key: &[u8], value: &[u8], transaction: TransactionArg) {
+        db.put_aux(key, value, None, transaction)
+            .unwrap()
+            .expect("put aux");
+    }
+
+    fn listing(
+        db: &GroveDb,
+        key_prefix: &[u8],
+        transaction: TransactionArg,
+    ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        db.get_aux_by_key_prefix(key_prefix, transaction)
+            .unwrap()
+            .expect("aux listing")
+    }
+
+    #[test]
+    fn get_aux_by_key_prefix_lists_only_that_prefix_in_key_order() {
+        let db = make_empty_grovedb();
+        put(&db, b"mn/b", b"2", None);
+        put(&db, b"mn/a", b"1", None);
+        put(&db, b"mn/c", b"3", None);
+        // Equal to the prefix: included. Shorter, or diverging: excluded.
+        put(&db, b"mn/", b"exact prefix", None);
+        put(&db, b"mn", b"shorter", None);
+        put(&db, b"mo/a", b"other prefix", None);
+        put(&db, b"m", b"much shorter", None);
+
+        assert_eq!(
+            listing(&db, b"mn/", None),
+            vec![
+                (b"mn/".to_vec(), b"exact prefix".to_vec()),
+                (b"mn/a".to_vec(), b"1".to_vec()),
+                (b"mn/b".to_vec(), b"2".to_vec()),
+                (b"mn/c".to_vec(), b"3".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn get_aux_by_key_prefix_is_empty_when_nothing_matches() {
+        let db = make_empty_grovedb();
+        put(&db, b"mn/a", b"1", None);
+
+        assert!(listing(&db, b"vs/", None).is_empty());
+        assert!(listing(&db, b"zz", None).is_empty());
+        assert!(listing(&make_empty_grovedb(), b"", None).is_empty());
+    }
+
+    #[test]
+    fn get_aux_by_key_prefix_with_an_empty_prefix_lists_every_entry() {
+        let db = make_empty_grovedb();
+        put(&db, b"vs/x", b"3", None);
+        put(&db, b"mn/a", b"1", None);
+        put(&db, b"mn/b", b"2", None);
+
+        assert_eq!(
+            listing(&db, b"", None),
+            vec![
+                (b"mn/a".to_vec(), b"1".to_vec()),
+                (b"mn/b".to_vec(), b"2".to_vec()),
+                (b"vs/x".to_vec(), b"3".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn get_aux_by_key_prefix_sees_the_transactions_own_writes() {
+        let db = make_empty_grovedb();
+        put(&db, b"mn/a", b"committed", None);
+        put(&db, b"mn/b", b"to delete", None);
+
+        let transaction = db.start_transaction();
+        put(&db, b"mn/c", b"pending", Some(&transaction));
+        put(&db, b"mn/a", b"rewritten", Some(&transaction));
+        db.delete_aux(b"mn/b", None, Some(&transaction))
+            .unwrap()
+            .expect("delete aux");
+
+        // Through the transaction: its own puts and deletes.
+        assert_eq!(
+            listing(&db, b"mn/", Some(&transaction)),
+            vec![
+                (b"mn/a".to_vec(), b"rewritten".to_vec()),
+                (b"mn/c".to_vec(), b"pending".to_vec()),
+            ]
+        );
+        // Outside it: committed state only.
+        assert_eq!(
+            listing(&db, b"mn/", None),
+            vec![
+                (b"mn/a".to_vec(), b"committed".to_vec()),
+                (b"mn/b".to_vec(), b"to delete".to_vec()),
+            ]
+        );
+
+        db.commit_transaction(transaction).unwrap().expect("commit");
+        assert_eq!(
+            listing(&db, b"mn/", None),
+            vec![
+                (b"mn/a".to_vec(), b"rewritten".to_vec()),
+                (b"mn/c".to_vec(), b"pending".to_vec()),
+            ]
+        );
     }
 }

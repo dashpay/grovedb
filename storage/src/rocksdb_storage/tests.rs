@@ -543,6 +543,93 @@ mod immediate_storage {
             assert!(expected_iter.next().is_none());
         }
     }
+
+    #[test]
+    fn test_raw_iter_aux() {
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let context = storage
+            .get_immediate_storage_context([b"someprefix"].as_ref().into(), &tx)
+            .unwrap();
+        let other_context = storage
+            .get_immediate_storage_context([b"anotherprefix"].as_ref().into(), &tx)
+            .unwrap();
+
+        for (key, value) in [
+            (b"key2".as_slice(), b"value2".as_slice()),
+            (b"key0", b"value0"),
+            (b"key1", b"value1"),
+        ] {
+            context
+                .put_aux(key, value, None)
+                .unwrap()
+                .expect("expected successful aux insertion");
+        }
+        // The same keys under another subtree prefix must stay invisible.
+        other_context
+            .put_aux(b"key0", b"other0", None)
+            .unwrap()
+            .expect("expected successful aux insertion");
+        other_context
+            .put_aux(b"key9", b"other9", None)
+            .unwrap()
+            .expect("expected successful aux insertion");
+        // A data entry of the same context must not show up in the aux listing.
+        context
+            .put(b"key5", b"data5", None, None)
+            .unwrap()
+            .expect("expected successful insertion");
+
+        let mut iter = context.raw_iter_aux();
+        iter.seek_to_first().unwrap();
+        let mut entries = Vec::new();
+        while iter.valid().unwrap() {
+            entries.push((
+                iter.key().unwrap().expect("key").to_vec(),
+                iter.value().unwrap().expect("value").to_vec(),
+            ));
+            iter.next().unwrap();
+        }
+        assert_eq!(
+            entries,
+            vec![
+                (b"key0".to_vec(), b"value0".to_vec()),
+                (b"key1".to_vec(), b"value1".to_vec()),
+                (b"key2".to_vec(), b"value2".to_vec()),
+            ]
+        );
+
+        // Seeking inside the prefix lands on the requested key.
+        let mut iter = context.raw_iter_aux();
+        iter.seek(b"key1").unwrap();
+        assert_eq!(iter.key().unwrap(), Some(b"key1".as_slice()));
+        iter.seek_to_last().unwrap();
+        assert_eq!(iter.key().unwrap(), Some(b"key2".as_slice()));
+
+        // The data iterator sees the data entry and none of the aux entries.
+        let mut iter = context.raw_iter();
+        iter.seek_to_first().unwrap();
+        assert_eq!(iter.key().unwrap(), Some(b"key5".as_slice()));
+        iter.next().unwrap();
+        assert!(!iter.valid().unwrap());
+
+        // The transactional context, the one GroveDb reads through, sees the
+        // same aux entries.
+        let tx_context = storage
+            .get_transactional_storage_context([b"someprefix"].as_ref().into(), None, &tx)
+            .unwrap();
+        let mut iter = tx_context.raw_iter_aux();
+        iter.seek_to_first().unwrap();
+        let mut keys = Vec::new();
+        while iter.valid().unwrap() {
+            keys.push(iter.key().unwrap().expect("key").to_vec());
+            iter.next().unwrap();
+        }
+        assert_eq!(
+            keys,
+            vec![b"key0".to_vec(), b"key1".to_vec(), b"key2".to_vec()]
+        );
+    }
 }
 
 mod batch_no_transaction {

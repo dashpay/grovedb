@@ -262,6 +262,14 @@ impl<'db> Tx<'db> {
         self.tx.raw_iterator_opt(self.read_options())
     }
 
+    /// Snapshot-honoring raw iterator over a named column family.
+    pub(crate) fn raw_iterator_cf(
+        &self,
+        cf: &ColumnFamily,
+    ) -> DBRawIteratorWithThreadMode<'_, RawTx<'db>> {
+        self.tx.raw_iterator_cf_opt(cf, self.read_options())
+    }
+
     /// Write into the default column family. Refused on a snapshot
     /// read transaction.
     pub(crate) fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(
